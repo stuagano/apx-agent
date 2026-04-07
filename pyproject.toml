@@ -15,13 +15,12 @@ dependencies = [
     "pydantic-settings>=2.0",
     "databricks-sdk>=0.74.0",
     "httpx>=0.27.0",
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.0.0"]
 eval = ["mlflow>=2.0"]
-dev = ["apx-agent[mcp]"]
-all = ["apx-agent[mcp,eval,dev]"]
+all = ["apx-agent[eval]"]
 
 [dependency-groups]
 dev = ["uvicorn[standard]>=0.34.0"]

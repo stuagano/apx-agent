@@ -59,23 +59,17 @@ dependencies = [
     { name = "databricks-sdk" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "mcp" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
 ]
 
 [package.optional-dependencies]
 all = [
-    { name = "mcp" },
     { name = "mlflow" },
-]
-dev = [
-    { name = "mcp" },
 ]
 eval = [
     { name = "mlflow" },
-]
-mcp = [
-    { name = "mcp" },
 ]
 
 [package.dev-dependencies]
@@ -85,17 +79,16 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "apx-agent", extras = ["mcp"], marker = "extra == 'dev'" },
-    { name = "apx-agent", extras = ["mcp", "eval", "dev"], marker = "extra == 'all'" },
+    { name = "apx-agent", extras = ["eval"], marker = "extra == 'all'" },
     { name = "databricks-sdk", specifier = ">=0.74.0" },
     { name = "fastapi", specifier = ">=0.119.0" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=1.0.0" },
     { name = "mlflow", marker = "extra == 'eval'", specifier = ">=2.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
 ]
-provides-extras = ["mcp", "eval", "dev", "all"]
+provides-extras = ["eval", "all"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" }]
