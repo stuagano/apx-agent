@@ -1,0 +1,17 @@
+command: ["uv", "run", "uvicorn", "explain_my_bill_agent.backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
+
+env:
+  - name: MLFLOW_TRACKING_URI
+    value: "databricks"
+  - name: MLFLOW_REGISTRY_URI
+    value: "databricks-uc"
+  - name: AGENT_MODEL
+    value: "databricks-meta-llama-3-3-70b-instruct"
+  - name: MLFLOW_EXPERIMENT_NAME
+    value: "/Shared/explain-my-bill-agent"
+  - name: WAREHOUSE_ID
+    value: "<your-warehouse-id>"
+  - name: DEMO_CATALOG
+    value: "<your-catalog>"
+  - name: DEMO_SCHEMA
+    value: "<your-schema>"

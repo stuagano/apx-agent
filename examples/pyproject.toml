@@ -1,0 +1,35 @@
+[project]
+name = "explain-my-bill-agent"
+version = "0.1.0"
+description = "Energy billing Q&A agent — answers questions about AMI readings, billing history, and rate plans via Unity Catalog"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mlflow>=3.6.0",
+    "databricks-sdk>=0.74.0",
+    "mcp>=1.0.0",
+    "httpx>=0.27.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+]
+
+[tool.apx.metadata]
+app-name = "explain-my-bill-agent"
+app-slug = "explain_my_bill_agent"
+app-entrypoint = "explain_my_bill_agent.backend.app:app"
+api-prefix = "/api"
+metadata-path = "src/explain_my_bill_agent/_metadata.py"
+
+[tool.apx.agent]
+name = "explain_my_bill_agent"
+description = "Answer customer energy billing questions — looks up account profiles, AMI smart meter readings, billing history, rate schedules, and compares usage across months"
+model = "databricks-meta-llama-3-3-70b-instruct"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/explain_my_bill_agent"]
