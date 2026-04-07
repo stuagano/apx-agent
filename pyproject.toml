@@ -20,7 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 mcp = ["mcp>=1.0.0"]
 eval = ["mlflow>=2.0"]
-all = ["apx-agent[mcp,eval]"]
+dev = ["apx-agent[mcp]"]
+all = ["apx-agent[mcp,eval,dev]"]
 
 [dependency-groups]
 dev = ["uvicorn[standard]>=0.34.0"]
