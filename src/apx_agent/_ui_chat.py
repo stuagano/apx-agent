@@ -453,7 +453,7 @@ async function runEvalCase(i) {{
   r.status = 'running'; r.response = '';
   renderEval();
   try {{
-    const resp = await fetch('/invocations', {{
+    const resp = await fetch('/responses', {{
       method: 'POST', headers: {{'Content-Type':'application/json'}},
       body: JSON.stringify({{input: [{{role:'user', content:r.question}}]}}),
     }});
@@ -628,7 +628,7 @@ form.addEventListener('submit', async e => {{
   let pendingTrace = null;
 
   try {{
-    const res = await fetch('/invocations', {{
+    const res = await fetch('/responses', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
       body: JSON.stringify({{ input: history, stream: true }}),

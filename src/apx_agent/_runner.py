@@ -280,7 +280,7 @@ def _to_sub_agent_tool(
 
             async with HttpxClient(timeout=120.0) as http_client:
                 resp = await http_client.post(
-                    f"{(tool.sub_agent_url or '').rstrip('/')}/invocations",
+                    f"{(tool.sub_agent_url or '').rstrip('/')}/responses",
                     json={"input": [{"role": "user", "content": message}]},
                 )
             if resp.status_code >= 400:

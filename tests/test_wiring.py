@@ -35,7 +35,7 @@ class TestSetupAgent:
         # Check protocol routes exist
         route_paths = [r.path for r in app.routes]
         assert "/.well-known/agent.json" in route_paths
-        assert "/invocations" in route_paths
+        assert "/responses" in route_paths
         assert "/health" in route_paths
 
     @pytest.mark.asyncio
