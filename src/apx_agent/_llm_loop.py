@@ -1,4 +1,4 @@
-"""LLM loop — tool dispatch, context trimming, and /invocations handler."""
+"""LLM loop — tool dispatch, context trimming, and /responses handler."""
 
 from __future__ import annotations
 
@@ -366,7 +366,7 @@ async def _handle_invocation(
     request: Request,
     body: InvocationRequest,
 ) -> InvocationResponse | StreamingResponse:
-    """Handle /invocations — returns JSON or SSE depending on body.stream."""
+    """Handle /responses — returns JSON or SSE depending on body.stream."""
     import json as _json
 
     ctx: AgentContext | None = request.app.state.agent_context

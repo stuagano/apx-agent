@@ -53,7 +53,7 @@ async def setup_agent(
     1. Loads config from pyproject.toml if not provided
     2. Collects tools + fetches remote sub-agent tools
     3. Builds the A2A discovery card
-    4. Mounts protocol routes: /invocations, /.well-known/agent.json, /health
+    4. Mounts protocol routes: /responses, /.well-known/agent.json, /health
     5. Mounts tool routes under {api_prefix}/tools/<name>
 
     Returns the AgentContext, or None if config is missing.
@@ -222,20 +222,6 @@ def _mount_protocol_routes(app: FastAPI) -> None:
             "output": response_data.get("output", []),
             "output_text": output_text,
         }
-
-    # -----------------------------------------------------------------
-    # /invocations — legacy endpoint (MLflow ResponsesAgent format)
-    # Translates to Responses API format internally.
-    # -----------------------------------------------------------------
-
-    @protocol_router.post("/invocations", include_in_schema=False)
-    async def invocations(request: Request, body: InvocationRequest) -> Any:
-        """Legacy MLflow agent endpoint. Accepts InvocationRequest format,
-        delegates to the same handler as /responses."""
-        ctx: AgentContext | None = request.app.state.agent_context
-        if ctx is None:
-            raise HTTPException(status_code=404, detail="Agent protocol not configured")
-        return await _handle_invocation(request, body)
 
     def _parse_responses_input(raw: dict) -> InvocationRequest:
         """Parse OpenAI Responses API input into InvocationRequest."""

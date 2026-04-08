@@ -27,7 +27,7 @@ def app_predict_fn(url: str, token: str | None = None) -> Callable[[dict[str, An
         )
 
     The predict function accepts a dict with a "messages" key (list of message
-    dicts) or a plain string, posts to the agent's /invocations endpoint, and
+    dicts) or a plain string, posts to the agent's /responses endpoint, and
     returns the response text.
     """
     import httpx
@@ -44,7 +44,7 @@ def app_predict_fn(url: str, token: str | None = None) -> Callable[[dict[str, An
             ]
 
         response = httpx.post(
-            f"{base}/invocations",
+            f"{base}/responses",
             json={"input": messages},
             headers=headers,
             timeout=120.0,

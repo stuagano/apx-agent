@@ -76,4 +76,4 @@ class TestAppPredictFn:
         with patch("httpx.post", return_value=resp) as mock_post:
             predict("test")
             url = mock_post.call_args[0][0]
-            assert url == "http://my-agent.com/invocations"
+            assert url == "http://my-agent.com/responses"
