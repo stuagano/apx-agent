@@ -134,12 +134,23 @@ class LlmAgent(BaseAgent):
                 return result
         return None
 
-    async def run(self, messages: list[Message], request: Request) -> str:
+    async def _run_loop(self, messages: list[Message], request: Request) -> str:
+        """Run the LLM loop — delegates to SDK Runner or legacy loop based on USE_RUNNER."""
+        from ._runner import is_runner_enabled, run_via_sdk
+
+        if is_runner_enabled():
+            return await run_via_sdk(
+                messages, request,
+                tools=self.collect_tools(),
+                instructions=self._instructions,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                max_iterations=self._max_iterations,
+            )
+
         from ._llm_loop import _run_llm_loop  # late import to break circular
 
-        if rejection := await self._apply_input_guardrails(messages):
-            return rejection
-        text = await _run_llm_loop(
+        return await _run_llm_loop(
             messages, request,
             tools=self.collect_tools(),
             instructions=self._instructions,
@@ -150,27 +161,20 @@ class LlmAgent(BaseAgent):
             after_tool=self._after_tool,
             context_window_tokens=self._context_window_tokens,
         )
+
+    async def run(self, messages: list[Message], request: Request) -> str:
+        if rejection := await self._apply_input_guardrails(messages):
+            return rejection
+        text = await self._run_loop(messages, request)
         if replacement := await self._apply_output_guardrails(text):
             return replacement
         return text
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
-        from ._llm_loop import _run_llm_loop  # late import to break circular
-
         if rejection := await self._apply_input_guardrails(messages):
             yield rejection
             return
-        text = await _run_llm_loop(
-            messages, request,
-            tools=self.collect_tools(),
-            instructions=self._instructions,
-            temperature=self._temperature,
-            max_tokens=self._max_tokens,
-            max_iterations=self._max_iterations,
-            before_tool=self._before_tool,
-            after_tool=self._after_tool,
-            context_window_tokens=self._context_window_tokens,
-        )
+        text = await self._run_loop(messages, request)
         if replacement := await self._apply_output_guardrails(text):
             yield replacement
             return
