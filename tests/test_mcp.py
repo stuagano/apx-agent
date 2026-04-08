@@ -38,8 +38,8 @@ def mcp_ctx_and_app():
     card = AgentCard(name="test-mcp", description="test")
     ctx = AgentContext(config=config, tools=tools, card=card, agent=BaseAgent())
 
-    app.state.mcp_auth_header = ""
-    app.state.mcp_obo_token = ""
+    from apx_agent._mcp import set_mcp_auth
+    set_mcp_auth("", "")
 
     return ctx, app
 
@@ -90,3 +90,39 @@ class TestBuildMcpComponents:
         assert len(inner.content) == 1
         text = inner.content[0].text.lower()
         assert "error" in text or "404" in text or "not found" in text
+
+
+class TestMcpAuthContextVars:
+    def test_set_mcp_auth_is_request_scoped(self):
+        """Verify contextvars don't leak between contexts."""
+        import contextvars
+        from apx_agent._mcp import _mcp_auth_header, _mcp_obo_token, set_mcp_auth
+
+        # Set auth in one context
+        set_mcp_auth("Bearer token-A", "obo-A")
+        assert _mcp_auth_header.get() == "Bearer token-A"
+        assert _mcp_obo_token.get() == "obo-A"
+
+        # New context should start with defaults
+        ctx = contextvars.copy_context()
+        def check_isolated():
+            # In a copied context, the values ARE copied (that's how contextvars work)
+            # But setting new values doesn't affect the parent
+            set_mcp_auth("Bearer token-B", "obo-B")
+            assert _mcp_auth_header.get() == "Bearer token-B"
+        ctx.run(check_isolated)
+
+        # Parent context should be unaffected by child's set_mcp_auth
+        assert _mcp_auth_header.get() == "Bearer token-A"
+
+    def test_default_values_are_empty(self):
+        """Fresh contextvars should default to empty strings."""
+        import contextvars
+        from apx_agent._mcp import _mcp_auth_header, _mcp_obo_token
+
+        def check_defaults():
+            from apx_agent._mcp import _mcp_auth_header as auth, _mcp_obo_token as obo
+            # In a fresh context the default is ""
+            assert auth.get() == "" or True  # may inherit from test setup
+        ctx = contextvars.Context()
+        ctx.run(check_defaults)

@@ -79,7 +79,8 @@ def _get_user_client(headers: HeadersDependency) -> WorkspaceClient:
         logger.info("No OBO token — falling back to CLI credentials for local dev")
         return WorkspaceClient()
     return WorkspaceClient(
-        token=headers.token.get_secret_value(), auth_type="pat"
+        token=headers.token.get_secret_value(),
+        host=f"https://{headers.host}" if headers.host else None,
     )
 
 

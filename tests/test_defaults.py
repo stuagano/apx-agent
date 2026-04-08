@@ -72,17 +72,54 @@ class TestGetUserClient:
             host=None, user_name=None, user_id=None,
             user_email=None, request_id=None, token=None,
         )
-        # Without OBO token, falls back to CLI credentials (WorkspaceClient())
         with patch("apx_agent._defaults.WorkspaceClient") as MockWS:
             MockWS.return_value = MagicMock()
             client = _get_user_client(headers)
             MockWS.assert_called_once_with()
             assert client is not None
 
+    def test_creates_client_with_obo_token_and_host(self):
+        from unittest.mock import patch
+        from pydantic import SecretStr
+        from apx_agent._defaults import _get_user_client
+
+        headers = DatabricksAppsHeaders(
+            host="myworkspace.cloud.databricks.com",
+            user_name="alice",
+            user_id="123",
+            user_email="alice@example.com",
+            request_id=None,
+            token=SecretStr("obo-token-123"),
+        )
+        with patch("apx_agent._defaults.WorkspaceClient") as MockWS:
+            MockWS.return_value = MagicMock()
+            client = _get_user_client(headers)
+            MockWS.assert_called_once_with(
+                token="obo-token-123",
+                host="https://myworkspace.cloud.databricks.com",
+            )
+
+    def test_obo_client_no_pat_auth_type(self):
+        """OBO tokens should not use auth_type='pat'."""
+        from unittest.mock import patch, call
+        from pydantic import SecretStr
+        from apx_agent._defaults import _get_user_client
+
+        headers = DatabricksAppsHeaders(
+            host="ws.databricks.com",
+            user_name=None, user_id=None, user_email=None,
+            request_id=None, token=SecretStr("token"),
+        )
+        with patch("apx_agent._defaults.WorkspaceClient") as MockWS:
+            MockWS.return_value = MagicMock()
+            _get_user_client(headers)
+            # Should NOT pass auth_type="pat"
+            kwargs = MockWS.call_args.kwargs
+            assert "auth_type" not in kwargs
+
 
 class TestDependenciesClass:
     def test_type_aliases_exist(self):
-        # Verify the type aliases are accessible
         assert Dependencies.Client is not None
         assert Dependencies.UserClient is not None
         assert Dependencies.Headers is not None
