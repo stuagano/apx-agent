@@ -207,25 +207,30 @@ def _to_function_tool(
     api_prefix = ctx.config.api_prefix
 
     async def _on_invoke(ctx_sdk: Any, args_json: str) -> str:
-        arguments = _json.loads(args_json) if args_json else {}
-        obo_headers = {
-            "Authorization": request.headers.get("Authorization", ""),
-            "X-Forwarded-Access-Token": request.headers.get("X-Forwarded-Access-Token", ""),
-            "X-Forwarded-Host": request.headers.get("X-Forwarded-Host", ""),
-        }
-        async with AsyncClient(
-            transport=ASGITransport(app=request.app),
-            base_url="http://internal",
-        ) as client:
-            response = await client.post(
-                f"{api_prefix}/tools/{tool.name}",
-                json=arguments,
-                headers=obo_headers,
-            )
-        if response.status_code >= 400:
-            return f"Tool error ({response.status_code}): {response.text}"
-        result = response.json()
-        return result if isinstance(result, str) else _json.dumps(result)
+        try:
+            arguments = _json.loads(args_json) if args_json else {}
+            obo_headers = {
+                "Authorization": request.headers.get("Authorization", ""),
+                "X-Forwarded-Access-Token": request.headers.get("X-Forwarded-Access-Token", ""),
+                "X-Forwarded-Host": request.headers.get("X-Forwarded-Host", ""),
+            }
+            async with AsyncClient(
+                transport=ASGITransport(app=request.app),
+                base_url="http://internal",
+            ) as client:
+                response = await client.post(
+                    f"{api_prefix}/tools/{tool.name}",
+                    json=arguments,
+                    headers=obo_headers,
+                )
+            if response.status_code >= 400:
+                return f"Tool error ({response.status_code}): {response.text}"
+            result = response.json()
+            return result if isinstance(result, str) else _json.dumps(result)
+        except Exception as e:
+            # Return errors as text so the LLM can reason about them
+            # instead of crashing the agent loop
+            return f"Tool error: {e}"
 
     # Build strict JSON schema from apx-agent's tool schema
     params_schema = _to_strict_schema(tool.input_schema)
@@ -253,37 +258,40 @@ def _to_sub_agent_tool(
     app_name = _url_to_app_name(tool.sub_agent_url or "")
 
     async def _on_invoke(ctx_sdk: Any, args_json: str) -> str:
-        arguments = _json.loads(args_json) if args_json else {}
-        message = arguments.get("message", _json.dumps(arguments))
-
-        if app_name:
-            try:
-                response = await client.responses.create(
-                    model=f"apps/{app_name}",
-                    input=[{"type": "message", "role": "user", "content": message}],
-                )
-                return response.output_text
-            except Exception as e:
-                logger.warning(
-                    "DatabricksOpenAI call to apps/%s failed (%s), falling back to direct HTTP",
-                    app_name, e,
-                )
-
-        # Fallback: direct HTTP POST
-        from httpx import AsyncClient as HttpxClient
-
-        async with HttpxClient(timeout=120.0) as http_client:
-            resp = await http_client.post(
-                f"{(tool.sub_agent_url or '').rstrip('/')}/invocations",
-                json={"input": [{"role": "user", "content": message}]},
-            )
-        if resp.status_code >= 400:
-            return f"Sub-agent error ({resp.status_code}): {resp.text}"
-        data = resp.json()
         try:
-            return data["output"][0]["content"][0]["text"]
-        except (KeyError, IndexError):
-            return _json.dumps(data)
+            arguments = _json.loads(args_json) if args_json else {}
+            message = arguments.get("message", _json.dumps(arguments))
+
+            if app_name:
+                try:
+                    response = await client.responses.create(
+                        model=f"apps/{app_name}",
+                        input=[{"type": "message", "role": "user", "content": message}],
+                    )
+                    return response.output_text
+                except Exception as e:
+                    logger.warning(
+                        "DatabricksOpenAI call to apps/%s failed (%s), falling back to direct HTTP",
+                        app_name, e,
+                    )
+
+            # Fallback: direct HTTP POST
+            from httpx import AsyncClient as HttpxClient
+
+            async with HttpxClient(timeout=120.0) as http_client:
+                resp = await http_client.post(
+                    f"{(tool.sub_agent_url or '').rstrip('/')}/invocations",
+                    json={"input": [{"role": "user", "content": message}]},
+                )
+            if resp.status_code >= 400:
+                return f"Sub-agent error ({resp.status_code}): {resp.text}"
+            data = resp.json()
+            try:
+                return data["output"][0]["content"][0]["text"]
+            except (KeyError, IndexError):
+                return _json.dumps(data)
+        except Exception as e:
+            return f"Sub-agent error: {e}"
 
     return FunctionTool(
         name=tool.name,
