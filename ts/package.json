@@ -1,0 +1,38 @@
+{
+  "name": "appkit-agent",
+  "version": "0.1.0",
+  "description": "AppKit plugins for building AI agents on Databricks Apps — typed tools, A2A discovery, MCP server, dev UI",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown -c tsdown.config.ts",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src/",
+    "clean": "rm -rf dist"
+  },
+  "keywords": ["databricks", "appkit", "agent", "mcp", "a2a"],
+  "license": "Apache-2.0",
+  "peerDependencies": {
+    "@databricks/appkit": ">=0.20.0"
+  },
+  "dependencies": {
+    "databricks-openai": "^0.1.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@databricks/appkit": "^0.21.0",
+    "tsdown": "^0.20.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.0",
+    "vitest": "^4.0.0"
+  }
+}
