@@ -286,8 +286,11 @@ def create_app(
             mcp_lifecycle = nullcontext()
 
         async with mcp_lifecycle:
-            # Auto-register with agent registry after all routes are mounted
-            await _do_registration(app)
+            # Schedule auto-registration as a background task — needs to run
+            # after the server is accepting connections so the registry can
+            # crawl back to /.well-known/agent.json
+            import asyncio
+            asyncio.get_event_loop().call_later(3, lambda: asyncio.ensure_future(_do_registration(app)))
             try:
                 yield
             finally:
