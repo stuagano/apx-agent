@@ -18,6 +18,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import os
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from fastapi import Request
@@ -114,6 +115,79 @@ async def run_via_sdk(
             return str(item.content)
 
     return ""
+
+
+async def stream_via_sdk(
+    input_messages: list[Message],
+    request: Request,
+    tools: list[AgentTool] | None = None,
+    instructions: str = "",
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    max_iterations: int | None = None,
+    **kwargs: Any,
+) -> AsyncGenerator[str, None]:
+    """Stream the agent loop using OpenAI Agents SDK + DatabricksOpenAI.
+
+    Yields text chunks as the LLM produces them — real token streaming,
+    not run-to-completion-then-chunk.
+    """
+    from agents import Agent as OAIAgent
+    from agents import Runner
+    from databricks_openai import AsyncDatabricksOpenAI
+    from agents import set_default_openai_client, set_default_openai_api
+
+    ctx: AgentContext = request.app.state.agent_context
+
+    client = AsyncDatabricksOpenAI()
+    set_default_openai_client(client)
+    set_default_openai_api("chat_completions")
+
+    effective_tools = tools if tools is not None else ctx.tools
+
+    function_tools = [
+        _to_function_tool(t, request, ctx)
+        for t in effective_tools
+        if not t.sub_agent_url
+    ]
+    sub_agent_tools = [
+        _to_sub_agent_tool(t, client)
+        for t in effective_tools
+        if t.sub_agent_url
+    ]
+
+    effective_model = ctx.config.model
+    effective_instructions = instructions or ctx.config.instructions
+    effective_max_iter = max_iterations or ctx.config.max_iterations
+
+    oai_agent = OAIAgent(
+        name=ctx.config.name,
+        model=effective_model,
+        instructions=effective_instructions or "You are a helpful assistant.",
+        tools=function_tools + sub_agent_tools,
+    )
+
+    sdk_input = [
+        {"role": m.role, "content": m.content}
+        for m in input_messages
+    ]
+
+    result = Runner.run_streamed(
+        oai_agent,
+        sdk_input,
+        max_turns=effective_max_iter,
+    )
+
+    async for event in result.stream_events():
+        # RawResponsesStreamEvent contains the raw model output deltas
+        if hasattr(event, 'data') and hasattr(event.data, 'delta'):
+            delta = event.data.delta
+            if isinstance(delta, str) and delta:
+                yield delta
+        # Also handle OutputTextDelta events from the Responses API format
+        elif hasattr(event, 'type') and 'output_text' in str(getattr(event, 'type', '')):
+            if hasattr(event, 'delta') and isinstance(event.delta, str):
+                yield event.delta
 
 
 def _to_function_tool(

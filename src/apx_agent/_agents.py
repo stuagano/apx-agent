@@ -174,6 +174,27 @@ class LlmAgent(BaseAgent):
         if rejection := await self._apply_input_guardrails(messages):
             yield rejection
             return
+
+        from ._runner import is_runner_enabled, stream_via_sdk
+
+        if is_runner_enabled():
+            full_text = ""
+            async for chunk in stream_via_sdk(
+                messages, request,
+                tools=self.collect_tools(),
+                instructions=self._instructions,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                max_iterations=self._max_iterations,
+            ):
+                full_text += chunk
+                yield chunk
+            # Apply output guardrail on the full assembled text
+            if replacement := await self._apply_output_guardrails(full_text):
+                yield f"\n\n[Guardrail override: {replacement}]"
+            return
+
+        # Legacy path: run-to-completion then chunk
         text = await self._run_loop(messages, request)
         if replacement := await self._apply_output_guardrails(text):
             yield replacement
