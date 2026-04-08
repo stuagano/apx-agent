@@ -98,53 +98,38 @@ async def setup_agent(
 
     # Auto-register with agent registry (if configured)
     if config.registry:
-        _schedule_registration(app, config.registry)
+        app.state._pending_registration = config.registry
 
     return ctx
 
 
-def _schedule_registration(app: FastAPI, registry_url: str) -> None:
-    """Schedule a background task to register with an agent registry after startup.
-
-    Runs after the server is accepting requests so the registry can crawl
-    back to /.well-known/agent.json. Failures are logged but don't block startup.
-    """
-    import asyncio
-
+async def _do_registration(app: FastAPI) -> None:
+    """Register with the agent registry. Called from within the lifespan."""
     import httpx
 
-    async def _register() -> None:
-        # Wait for the server to be ready
-        await asyncio.sleep(2)
-        # Discover our own URL from uvicorn bindings
-        server = getattr(app.state, "_server", None)
-        if server and hasattr(server, "servers") and server.servers:
-            sock = server.servers[0].sockets[0]
-            host, port = sock.getsockname()[:2]
-            own_url = f"http://{host}:{port}"
-        else:
-            own_url = "http://127.0.0.1:8000"
-            logger.warning("Could not detect own URL — using %s", own_url)
+    registry_url = getattr(app.state, "_pending_registration", None)
+    if not registry_url:
+        return
 
-        url = registry_url.rstrip("/")
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.post(
-                    f"{url}/api/agents/register",
-                    json={"url": own_url},
-                )
-                r.raise_for_status()
-                data = r.json()
-                logger.info(
-                    "Registered with agent registry at %s as '%s'",
-                    url, data.get("id", "unknown"),
-                )
-        except Exception as e:
-            logger.warning("Failed to register with agent registry at %s: %s", url, e)
+    # Discover our own URL — check environment, then fall back to localhost.
+    # In Databricks Apps, DATABRICKS_APP_URL is set by the runtime.
+    own_url = os.environ.get("DATABRICKS_APP_URL", "http://127.0.0.1:8000")
 
-    @app.on_event("startup")
-    async def _on_startup() -> None:
-        asyncio.create_task(_register())
+    url = registry_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(
+                f"{url}/api/agents/register",
+                json={"url": own_url},
+            )
+            r.raise_for_status()
+            data = r.json()
+            logger.info(
+                "Registered with agent registry at %s as '%s'",
+                url, data.get("id", "unknown"),
+            )
+    except Exception as e:
+        logger.warning("Failed to register with agent registry at %s: %s", url, e)
 
 
 def _mount_protocol_routes(app: FastAPI) -> None:
@@ -295,6 +280,8 @@ def create_app(
             mcp_lifecycle = nullcontext()
 
         async with mcp_lifecycle:
+            # Auto-register with agent registry after all routes are mounted
+            await _do_registration(app)
             try:
                 yield
             finally:
