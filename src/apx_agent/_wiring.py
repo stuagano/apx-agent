@@ -182,30 +182,63 @@ def _mount_protocol_routes(app: FastAPI) -> None:
             "mcpEndpoint": f"{base}/mcp" if mcp_available else None,
         })
 
-    @protocol_router.post("/invocations", include_in_schema=False)
-    async def invocations(request: Request, body: InvocationRequest) -> Any:
-        ctx: AgentContext | None = request.app.state.agent_context
-        if ctx is None:
-            raise HTTPException(status_code=404, detail="Agent protocol not configured")
-        return await _handle_invocation(request, body)
+    # -----------------------------------------------------------------
+    # /responses — primary endpoint (OpenAI Responses API format)
+    # -----------------------------------------------------------------
 
     @protocol_router.post("/responses", include_in_schema=False)
     async def responses_api(request: Request) -> Any:
-        """OpenAI Responses API compatibility endpoint.
+        """Primary agent endpoint — OpenAI Responses API format.
 
-        Accepts the Responses API format used by DatabricksOpenAI when calling
-        ``model="apps/<name>"``. Translates to the internal InvocationRequest
-        format and delegates to the same handler as /invocations.
+        This is what ``DatabricksOpenAI.responses.create(model="apps/<name>")``
+        calls. Accepts the Responses API input format and returns the
+        Responses API output format with ``output_text``.
         """
         ctx: AgentContext | None = request.app.state.agent_context
         if ctx is None:
             raise HTTPException(status_code=404, detail="Agent protocol not configured")
 
-        import json as _json
-
         raw = await request.json()
+        body = _parse_responses_input(raw)
+        result = await _handle_invocation(request, body)
 
-        # Translate Responses API input format to InvocationRequest format
+        # StreamingResponse — pass through
+        if hasattr(result, 'body'):
+            return result
+
+        # Wrap in Responses API format
+        response_data = result.model_dump() if hasattr(result, 'output') else {"output": []}
+        output_text = ""
+        for item in response_data.get("output", []):
+            for content in item.get("content", []):
+                if content.get("type") == "output_text":
+                    output_text = content.get("text", "")
+                    break
+
+        return {
+            "id": f"resp_{id(result)}",
+            "object": "response",
+            "status": "completed",
+            "output": response_data.get("output", []),
+            "output_text": output_text,
+        }
+
+    # -----------------------------------------------------------------
+    # /invocations — legacy endpoint (MLflow ResponsesAgent format)
+    # Translates to Responses API format internally.
+    # -----------------------------------------------------------------
+
+    @protocol_router.post("/invocations", include_in_schema=False)
+    async def invocations(request: Request, body: InvocationRequest) -> Any:
+        """Legacy MLflow agent endpoint. Accepts InvocationRequest format,
+        delegates to the same handler as /responses."""
+        ctx: AgentContext | None = request.app.state.agent_context
+        if ctx is None:
+            raise HTTPException(status_code=404, detail="Agent protocol not configured")
+        return await _handle_invocation(request, body)
+
+    def _parse_responses_input(raw: dict) -> InvocationRequest:
+        """Parse OpenAI Responses API input into InvocationRequest."""
         raw_input = raw.get("input", [])
         if isinstance(raw_input, str):
             messages = [Message(role="user", content=raw_input)]
@@ -215,9 +248,7 @@ def _mount_protocol_routes(app: FastAPI) -> None:
                 if isinstance(item, dict):
                     role = item.get("role", "user")
                     content = item.get("content", "")
-                    # Handle {"type": "message", "role": "user", "content": "..."}
                     if isinstance(content, list):
-                        # Content array format: [{"type": "input_text", "text": "..."}]
                         text_parts = [
                             p.get("text", "") for p in content
                             if isinstance(p, dict) and p.get("type") in ("input_text", "text")
@@ -225,39 +256,11 @@ def _mount_protocol_routes(app: FastAPI) -> None:
                         content = " ".join(text_parts) if text_parts else str(content)
                     messages.append(Message(role=role, content=content))
 
-        body = InvocationRequest(
+        return InvocationRequest(
             input=messages,
             stream=raw.get("stream", False),
             custom_inputs=raw.get("custom_inputs", {}),
         )
-        result = await _handle_invocation(request, body)
-
-        # Translate InvocationResponse to Responses API format
-        if hasattr(result, 'body'):
-            # StreamingResponse — pass through
-            return result
-
-        # JSON response — wrap in Responses API format
-        if hasattr(result, 'output'):
-            response_data = result.model_dump()
-        else:
-            response_data = {"output": []}
-
-        return {
-            "id": f"resp_{id(result)}",
-            "object": "response",
-            "status": "completed",
-            "output": response_data.get("output", []),
-            "output_text": _extract_output_text(response_data),
-        }
-
-    def _extract_output_text(response_data: dict) -> str:
-        """Extract plain text from InvocationResponse output format."""
-        for item in response_data.get("output", []):
-            for content in item.get("content", []):
-                if content.get("type") == "output_text":
-                    return content.get("text", "")
-        return ""
 
     @protocol_router.get("/health", include_in_schema=False)
     async def health() -> dict[str, str]:
