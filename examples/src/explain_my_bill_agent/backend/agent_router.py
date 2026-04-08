@@ -25,7 +25,7 @@ import os
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.sql import StatementState
+from databricks.sdk.service.sql import StatementParameterListItem, StatementState
 
 from .core import Dependencies
 from .core.agent import Agent
@@ -42,6 +42,11 @@ SCHEMA = os.environ.get("DEMO_SCHEMA", "billing")
 WAREHOUSE_ID = os.environ.get("WAREHOUSE_ID", "")
 
 # Expected tables: customers, ami_hourly_rollups, billing_history, rate_schedules
+
+
+def _param(name: str, value: Any) -> StatementParameterListItem:
+    """Shorthand to build a Statement Execution query parameter."""
+    return StatementParameterListItem(name=name, value=str(value))
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +81,6 @@ def get_session_context(headers: Headers) -> dict:
         "obo_token": obo_active,
         "catalog": f"{CATALOG}.{SCHEMA}",
         "tables": ["customers", "ami_hourly_rollups", "billing_history", "rate_schedules"],
-        "audit_query": f"SELECT * FROM system.access.audit WHERE user_identity.email = '{email}'",
     }
 
 
@@ -84,11 +88,16 @@ def get_session_context(headers: Headers) -> dict:
 # SQL helper
 # ---------------------------------------------------------------------------
 
-def _run_sql(ws: WorkspaceClient, sql: str) -> list[dict[str, Any]]:
-    """Execute SQL via Statement Execution API and return list of row dicts."""
+def _run_sql(
+    ws: WorkspaceClient,
+    sql: str,
+    params: list[StatementParameterListItem] | None = None,
+) -> list[dict[str, Any]]:
+    """Execute parameterized SQL via Statement Execution API and return list of row dicts."""
     response = ws.statement_execution.execute_statement(
         warehouse_id=WAREHOUSE_ID,
         statement=sql,
+        parameters=params,
         catalog=CATALOG,
         schema=SCHEMA,
     )
@@ -133,11 +142,13 @@ def get_customer_profile(ws: Client, customer_id: str = "", name: str = "") -> d
         return {"error": "Provide either customer_id or name"}
 
     if customer_id:
-        sql = f"SELECT * FROM customers WHERE customer_id = '{customer_id}'"
+        sql = "SELECT * FROM customers WHERE customer_id = :customer_id"
+        params = [_param("customer_id", customer_id)]
     else:
-        sql = f"SELECT * FROM customers WHERE LOWER(name) LIKE LOWER('%{name}%') LIMIT 1"
+        sql = "SELECT * FROM customers WHERE LOWER(name) LIKE LOWER(:pattern) LIMIT 1"
+        params = [_param("pattern", f"%{name}%")]
 
-    rows = _run_sql(ws, sql)
+    rows = _run_sql(ws, sql, params)
     if not rows:
         return {"error": "Customer not found"}
     if "error" in rows[0]:
@@ -154,14 +165,19 @@ def query_ami_readings(customer_id: str, start_date: str, end_date: str, ws: Cli
     sd = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
     ed = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
 
-    sql = f"""
+    sql = """
     SELECT read_date, daily_kwh, min_kwh, max_kwh, avg_kwh, readings
     FROM ami_hourly_rollups
-    WHERE customer_id = '{customer_id}'
-      AND read_date BETWEEN '{sd}' AND '{ed}'
+    WHERE customer_id = :customer_id
+      AND read_date BETWEEN :start_date AND :end_date
     ORDER BY read_date
     """
-    rows = _run_sql(ws, sql)
+    params = [
+        _param("customer_id", customer_id),
+        _param("start_date", sd),
+        _param("end_date", ed),
+    ]
+    rows = _run_sql(ws, sql, params)
     if rows and "error" in rows[0]:
         return rows[0]
     return {
@@ -179,13 +195,17 @@ def get_billing_summary(customer_id: str, months: int, ws: Client) -> dict[str, 
     customer_id: e.g. CUST-0001
     months: number of recent months to return (use 3 if unsure)"""
 
-    sql = f"""
+    sql = """
     SELECT * FROM billing_history
-    WHERE customer_id = '{customer_id}'
+    WHERE customer_id = :customer_id
     ORDER BY billing_month DESC
-    LIMIT {int(months)}
+    LIMIT :limit
     """
-    rows = _run_sql(ws, sql)
+    params = [
+        _param("customer_id", customer_id),
+        _param("limit", int(months)),
+    ]
+    rows = _run_sql(ws, sql, params)
     if rows and "error" in rows[0]:
         return rows[0]
     if not rows:
@@ -202,8 +222,9 @@ def get_rate_schedule(rate_plan_id: str, ws: Client) -> dict[str, Any]:
     per-kWh rates for each tier, fixed monthly charges, and demand charges.
     rate_plan_id: e.g. RP-BASIC, RP-TOU, RP-GREEN, RP-EV, RP-COMM"""
 
-    sql = f"SELECT * FROM rate_schedules WHERE rate_plan_id = '{rate_plan_id}'"
-    rows = _run_sql(ws, sql)
+    sql = "SELECT * FROM rate_schedules WHERE rate_plan_id = :rate_plan_id"
+    params = [_param("rate_plan_id", rate_plan_id)]
+    rows = _run_sql(ws, sql, params)
     if not rows:
         return {"error": f"Rate plan {rate_plan_id} not found"}
     if "error" in rows[0]:
@@ -218,12 +239,17 @@ def compare_months(customer_id: str, month1: str, month2: str, ws: Client) -> di
     customer_id: e.g. CUST-0001
     month1 / month2: YYYYMM format (e.g. 202503)"""
 
-    bill_sql = f"""
+    bill_sql = """
     SELECT * FROM billing_history
-    WHERE customer_id = '{customer_id}' AND billing_month IN ('{month1}', '{month2}')
+    WHERE customer_id = :customer_id AND billing_month IN (:month1, :month2)
     ORDER BY billing_month
     """
-    bills = _run_sql(ws, bill_sql)
+    bill_params = [
+        _param("customer_id", customer_id),
+        _param("month1", month1),
+        _param("month2", month2),
+    ]
+    bills = _run_sql(ws, bill_sql, bill_params)
     if bills and "error" in bills[0]:
         return bills[0]
     if not bills:
@@ -237,17 +263,22 @@ def compare_months(customer_id: str, month1: str, month2: str, ws: Client) -> di
 
         start = f"{month[:4]}-{month[4:]}-01"
         end = f"{month[:4]}-{month[4:]}-31"
-        ami_sql = f"""
+        ami_sql = """
         SELECT
             COUNT(DISTINCT read_date) AS days_with_data,
             SUM(daily_kwh)            AS total_kwh,
             AVG(daily_kwh)            AS avg_daily_kwh,
             MAX(max_kwh)              AS peak_kwh
         FROM ami_hourly_rollups
-        WHERE customer_id = '{customer_id}'
-          AND read_date BETWEEN '{start}' AND '{end}'
+        WHERE customer_id = :customer_id
+          AND read_date BETWEEN :start_date AND :end_date
         """
-        ami_rows = _run_sql(ws, ami_sql)
+        ami_params = [
+            _param("customer_id", customer_id),
+            _param("start_date", start),
+            _param("end_date", end),
+        ]
+        ami_rows = _run_sql(ws, ami_sql, ami_params)
         ami = _cast_numerics(ami_rows[0]) if ami_rows and "error" not in ami_rows[0] else {}
 
         result["months"][month] = {"billing": bill, "ami": ami}

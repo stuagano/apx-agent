@@ -139,7 +139,8 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         mcp_transport = getattr(request.app.state, "mcp_transport", None)
         if mcp_server is None or mcp_transport is None:
             raise HTTPException(status_code=503, detail="MCP server not available")
-        request.app.state.mcp_auth_header = request.headers.get("Authorization", "")
+        from ._mcp import set_mcp_auth
+        set_mcp_auth(request.headers.get("Authorization", ""), request.headers.get("X-Forwarded-Access-Token", ""))
         async with mcp_transport.connect_sse(
             request.scope, request.receive, request._send
         ) as streams:
@@ -165,8 +166,8 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         mcp_http_manager = getattr(request.app.state, "mcp_http_manager", None)
         if mcp_http_manager is None:
             raise HTTPException(status_code=503, detail="MCP server not available")
-        request.app.state.mcp_auth_header = request.headers.get("Authorization", "")
-        request.app.state.mcp_obo_token = request.headers.get("X-Forwarded-Access-Token", "")
+        from ._mcp import set_mcp_auth
+        set_mcp_auth(request.headers.get("Authorization", ""), request.headers.get("X-Forwarded-Access-Token", ""))
         scope = dict(request.scope)
         headers = list(scope.get("headers", []))
         accept_vals = [v for k, v in headers if k.lower() == b"accept"]

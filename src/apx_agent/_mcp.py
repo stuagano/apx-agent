@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import contextvars
 from typing import Any
 
 from fastapi import FastAPI
 
 from ._models import AgentContext
+
+# Request-scoped auth context — avoids race conditions with concurrent MCP clients
+_mcp_auth_header: contextvars.ContextVar[str] = contextvars.ContextVar("_mcp_auth_header", default="")
+_mcp_obo_token: contextvars.ContextVar[str] = contextvars.ContextVar("_mcp_obo_token", default="")
+
+
+def set_mcp_auth(auth_header: str, obo_token: str) -> None:
+    """Set MCP auth context for the current request (called from protocol routes)."""
+    _mcp_auth_header.set(auth_header)
+    _mcp_obo_token.set(obo_token)
 
 
 def _build_mcp_components(ctx: AgentContext, app: FastAPI, api_prefix: str = "/api") -> tuple[Any, Any]:
@@ -38,10 +49,9 @@ def _build_mcp_components(ctx: AgentContext, app: FastAPI, api_prefix: str = "/a
     async def _call_tool(name: str, arguments: dict[str, Any] | None) -> list[Any]:
         from httpx import ASGITransport, AsyncClient
 
-        # Forward auth headers captured from the most recent MCP request (SSE or stateless HTTP).
-        # X-Forwarded-Access-Token is the Databricks Apps OBO token required by tool routes.
-        mcp_auth: str = getattr(app.state, "mcp_auth_header", "")
-        mcp_obo: str = getattr(app.state, "mcp_obo_token", "")
+        # Read auth from request-scoped contextvars (set by protocol routes)
+        mcp_auth = _mcp_auth_header.get()
+        mcp_obo = _mcp_obo_token.get()
         extra_headers: dict[str, str] = {}
         if mcp_auth:
             extra_headers["Authorization"] = mcp_auth

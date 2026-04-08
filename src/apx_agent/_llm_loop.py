@@ -237,7 +237,6 @@ async def _run_llm_loop(
     ]
     messages = base_messages
 
-    auth_headers = ws.config.authenticate()
     endpoint_url = f"{ws.config.host.rstrip('/')}/serving-endpoints/{ctx.config.model}/invocations"
 
     model_params: dict[str, Any] = {}
@@ -255,6 +254,9 @@ async def _run_llm_loop(
 
     async with AsyncClient() as client:
         for _ in range(effective_max_iter):
+            # Re-authenticate each iteration — tokens may expire during long loops
+            auth_headers = ws.config.authenticate()
+
             effective_tools = tools if tools is not None else ctx.tools
             tool_schemas = _build_tool_schemas(effective_tools)
 
