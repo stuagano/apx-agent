@@ -123,15 +123,17 @@ def _to_function_tool(
 ) -> Any:
     """Wrap an apx-agent local tool as an OpenAI Agents SDK FunctionTool.
 
-    Dispatch goes through the existing FastAPI ASGI route so that all
-    Dependencies.* injection (OBO token, WorkspaceClient, etc.) works.
+    Uses ``FunctionTool`` directly (not the ``@function_tool`` decorator)
+    to control the JSON schema exactly. Tool calls dispatch through the
+    existing FastAPI ASGI route so Dependencies.* injection works.
     """
-    from agents import function_tool
+    from agents.tool import FunctionTool
     from httpx import ASGITransport, AsyncClient
 
     api_prefix = ctx.config.api_prefix
 
-    async def _invoke(**kwargs: Any) -> str:
+    async def _on_invoke(ctx_sdk: Any, args_json: str) -> str:
+        arguments = _json.loads(args_json) if args_json else {}
         obo_headers = {
             "Authorization": request.headers.get("Authorization", ""),
             "X-Forwarded-Access-Token": request.headers.get("X-Forwarded-Access-Token", ""),
@@ -143,7 +145,7 @@ def _to_function_tool(
         ) as client:
             response = await client.post(
                 f"{api_prefix}/tools/{tool.name}",
-                json=kwargs,
+                json=arguments,
                 headers=obo_headers,
             )
         if response.status_code >= 400:
@@ -151,13 +153,16 @@ def _to_function_tool(
         result = response.json()
         return result if isinstance(result, str) else _json.dumps(result)
 
-    # Apply the decorator with name/description overrides
-    decorated = function_tool(
-        name_override=tool.name,
-        description_override=tool.description,
-    )(_invoke)
+    # Build strict JSON schema from apx-agent's tool schema
+    params_schema = _to_strict_schema(tool.input_schema)
 
-    return decorated
+    return FunctionTool(
+        name=tool.name,
+        description=tool.description,
+        params_json_schema=params_schema,
+        on_invoke_tool=_on_invoke,
+        strict_json_schema=True,
+    )
 
 
 def _to_sub_agent_tool(
@@ -169,14 +174,15 @@ def _to_sub_agent_tool(
     Uses ``model="apps/<app-name>"`` for automatic OBO token forwarding
     through the Supervisor gateway, instead of raw HTTP POST.
     """
-    from agents import function_tool
+    from agents.tool import FunctionTool
 
-    # Try to derive app name from URL: https://<app-name>.workspace.databricksapps.com
     app_name = _url_to_app_name(tool.sub_agent_url or "")
 
-    async def _invoke(message: str) -> str:
+    async def _on_invoke(ctx_sdk: Any, args_json: str) -> str:
+        arguments = _json.loads(args_json) if args_json else {}
+        message = arguments.get("message", _json.dumps(arguments))
+
         if app_name:
-            # Use DatabricksOpenAI for proper OBO auth routing
             try:
                 response = await client.responses.create(
                     model=f"apps/{app_name}",
@@ -189,7 +195,7 @@ def _to_sub_agent_tool(
                     app_name, e,
                 )
 
-        # Fallback: direct HTTP POST (existing behavior)
+        # Fallback: direct HTTP POST
         from httpx import AsyncClient as HttpxClient
 
         async with HttpxClient(timeout=120.0) as http_client:
@@ -205,12 +211,42 @@ def _to_sub_agent_tool(
         except (KeyError, IndexError):
             return _json.dumps(data)
 
-    decorated = function_tool(
-        name_override=tool.name,
-        description_override=tool.description,
-    )(_invoke)
+    return FunctionTool(
+        name=tool.name,
+        description=tool.description,
+        params_json_schema={
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "The message to send to the agent"},
+            },
+            "required": ["message"],
+            "additionalProperties": False,
+        },
+        on_invoke_tool=_on_invoke,
+        strict_json_schema=True,
+    )
 
-    return decorated
+
+def _to_strict_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
+    """Convert an apx-agent tool input schema to OpenAI strict JSON schema format.
+
+    Ensures ``additionalProperties: false`` is set on all object types,
+    which the OpenAI Agents SDK requires for strict mode.
+    """
+    if not schema:
+        return {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+
+    result = dict(schema)
+    if result.get("type") == "object":
+        result.setdefault("additionalProperties", False)
+        result.setdefault("required", list(result.get("properties", {}).keys()))
+        # Recurse into nested object properties
+        if "properties" in result:
+            result["properties"] = {
+                k: _to_strict_schema(v) if isinstance(v, dict) and v.get("type") == "object" else v
+                for k, v in result["properties"].items()
+            }
+    return result
 
 
 def _url_to_app_name(url: str) -> str | None:
