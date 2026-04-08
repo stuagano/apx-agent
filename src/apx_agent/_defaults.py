@@ -7,7 +7,8 @@ template offers, but without requiring the APX template scaffolding.
 from __future__ import annotations
 
 import logging
-from typing import Annotated, TypeAlias
+from collections.abc import Callable
+from typing import Annotated, Any, TypeAlias
 from uuid import UUID
 
 from databricks.sdk import WorkspaceClient
@@ -89,6 +90,56 @@ UserClientDependency: TypeAlias = Annotated[WorkspaceClient, Depends(_get_user_c
 
 
 # ---------------------------------------------------------------------------
+# Request dependency
+# ---------------------------------------------------------------------------
+
+
+def _get_request(request: Request) -> Request:
+    """Identity dependency — lets tools declare ``request: Dependencies.Request``."""
+    return request
+
+
+RequestDependency: TypeAlias = Annotated[Request, Depends(_get_request)]
+
+
+# ---------------------------------------------------------------------------
+# SQL runner dependency
+# ---------------------------------------------------------------------------
+
+
+SqlRunnerFn: TypeAlias = Callable[[str], list[dict[str, Any]]]
+"""Callable that executes SQL and returns rows as list of dicts."""
+
+
+def _get_sql_runner(headers: HeadersDependency) -> SqlRunnerFn:
+    """Return a SQL runner bound to the current user's workspace client.
+
+    Usage in tool functions::
+
+        def my_tool(query: str, sql: Dependencies.Sql) -> list[dict]:
+            return sql(f"SELECT * FROM t WHERE col = '{query}'")
+    """
+    from ._sql import run_sql
+
+    if not headers.token:
+        logger.info("No OBO token — SQL runner using CLI credentials for local dev")
+        ws = WorkspaceClient()
+    else:
+        ws = WorkspaceClient(
+            token=headers.token.get_secret_value(),
+            host=f"https://{headers.host}" if headers.host else None,
+        )
+
+    def _runner(sql_statement: str) -> list[dict[str, Any]]:
+        return run_sql(ws, sql_statement)
+
+    return _runner
+
+
+SqlDependency: TypeAlias = Annotated[SqlRunnerFn, Depends(_get_sql_runner)]
+
+
+# ---------------------------------------------------------------------------
 # Dependencies class — public API
 # ---------------------------------------------------------------------------
 
@@ -101,6 +152,9 @@ class Dependencies:
         def my_tool(query: str, ws: Dependencies.Client) -> str:
             rows = ws.statement_execution.execute_statement(...)
             ...
+
+        def my_tool(query: str, sql: Dependencies.Sql) -> list[dict]:
+            return sql(f"SELECT * FROM t WHERE col = '{query}'")
     """
 
     Client: TypeAlias = ClientDependency
@@ -120,3 +174,11 @@ class Dependencies:
     """Workspace client authenticated on behalf of the current user (OBO).
     Shorthand for Dependencies.UserClient in agent tool functions.
     Recommended usage: ``ws: Dependencies.Workspace``"""
+
+    Request: TypeAlias = RequestDependency
+    """The raw FastAPI Request object — excluded from tool input schemas.
+    Recommended usage: ``request: Dependencies.Request``"""
+
+    Sql: TypeAlias = SqlDependency
+    """SQL runner bound to the current user's workspace — excluded from schemas.
+    Recommended usage: ``sql: Dependencies.Sql``"""

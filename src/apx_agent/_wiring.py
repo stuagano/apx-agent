@@ -28,10 +28,23 @@ from ._models import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_env_var(value: str) -> str:
+    """Resolve a ``$VAR`` or ``${VAR}`` reference to its environment value.
+
+    Returns the original string unchanged if it doesn't start with ``$``
+    or the variable is not set.
+    """
+    if not value.startswith("$"):
+        return value
+    var_name = value.lstrip("$").strip("{}")
+    return os.environ.get(var_name, "")
+
+
 async def setup_agent(
     app: FastAPI,
     agent: BaseAgent,
     config: AgentConfig | None = None,
+    pyproject_path: str | None = None,
 ) -> AgentContext | None:
     """Wire agent protocol routes onto an existing FastAPI app.
 
@@ -45,7 +58,7 @@ async def setup_agent(
     Returns the AgentContext, or None if config is missing.
     """
     if config is None:
-        config = _load_agent_config()
+        config = _load_agent_config(pyproject_path=pyproject_path)
     if config is None:
         logger.info("No agent config found — agent protocol disabled")
         app.state.agent_context = None
@@ -56,14 +69,10 @@ async def setup_agent(
         sub_agent_urls: list[str] = getattr(agent, "_sub_agent_urls", [])
         existing = set(sub_agent_urls)
         for raw_url in config.sub_agents:
-            if raw_url.startswith("$"):
-                var_name = raw_url.lstrip("$").strip("{}")
-                resolved = os.environ.get(var_name, "")
-                if not resolved:
-                    logger.warning(f"sub_agents config: env var {var_name} not set — skipping")
-                    continue
-            else:
-                resolved = raw_url
+            resolved = _resolve_env_var(raw_url)
+            if not resolved:
+                logger.warning(f"sub_agents config: {raw_url} resolved to empty — skipping")
+                continue
             if resolved not in existing:
                 sub_agent_urls.append(resolved)
                 existing.add(resolved)
@@ -98,44 +107,62 @@ async def setup_agent(
 
     # Auto-register with agent registry (if configured)
     if config.registry:
-        app.state._pending_registration = config.registry
+        public_url = _resolve_env_var(config.url) if config.url else ""
+        registry_url = _resolve_env_var(config.registry)
+        if registry_url:
+            _schedule_registration(app, registry_url, public_url)
+        else:
+            logger.warning("registry env var resolved to empty — skipping registration")
 
     return ctx
 
 
-async def _do_registration(app: FastAPI) -> None:
-    """Register with the agent registry. Called from within the lifespan."""
+def _schedule_registration(app: FastAPI, registry_url: str, public_url: str) -> None:
+    """Schedule a background task to register with an agent registry after startup.
+
+    ``public_url`` is the agent's externally-reachable URL (e.g. its
+    Databricks App URL). The registry will crawl ``{public_url}/.well-known/agent.json``
+    to populate the agent card.
+
+    Runs after the server is accepting requests. Failures are logged but
+    don't block startup.
+    """
+    import asyncio
+
     import httpx
 
-    registry_url = getattr(app.state, "_pending_registration", None)
-    if not registry_url:
-        return
+    async def _register() -> None:
+        # Give the server a moment to start accepting requests
+        await asyncio.sleep(2)
 
-    # Discover our own URL:
-    # 1. DATABRICKS_APP_URL — set by Databricks Apps runtime in production
-    # 2. APX_PUBLIC_URL — explicit override for any environment
-    # 3. Fall back to localhost (won't work for crawl-back in local dev)
-    own_url = (
-        os.environ.get("DATABRICKS_APP_URL")
-        or os.environ.get("APX_PUBLIC_URL")
-        or "http://127.0.0.1:8000"
-    )
+        url = registry_url.rstrip("/")
+        payload: dict[str, Any] = {}
+        if public_url:
+            payload["url"] = public_url.rstrip("/")
+        else:
+            logger.warning(
+                "No public URL configured (set url in [tool.apx.agent]) — "
+                "registry may not be able to crawl this agent"
+            )
 
-    url = registry_url.rstrip("/")
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.post(
-                f"{url}/api/agents/register",
-                json={"url": own_url},
-            )
-            r.raise_for_status()
-            data = r.json()
-            logger.info(
-                "Registered with agent registry at %s as '%s'",
-                url, data.get("id", "unknown"),
-            )
-    except Exception as e:
-        logger.warning("Failed to register with agent registry at %s: %s", url, e)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.post(
+                    f"{url}/api/agents/register",
+                    json=payload,
+                )
+                r.raise_for_status()
+                data = r.json()
+                logger.info(
+                    "Registered with agent registry at %s as '%s'",
+                    url, data.get("id", "unknown"),
+                )
+        except Exception as e:
+            logger.warning("Failed to register with agent registry at %s: %s", url, e)
+
+    @app.on_event("startup")
+    async def _on_startup() -> None:
+        asyncio.create_task(_register())
 
 
 def _mount_protocol_routes(app: FastAPI) -> None:
@@ -254,8 +281,13 @@ async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
 def create_app(
     agent: BaseAgent,
     config: AgentConfig | None = None,
+    pyproject_path: str | None = None,
 ) -> FastAPI:
     """Create a complete FastAPI app with agent protocol. No APX needed.
+
+    ``pyproject_path`` can be an explicit path to pyproject.toml. When
+    omitted, the config is discovered from the entry-point module's location
+    or the current working directory.
 
     Example::
 
@@ -276,7 +308,7 @@ def create_app(
         app.state.workspace_client = WorkspaceClient()
 
         # Setup agent protocol
-        ctx = await setup_agent(app, agent, config)
+        ctx = await setup_agent(app, agent, config, pyproject_path=pyproject_path)
 
         # Setup MCP if agent is configured
         if ctx is not None:
@@ -286,11 +318,6 @@ def create_app(
             mcp_lifecycle = nullcontext()
 
         async with mcp_lifecycle:
-            # Schedule auto-registration as a background task — needs to run
-            # after the server is accepting connections so the registry can
-            # crawl back to /.well-known/agent.json
-            import asyncio
-            asyncio.get_event_loop().call_later(3, lambda: asyncio.ensure_future(_do_registration(app)))
             try:
                 yield
             finally:

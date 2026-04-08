@@ -126,17 +126,24 @@ def _patch_handler_signature(
 
 def _load_agent_config(
     section_path: tuple[str, ...] = ("tool", "apx", "agent"),
+    pyproject_path: Path | str | None = None,
 ) -> AgentConfig | None:
     """Read agent config from pyproject.toml. Returns None if absent.
 
     ``section_path`` defaults to ``("tool", "apx", "agent")`` for APX compatibility.
     Override to e.g. ``("tool", "agent")`` for standalone projects.
 
-    Search order (first match wins):
-    1. Walk up from this module's ``__file__`` — reliable in deployed apps
-       where ``Path.cwd()`` may be an unrelated directory.
+    ``pyproject_path`` can be an explicit path to the pyproject.toml file.
+    When omitted, the search order is:
+
+    1. Walk up from ``__main__.__file__`` — the entry-point module (e.g. the
+       consumer's ``app.py``). This is the most reliable heuristic in both
+       local dev and deployed Databricks Apps.
     2. Walk up from ``Path.cwd()`` — fallback for interactive / test use.
     """
+    import sys
+    import tomllib
+
     def _find_pyproject(start: Path) -> Path | None:
         for directory in [start, *start.parents]:
             candidate = directory / "pyproject.toml"
@@ -144,16 +151,23 @@ def _load_agent_config(
                 return candidate
         return None
 
-    pyproject_path = (
-        _find_pyproject(Path(__file__).parent)
-        or _find_pyproject(Path.cwd())
-    )
-    if pyproject_path is None:
+    if pyproject_path is not None:
+        resolved = Path(pyproject_path)
+    else:
+        resolved = None
+        # Try __main__'s location first — this is the consumer's entry point
+        main_mod = sys.modules.get("__main__")
+        main_file = getattr(main_mod, "__file__", None) if main_mod else None
+        if main_file:
+            resolved = _find_pyproject(Path(main_file).parent)
+        # Fallback to cwd
+        if resolved is None:
+            resolved = _find_pyproject(Path.cwd())
+
+    if resolved is None or not resolved.exists():
         return None
 
-    import tomllib
-
-    with open(pyproject_path, "rb") as f:
+    with open(resolved, "rb") as f:
         data = tomllib.load(f)
 
     section = data

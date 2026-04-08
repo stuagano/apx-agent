@@ -31,6 +31,9 @@ from ._models import (
 # FastAPI dependency injection
 from ._defaults import Dependencies
 
+# SQL utilities
+from ._sql import get_warehouse_id, run_sql
+
 # App factory and setup
 from ._wiring import create_app, setup_agent
 
@@ -62,6 +65,9 @@ __all__ = [
     "set_custom_output",
     # Dependencies
     "Dependencies",
+    # SQL utilities
+    "get_warehouse_id",
+    "run_sql",
     # App factory
     "create_app",
     "setup_agent",
