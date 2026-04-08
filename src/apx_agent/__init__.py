@@ -38,7 +38,7 @@ from ._sql import get_warehouse_id, run_sql
 from ._wiring import create_app, setup_agent
 
 # Runner adapter (SDK-based loop)
-from ._runner import is_runner_enabled, run_via_sdk
+from ._runner import is_runner_enabled, run_via_sdk, stream_via_sdk
 
 # Eval bridge
 from ._eval import app_predict_fn
@@ -77,6 +77,7 @@ __all__ = [
     # Runner adapter
     "is_runner_enabled",
     "run_via_sdk",
+    "stream_via_sdk",
     # Eval
     "app_predict_fn",
 ]
