@@ -6,12 +6,15 @@ template offers, but without requiring the APX template scaffolding.
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, TypeAlias
 from uuid import UUID
 
 from databricks.sdk import WorkspaceClient
 from fastapi import Depends, Header, Request
 from pydantic import BaseModel, SecretStr
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -68,10 +71,13 @@ def _get_workspace_client(request: Request) -> WorkspaceClient:
 def _get_user_client(headers: HeadersDependency) -> WorkspaceClient:
     """Return a WorkspaceClient authenticated on behalf of the current user.
 
-    Requires the X-Forwarded-Access-Token header (injected by Databricks Apps proxy).
+    Uses the OBO token from X-Forwarded-Access-Token when running inside a
+    Databricks App.  Falls back to CLI-configured credentials for local
+    development (``apx dev`` / ``uvicorn --reload``).
     """
     if not headers.token:
-        raise ValueError("OBO token not provided in X-Forwarded-Access-Token header")
+        logger.info("No OBO token — falling back to CLI credentials for local dev")
+        return WorkspaceClient()
     return WorkspaceClient(
         token=headers.token.get_secret_value(), auth_type="pat"
     )
@@ -108,3 +114,8 @@ class Dependencies:
     Headers: TypeAlias = HeadersDependency
     """Databricks Apps HTTP headers for the current request.
     Recommended usage: ``headers: Dependencies.Headers``"""
+
+    Workspace: TypeAlias = UserClientDependency
+    """Workspace client authenticated on behalf of the current user (OBO).
+    Shorthand for Dependencies.UserClient in agent tool functions.
+    Recommended usage: ``ws: Dependencies.Workspace``"""
