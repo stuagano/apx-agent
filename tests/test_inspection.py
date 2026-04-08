@@ -198,3 +198,18 @@ class TestLoadAgentConfig:
     def test_returns_none_for_missing_section(self):
         config = _load_agent_config(section_path=("tool", "nonexistent", "section"))
         assert config is None
+
+    def test_explicit_pyproject_path(self, tmp_path):
+        """Explicit pyproject_path overrides all heuristics."""
+        toml = tmp_path / "pyproject.toml"
+        toml.write_text(
+            '[tool.apx.agent]\nname = "explicit-test"\ndescription = "from path"\n'
+        )
+        config = _load_agent_config(pyproject_path=toml)
+        assert config is not None
+        assert config.name == "explicit-test"
+
+    def test_explicit_pyproject_path_missing(self, tmp_path):
+        """Explicit path to a non-existent file returns None."""
+        config = _load_agent_config(pyproject_path=tmp_path / "nope.toml")
+        assert config is None

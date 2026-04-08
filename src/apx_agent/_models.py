@@ -39,19 +39,6 @@ OutputGuardrailFn: TypeAlias = Callable[[str], "str | None"]
 """Called with the agent's final text response.
 Return ``None`` to pass through, or a non-empty string to replace the output."""
 
-# Module-level Agent instance, set when user calls Agent(tools=[...])
-_agent_instance: "BaseAgent | None" = None
-
-
-def _get_agent_instance() -> "BaseAgent | None":
-    return _agent_instance
-
-
-def _set_agent_instance(agent: "BaseAgent | None") -> None:
-    global _agent_instance
-    _agent_instance = agent
-
-
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
@@ -69,7 +56,8 @@ class AgentConfig(BaseModel):
     max_iterations: int = 10  # safety cap on the tool-calling loop
     vector_search_index: str | None = None  # Used by dev UI; RAG runtime not yet implemented
     sub_agents: list[str] = []  # URLs (or $ENV_VAR refs) of remote agents to consume as tools
-    registry: str | None = None  # URL of an agent registry to auto-register with on startup
+    url: str | None = None  # Public URL of this agent (supports $ENV_VAR); used for registry self-announcement
+    registry: str | None = None  # URL of an agent registry to auto-register with on startup (supports $ENV_VAR)
     api_prefix: str = "/api"  # route prefix for tool endpoints
 
 
