@@ -37,8 +37,8 @@ from ._sql import get_warehouse_id, run_sql
 # App factory and setup
 from ._wiring import create_app, setup_agent
 
-# Runner adapter (SDK-based loop)
-from ._runner import is_runner_enabled, run_via_sdk, stream_via_sdk
+# Runner (OpenAI Agents SDK)
+from ._runner import run_via_sdk, stream_via_sdk
 
 # Eval bridge
 from ._eval import app_predict_fn
@@ -74,8 +74,7 @@ __all__ = [
     # App factory
     "create_app",
     "setup_agent",
-    # Runner adapter
-    "is_runner_enabled",
+    # Runner
     "run_via_sdk",
     "stream_via_sdk",
     # Eval
