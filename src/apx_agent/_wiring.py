@@ -12,9 +12,10 @@ from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from starlette.responses import Response
 
+from collections.abc import AsyncGenerator
+
 from ._agents import BaseAgent
 from ._inspection import _load_agent_config
-from ._llm_loop import _handle_invocation
 from ._mcp import _build_mcp_components
 from ._models import (
     A2ASkill,
@@ -23,7 +24,10 @@ from ._models import (
     AgentContext,
     AgentTool,
     InvocationRequest,
+    InvocationResponse,
     Message,
+    OutputItem,
+    OutputTextContent,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,6 +168,54 @@ def _schedule_registration(app: FastAPI, registry_url: str, public_url: str) -> 
     @app.on_event("startup")
     async def _on_startup() -> None:
         asyncio.create_task(_register())
+
+
+async def _handle_invocation(
+    request: Request,
+    body: InvocationRequest,
+) -> InvocationResponse | StreamingResponse:
+    """Handle agent requests — returns JSON or SSE depending on body.stream."""
+    import json as _json
+
+    ctx: AgentContext | None = request.app.state.agent_context
+    if ctx is None:
+        raise HTTPException(status_code=503, detail="Agent protocol not configured")
+
+    request.state.custom_inputs = body.custom_inputs
+    request.state.custom_outputs = {}
+    messages = body.messages()
+
+    if body.stream:
+        async def _sse_generator() -> AsyncGenerator[str, None]:
+            item_id = "msg_001"
+            yield f"event: response.output_item.start\ndata: {_json.dumps({'item_id': item_id})}\n\n"
+            full_text = ""
+            try:
+                async for chunk in ctx.agent.stream(messages, request):
+                    full_text += chunk
+                    yield f"event: output_text.delta\ndata: {_json.dumps({'item_id': item_id, 'text': chunk})}\n\n"
+                output_item = OutputItem(content=[OutputTextContent(text=full_text)])
+                yield f"event: response.output_item.done\ndata: {_json.dumps({'item_id': item_id, 'output': output_item.model_dump()})}\n\n"
+                tool_trace = getattr(request.state, "tool_trace", [])
+                if tool_trace:
+                    yield f"event: tool.trace\ndata: {_json.dumps(tool_trace)}\n\n"
+                    request.state.tool_trace = []
+                custom_out = getattr(request.state, "custom_outputs", {})
+                if custom_out:
+                    yield f"event: custom_outputs\ndata: {_json.dumps(custom_out)}\n\n"
+            except Exception as exc:
+                error_payload = {"item_id": item_id, "error": str(exc)}
+                yield f"event: error\ndata: {_json.dumps(error_payload)}\n\n"
+                logger.exception("Error during streaming invocation")
+
+        return StreamingResponse(_sse_generator(), media_type="text/event-stream")
+
+    text = await ctx.agent.run(messages, request)
+    custom_out = getattr(request.state, "custom_outputs", {})
+    return InvocationResponse(
+        output=[OutputItem(content=[OutputTextContent(text=text)])],
+        custom_outputs=custom_out,
+    )
 
 
 def _mount_protocol_routes(app: FastAPI) -> None:

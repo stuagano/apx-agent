@@ -1,12 +1,8 @@
-"""Runner adapter — bridges apx-agent tools to OpenAI Agents SDK Runner.run().
+"""Runner — bridges apx-agent tools to OpenAI Agents SDK Runner.run().
 
-This module provides ``run_via_sdk()`` as a drop-in replacement for
-``_run_llm_loop()``. It converts apx-agent's typed tool functions into
-OpenAI Agents SDK ``FunctionTool`` instances and delegates the LLM loop
-to ``Runner.run()`` via ``DatabricksOpenAI``.
-
-Feature-flagged: set ``USE_RUNNER=true`` to use this path. When unset
-or ``false``, the legacy ``_run_llm_loop()`` is used.
+Converts apx-agent's typed tool functions into OpenAI Agents SDK
+``FunctionTool`` instances and delegates the LLM loop to ``Runner.run()``
+via ``DatabricksOpenAI``.
 
 Tools are dispatched through the existing FastAPI ASGI routes so that
 ``Dependencies.*`` injection (OBO auth, WorkspaceClient, etc.) continues
@@ -17,7 +13,6 @@ from __future__ import annotations
 
 import json as _json
 import logging
-import os
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -26,13 +21,6 @@ from fastapi import Request
 from ._models import AgentContext, AgentTool, Message
 
 logger = logging.getLogger(__name__)
-
-USE_RUNNER = os.environ.get("USE_RUNNER", "").lower() in ("true", "1", "yes")
-
-
-def is_runner_enabled() -> bool:
-    """Check whether the SDK runner path is active."""
-    return USE_RUNNER
 
 
 async def run_via_sdk(

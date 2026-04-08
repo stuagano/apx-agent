@@ -134,74 +134,44 @@ class LlmAgent(BaseAgent):
                 return result
         return None
 
-    async def _run_loop(self, messages: list[Message], request: Request) -> str:
-        """Run the LLM loop — delegates to SDK Runner or legacy loop based on USE_RUNNER."""
-        from ._runner import is_runner_enabled, run_via_sdk
+    async def run(self, messages: list[Message], request: Request) -> str:
+        from ._runner import run_via_sdk
 
-        if is_runner_enabled():
-            return await run_via_sdk(
-                messages, request,
-                tools=self.collect_tools(),
-                instructions=self._instructions,
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
-                max_iterations=self._max_iterations,
-            )
-
-        from ._llm_loop import _run_llm_loop  # late import to break circular
-
-        return await _run_llm_loop(
+        if rejection := await self._apply_input_guardrails(messages):
+            return rejection
+        text = await run_via_sdk(
             messages, request,
             tools=self.collect_tools(),
             instructions=self._instructions,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
             max_iterations=self._max_iterations,
-            before_tool=self._before_tool,
-            after_tool=self._after_tool,
-            context_window_tokens=self._context_window_tokens,
         )
-
-    async def run(self, messages: list[Message], request: Request) -> str:
-        if rejection := await self._apply_input_guardrails(messages):
-            return rejection
-        text = await self._run_loop(messages, request)
         if replacement := await self._apply_output_guardrails(text):
             return replacement
         return text
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
+        from ._runner import stream_via_sdk
+
         if rejection := await self._apply_input_guardrails(messages):
             yield rejection
             return
 
-        from ._runner import is_runner_enabled, stream_via_sdk
+        full_text = ""
+        async for chunk in stream_via_sdk(
+            messages, request,
+            tools=self.collect_tools(),
+            instructions=self._instructions,
+            temperature=self._temperature,
+            max_tokens=self._max_tokens,
+            max_iterations=self._max_iterations,
+        ):
+            full_text += chunk
+            yield chunk
 
-        if is_runner_enabled():
-            full_text = ""
-            async for chunk in stream_via_sdk(
-                messages, request,
-                tools=self.collect_tools(),
-                instructions=self._instructions,
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
-                max_iterations=self._max_iterations,
-            ):
-                full_text += chunk
-                yield chunk
-            # Apply output guardrail on the full assembled text
-            if replacement := await self._apply_output_guardrails(full_text):
-                yield f"\n\n[Guardrail override: {replacement}]"
-            return
-
-        # Legacy path: run-to-completion then chunk
-        text = await self._run_loop(messages, request)
-        if replacement := await self._apply_output_guardrails(text):
-            yield replacement
-            return
-        chunk_size = 20
-        for i in range(0, len(text), chunk_size):
-            yield text[i : i + chunk_size]
+        if replacement := await self._apply_output_guardrails(full_text):
+            yield f"\n\n[Guardrail override: {replacement}]"
 
     def build_router(self) -> APIRouter:
         """Build an APIRouter with a POST route for each tool."""
@@ -327,7 +297,7 @@ class LoopAgent(BaseAgent):
         return routers
 
     async def run(self, messages: list[Message], request: Request) -> str:
-        from ._llm_loop import _run_llm_loop
+        from ._runner import run_via_sdk
 
         context = list(messages)
         result = ""
@@ -335,16 +305,13 @@ class LoopAgent(BaseAgent):
         all_tools = self.collect_tools()
 
         for _ in range(self._max_iterations):
-            result = await _run_llm_loop(
+            result = await run_via_sdk(
                 context, request,
                 tools=all_tools,
                 instructions=self._inner._instructions,
                 temperature=self._inner._temperature,
                 max_tokens=self._inner._max_tokens,
                 max_iterations=self._inner._max_iterations,
-                before_tool=self._inner._before_tool,
-                after_tool=self._inner._after_tool,
-                context_window_tokens=self._inner._context_window_tokens,
             )
             if getattr(request.state, "loop_done", False):
                 break
@@ -627,7 +594,7 @@ class HandoffAgent(BaseAgent):
         return tools
 
     async def run(self, messages: list[Message], request: Request) -> str:
-        from ._llm_loop import _run_llm_loop
+        from ._runner import run_via_sdk
 
         current_name = self._start
         context = list(messages)
@@ -639,16 +606,13 @@ class HandoffAgent(BaseAgent):
 
             own_tools = agent.collect_tools() + self._transfer_tools_for(current_name)
 
-            result = await _run_llm_loop(
+            result = await run_via_sdk(
                 context, request,
                 tools=own_tools,
                 instructions=agent._instructions,
                 temperature=agent._temperature,
                 max_tokens=agent._max_tokens,
                 max_iterations=agent._max_iterations,
-                before_tool=agent._before_tool,
-                after_tool=agent._after_tool,
-                context_window_tokens=agent._context_window_tokens,
             )
 
             handoff_target: str | None = getattr(request.state, "handoff_to", None)

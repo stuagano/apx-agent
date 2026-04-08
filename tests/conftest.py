@@ -10,7 +10,6 @@ from fastapi import Depends, Request, params
 from pydantic import BaseModel
 
 from apx_agent import Agent, AgentConfig, AgentContext, AgentTool, Dependencies, Message
-from apx_agent._llm_loop import _build_tool_schemas
 
 
 # ---------------------------------------------------------------------------
