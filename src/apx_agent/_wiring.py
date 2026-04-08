@@ -23,6 +23,7 @@ from ._models import (
     AgentContext,
     AgentTool,
     InvocationRequest,
+    Message,
 )
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,76 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         if ctx is None:
             raise HTTPException(status_code=404, detail="Agent protocol not configured")
         return await _handle_invocation(request, body)
+
+    @protocol_router.post("/responses", include_in_schema=False)
+    async def responses_api(request: Request) -> Any:
+        """OpenAI Responses API compatibility endpoint.
+
+        Accepts the Responses API format used by DatabricksOpenAI when calling
+        ``model="apps/<name>"``. Translates to the internal InvocationRequest
+        format and delegates to the same handler as /invocations.
+        """
+        ctx: AgentContext | None = request.app.state.agent_context
+        if ctx is None:
+            raise HTTPException(status_code=404, detail="Agent protocol not configured")
+
+        import json as _json
+
+        raw = await request.json()
+
+        # Translate Responses API input format to InvocationRequest format
+        raw_input = raw.get("input", [])
+        if isinstance(raw_input, str):
+            messages = [Message(role="user", content=raw_input)]
+        else:
+            messages = []
+            for item in raw_input:
+                if isinstance(item, dict):
+                    role = item.get("role", "user")
+                    content = item.get("content", "")
+                    # Handle {"type": "message", "role": "user", "content": "..."}
+                    if isinstance(content, list):
+                        # Content array format: [{"type": "input_text", "text": "..."}]
+                        text_parts = [
+                            p.get("text", "") for p in content
+                            if isinstance(p, dict) and p.get("type") in ("input_text", "text")
+                        ]
+                        content = " ".join(text_parts) if text_parts else str(content)
+                    messages.append(Message(role=role, content=content))
+
+        body = InvocationRequest(
+            input=messages,
+            stream=raw.get("stream", False),
+            custom_inputs=raw.get("custom_inputs", {}),
+        )
+        result = await _handle_invocation(request, body)
+
+        # Translate InvocationResponse to Responses API format
+        if hasattr(result, 'body'):
+            # StreamingResponse — pass through
+            return result
+
+        # JSON response — wrap in Responses API format
+        if hasattr(result, 'output'):
+            response_data = result.model_dump()
+        else:
+            response_data = {"output": []}
+
+        return {
+            "id": f"resp_{id(result)}",
+            "object": "response",
+            "status": "completed",
+            "output": response_data.get("output", []),
+            "output_text": _extract_output_text(response_data),
+        }
+
+    def _extract_output_text(response_data: dict) -> str:
+        """Extract plain text from InvocationResponse output format."""
+        for item in response_data.get("output", []):
+            for content in item.get("content", []):
+                if content.get("type") == "output_text":
+                    return content.get("text", "")
+        return ""
 
     @protocol_router.get("/health", include_in_schema=False)
     async def health() -> dict[str, str]:
