@@ -69,6 +69,7 @@ class AgentConfig(BaseModel):
     max_iterations: int = 10  # safety cap on the tool-calling loop
     vector_search_index: str | None = None  # Used by dev UI; RAG runtime not yet implemented
     sub_agents: list[str] = []  # URLs (or $ENV_VAR refs) of remote agents to consume as tools
+    registry: str | None = None  # URL of an agent registry to auto-register with on startup
     api_prefix: str = "/api"  # route prefix for tool endpoints
 
 
