@@ -111,9 +111,15 @@ async def _do_registration(app: FastAPI) -> None:
     if not registry_url:
         return
 
-    # Discover our own URL — check environment, then fall back to localhost.
-    # In Databricks Apps, DATABRICKS_APP_URL is set by the runtime.
-    own_url = os.environ.get("DATABRICKS_APP_URL", "http://127.0.0.1:8000")
+    # Discover our own URL:
+    # 1. DATABRICKS_APP_URL — set by Databricks Apps runtime in production
+    # 2. APX_PUBLIC_URL — explicit override for any environment
+    # 3. Fall back to localhost (won't work for crawl-back in local dev)
+    own_url = (
+        os.environ.get("DATABRICKS_APP_URL")
+        or os.environ.get("APX_PUBLIC_URL")
+        or "http://127.0.0.1:8000"
+    )
 
     url = registry_url.rstrip("/")
     try:
