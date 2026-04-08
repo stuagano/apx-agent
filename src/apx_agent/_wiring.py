@@ -53,7 +53,8 @@ async def setup_agent(
 
     # Merge sub_agents from config
     if config.sub_agents:
-        existing = set(getattr(agent, "_sub_agent_urls", []))
+        sub_agent_urls: list[str] = getattr(agent, "_sub_agent_urls", [])
+        existing = set(sub_agent_urls)
         for raw_url in config.sub_agents:
             if raw_url.startswith("$"):
                 var_name = raw_url.lstrip("$").strip("{}")
@@ -64,7 +65,7 @@ async def setup_agent(
             else:
                 resolved = raw_url
             if resolved not in existing:
-                agent._sub_agent_urls.append(resolved)
+                sub_agent_urls.append(resolved)
                 existing.add(resolved)
 
     tools = agent.collect_tools()
@@ -245,7 +246,17 @@ def create_app(
             mcp_lifecycle = nullcontext()
 
         async with mcp_lifecycle:
-            yield
+            try:
+                yield
+            finally:
+                logger.info("Shutting down agent runtime")
+                # Clean up workspace client if it has a close method
+                ws = getattr(app.state, "workspace_client", None)
+                if ws and hasattr(ws, "close"):
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
 
     app = FastAPI(lifespan=lifespan)
     return app

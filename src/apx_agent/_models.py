@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias
 
 from fastapi import Request
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from ._agents import BaseAgent
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +67,7 @@ class AgentConfig(BaseModel):
     temperature: float | None = None  # None = use model default
     max_tokens: int | None = None  # None = use model default
     max_iterations: int = 10  # safety cap on the tool-calling loop
-    vector_search_index: str | None = None  # Mosaic AI Vector Search index for RAG
+    vector_search_index: str | None = None  # Used by dev UI; RAG runtime not yet implemented
     sub_agents: list[str] = []  # URLs (or $ENV_VAR refs) of remote agents to consume as tools
     api_prefix: str = "/api"  # route prefix for tool endpoints
 

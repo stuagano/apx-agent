@@ -23,10 +23,26 @@ eval = ["mlflow>=2.0"]
 all = ["apx-agent[eval]"]
 
 [dependency-groups]
-dev = ["uvicorn[standard]>=0.34.0"]
+dev = [
+    "uvicorn[standard]>=0.34.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+    "pyright>=1.1.380",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/apx_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.pyright]
+include = ["src/apx_agent"]
+exclude = ["src/apx_agent/_ui_*.py", "src/apx_agent/_dev.py"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
 
 [tool.apx.agent]
 name = "apx-agent"

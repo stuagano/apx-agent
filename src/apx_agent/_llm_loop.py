@@ -40,6 +40,51 @@ def _build_tool_schemas(tools: list[AgentTool]) -> list[dict[str, Any]]:
     ]
 
 
+_RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
+_MAX_RETRIES = 3
+_RETRY_BACKOFF_BASE = 1.0  # seconds
+
+
+async def _post_with_retry(
+    client: Any,
+    url: str,
+    *,
+    json: Any,
+    headers: dict[str, str],
+    timeout: float = 60.0,
+) -> Any:
+    """POST with exponential backoff retry on transient failures."""
+    import asyncio as _asyncio
+
+    from httpx import HTTPStatusError
+
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = await client.post(url, json=json, headers=headers, timeout=timeout)
+            if response.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES - 1:
+                delay = _RETRY_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    f"Retryable status {response.status_code} from {url} — "
+                    f"retrying in {delay:.1f}s (attempt {attempt + 1}/{_MAX_RETRIES})"
+                )
+                await _asyncio.sleep(delay)
+                continue
+            return response
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES - 1:
+                delay = _RETRY_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    f"Request to {url} failed ({exc}) — "
+                    f"retrying in {delay:.1f}s (attempt {attempt + 1}/{_MAX_RETRIES})"
+                )
+                await _asyncio.sleep(delay)
+            else:
+                raise
+    raise last_exc  # type: ignore[misc]  # unreachable but satisfies type checker
+
+
 async def _dispatch_tool_call(
     request: Request,
     tool_call: dict[str, Any],
@@ -64,13 +109,15 @@ async def _dispatch_tool_call(
     }
 
     if tool and tool.sub_agent_url:
-        # Sub-agent: POST to its /invocations with the message
+        # Sub-agent: POST to its /invocations with the message (with retry)
         message = arguments.get("message", _json.dumps(arguments))
-        async with AsyncClient(timeout=60.0) as client:
-            response = await client.post(
+        async with AsyncClient() as client:
+            response = await _post_with_retry(
+                client,
                 f"{tool.sub_agent_url}/invocations",
                 json={"input": [{"role": "user", "content": message}]},
                 headers=obo_header,
+                timeout=120.0,
             )
         if response.status_code >= 400:
             return f"Sub-agent error ({response.status_code}): {response.text}"
