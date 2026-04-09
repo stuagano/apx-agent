@@ -49,3 +49,20 @@ export type { McpConfig, McpAuthContext } from './mcp/index.js';
 // Dev UI plugin — chat testing + tool inspector
 export { createDevPlugin } from './dev/index.js';
 export type { DevUIConfig } from './dev/index.js';
+
+// Workflow agents — deterministic composition patterns
+export {
+  SequentialAgent,
+  ParallelAgent,
+  LoopAgent,
+  RouterAgent,
+  HandoffAgent,
+} from './workflows/index.js';
+export type {
+  Message,
+  Runnable,
+  StopPredicate,
+  Route,
+  RouterConfig,
+  HandoffConfig,
+} from './workflows/index.js';
