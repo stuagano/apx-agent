@@ -57,6 +57,7 @@ export {
   LoopAgent,
   RouterAgent,
   HandoffAgent,
+  RemoteAgent,
 } from './workflows/index.js';
 export type {
   Message,
@@ -65,4 +66,17 @@ export type {
   Route,
   RouterConfig,
   HandoffConfig,
+  RemoteAgentConfig,
 } from './workflows/index.js';
+
+// Eval bridge — predict function + harness for /responses endpoints
+export { createPredictFn, runEval } from './eval/index.js';
+export type {
+  PredictFn,
+  PredictOptions,
+  PredictInput,
+  EvalCase,
+  EvalResult,
+  RunEvalOptions,
+  EvalSummary,
+} from './eval/index.js';

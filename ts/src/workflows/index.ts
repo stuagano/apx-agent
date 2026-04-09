@@ -17,4 +17,14 @@ export { RouterAgent } from './router.js';
 export type { Route, RouterConfig } from './router.js';
 export { HandoffAgent } from './handoff.js';
 export type { HandoffConfig } from './handoff.js';
+export { RemoteAgent } from './remote.js';
+export type { RemoteAgentConfig } from './remote.js';
+export { AgentState } from './state.js';
+export {
+  Session,
+  InMemorySessionStore,
+  setDefaultSessionStore,
+  getDefaultSessionStore,
+} from './session.js';
+export type { SessionStore, SessionSnapshot } from './session.js';
 export type { Message, Runnable } from './types.js';

@@ -9,3 +9,6 @@ export { createAgentPlugin } from './plugin.js';
 export type { AgentConfig, AgentExports } from './plugin.js';
 
 export { runViaSDK, streamViaSDK, initDatabricksClient, toFunctionTool, toSubAgentTool } from './runner.js';
+
+export { discoverMcpTools, createMcpToolProvider, genieSpaceMcpUrl, ucFunctionsMcpUrl } from './mcp-client.js';
+export type { McpAuthOptions } from './mcp-client.js';

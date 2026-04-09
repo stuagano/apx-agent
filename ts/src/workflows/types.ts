@@ -7,6 +7,7 @@
  */
 
 import type { AgentTool } from '../agent/tools.js';
+import type { AgentState } from './state.js';
 
 /** A message in the conversation. */
 export interface Message {
@@ -22,11 +23,17 @@ export interface Message {
  * Handoff) all implement this interface while adding composition logic.
  */
 export interface Runnable {
+  /**
+   * When set, the agent's output is stored in AgentState under this key
+   * after execution. Follows the Google ADK output_key pattern.
+   */
+  outputKey?: string;
+
   /** Run the agent and return the final text. */
-  run(messages: Message[]): Promise<string>;
+  run(messages: Message[], state?: AgentState): Promise<string>;
 
   /** Stream text chunks. Default: run to completion and yield once. */
-  stream?(messages: Message[]): AsyncGenerator<string>;
+  stream?(messages: Message[], state?: AgentState): AsyncGenerator<string>;
 
   /** Collect tool descriptors for all agents in the tree. */
   collectTools?(): AgentTool[];
