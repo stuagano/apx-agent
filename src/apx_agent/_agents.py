@@ -343,16 +343,24 @@ class SequentialAgent(BaseAgent):
     async def run(self, messages: list[Message], request: Request) -> str:
         context = self._prepend_instructions(messages)
         result = ""
-        for sub in self._agents:
+        for i, sub in enumerate(self._agents):
+            if i > 0:
+                # Append previous result and a continuation prompt so the
+                # conversation ends with a user message (required by some models)
+                context.append(Message(role="assistant", content=result))
+                context.append(Message(role="user", content="Continue with the next investigation step based on the findings above."))
             result = await sub.run(context, request)
-            context.append(Message(role="assistant", content=result))
         return result
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
         context = self._prepend_instructions(messages)
-        for sub in self._agents[:-1]:
+        for i, sub in enumerate(self._agents[:-1]):
+            if i > 0:
+                context.append(Message(role="user", content="Continue with the next investigation step based on the findings above."))
             result = await sub.run(context, request)
             context.append(Message(role="assistant", content=result))
+        # Last agent — stream
+        context.append(Message(role="user", content="Continue with the next investigation step based on the findings above."))
         async for chunk in self._agents[-1].stream(context, request):
             yield chunk
 
