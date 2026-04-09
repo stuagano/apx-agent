@@ -25,6 +25,7 @@ import type { Express, Request, Response } from 'express';
 import type { AgentTool, FunctionSchema } from './tools.js';
 import { toolsToFunctionSchemas } from './tools.js';
 import { runViaSDK, streamViaSDK, initDatabricksClient } from './runner.js';
+import { createMcpToolProvider } from './mcp-client.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -41,6 +42,23 @@ export interface AgentConfig {
   maxIterations?: number;
   /** URLs of remote sub-agents (Databricks Apps). */
   subAgents?: string[];
+  /**
+   * Remote MCP server URLs to consume as tools.
+   *
+   * Tools are discovered at startup via tools/list and merged into the
+   * agent's tool list alongside any statically registered tools.
+   *
+   * Supports Databricks managed MCP URLs:
+   *   /api/2.0/mcp/genie/{space_id}              — Genie Space
+   *   /api/2.0/mcp/functions/{catalog}/{schema}   — UC Functions
+   *
+   * @example
+   * mcpServers: [
+   *   'https://my-workspace.databricks.com/api/2.0/mcp/genie/abc123',
+   *   'https://my-workspace.databricks.com/api/2.0/mcp/functions/main/default',
+   * ]
+   */
+  mcpServers?: string[];
   /** API route prefix. Defaults to '/api/agent'. */
   apiPrefix?: string;
 }
@@ -124,7 +142,8 @@ function parseInput(raw: ResponsesInput): Array<{ role: string; content: string 
  * be converted to extend Plugin<AgentConfig>.
  */
 export function createAgentPlugin(config: AgentConfig) {
-  const tools = config.tools ?? [];
+  // Mutable — MCP tools are appended during setup()
+  const tools: AgentTool[] = [...(config.tools ?? [])];
   const toolMap = new Map(tools.map((t) => [t.name, t]));
   const apiPrefix = config.apiPrefix ?? '/api/agent';
 
@@ -135,9 +154,29 @@ export function createAgentPlugin(config: AgentConfig) {
     displayName: 'Agent Plugin',
     description: 'AI agent with typed tools and deterministic routing',
 
-    setup(expressApp: Express) {
+    async setup(expressApp: Express) {
       app = expressApp;
       initDatabricksClient();
+
+      // Discover tools from remote MCP servers and merge into the tool list
+      if (config.mcpServers && config.mcpServers.length > 0) {
+        try {
+          const mcpTools = await createMcpToolProvider(config.mcpServers);
+          for (const mcpTool of mcpTools) {
+            if (!toolMap.has(mcpTool.name)) {
+              tools.push(mcpTool);
+              toolMap.set(mcpTool.name, mcpTool);
+            } else {
+              console.warn(
+                `[agent] MCP tool "${mcpTool.name}" conflicts with an existing tool — skipping`,
+              );
+            }
+          }
+        } catch (err) {
+          // Non-fatal: agent still starts, just without the MCP tools
+          console.warn('[agent] MCP tool discovery failed:', err instanceof Error ? err.message : String(err));
+        }
+      }
     },
 
     injectRoutes(router: { get: Function; post: Function; all: Function }) {

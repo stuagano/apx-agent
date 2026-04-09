@@ -11,6 +11,7 @@ from ._agents import (
     RouterAgent,
     SequentialAgent,
 )
+from ._remote import RemoteDatabricksAgent
 
 # Models
 from ._models import (
@@ -53,6 +54,7 @@ __all__ = [
     "ParallelAgent",
     "RouterAgent",
     "SequentialAgent",
+    "RemoteDatabricksAgent",
     # Models
     "AgentCard",
     "AgentConfig",
