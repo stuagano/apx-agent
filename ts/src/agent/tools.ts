@@ -73,6 +73,10 @@ export function defineTool<T extends z.ZodType>(opts: {
 
 /** Convert a Zod schema to JSON Schema, suitable for OpenAI function calling. */
 export function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
+  // Zod v4 has native toJSONSchema() — use it if available (more reliable than zod-to-json-schema v3)
+  if ('toJSONSchema' in schema && typeof schema.toJSONSchema === 'function') {
+    return schema.toJSONSchema() as Record<string, unknown>;
+  }
   return zodToJson(schema, { target: 'openAi' }) as Record<string, unknown>;
 }
 
