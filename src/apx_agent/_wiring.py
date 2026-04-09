@@ -10,6 +10,7 @@ from typing import Any
 
 from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from starlette.responses import Response
 
 from collections.abc import AsyncGenerator
