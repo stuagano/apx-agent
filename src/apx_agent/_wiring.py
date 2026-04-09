@@ -111,6 +111,14 @@ async def setup_agent(
     # Mount protocol routes
     _mount_protocol_routes(app)
 
+    # Mount dev UI (/_apx/agent, /_apx/tools, /_apx/probe)
+    try:
+        from ._dev import build_dev_ui_router
+        app.include_router(build_dev_ui_router(config.api_prefix))
+        logger.info("Dev UI mounted at /_apx/agent, /_apx/tools, /_apx/probe")
+    except Exception as e:
+        logger.info(f"Dev UI not available: {e}")
+
     # Auto-register with agent registry (if configured)
     if config.registry:
         public_url = _resolve_env_var(config.url) if config.url else ""
