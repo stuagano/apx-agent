@@ -353,16 +353,33 @@ class SequentialAgent(BaseAgent):
         return result
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
+        """Stream all steps — emit each step's output as it completes.
+
+        This keeps the SSE connection alive during long pipelines (6+ steps)
+        by yielding text between steps instead of waiting for everything to
+        finish before streaming the last step.
+        """
         context = self._prepend_instructions(messages)
-        for i, sub in enumerate(self._agents[:-1]):
+        total = len(self._agents)
+        for i, sub in enumerate(self._agents):
+            step_num = i + 1
             if i > 0:
+                context.append(Message(role="assistant", content=result))
                 context.append(Message(role="user", content="Continue with the next investigation step based on the findings above."))
-            result = await sub.run(context, request)
-            context.append(Message(role="assistant", content=result))
-        # Last agent — stream
-        context.append(Message(role="user", content="Continue with the next investigation step based on the findings above."))
-        async for chunk in self._agents[-1].stream(context, request):
-            yield chunk
+
+            # Emit step header so the user sees progress
+            yield f"\n\n---\n**Step {step_num}/{total}**\n\n"
+
+            # Stream this step if it supports streaming, otherwise run and yield
+            if hasattr(sub, 'stream') and sub is self._agents[-1]:
+                # Only truly stream the last step (token-by-token)
+                result = ""
+                async for chunk in sub.stream(context, request):
+                    result += chunk
+                    yield chunk
+            else:
+                result = await sub.run(context, request)
+                yield result
 
     def get_tool_routers(self) -> list[APIRouter]:
         routers: list[APIRouter] = []
