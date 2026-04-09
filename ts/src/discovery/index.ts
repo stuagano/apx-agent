@@ -3,19 +3,10 @@
  *
  * Serves an A2A agent card at /.well-known/agent.json and optionally
  * auto-registers with an agent registry on startup.
- *
- * Usage:
- *   import { discovery } from 'appkit-agent';
- *
- *   createApp({
- *     plugins: [
- *       agent({ model: '...', tools: [...] }),
- *       discovery({ registry: '$AGENT_HUB_URL' }),
- *     ],
- *   });
  */
 
-import type { IAppRouter } from '@databricks/appkit';
+import type { Request, Response } from 'express';
+import type { AgentExports } from '../agent/index.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,18 +19,13 @@ export interface AgentCard {
   url: string;
   protocolVersion: string;
   capabilities: { streaming: boolean; multiTurn: boolean };
-  skills: Array<{
-    id: string;
-    name: string;
-    description: string;
-  }>;
+  authentication: { schemes: string[]; credentials: string };
+  skills: Array<{ id: string; name: string; description: string }>;
   mcpEndpoint?: string;
 }
 
 export interface DiscoveryConfig {
-  /** Agent name (defaults to agent plugin config name). */
   name?: string;
-  /** Agent description. */
   description?: string;
   /** Public URL of this agent (supports $ENV_VAR). */
   url?: string;
@@ -58,40 +44,30 @@ function resolveEnvVar(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Discovery plugin factory
+// Plugin factory
 // ---------------------------------------------------------------------------
 
-export function discovery(config: DiscoveryConfig = {}) {
-  let agentExports: {
-    getTools: () => Array<{ name: string; description: string }>;
-    getConfig: () => { model: string; instructions?: string };
-  } | null = null;
-
+export function createDiscoveryPlugin(config: DiscoveryConfig, agentExports: () => AgentExports | null) {
   return {
-    name: 'discovery',
+    name: 'discovery' as const,
     displayName: 'Agent Discovery',
     description: 'A2A agent card and registry auto-registration',
 
-    async setup(appkit: { agent?: { getTools: () => unknown; getConfig: () => unknown } }) {
-      // Grab exports from the agent plugin if available
-      agentExports = appkit.agent as typeof agentExports ?? null;
-
-      // Auto-register with registry if configured
+    setup() {
       if (config.registry) {
         const registryUrl = resolveEnvVar(config.registry);
         const publicUrl = config.url ? resolveEnvVar(config.url) : '';
-
         if (registryUrl) {
-          // Fire-and-forget — don't block startup
           setTimeout(() => registerWithHub(registryUrl, publicUrl), 2000);
         }
       }
     },
 
-    injectRoutes(router: IAppRouter) {
-      router.get('/.well-known/agent.json', (req, res) => {
-        const tools = agentExports?.getTools() ?? [];
-        const agentConfig = agentExports?.getConfig();
+    injectRoutes(router: { get: Function }) {
+      router.get('/.well-known/agent.json', (req: Request, res: Response) => {
+        const exports = agentExports();
+        const tools = exports?.getTools() ?? [];
+        const agentConfig = exports?.getConfig();
         const baseUrl = `${req.protocol}://${req.get('host')}`;
 
         const card: AgentCard = {
@@ -101,6 +77,7 @@ export function discovery(config: DiscoveryConfig = {}) {
           url: baseUrl,
           protocolVersion: '0.3.0',
           capabilities: { streaming: true, multiTurn: true },
+          authentication: { schemes: ['bearer'], credentials: 'same_origin' },
           skills: tools.map((t) => ({
             id: t.name,
             name: t.name,
@@ -128,13 +105,13 @@ async function registerWithHub(registryUrl: string, publicUrl: string): Promise<
     });
 
     if (!response.ok) {
-      console.warn(`Registry registration failed: ${response.status} ${response.statusText}`);
+      console.warn(`Registry registration failed: ${response.status}`);
       return;
     }
 
-    const data = await response.json();
+    const data = await response.json() as Record<string, unknown>;
     console.log(`Registered with agent registry at ${url} as '${data.id ?? 'unknown'}'`);
   } catch (err) {
-    console.warn(`Failed to register with agent registry at ${registryUrl}:`, err);
+    console.warn(`Failed to register with agent registry:`, err);
   }
 }

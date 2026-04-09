@@ -4,18 +4,13 @@
  * Exposes the agent's tools as an MCP server so Supervisor Agent,
  * Claude Desktop, Cursor, and Genie Code can connect.
  *
- * Usage:
- *   import { mcp } from 'appkit-agent';
- *
- *   createApp({
- *     plugins: [
- *       agent({ model: '...', tools: [...] }),
- *       mcp(),
- *     ],
- *   });
+ * Uses @modelcontextprotocol/sdk with StreamableHTTPServerTransport
+ * in stateless mode.
  */
 
-import type { IAppRouter } from '@databricks/appkit';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import type { Request, Response } from 'express';
+import type { AgentExports } from '../agent/index.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,39 +21,137 @@ export interface McpConfig {
   path?: string;
 }
 
+export interface McpAuthContext {
+  authorization: string;
+  oboToken: string;
+}
+
 // ---------------------------------------------------------------------------
-// MCP plugin factory
+// Auth context (AsyncLocalStorage — equivalent of Python contextvars)
 // ---------------------------------------------------------------------------
 
-export function mcp(config: McpConfig = {}) {
+export const mcpAuthStore = new AsyncLocalStorage<McpAuthContext>();
+
+export function getMcpAuth(): McpAuthContext | undefined {
+  return mcpAuthStore.getStore();
+}
+
+// ---------------------------------------------------------------------------
+// Plugin factory
+// ---------------------------------------------------------------------------
+
+export function createMcpPlugin(config: McpConfig, agentExports: () => AgentExports | null) {
   const mcpPath = config.path ?? '/mcp';
 
+  let mcpServer: unknown = null;
+  let initialized = false;
+
+  async function ensureInitialized() {
+    if (initialized) return;
+    initialized = true;
+
+    try {
+      const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
+
+      mcpServer = new McpServer(
+        { name: 'appkit-agent', version: '1.0.0' },
+        { capabilities: { tools: {} } },
+      );
+
+      // Register tools from agent plugin
+      const exports = agentExports();
+      if (exports) {
+        for (const tool of exports.getTools()) {
+          const server = mcpServer as {
+            tool: (name: string, description: string, schema: unknown, handler: (args: unknown) => Promise<unknown>) => void;
+          };
+          server.tool(
+            tool.name,
+            tool.description,
+            tool.parameters,
+            async (args: unknown) => {
+              try {
+                const result = await tool.handler(args);
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: typeof result === 'string' ? result : JSON.stringify(result),
+                    },
+                  ],
+                };
+              } catch (e) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `Tool error: ${e instanceof Error ? e.message : String(e)}`,
+                    },
+                  ],
+                  isError: true,
+                };
+              }
+            },
+          );
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to initialize MCP server:', e);
+      mcpServer = null;
+    }
+  }
+
   return {
-    name: 'mcp',
+    name: 'mcp' as const,
     displayName: 'MCP Server',
     description: 'Model Context Protocol server for agent tool access',
 
     async setup() {
-      // TODO: Initialize MCP server from @modelcontextprotocol/sdk
-      // using tool schemas from the agent plugin exports.
+      await ensureInitialized();
     },
 
-    injectRoutes(router: IAppRouter) {
-      // Streamable HTTP transport (stateless)
-      router.all(mcpPath, async (req, res) => {
-        // TODO: Wire up StreamableHTTPSessionManager from @modelcontextprotocol/sdk
-        // For now, return a descriptive error so consumers know MCP is planned.
-        res.status(501).json({
-          error: 'MCP server not yet implemented',
-          hint: 'MCP support is planned — tools are available at /api/tools/:name',
-        });
-      });
+    injectRoutes(router: { all: Function; get: Function; post: Function }) {
+      // Streamable HTTP transport
+      router.all(mcpPath, async (req: Request, res: Response) => {
+        await ensureInitialized();
 
-      // SSE transport for Claude Desktop / Cursor
-      router.get(`${mcpPath}/sse`, async (req, res) => {
-        res.status(501).json({
-          error: 'MCP SSE transport not yet implemented',
-        });
+        if (!mcpServer) {
+          res.status(503).json({
+            error: 'MCP server not available',
+            hint: 'Check that @modelcontextprotocol/sdk is installed',
+          });
+          return;
+        }
+
+        // Capture OBO auth context
+        const authCtx: McpAuthContext = {
+          authorization: (req.headers.authorization as string) ?? '',
+          oboToken: (req.headers['x-forwarded-access-token'] as string) ?? '',
+        };
+
+        try {
+          const { StreamableHTTPServerTransport } = await import(
+            '@modelcontextprotocol/sdk/server/streamableHttp.js'
+          );
+
+          // Stateless transport — new for each request
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: undefined, // stateless
+          });
+
+          // Run with auth context so tool handlers can access OBO headers
+          await mcpAuthStore.run(authCtx, async () => {
+            const server = mcpServer as { connect: (t: unknown) => Promise<void> };
+            await server.connect(transport);
+            await transport.handleRequest(req, res, req.body);
+          });
+        } catch (e) {
+          if (!res.headersSent) {
+            res.status(500).json({
+              error: `MCP error: ${e instanceof Error ? e.message : String(e)}`,
+            });
+          }
+        }
       });
     },
   };
