@@ -256,7 +256,7 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         result = await _handle_invocation(request, body)
 
         # StreamingResponse — pass through
-        if hasattr(result, 'body'):
+        if isinstance(result, StreamingResponse):
             return result
 
         # Wrap in Responses API format
