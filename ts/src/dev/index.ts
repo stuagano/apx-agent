@@ -2,22 +2,13 @@
  * Dev UI plugin for Databricks AppKit.
  *
  * Adds development-time routes for testing and inspecting the agent:
- * - /_apx/agent — chat UI for interactive testing
- * - /_apx/tools — tool inspector with live invocation forms
+ * - /_apx/agent — chat UI with streaming support
+ * - /_apx/tools — tool inspector with real schemas
  * - /_apx/probe?url=<url> — outbound connectivity tester
- *
- * Usage:
- *   import { devUI } from 'appkit-agent';
- *
- *   createApp({
- *     plugins: [
- *       agent({ model: '...', tools: [...] }),
- *       devUI(),
- *     ],
- *   });
  */
 
-import type { IAppRouter } from '@databricks/appkit';
+import type { Request, Response } from 'express';
+import type { AgentExports } from '../agent/index.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,44 +17,50 @@ import type { IAppRouter } from '@databricks/appkit';
 export interface DevUIConfig {
   /** Base path for dev UI routes. Defaults to '/_apx'. */
   basePath?: string;
-  /** Disable in production. Defaults to true (enabled only when NODE_ENV !== 'production'). */
+  /** Disable in production. Defaults to true. */
   productionGuard?: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// Dev UI plugin factory
+// Plugin factory
 // ---------------------------------------------------------------------------
 
-export function devUI(config: DevUIConfig = {}) {
+export function createDevPlugin(config: DevUIConfig, agentExports: () => AgentExports | null) {
   const basePath = config.basePath ?? '/_apx';
   const guardProduction = config.productionGuard ?? true;
 
   return {
-    name: 'devUI',
+    name: 'devUI' as const,
     displayName: 'Agent Dev UI',
     description: 'Development chat UI and tool inspector',
 
-    injectRoutes(router: IAppRouter) {
+    injectRoutes(router: { get: Function }) {
       if (guardProduction && process.env.NODE_ENV === 'production') {
-        return; // Don't mount dev routes in production
+        return;
       }
 
-      // Tool inspector — lists all registered tools with schemas
-      router.get(`${basePath}/tools`, (req, res) => {
-        // TODO: Pull tool schemas from agent plugin exports
-        res.json({
-          message: 'Tool inspector — coming soon',
-          hint: 'Tools are available at /api/tools/:name',
-        });
+      // Tool inspector — returns real schemas from agent plugin
+      router.get(`${basePath}/tools`, (_req: Request, res: Response) => {
+        const exports = agentExports();
+        if (!exports) {
+          res.json({ tools: [], message: 'Agent plugin not available' });
+          return;
+        }
+        const tools = exports.getTools().map((t) => ({
+          name: t.name,
+          description: t.description,
+        }));
+        const schemas = exports.getToolSchemas();
+        res.json({ tools, schemas });
       });
 
-      // Chat UI — serves a minimal HTML page for testing the agent
-      router.get(`${basePath}/agent`, (_req, res) => {
+      // Chat UI with SSE streaming support
+      router.get(`${basePath}/agent`, (_req: Request, res: Response) => {
         res.type('html').send(chatPageHtml(basePath));
       });
 
       // Outbound connectivity probe
-      router.get(`${basePath}/probe`, async (req, res) => {
+      router.get(`${basePath}/probe`, async (req: Request, res: Response) => {
         const targetUrl = req.query.url as string;
         if (!targetUrl) {
           res.status(400).json({ error: 'url query parameter required' });
@@ -72,16 +69,14 @@ export function devUI(config: DevUIConfig = {}) {
         try {
           const start = Date.now();
           const response = await fetch(targetUrl);
-          const elapsed = Date.now() - start;
           res.json({
             url: targetUrl,
             status: response.status,
             ok: response.ok,
-            elapsed_ms: elapsed,
+            elapsed_ms: Date.now() - start,
           });
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          res.json({ url: targetUrl, error: message });
+          res.json({ url: targetUrl, error: err instanceof Error ? err.message : String(err) });
         }
       });
     },
@@ -108,7 +103,9 @@ function chatPageHtml(basePath: string): string {
     #input-bar input { flex: 1; padding: 0.75rem; border-radius: 6px; border: 1px solid #444; background: #1a1a2e; color: #e0e0e0; font-size: 0.9rem; }
     #input-bar button { padding: 0.75rem 1.5rem; border-radius: 6px; border: none; background: #e94560; color: white; font-weight: 600; cursor: pointer; }
     nav { padding: 0.5rem 1rem; background: #16213e; font-size: 0.8rem; }
-    nav a { color: #e94560; margin-right: 1rem; }
+    nav a { color: #e94560; margin-right: 1rem; text-decoration: none; }
+    nav a:hover { text-decoration: underline; }
+    .streaming { opacity: 0.7; }
   </style>
 </head>
 <body>
@@ -116,7 +113,7 @@ function chatPageHtml(basePath: string): string {
   <nav>
     <a href="${basePath}/agent">Chat</a>
     <a href="${basePath}/tools">Tools</a>
-    <a href="/.well-known/agent.json">Agent Card</a>
+    <a href="/.well-known/agent.json" target="_blank">Agent Card</a>
   </nav>
   <div id="messages"></div>
   <div id="input-bar">
@@ -133,26 +130,55 @@ function chatPageHtml(basePath: string): string {
       if (!text) return;
       input.value = '';
       addMsg('user', text);
+
+      // Try streaming first
+      const assistantDiv = addMsg('assistant', '', true);
       try {
-        const res = await fetch('/invocations', {
+        const res = await fetch('/responses', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ input: [{ role: 'user', content: text }] }),
+          body: JSON.stringify({ input: [{ role: 'user', content: text }], stream: true }),
         });
-        const data = await res.json();
-        const reply = data?.output?.[0]?.content?.[0]?.text ?? JSON.stringify(data);
-        addMsg('assistant', reply);
+
+        if (res.headers.get('content-type')?.includes('text/event-stream')) {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let fullText = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value);
+            for (const line of chunk.split('\\n')) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  if (data.text) { fullText += data.text; assistantDiv.textContent = fullText; }
+                  if (data.output) { assistantDiv.textContent = data.output?.content?.[0]?.text || fullText; }
+                } catch {}
+              }
+            }
+          }
+          assistantDiv.classList.remove('streaming');
+        } else {
+          const data = await res.json();
+          const reply = data?.output_text ?? data?.output?.[0]?.content?.[0]?.text ?? JSON.stringify(data);
+          assistantDiv.textContent = reply;
+          assistantDiv.classList.remove('streaming');
+        }
       } catch (err) {
-        addMsg('assistant', 'Error: ' + err.message);
+        assistantDiv.textContent = 'Error: ' + err.message;
+        assistantDiv.classList.remove('streaming');
       }
+      msgs.scrollTop = msgs.scrollHeight;
     }
 
-    function addMsg(role, text) {
+    function addMsg(role, text, streaming = false) {
       const div = document.createElement('div');
-      div.className = 'msg ' + role;
-      div.textContent = text;
+      div.className = 'msg ' + role + (streaming ? ' streaming' : '');
+      div.textContent = text || (streaming ? 'Thinking...' : '');
       msgs.appendChild(div);
       msgs.scrollTop = msgs.scrollHeight;
+      return div;
     }
   </script>
 </body>

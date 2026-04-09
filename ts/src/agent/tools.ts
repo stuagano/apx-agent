@@ -1,0 +1,117 @@
+/**
+ * Tool definition and schema helpers.
+ *
+ * Define agent tools with Zod schemas. The schema is used for:
+ * - OpenAI function calling (passed to Runner.run)
+ * - MCP tool registration
+ * - A2A discovery card skills
+ * - Dev UI tool inspector
+ */
+
+import { z } from 'zod';
+import { zodToJsonSchema as zodToJson } from 'zod-to-json-schema';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** A tool function with metadata derived from its Zod schema. */
+export interface AgentTool<T = unknown> {
+  name: string;
+  description: string;
+  parameters: z.ZodType<T>;
+  handler: (args: T) => Promise<unknown>;
+}
+
+/** OpenAI function calling format. */
+export interface FunctionSchema {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tool definition helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Define a typed agent tool.
+ *
+ * @example
+ * const getLineage = defineTool({
+ *   name: 'get_table_lineage',
+ *   description: 'Get upstream sources for a table',
+ *   parameters: z.object({ tableName: z.string() }),
+ *   handler: async ({ tableName }) => {
+ *     // query Unity Catalog lineage
+ *   },
+ * });
+ */
+export function defineTool<T extends z.ZodType>(opts: {
+  name: string;
+  description: string;
+  parameters: T;
+  handler: (args: z.infer<T>) => Promise<unknown>;
+}): AgentTool<z.infer<T>> {
+  return {
+    name: opts.name,
+    description: opts.description,
+    parameters: opts.parameters,
+    handler: async (raw: z.infer<T>) => {
+      const parsed = opts.parameters.parse(raw);
+      return opts.handler(parsed);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Schema conversion
+// ---------------------------------------------------------------------------
+
+/** Convert a Zod schema to JSON Schema, suitable for OpenAI function calling. */
+export function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
+  return zodToJson(schema, { target: 'openAi' }) as Record<string, unknown>;
+}
+
+/**
+ * Ensure a JSON schema is "strict" for OpenAI — adds `additionalProperties: false`
+ * on all object types recursively.
+ */
+export function toStrictSchema(schema: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  if (!schema) {
+    return { type: 'object', properties: {}, required: [], additionalProperties: false };
+  }
+  const result = { ...schema };
+  if (result.type === 'object') {
+    result.additionalProperties = false;
+    if (!result.required) {
+      result.required = Object.keys((result.properties as Record<string, unknown>) ?? {});
+    }
+    if (result.properties && typeof result.properties === 'object') {
+      result.properties = Object.fromEntries(
+        Object.entries(result.properties as Record<string, unknown>).map(([k, v]) => {
+          if (typeof v === 'object' && v !== null && (v as Record<string, unknown>).type === 'object') {
+            return [k, toStrictSchema(v as Record<string, unknown>)];
+          }
+          return [k, v];
+        }),
+      );
+    }
+  }
+  return result;
+}
+
+/** Convert AgentTools to OpenAI function calling format. */
+export function toolsToFunctionSchemas(tools: AgentTool[]): FunctionSchema[] {
+  return tools.map((t) => ({
+    type: 'function' as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: toStrictSchema(zodToJsonSchema(t.parameters)),
+    },
+  }));
+}
