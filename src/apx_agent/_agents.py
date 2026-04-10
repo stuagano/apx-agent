@@ -139,9 +139,13 @@ class LlmAgent(BaseAgent):
 
         if rejection := await self._apply_input_guardrails(messages):
             return rejection
+        # Pass None for tools when sub_agents are configured so run_via_sdk
+        # uses ctx.tools which includes both local and remote (sub-agent) tools.
+        # When no sub_agents, pass collect_tools() for the local-only list.
+        effective_tools = None if self._sub_agent_urls else self.collect_tools()
         text = await run_via_sdk(
             messages, request,
-            tools=self.collect_tools(),
+            tools=effective_tools,
             instructions=self._instructions,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
@@ -158,10 +162,11 @@ class LlmAgent(BaseAgent):
             yield rejection
             return
 
+        effective_tools = None if self._sub_agent_urls else self.collect_tools()
         full_text = ""
         async for chunk in stream_via_sdk(
             messages, request,
-            tools=self.collect_tools(),
+            tools=effective_tools,
             instructions=self._instructions,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
