@@ -195,8 +195,12 @@ def _to_function_tool(
     api_prefix = ctx.config.api_prefix
 
     async def _on_invoke(ctx_sdk: Any, args_json: str) -> str:
+        import time as _time
+
+        arguments = _json.loads(args_json) if args_json else {}
+        t0 = _time.monotonic()
+        result_text = ""
         try:
-            arguments = _json.loads(args_json) if args_json else {}
             obo_headers = {
                 "Authorization": request.headers.get("Authorization", ""),
                 "X-Forwarded-Access-Token": request.headers.get("X-Forwarded-Access-Token", ""),
@@ -212,13 +216,31 @@ def _to_function_tool(
                     headers=obo_headers,
                 )
             if response.status_code >= 400:
-                return f"Tool error ({response.status_code}): {response.text}"
-            result = response.json()
-            return result if isinstance(result, str) else _json.dumps(result)
+                result_text = f"Tool error ({response.status_code}): {response.text}"
+            else:
+                result = response.json()
+                result_text = result if isinstance(result, str) else _json.dumps(result)
         except Exception as e:
-            # Return errors as text so the LLM can reason about them
-            # instead of crashing the agent loop
-            return f"Tool error: {e}"
+            result_text = f"Tool error: {e}"
+
+        # Record trace for dev UI
+        elapsed = int((_time.monotonic() - t0) * 1000)
+        if hasattr(request.state, "tool_trace"):
+            request.state.tool_trace.append({
+                "name": tool.name,
+                "args": arguments,
+                "result": result_text[:500] if len(result_text) > 500 else result_text,
+                "ms": elapsed,
+            })
+        else:
+            request.state.tool_trace = [{
+                "name": tool.name,
+                "args": arguments,
+                "result": result_text[:500] if len(result_text) > 500 else result_text,
+                "ms": elapsed,
+            }]
+
+        return result_text
 
     # Build strict JSON schema from apx-agent's tool schema
     params_schema = _to_strict_schema(tool.input_schema)
