@@ -63,7 +63,7 @@ async def run_via_sdk(
     # Convert sub-agent tools to SDK FunctionTool instances
     # These call DatabricksOpenAI.responses.create(model="apps/<name>") for OBO
     sub_agent_tools = [
-        _to_sub_agent_tool(t, client)
+        _to_sub_agent_tool(t, client, request)
         for t in effective_tools
         if t.sub_agent_url
     ]
@@ -139,7 +139,7 @@ async def stream_via_sdk(
         if not t.sub_agent_url
     ]
     sub_agent_tools = [
-        _to_sub_agent_tool(t, client)
+        _to_sub_agent_tool(t, client, request)
         for t in effective_tools
         if t.sub_agent_url
     ]
@@ -257,17 +257,23 @@ def _to_function_tool(
 def _to_sub_agent_tool(
     tool: AgentTool,
     client: Any,
+    request: Request | None = None,
 ) -> Any:
     """Wrap a sub-agent tool to call via DatabricksOpenAI Responses API.
 
     Uses ``model="apps/<app-name>"`` for automatic OBO token forwarding
     through the Supervisor gateway, instead of raw HTTP POST.
+    Falls back to direct HTTP with OBO headers from the request.
     """
+    import time as _time
+
     from agents.tool import FunctionTool
 
     app_name = _url_to_app_name(tool.sub_agent_url or "")
 
     async def _on_invoke(ctx_sdk: Any, args_json: str) -> str:
+        t0 = _time.monotonic()
+        result_text = ""
         try:
             arguments = _json.loads(args_json) if args_json else {}
             message = arguments.get("message", _json.dumps(arguments))
@@ -278,30 +284,63 @@ def _to_sub_agent_tool(
                         model=f"apps/{app_name}",
                         input=[{"type": "message", "role": "user", "content": message}],
                     )
-                    return response.output_text
+                    result_text = response.output_text
+                    return result_text
                 except Exception as e:
                     logger.warning(
                         "DatabricksOpenAI call to apps/%s failed (%s), falling back to direct HTTP",
                         app_name, e,
                     )
 
-            # Fallback: direct HTTP POST
+            # Fallback: direct HTTP POST with OBO headers
             from httpx import AsyncClient as HttpxClient
+
+            obo_headers: dict[str, str] = {}
+            if request:
+                obo_headers = {
+                    "Authorization": request.headers.get("Authorization", ""),
+                    "X-Forwarded-Access-Token": request.headers.get("X-Forwarded-Access-Token", ""),
+                }
+            # Also try workspace client auth as last resort
+            if not obo_headers.get("Authorization"):
+                try:
+                    from databricks.sdk import WorkspaceClient
+                    obo_headers.update(WorkspaceClient().config.authenticate())
+                except Exception:
+                    pass
 
             async with HttpxClient(timeout=120.0) as http_client:
                 resp = await http_client.post(
                     f"{(tool.sub_agent_url or '').rstrip('/')}/responses",
                     json={"input": [{"role": "user", "content": message}]},
+                    headers=obo_headers,
                 )
             if resp.status_code >= 400:
-                return f"Sub-agent error ({resp.status_code}): {resp.text}"
+                result_text = f"Sub-agent error ({resp.status_code}): {resp.text}"
+                return result_text
             data = resp.json()
             try:
-                return data["output"][0]["content"][0]["text"]
+                result_text = data.get("output_text", "") or data["output"][0]["content"][0]["text"]
             except (KeyError, IndexError):
-                return _json.dumps(data)
+                result_text = _json.dumps(data)
+            return result_text
         except Exception as e:
-            return f"Sub-agent error: {e}"
+            result_text = f"Sub-agent error: {e}"
+            return result_text
+        finally:
+            # Record trace for dev UI
+            elapsed = int((_time.monotonic() - t0) * 1000)
+            if request and hasattr(request, 'state'):
+                trace_entry = {
+                    "name": f"🔗 {tool.name}" if app_name else tool.name,
+                    "args": {"message": message[:200]} if 'message' in dir() else {},
+                    "result": result_text[:500] if result_text and len(result_text) > 500 else (result_text or ""),
+                    "ms": elapsed,
+                }
+                if hasattr(request.state, "tool_trace"):
+                    request.state.tool_trace.append(trace_entry)
+                else:
+                    request.state.tool_trace = [trace_entry]
 
     return FunctionTool(
         name=tool.name,
