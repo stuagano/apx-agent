@@ -203,10 +203,22 @@ class LlmAgent(BaseAgent):
         ]
 
     async def fetch_remote_tools(self) -> list[AgentTool]:
-        """Fetch agent cards from sub-agent URLs and build tools from them."""
+        """Fetch agent cards from sub-agent URLs and build tools from them.
+
+        Uses the workspace client's auth headers to authenticate with
+        Databricks Apps (which require OAuth/bearer tokens).
+        """
         import os
 
+        from databricks.sdk import WorkspaceClient
         from httpx import AsyncClient
+
+        # Get auth headers from the workspace client for app-to-app calls
+        try:
+            ws = WorkspaceClient()
+            auth_headers = ws.config.authenticate()
+        except Exception:
+            auth_headers = {}
 
         tools: list[AgentTool] = []
         async with AsyncClient(timeout=10.0) as client:
@@ -221,7 +233,7 @@ class LlmAgent(BaseAgent):
                     url = raw_url
                 card_url = f"{url.rstrip('/')}/.well-known/agent.json"
                 try:
-                    response = await client.get(card_url)
+                    response = await client.get(card_url, headers=auth_headers)
                     response.raise_for_status()
                     card = response.json()
                 except Exception as e:
