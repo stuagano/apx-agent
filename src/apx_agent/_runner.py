@@ -53,6 +53,15 @@ async def run_via_sdk(
 
     effective_tools = tools if tools is not None else ctx.tools
 
+    # Deduplicate by name — ctx.tools may contain duplicates from multiple agents
+    seen: set[str] = set()
+    deduped: list[AgentTool] = []
+    for t in effective_tools:
+        if t.name not in seen:
+            seen.add(t.name)
+            deduped.append(t)
+    effective_tools = deduped
+
     # Convert apx-agent tools to SDK FunctionTool instances
     function_tools = [
         _to_function_tool(t, request, ctx)
@@ -132,6 +141,15 @@ async def stream_via_sdk(
     set_default_openai_api("chat_completions")
 
     effective_tools = tools if tools is not None else ctx.tools
+
+    # Deduplicate
+    seen: set[str] = set()
+    deduped: list[AgentTool] = []
+    for t in effective_tools:
+        if t.name not in seen:
+            seen.add(t.name)
+            deduped.append(t)
+    effective_tools = deduped
 
     function_tools = [
         _to_function_tool(t, request, ctx)
