@@ -238,13 +238,24 @@ class LlmAgent(BaseAgent):
                     card = response.json()
                 except Exception as e:
                     logger.warning(f"Failed to fetch agent card from {card_url}: {e}")
-                    continue
+                    # Register anyway with a generic description — the sub-agent
+                    # is still callable at runtime via the user's OBO token even
+                    # if the card fetch fails (e.g. Databricks Apps OAuth proxy)
+                    card = None
 
-                raw_name = card.get("name", url.split("/")[-1])
+                if card:
+                    raw_name = card.get("name", url.split("/")[-1])
+                    description = card.get("description", f"Agent at {url}")
+                else:
+                    # Derive name from URL
+                    raw_name = url.rstrip("/").split("/")[-1].split(".")[0].split("-")[0:-1]
+                    raw_name = "-".join(raw_name) if raw_name else url.split("/")[-1]
+                    description = f"Remote agent at {url} (card fetch failed — tool is still callable)"
+
                 tool_name = raw_name.replace("-", "_").replace(" ", "_")
                 tools.append(AgentTool(
                     name=tool_name,
-                    description=card.get("description", f"Agent at {url}"),
+                    description=description,
                     input_schema={
                         "type": "object",
                         "properties": {"message": {"type": "string", "description": "Message to send"}},
