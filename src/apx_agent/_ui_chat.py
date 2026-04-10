@@ -656,7 +656,10 @@ form.addEventListener('submit', async e => {{
               assistantDiv.textContent = full;
               chat.scrollTop = chat.scrollHeight;
             }} else if (eventType === 'tool.trace') {{
-              pendingTrace = payload;
+              // Render tool pills immediately as they arrive
+              if (Array.isArray(payload) && payload.length) {{
+                addToolPills(payload);
+              }}
             }}
           }} catch {{}}
         }}
@@ -668,9 +671,6 @@ form.addEventListener('submit', async e => {{
   }}
 
   assistantDiv.classList.remove('streaming');
-  if (pendingTrace && pendingTrace.length) {{
-    addToolPills(pendingTrace);
-  }}
   addEvent('assistant', full.slice(0, 80) + (full.length > 80 ? '…' : ''), null, {{ content: full }});
   history.push({{ role: 'assistant', content: full }});
   sendBtn.disabled = false;

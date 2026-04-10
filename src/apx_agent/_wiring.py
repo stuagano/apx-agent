@@ -197,18 +197,26 @@ async def _handle_invocation(
     if body.stream:
         async def _sse_generator() -> AsyncGenerator[str, None]:
             item_id = "msg_001"
+            _emitted_trace_count = 0
             yield f"event: response.output_item.start\ndata: {_json.dumps({'item_id': item_id})}\n\n"
             full_text = ""
             try:
                 async for chunk in ctx.agent.stream(messages, request):
                     full_text += chunk
                     yield f"event: output_text.delta\ndata: {_json.dumps({'item_id': item_id, 'text': chunk})}\n\n"
+                    # Emit tool traces incrementally as tools complete
+                    tool_trace = getattr(request.state, "tool_trace", [])
+                    if len(tool_trace) > _emitted_trace_count:
+                        new_traces = tool_trace[_emitted_trace_count:]
+                        yield f"event: tool.trace\ndata: {_json.dumps(new_traces)}\n\n"
+                        _emitted_trace_count = len(tool_trace)
                 output_item = OutputItem(content=[OutputTextContent(text=full_text)])
                 yield f"event: response.output_item.done\ndata: {_json.dumps({'item_id': item_id, 'output': output_item.model_dump()})}\n\n"
+                # Emit any remaining traces
                 tool_trace = getattr(request.state, "tool_trace", [])
-                if tool_trace:
-                    yield f"event: tool.trace\ndata: {_json.dumps(tool_trace)}\n\n"
-                    request.state.tool_trace = []
+                if len(tool_trace) > _emitted_trace_count:
+                    new_traces = tool_trace[_emitted_trace_count:]
+                    yield f"event: tool.trace\ndata: {_json.dumps(new_traces)}\n\n"
                 custom_out = getattr(request.state, "custom_outputs", {})
                 if custom_out:
                     yield f"event: custom_outputs\ndata: {_json.dumps(custom_out)}\n\n"
