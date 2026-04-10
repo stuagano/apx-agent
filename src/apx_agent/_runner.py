@@ -292,22 +292,31 @@ def _to_sub_agent_tool(
                         app_name, e,
                     )
 
-            # Fallback: direct HTTP POST with OBO headers
+            # Fallback: direct HTTP POST with OBO token
+            # Databricks Apps accept OAuth tokens, not PATs.
+            # The user's OBO token is in X-Forwarded-Access-Token (injected by Apps proxy).
+            # Use it as Authorization for the sub-agent call.
             from httpx import AsyncClient as HttpxClient
 
-            obo_headers: dict[str, str] = {}
+            obo_token = ""
             if request:
-                obo_headers = {
-                    "Authorization": request.headers.get("Authorization", ""),
-                    "X-Forwarded-Access-Token": request.headers.get("X-Forwarded-Access-Token", ""),
-                }
-            # Also try workspace client auth as last resort
-            if not obo_headers.get("Authorization"):
+                # Prefer the user's OBO token (works for app-to-app calls)
+                obo_token = (
+                    request.headers.get("X-Forwarded-Access-Token", "")
+                    or request.headers.get("Authorization", "").replace("Bearer ", "")
+                )
+            # Fallback to workspace client auth
+            if not obo_token:
                 try:
                     from databricks.sdk import WorkspaceClient
-                    obo_headers.update(WorkspaceClient().config.authenticate())
+                    ws_headers = WorkspaceClient().config.authenticate()
+                    obo_token = ws_headers.get("Authorization", "").replace("Bearer ", "")
                 except Exception:
                     pass
+
+            obo_headers: dict[str, str] = {
+                "Authorization": f"Bearer {obo_token}" if obo_token else "",
+            }
 
             async with HttpxClient(timeout=120.0) as http_client:
                 resp = await http_client.post(
