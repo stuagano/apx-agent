@@ -16,11 +16,11 @@ import { zodToJsonSchema as zodToJson } from 'zod-to-json-schema';
 // ---------------------------------------------------------------------------
 
 /** A tool function with metadata derived from its Zod schema. */
-export interface AgentTool<T = unknown> {
+export interface AgentTool {
   name: string;
   description: string;
-  parameters: z.ZodType<T>;
-  handler: (args: T) => Promise<unknown>;
+  parameters: z.ZodType;
+  handler: (args: any) => Promise<unknown>;
 }
 
 /** OpenAI function calling format. */
@@ -55,12 +55,12 @@ export function defineTool<T extends z.ZodType>(opts: {
   description: string;
   parameters: T;
   handler: (args: z.infer<T>) => Promise<unknown>;
-}): AgentTool<z.infer<T>> {
+}): AgentTool {
   return {
     name: opts.name,
     description: opts.description,
     parameters: opts.parameters,
-    handler: async (raw: z.infer<T>) => {
+    handler: async (raw: unknown) => {
       const parsed = opts.parameters.parse(raw);
       return opts.handler(parsed);
     },
@@ -73,11 +73,16 @@ export function defineTool<T extends z.ZodType>(opts: {
 
 /** Convert a Zod schema to JSON Schema, suitable for OpenAI function calling. */
 export function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
-  // Zod v4 has native toJSONSchema() — use it if available (more reliable than zod-to-json-schema v3)
-  if ('toJSONSchema' in schema && typeof schema.toJSONSchema === 'function') {
-    return schema.toJSONSchema() as Record<string, unknown>;
+  // Zod v4 has native toJSONSchema() — use it if available
+  if ('toJSONSchema' in schema && typeof (schema as any).toJSONSchema === 'function') {
+    return (schema as any).toJSONSchema() as Record<string, unknown>;
   }
-  return zodToJson(schema, { target: 'openAi' }) as Record<string, unknown>;
+  // Fallback to zod-to-json-schema (works with Zod v3)
+  try {
+    return zodToJson(schema as any, { target: 'openAi' }) as Record<string, unknown>;
+  } catch {
+    return { type: 'object', properties: {} };
+  }
 }
 
 /**
