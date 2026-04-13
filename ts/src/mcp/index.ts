@@ -5,7 +5,7 @@
  * Claude Desktop, Cursor, and Genie Code can connect.
  *
  * Uses @modelcontextprotocol/sdk with StreamableHTTPServerTransport
- * in stateless mode.
+ * in stateless mode (fresh server per request).
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -27,7 +27,7 @@ export interface McpAuthContext {
 }
 
 // ---------------------------------------------------------------------------
-// Auth context (AsyncLocalStorage — equivalent of Python contextvars)
+// Auth context
 // ---------------------------------------------------------------------------
 
 export const mcpAuthStore = new AsyncLocalStorage<McpAuthContext>();
@@ -43,62 +43,46 @@ export function getMcpAuth(): McpAuthContext | undefined {
 export function createMcpPlugin(config: McpConfig, agentExports: () => AgentExports | null) {
   const mcpPath = config.path ?? '/mcp';
 
-  let mcpServer: unknown = null;
-  let initialized = false;
+  /** Create a fresh MCP server with tools registered. */
+  async function createServer() {
+    const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
 
-  async function ensureInitialized() {
-    if (initialized) return;
-    initialized = true;
+    const server = new McpServer(
+      { name: 'appkit-agent', version: '1.0.0' },
+      { capabilities: { tools: {} } },
+    );
 
-    try {
-      const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
-
-      mcpServer = new McpServer(
-        { name: 'appkit-agent', version: '1.0.0' },
-        { capabilities: { tools: {} } },
-      );
-
-      // Register tools from agent plugin
-      const exports = agentExports();
-      if (exports) {
-        for (const tool of exports.getTools()) {
-          const server = mcpServer as {
-            tool: (name: string, description: string, schema: unknown, handler: (args: unknown) => Promise<unknown>) => void;
-          };
-          server.tool(
-            tool.name,
-            tool.description,
-            tool.parameters,
-            async (args: unknown) => {
-              try {
-                const result = await tool.handler(args);
-                return {
-                  content: [
-                    {
-                      type: 'text' as const,
-                      text: typeof result === 'string' ? result : JSON.stringify(result),
-                    },
-                  ],
-                };
-              } catch (e) {
-                return {
-                  content: [
-                    {
-                      type: 'text' as const,
-                      text: `Tool error: ${e instanceof Error ? e.message : String(e)}`,
-                    },
-                  ],
-                  isError: true,
-                };
-              }
-            },
-          );
-        }
+    const exports = agentExports();
+    if (exports) {
+      for (const t of exports.getTools()) {
+        // Use the 3-arg overload (no schema) — compatible with Zod v4
+        (server as any).tool(
+          t.name,
+          t.description,
+          async (args: unknown) => {
+            try {
+              const result = await t.handler(args);
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: typeof result === 'string' ? result : JSON.stringify(result),
+                }],
+              };
+            } catch (e) {
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: `Tool error: ${e instanceof Error ? e.message : String(e)}`,
+                }],
+                isError: true,
+              };
+            }
+          },
+        );
       }
-    } catch (e) {
-      console.warn('Failed to initialize MCP server:', e);
-      mcpServer = null;
     }
+
+    return server;
   }
 
   return {
@@ -107,23 +91,16 @@ export function createMcpPlugin(config: McpConfig, agentExports: () => AgentExpo
     description: 'Model Context Protocol server for agent tool access',
 
     async setup() {
-      await ensureInitialized();
+      // Validate MCP SDK is available
+      try {
+        await import('@modelcontextprotocol/sdk/server/mcp.js');
+      } catch (e) {
+        console.warn('MCP SDK not available:', e);
+      }
     },
 
     injectRoutes(router: { all: Function; get: Function; post: Function }) {
-      // Streamable HTTP transport
       router.all(mcpPath, async (req: Request, res: Response) => {
-        await ensureInitialized();
-
-        if (!mcpServer) {
-          res.status(503).json({
-            error: 'MCP server not available',
-            hint: 'Check that @modelcontextprotocol/sdk is installed',
-          });
-          return;
-        }
-
-        // Capture OBO auth context
         const authCtx: McpAuthContext = {
           authorization: (req.headers.authorization as string) ?? '',
           oboToken: (req.headers['x-forwarded-access-token'] as string) ?? '',
@@ -134,14 +111,13 @@ export function createMcpPlugin(config: McpConfig, agentExports: () => AgentExpo
             '@modelcontextprotocol/sdk/server/streamableHttp.js'
           );
 
-          // Stateless transport — new for each request
+          // Fresh server + transport per request (stateless mode)
+          const server = await createServer();
           const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: undefined, // stateless
+            sessionIdGenerator: undefined,
           });
 
-          // Run with auth context so tool handlers can access OBO headers
           await mcpAuthStore.run(authCtx, async () => {
-            const server = mcpServer as { connect: (t: unknown) => Promise<void> };
             await server.connect(transport);
             await transport.handleRequest(req, res, req.body);
           });
