@@ -11,6 +11,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Request, Response } from 'express';
 import type { AgentExports } from '../agent/index.js';
+import { zodToJsonSchema } from '../agent/tools.js';
+import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,6 +26,49 @@ export interface McpConfig {
 export interface McpAuthContext {
   authorization: string;
   oboToken: string;
+}
+
+// ---------------------------------------------------------------------------
+// Zod shape extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the raw Zod shape from a ZodType so it can be passed as
+ * `inputSchema` to McpServer.registerTool().
+ *
+ * The MCP SDK expects a `ZodRawShapeCompat` — a `Record<string, ZodType>` —
+ * which is the shape argument of `z.object({...})`.
+ *
+ * Returns undefined for non-object schemas (primitive, array, etc.)
+ * so the tool is still registered but without parameter definitions.
+ */
+function extractZodShape(schema: z.ZodType): Record<string, z.ZodType> | undefined {
+  // Zod v4: shape is in `._zod.def.shape` or directly `.shape`
+  const v4Internal = schema as { _zod?: { def?: { shape?: Record<string, z.ZodType> | (() => Record<string, z.ZodType>) } } };
+  if (v4Internal._zod?.def?.shape) {
+    const shape = v4Internal._zod.def.shape;
+    return typeof shape === 'function' ? shape() : shape;
+  }
+
+  // Zod v3: shape is in `._def.shape` or `.shape`
+  const v3Internal = schema as {
+    _def?: { shape?: Record<string, z.ZodType> | (() => Record<string, z.ZodType>); typeName?: string };
+    shape?: Record<string, z.ZodType> | (() => Record<string, z.ZodType>);
+  };
+
+  if (v3Internal._def?.typeName === 'ZodObject') {
+    const shape = v3Internal._def?.shape ?? v3Internal.shape;
+    if (shape) {
+      return typeof shape === 'function' ? shape() : shape;
+    }
+  }
+
+  if (v3Internal.shape) {
+    const shape = v3Internal.shape;
+    return typeof shape === 'function' ? shape() : shape;
+  }
+
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,10 +100,19 @@ export function createMcpPlugin(config: McpConfig, agentExports: () => AgentExpo
     const exports = agentExports();
     if (exports) {
       for (const t of exports.getTools()) {
-        // Use the 3-arg overload (no schema) — compatible with Zod v4
-        (server as any).tool(
+        // Extract the Zod shape from the tool's parameters schema so MCP
+        // clients receive a full inputSchema.  z.object() stores its shape
+        // in `.shape` (Zod v3) or `._zod.def.shape` (Zod v4).
+        const zodShape = extractZodShape(t.parameters);
+
+        // Use registerTool (preferred API) with inputSchema so MCP
+        // clients see parameter definitions.
+        server.registerTool(
           t.name,
-          t.description,
+          {
+            description: t.description,
+            ...(zodShape ? { inputSchema: zodShape } : {}),
+          },
           async (args: unknown) => {
             try {
               const result = await t.handler(args);

@@ -26,6 +26,8 @@ import type { AgentTool, FunctionSchema } from './tools.js';
 import { toolsToFunctionSchemas } from './tools.js';
 import { runViaSDK, streamViaSDK, initDatabricksClient } from './runner.js';
 import { createMcpToolProvider } from './mcp-client.js';
+import type { Runnable, Message } from '../workflows/types.js';
+import { AgentState } from '../workflows/state.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -42,6 +44,12 @@ export interface AgentConfig {
   maxIterations?: number;
   /** URLs of remote sub-agents (Databricks Apps). */
   subAgents?: string[];
+  /**
+   * A workflow agent (SequentialAgent, ParallelAgent, etc.) to use as the
+   * execution engine for /responses. When set, the plugin delegates to
+   * `workflow.run()` instead of the default LLM tool-calling loop.
+   */
+  workflow?: Runnable;
   /**
    * Remote MCP server URLs to consume as tools.
    *
@@ -204,6 +212,65 @@ export function createAgentPlugin(config: AgentConfig) {
           const raw = req.body as ResponsesInput;
           const messages = parseInput(raw);
           const oboHeaders = getOboHeaders(req);
+
+          // When a workflow agent is configured, delegate to it
+          if (config.workflow) {
+            const workflowMessages: Message[] = messages.map((m) => ({
+              role: m.role,
+              content: m.content,
+            }));
+
+            if (raw.stream && config.workflow.stream) {
+              // SSE streaming via workflow
+              res.setHeader('Content-Type', 'text/event-stream');
+              res.setHeader('Cache-Control', 'no-cache');
+              res.setHeader('Connection', 'keep-alive');
+
+              const itemId = 'msg_001';
+              res.write(`event: response.output_item.start\ndata: ${JSON.stringify({ item_id: itemId })}\n\n`);
+
+              let fullText = '';
+              try {
+                for await (const chunk of config.workflow.stream(workflowMessages)) {
+                  fullText += chunk;
+                  res.write(`event: output_text.delta\ndata: ${JSON.stringify({ item_id: itemId, text: chunk })}\n\n`);
+                }
+
+                const output = {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: fullText }],
+                };
+                res.write(`event: response.output_item.done\ndata: ${JSON.stringify({ item_id: itemId, output })}\n\n`);
+              } catch (err) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                res.write(`event: error\ndata: ${JSON.stringify({ item_id: itemId, error: errMsg })}\n\n`);
+              }
+
+              res.end();
+              return;
+            }
+
+            // Non-streaming workflow
+            const text = await config.workflow.run(workflowMessages);
+
+            const response: ResponsesOutput = {
+              id: `resp_${Date.now()}`,
+              object: 'response',
+              status: 'completed',
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text }],
+                },
+              ],
+              output_text: text,
+            };
+
+            res.json(response);
+            return;
+          }
 
           if (raw.stream) {
             // SSE streaming

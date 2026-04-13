@@ -1,0 +1,26 @@
+bundle:
+  name: basic-agent
+
+resources:
+  apps:
+    basic-agent:
+      name: basic-agent
+      description: "Basic AI agent built with appkit-agent TypeScript SDK"
+      source_code_path: .
+
+      config:
+        - name: DATABRICKS_HOST
+          value: ${workspace.host}
+        - name: DATABRICKS_TOKEN
+          value: ${workspace.token}
+
+      permissions:
+        - user_name: ${workspace.current_user.userName}
+          level: CAN_MANAGE
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: ${var.workspace_host}

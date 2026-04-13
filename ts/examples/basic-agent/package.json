@@ -1,0 +1,14 @@
+{
+  "name": "basic-agent-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npx tsc --project tsconfig.json",
+    "start": "node dist/app.js",
+    "dev": "npx tsx app.ts"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "zod": "^4.0.0"
+  }
+}
