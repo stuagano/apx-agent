@@ -37,22 +37,81 @@ export interface RunParams {
 
 let _clientInitialized = false;
 
-/** Configure the OpenAI Agents SDK to use Databricks Model Serving. */
-export function initDatabricksClient(): OpenAI {
+/**
+ * Sanitize messages for Databricks model serving compatibility.
+ *
+ * The @openai/agents SDK sometimes embeds `role` and `tool_calls` inside
+ * content array items (Anthropic-style), which Databricks rejects. This
+ * function normalizes messages to the standard chat completions format.
+ */
+function sanitizeMessages(messages: any[]): any[] {
+  return messages.map((msg) => {
+    if (!msg || typeof msg !== 'object') return msg;
+
+    // If content is an array, strip invalid fields from each item
+    if (Array.isArray(msg.content)) {
+      const cleaned = msg.content.map((item: any) => {
+        if (typeof item !== 'object' || !item) return item;
+        const { role: _r, tool_calls: _tc, ...rest } = item;
+        return rest;
+      }).filter((item: any) => {
+        // Keep items that have text or actual content
+        if (typeof item === 'string') return true;
+        if (item.type === 'text' && item.text) return true;
+        return Object.keys(item).length > 0;
+      });
+      return { ...msg, content: cleaned.length > 0 ? cleaned : msg.content };
+    }
+
+    return msg;
+  });
+}
+
+/**
+ * Configure the OpenAI Agents SDK to use Databricks Model Serving.
+ *
+ * On Databricks Apps the token comes per-request via X-Forwarded-Access-Token
+ * or the Authorization bearer header. Pass oboToken to create a per-request
+ * client; falls back to DATABRICKS_TOKEN env var.
+ *
+ * Note: Databricks Apps injects DATABRICKS_HOST without the https:// scheme,
+ * so we normalize it here.
+ */
+export function initDatabricksClient(oboToken?: string): OpenAI {
   const host = process.env.DATABRICKS_HOST;
-  const token = process.env.DATABRICKS_TOKEN;
+  const token = oboToken || process.env.DATABRICKS_TOKEN;
 
   if (!host) {
     throw new Error('DATABRICKS_HOST env var required');
   }
 
+  // Databricks Apps strips the scheme — ensure https://
+  const normalizedHost = host.startsWith('http') ? host : `https://${host}`;
+
   const client = new OpenAI({
-    baseURL: `${host.replace(/\/$/, '')}/serving-endpoints`,
+    baseURL: `${normalizedHost.replace(/\/$/, '')}/serving-endpoints`,
     apiKey: token || 'no-token',
+    // Intercept requests to sanitize message format for Databricks compatibility.
+    // The @openai/agents SDK embeds role/tool_calls inside content arrays, which
+    // Databricks model serving rejects with "Extra inputs are not permitted".
+    fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.body && typeof init.body === 'string') {
+        try {
+          const body = JSON.parse(init.body);
+          if (Array.isArray(body.messages)) {
+            body.messages = sanitizeMessages(body.messages);
+            init = { ...init, body: JSON.stringify(body) };
+          }
+        } catch { /* not JSON, pass through */ }
+      }
+      return globalThis.fetch(url, init);
+    },
   });
 
+  // Update the default client — on Databricks Apps this refreshes per-request
+  // with the OBO token from the incoming request headers
+  setDefaultOpenAIClient(client as any);
   if (!_clientInitialized) {
-    setDefaultOpenAIClient(client);
     setOpenAIAPI('chat_completions');
     _clientInitialized = true;
   }
@@ -67,14 +126,14 @@ export function initDatabricksClient(): OpenAI {
 /**
  * Wrap an AgentTool as an OpenAI Agents SDK tool.
  *
- * Dispatches through the Express app via light-my-request so that the full
- * middleware chain (body parsing, OBO auth, telemetry) is preserved.
+ * Calls the tool handler directly (no Express loopback) to avoid
+ * compatibility issues between light-my-request and Express 5.
  */
 export function toFunctionTool(
   agentTool: AgentTool,
-  app: Express,
-  oboHeaders: Record<string, string>,
-  apiPrefix: string = '/api/agent',
+  _app: Express,
+  _oboHeaders: Record<string, string>,
+  _apiPrefix: string = '/api/agent',
 ): Tool {
   const schema = toStrictSchema(zodToJsonSchema(agentTool.parameters));
 
@@ -84,18 +143,7 @@ export function toFunctionTool(
     parameters: schema as any,
     execute: async (args: unknown): Promise<string> => {
       try {
-        const res = await inject(app, {
-          method: 'POST',
-          url: `${apiPrefix}/tools/${agentTool.name}`,
-          payload: args as Record<string, unknown>,
-          headers: oboHeaders,
-        });
-
-        if (res.statusCode >= 400) {
-          return `Tool error (${res.statusCode}): ${res.body}`;
-        }
-
-        const result = res.json();
+        const result = await agentTool.handler(args);
         return typeof result === 'string' ? result : JSON.stringify(result);
       } catch (e) {
         return `Tool error: ${e instanceof Error ? e.message : String(e)}`;
@@ -164,12 +212,25 @@ export function toSubAgentTool(
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Extract the best available auth token from OBO headers. */
+function extractOboToken(headers: Record<string, string>): string | undefined {
+  return (
+    headers['x-forwarded-access-token'] ||
+    (headers['authorization'] ?? '').replace(/^Bearer\s+/i, '') ||
+    undefined
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
 /** Run the agent loop and return the final text. */
 export async function runViaSDK(params: RunParams): Promise<string> {
-  initDatabricksClient();
+  initDatabricksClient(extractOboToken(params.oboHeaders));
 
   const functionTools = params.tools.map((t) =>
     toFunctionTool(t, params.app, params.oboHeaders, params.apiPrefix),
@@ -210,7 +271,7 @@ export async function runViaSDK(params: RunParams): Promise<string> {
 
 /** Stream the agent loop, yielding text chunks. */
 export async function* streamViaSDK(params: RunParams): AsyncGenerator<string> {
-  initDatabricksClient();
+  initDatabricksClient(extractOboToken(params.oboHeaders));
 
   const functionTools = params.tools.map((t) =>
     toFunctionTool(t, params.app, params.oboHeaders, params.apiPrefix),
