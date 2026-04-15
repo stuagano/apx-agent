@@ -1,6 +1,6 @@
 {
   "name": "appkit-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AppKit plugins for building AI agents on Databricks Apps — typed tools, A2A discovery, MCP server, dev UI",
   "type": "module",
   "main": "dist/index.js",
