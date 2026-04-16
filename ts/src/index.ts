@@ -80,3 +80,31 @@ export type {
   RunEvalOptions,
   EvalSummary,
 } from './eval/index.js';
+
+// Connectors — domain tool factories for Lakebase, Vector Search, Doc Parser
+export {
+  parseEntitySchema,
+  resolveHost,
+  buildSqlParams,
+  dbFetch,
+  createLakebaseQueryTool,
+  createLakebaseMutateTool,
+  createLakebaseSchemaInspectTool,
+  createVSQueryTool,
+  createVSUpsertTool,
+  createVSDeleteTool,
+  createDocUploadTool,
+  createDocChunkTool,
+  createDocExtractEntitiesTool,
+  chunkText,
+} from './connectors/index.js';
+export type {
+  ConnectorConfig,
+  EntitySchema,
+  EntityDef,
+  EdgeDef,
+  FieldDef,
+  ExtractionConfig,
+  FitnessConfig,
+  EvolutionConfig,
+} from './connectors/index.js';

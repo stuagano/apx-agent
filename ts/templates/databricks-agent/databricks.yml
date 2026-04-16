@@ -1,0 +1,37 @@
+bundle:
+  name: {{AGENT_NAME}}
+
+# Only sync bundle + app config — no package.json = no npm install
+sync:
+  include:
+    - dist/app.cjs
+    - app.yaml
+  exclude:
+    - node_modules
+    - src
+    - "*.ts"
+    - "*.map"
+    - package.json
+    - package-lock.json
+    - tsconfig.json
+    - esbuild.config.mjs
+    - deploy.sh
+    - .gitignore
+
+resources:
+  apps:
+    {{AGENT_NAME}}:
+      name: {{AGENT_NAME}}
+      description: "{{AGENT_DESCRIPTION}}"
+      source_code_path: .
+
+      permissions:
+        - user_name: ${workspace.current_user.userName}
+          level: CAN_MANAGE
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: {{WORKSPACE_HOST}}

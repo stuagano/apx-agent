@@ -1,5 +1,5 @@
 {
-  "name": "basic-agent-example",
+  "name": "pipeline-agent-example",
   "private": true,
   "type": "module",
   "scripts": {

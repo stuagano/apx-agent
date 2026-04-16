@@ -15,7 +15,7 @@ import {
   createMcpPlugin,
   createDevPlugin,
   defineTool,
-} from '../../src/index.js';
+} from '@databricks/appkit-agent';
 
 // ---------------------------------------------------------------------------
 // Define tools
