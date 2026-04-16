@@ -108,3 +108,21 @@ export type {
   FitnessConfig,
   EvolutionConfig,
 } from './connectors/index.js';
+
+// Evolutionary workflow
+export {
+  EvolutionaryAgent,
+  PopulationStore,
+  paretoDominates,
+  paretoFrontier,
+  selectSurvivors,
+  createHypothesis,
+  compositeFitness,
+} from './workflows/index.js';
+export type {
+  Hypothesis,
+  EvolutionaryConfig,
+  EvolutionState,
+  GenerationResult,
+  PopulationStoreConfig,
+} from './workflows/index.js';
