@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-hub"
+version = "0.1.0"
+description = "Unified catalog and chat interface for agents on Databricks"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    "apx-agent",
+    "databricks-sdk>=0.74.0",
+    "httpx>=0.27.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[tool.uv.sources]
+apx-agent = { path = "../python", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hub"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.apx.agent]
+name = "agent-hub"
+description = "Unified catalog and chat for all workspace agents"
+model = "databricks-meta-llama-3-3-70b-instruct"
