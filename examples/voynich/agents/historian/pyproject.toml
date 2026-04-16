@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "voynich-historian"
+version = "0.1.0"
+description = "Voynich historian agent"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    "apx-agent>=0.16.0",
+    "fastapi>=0.119.0",
+    "pydantic>=2.0",
+    "databricks-sdk>=0.74.0",
+    "httpx>=0.27.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
