@@ -121,13 +121,37 @@ DATABRICKS_WAREHOUSE_ID = "<your-warehouse-id>"
 ### 4. Deploy the Workflow
 
 ```bash
-databricks jobs create --json @SCHEMA_AND_WORKFLOW.sql
+make deploy-workflow    # databricks jobs create --json @voynich_workflow.yml
 ```
 
-Or trigger a single generation batch manually:
+Capture the returned `job_id` and export it so subsequent Makefile targets
+know which job to act on:
 
 ```bash
-# Via the Orchestrator App chat UI
+export VOYNICH_JOB_ID=<id-from-deploy-workflow>
+```
+
+### 5. Trigger the first run
+
+The workflow YAML ships with `pause_status: PAUSED`, so the schedule never
+fires on its own. Kick off the first run manually:
+
+```bash
+make run-workflow       # databricks jobs run-now --job-id $VOYNICH_JOB_ID
+make list-runs          # see run_id + state
+export VOYNICH_RUN_ID=<run-id-from-list-runs>
+make get-run            # poll run state / per-task status
+```
+
+Once you're happy, flip the schedule on so it runs on cron:
+
+```bash
+make unpause-workflow
+```
+
+Or trigger a single generation batch manually via the Orchestrator:
+
+```bash
 # Open: https://voynich-orchestrator.<workspace>.databricksapps.com/_apx/agent
 # Ask:  "Run 10 generations"
 ```
