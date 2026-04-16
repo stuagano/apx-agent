@@ -1,4 +1,4 @@
-.PHONY: install test lint typecheck clean build deploy-wheel help
+.PHONY: install test lint typecheck clean build deploy-wheel run-workflow list-runs get-run unpause-workflow help
 
 # ── Config ─────────────────────────────────────────────────────────────────
 
@@ -27,6 +27,10 @@ help:
 	@echo "  deploy-agents  Deploy all five agents as Databricks Apps"
 	@echo "  seed           Seed generation 0 via voynich-seed CLI"
 	@echo "  run-batch      Run 10 test generations via voynich-run CLI"
+	@echo "  run-workflow      Trigger a run of the deployed Workflow job (needs VOYNICH_JOB_ID)"
+	@echo "  list-runs         Show recent runs of the Workflow job (needs VOYNICH_JOB_ID)"
+	@echo "  get-run           Fetch state of a specific run (needs VOYNICH_RUN_ID)"
+	@echo "  unpause-workflow  Flip the Workflow schedule from PAUSED to UNPAUSED"
 
 # ── Install ────────────────────────────────────────────────────────────────
 
@@ -109,6 +113,27 @@ deploy-workflow:
 update-workflow:
 	$(DATABRICKS) jobs reset --job-id $$VOYNICH_JOB_ID --json @voynich_workflow.yml
 	@echo "✓ Workflow updated"
+
+# ── Databricks run ─────────────────────────────────────────────────────────
+
+run-workflow:
+	@test -n "$$VOYNICH_JOB_ID" || (echo "ERROR: set VOYNICH_JOB_ID to the deployed job id"; exit 1)
+	$(DATABRICKS) jobs run-now --job-id $$VOYNICH_JOB_ID
+	@echo "✓ Run submitted for job $$VOYNICH_JOB_ID. Track progress in the Databricks Jobs UI or via 'make list-runs'."
+
+list-runs:
+	@test -n "$$VOYNICH_JOB_ID" || (echo "ERROR: set VOYNICH_JOB_ID"; exit 1)
+	$(DATABRICKS) jobs list-runs --job-id $$VOYNICH_JOB_ID --limit 10
+
+get-run:
+	@test -n "$$VOYNICH_RUN_ID" || (echo "ERROR: set VOYNICH_RUN_ID to the run id returned by run-workflow"; exit 1)
+	$(DATABRICKS) jobs get-run $$VOYNICH_RUN_ID
+
+unpause-workflow:
+	@test -n "$$VOYNICH_JOB_ID" || (echo "ERROR: set VOYNICH_JOB_ID"; exit 1)
+	$(DATABRICKS) jobs update --job-id $$VOYNICH_JOB_ID \
+		--json '{"new_settings":{"schedule":{"quartz_cron_expression":"0 0 2 * * ?","timezone_id":"America/Los_Angeles","pause_status":"UNPAUSED"}}}'
+	@echo "✓ Schedule unpaused — job will now run on cron."
 
 # ── Local CLI testing ──────────────────────────────────────────────────────
 
