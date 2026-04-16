@@ -16,38 +16,38 @@
 
 | File | Responsibility |
 |------|----------------|
-| `ts/src/workflows/hypothesis.ts` | `Hypothesis` interface, `createHypothesis()`, `compositeFitness()` |
-| `ts/src/workflows/pareto.ts` | `paretoDominates()`, `paretoFrontier()`, `selectSurvivors()` |
-| `ts/src/workflows/population.ts` | `PopulationStore` class — SQL batching, caching, MERGE upsert |
-| `ts/src/workflows/evolutionary.ts` | `EvolutionaryAgent` implements Runnable — generation loop, agent calls, pause/resume |
-| `ts/src/connectors/evolution-tools.ts` | `defineTool()` factories for conversational tools (status, pause, resume, escalate) |
-| `ts/src/workflows/index.ts` | Add new exports |
-| `ts/src/connectors/index.ts` | Add evolution-tools exports |
-| `ts/src/index.ts` | Add new package-level exports |
-| `ts/tests/hypothesis.test.ts` | Tests for hypothesis creation and composite fitness |
-| `ts/tests/pareto.test.ts` | Tests for Pareto dominance, frontier, survivor selection |
-| `ts/tests/population.test.ts` | Tests for PopulationStore (mocked SQL API) |
-| `ts/tests/evolutionary.test.ts` | Tests for EvolutionaryAgent loop, convergence, pause/resume |
-| `ts/tests/evolution-tools.test.ts` | Tests for conversational tool factories |
-| `ts/examples/voynich/voynich-config.ts` | Shared config: fitness weights, Pareto objectives, cipher types |
-| `ts/examples/voynich/orchestrator/app.ts` | EvolutionaryAgent + PopulationStore wiring |
-| `ts/examples/voynich/decipherer/app.ts` | Mutation agent: mutate cipher params |
-| `ts/examples/voynich/historian/app.ts` | RAG fitness scorer using VS connector |
-| `ts/examples/voynich/critic/app.ts` | Adversarial falsifier |
-| `ts/examples/voynich/judge/app.ts` | Agent eval: score reasoning quality |
+| `typescript/src/workflows/hypothesis.ts` | `Hypothesis` interface, `createHypothesis()`, `compositeFitness()` |
+| `typescript/src/workflows/pareto.ts` | `paretoDominates()`, `paretoFrontier()`, `selectSurvivors()` |
+| `typescript/src/workflows/population.ts` | `PopulationStore` class — SQL batching, caching, MERGE upsert |
+| `typescript/src/workflows/evolutionary.ts` | `EvolutionaryAgent` implements Runnable — generation loop, agent calls, pause/resume |
+| `typescript/src/connectors/evolution-tools.ts` | `defineTool()` factories for conversational tools (status, pause, resume, escalate) |
+| `typescript/src/workflows/index.ts` | Add new exports |
+| `typescript/src/connectors/index.ts` | Add evolution-tools exports |
+| `typescript/src/index.ts` | Add new package-level exports |
+| `typescript/tests/hypothesis.test.ts` | Tests for hypothesis creation and composite fitness |
+| `typescript/tests/pareto.test.ts` | Tests for Pareto dominance, frontier, survivor selection |
+| `typescript/tests/population.test.ts` | Tests for PopulationStore (mocked SQL API) |
+| `typescript/tests/evolutionary.test.ts` | Tests for EvolutionaryAgent loop, convergence, pause/resume |
+| `typescript/tests/evolution-tools.test.ts` | Tests for conversational tool factories |
+| `typescript/examples/voynich/voynich-config.ts` | Shared config: fitness weights, Pareto objectives, cipher types |
+| `typescript/examples/voynich/orchestrator/app.ts` | EvolutionaryAgent + PopulationStore wiring |
+| `typescript/examples/voynich/decipherer/app.ts` | Mutation agent: mutate cipher params |
+| `typescript/examples/voynich/historian/app.ts` | RAG fitness scorer using VS connector |
+| `typescript/examples/voynich/critic/app.ts` | Adversarial falsifier |
+| `typescript/examples/voynich/judge/app.ts` | Agent eval: score reasoning quality |
 
 ---
 
 ### Task 1: Hypothesis Type
 
 **Files:**
-- Create: `ts/src/workflows/hypothesis.ts`
-- Create: `ts/tests/hypothesis.test.ts`
+- Create: `typescript/src/workflows/hypothesis.ts`
+- Create: `typescript/tests/hypothesis.test.ts`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```typescript
-// ts/tests/hypothesis.test.ts
+// typescript/tests/hypothesis.test.ts
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -143,7 +143,7 @@ Expected: FAIL — module does not exist
 - [ ] **Step 3: Implement hypothesis.ts**
 
 ```typescript
-// ts/src/workflows/hypothesis.ts
+// typescript/src/workflows/hypothesis.ts
 
 import { randomUUID } from 'node:crypto';
 
@@ -221,13 +221,13 @@ git commit -m "feat(evolutionary): add Hypothesis type and compositeFitness"
 ### Task 2: Pareto Selection
 
 **Files:**
-- Create: `ts/src/workflows/pareto.ts`
-- Create: `ts/tests/pareto.test.ts`
+- Create: `typescript/src/workflows/pareto.ts`
+- Create: `typescript/tests/pareto.test.ts`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```typescript
-// ts/tests/pareto.test.ts
+// typescript/tests/pareto.test.ts
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -359,7 +359,7 @@ Expected: FAIL — module does not exist
 - [ ] **Step 3: Implement pareto.ts**
 
 ```typescript
-// ts/src/workflows/pareto.ts
+// typescript/src/workflows/pareto.ts
 
 import type { Hypothesis } from './hypothesis.js';
 import { compositeFitness } from './hypothesis.js';
@@ -448,13 +448,13 @@ git commit -m "feat(evolutionary): add Pareto dominance, frontier, and survivor 
 ### Task 3: PopulationStore
 
 **Files:**
-- Create: `ts/src/workflows/population.ts`
-- Create: `ts/tests/population.test.ts`
+- Create: `typescript/src/workflows/population.ts`
+- Create: `typescript/tests/population.test.ts`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```typescript
-// ts/tests/population.test.ts
+// typescript/tests/population.test.ts
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PopulationStore } from '../src/workflows/population.js';
@@ -669,7 +669,7 @@ Expected: FAIL — module does not exist
 - [ ] **Step 3: Implement population.ts**
 
 ```typescript
-// ts/src/workflows/population.ts
+// typescript/src/workflows/population.ts
 
 import type { Hypothesis } from './hypothesis.js';
 import { compositeFitness } from './hypothesis.js';
@@ -902,13 +902,13 @@ git commit -m "feat(evolutionary): add PopulationStore with SQL batching and cac
 ### Task 4: EvolutionaryAgent
 
 **Files:**
-- Create: `ts/src/workflows/evolutionary.ts`
-- Create: `ts/tests/evolutionary.test.ts`
+- Create: `typescript/src/workflows/evolutionary.ts`
+- Create: `typescript/tests/evolutionary.test.ts`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```typescript
-// ts/tests/evolutionary.test.ts
+// typescript/tests/evolutionary.test.ts
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EvolutionaryAgent } from '../src/workflows/evolutionary.js';
@@ -1108,7 +1108,7 @@ Expected: FAIL — module does not exist
 - [ ] **Step 3: Implement evolutionary.ts**
 
 ```typescript
-// ts/src/workflows/evolutionary.ts
+// typescript/src/workflows/evolutionary.ts
 
 import type { AgentTool } from '../agent/tools.js';
 import type { Message, Runnable } from './types.js';
@@ -1524,12 +1524,12 @@ git commit -m "feat(evolutionary): add EvolutionaryAgent with background loop an
 ### Task 5: Package Wiring
 
 **Files:**
-- Modify: `ts/src/workflows/index.ts`
-- Modify: `ts/src/index.ts`
+- Modify: `typescript/src/workflows/index.ts`
+- Modify: `typescript/src/index.ts`
 
 - [ ] **Step 1: Add evolutionary exports to workflows/index.ts**
 
-Add to the end of `ts/src/workflows/index.ts`:
+Add to the end of `typescript/src/workflows/index.ts`:
 
 ```typescript
 // Evolutionary workflow — population management across generations
@@ -1544,7 +1544,7 @@ export type { Hypothesis } from './hypothesis.js';
 
 - [ ] **Step 2: Add evolutionary exports to src/index.ts**
 
-Add to the end of `ts/src/index.ts` (after the connectors block):
+Add to the end of `typescript/src/index.ts` (after the connectors block):
 
 ```typescript
 // Evolutionary workflow
@@ -1589,12 +1589,12 @@ git commit -m "feat(evolutionary): wire exports into package entry point"
 ### Task 6: Voynich Shared Config
 
 **Files:**
-- Create: `ts/examples/voynich/voynich-config.ts`
+- Create: `typescript/examples/voynich/voynich-config.ts`
 
 - [ ] **Step 1: Create the shared config**
 
 ```typescript
-// ts/examples/voynich/voynich-config.ts
+// typescript/examples/voynich/voynich-config.ts
 
 /**
  * Voynich manuscript evolutionary decipherment — shared config.
@@ -1686,12 +1686,12 @@ git commit -m "feat(voynich): add shared config — fitness weights, indexes, co
 ### Task 7: Voynich Orchestrator App
 
 **Files:**
-- Create: `ts/examples/voynich/orchestrator/app.ts`
+- Create: `typescript/examples/voynich/orchestrator/app.ts`
 
 - [ ] **Step 1: Create the orchestrator**
 
 ```typescript
-// ts/examples/voynich/orchestrator/app.ts
+// typescript/examples/voynich/orchestrator/app.ts
 
 /**
  * Voynich Orchestrator — evolutionary loop controller.
@@ -1799,12 +1799,12 @@ git commit -m "feat(voynich): add Orchestrator app — EvolutionaryAgent control
 ### Task 8: Voynich Decipherer App
 
 **Files:**
-- Create: `ts/examples/voynich/decipherer/app.ts`
+- Create: `typescript/examples/voynich/decipherer/app.ts`
 
 - [ ] **Step 1: Create the decipherer (mutation agent)**
 
 ```typescript
-// ts/examples/voynich/decipherer/app.ts
+// typescript/examples/voynich/decipherer/app.ts
 
 /**
  * Voynich Decipherer — hypothesis mutation agent.
@@ -1926,12 +1926,12 @@ git commit -m "feat(voynich): add Decipherer app — hypothesis mutation agent"
 ### Task 9: Voynich Historian App
 
 **Files:**
-- Create: `ts/examples/voynich/historian/app.ts`
+- Create: `typescript/examples/voynich/historian/app.ts`
 
 - [ ] **Step 1: Create the historian (RAG fitness scorer)**
 
 ```typescript
-// ts/examples/voynich/historian/app.ts
+// typescript/examples/voynich/historian/app.ts
 
 /**
  * Voynich Historian — medieval RAG fitness scorer.
@@ -2027,12 +2027,12 @@ git commit -m "feat(voynich): add Historian app — medieval RAG fitness scorer"
 ### Task 10: Voynich Critic App
 
 **Files:**
-- Create: `ts/examples/voynich/critic/app.ts`
+- Create: `typescript/examples/voynich/critic/app.ts`
 
 - [ ] **Step 1: Create the critic (adversarial falsifier)**
 
 ```typescript
-// ts/examples/voynich/critic/app.ts
+// typescript/examples/voynich/critic/app.ts
 
 /**
  * Voynich Critic — adversarial falsifier.
@@ -2163,12 +2163,12 @@ git commit -m "feat(voynich): add Critic app — adversarial falsifier"
 ### Task 11: Voynich Judge App
 
 **Files:**
-- Create: `ts/examples/voynich/judge/app.ts`
+- Create: `typescript/examples/voynich/judge/app.ts`
 
 - [ ] **Step 1: Create the judge (agent eval agent)**
 
 ```typescript
-// ts/examples/voynich/judge/app.ts
+// typescript/examples/voynich/judge/app.ts
 
 /**
  * Voynich Judge — agent eval agent.

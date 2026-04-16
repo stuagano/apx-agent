@@ -16,29 +16,29 @@
 
 | File | Responsibility |
 |------|----------------|
-| `ts/src/connectors/types.ts` | ConnectorConfig, EntitySchema, and all related interfaces. Schema YAML parser. Databricks API helper (`dbFetch`). |
-| `ts/src/connectors/lakebase.ts` | `createLakebaseQueryTool`, `createLakebaseMutateTool`, `createLakebaseSchemaInspectTool` |
-| `ts/src/connectors/vector-search.ts` | `createVSQueryTool`, `createVSUpsertTool`, `createVSDeleteTool` |
-| `ts/src/connectors/doc-parser.ts` | `createDocUploadTool`, `createDocChunkTool`, `createDocExtractEntitiesTool` |
-| `ts/src/connectors/index.ts` | Re-exports from all connector modules |
-| `ts/src/index.ts` | Add connector exports to package entry point |
-| `ts/tests/connectors-types.test.ts` | Tests for types, schema parsing, dbFetch |
-| `ts/tests/connectors-lakebase.test.ts` | Tests for Lakebase tool factories |
-| `ts/tests/connectors-vector-search.test.ts` | Tests for Vector Search tool factories |
-| `ts/tests/connectors-doc-parser.test.ts` | Tests for Doc Parser tool factories |
+| `typescript/src/connectors/types.ts` | ConnectorConfig, EntitySchema, and all related interfaces. Schema YAML parser. Databricks API helper (`dbFetch`). |
+| `typescript/src/connectors/lakebase.ts` | `createLakebaseQueryTool`, `createLakebaseMutateTool`, `createLakebaseSchemaInspectTool` |
+| `typescript/src/connectors/vector-search.ts` | `createVSQueryTool`, `createVSUpsertTool`, `createVSDeleteTool` |
+| `typescript/src/connectors/doc-parser.ts` | `createDocUploadTool`, `createDocChunkTool`, `createDocExtractEntitiesTool` |
+| `typescript/src/connectors/index.ts` | Re-exports from all connector modules |
+| `typescript/src/index.ts` | Add connector exports to package entry point |
+| `typescript/tests/connectors-types.test.ts` | Tests for types, schema parsing, dbFetch |
+| `typescript/tests/connectors-lakebase.test.ts` | Tests for Lakebase tool factories |
+| `typescript/tests/connectors-vector-search.test.ts` | Tests for Vector Search tool factories |
+| `typescript/tests/connectors-doc-parser.test.ts` | Tests for Doc Parser tool factories |
 
 ---
 
 ### Task 1: Shared Types and Databricks API Helper
 
 **Files:**
-- Create: `ts/src/connectors/types.ts`
-- Create: `ts/tests/connectors-types.test.ts`
+- Create: `typescript/src/connectors/types.ts`
+- Create: `typescript/tests/connectors-types.test.ts`
 
 - [ ] **Step 1: Write the failing tests for ConnectorConfig, EntitySchema, and dbFetch**
 
 ```typescript
-// ts/tests/connectors-types.test.ts
+// typescript/tests/connectors-types.test.ts
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
@@ -256,7 +256,7 @@ Expected: FAIL — module `../src/connectors/types.js` does not exist
 - [ ] **Step 3: Implement types.ts**
 
 ```typescript
-// ts/src/connectors/types.ts
+// typescript/src/connectors/types.ts
 
 import { z } from 'zod';
 
@@ -507,13 +507,13 @@ git commit -m "feat(connectors): add shared types, schema parser, and dbFetch he
 ### Task 2: Lakebase Connector
 
 **Files:**
-- Create: `ts/src/connectors/lakebase.ts`
-- Create: `ts/tests/connectors-lakebase.test.ts`
+- Create: `typescript/src/connectors/lakebase.ts`
+- Create: `typescript/tests/connectors-lakebase.test.ts`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```typescript
-// ts/tests/connectors-lakebase.test.ts
+// typescript/tests/connectors-lakebase.test.ts
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { z } from 'zod';
@@ -789,7 +789,7 @@ Expected: FAIL — module `../src/connectors/lakebase.js` does not exist
 - [ ] **Step 3: Implement lakebase.ts**
 
 ```typescript
-// ts/src/connectors/lakebase.ts
+// typescript/src/connectors/lakebase.ts
 
 import { z } from 'zod';
 import { defineTool } from '../agent/tools.js';
@@ -1011,13 +1011,13 @@ git commit -m "feat(connectors): add Lakebase query, mutate, and schema inspect 
 ### Task 3: Vector Search Connector
 
 **Files:**
-- Create: `ts/src/connectors/vector-search.ts`
-- Create: `ts/tests/connectors-vector-search.test.ts`
+- Create: `typescript/src/connectors/vector-search.ts`
+- Create: `typescript/tests/connectors-vector-search.test.ts`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```typescript
-// ts/tests/connectors-vector-search.test.ts
+// typescript/tests/connectors-vector-search.test.ts
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
@@ -1163,7 +1163,7 @@ Expected: FAIL — module does not exist
 - [ ] **Step 3: Implement vector-search.ts**
 
 ```typescript
-// ts/src/connectors/vector-search.ts
+// typescript/src/connectors/vector-search.ts
 
 import { z } from 'zod';
 import { defineTool } from '../agent/tools.js';
@@ -1343,13 +1343,13 @@ git commit -m "feat(connectors): add Vector Search query, upsert, and delete too
 ### Task 4: Doc Parser Connector
 
 **Files:**
-- Create: `ts/src/connectors/doc-parser.ts`
-- Create: `ts/tests/connectors-doc-parser.test.ts`
+- Create: `typescript/src/connectors/doc-parser.ts`
+- Create: `typescript/tests/connectors-doc-parser.test.ts`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```typescript
-// ts/tests/connectors-doc-parser.test.ts
+// typescript/tests/connectors-doc-parser.test.ts
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
@@ -1590,7 +1590,7 @@ Expected: FAIL — module does not exist
 - [ ] **Step 3: Implement doc-parser.ts**
 
 ```typescript
-// ts/src/connectors/doc-parser.ts
+// typescript/src/connectors/doc-parser.ts
 
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
@@ -1820,13 +1820,13 @@ git commit -m "feat(connectors): add doc upload, chunking, and entity extraction
 ### Task 5: Connector Index and Package Exports
 
 **Files:**
-- Create: `ts/src/connectors/index.ts`
-- Modify: `ts/src/index.ts`
+- Create: `typescript/src/connectors/index.ts`
+- Modify: `typescript/src/index.ts`
 
 - [ ] **Step 1: Create the connector barrel export**
 
 ```typescript
-// ts/src/connectors/index.ts
+// typescript/src/connectors/index.ts
 
 // Types
 export type {
@@ -1869,7 +1869,7 @@ export {
 
 - [ ] **Step 2: Add connector exports to the package entry point**
 
-Add the following to the end of `ts/src/index.ts`, before any closing comments:
+Add the following to the end of `typescript/src/index.ts`, before any closing comments:
 
 ```typescript
 // Connectors — domain tool factories for Lakebase, Vector Search, Doc Parser

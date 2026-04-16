@@ -77,7 +77,7 @@ Build domain connectors for the apx-agent AppKit TypeScript scaffold to cover Gu
 
 ## Generic Connectors (appkit-agent)
 
-Three new modules in `appkit-agent/ts/src/connectors/`. Each exports `defineTool()` factories following the existing pattern. Connectors are generic and reusable — Guidepoint-specific entity types come from schema.yaml, not hardcoded.
+Three new modules in `appkit-agent/typescript/src/connectors/`. Each exports `defineTool()` factories following the existing pattern. Connectors are generic and reusable — Guidepoint-specific entity types come from schema.yaml, not hardcoded.
 
 ### Lakebase Connector (`connectors/lakebase.ts`)
 
@@ -248,7 +248,7 @@ interface EvolutionConfig {
 
 ### Module Exports
 
-New exports added to `appkit-agent/ts/src/index.ts`:
+New exports added to `appkit-agent/typescript/src/index.ts`:
 
 ```typescript
 // Connectors — domain tool factories
