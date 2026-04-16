@@ -1,0 +1,200 @@
+# voynich_workflow.yml
+# Deploy with: databricks jobs create --json @voynich_workflow.yml
+# Update with: databricks jobs reset --job-id <id> --json @voynich_workflow.yml
+#
+# Prereqs:
+#   1. Run notebooks/01_load_corpus.py
+#   2. Run notebooks/02_build_indexes.py
+#   3. Deploy all five agents as Databricks Apps
+#   4. Set the env vars below with actual values
+
+name: voynich-evolutionary-search
+description: >
+  Evolutionary cryptanalysis loop for Voynich manuscript decipherment.
+  Runs multi-agent hypothesis evaluation across 2000 generations.
+
+# Pause by default — trigger manually for first run, then schedule as needed
+schedule:
+  quartz_cron_expression: "0 0 2 * * ?"
+  timezone_id: "America/Los_Angeles"
+  pause_status: PAUSED
+
+# Tags for cost attribution
+tags:
+  project: voynich
+  env: production
+  team: field-engineering
+
+# Email notifications
+email_notifications:
+  on_start:   []
+  on_success: ["stuagano@databricks.com"]
+  on_failure: ["stuagano@databricks.com"]
+
+# Shared cluster config — reused across tasks
+job_clusters:
+  - job_cluster_key: cpu_cluster
+    new_cluster:
+      spark_version: "15.4.x-scala2.12"
+      node_type_id:  "m5.2xlarge"
+      num_workers:   4
+      autoscale:
+        min_workers: 2
+        max_workers: 8
+      spark_conf:
+        spark.databricks.delta.preview.enabled:       "true"
+        spark.databricks.delta.optimizeWrite.enabled: "true"
+        spark.databricks.delta.autoCompact.enabled:   "true"
+      spark_env_vars:
+        VOYNICH_POPULATION_TABLE: "voynich.evolution.population"
+        VOYNICH_REVIEW_TABLE:     "voynich.evolution.review_queue"
+        MLFLOW_EXPERIMENT:        "/voynich/evolutionary_search"
+        # Agent URLs — set these to your actual Databricks Apps URLs
+        DECIPHERER_AGENT_URL:  "https://voynich-decipherer.{{workspace_url}}.databricksapps.com"
+        HISTORIAN_AGENT_URL:   "https://voynich-historian.{{workspace_url}}.databricksapps.com"
+        CRITIC_AGENT_URL:      "https://voynich-critic.{{workspace_url}}.databricksapps.com"
+        JUDGE_AGENT_URL:       "https://voynich-judge.{{workspace_url}}.databricksapps.com"
+        FITNESS_AGENT_URLS:    "https://voynich-historian.{{workspace_url}}.databricksapps.com,https://voynich-critic.{{workspace_url}}.databricksapps.com"
+        # Infrastructure
+        DATABRICKS_WAREHOUSE_ID: "{{warehouse_id}}"
+        # Loop config
+        POPULATION_SIZE:       "500"
+        MUTATION_BATCH:        "50"
+        MAX_GENERATIONS:       "2000"
+        ESCALATION_THRESHOLD:  "0.85"
+
+# Wheel location (built by CI and uploaded to DBFS)
+libraries_default:
+  - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TASKS
+# ─────────────────────────────────────────────────────────────────────────────
+
+tasks:
+
+  # ── Task 1: Seed generation 0 ──────────────────────────────────────────────
+  - task_key: seed_population
+    description: "Generate initial population (generation 0) via Decipherer agent"
+    job_cluster_key: cpu_cluster
+    python_wheel_task:
+      package_name:  "apx-agent-loop"
+      entry_point:   "voynich-seed"
+      named_parameters:
+        n: "500"
+    libraries:
+      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+    timeout_seconds: 1800
+    max_retries: 1
+    retry_on_timeout: false
+
+  # ── Task 2: Generation batch 1 (gens 1–500) ───────────────────────────────
+  - task_key: run_batch_1
+    description: "Evolutionary generations 1–500"
+    depends_on:
+      - task_key: seed_population
+    job_cluster_key: cpu_cluster
+    python_wheel_task:
+      package_name:  "apx-agent-loop"
+      entry_point:   "voynich-run"
+      named_parameters:
+        n_generations:   "500"
+        from_generation: "1"
+    libraries:
+      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+    timeout_seconds: 64800   # 18 hours
+    max_retries: 1
+
+  # ── Task 3: Export checkpoint after batch 1 ────────────────────────────────
+  - task_key: export_checkpoint_1
+    description: "Export top candidates after batch 1 to DBFS"
+    depends_on:
+      - task_key: run_batch_1
+    job_cluster_key: cpu_cluster
+    python_wheel_task:
+      package_name:  "apx-agent-loop"
+      entry_point:   "voynich-export"
+      named_parameters:
+        n:           "50"
+        output_path: "/dbfs/voynich/exports/checkpoint_gen500.json"
+    libraries:
+      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+    timeout_seconds: 600
+
+  # ── Task 4: Human review gate ─────────────────────────────────────────────
+  - task_key: human_review_gate
+    description: >
+      Pause for researcher review. Open the Orchestrator App, review flagged
+      candidates, inject any constraints, then approve this task manually
+      by running the final cell in the review gate notebook.
+    depends_on:
+      - task_key: export_checkpoint_1
+    job_cluster_key: cpu_cluster
+    notebook_task:
+      notebook_path: "/voynich/notebooks/03_review_gate"
+      base_parameters:
+        review_url:     "https://voynich-orchestrator.{{workspace_url}}.databricksapps.com/_apx/agent"
+        mlflow_url:     "https://{{workspace_url}}/#mlflow/experiments/voynich/evolutionary_search"
+        export_path:    "/dbfs/voynich/exports/checkpoint_gen500.json"
+    timeout_seconds: 86400   # 24 hour window for human review
+
+  # ── Task 5: Optimize Delta table ──────────────────────────────────────────
+  - task_key: vacuum_after_batch_1
+    description: "OPTIMIZE + VACUUM population table before batch 2"
+    depends_on:
+      - task_key: human_review_gate
+    job_cluster_key: cpu_cluster
+    python_wheel_task:
+      package_name:  "apx-agent-loop"
+      entry_point:   "voynich-vacuum"
+      named_parameters:
+        keep_generations: "500"
+    libraries:
+      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+    timeout_seconds: 1800
+
+  # ── Task 6: Generation batch 2 (gens 501–2000) ────────────────────────────
+  - task_key: run_batch_2
+    description: "Evolutionary generations 501–2000 (with researcher constraints applied)"
+    depends_on:
+      - task_key: vacuum_after_batch_1
+    job_cluster_key: cpu_cluster
+    python_wheel_task:
+      package_name:  "apx-agent-loop"
+      entry_point:   "voynich-run"
+      named_parameters:
+        n_generations:   "1500"
+        from_generation: "501"
+    libraries:
+      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+    timeout_seconds: 172800   # 48 hours
+    max_retries: 2
+
+  # ── Task 7: Final export ───────────────────────────────────────────────────
+  - task_key: export_final
+    description: "Export final top candidates for publication"
+    depends_on:
+      - task_key: run_batch_2
+    job_cluster_key: cpu_cluster
+    python_wheel_task:
+      package_name:  "apx-agent-loop"
+      entry_point:   "voynich-export"
+      named_parameters:
+        n:           "100"
+        output_path: "/dbfs/voynich/exports/final_top100.json"
+    libraries:
+      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+    timeout_seconds: 600
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB-LEVEL PARAMETERS (overridable at trigger time)
+# ─────────────────────────────────────────────────────────────────────────────
+parameters:
+  - name: n_generations_batch_1
+    default: "500"
+  - name: n_generations_batch_2
+    default: "1500"
+  - name: population_size
+    default: "500"
+  - name: escalation_threshold
+    default: "0.85"
