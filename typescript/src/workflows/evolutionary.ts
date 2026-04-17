@@ -18,6 +18,7 @@
 import { z } from 'zod';
 import type { AgentTool } from '../agent/tools.js';
 import { defineTool } from '../agent/tools.js';
+import { getRequestContext } from '../agent/request-context.js';
 import type { Hypothesis } from './hypothesis.js';
 import { compositeFitness } from './hypothesis.js';
 import { paretoFrontier, selectSurvivors } from './pareto.js';
@@ -358,9 +359,19 @@ export class EvolutionaryAgent implements Runnable {
       ],
     };
 
+    const ctx = getRequestContext();
+    const oboToken = ctx
+      ? (ctx.oboHeaders['x-forwarded-access-token'] ||
+         (ctx.oboHeaders['authorization'] ?? '').replace(/^Bearer\s+/i, ''))
+      : undefined;
+    const callToken = oboToken || process.env.DATABRICKS_TOKEN;
+
+    const callHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (callToken) callHeaders.Authorization = `Bearer ${callToken}`;
+
     const response = await fetch(`${url}/invocations`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: callHeaders,
       body: JSON.stringify(body),
     });
 
