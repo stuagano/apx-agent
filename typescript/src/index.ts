@@ -95,6 +95,7 @@ export type { CatalogToolOptions, UcFunctionToolOptions } from './catalog.js';
 export {
   parseEntitySchema,
   resolveHost,
+  resolveToken,
   buildSqlParams,
   dbFetch,
   createLakebaseQueryTool,

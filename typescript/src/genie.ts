@@ -13,8 +13,7 @@
 import { z } from 'zod';
 import { defineTool } from './agent/tools.js';
 import type { AgentTool } from './agent/tools.js';
-import { resolveHost, dbFetch } from './connectors/types.js';
-import { getRequestContext } from './agent/request-context.js';
+import { resolveHost, resolveToken, dbFetch } from './connectors/types.js';
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -30,30 +29,6 @@ interface GenieMessageResponse {
   attachments?: Array<{
     text?: { content?: string };
   }>;
-}
-
-// ---------------------------------------------------------------------------
-// Token resolution
-// ---------------------------------------------------------------------------
-
-function resolveToken(oboHeaders?: Record<string, string>): string {
-  // 1. Explicit opts (for manual use / testing)
-  if (oboHeaders) {
-    const auth = oboHeaders['authorization'] ?? oboHeaders['Authorization'];
-    if (auth?.startsWith('Bearer ')) return auth.slice(7);
-  }
-  // 2. Per-request context (set by runner during tool dispatch — automatic OBO forwarding)
-  const ctx = getRequestContext();
-  if (ctx) {
-    const token =
-      ctx.oboHeaders['x-forwarded-access-token'] ||
-      (ctx.oboHeaders['authorization'] ?? '').replace(/^Bearer\s+/i, '');
-    if (token) return token;
-  }
-  // 3. Env var fallback for local dev
-  const envToken = process.env.DATABRICKS_TOKEN;
-  if (envToken) return envToken;
-  throw new Error('No Databricks token: pass oboHeaders, set DATABRICKS_TOKEN, or call from within a request context');
 }
 
 // ---------------------------------------------------------------------------

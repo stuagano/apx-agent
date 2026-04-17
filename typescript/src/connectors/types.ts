@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { getRequestContext } from '../agent/request-context.js';
 
 export interface FieldDef {
   name: string;
@@ -119,6 +120,40 @@ const entitySchemaValidator = z.object({
 
 export function parseEntitySchema(raw: unknown): EntitySchema {
   return entitySchemaValidator.parse(raw);
+}
+
+/**
+ * Resolve a Databricks bearer token for an outbound API call.
+ *
+ * Priority order — checked at call time so per-request OBO tokens are
+ * always used when available, not captured at construction time:
+ *   1. Explicit `oboHeaders` argument (e.g. passed from the incoming request)
+ *   2. `AsyncLocalStorage` request context — set by the agent framework for
+ *      every tool handler and sub-agent call; reads `x-forwarded-access-token`
+ *      or `authorization` from the user's OBO headers
+ *   3. `DATABRICKS_TOKEN` env var — local dev or service-to-service fallback
+ *
+ * @throws if no token is available through any path
+ */
+export function resolveToken(oboHeaders?: Record<string, string>): string {
+  if (oboHeaders) {
+    const auth = oboHeaders['authorization'] ?? oboHeaders['Authorization'];
+    if (auth?.startsWith('Bearer ')) return auth.slice(7);
+    const xfat = oboHeaders['x-forwarded-access-token'];
+    if (xfat) return xfat;
+  }
+  const ctx = getRequestContext();
+  if (ctx) {
+    const token =
+      ctx.oboHeaders['x-forwarded-access-token'] ||
+      (ctx.oboHeaders['authorization'] ?? '').replace(/^Bearer\s+/i, '');
+    if (token) return token;
+  }
+  const envToken = process.env.DATABRICKS_TOKEN;
+  if (envToken) return envToken;
+  throw new Error(
+    'No Databricks token available. Pass oboHeaders, run within a request context, or set DATABRICKS_TOKEN.',
+  );
 }
 
 export function resolveHost(host?: string): string {
