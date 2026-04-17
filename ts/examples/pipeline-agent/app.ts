@@ -19,9 +19,9 @@ import {
   createDiscoveryPlugin,
   createMcpPlugin,
   SequentialAgent,
-} from '../../src/index.js';
-import type { Runnable, Message } from '../../src/workflows/types.js';
-import { AgentState } from '../../src/workflows/state.js';
+  AgentState,
+} from '@databricks/appkit-agent';
+import type { Runnable, Message } from '@databricks/appkit-agent';
 
 // ---------------------------------------------------------------------------
 // Step agents — each has an output_key so its result is stored in state

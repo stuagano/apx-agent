@@ -1,6 +1,6 @@
 {
   "name": "appkit-agent",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "AppKit plugins for building AI agents on Databricks Apps — typed tools, A2A discovery, MCP server, dev UI",
   "type": "module",
   "main": "dist/index.js",
@@ -32,15 +32,12 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/agents": "^0.8.0",
-    "openai": "^6.26.0",
     "zod": "^4.0.0",
     "zod-to-json-schema": "^3.25.0"
   },
   "devDependencies": {
     "@databricks/appkit": "^0.21.0",
     "@types/express": "^5.0.6",
-    "light-my-request": "^6.0.0",
     "tsdown": "^0.20.0",
     "tsx": "^4.20.0",
     "typescript": "~5.9.0",

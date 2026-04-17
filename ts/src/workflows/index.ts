@@ -28,3 +28,12 @@ export {
 } from './session.js';
 export type { SessionStore, SessionSnapshot } from './session.js';
 export type { Message, Runnable } from './types.js';
+
+// Evolutionary workflow — population management across generations
+export { EvolutionaryAgent } from './evolutionary.js';
+export type { EvolutionaryConfig, EvolutionState, GenerationResult } from './evolutionary.js';
+export { PopulationStore } from './population.js';
+export type { PopulationStoreConfig } from './population.js';
+export { paretoDominates, paretoFrontier, selectSurvivors } from './pareto.js';
+export { createHypothesis, compositeFitness } from './hypothesis.js';
+export type { Hypothesis } from './hypothesis.js';
