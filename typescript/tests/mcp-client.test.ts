@@ -55,6 +55,7 @@ import {
   genieSpaceMcpUrl,
   ucFunctionsMcpUrl,
 } from '../src/agent/mcp-client.js';
+import { runWithContext } from '../src/agent/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -222,6 +223,35 @@ describe('discoverMcpTools', () => {
     const [, transportOptions] = MockTransport.mock.calls[0];
     const headers = transportOptions.requestInit?.headers ?? {};
     expect(headers.Authorization).toBeUndefined();
+  });
+
+  it('uses OBO token from request context in handler call', async () => {
+    mockListTools.mockResolvedValue({ tools: [makeToolDef('my_tool')] });
+    mockCallTool.mockResolvedValue(makeTextResult('ok'));
+
+    const [tool] = await discoverMcpTools(MCP_URL);
+    MockTransport.mockClear();
+
+    await runWithContext(
+      { oboHeaders: { 'x-forwarded-access-token': 'obo-token-123' } },
+      () => tool.handler({}),
+    );
+
+    const [, callOptions] = MockTransport.mock.calls[0];
+    expect(callOptions.requestInit.headers.Authorization).toBe('Bearer obo-token-123');
+  });
+
+  it('falls back to static auth token in handler when no request context', async () => {
+    mockListTools.mockResolvedValue({ tools: [makeToolDef('my_tool')] });
+    mockCallTool.mockResolvedValue(makeTextResult('ok'));
+
+    const [tool] = await discoverMcpTools(MCP_URL, { token: 'static-token' });
+    MockTransport.mockClear();
+
+    await tool.handler({});
+
+    const [, callOptions] = MockTransport.mock.calls[0];
+    expect(callOptions.requestInit.headers.Authorization).toBe('Bearer static-token');
   });
 
   it('throws a descriptive error when connect fails', async () => {

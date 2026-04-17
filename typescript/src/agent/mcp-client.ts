@@ -23,6 +23,7 @@
 
 import { z } from 'zod';
 import type { AgentTool } from './tools.js';
+import { getRequestContext } from './request-context.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -155,9 +156,10 @@ export async function discoverMcpTools(url: string, auth?: McpAuthOptions): Prom
     '@modelcontextprotocol/sdk/client/streamableHttp.js'
   );
 
-  // Build request init with optional auth header
-  const requestInit: RequestInit = auth
-    ? { headers: { Authorization: `Bearer ${auth.token}` } }
+  // Build request init for discovery — fall back to DATABRICKS_TOKEN env var
+  const discoveryToken = auth?.token ?? process.env.DATABRICKS_TOKEN;
+  const requestInit: RequestInit = discoveryToken
+    ? { headers: { Authorization: `Bearer ${discoveryToken}` } }
     : {};
 
   // Connect to list tools
@@ -206,7 +208,18 @@ export async function discoverMcpTools(url: string, auth?: McpAuthOptions): Prom
           { capabilities: {} },
         );
 
-        const callTransport = new StreamableHTTPClientTransport(new URL(url), { requestInit });
+        // Resolve OBO token at call time: request context → static auth → env var
+        const ctx = getRequestContext();
+        const oboToken = ctx
+          ? (ctx.oboHeaders['x-forwarded-access-token'] ||
+             (ctx.oboHeaders['authorization'] ?? '').replace(/^Bearer\s+/i, ''))
+          : undefined;
+        const callToken = oboToken || auth?.token || process.env.DATABRICKS_TOKEN;
+        const callRequestInit: RequestInit = callToken
+          ? { headers: { Authorization: `Bearer ${callToken}` } }
+          : {};
+
+        const callTransport = new StreamableHTTPClientTransport(new URL(url), { requestInit: callRequestInit });
 
         try {
           await callClient.connect(callTransport);
