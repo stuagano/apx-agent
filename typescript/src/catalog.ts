@@ -120,7 +120,7 @@ export function catalogTool(catalog: string, schema: string, opts: CatalogToolOp
     parameters: z.object({}),
     handler: async () => {
       const host = resolveHost(opts.host);
-      const token = resolveToken(opts.oboHeaders);
+      const token = await resolveToken(opts.oboHeaders);
       const data = await dbFetch<UcTableListResponse>(
         `${host}/api/2.1/unity-catalog/tables?catalog_name=${encodeURIComponent(catalog)}&schema_name=${encodeURIComponent(schema)}`,
         { token, method: 'GET' },
@@ -161,7 +161,7 @@ export function lineageTool(opts: CatalogToolOptions = {}): AgentTool {
     }),
     handler: async ({ table_name }) => {
       const host = resolveHost(opts.host);
-      const token = resolveToken(opts.oboHeaders);
+      const token = await resolveToken(opts.oboHeaders);
       const data = await dbFetch<UcLineageResponse>(
         `${host}/api/2.1/unity-catalog/lineage-tracking/table-lineage?table_name=${encodeURIComponent(table_name)}`,
         { token, method: 'GET' },
@@ -205,7 +205,7 @@ export function schemaTool(opts: CatalogToolOptions = {}): AgentTool {
     }),
     handler: async ({ table_name }) => {
       const host = resolveHost(opts.host);
-      const token = resolveToken(opts.oboHeaders);
+      const token = await resolveToken(opts.oboHeaders);
       const data = await dbFetch<UcTableDetailResponse>(
         `${host}/api/2.1/unity-catalog/tables/${encodeURIComponent(table_name)}`,
         { token, method: 'GET' },
@@ -315,7 +315,7 @@ export function ucFunctionTool(functionName: string, opts: UcFunctionToolOptions
     }),
     handler: async ({ params }) => {
       const host = resolveHost(opts.host);
-      const token = resolveToken(opts.oboHeaders);
+      const token = await resolveToken(opts.oboHeaders);
 
       // Fetch and cache function definition on first call
       if (!funcDef) {

@@ -23,7 +23,7 @@
 
 import { z } from 'zod';
 import type { AgentTool } from './tools.js';
-import { getRequestContext } from './request-context.js';
+import { resolveToken } from '../connectors/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -156,8 +156,13 @@ export async function discoverMcpTools(url: string, auth?: McpAuthOptions): Prom
     '@modelcontextprotocol/sdk/client/streamableHttp.js'
   );
 
-  // Build request init for discovery — fall back to DATABRICKS_TOKEN env var
-  const discoveryToken = auth?.token ?? process.env.DATABRICKS_TOKEN;
+  // Build request init for discovery — use resolveToken for full fallback chain
+  let discoveryToken: string | undefined;
+  try {
+    discoveryToken = await resolveToken(auth ? { authorization: `Bearer ${auth.token}` } : undefined);
+  } catch {
+    // No token available — proceed without auth (may work for unauthenticated MCP servers)
+  }
   const requestInit: RequestInit = discoveryToken
     ? { headers: { Authorization: `Bearer ${discoveryToken}` } }
     : {};
@@ -208,13 +213,14 @@ export async function discoverMcpTools(url: string, auth?: McpAuthOptions): Prom
           { capabilities: {} },
         );
 
-        // Resolve OBO token at call time: request context → static auth → env var
-        const ctx = getRequestContext();
-        const oboToken = ctx
-          ? (ctx.oboHeaders['x-forwarded-access-token'] ||
-             (ctx.oboHeaders['authorization'] ?? '').replace(/^Bearer\s+/i, ''))
-          : undefined;
-        const callToken = oboToken || auth?.token || process.env.DATABRICKS_TOKEN;
+        // Resolve token at call time via the shared resolveToken() — gets OBO,
+        // static PAT, or M2M OAuth depending on context
+        let callToken: string | undefined;
+        try {
+          callToken = await resolveToken(auth ? { authorization: `Bearer ${auth.token}` } : undefined);
+        } catch {
+          // No token — proceed without auth
+        }
         const callRequestInit: RequestInit = callToken
           ? { headers: { Authorization: `Bearer ${callToken}` } }
           : {};

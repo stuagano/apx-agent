@@ -111,7 +111,7 @@ export function genieTool(spaceId: string, opts: GenieToolOptions = {}): AgentTo
     parameters: z.object({ question: z.string().describe('The question to ask Genie') }),
     handler: async ({ question }) => {
       const host = resolveHost(opts.host);
-      const token = resolveToken(opts.oboHeaders);
+      const token = await resolveToken(opts.oboHeaders);
       return queryGenie(host, token, spaceId, question);
     },
   });

@@ -22,16 +22,24 @@ The framework does three things:
 
 1. **Captures** the user's OBO token from every inbound request at the middleware boundary
 2. **Propagates** it through the async context — every tool handler, MCP server call, sub-agent invocation, and workflow step runs inside this context automatically
-3. **Resolves** it at the point of use via a single `resolveToken()` function with a clear fallback chain: per-request context → explicit headers → `DATABRICKS_TOKEN` env var
+3. **Resolves** it at the point of use via a single `resolveToken()` function with a clear fallback chain:
+
+| Priority | Source | When it's used |
+|----------|--------|---------------|
+| 1 | Per-request OBO context | Interactive — user hits the app, their token flows through |
+| 2 | Explicit headers | Caller passes auth directly (testing, manual invocation) |
+| 3 | `DATABRICKS_TOKEN` env var | Local dev with a static PAT |
+| 4 | M2M OAuth (`DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET`) | Background jobs, workflows, evolutionary loops — no user present |
+
+The same `resolveToken()` handles both interactive and background paths. In an interactive request, the user's OBO token takes priority. In a background job or workflow where there's no user, it falls through to M2M client credentials — the standard OAuth 2.0 `client_credentials` grant that Databricks service principals use. The token is cached and refreshed automatically.
 
 ```typescript
-// You write this:
+// Interactive: user's OBO token flows automatically
 const tool = genieTool('abc123');
 
-// The framework handles this:
-//   inbound request → extract X-Forwarded-Access-Token → store in async context
-//   tool handler runs → resolveToken() reads from context → outbound call uses user's token
-//   user's Genie permissions apply, not the service principal's
+// Background job: M2M OAuth kicks in when no user context exists
+// Just set DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET in the environment
+const agent = new EvolutionaryAgent({ mutationAgent: '...' });
 ```
 
 Every code path through the framework — the agent loop, streaming responses, MCP server, HTTP tool routes — wraps tool execution with the request context. Every built-in tool factory, connector, and sub-agent call resolves the token at call time. Custom tools get the same behavior by calling `resolveToken()`.
