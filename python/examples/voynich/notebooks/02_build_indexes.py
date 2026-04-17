@@ -5,10 +5,10 @@
 # MAGIC Creates and populates the Vector Search indexes used by the Historian agent.
 # MAGIC
 # MAGIC **Indexes created:**
-# MAGIC - `voynich.medieval.botanical_index`     — Dioscorides, Hildegard, Apuleius Platonicus
-# MAGIC - `voynich.medieval.astronomical_index`  — Ptolemy, Sacrobosco, Arabic star catalogs
-# MAGIC - `voynich.medieval.pharmaceutical_index`— Antidotarium Nicolai, Circa instans
-# MAGIC - `voynich.medieval.alchemical_index`    — Pseudo-Lull, Jabir corpus
+# MAGIC - `{_CATALOG}.voynich_medieval.botanical_index`     — Dioscorides, Hildegard, Apuleius Platonicus
+# MAGIC - `{_CATALOG}.voynich_medieval.astronomical_index`  — Ptolemy, Sacrobosco, Arabic star catalogs
+# MAGIC - `{_CATALOG}.voynich_medieval.pharmaceutical_index`— Antidotarium Nicolai, Circa instans
+# MAGIC - `{_CATALOG}.voynich_medieval.alchemical_index`    — Pseudo-Lull, Jabir corpus
 # MAGIC
 # MAGIC **Prerequisites:** Notebook 01 must have run. Vector Search endpoint must exist.
 
@@ -18,13 +18,15 @@
 
 # COMMAND ----------
 
+import os
+import json
 from databricks.vector_search.client import VectorSearchClient
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-import json
 
 spark = SparkSession.builder.getOrCreate()
 vsc   = VectorSearchClient()
+_CATALOG = os.getenv("VOYNICH_CATALOG", "serverless_stable_s0v155_catalog")
 
 VECTOR_SEARCH_ENDPOINT = "voynich_vs_endpoint"   # set to your VS endpoint name
 
@@ -110,7 +112,7 @@ PHARMACEUTICAL_PASSAGES = [
 ]
 
 ALCHEMICAL_PASSAGES = [
-    ("The philosopher's work begins with the purification of mercury. Remove all impurity by sublimation.",
+    ("The philosopherf's work begins with the purification of mercury. Remove all impurity by sublimation.",
      "Summa perfectionis", "Pseudo-Jabir", "ca. 1300 CE", "latin", "process"),
     ("Dissolve the body in the water until the water becomes red as blood. This is the first work.",
      "Testamentum", "Pseudo-Lull", "ca. 1330 CE", "latin", "process"),
@@ -137,7 +139,7 @@ for corpus_name, passages in [
         .format("delta")
         .mode("overwrite")
         .option("overwriteSchema", "true")
-        .saveAsTable(f"voynich.medieval.{corpus_name}_source"))
+        .saveAsTable(f"{_CATALOG}.voynich_medieval.{corpus_name}_source"))
     print(f"✓ {corpus_name}: {len(rows)} passages")
 
 # COMMAND ----------
@@ -147,10 +149,10 @@ for corpus_name, passages in [
 # COMMAND ----------
 
 INDEXES = {
-    "botanical":      ("voynich.medieval.botanical_source",      "voynich.medieval.botanical_index"),
-    "astronomical":   ("voynich.medieval.astronomical_source",   "voynich.medieval.astronomical_index"),
-    "pharmaceutical": ("voynich.medieval.pharmaceutical_source", "voynich.medieval.pharmaceutical_index"),
-    "alchemical":     ("voynich.medieval.alchemical_source",     "voynich.medieval.alchemical_index"),
+    "botanical":      (f"{_CATALOG}.voynich_medieval.botanical_source",      f"{_CATALOG}.voynich_medieval.botanical_index"),
+    "astronomical":   (f"{_CATALOG}.voynich_medieval.astronomical_source",   f"{_CATALOG}.voynich_medieval.astronomical_index"),
+    "pharmaceutical": (f"{_CATALOG}.voynich_medieval.pharmaceutical_source", f"{_CATALOG}.voynich_medieval.pharmaceutical_index"),
+    "alchemical":     (f"{_CATALOG}.voynich_medieval.alchemical_source",     f"{_CATALOG}.voynich_medieval.alchemical_index"),
 }
 
 for corpus, (source_table, index_name) in INDEXES.items():

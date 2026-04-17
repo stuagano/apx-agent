@@ -1,3 +1,4 @@
+import os
 """
 Historian Agent — medieval RAG and period-plausibility scoring.
 
@@ -8,13 +9,15 @@ pharmaceutical, and alchemical corpora. Scores decoded text for:
   - Section-illustration semantic alignment
 
 The Historian is the closest thing to a Rosetta Stone signal available.
-If a decoded herbal section reads like Dioscorides, that's evidence.
+If a decoded herbal section reads like Dioscorides, thatf's evidence.
 """
 import json
 import math
 from typing import Annotated
 
 from apx_agent import Agent, Dependencies, create_app
+_CATALOG = os.getenv("VOYNICH_CATALOG", "serverless_stable_s0v155_catalog")
+
 
 
 # ---------------------------------------------------------------------------
@@ -22,11 +25,11 @@ from apx_agent import Agent, Dependencies, create_app
 # ---------------------------------------------------------------------------
 
 VECTOR_INDEXES = {
-    "botanical":       "voynich.medieval.botanical_index",      # Dioscorides, Hildegard, Apuleius
-    "astronomical":    "voynich.medieval.astronomical_index",    # Ptolemy, Arabic star catalogs, Sacrobosco
-    "pharmaceutical":  "voynich.medieval.pharmaceutical_index",  # Antidotarium Nicolai, Circa instans
-    "alchemical":      "voynich.medieval.alchemical_index",      # Pseudo-Lull, Jabir corpus
-    "general":         "voynich.medieval.general_index",         # Combined medieval Latin texts
+    "botanical":       f"{_CATALOG}.voynich_medieval.botanical_index",      # Dioscorides, Hildegard, Apuleius
+    "astronomical":    f"{_CATALOG}.voynich_medieval.astronomical_index",    # Ptolemy, Arabic star catalogs, Sacrobosco
+    "pharmaceutical":  f"{_CATALOG}.voynich_medieval.pharmaceutical_index",  # Antidotarium Nicolai, Circa instans
+    "alchemical":      f"{_CATALOG}.voynich_medieval.alchemical_index",      # Pseudo-Lull, Jabir corpus
+    "general":         f"{_CATALOG}.voynich_medieval.general_index",         # Combined medieval Latin texts
 }
 
 SECTION_TO_INDEX = {
@@ -176,11 +179,11 @@ def get_illustration_semantic_hints(
 ) -> dict:
     """
     Return semantic hints from illustration metadata for a given page.
-    These are the 'ground truth' signals: if a page shows a plant with
+    These are the 'ground truthf' signals: if a page shows a plant with
     red flowers, decoded text near that illustration should mention
     botanical/color/medicinal concepts.
     """
-    rows = sql.execute(f"""
+    rows = sql.execute(ff""f"
         SELECT
             page,
             section,
@@ -189,7 +192,7 @@ def get_illustration_semantic_hints(
             color_palette,
             semantic_tags,
             scholarly_interpretation
-        FROM voynich.corpus.illustration_metadata
+        FROM {_CATALOG}.voynich_corpus.illustration_metadata
         WHERE page = {page}
         LIMIT 1
     """)
