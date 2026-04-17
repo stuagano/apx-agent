@@ -197,6 +197,33 @@ apx-agent apps work standalone, as Supervisor sub-agents (via MCP), or as Databr
 
 **Hub** — A lightweight registry that agents self-register with on startup. Provides a browseable index of all running agent apps and powers cross-agent discovery.
 
+## Ecosystem
+
+apx-agent sits alongside a growing set of community and official tools in the Databricks AI space. Here's how they relate:
+
+### Official Databricks projects
+
+| Project | What it does | Relationship |
+|---------|-------------|--------------|
+| [databrickslabs/mcp](https://github.com/databrickslabs/mcp) | Official Databricks Labs MCP work — managed MCP endpoints for Genie, UC functions | apx-agent exposes your *own* tools over MCP; these endpoints let you *consume* Databricks platform capabilities as MCP tools |
+| [databricks-solutions/custom-mcp-databricks-app](https://github.com/databricks-solutions/custom-mcp-databricks-app) | Example: hosting a custom MCP server on a Databricks App with Claude | apx-agent is the full-featured version of this pattern — adds the agent loop, A2A discovery, hub registration, and dev UI on top |
+| [databricks-solutions/genierails](https://github.com/databricks-solutions/genierails) | Automates Genie space setup — row filters, column masks, tag policies, guardrails | Orthogonal to apx-agent: use genierails to configure the Genie spaces that `genie_tool()` will call at runtime |
+
+### Community projects
+
+| Project | What it does | Relationship |
+|---------|-------------|--------------|
+| [alexxx-db/databricks-genie-mcp](https://github.com/alexxx-db/databricks-genie-mcp) | Exposes Genie spaces as MCP tools | apx-agent's `genie_tool()` covers the same ground natively (no separate MCP server needed); this is useful if you want Genie in a non-apx MCP client like Claude Desktop |
+| [RafaelCartenet/mcp-databricks-server](https://github.com/RafaelCartenet/mcp-databricks-server) | MCP server for Unity Catalog metadata — table discovery, schema inspection, lineage | Points to the next gap in apx-agent: `catalog_tool()` / `lineage_tool()` / `schema_tool()` factories for agents that need to introspect tables before writing SQL |
+| [IanGagnonDB/databricks-agent-mcp-genie](https://github.com/IanGagnonDB/databricks-agent-mcp-genie) | Agent + MCP + Genie integration example | Similar to what apx-agent provides; useful as a reference for Genie conversation patterns |
+| [Federix93/genie_space_in_databricks_apps](https://github.com/Federix93/genie_space_in_databricks_apps) | Embeds Genie Conversation API in a Databricks App via Dash | Reference for app-to-Genie wiring patterns; apx-agent's hub uses a similar approach for its chat proxy |
+
+### Where apx-agent fits
+
+The community MCP servers above are **standalone services** — you run them separately and connect clients to them. apx-agent takes a different approach: tool factories (`genie_tool`, `createLakebaseQueryTool`, `createVSQueryTool`) that register directly into your agent's tool loop with the same OBO auth, same schema generation, and same dev UI as your custom tools.
+
+The next logical connectors — `catalog_tool()` for UC table discovery, `lineage_tool()` for upstream/downstream lineage, and `schema_tool()` for column introspection — would close the gap between asking questions (Genie) and knowing the data landscape (UC metadata APIs). The RafaelCartenet MCP server is the clearest prior art for what these should cover.
+
 ## Project structure
 
 ```
