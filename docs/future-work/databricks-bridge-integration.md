@@ -1,8 +1,8 @@
 # Future: Databricks AI Bridge Integration
 
-> **Status: Scoped out — `databricks-ai-bridge` / `databricks-langchain` already provides this.**
->
-> This doc captures the design intent so it doesn't get lost, but implementation is deferred.
+> **Status: Partially implemented.**
+> - ✅ `genie_tool()` — ships in `apx_agent.genie`, no extra deps required
+> - ⏳ `vector_search_tool()` — deferred; `databricks-langchain` covers this already
 
 ## Context
 

@@ -44,6 +44,9 @@ from ._runner import run_via_sdk, stream_via_sdk
 # Eval bridge
 from ._eval import app_predict_fn
 
+# Genie tool factory
+from .genie import genie_tool
+
 __all__ = [
     # Agent types
     "Agent",
@@ -81,4 +84,6 @@ __all__ = [
     "stream_via_sdk",
     # Eval
     "app_predict_fn",
+    # Genie
+    "genie_tool",
 ]
