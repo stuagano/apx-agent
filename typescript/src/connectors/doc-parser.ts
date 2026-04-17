@@ -90,7 +90,7 @@ export function createDocUploadTool(config: ConnectorConfig): AgentTool {
     }),
     handler: async ({ filename, content }) => {
       const host = resolveHost(config.host);
-      const token = resolveToken();
+      const token = await resolveToken();
       const docId = randomUUID();
 
       // Strip trailing slash from volumePath, then build path
@@ -170,7 +170,7 @@ export function createDocExtractEntitiesTool(config: ConnectorConfig): AgentTool
     }),
     handler: async ({ chunks, model }) => {
       const host = resolveHost(config.host);
-      const token = resolveToken();
+      const token = await resolveToken();
       const modelName = model ?? 'databricks-claude-sonnet-4-6';
 
       const schema = config.entitySchema;

@@ -122,7 +122,7 @@ export function createLakebaseQueryTool(config: ConnectorConfig) {
       limit: z.number().int().min(1).optional().describe('Maximum rows to return (default 100)'),
     }),
     handler: async ({ table, columns, filters, limit }) => {
-      const token = resolveToken();
+      const token = await resolveToken();
       const fqn = `${catalog}.${schema}.${table}`;
       const cols = columns && columns.length > 0 ? columns.join(', ') : '*';
       const effectiveLimit = limit ?? 100;
@@ -158,7 +158,7 @@ export function createLakebaseMutateTool(config: ConnectorConfig) {
       filters: z.record(z.string(), z.unknown()).optional().describe('Key-value filter pairs for WHERE clause (required for UPDATE and DELETE)'),
     }),
     handler: async ({ table, operation, values, filters }) => {
-      const token = resolveToken();
+      const token = await resolveToken();
       const fqn = `${catalog}.${schema}.${table}`;
 
       let statement: string;
@@ -223,7 +223,7 @@ export function createLakebaseSchemaInspectTool(config: ConnectorConfig) {
       table_filter: z.string().optional().describe('Optional table name to filter results to a single table'),
     }),
     handler: async ({ table_filter }) => {
-      const token = resolveToken();
+      const token = await resolveToken();
 
       const params: SqlParam[] = [
         { name: 'cat', value: catalog, type: 'STRING' },

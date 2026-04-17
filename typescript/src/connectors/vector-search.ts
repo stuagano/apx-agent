@@ -36,7 +36,7 @@ export function createVSQueryTool(config: ConnectorConfig): AgentTool {
     }),
     handler: async ({ query_text, filters, num_results }) => {
       const host = resolveHost(config.host);
-      const token = resolveToken();
+      const token = await resolveToken();
 
       const body: Record<string, unknown> = {
         query_text,
@@ -96,7 +96,7 @@ export function createVSUpsertTool(config: ConnectorConfig): AgentTool {
     }),
     handler: async ({ id, text, metadata }) => {
       const host = resolveHost(config.host);
-      const token = resolveToken();
+      const token = await resolveToken();
 
       const record: Record<string, unknown> = { id, text, ...metadata };
 
@@ -134,7 +134,7 @@ export function createVSDeleteTool(config: ConnectorConfig): AgentTool {
     }),
     handler: async ({ ids }) => {
       const host = resolveHost(config.host);
-      const token = resolveToken();
+      const token = await resolveToken();
 
       await dbFetch(`${host}/api/2.0/vector-search/indexes/${encodeURIComponent(indexName)}/delete-data`, {
         token,

@@ -122,6 +122,76 @@ export function parseEntitySchema(raw: unknown): EntitySchema {
   return entitySchemaValidator.parse(raw);
 }
 
+// ---------------------------------------------------------------------------
+// M2M OAuth client credentials token cache
+// ---------------------------------------------------------------------------
+
+let m2mToken: string | null = null;
+let m2mExpiry = 0;
+let m2mInFlight: Promise<string> | null = null;
+
+/**
+ * Exchange DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET for an OAuth
+ * access token via the Databricks OIDC token endpoint. The token is cached
+ * and refreshed 60 seconds before expiry.
+ *
+ * This is the standard OAuth 2.0 client_credentials grant — the same flow
+ * that Databricks Jobs, Workflows, and service principals use.
+ */
+async function acquireM2mToken(): Promise<string> {
+  const clientId = process.env.DATABRICKS_CLIENT_ID;
+  const clientSecret = process.env.DATABRICKS_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      'No Databricks token available. Provide one of:\n' +
+      '  - X-Forwarded-Access-Token header (interactive/OBO)\n' +
+      '  - DATABRICKS_TOKEN env var (static PAT)\n' +
+      '  - DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET (M2M OAuth)',
+    );
+  }
+
+  const host = resolveHost();
+  const tokenUrl = `${host}/oidc/v1/token`;
+
+  const res = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: clientId,
+      client_secret: clientSecret,
+      scope: 'all-apis',
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`M2M token exchange failed (${res.status}): ${text}`);
+  }
+
+  const data = await res.json() as { access_token: string; expires_in?: number };
+  m2mToken = data.access_token;
+  // Refresh 60s before expiry; default to 1 hour if expires_in not provided
+  m2mExpiry = Date.now() + ((data.expires_in ?? 3600) - 60) * 1000;
+  return m2mToken;
+}
+
+/**
+ * Get a cached M2M token, refreshing if expired. Deduplicates concurrent
+ * requests so only one token exchange is in-flight at a time.
+ */
+async function getM2mToken(): Promise<string> {
+  if (m2mToken && Date.now() < m2mExpiry) return m2mToken;
+  if (!m2mInFlight) {
+    m2mInFlight = acquireM2mToken().finally(() => { m2mInFlight = null; });
+  }
+  return m2mInFlight;
+}
+
+// ---------------------------------------------------------------------------
+// resolveToken
+// ---------------------------------------------------------------------------
+
 /**
  * Resolve a Databricks bearer token for an outbound API call.
  *
@@ -131,11 +201,15 @@ export function parseEntitySchema(raw: unknown): EntitySchema {
  *   2. `AsyncLocalStorage` request context — set by the agent framework for
  *      every tool handler and sub-agent call; reads `x-forwarded-access-token`
  *      or `authorization` from the user's OBO headers
- *   3. `DATABRICKS_TOKEN` env var — local dev or service-to-service fallback
+ *   3. `DATABRICKS_TOKEN` env var — static PAT for local dev
+ *   4. M2M OAuth via `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET` —
+ *      service principal identity for jobs, workflows, and background loops
  *
- * @throws if no token is available through any path
+ * Steps 1-3 are synchronous. Step 4 requires an async token exchange, so
+ * this function returns `string | Promise<string>`. All call sites already
+ * run in async handlers, so `await resolveToken()` works everywhere.
  */
-export function resolveToken(oboHeaders?: Record<string, string>): string {
+export function resolveToken(oboHeaders?: Record<string, string>): string | Promise<string> {
   if (oboHeaders) {
     const auth = oboHeaders['authorization'] ?? oboHeaders['Authorization'];
     if (auth?.startsWith('Bearer ')) return auth.slice(7);
@@ -151,8 +225,16 @@ export function resolveToken(oboHeaders?: Record<string, string>): string {
   }
   const envToken = process.env.DATABRICKS_TOKEN;
   if (envToken) return envToken;
+  // M2M OAuth — returns cached token synchronously if available, else async exchange
+  if (process.env.DATABRICKS_CLIENT_ID && process.env.DATABRICKS_CLIENT_SECRET) {
+    if (m2mToken && Date.now() < m2mExpiry) return m2mToken;
+    return getM2mToken();
+  }
   throw new Error(
-    'No Databricks token available. Pass oboHeaders, run within a request context, or set DATABRICKS_TOKEN.',
+    'No Databricks token available. Provide one of:\n' +
+    '  - X-Forwarded-Access-Token header (interactive/OBO)\n' +
+    '  - DATABRICKS_TOKEN env var (static PAT)\n' +
+    '  - DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET (M2M OAuth)',
   );
 }
 

@@ -1,5 +1,5 @@
 import { type Hypothesis, compositeFitness } from './hypothesis.js';
-import { getRequestContext } from '../agent/request-context.js';
+import { resolveToken } from '../connectors/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -172,15 +172,7 @@ export class PopulationStore {
   // -------------------------------------------------------------------------
 
   private async executeSql(statement: string): Promise<SqlStatementResponse> {
-    const ctx = getRequestContext();
-    const oboToken = ctx
-      ? (ctx.oboHeaders['x-forwarded-access-token'] ||
-         (ctx.oboHeaders['authorization'] ?? '').replace(/^Bearer\s+/i, ''))
-      : undefined;
-    const token = oboToken || process.env.DATABRICKS_TOKEN;
-    if (!token) {
-      throw new Error('No Databricks token: set DATABRICKS_TOKEN env var or run within a request context');
-    }
+    const token = await resolveToken();
 
     const url = `${this.host}/api/2.0/sql/statements/`;
     const body = {
