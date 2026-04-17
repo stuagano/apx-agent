@@ -94,6 +94,8 @@ export function toStrictSchema(schema: Record<string, unknown> | null | undefine
     return { type: 'object', properties: {}, required: [], additionalProperties: false };
   }
   const result = { ...schema };
+  // Strip $schema — Databricks model serving rejects tool parameters with it
+  delete result['$schema'];
   if (result.type === 'object') {
     result.additionalProperties = false;
     if (!result.required) {
