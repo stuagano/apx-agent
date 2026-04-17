@@ -132,7 +132,7 @@ tasks:
       - task_key: export_checkpoint_1
     job_cluster_key: cpu_cluster
     notebook_task:
-      notebook_path: "/voynich/notebooks/03_review_gate"
+      notebook_path: "/Workspace/Users/stuart.gano@databricks.com/voynich/notebooks/03_review_gate"
       base_parameters:
         review_url:     "https://voynich-orchestrator.{{workspace_url}}.databricksapps.com/_apx/agent"
         mlflow_url:     "https://{{workspace_url}}/#mlflow/experiments/voynich/evolutionary_search"
