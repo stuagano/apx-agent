@@ -166,7 +166,12 @@ Built-in development tools at:
 
 ## How it fits
 
-apx-agent targets the middle ground between fully-managed orchestration and building from scratch:
+Databricks provides two excellent native paths for building agents:
+
+- **Mosaic AI Agent Framework** (`ResponsesAgent` + MLflow) — agents logged as MLflow models, deployed as Model Serving endpoints, with built-in tracing, evaluation, and a bundled Chat UI.
+- **Supervisor API** — a managed orchestration layer where an LLM routes to sub-agents via MCP.
+
+apx-agent extends these with a third path: **agents deployed as Databricks Apps** with **developer-controlled orchestration**. Apps are long-running FastAPI-style services, which opens up patterns that complement the platform — custom UIs, stateful workflows, direct Databricks SDK access with per-user auth, and agent-to-agent composition across app boundaries.
 
 | Need | Solution | Routing |
 |------|----------|---------|
@@ -174,13 +179,30 @@ apx-agent targets the middle ground between fully-managed orchestration and buil
 | Deterministic routing, workflows, custom logic | **apx-agent** | Developer-controlled |
 | Full graph-based orchestration | **LangGraph** | Developer-defined graph |
 
-apx-agent apps are standard Databricks Apps. They work standalone, as Supervisor sub-agents (via MCP), or as DatabricksOpenAI targets (`model="apps/<app-name>"`).
+apx-agent apps work standalone, as Supervisor sub-agents (via MCP), or as DatabricksOpenAI targets (`model="apps/<app-name>"`). They slot into the existing Databricks AI ecosystem rather than replacing any part of it.
+
+### What apx-agent adds
+
+**Typed tools with dependency injection** — Type hints and docstrings generate tool schemas automatically. Parameters typed as `Dependencies.Workspace` or `Dependencies.UserClient` are injected by FastAPI and excluded from the schema — the LLM never sees auth as a parameter, but your function gets a live, per-user authenticated SDK client.
+
+**OBO token forwarding** — Databricks Apps authenticate users via OAuth On-Behalf-Of tokens. apx-agent propagates these automatically across app-to-app calls: it first routes through the Supervisor gateway (`model="apps/<name>"`) for OBO, then falls back to forwarding `X-Forwarded-Access-Token` directly. Your tools always run as the calling user, not the app's service principal.
+
+**Workflow agents** — `SequentialAgent`, `ParallelAgent`, `LoopAgent`, `RouterAgent`, and `HandoffAgent` give you deterministic, developer-defined control flow on top of the LLM. These complement the Supervisor API's probabilistic routing for cases where step order matters.
+
+**Unified tool dispatch** — The LLM loop, the MCP server, and external HTTP callers all invoke tools through the same FastAPI routes (via `ASGITransport` for in-process dispatch). `Dependencies.*` injection — auth, workspace client, OBO tokens — works identically across all three paths without duplicating wiring.
+
+**A2A discovery (`/.well-known/agent.json`)** — Every agent publishes a card with its name, skills, and MCP endpoint. Orchestrating agents fetch this at startup to pull sub-agent capabilities into their own tool list, enabling multi-agent composition without a central schema registry.
+
+**MCP server** — Exposes every registered tool over MCP (SSE and streamable HTTP), wired through the same auth-injecting routes. Connects to Claude Desktop, Cursor, Genie Code, or any Supervisor Agent out of the box.
+
+**Hub** — A lightweight registry that agents self-register with on startup. Provides a browseable index of all running agent apps and powers cross-agent discovery.
 
 ## Project structure
 
 ```
 python/          Python package — pyproject.toml, src/, tests/, examples/
 typescript/      TypeScript package — package.json, src/, tests/, examples/
+hub/             Agent Hub — catalog and chat dashboard (Databricks App)
 docs/            Design specs and implementation plans
 ```
 

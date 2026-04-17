@@ -86,6 +86,22 @@ def test_list_agents_filter_query(client):
     assert agents[0]["name"] == "billing-agent"
 
 
+def test_deregister_agent(client):
+    from hub.models import HubAgent
+    registry = client.app.state.hub_registry
+    agent = HubAgent(name="to-remove", description="d", source="apx")
+    registry.add(agent)
+
+    resp = client.delete(f"/api/agents/{agent.id}")
+    assert resp.status_code == 204
+    assert registry.get(agent.id) is None
+
+
+def test_deregister_agent_not_found(client):
+    resp = client.delete("/api/agents/nonexistent")
+    assert resp.status_code == 404
+
+
 def test_frontend_served(client):
     resp = client.get("/")
     assert resp.status_code == 200

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import uuid
@@ -81,9 +82,11 @@ async def _chat_serving_endpoint(
     conversation_id: str,
 ) -> ChatResponse:
     """Send message to a serving endpoint via Databricks SDK."""
+    from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+
     response = ws.serving_endpoints.query(
         name=agent.url,
-        messages=[{"role": "user", "content": request.message}],
+        messages=[ChatMessage(role=ChatMessageRole.USER, content=request.message)],
     )
     text = response.choices[0].message.content if response.choices else ""
     return ChatResponse(agent_id=request.agent_id, message=text, conversation_id=conversation_id)
@@ -95,21 +98,39 @@ async def _chat_genie_space(
     ws: "WorkspaceClient",
     conversation_id: str,
 ) -> ChatResponse:
-    """Send message to a Genie space via conversation API."""
+    """Send message to a Genie space via conversation API.
+
+    Genie responses are asynchronous — this polls the message status until
+    COMPLETED (or up to 60 seconds), then extracts text from attachments.
+    """
     space_id = agent.metadata.get("space_id", "")
 
     conv_resp = ws.api_client.do(
         "POST",
-        f"/api/2.0/genie/spaces/{space_id}/conversations",
+        f"/api/2.0/genie/spaces/{space_id}/start_conversation",
         body={"content": request.message},
     )
     genie_conv_id = conv_resp.get("conversation_id", "")
     message_id = conv_resp.get("message_id", "")
 
-    msg_resp = ws.api_client.do(
-        "GET",
-        f"/api/2.0/genie/spaces/{space_id}/conversations/{genie_conv_id}/messages/{message_id}",
-    )
+    # Poll until the message is ready (Genie processes queries asynchronously)
+    msg_resp: dict = {}
+    for _ in range(30):
+        msg_resp = ws.api_client.do(
+            "GET",
+            f"/api/2.0/genie/spaces/{space_id}/conversations/{genie_conv_id}/messages/{message_id}",
+        )
+        status = msg_resp.get("status", "")
+        if status == "COMPLETED":
+            break
+        if status in ("FAILED", "CANCELLED"):
+            return ChatResponse(
+                agent_id=request.agent_id,
+                message=f"Genie query {status.lower()}.",
+                conversation_id=f"{space_id}:{genie_conv_id}",
+            )
+        await asyncio.sleep(2)
+
     attachments = msg_resp.get("attachments", [])
     text = ""
     for att in attachments:

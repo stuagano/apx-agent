@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 
 from .chat import proxy_chat
-from .discovery import discover_serving_endpoints, discover_genie_spaces
+from .discovery import discover_apps, discover_genie_spaces, discover_serving_endpoints
 from .models import ChatRequest, ChatResponse, HubAgent, HubSkill, RegisterRequest, RegisterResponse
 from .registry import AgentRegistry
 
@@ -35,13 +35,15 @@ def create_hub_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.hub_registry = registry
-        app.state.workspace_client = _get_workspace_client()
+        app.state.obo_token = None  # Populated from first authenticated request
+        ws = _get_workspace_client()
+        app.state.workspace_client = ws
 
-        # Initial workspace discovery
-        _refresh_registry(registry, app.state.workspace_client)
+        # Initial workspace discovery (serving endpoints + Genie spaces)
+        _refresh_registry(registry, ws)
 
         # Start background refresh task
-        task = asyncio.create_task(_background_refresh(registry, app.state.workspace_client))
+        task = asyncio.create_task(_background_refresh(registry, app))
         yield
         task.cancel()
 
@@ -50,6 +52,16 @@ def create_hub_app() -> FastAPI:
     # even outside of lifespan context (lifespan will also set it, but this
     # ensures it's available before the lifespan runs).
     app.state.hub_registry = registry
+
+    # Capture OBO token from any authenticated request for use in app discovery.
+    # Databricks Apps inject X-Forwarded-Access-Token on every request —
+    # this user token (not the SP token) is required for cross-app HTTP calls.
+    @app.middleware("http")
+    async def capture_obo_token(request: Request, call_next: Any) -> Any:
+        token = request.headers.get("X-Forwarded-Access-Token", "")
+        if token:
+            request.app.state.obo_token = token
+        return await call_next(request)
 
     # --- API routes ---
 
@@ -105,6 +117,23 @@ def create_hub_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Agent not found")
         return agent.model_dump()
 
+    @app.post("/api/discover")
+    async def trigger_discovery(request: Request) -> dict[str, int]:
+        obo_token = request.headers.get("X-Forwarded-Access-Token", "")
+        if obo_token:
+            request.app.state.obo_token = obo_token
+        ws = request.app.state.workspace_client
+        found = await discover_apps(ws, obo_token=obo_token or None)
+        for agent in found:
+            registry.add(agent)
+        return {"discovered": len(found)}
+
+    @app.delete("/api/agents/{agent_id}", status_code=204)
+    async def deregister_agent(agent_id: str) -> None:
+        if registry.get(agent_id) is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        registry.remove(agent_id)
+
     @app.post("/api/chat")
     async def chat(body: ChatRequest, request: Request) -> ChatResponse:
         agent = registry.get(body.agent_id)
@@ -136,12 +165,15 @@ def _refresh_registry(registry: AgentRegistry, ws: Any) -> None:
         registry.add(agent)
 
 
-async def _background_refresh(registry: AgentRegistry, ws: Any) -> None:
+async def _background_refresh(registry: AgentRegistry, app: Any) -> None:
     """Periodically refresh workspace agents and health-check apx agents."""
     health_counter = 0
     while True:
         await asyncio.sleep(60)
         health_counter += 1
+
+        ws = app.state.workspace_client
+        obo_token = getattr(app.state, "obo_token", None)
 
         apx_agents = registry.list(source="apx")
         for agent in apx_agents:
@@ -158,3 +190,7 @@ async def _background_refresh(registry: AgentRegistry, ws: Any) -> None:
 
         if health_counter % 5 == 0:
             _refresh_registry(registry, ws)
+
+        if obo_token:
+            for agent in await discover_apps(ws, obo_token=obo_token):
+                registry.add(agent)

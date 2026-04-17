@@ -1,5 +1,517 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>Agent Hub</title></head>
-<body><div id="app">Loading...</div></body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Hub</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f7f7f8;
+      color: #111;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    header {
+      background: #fff;
+      border-bottom: 1px solid #e8e8e8;
+      padding: 0 20px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    .logo {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: #111;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .logo-dot { width: 8px; height: 8px; background: #3b5bdb; border-radius: 50%; }
+    .search-wrap {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      background: #f4f4f5;
+      border: 1px solid #e4e4e7;
+      border-radius: 7px;
+      padding: 6px 10px;
+      width: 280px;
+    }
+    .search-wrap input {
+      border: none;
+      background: none;
+      outline: none;
+      font-size: 13px;
+      width: 100%;
+      color: #111;
+    }
+    .search-wrap input::placeholder { color: #a0a0a8; }
+
+    /* ── Layout ── */
+    .layout { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 272px;
+      background: #fff;
+      border-right: 1px solid #e8e8e8;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+    .sidebar-top {
+      padding: 12px 14px 8px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .sidebar-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #888;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .agent-count { font-weight: 500; color: #bbb; }
+    .filters {
+      display: flex;
+      gap: 5px;
+      padding: 8px 14px;
+      border-bottom: 1px solid #f0f0f0;
+      flex-wrap: wrap;
+    }
+    .chip {
+      font-size: 11px;
+      font-weight: 500;
+      padding: 3px 9px;
+      border-radius: 20px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.1s;
+      user-select: none;
+    }
+    .chip.all        { background: #f0f0f0; color: #555; }
+    .chip.all.active { background: #111; color: #fff; }
+    .chip.apx        { background: #eff6ff; color: #2563eb; border-color: #bfdbfe; }
+    .chip.apx.active { background: #2563eb; color: #fff; border-color: transparent; }
+    .chip.serving    { background: #f5f3ff; color: #7c3aed; border-color: #ddd6fe; }
+    .chip.serving.active { background: #7c3aed; color: #fff; border-color: transparent; }
+    .chip.genie      { background: #f0fdf4; color: #16a34a; border-color: #bbf7d0; }
+    .chip.genie.active { background: #16a34a; color: #fff; border-color: transparent; }
+
+    .agent-list { overflow-y: auto; flex: 1; }
+    .agent-item {
+      padding: 10px 14px;
+      cursor: pointer;
+      border-bottom: 1px solid #f5f5f5;
+      transition: background 0.08s;
+    }
+    .agent-item:hover { background: #fafafa; }
+    .agent-item.selected { background: #eff6ff; border-left: 2px solid #2563eb; }
+    .agent-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .status-dot.online  { background: #22c55e; }
+    .status-dot.offline { background: #ef4444; }
+    .status-dot.unknown { background: #d1d5db; }
+    .agent-name {
+      font-size: 13px;
+      font-weight: 500;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 10px;
+      flex-shrink: 0;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .badge-apx     { background: #dbeafe; color: #1d4ed8; }
+    .badge-serving { background: #ede9fe; color: #6d28d9; }
+    .badge-genie   { background: #dcfce7; color: #15803d; }
+    .agent-desc {
+      font-size: 12px;
+      color: #888;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ── Chat panel ── */
+    .chat-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .chat-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid #e8e8e8;
+      background: #fff;
+      flex-shrink: 0;
+    }
+    .chat-title { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .chat-meta  { font-size: 12px; color: #888; margin-top: 2px; }
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .msg {
+      max-width: 72%;
+      padding: 9px 13px;
+      border-radius: 14px;
+      font-size: 13px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: #2563eb;
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .msg.assistant {
+      align-self: flex-start;
+      background: #fff;
+      border: 1px solid #e8e8e8;
+      color: #111;
+      border-bottom-left-radius: 4px;
+    }
+    .msg.thinking {
+      color: #aaa;
+      font-style: italic;
+      background: #f9f9f9;
+      border-color: #f0f0f0;
+    }
+    .chat-footer {
+      padding: 14px 20px;
+      border-top: 1px solid #e8e8e8;
+      background: #fff;
+      display: flex;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .msg-input {
+      flex: 1;
+      border: 1px solid #e4e4e7;
+      border-radius: 9px;
+      padding: 9px 13px;
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+      resize: none;
+      line-height: 1.4;
+      transition: border-color 0.15s;
+    }
+    .msg-input:focus { border-color: #2563eb; }
+    .send-btn {
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 9px;
+      padding: 9px 18px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.1s;
+    }
+    .send-btn:hover:not(:disabled) { background: #1d4ed8; }
+    .send-btn:disabled { background: #cbd5e1; cursor: not-allowed; }
+
+    /* ── Empty / placeholder states ── */
+    .empty {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: #bbb;
+      user-select: none;
+    }
+    .empty-icon { font-size: 36px; opacity: 0.5; }
+    .empty h3 { font-size: 14px; font-weight: 500; color: #888; }
+    .empty p  { font-size: 13px; }
+    .hint { text-align: center; padding: 24px; color: #c0c0c8; font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    Agent Hub
+  </div>
+  <div class="search-wrap">
+    <svg width="13" height="13" fill="none" stroke="#a0a0a8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+    </svg>
+    <input id="search" type="text" placeholder="Search agents…" autocomplete="off">
+  </div>
+</header>
+
+<div class="layout">
+  <div class="sidebar">
+    <div class="sidebar-top">
+      <div class="sidebar-label">
+        <span>Agents</span>
+        <span class="agent-count" id="count">–</span>
+      </div>
+    </div>
+    <div class="filters">
+      <span class="chip all active" data-src="">All</span>
+      <span class="chip apx"     data-src="apx">apx</span>
+      <span class="chip serving" data-src="serving_endpoint">serving</span>
+      <span class="chip genie"   data-src="genie_space">genie</span>
+    </div>
+    <div class="agent-list" id="agent-list">
+      <div class="hint">Loading…</div>
+    </div>
+  </div>
+
+  <div class="chat-panel" id="chat-panel">
+    <div class="empty">
+      <div class="empty-icon">◎</div>
+      <h3>No agent selected</h3>
+      <p>Pick one from the list to start a conversation</p>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────
+let agents = [];
+let selected = null;
+let convos   = {};   // agentId → { messages: [{role,text}], convId: str|null }
+let srcFilter = '';
+let query     = '';
+
+// ── API ────────────────────────────────────────────
+async function loadAgents() {
+  const p = new URLSearchParams();
+  if (srcFilter) p.set('source', srcFilter);
+  if (query)     p.set('q', query);
+  const r = await fetch('/api/agents?' + p);
+  return r.ok ? r.json() : [];
+}
+
+async function chat(agentId, message, convId) {
+  const r = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent_id: agentId, message, conversation_id: convId }),
+  });
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+
+// ── Render sidebar ─────────────────────────────────
+function badgeClass(src) {
+  if (src === 'serving_endpoint') return 'badge-serving';
+  if (src === 'genie_space')      return 'badge-genie';
+  return 'badge-apx';
+}
+function badgeLabel(src) {
+  if (src === 'serving_endpoint') return 'serving';
+  if (src === 'genie_space')      return 'genie';
+  return 'apx';
+}
+
+function renderList() {
+  const el = document.getElementById('agent-list');
+  document.getElementById('count').textContent = agents.length;
+
+  if (!agents.length) {
+    el.innerHTML = '<div class="hint">No agents found</div>';
+    return;
+  }
+
+  el.innerHTML = agents.map(a => `
+    <div class="agent-item${selected?.id === a.id ? ' selected' : ''}" data-id="${a.id}">
+      <div class="agent-row">
+        <span class="status-dot ${a.status}"></span>
+        <span class="agent-name">${esc(a.name)}</span>
+        <span class="badge ${badgeClass(a.source)}">${badgeLabel(a.source)}</span>
+      </div>
+      ${a.description ? `<div class="agent-desc">${esc(a.description)}</div>` : ''}
+    </div>
+  `).join('');
+
+  el.querySelectorAll('.agent-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const a = agents.find(x => x.id === el.dataset.id);
+      if (a) selectAgent(a);
+    });
+  });
+}
+
+// ── Render chat ────────────────────────────────────
+function renderChat() {
+  const panel = document.getElementById('chat-panel');
+  if (!selected) {
+    panel.innerHTML = `
+      <div class="empty">
+        <div class="empty-icon">◎</div>
+        <h3>No agent selected</h3>
+        <p>Pick one from the list to start a conversation</p>
+      </div>`;
+    return;
+  }
+
+  const conv = convos[selected.id] || { messages: [], convId: null };
+  const meta = [badgeLabel(selected.source), selected.url].filter(Boolean).join(' · ');
+
+  panel.innerHTML = `
+    <div class="chat-header">
+      <div class="chat-title">
+        <span class="status-dot ${selected.status}"></span>
+        ${esc(selected.name)}
+      </div>
+      <div class="chat-meta">${esc(meta)}</div>
+    </div>
+    <div class="chat-messages" id="msgs">
+      ${conv.messages.length === 0
+        ? '<div class="hint">Send a message to start</div>'
+        : conv.messages.map(m => `<div class="msg ${m.role}">${esc(m.text)}</div>`).join('')}
+    </div>
+    <div class="chat-footer">
+      <textarea class="msg-input" id="input" rows="1" placeholder="Message ${esc(selected.name)}…"></textarea>
+      <button class="send-btn" id="send">Send</button>
+    </div>`;
+
+  scrollBottom();
+
+  document.getElementById('send').addEventListener('click', handleSend);
+  document.getElementById('input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
+  });
+  document.getElementById('input').focus();
+}
+
+function scrollBottom() {
+  const el = document.getElementById('msgs');
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+// ── Actions ────────────────────────────────────────
+function selectAgent(a) {
+  selected = a;
+  if (!convos[a.id]) convos[a.id] = { messages: [], convId: null };
+  renderList();
+  renderChat();
+}
+
+async function handleSend() {
+  const input = document.getElementById('input');
+  const btn   = document.getElementById('send');
+  const text  = input.value.trim();
+  if (!text || !selected) return;
+
+  input.value   = '';
+  btn.disabled  = true;
+
+  const conv = convos[selected.id];
+  conv.messages.push({ role: 'user', text });
+
+  // Optimistic render with thinking indicator
+  const msgs = document.getElementById('msgs');
+  msgs.querySelector('.hint')?.remove();
+  msgs.innerHTML += `<div class="msg user">${esc(text)}</div>`;
+  msgs.innerHTML += `<div class="msg assistant thinking" id="thinking">Thinking…</div>`;
+  scrollBottom();
+
+  const agentId = selected.id;
+  try {
+    const res = await chat(agentId, text, conv.convId);
+    conv.convId = res.conversation_id;
+    conv.messages.push({ role: 'assistant', text: res.message });
+  } catch (e) {
+    conv.messages.push({ role: 'assistant', text: `Error: ${e.message}` });
+  }
+
+  btn.disabled = false;
+  // Re-render only if this agent is still selected
+  if (selected?.id === agentId) renderChat();
+}
+
+// ── Filters ────────────────────────────────────────
+document.querySelector('.filters').addEventListener('click', e => {
+  const chip = e.target.closest('.chip');
+  if (!chip) return;
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  srcFilter = chip.dataset.src;
+  refresh();
+});
+
+let debounce;
+document.getElementById('search').addEventListener('input', e => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => { query = e.target.value.trim(); refresh(); }, 200);
+});
+
+// ── Refresh ────────────────────────────────────────
+async function refresh() {
+  agents = await loadAgents();
+  if (selected) {
+    const updated = agents.find(a => a.id === selected.id);
+    if (updated) selected = updated;
+  }
+  renderList();
+  if (selected) {
+    // Update status dot in header without re-rendering the whole panel
+    const dot = document.querySelector('.chat-header .status-dot');
+    if (dot) { dot.className = `status-dot ${selected.status}`; }
+  }
+}
+
+// ── Utilities ──────────────────────────────────────
+function esc(s) {
+  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Boot ───────────────────────────────────────────
+// Trigger apx discovery immediately using the browser's OBO token,
+// then load the agent list. Discovery also runs in background every 60s.
+async function boot() {
+  await fetch('/api/discover', { method: 'POST' }).catch(() => {});
+  refresh();
+}
+
+boot();
+setInterval(refresh, 30_000);
+</script>
+</body>
 </html>

@@ -83,16 +83,34 @@ async def test_proxy_chat_serving_endpoint(serving_agent: HubAgent):
 @pytest.mark.asyncio
 async def test_proxy_chat_genie_space(genie_agent: HubAgent):
     ws = MagicMock()
+    # First call: start conversation; second: message still pending; third: completed
     ws.api_client.do.side_effect = [
         {"conversation_id": "conv-new", "message_id": "msg-1"},
-        {"attachments": [{"text": {"content": "Sales are up 10%"}}]},
+        {"status": "EXECUTING_QUERY"},
+        {"status": "COMPLETED", "attachments": [{"text": {"content": "Sales are up 10%"}}]},
     ]
 
-    request = ChatRequest(agent_id=genie_agent.id, message="How are sales?")
-    result = await proxy_chat(request, genie_agent, headers={}, ws=ws)
+    with patch("hub.chat.asyncio.sleep", new_callable=AsyncMock):
+        request = ChatRequest(agent_id=genie_agent.id, message="How are sales?")
+        result = await proxy_chat(request, genie_agent, headers={}, ws=ws)
 
     assert result.message == "Sales are up 10%"
     assert result.conversation_id is not None
+
+
+@pytest.mark.asyncio
+async def test_proxy_chat_genie_space_failed(genie_agent: HubAgent):
+    ws = MagicMock()
+    ws.api_client.do.side_effect = [
+        {"conversation_id": "conv-new", "message_id": "msg-1"},
+        {"status": "FAILED"},
+    ]
+
+    with patch("hub.chat.asyncio.sleep", new_callable=AsyncMock):
+        request = ChatRequest(agent_id=genie_agent.id, message="Bad query")
+        result = await proxy_chat(request, genie_agent, headers={}, ws=ws)
+
+    assert "failed" in result.message.lower()
 
 
 @pytest.mark.asyncio
