@@ -379,7 +379,7 @@ export async function* streamViaSDK(params: RunParams): AsyncGenerator<string> {
       if (tool) {
         try {
           const args = JSON.parse(tc.function.arguments);
-          const output = await tool.handler(args);
+          const output = await runWithContext({ oboHeaders: params.oboHeaders }, () => tool.handler(args));
           result = typeof output === 'string' ? output : JSON.stringify(output);
         } catch (e) {
           result = `Tool error: ${e instanceof Error ? e.message : String(e)}`;
