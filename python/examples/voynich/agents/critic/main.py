@@ -85,7 +85,7 @@ def find_internal_contradiction(
         # Find words appearing in multiple sections with this decoding
         word_list = list(set(decoded_text.lower().split()))[:20]
         if word_list:
-            shared = sql.execute(ff""f"
+            shared = sql.execute(f"""
                 SELECT word, COUNT(DISTINCT section) as section_count, 
                        COLLECT_SET(section) as sections
                 FROM {_CATALOG}.voynich_corpus.decoded_word_registry
@@ -131,7 +131,7 @@ def check_illustration_mismatch(
     """
     # Get illustration metadata
     if sql:
-        rows = sql.execute(ff""f"
+        rows = sql.execute(f"""
             SELECT illustration_type, identified_subjects, semantic_tags
             FROM {_CATALOG}.voynich_corpus.illustration_metadata
             WHERE page = {page} LIMIT 1

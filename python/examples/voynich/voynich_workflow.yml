@@ -36,7 +36,7 @@ job_clusters:
   - job_cluster_key: cpu_cluster
     new_cluster:
       spark_version: "15.4.x-scala2.12"
-      node_type_id:  "m5.2xlarge"
+      node_type_id:  "i3.2xlarge"
       num_workers:   4
       autoscale:
         min_workers: 2
@@ -46,26 +46,27 @@ job_clusters:
         spark.databricks.delta.optimizeWrite.enabled: "true"
         spark.databricks.delta.autoCompact.enabled:   "true"
       spark_env_vars:
-        VOYNICH_POPULATION_TABLE: "voynich.evolution.population"
-        VOYNICH_REVIEW_TABLE:     "voynich.evolution.review_queue"
+        VOYNICH_CATALOG:          "serverless_stable_s0v155_catalog"
+        VOYNICH_POPULATION_TABLE: "serverless_stable_s0v155_catalog.voynich_evolution.population"
+        VOYNICH_REVIEW_TABLE:     "serverless_stable_s0v155_catalog.voynich_evolution.review_queue"
         MLFLOW_EXPERIMENT:        "/voynich/evolutionary_search"
-        # Agent URLs — set these to your actual Databricks Apps URLs
-        DECIPHERER_AGENT_URL:  "https://voynich-decipherer.{{workspace_url}}.databricksapps.com"
-        HISTORIAN_AGENT_URL:   "https://voynich-historian.{{workspace_url}}.databricksapps.com"
-        CRITIC_AGENT_URL:      "https://voynich-critic.{{workspace_url}}.databricksapps.com"
-        JUDGE_AGENT_URL:       "https://voynich-judge.{{workspace_url}}.databricksapps.com"
-        FITNESS_AGENT_URLS:    "https://voynich-historian.{{workspace_url}}.databricksapps.com,https://voynich-critic.{{workspace_url}}.databricksapps.com"
+        # Agent URLs (fe-stable workspace — ID 7474657313075170)
+        DECIPHERER_AGENT_URL:  "https://voynich-decipherer-7474657313075170.aws.databricksapps.com"
+        HISTORIAN_AGENT_URL:   "https://voynich-historian-7474657313075170.aws.databricksapps.com"
+        CRITIC_AGENT_URL:      "https://voynich-critic-7474657313075170.aws.databricksapps.com"
+        JUDGE_AGENT_URL:       "https://voynich-judge-7474657313075170.aws.databricksapps.com"
+        FITNESS_AGENT_URLS:    "https://voynich-historian-7474657313075170.aws.databricksapps.com,https://voynich-critic-7474657313075170.aws.databricksapps.com"
         # Infrastructure
-        DATABRICKS_WAREHOUSE_ID: "{{warehouse_id}}"
+        DATABRICKS_WAREHOUSE_ID: "2053827451af25b6"
         # Loop config
         POPULATION_SIZE:       "500"
         MUTATION_BATCH:        "50"
         MAX_GENERATIONS:       "2000"
         ESCALATION_THRESHOLD:  "0.85"
 
-# Wheel location (built by CI and uploaded to DBFS)
+# Wheel location (UC Volume — DBFS root disabled on fe-stable)
 libraries_default:
-  - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+  - whl: "/Volumes/serverless_stable_s0v155_catalog/voynich_evolution/wheels/apx_agent-0.16.0-py3-none-any.whl"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TASKS
@@ -78,12 +79,12 @@ tasks:
     description: "Generate initial population (generation 0) via Decipherer agent"
     job_cluster_key: cpu_cluster
     python_wheel_task:
-      package_name:  "apx-agent-loop"
+      package_name:  "apx-agent"
       entry_point:   "voynich-seed"
       named_parameters:
         n: "500"
     libraries:
-      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+      - whl: "/Volumes/serverless_stable_s0v155_catalog/voynich_evolution/wheels/apx_agent-0.16.0-py3-none-any.whl"
     timeout_seconds: 1800
     max_retries: 1
     retry_on_timeout: false
@@ -95,13 +96,13 @@ tasks:
       - task_key: seed_population
     job_cluster_key: cpu_cluster
     python_wheel_task:
-      package_name:  "apx-agent-loop"
+      package_name:  "apx-agent"
       entry_point:   "voynich-run"
       named_parameters:
         n_generations:   "500"
         from_generation: "1"
     libraries:
-      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+      - whl: "/Volumes/serverless_stable_s0v155_catalog/voynich_evolution/wheels/apx_agent-0.16.0-py3-none-any.whl"
     timeout_seconds: 64800   # 18 hours
     max_retries: 1
 
@@ -112,13 +113,13 @@ tasks:
       - task_key: run_batch_1
     job_cluster_key: cpu_cluster
     python_wheel_task:
-      package_name:  "apx-agent-loop"
+      package_name:  "apx-agent"
       entry_point:   "voynich-export"
       named_parameters:
         n:           "50"
         output_path: "/dbfs/voynich/exports/checkpoint_gen500.json"
     libraries:
-      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+      - whl: "/Volumes/serverless_stable_s0v155_catalog/voynich_evolution/wheels/apx_agent-0.16.0-py3-none-any.whl"
     timeout_seconds: 600
 
   # ── Task 4: Human review gate ─────────────────────────────────────────────
@@ -145,12 +146,12 @@ tasks:
       - task_key: human_review_gate
     job_cluster_key: cpu_cluster
     python_wheel_task:
-      package_name:  "apx-agent-loop"
+      package_name:  "apx-agent"
       entry_point:   "voynich-vacuum"
       named_parameters:
         keep_generations: "500"
     libraries:
-      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+      - whl: "/Volumes/serverless_stable_s0v155_catalog/voynich_evolution/wheels/apx_agent-0.16.0-py3-none-any.whl"
     timeout_seconds: 1800
 
   # ── Task 6: Generation batch 2 (gens 501–2000) ────────────────────────────
@@ -160,13 +161,13 @@ tasks:
       - task_key: vacuum_after_batch_1
     job_cluster_key: cpu_cluster
     python_wheel_task:
-      package_name:  "apx-agent-loop"
+      package_name:  "apx-agent"
       entry_point:   "voynich-run"
       named_parameters:
         n_generations:   "1500"
         from_generation: "501"
     libraries:
-      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+      - whl: "/Volumes/serverless_stable_s0v155_catalog/voynich_evolution/wheels/apx_agent-0.16.0-py3-none-any.whl"
     timeout_seconds: 172800   # 48 hours
     max_retries: 2
 
@@ -177,13 +178,13 @@ tasks:
       - task_key: run_batch_2
     job_cluster_key: cpu_cluster
     python_wheel_task:
-      package_name:  "apx-agent-loop"
+      package_name:  "apx-agent"
       entry_point:   "voynich-export"
       named_parameters:
         n:           "100"
         output_path: "/dbfs/voynich/exports/final_top100.json"
     libraries:
-      - whl: "dbfs:/voynich/wheels/apx_agent_loop-0.1.0-py3-none-any.whl"
+      - whl: "/Volumes/serverless_stable_s0v155_catalog/voynich_evolution/wheels/apx_agent-0.16.0-py3-none-any.whl"
     timeout_seconds: 600
 
 # ─────────────────────────────────────────────────────────────────────────────

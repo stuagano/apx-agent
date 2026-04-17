@@ -55,8 +55,8 @@ def query_eva_corpus(
     Query statistical properties of the EVA-transliterated corpus for a given section.
     Returns character frequencies, word frequencies, avg word length, token count.
     """
-    section_filter = "" if section == "all" else f"WHERE section = '{section}f'"
-    rows = sql.execute(ff""f"
+    section_filter = "" if section == "all" else f"WHERE section = '{section}'"
+    rows = sql.execute(f"""
         SELECT
             symbol,
             COUNT(*) as freq,
@@ -67,7 +67,7 @@ def query_eva_corpus(
         ORDER BY freq DESC
         LIMIT 50
     """)
-    word_rows = sql.execute(ff""f"
+    word_rows = sql.execute(f"""
         SELECT
             word,
             COUNT(*) as freq,
@@ -87,14 +87,14 @@ def query_eva_corpus(
 
 
 def get_symbol_statistics(
-    section: Annotated[str, "Section to analyze, or 'allf'"] = "all",
+    section: Annotated[str, "Section to analyze, or 'all'"] = "all",
     sql: Dependencies.Sql = None,
 ) -> dict:
     """
     Compute cryptographic statistics on EVA text: index of coincidence,
     bigram entropy, word length distribution. Used to assess cipher type.
     """
-    rows = sql.execute(ff""f"
+    rows = sql.execute(f"""
         SELECT symbol, COUNT(*) as freq
         FROM {_CATALOG}.voynich_corpus.eva_chars
         {'WHERE section = ' + repr(section) if section != 'all' else ''}
