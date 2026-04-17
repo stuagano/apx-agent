@@ -81,6 +81,10 @@ export type {
   EvalSummary,
 } from './eval/index.js';
 
+// Genie tool factory
+export { genieTool } from './genie.js';
+export type { GenieToolOptions } from './genie.js';
+
 // Connectors — domain tool factories for Lakebase, Vector Search, Doc Parser
 export {
   parseEntitySchema,
