@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { catalogTool, lineageTool, schemaTool } from '../src/catalog.js';
+import { catalogTool, lineageTool, schemaTool, ucFunctionTool } from '../src/catalog.js';
 import { runWithContext } from '../src/agent/request-context.js';
 
 // ---------------------------------------------------------------------------
@@ -213,5 +213,132 @@ describe('schemaTool', () => {
 
     const call = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[1].headers.Authorization).toBe('Bearer ctx-token');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ucFunctionTool
+// ---------------------------------------------------------------------------
+
+function makeUcFetchSequence(
+  funcDef: object,
+  warehouseList: object,
+  sqlResult: object,
+) {
+  const responses = [funcDef, warehouseList, sqlResult];
+  let i = 0;
+  return vi.fn().mockImplementation(async () => {
+    const body = responses[Math.min(i++, responses.length - 1)];
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+  });
+}
+
+const FUNC_DEF = {
+  data_type: 'STRING',
+  input_params: {
+    parameters: [
+      { name: 'text', type_name: 'STRING', position: 0 },
+      { name: 'threshold', type_name: 'DOUBLE', position: 1 },
+    ],
+  },
+};
+
+const WH_LIST = { warehouses: [{ id: 'wh-1', warehouse_type: 'PRO_SERVERLESS' }] };
+
+const SQL_SCALAR = {
+  status: { state: 'SUCCEEDED' },
+  manifest: { schema: { columns: [{ name: 'classify_intent' }] } },
+  result: { data_array: [['greeting']] },
+};
+
+describe('ucFunctionTool', () => {
+  it('uses short function name as default tool name', () => {
+    const tool = ucFunctionTool('main.tools.classify_intent', { host: HOST, oboHeaders: OBO });
+    expect(tool.name).toBe('classify_intent');
+  });
+
+  it('accepts custom name', () => {
+    const tool = ucFunctionTool('main.tools.fn', { name: 'my_fn', host: HOST, oboHeaders: OBO });
+    expect(tool.name).toBe('my_fn');
+  });
+
+  it('includes function name in default description', () => {
+    const tool = ucFunctionTool('main.tools.classify_intent', { host: HOST, oboHeaders: OBO });
+    expect(tool.description).toContain('main.tools.classify_intent');
+  });
+
+  it('accepts custom description', () => {
+    const tool = ucFunctionTool('main.tools.fn', { description: 'My fn', host: HOST, oboHeaders: OBO });
+    expect(tool.description).toBe('My fn');
+  });
+
+  it('builds correct SQL and returns scalar result', async () => {
+    global.fetch = makeUcFetchSequence(FUNC_DEF, WH_LIST, SQL_SCALAR);
+
+    const tool = ucFunctionTool('main.tools.classify_intent', { host: HOST, oboHeaders: OBO });
+    const result = await tool.handler({ params: { text: 'hello', threshold: 0.8 } });
+    expect(result).toBe('greeting');
+
+    // Check SQL call (3rd fetch)
+    const sqlCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[2];
+    const body = JSON.parse(sqlCall[1].body);
+    expect(body.statement).toContain("main.tools.classify_intent('hello', 0.8)");
+  });
+
+  it('quotes strings and passes numbers raw', async () => {
+    global.fetch = makeUcFetchSequence(FUNC_DEF, WH_LIST, SQL_SCALAR);
+
+    const tool = ucFunctionTool('main.tools.classify_intent', { host: HOST, oboHeaders: OBO });
+    await tool.handler({ params: { text: "it's alive", threshold: 0.5 } });
+
+    const sqlCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[2];
+    const body = JSON.parse(sqlCall[1].body);
+    expect(body.statement).toContain("'it''s alive'");
+    expect(body.statement).toContain('0.5');
+  });
+
+  it('caches function definition across calls', async () => {
+    let callCount = 0;
+    global.fetch = vi.fn().mockImplementation(async (url: string) => {
+      callCount++;
+      let body: object;
+      if (url.includes('/functions/')) body = FUNC_DEF;
+      else if (url.includes('/warehouses')) body = WH_LIST;
+      else body = SQL_SCALAR;
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    });
+
+    const tool = ucFunctionTool('main.tools.fn', { host: HOST, oboHeaders: OBO, warehouseId: 'wh-1' });
+    await tool.handler({ params: { text: 'a', threshold: 0.5 } });
+    const countAfterFirst = callCount;
+    await tool.handler({ params: { text: 'b', threshold: 0.6 } });
+
+    // Second call should skip the function definition fetch (1 fewer fetch)
+    expect(callCount - countAfterFirst).toBeLessThan(countAfterFirst);
+  });
+
+  it('returns table result for multi-row response', async () => {
+    const multiRowSql = {
+      status: { state: 'SUCCEEDED' },
+      manifest: { schema: { columns: [{ name: 'a' }, { name: 'b' }] } },
+      result: { data_array: [['1', '2'], ['3', '4']] },
+    };
+    global.fetch = makeUcFetchSequence(FUNC_DEF, WH_LIST, multiRowSql);
+
+    const tool = ucFunctionTool('main.tools.fn', { host: HOST, oboHeaders: OBO });
+    const result = await tool.handler({ params: { text: 'x', threshold: 0.5 } }) as any[];
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual({ a: '1', b: '2' });
+  });
+
+  it('auto-discovers serverless warehouse when warehouseId not provided', async () => {
+    global.fetch = makeUcFetchSequence(FUNC_DEF, WH_LIST, SQL_SCALAR);
+
+    const tool = ucFunctionTool('main.tools.fn', { host: HOST, oboHeaders: OBO });
+    await tool.handler({ params: { text: 'x', threshold: 0.5 } });
+
+    const sqlCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[2];
+    const body = JSON.parse(sqlCall[1].body);
+    expect(body.warehouse_id).toBe('wh-1');
   });
 });

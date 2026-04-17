@@ -57,6 +57,31 @@ export interface CatalogToolOptions {
   oboHeaders?: Record<string, string>;
 }
 
+export interface UcFunctionToolOptions extends CatalogToolOptions {
+  /** SQL warehouse ID. Auto-discovered (prefers serverless) if not provided. */
+  warehouseId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// SQL literal helper (used by ucFunctionTool)
+// ---------------------------------------------------------------------------
+
+function toSqlLiteral(value: unknown, typeName: string): string {
+  if (value === null || value === undefined) return 'NULL';
+  const t = typeName.toUpperCase();
+  if (t === 'BOOLEAN') return value ? 'TRUE' : 'FALSE';
+  if (['STRING', 'CHAR', 'VARCHAR', 'TEXT'].includes(t)) {
+    const escaped = String(value).replace(/'/g, "''");
+    return `'${escaped}'`;
+  }
+  // Numeric — validate, then pass raw
+  const n = Number(value);
+  if (!isNaN(n)) return String(value);
+  // Fallback: quote as string
+  const escaped = String(value).replace(/'/g, "''");
+  return `'${escaped}'`;
+}
+
 // ---------------------------------------------------------------------------
 // UC API response types
 // ---------------------------------------------------------------------------
@@ -217,6 +242,138 @@ export function schemaTool(opts: CatalogToolOptions = {}): AgentTool {
         nullable: col.nullable ?? true,
         position: col.position ?? 0,
       }));
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// ucFunctionTool
+// ---------------------------------------------------------------------------
+
+interface UcFunctionParam {
+  name: string;
+  position: number;
+  type_name: string;
+}
+
+interface UcFunctionDef {
+  parameters: UcFunctionParam[];
+  data_type: string;
+}
+
+interface SqlStatementResponse {
+  status: { state: string; error?: { message?: string } };
+  manifest?: { schema?: { columns?: Array<{ name: string }> } };
+  result?: { data_array?: Array<Array<string | null>> };
+}
+
+interface WarehouseListResponse {
+  warehouses?: Array<{ id: string; warehouse_type?: string }>;
+}
+
+async function resolveWarehouseId(host: string, token: string, warehouseId?: string): Promise<string> {
+  if (warehouseId) return warehouseId;
+  const data = await dbFetch<WarehouseListResponse>(`${host}/api/2.0/sql/warehouses`, { token, method: 'GET' });
+  const warehouses = data.warehouses ?? [];
+  // Prefer serverless
+  const serverless = warehouses.find((w) => w.warehouse_type?.toLowerCase().includes('serverless'));
+  const first = warehouses.find((w) => w.id);
+  const id = (serverless ?? first)?.id;
+  if (!id) throw new Error('No SQL warehouse available in this workspace');
+  return id;
+}
+
+async function executeSqlStatement(
+  host: string,
+  token: string,
+  warehouseId: string,
+  statement: string,
+): Promise<Array<Record<string, unknown>>> {
+  const data = await dbFetch<SqlStatementResponse>(`${host}/api/2.0/sql/statements/`, {
+    token,
+    method: 'POST',
+    body: { statement, warehouse_id: warehouseId, wait_timeout: '30s', disposition: 'INLINE', format: 'JSON_ARRAY' },
+  });
+
+  if (data.status.state !== 'SUCCEEDED') {
+    throw new Error(`SQL failed: ${data.status.error?.message ?? data.status.state}`);
+  }
+
+  const cols = data.manifest?.schema?.columns ?? [];
+  const rows = data.result?.data_array ?? [];
+  return rows.map((row) => Object.fromEntries(cols.map((col, i) => [col.name, row[i] ?? null])));
+}
+
+/**
+ * Create a tool that executes a Unity Catalog function via SQL.
+ *
+ * The function definition is fetched from UC on the first call and cached —
+ * parameter names, types, and order are derived automatically.
+ *
+ * @param functionName - Fully qualified UC function name: `catalog.schema.function`.
+ * @param opts         - Optional overrides for name, description, host, warehouseId, and auth.
+ *
+ * @example
+ * ucFunctionTool('main.tools.classify_intent', {
+ *   description: 'Classify user intent. params: {text, min_confidence}',
+ * })
+ */
+export function ucFunctionTool(functionName: string, opts: UcFunctionToolOptions = {}): AgentTool {
+  const shortName = functionName.split('.').pop() ?? functionName;
+  const name = opts.name ?? shortName;
+  const description =
+    opts.description ??
+    `Execute the Unity Catalog function \`${functionName}\`. ` +
+      `Pass parameters as a JSON object with parameter names as keys, e.g. {"param1": "value1", "param2": 42}.`;
+
+  // Cached function definition — populated on first handler call
+  let funcDef: UcFunctionDef | null = null;
+
+  return defineTool({
+    name,
+    description,
+    parameters: z.object({
+      params: z
+        .record(z.string(), z.unknown())
+        .describe('Function parameters as {param_name: value} pairs'),
+    }),
+    handler: async ({ params }) => {
+      const host = resolveHost(opts.host);
+      const token = resolveToken(opts.oboHeaders);
+
+      // Fetch and cache function definition on first call
+      if (!funcDef) {
+        const info = await dbFetch<any>(
+          `${host}/api/2.1/unity-catalog/functions/${encodeURIComponent(functionName)}`,
+          { token, method: 'GET' },
+        );
+        funcDef = {
+          data_type: info.data_type ?? '',
+          parameters: ((info.input_params?.parameters ?? []) as any[])
+            .sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0))
+            .map((p: any) => ({
+              name: p.name as string,
+              position: (p.position ?? 0) as number,
+              type_name: (p.type_name ?? 'STRING') as string,
+            })),
+        };
+      }
+
+      // Build SQL call with positional args
+      const sqlArgs = funcDef.parameters.map((p) => toSqlLiteral(params[p.name], p.type_name));
+      const sql =
+        sqlArgs.length === 0
+          ? `SELECT ${functionName}()`
+          : `SELECT ${functionName}(${sqlArgs.join(', ')})`;
+
+      const warehouseId = await resolveWarehouseId(host, token, opts.warehouseId);
+      const rows = await executeSqlStatement(host, token, warehouseId, sql);
+
+      // Scalar: unwrap single cell
+      if (rows.length === 1 && Object.keys(rows[0]).length === 1) {
+        return Object.values(rows[0])[0];
+      }
+      return rows;
     },
   });
 }
