@@ -12,6 +12,7 @@
 import type { Express } from 'express';
 import type { AgentTool } from './tools.js';
 import { toStrictSchema, zodToJsonSchema } from './tools.js';
+import { runWithContext } from './request-context.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -297,7 +298,7 @@ export async function runViaSDK(params: RunParams): Promise<string> {
       if (tool) {
         try {
           const args = JSON.parse(tc.function.arguments);
-          const output = await tool.handler(args);
+          const output = await runWithContext({ oboHeaders: params.oboHeaders }, () => tool.handler(args));
           result = typeof output === 'string' ? output : JSON.stringify(output);
         } catch (e) {
           result = `Tool error: ${e instanceof Error ? e.message : String(e)}`;

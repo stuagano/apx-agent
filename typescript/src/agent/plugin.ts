@@ -25,6 +25,7 @@ import type { Express, Request, Response } from 'express';
 import type { AgentTool, FunctionSchema } from './tools.js';
 import { toolsToFunctionSchemas } from './tools.js';
 import { runViaSDK, streamViaSDK, initDatabricksClient } from './runner.js';
+import { runWithContext } from './request-context.js';
 import { createMcpToolProvider } from './mcp-client.js';
 import type { Runnable, Message } from '../workflows/types.js';
 import { AgentState } from '../workflows/state.js';
@@ -197,7 +198,8 @@ export function createAgentPlugin(config: AgentConfig) {
       for (const tool of tools) {
         router.post(`${apiPrefix}/tools/${tool.name}`, async (req: Request, res: Response) => {
           try {
-            const result = await tool.handler(req.body);
+            const oboHeaders = getOboHeaders(req);
+            const result = await runWithContext({ oboHeaders }, () => tool.handler(req.body));
             res.json(result);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
