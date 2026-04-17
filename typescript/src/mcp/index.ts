@@ -12,6 +12,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Request, Response } from 'express';
 import type { AgentExports } from '../agent/index.js';
 import { zodToJsonSchema } from '../agent/tools.js';
+import { runWithContext } from '../agent/request-context.js';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -115,7 +116,16 @@ export function createMcpPlugin(config: McpConfig, agentExports: () => AgentExpo
           },
           async (args: unknown) => {
             try {
-              const result = await t.handler(args);
+              // Resolve OBO headers from the mcpAuthStore context set in the route handler.
+              // This bridges the MCP auth context into the shared request context so
+              // resolveToken() works identically whether a tool is called via the agent
+              // loop, HTTP routes, or MCP.
+              const mcpAuth = mcpAuthStore.getStore();
+              const oboHeaders: Record<string, string> = {};
+              if (mcpAuth?.oboToken) oboHeaders['x-forwarded-access-token'] = mcpAuth.oboToken;
+              if (mcpAuth?.authorization) oboHeaders['authorization'] = mcpAuth.authorization;
+
+              const result = await runWithContext({ oboHeaders }, () => t.handler(args));
               return {
                 content: [{
                   type: 'text' as const,
