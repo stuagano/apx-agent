@@ -17,6 +17,7 @@
 
 # COMMAND ----------
 
+import os
 import re
 import json
 import requests
@@ -28,6 +29,7 @@ from pyspark.sql.types import (
 )
 
 spark = SparkSession.builder.getOrCreate()
+_CATALOG = os.getenv("VOYNICH_CATALOG", "serverless_stable_s0v155_catalog")
 
 # COMMAND ----------
 
@@ -35,10 +37,11 @@ spark = SparkSession.builder.getOrCreate()
 
 # COMMAND ----------
 
-spark.sql("CREATE CATALOG IF NOT EXISTS voynich")
-spark.sql("CREATE SCHEMA IF NOT EXISTS voynich.corpus")
-spark.sql("CREATE SCHEMA IF NOT EXISTS voynich.evolution")
-spark.sql("CREATE SCHEMA IF NOT EXISTS voynich.medieval")
+# Catalog and schemas are pre-created — just validate they exist
+spark.sql(f"USE CATALOG {_CATALOG}")
+spark.sql("CREATE SCHEMA IF NOT EXISTS voynich_corpus")
+spark.sql("CREATE SCHEMA IF NOT EXISTS voynich_evolution")
+spark.sql("CREATE SCHEMA IF NOT EXISTS voynich_medieval")
 
 print("✓ Schemas created")
 
@@ -54,7 +57,6 @@ print("✓ Schemas created")
 EVA_DBFS_PATH = "/dbfs/voynich/eva_interlinear_zl.txt"
 
 # If file isn't staged, download it
-import os
 if not os.path.exists(EVA_DBFS_PATH):
     # Alternatively: spark.sparkContext.addFile("https://...") 
     # For now, raise an informative error
@@ -165,7 +167,7 @@ with open(EVA_DBFS_PATH, 'r', encoding='utf-8') as f:
                         "paragraph":  int(line_num),
                         "word_pos":   word_pos,
                         "word":       word,
-                        "word_length": len(re.findall(r'ch|sh|th|qo|[a-z]', word)),
+                        "word_length": len(re.findall(r'ch|sh|th|qo|[a-z]f', word)),
                     })
 
 print(f"✓ Parsed {len(all_chars):,} characters across {len(all_words):,} words")
@@ -181,17 +183,17 @@ words_df = spark.createDataFrame(all_words)
     .mode("overwrite")
     .partitionBy("section")
     .option("overwriteSchema", "true")
-    .saveAsTable("voynich.corpus.eva_chars"))
+    .saveAsTable(f"{_CATALOG}.voynich_corpus.eva_chars"))
 
 (words_df.write
     .format("delta")
     .mode("overwrite")
     .partitionBy("section")
     .option("overwriteSchema", "true")
-    .saveAsTable("voynich.corpus.eva_words"))
+    .saveAsTable(f"{_CATALOG}.voynich_corpus.eva_words"))
 
 print("✓ EVA corpus written to Delta")
-display(spark.sql("SELECT section, COUNT(*) as chars FROM voynich.corpus.eva_chars GROUP BY section ORDER BY chars DESC"))
+display(spark.sql(f"SELECT section, COUNT(*) as chars FROM {_CATALOG}.voynich_corpus.eva_chars GROUP BY section ORDER BY chars DESC"))
 
 # COMMAND ----------
 
@@ -226,7 +228,7 @@ ILLUSTRATION_DATA = [
      '["green","brown","red"]', '["vessel","ingredient","preparation","recipe","jar"]',
      "Pharmaceutical preparation scene. Labeled containers."),
     (103, "recipes", "recipe", "Recipe text with plant material",
-     '["green","brown"]', '["recipe","ingredient","take","mix","preparation"]',
+     '["green","brown"]', '["recipe","ingredient","take","mix","preparation"]f',
      "Dense recipe text. Possibly ingredient lists."),
 ]
 
@@ -250,7 +252,7 @@ illus_df = spark.createDataFrame(rows, schema=schema)
     .format("delta")
     .mode("overwrite")
     .option("overwriteSchema", "true")
-    .saveAsTable("voynich.corpus.illustration_metadata"))
+    .saveAsTable(f"{_CATALOG}.voynich_corpus.illustration_metadata"))
 
 print(f"✓ Loaded {len(rows)} illustration records")
 print("⚠️  This is a seed dataset. Expand via the researcher annotation UI.")
@@ -262,7 +264,7 @@ print("⚠️  This is a seed dataset. Expand via the researcher annotation UI."
 # COMMAND ----------
 
 for ddl in [
-    """CREATE TABLE IF NOT EXISTS voynich.evolution.population (
+    f""f"CREATE TABLE IF NOT EXISTS {_CATALOG}.voynich_evolution.population (
         id STRING NOT NULL, generation INT NOT NULL, parent_id STRING,
         cipher_type STRING, source_language STRING,
         symbol_map STRING, null_chars STRING, transformation_rules STRING,
@@ -274,22 +276,22 @@ for ddl in [
         flagged_for_review BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT current_timestamp()
     ) USING DELTA PARTITIONED BY (generation)
-    TBLPROPERTIES ('delta.enableChangeDataFeed'='true','delta.autoOptimize.optimizeWrite'='true')""",
+    TBLPROPERTIES ('delta.enableChangeDataFeed'='true','delta.autoOptimize.optimizeWrite'='truef')""",
 
-    """CREATE TABLE IF NOT EXISTS voynich.evolution.review_queue (
+    f""f"CREATE TABLE IF NOT EXISTS {_CATALOG}.voynich_evolution.review_queue (
         hypothesis_id STRING, reason STRING, expert_type STRING,
-        status STRING DEFAULT 'pending', annotation STRING,
+        status STRING DEFAULT 'pendingf', annotation STRING,
         flagged_at TIMESTAMP DEFAULT current_timestamp(), resolved_at TIMESTAMP
     ) USING DELTA""",
 
-    """CREATE TABLE IF NOT EXISTS voynich.evolution.constraints (
+    f""f"CREATE TABLE IF NOT EXISTS {_CATALOG}.voynich_evolution.constraints (
         id BIGINT GENERATED ALWAYS AS IDENTITY,
         constraint_type STRING, constraint_value STRING, target_section STRING,
         active BOOLEAN DEFAULT TRUE, created_by STRING,
         created_at TIMESTAMP DEFAULT current_timestamp()
     ) USING DELTA""",
 
-    """CREATE TABLE IF NOT EXISTS voynich.evolution.agent_evals (
+    f""f"CREATE TABLE IF NOT EXISTS {_CATALOG}.voynich_evolution.agent_evals (
         agent_name STRING, hypothesis_id STRING, generation INT,
         tool_use_score DOUBLE, reasoning_quality DOUBLE,
         hallucination_confidence DOUBLE, composite_eval_score DOUBLE,
@@ -297,7 +299,7 @@ for ddl in [
         created_at TIMESTAMP DEFAULT current_timestamp()
     ) USING DELTA PARTITIONED BY (generation)""",
 
-    """CREATE TABLE IF NOT EXISTS voynich.corpus.decoded_word_registry (
+    f""f"CREATE TABLE IF NOT EXISTS {_CATALOG}.voynich_corpus.decoded_word_registry (
         eva_word STRING, decoded_word STRING, hypothesis_id STRING,
         generation INT, section STRING, confidence DOUBLE
     ) USING DELTA PARTITIONED BY (generation)""",

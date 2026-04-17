@@ -9,6 +9,7 @@ Deploy as a Databricks App:
     uvicorn main:app --host 0.0.0.0 --port 8000
 """
 import json
+import os
 import re
 import uuid
 from collections import Counter
@@ -16,6 +17,8 @@ from typing import Annotated
 
 from apx_agent import Agent, Dependencies, create_app
 from pydantic import BaseModel, Field
+
+_CATALOG = os.getenv("VOYNICH_CATALOG", "serverless_stable_s0v155_catalog")
 
 
 # ---------------------------------------------------------------------------
@@ -52,24 +55,24 @@ def query_eva_corpus(
     Query statistical properties of the EVA-transliterated corpus for a given section.
     Returns character frequencies, word frequencies, avg word length, token count.
     """
-    section_filter = "" if section == "all" else f"WHERE section = '{section}'"
-    rows = sql.execute(f"""
+    section_filter = "" if section == "all" else f"WHERE section = '{section}f'"
+    rows = sql.execute(ff""f"
         SELECT
             symbol,
             COUNT(*) as freq,
             section
-        FROM voynich.corpus.eva_chars
+        FROM {_CATALOG}.voynich_corpus.eva_chars
         {section_filter}
         GROUP BY symbol, section
         ORDER BY freq DESC
         LIMIT 50
     """)
-    word_rows = sql.execute(f"""
+    word_rows = sql.execute(ff""f"
         SELECT
             word,
             COUNT(*) as freq,
             AVG(LENGTH(word)) as avg_len
-        FROM voynich.corpus.eva_words
+        FROM {_CATALOG}.voynich_corpus.eva_words
         {section_filter}
         GROUP BY word
         ORDER BY freq DESC
@@ -84,16 +87,16 @@ def query_eva_corpus(
 
 
 def get_symbol_statistics(
-    section: Annotated[str, "Section to analyze, or 'all'"] = "all",
+    section: Annotated[str, "Section to analyze, or 'allf'"] = "all",
     sql: Dependencies.Sql = None,
 ) -> dict:
     """
     Compute cryptographic statistics on EVA text: index of coincidence,
     bigram entropy, word length distribution. Used to assess cipher type.
     """
-    rows = sql.execute(f"""
+    rows = sql.execute(ff""f"
         SELECT symbol, COUNT(*) as freq
-        FROM voynich.corpus.eva_chars
+        FROM {_CATALOG}.voynich_corpus.eva_chars
         {'WHERE section = ' + repr(section) if section != 'all' else ''}
         GROUP BY symbol
     """)
@@ -169,7 +172,6 @@ def propose_initial_population(
     """
     seeds = []
     import random
-
     for i in range(n):
         cipher_type = CIPHER_TYPES[i % len(CIPHER_TYPES)]
         language = SOURCE_LANGUAGES[i % len(SOURCE_LANGUAGES)]

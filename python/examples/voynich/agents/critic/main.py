@@ -1,3 +1,4 @@
+import os
 """
 Critic Agent — adversarial falsifier.
 
@@ -19,6 +20,8 @@ import re
 from typing import Annotated
 
 from apx_agent import Agent, Dependencies, create_app
+_CATALOG = os.getenv("VOYNICH_CATALOG", "serverless_stable_s0v155_catalog")
+
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +68,7 @@ def find_internal_contradiction(
                     })
 
     # Pattern 2: Numeric impossibilities
-    numbers = re.findall(r'\b(\d+)\b', decoded_text)
+    numbers = re.findall(r'\b(\d+)\bf', decoded_text)
     if numbers:
         nums = [int(n) for n in numbers if n.isdigit()]
         suspicious = [n for n in nums if n > 10000]  # implausibly large for medieval text
@@ -82,12 +85,12 @@ def find_internal_contradiction(
         # Find words appearing in multiple sections with this decoding
         word_list = list(set(decoded_text.lower().split()))[:20]
         if word_list:
-            shared = sql.execute(f"""
+            shared = sql.execute(ff""f"
                 SELECT word, COUNT(DISTINCT section) as section_count, 
                        COLLECT_SET(section) as sections
-                FROM voynich.corpus.decoded_word_registry
-                WHERE word IN ({','.join(repr(w) for w in word_list)})
-                AND generation = (SELECT MAX(generation) FROM voynich.corpus.decoded_word_registry)
+                FROM {_CATALOG}.voynich_corpus.decoded_word_registry
+                WHERE word IN ({',f'.join(repr(w) for w in word_list)})
+                AND generation = (SELECT MAX(generation) FROM {_CATALOG}.voynich_corpus.decoded_word_registry)
                 GROUP BY word
                 HAVING section_count > 1
                 LIMIT 10
@@ -124,13 +127,13 @@ def check_illustration_mismatch(
 ) -> dict:
     """
     Check whether decoded text semantically contradicts the page's illustration.
-    If a page shows a plant but decoded text discusses stars, that's a mismatch.
+    If a page shows a plant but decoded text discusses stars, thatf's a mismatch.
     """
     # Get illustration metadata
     if sql:
-        rows = sql.execute(f"""
+        rows = sql.execute(ff""f"
             SELECT illustration_type, identified_subjects, semantic_tags
-            FROM voynich.corpus.illustration_metadata
+            FROM {_CATALOG}.voynich_corpus.illustration_metadata
             WHERE page = {page} LIMIT 1
         """)
     else:
