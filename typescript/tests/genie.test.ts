@@ -4,6 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { genieTool } from '../src/genie.js';
+import { runWithContext } from '../src/agent/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Mock fetch
@@ -132,7 +133,7 @@ describe('genieTool handler', () => {
     vi.useRealTimers();
   });
 
-  it('uses OBO header token when provided', async () => {
+  it('uses OBO header token when provided explicitly', async () => {
     global.fetch = makeMockFetch(
       { conversation_id: 'conv-1', message_id: 'msg-1' },
       { status: 'COMPLETED', attachments: [{ text: { content: 'ok' } }] },
@@ -143,5 +144,22 @@ describe('genieTool handler', () => {
 
     const firstCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(firstCall[1].headers.Authorization).toBe('Bearer obo-token');
+  });
+
+  it('automatically uses OBO token from request context', async () => {
+    global.fetch = makeMockFetch(
+      { conversation_id: 'conv-1', message_id: 'msg-1' },
+      { status: 'COMPLETED', attachments: [{ text: { content: 'ok' } }] },
+    );
+
+    // No explicit oboHeaders — token comes from AsyncLocalStorage context
+    const tool = genieTool('space-123');
+    await runWithContext(
+      { oboHeaders: { 'x-forwarded-access-token': 'context-token' } },
+      () => tool.handler({ question: 'test' }),
+    );
+
+    const firstCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(firstCall[1].headers.Authorization).toBe('Bearer context-token');
   });
 });
