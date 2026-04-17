@@ -2,7 +2,33 @@
 
 A standard set of tools for building AI agents on Databricks Apps. Available in **Python** and **TypeScript**.
 
-Both implementations share the same capabilities: typed tool registration, MCP server, A2A discovery, sub-agent composition, registry auto-registration, and a dev UI.
+## Why this exists
+
+The hardest problem when building agents on Databricks Apps isn't the LLM loop — it's **auth**.
+
+Databricks Apps solves *inbound* auth beautifully. When a user hits your app, the platform validates their OAuth token and injects it into your request as `X-Forwarded-Access-Token`. But the platform has no visibility into your app's *outbound* calls. When your tool handler calls the Genie API, runs a SQL statement, queries Unity Catalog, or talks to another agent app — that's just a regular HTTP call from inside a Node or Python process. Nothing automatically threads the user's token to it.
+
+So your tools silently run as the **app's service principal** instead of the **calling user**. This means either too much access (governance violation) or too little (the user's data isn't reachable). Every developer has to manually extract the OBO header, pass it through every function call, and attach it to every outbound `fetch`. Most don't — and the ones who try get it wrong more often than not.
+
+apx-agent fixes this at the framework level:
+
+1. **Extracts** the user's OBO token from every inbound request
+2. **Stores** it in per-request async context (`AsyncLocalStorage` in TS, FastAPI dependency injection in Python)
+3. **Provides** a single `resolveToken()` that every tool, connector, and sub-agent call uses automatically
+
+```typescript
+// You write this:
+const tool = genieTool('abc123');
+
+// The framework handles this:
+//   inbound request → extract X-Forwarded-Access-Token → store in async context
+//   tool handler runs → resolveToken() reads from context → outbound call uses user's token
+//   user's Genie permissions apply, not the service principal's
+```
+
+Every built-in tool factory (`genieTool`, `catalogTool`, `lineageTool`, `schemaTool`, `ucFunctionTool`), every connector (`createLakebaseQueryTool`, `createVSQueryTool`), every external MCP client call, and every sub-agent invocation forwards the user's token automatically. Custom tools get it too — just call `resolveToken()` from `appkit-agent`.
+
+**This is the #1 pain point** customers hit when building agents on Databricks Apps, and it's the core reason apx-agent exists. Everything else — typed tools, MCP server, A2A discovery, workflow agents — is built on top of this foundation.
 
 ## Quick start
 
@@ -219,7 +245,7 @@ apx-agent apps work standalone, as Supervisor sub-agents (via MCP), or as Databr
 
 **Typed tools with dependency injection** — Type hints and docstrings generate tool schemas automatically. Parameters typed as `Dependencies.Workspace` or `Dependencies.UserClient` are injected by FastAPI and excluded from the schema — the LLM never sees auth as a parameter, but your function gets a live, per-user authenticated SDK client.
 
-**OBO token forwarding** — Databricks Apps authenticate users via OAuth On-Behalf-Of tokens. apx-agent propagates these automatically across app-to-app calls: it first routes through the Supervisor gateway (`model="apps/<name>"`) for OBO, then falls back to forwarding `X-Forwarded-Access-Token` directly. Your tools always run as the calling user, not the app's service principal.
+**Automatic OBO token forwarding** — The core problem described above, solved. Every outbound Databricks API call — Genie, Unity Catalog, SQL execution, Vector Search, MCP servers, sub-agent calls — automatically carries the calling user's OAuth token. A single `resolveToken()` handles the full fallback chain: per-request context → explicit headers → `DATABRICKS_TOKEN` env var. Custom tools and third-party connectors get this for free by importing `resolveToken` from the public API.
 
 **Workflow agents** — `SequentialAgent`, `ParallelAgent`, `LoopAgent`, `RouterAgent`, and `HandoffAgent` give you deterministic, developer-defined control flow on top of the LLM. These complement the Supervisor API's probabilistic routing for cases where step order matters.
 
