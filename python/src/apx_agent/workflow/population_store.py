@@ -408,7 +408,7 @@ class PopulationStore:
         resp = self.ws.statement_execution.execute_statement(
             warehouse_id=self.config.warehouse_id,
             statement=sql.strip(),
-            wait_timeout="60s",
+            wait_timeout="50s",
         )
         if resp.status.state == StatementState.FAILED:
             raise RuntimeError(

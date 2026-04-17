@@ -23,9 +23,29 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import json
 import os
 import sys
+
+
+def _run_async(coro):
+    """Run an async coroutine safely, even from inside a running event loop (IPython/Jupyter)."""
+    try:
+        asyncio.get_running_loop()
+        # Already inside an event loop — run in a separate thread
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
+def _inject_job_params(unknown_args: list[str]) -> None:
+    """Databricks passes job parameters as --KEY=value CLI args. Inject into os.environ."""
+    for arg in unknown_args:
+        if arg.startswith("--") and "=" in arg:
+            key, _, value = arg[2:].partition("=")
+            os.environ.setdefault(key, value)
 
 
 def _build_config_from_env():
@@ -69,7 +89,8 @@ def seed_population():
     """
     parser = argparse.ArgumentParser(description="Seed Voynich evolutionary population")
     parser.add_argument("--n", type=int, default=500, help="Number of seed hypotheses")
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    _inject_job_params(unknown)
 
     print(f"[voynich-seed] Seeding population with {args.n} hypotheses...")
 
@@ -84,7 +105,7 @@ def seed_population():
     loop = LoopAgent(config=config)
 
     # Call Decipherer to generate seed hypotheses
-    seed_hypotheses = asyncio.run(loop._mutate(parents=[], generation=0))
+    seed_hypotheses = _run_async(loop._mutate(parents=[], generation=0, ws=ws))
     if not seed_hypotheses:
         print("[voynich-seed] WARNING: Decipherer returned 0 hypotheses. Using fallback seeder.")
         # Fallback: generate minimal diversity seed using built-in logic
@@ -126,7 +147,8 @@ def run_generation_batch():
     parser = argparse.ArgumentParser(description="Run Voynich evolutionary generations")
     parser.add_argument("--n_generations",   type=int, default=500, help="Generations to run")
     parser.add_argument("--from_generation", type=int, default=-1,  help="Starting generation (-1=auto)")
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    _inject_job_params(unknown)
 
     print(f"[voynich-run] Running {args.n_generations} generations...")
 
@@ -164,7 +186,7 @@ def run_generation_batch():
             loop._current_generation = gen
             loop._running = True
 
-            result = asyncio.run(
+            result = _run_async(
                 loop._run_generation(gen, store, ws, parent_run_id="batch")
             )
             results.append(result)
@@ -219,7 +241,8 @@ def vacuum_population():
     parser = argparse.ArgumentParser(description="Vacuum Voynich population table")
     parser.add_argument("--keep_generations", type=int, default=100,
                         help="Keep top-N generations, vacuum the rest")
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    _inject_job_params(unknown)
 
     config = _build_config_from_env()
     ws     = _build_workspace_client()
@@ -267,7 +290,8 @@ def export_top_candidates():
     parser.add_argument("--n",           type=int, default=20)
     parser.add_argument("--output_path", type=str,
                         default="/dbfs/voynich/exports/top_candidates.json")
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    _inject_job_params(unknown)
 
     config = _build_config_from_env()
     ws     = _build_workspace_client()
