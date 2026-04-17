@@ -4,17 +4,25 @@ A standard set of tools for building AI agents on Databricks Apps. Available in 
 
 ## Why this exists
 
-The hardest problem when building agents on Databricks Apps isn't the LLM loop — it's **auth**.
+### The token propagation problem
 
-Databricks Apps solves *inbound* auth beautifully. When a user hits your app, the platform validates their OAuth token and injects it into your request as `X-Forwarded-Access-Token`. But the platform has no visibility into your app's *outbound* calls. When your tool handler calls the Genie API, runs a SQL statement, queries Unity Catalog, or talks to another agent app — that's just a regular HTTP call from inside a Node or Python process. Nothing automatically threads the user's token to it.
+When a service receives a request on behalf of a user and then makes its own outbound calls, the user's identity needs to travel with those calls. This is a well-understood infrastructure problem. OpenTelemetry solved it for trace context. Service meshes solve it for mutual TLS. AWS IAM solves it for role chaining. The pattern is always the same: capture per-request context at the boundary, store it in an ambient scope, and make it available to any code that runs within that request — without requiring every function in the call chain to explicitly pass it.
 
-So your tools silently run as the **app's service principal** instead of the **calling user**. This means either too much access (governance violation) or too little (the user's data isn't reachable). Every developer has to manually extract the OBO header, pass it through every function call, and attach it to every outbound `fetch`. Most don't — and the ones who try get it wrong more often than not.
+Databricks Apps has this problem with OAuth. The platform handles the *inbound* side: when a user hits your app, it validates their token and injects it as `X-Forwarded-Access-Token`. But it has no visibility into the app's *outbound* calls — a `fetch` to the Genie API, a SQL statement execution, a Unity Catalog lookup, a call to another agent app. Those are just HTTP calls from inside a process. Nothing threads the user's token to them.
 
-apx-agent fixes this at the framework level:
+Without that thread, outbound calls silently run as the app's service principal instead of the calling user. This breaks in both directions — either the service principal has broader access than the user should (governance violation) or it lacks access to the user's data entirely.
 
-1. **Extracts** the user's OBO token from every inbound request
-2. **Stores** it in per-request async context (`AsyncLocalStorage` in TS, FastAPI dependency injection in Python)
-3. **Provides** a single `resolveToken()` that every tool, connector, and sub-agent call uses automatically
+### How apx-agent solves it
+
+apx-agent applies the same pattern that OpenTelemetry, Next.js, NestJS, and Rails use for per-request context: capture at the boundary, propagate through the async call stack, resolve at the point of use.
+
+In TypeScript, this is `AsyncLocalStorage` — the Node.js primitive that OpenTelemetry's context propagation is built on. In Python, it's FastAPI dependency injection, which naturally scopes services to the request lifecycle. Both are mature, well-tested, low-overhead mechanisms (~1-2% on Node 22+).
+
+The framework does three things:
+
+1. **Captures** the user's OBO token from every inbound request at the middleware boundary
+2. **Propagates** it through the async context — every tool handler, MCP server call, sub-agent invocation, and workflow step runs inside this context automatically
+3. **Resolves** it at the point of use via a single `resolveToken()` function with a clear fallback chain: per-request context → explicit headers → `DATABRICKS_TOKEN` env var
 
 ```typescript
 // You write this:
@@ -26,9 +34,9 @@ const tool = genieTool('abc123');
 //   user's Genie permissions apply, not the service principal's
 ```
 
-Every built-in tool factory (`genieTool`, `catalogTool`, `lineageTool`, `schemaTool`, `ucFunctionTool`), every connector (`createLakebaseQueryTool`, `createVSQueryTool`), every external MCP client call, and every sub-agent invocation forwards the user's token automatically. Custom tools get it too — just call `resolveToken()` from `appkit-agent`.
+Every code path through the framework — the agent loop, streaming responses, MCP server, HTTP tool routes — wraps tool execution with the request context. Every built-in tool factory, connector, and sub-agent call resolves the token at call time. Custom tools get the same behavior by calling `resolveToken()`.
 
-**This is the #1 pain point** customers hit when building agents on Databricks Apps, and it's the core reason apx-agent exists. Everything else — typed tools, MCP server, A2A discovery, workflow agents — is built on top of this foundation.
+This is the core reason apx-agent exists. Everything else — typed tools, MCP server, A2A discovery, workflow agents — is built on top of this foundation.
 
 ## Quick start
 
