@@ -1,0 +1,14 @@
+bundle:
+  name: agent-hub
+
+resources:
+  apps:
+    agent-hub:
+      name: "agent-hub"
+      description: "Unified catalog and chat interface for workspace agents"
+      source_code_path: .
+
+targets:
+  dev:
+    mode: development
+    default: true
