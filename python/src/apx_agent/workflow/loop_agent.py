@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -123,14 +124,34 @@ class Hypothesis:
             "flagged_for_review": self.flagged_for_review,
         }
 
+    _FLOAT_FIELDS = frozenset({
+        "fitness_statistical", "fitness_perplexity", "fitness_semantic",
+        "fitness_consistency", "fitness_adversarial", "fitness_composite",
+        "agent_eval_historian", "agent_eval_critic",
+    })
+    _INT_FIELDS = frozenset({"generation"})
+
     @classmethod
     def from_dict(cls, d: dict) -> "Hypothesis":
         h = cls()
         for k, v in d.items():
+            if not hasattr(h, k):
+                continue
             if k in ("symbol_map", "null_chars", "transformation_rules") and isinstance(v, str):
-                v = json.loads(v)
-            if hasattr(h, k):
-                setattr(h, k, v)
+                v = json.loads(v) if v else ({} if k == "symbol_map" else [])
+            elif k in cls._FLOAT_FIELDS:
+                try:
+                    v = float(v) if v is not None else 0.0
+                except (TypeError, ValueError):
+                    v = 0.0
+            elif k in cls._INT_FIELDS:
+                try:
+                    v = int(v) if v is not None else 0
+                except (TypeError, ValueError):
+                    v = 0
+            elif k == "flagged_for_review":
+                v = bool(v) if not isinstance(v, str) else v.lower() in ("true", "1")
+            setattr(h, k, v)
         return h
 
 
@@ -307,30 +328,66 @@ class LoopAgent:
     # Sub-agent dispatch
     # ------------------------------------------------------------------
 
-    async def _mutate(self, parents: list[Hypothesis], generation: int) -> list[Hypothesis]:
-        """Call Decipherer sub-agent to generate new candidates."""
-        async with httpx.AsyncClient(timeout=60) as client:
-            payload = {
-                "messages": [{
-                    "role": "user",
-                    "content": json.dumps({
-                        "task": "generate_mutations",
-                        "generation": generation,
-                        "parents": [p.to_dict() for p in parents],
-                        "n": self.config.mutation_batch,
-                        "population_size": self.config.population_size,
-                    }),
-                }]
-            }
-            resp = await client.post(
-                f"{self.config.mutation_agent}/invocations",
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            hypotheses_raw = json.loads(data.get("content", "[]"))
+    @staticmethod
+    def _url_to_app_name(url: str) -> str | None:
+        """Extract Databricks App name from URL hostname."""
+        from urllib.parse import urlparse
+        if not url or "databricksapps.com" not in url:
+            return None
+        try:
+            host = urlparse(url).hostname or ""
+            name_with_id = host.split(".")[0]
+            segments = name_with_id.split("-")
+            for i in range(len(segments) - 1, 0, -1):
+                if segments[i].isdigit() and len(segments[i]) > 8:
+                    return "-".join(segments[:i])
+            return name_with_id
+        except Exception:
+            return None
+
+    @staticmethod
+    async def _call_app(app_name: str, content: str, timeout: float = 120.0) -> str:
+        """Call a Databricks App via DatabricksOpenAI SDK (handles M2M auth automatically).
+
+        Requires OAuth M2M: set DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET in the job
+        environment. Raises if auth is not configured — callers should catch and handle.
+        """
+        from databricks_openai import AsyncDatabricksOpenAI
+        client = AsyncDatabricksOpenAI()
+        response = await client.responses.create(
+            model=f"apps/{app_name}",
+            input=[{"type": "message", "role": "user", "content": content}],
+        )
+        return response.output_text
+
+    async def _mutate(self, parents: list[Hypothesis], generation: int,
+                      ws: WorkspaceClient | None = None) -> list[Hypothesis]:
+        """Call Decipherer sub-agent to generate new candidates.
+
+        Returns [] if the agent is unreachable or auth is not configured —
+        callers should fall back to local random seeding.
+        """
+        app_name = self._url_to_app_name(self.config.mutation_agent)
+        if not app_name:
+            return []
+        content = json.dumps({
+            "task": "generate_mutations",
+            "generation": generation,
+            "parents": [p.to_dict() for p in parents],
+            "n": self.config.mutation_batch,
+            "population_size": self.config.population_size,
+        })
+        try:
+            raw = await self._call_app(app_name, content, timeout=60.0)
+            hypotheses_raw = json.loads(raw) if raw.startswith("[") else json.loads(raw).get("hypotheses", [])
             return [Hypothesis.from_dict(h) for h in hypotheses_raw]
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Decipherer agent call failed (returning []): %s — "
+                "Tip: set DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET for OAuth M2M", exc
+            )
+            return []
 
     async def _evaluate(self, candidates: list[Hypothesis], ws: WorkspaceClient) -> list[Hypothesis]:
         """Fan out evaluation tasks to fitness agent sub-agents in parallel."""
@@ -360,49 +417,48 @@ class LoopAgent:
         return candidates
 
     async def _call_fitness_agent(self, hypothesis: Hypothesis, agent_type: str) -> dict:
-        """Call a single fitness agent endpoint for one hypothesis."""
+        """Call a single fitness agent endpoint for one hypothesis. Returns {} on failure."""
         agent_url_map = {
-            "historian": self.config.fitness_agents[0] if self.config.fitness_agents else "",
-            "critic":    self.config.fitness_agents[1] if len(self.config.fitness_agents) > 1 else "",
+            "historian":   self.config.fitness_agents[0] if self.config.fitness_agents else "",
+            "critic":      self.config.fitness_agents[1] if len(self.config.fitness_agents) > 1 else "",
             "adversarial": self.config.fitness_agents[1] if len(self.config.fitness_agents) > 1 else "",
         }
         url = agent_url_map.get(agent_type, "")
-        if not url:
+        app_name = self._url_to_app_name(url)
+        if not app_name:
             return {}
-
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{url}/invocations",
-                json={"messages": [{"role": "user", "content": json.dumps({
-                    "task": f"evaluate_{agent_type}",
-                    "hypothesis": hypothesis.to_dict(),
-                })}]},
-            )
-            resp.raise_for_status()
-            return resp.json()
+        content = json.dumps({
+            "task": f"evaluate_{agent_type}",
+            "hypothesis": hypothesis.to_dict(),
+        })
+        try:
+            raw = await self._call_app(app_name, content)
+            return json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return {}
 
     async def _judge(self, evaluated: list[Hypothesis], ws: WorkspaceClient) -> list[Hypothesis]:
         """Call Judge agent to score reasoning trace quality for top candidates."""
+        app_name = self._url_to_app_name(self.config.judge_agent)
+        if not app_name:
+            return evaluated
+
         top_n = max(1, int(len(evaluated) * 0.20))  # judge top 20%
         ranked = sorted(evaluated, key=lambda h: h.composite_fitness(), reverse=True)
         top = ranked[:top_n]
 
-        async with httpx.AsyncClient(timeout=120) as client:
-            for h in top:
-                try:
-                    resp = await client.post(
-                        f"{self.config.judge_agent}/invocations",
-                        json={"messages": [{"role": "user", "content": json.dumps({
-                            "task": "score_reasoning",
-                            "hypothesis_id": h.id,
-                            "mlflow_run_id": h.mlflow_run_id,
-                        })}]},
-                    )
-                    data = resp.json()
-                    h.agent_eval_historian = data.get("historian_score", 0.0)
-                    h.agent_eval_critic    = data.get("critic_score", 0.0)
-                except Exception:
-                    pass  # non-blocking — judge eval is best-effort
+        for h in top:
+            try:
+                raw = await self._call_app(app_name, json.dumps({
+                    "task": "score_reasoning",
+                    "hypothesis_id": h.id,
+                    "mlflow_run_id": h.mlflow_run_id,
+                }))
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                h.agent_eval_historian = data.get("historian_score", 0.0)
+                h.agent_eval_critic    = data.get("critic_score", 0.0)
+            except Exception:
+                pass  # non-blocking — judge eval is best-effort
 
         return evaluated
 

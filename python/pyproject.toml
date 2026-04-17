@@ -7,7 +7,7 @@ name = "apx-agent"
 version = "0.16.0"
 description = "Standalone agent runtime for Databricks Apps — MCP, A2A, /invocations, tool routing"
 readme = "../README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = "Apache-2.0"
 dependencies = [
     "fastapi>=0.119.0",
@@ -31,6 +31,12 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pyright>=1.1.380",
 ]
+
+[project.scripts]
+voynich_seed   = "apx_agent.workflow.cli:seed_population"
+voynich_run    = "apx_agent.workflow.cli:run_generation_batch"
+voynich_vacuum = "apx_agent.workflow.cli:vacuum_population"
+voynich_export = "apx_agent.workflow.cli:export_top_candidates"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/apx_agent"]
