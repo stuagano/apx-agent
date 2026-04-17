@@ -9,13 +9,15 @@ Both implementations share the same capabilities: typed tool registration, MCP s
 ### Python
 
 ```python
-from apx_agent import Agent, Dependencies, create_app
+from apx_agent import Agent, create_app, lineage_tool, genie_tool
 
-def get_billing(customer_id: str, ws: Dependencies.Workspace) -> dict:
-    """Get billing history for a customer."""
-    ...
-
-agent = Agent(tools=[get_billing])
+agent = Agent(
+    tools=[
+        lineage_tool(),
+        genie_tool("abc123", description="Answer data questions"),
+    ],
+    instructions="You investigate missing data.",
+)
 app = create_app(agent)
 ```
 
@@ -28,29 +30,23 @@ uvicorn my_app:app --reload
 ### TypeScript
 
 ```typescript
-import { createApp, server, genie } from '@databricks/appkit';
-import { agent, discovery, mcp, devUI, defineTool } from 'appkit-agent';
-import { z } from 'zod';
-
-const getLineage = defineTool({
-  name: 'get_table_lineage',
-  description: 'Get upstream sources for a table',
-  parameters: z.object({ tableName: z.string() }),
-  handler: async ({ tableName }) => { /* query UC lineage */ },
-});
+import { createApp, server } from '@databricks/appkit';
+import { createAgentPlugin, createDiscoveryPlugin, createMcpPlugin, createDevPlugin, lineageTool, genieTool } from 'appkit-agent';
 
 createApp({
   plugins: [
     server(),
-    genie(),
-    agent({
+    createAgentPlugin({
       model: 'databricks-claude-sonnet-4-6',
       instructions: 'You investigate missing data.',
-      tools: [getLineage],
+      tools: [
+        lineageTool(),
+        genieTool('abc123', { description: 'Answer data questions' }),
+      ],
     }),
-    discovery({ registry: '$AGENT_HUB_URL' }),
-    mcp(),
-    devUI(),
+    createDiscoveryPlugin({ registry: '$AGENT_HUB_URL' }),
+    createMcpPlugin(),
+    createDevPlugin(),
   ],
 });
 ```
