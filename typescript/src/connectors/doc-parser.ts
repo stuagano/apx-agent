@@ -13,8 +13,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool, type AgentTool } from '../agent/tools.js';
-import { resolveHost, type ConnectorConfig } from '../connectors/types.js';
-import { getRequestContext } from '../agent/request-context.js';
+import { resolveHost, resolveToken, type ConnectorConfig } from '../connectors/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,16 +29,6 @@ export interface Chunk {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-function resolveToken(): string {
-  const ctx = getRequestContext();
-  if (ctx) {
-    const token =
-      ctx.oboHeaders['x-forwarded-access-token'] ||
-      (ctx.oboHeaders['authorization'] ?? '').replace(/^Bearer\s+/i, '');
-    if (token) return token;
-  }
-  return process.env.DATABRICKS_TOKEN ?? '';
-}
 
 // ---------------------------------------------------------------------------
 // chunkText

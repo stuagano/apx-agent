@@ -9,8 +9,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '../agent/tools.js';
-import { resolveHost, buildSqlParams, type ConnectorConfig, type SqlParam } from '../connectors/types.js';
-import { getRequestContext } from '../agent/request-context.js';
+import { resolveHost, resolveToken, buildSqlParams, type ConnectorConfig, type SqlParam } from '../connectors/types.js';
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -36,23 +35,6 @@ interface SqlStatementResponse {
 /**
  * Extract a Databricks token from OBO headers or the environment.
  */
-function resolveToken(oboHeaders?: Record<string, string>): string {
-  if (oboHeaders) {
-    const auth = oboHeaders['authorization'] ?? oboHeaders['Authorization'];
-    if (auth?.startsWith('Bearer ')) return auth.slice(7);
-  }
-  const ctx = getRequestContext();
-  if (ctx) {
-    const token =
-      ctx.oboHeaders['x-forwarded-access-token'] ||
-      (ctx.oboHeaders['authorization'] ?? '').replace(/^Bearer\s+/i, '');
-    if (token) return token;
-  }
-  const envToken = process.env.DATABRICKS_TOKEN;
-  if (envToken) return envToken;
-  throw new Error('No Databricks token: pass OBO headers or set DATABRICKS_TOKEN env var');
-}
-
 /**
  * POST a SQL statement to the Databricks SQL Statement Execution API and
  * return the response.

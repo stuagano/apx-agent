@@ -16,31 +16,7 @@
 import { z } from 'zod';
 import { defineTool } from './agent/tools.js';
 import type { AgentTool } from './agent/tools.js';
-import { resolveHost, dbFetch } from './connectors/types.js';
-import { getRequestContext } from './agent/request-context.js';
-
-// ---------------------------------------------------------------------------
-// Shared auth helper (same pattern as genie.ts)
-// ---------------------------------------------------------------------------
-
-function resolveToken(oboHeaders?: Record<string, string>): string {
-  if (oboHeaders) {
-    const auth = oboHeaders['authorization'] ?? oboHeaders['Authorization'];
-    if (auth?.startsWith('Bearer ')) return auth.slice(7);
-  }
-  const ctx = getRequestContext();
-  if (ctx) {
-    const token =
-      ctx.oboHeaders['x-forwarded-access-token'] ||
-      (ctx.oboHeaders['authorization'] ?? '').replace(/^Bearer\s+/i, '');
-    if (token) return token;
-  }
-  const envToken = process.env.DATABRICKS_TOKEN;
-  if (envToken) return envToken;
-  throw new Error(
-    'No Databricks token: pass oboHeaders, set DATABRICKS_TOKEN, or call from within a request context',
-  );
-}
+import { resolveHost, resolveToken, dbFetch } from './connectors/types.js';
 
 // ---------------------------------------------------------------------------
 // Shared options type
