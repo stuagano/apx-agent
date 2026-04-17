@@ -183,7 +183,7 @@ def get_illustration_semantic_hints(
     red flowers, decoded text near that illustration should mention
     botanical/color/medicinal concepts.
     """
-    rows = sql.execute(ff""f"
+    rows = sql.execute(f"""
         SELECT
             page,
             section,

@@ -22,3 +22,6 @@ packages = ["."]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.uv.sources]
+apx-agent = { path = "./apx_agent-0.16.0-py3-none-any.whl" }

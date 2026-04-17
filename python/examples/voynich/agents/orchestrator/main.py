@@ -116,7 +116,7 @@ def get_population_stats(
         else str(generation)
     )
 
-    stats = sql.execute(ff""f"
+    stats = sql.execute(f"""
         SELECT
             COUNT(*) as total,
             AVG(fitness_composite) as avg_fitness,
@@ -130,7 +130,7 @@ def get_population_stats(
         WHERE generation = {gen_filter}
     """)
 
-    breakdown = sql.execute(ff""f"
+    breakdown = sql.execute(f"""
         SELECT cipher_type, source_language, COUNT(*) as count,
                AVG(fitness_composite) as avg_fitness
         FROM {_CATALOG}.voynich_evolution.population
@@ -156,8 +156,8 @@ def get_top_candidates(
     Return the top-N candidates by composite fitness from the latest generation.
     Includes decoded sample and full fitness vector for researcher review.
     """
-    section_clause = "" if section_filter == "all" else f"AND section = '{section_filter}f'"
-    rows = sql.execute(ff""f"
+    section_clause = "" if section_filter == "all" else f"AND section = '{section_filter}'"
+    rows = sql.execute(f"""
         SELECT *
         FROM {_CATALOG}.voynich_evolution.population
         WHERE generation = (SELECT MAX(generation) FROM {_CATALOG}.voynich_evolution.population)
@@ -175,7 +175,7 @@ def get_top_candidates(
 def inject_constraint(
     constraint_type: Annotated[str, "Type: force_language | ban_cipher_type | fix_symbol | require_section_vocab"],
     constraint_value: Annotated[str, "The constraint value (e.g. 'latin' for force_language)"],
-    target_section: Annotated[str, "Section to apply constraint to, or 'allf'"] = "all",
+    target_section: Annotated[str, "Section to apply constraint to, or 'all'"] = "all",
     sql: Dependencies.Sql = None,
 ) -> dict:
     """
@@ -183,12 +183,12 @@ def inject_constraint(
     Constraints are logged to Delta and picked up by the Decipherer on the next generation.
     Example: a medievalist determines the herbal section must be Latin → inject force_language=latin.
     """
-    sql.execute(ff""f"
+    sql.execute(f"""
         INSERT INTO {_CATALOG}.voynich_evolution.constraints
         (constraint_type, constraint_value, target_section, active, created_by, created_at)
         VALUES (
             '{constraint_type}', '{constraint_value}',
-            '{target_section}', true, 'researcher_uif',
+            '{target_section}', true, 'researcher_ui',
             current_timestamp()
         )
     """)
@@ -204,7 +204,7 @@ def inject_constraint(
 
 def list_active_constraints(sql: Dependencies.Sql = None) -> dict:
     """List all active researcher-injected constraints currently influencing the loop."""
-    rows = sql.execute(f""f"
+    rows = sql.execute(f"""
         SELECT * FROM {_CATALOG}.voynich_evolution.constraints
         WHERE active = true
         ORDER BY created_at DESC
@@ -225,12 +225,12 @@ def flag_for_expert_review(
     Flag a specific hypothesis for expert human review.
     Writes to the review queue table surfaced in the Databricks Apps UI.
     """
-    sql.execute(ff""f"
+    sql.execute(f"""
         INSERT INTO {_CATALOG}.voynich_evolution.review_queue
         (hypothesis_id, reason, expert_type, status, flagged_at)
         VALUES (
             '{hypothesis_id}', '{reason.replace(chr(39), chr(34))}',
-            '{expert_type}', 'pendingf', current_timestamp()
+            '{expert_type}', 'pending', current_timestamp()
         )
     """)
     return {
@@ -243,7 +243,7 @@ def flag_for_expert_review(
 
 def get_review_queue(sql: Dependencies.Sql = None) -> dict:
     """Get all hypotheses awaiting human expert review."""
-    rows = sql.execute(f""f"
+    rows = sql.execute(f"""
         SELECT r.*, p.fitness_composite, p.cipher_type, p.source_language,
                p.decoded_sample, p.agent_eval_historian, p.agent_eval_critic
         FROM {_CATALOG}.voynich_evolution.review_queue r
@@ -265,12 +265,12 @@ def get_agent_eval_summary(
     Get a summary of agent eval scores across recent generations.
     Used to identify agents that need prompt refinement.
     """
-    rows = sql.execute(ff""f"
+    rows = sql.execute(f"""
         SELECT agent_name,
                AVG(composite_eval_score) as avg_score,
                MIN(composite_eval_score) as min_score,
                COUNT(*) as eval_count,
-               SUM(CASE WHEN action_triggered != 'OKf' THEN 1 ELSE 0 END) as issues
+               SUM(CASE WHEN action_triggered != 'OK' THEN 1 ELSE 0 END) as issues
         FROM {_CATALOG}.voynich_evolution.agent_evals
         WHERE generation >= (SELECT MAX(generation) - {n_generations}
                              FROM {_CATALOG}.voynich_evolution.agent_evals)
@@ -292,7 +292,7 @@ def get_evolutionary_trajectory(sql: Dependencies.Sql = None) -> dict:
     Get the fitness trajectory across all completed generations.
     Used to visualize progress in the Databricks Apps UI.
     """
-    rows = sql.execute(f""f"
+    rows = sql.execute(f"""
         SELECT
             generation,
             MAX(fitness_composite) as best_fitness,

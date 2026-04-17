@@ -30,7 +30,7 @@ import sys
 
 def _build_config_from_env():
     """Build LoopConfig from environment variables. Called by all CLI entry points."""
-    from loop_agent import LoopConfig
+    from apx_agent.workflow import LoopConfig
     return LoopConfig(
         population_table     = os.environ["VOYNICH_POPULATION_TABLE"],
         fitness_agents       = [
@@ -76,7 +76,7 @@ def seed_population():
     config = _build_config_from_env()
     ws     = _build_workspace_client()
 
-    from loop_agent import LoopAgent, PopulationStore
+    from apx_agent.workflow import LoopAgent, PopulationStore
 
     store = PopulationStore(ws, config)
     store.ensure_schema()
@@ -88,14 +88,13 @@ def seed_population():
     if not seed_hypotheses:
         print("[voynich-seed] WARNING: Decipherer returned 0 hypotheses. Using fallback seeder.")
         # Fallback: generate minimal diversity seed using built-in logic
-        from loop_agent.loop_agent import CipherType, SourceLanguage
+        from apx_agent.workflow import CipherType, SourceLanguage, Hypothesis
         import uuid, random
         alphabet = list("abcdefghijklmnopqrstuvwxyz")
         seed_hypotheses = []
         for i in range(min(args.n, 500)):
             shuffled = alphabet[:]
             random.shuffle(shuffled)
-            from loop_agent import Hypothesis
             seed_hypotheses.append(Hypothesis(
                 id=str(uuid.uuid4())[:8],
                 generation=0,
@@ -134,7 +133,7 @@ def run_generation_batch():
     config = _build_config_from_env()
     ws     = _build_workspace_client()
 
-    from loop_agent import LoopAgent, PopulationStore
+    from apx_agent.workflow import LoopAgent, PopulationStore
 
     store = PopulationStore(ws, config)
     store.ensure_schema()
@@ -273,7 +272,7 @@ def export_top_candidates():
     config = _build_config_from_env()
     ws     = _build_workspace_client()
 
-    from loop_agent import PopulationStore
+    from apx_agent.workflow import PopulationStore
     store = PopulationStore(ws, config)
 
     candidates = store.load_pareto_survivors(generation=-1, top_n=args.n)
