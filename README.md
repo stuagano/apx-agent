@@ -83,6 +83,44 @@ const getLineage = defineTool({
 });
 ```
 
+### Platform tool factories
+
+Pre-built tool factories for common Databricks platform capabilities. One line to register, no schema to write.
+
+| Factory | What it does |
+|---------|-------------|
+| `genie_tool(space_id)` | Ask a natural-language question to a Genie space |
+| `lineage_tool()` | Get upstream/downstream lineage for a UC table |
+| `schema_tool()` | Describe columns of a UC table |
+| `catalog_tool(catalog, schema)` | List tables in a UC schema |
+| `uc_function_tool(function_name)` | Execute a registered UC function |
+
+**`uc_function_tool` is a particularly strong unlock.** UC functions are already how data teams write and govern business logic — they define parameter types, write documentation, and apply access controls through standard UC governance. Without this, an AI engineer has to duplicate all of that work by hand-writing a tool schema and calling implementation that mirrors what the data team already registered. The two definitions then drift apart over time.
+
+With `uc_function_tool`, the UC function *is* the tool definition. The data team owns the logic; the AI engineer registers it in one line. Governance, access control, and documentation flow through UC the same way they do for any other data asset. Data teams can ship new agent capabilities through their normal workflow — write SQL or Python, register in UC, done — without touching agent code.
+
+```python
+# Python — fetches parameter schema from UC on first call, builds SQL automatically
+from apx_agent import Agent, uc_function_tool
+
+agent = Agent(tools=[
+    uc_function_tool("main.tools.classify_intent"),
+    uc_function_tool("main.tools.score_customer"),
+])
+```
+
+```typescript
+// TypeScript — same pattern, auto-discovers SQL warehouse
+import { ucFunctionTool } from 'appkit-agent';
+
+createAgentPlugin({
+  tools: [
+    ucFunctionTool('main.tools.classify_intent'),
+    ucFunctionTool('main.tools.score_customer'),
+  ],
+});
+```
+
 ### Workflow agents
 
 Composable agent patterns for multi-step orchestration:
