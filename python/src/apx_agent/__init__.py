@@ -48,7 +48,7 @@ from ._eval import app_predict_fn
 from .genie import genie_tool
 
 # Unity Catalog tool factories
-from .catalog import catalog_tool, lineage_tool, schema_tool
+from .catalog import catalog_tool, lineage_tool, schema_tool, uc_function_tool
 
 __all__ = [
     # Agent types
@@ -93,4 +93,5 @@ __all__ = [
     "catalog_tool",
     "lineage_tool",
     "schema_tool",
+    "uc_function_tool",
 ]

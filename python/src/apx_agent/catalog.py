@@ -1,4 +1,4 @@
-"""catalog_tool, lineage_tool, schema_tool — Unity Catalog tool factories.
+"""catalog_tool, lineage_tool, schema_tool, uc_function_tool — Unity Catalog tool factories.
 
 Annotations are intentionally NOT deferred (no ``from __future__ import annotations``)
 so that ``UserClientDependency`` is resolved eagerly and ``get_type_hints()`` in
@@ -8,7 +8,33 @@ _inspection.py sees the real Annotated[...] type, not a string.
 import logging
 from typing import Any
 
+from ._sql import get_warehouse_id, run_sql
+
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# SQL literal helper (used by uc_function_tool)
+# ---------------------------------------------------------------------------
+
+def _to_sql_literal(value: Any, type_name: str) -> str:
+    """Convert a Python value to a safe SQL literal for a UC function call."""
+    if value is None:
+        return "NULL"
+    type_upper = type_name.upper()
+    if type_upper in ("BOOLEAN",):
+        return "TRUE" if value else "FALSE"
+    if type_upper in ("STRING", "CHAR", "VARCHAR", "TEXT"):
+        escaped = str(value).replace("'", "''")
+        return f"'{escaped}'"
+    # Numeric types — validate then pass raw
+    try:
+        float(str(value))
+        return str(value)
+    except (ValueError, TypeError):
+        # Unknown type — fall back to quoted string
+        escaped = str(value).replace("'", "''")
+        return f"'{escaped}'"
 
 
 def catalog_tool(
@@ -161,3 +187,89 @@ def schema_tool(
     _describe_table.__qualname__ = name
     _describe_table.__doc__ = _desc
     return _describe_table
+
+
+def uc_function_tool(
+    function_name: str,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+) -> Any:
+    """Return a tool that executes a Unity Catalog function via SQL.
+
+    The function definition is fetched from UC on the first call and cached —
+    parameter names, types, and order are derived automatically so the SQL
+    call is always correct.
+
+    Usage::
+
+        from apx_agent import Agent, uc_function_tool
+
+        agent = Agent(tools=[
+            uc_function_tool("main.tools.classify_intent"),
+        ])
+
+    The returned tool accepts ``params: dict[str, Any]`` — a mapping of
+    parameter name to value. Values are safely quoted for SQL.
+
+    Args:
+        function_name: Fully qualified UC function name (``catalog.schema.function``).
+        name:          Tool name shown to the LLM. Defaults to the short function name.
+        description:   Tool description. Defaults to the UC function's ``comment``.
+    """
+    from ._defaults import UserClientDependency
+
+    _short_name = function_name.rsplit(".", 1)[-1]
+    _tool_name = name or _short_name
+
+    # Mutable cache — populated on first call using the live workspace client.
+    # Keys: "parameters" (list ordered by position), "data_type" (str), "desc" (str).
+    _cache: dict[str, Any] = {}
+
+    _initial_desc = description or (
+        f"Execute the Unity Catalog function `{function_name}`. "
+        f"Pass parameters as a dict with parameter names as keys, e.g. "
+        f'`{{"param1": "value1", "param2": 42}}`.'
+    )
+
+    async def _call_uc_function(params: dict[str, Any], ws: UserClientDependency) -> Any:  # type: ignore[valid-type]
+        """Placeholder doc — overwritten below."""
+        # Fetch and cache function definition on first call
+        if not _cache:
+            func_info = ws.functions.get(full_name=function_name)
+            raw_params = getattr(getattr(func_info, "input_params", None), "parameters", None) or []
+            _cache["parameters"] = sorted(
+                [
+                    {
+                        "name": p.name,
+                        "position": p.position if p.position is not None else 0,
+                        "type_name": str(p.type_name or "STRING"),
+                    }
+                    for p in raw_params
+                ],
+                key=lambda p: p["position"],
+            )
+            _cache["data_type"] = str(getattr(func_info, "data_type", "") or "")
+
+        # Build positional SQL args from param dict
+        sql_args = [
+            _to_sql_literal(params.get(p["name"]), p["type_name"])
+            for p in _cache["parameters"]
+        ]
+        sql = (
+            f"SELECT {function_name}()"
+            if not sql_args
+            else f"SELECT {function_name}({', '.join(sql_args)})"
+        )
+
+        rows = run_sql(ws, sql, warehouse_id=None)
+
+        # Scalar function: unwrap the single cell
+        if rows and len(rows) == 1 and len(rows[0]) == 1:
+            return next(iter(rows[0].values()))
+        return rows
+
+    _call_uc_function.__name__ = _tool_name
+    _call_uc_function.__qualname__ = _tool_name
+    _call_uc_function.__doc__ = _initial_desc
+    return _call_uc_function

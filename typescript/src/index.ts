@@ -88,8 +88,8 @@ export { genieTool } from './genie.js';
 export type { GenieToolOptions } from './genie.js';
 
 // Unity Catalog tool factories
-export { catalogTool, lineageTool, schemaTool } from './catalog.js';
-export type { CatalogToolOptions } from './catalog.js';
+export { catalogTool, lineageTool, schemaTool, ucFunctionTool } from './catalog.js';
+export type { CatalogToolOptions, UcFunctionToolOptions } from './catalog.js';
 
 // Connectors — domain tool factories for Lakebase, Vector Search, Doc Parser
 export {
