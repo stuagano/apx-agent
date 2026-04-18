@@ -130,21 +130,13 @@ class PopulationStore:
             )
         """)
 
-        # Constraints and review queue (owned by orchestrator, not loop)
-        for ddl in [
+        # Constraints and agent_evals live alongside the population — derive
+        # their FQN from the population_table namespace instead of hardcoding
+        # ``voynich.evolution.*``, which doesn't match user-configured catalogs.
+        ns = self.config.table_namespace
+        constraints_ddl = (
             f"""
-            CREATE TABLE IF NOT EXISTS {self.config.review_table} (
-                hypothesis_id  STRING,
-                reason         STRING,
-                expert_type    STRING,
-                status         STRING DEFAULT 'pending',
-                annotation     STRING,
-                flagged_at     TIMESTAMP DEFAULT current_timestamp(),
-                resolved_at    TIMESTAMP
-            ) USING DELTA
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS voynich.evolution.constraints (
+            CREATE TABLE IF NOT EXISTS {ns}.constraints (
                 id               BIGINT GENERATED ALWAYS AS IDENTITY,
                 constraint_type  STRING,
                 constraint_value STRING,
@@ -153,9 +145,12 @@ class PopulationStore:
                 created_by       STRING,
                 created_at       TIMESTAMP DEFAULT current_timestamp()
             ) USING DELTA
-            """,
             """
-            CREATE TABLE IF NOT EXISTS voynich.evolution.agent_evals (
+            if ns else ""
+        )
+        agent_evals_ddl = (
+            f"""
+            CREATE TABLE IF NOT EXISTS {ns}.agent_evals (
                 agent_name               STRING,
                 hypothesis_id            STRING,
                 generation               INT,
@@ -168,8 +163,27 @@ class PopulationStore:
                 created_at               TIMESTAMP DEFAULT current_timestamp()
             ) USING DELTA
             PARTITIONED BY (generation)
-            """,
-        ]:
+            """
+            if ns else ""
+        )
+        ddls = [
+            f"""
+            CREATE TABLE IF NOT EXISTS {self.config.review_table} (
+                hypothesis_id  STRING,
+                reason         STRING,
+                expert_type    STRING,
+                status         STRING DEFAULT 'pending',
+                annotation     STRING,
+                flagged_at     TIMESTAMP DEFAULT current_timestamp(),
+                resolved_at    TIMESTAMP
+            ) USING DELTA
+            """
+        ]
+        if constraints_ddl:
+            ddls.append(constraints_ddl)
+        if agent_evals_ddl:
+            ddls.append(agent_evals_ddl)
+        for ddl in ddls:
             try:
                 self._sql_exec(ddl)
             except Exception:
@@ -391,9 +405,12 @@ class PopulationStore:
         return [float(r["best"]) for r in rows]
 
     def get_active_constraints(self) -> list[dict]:
+        ns = self.config.table_namespace
+        if not ns:
+            return []
         try:
             rows = self._sql_exec(
-                "SELECT * FROM voynich.evolution.constraints WHERE active = true ORDER BY created_at DESC"
+                f"SELECT * FROM {ns}.constraints WHERE active = true ORDER BY created_at DESC"
             )
             return [dict(r) for r in rows]
         except Exception:
