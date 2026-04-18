@@ -298,9 +298,13 @@ def _to_sub_agent_tool(
 
             if app_name:
                 try:
+                    # Use EasyInputMessage form (no "type": "message") so string
+                    # content survives. With type="message" the Responses API
+                    # expects content as a list of InputContent parts and drops
+                    # a plain string.
                     response = await client.responses.create(
                         model=f"apps/{app_name}",
-                        input=[{"type": "message", "role": "user", "content": message}],
+                        input=[{"role": "user", "content": message}],
                     )
                     result_text = response.output_text
                     return result_text

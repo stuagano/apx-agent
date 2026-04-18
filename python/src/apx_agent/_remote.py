@@ -311,10 +311,13 @@ class RemoteDatabricksAgent(BaseAgent):
         from databricks_openai import AsyncDatabricksOpenAI
 
         client = AsyncDatabricksOpenAI()
+        # Use EasyInputMessage form (no "type": "message") so string content
+        # survives. With type="message" the Responses API expects content as a
+        # list of InputContent parts and drops a plain string.
         response = await client.responses.create(
             model=f"apps/{self._app_name}",
             input=[
-                {"type": "message", "role": m.role, "content": m.content}
+                {"role": m.role, "content": m.content}
                 for m in messages
             ],
         )

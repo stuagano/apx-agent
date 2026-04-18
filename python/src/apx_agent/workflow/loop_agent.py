@@ -354,9 +354,13 @@ class LoopAgent:
         """
         from databricks_openai import AsyncDatabricksOpenAI
         client = AsyncDatabricksOpenAI()
+        # Use EasyInputMessage form (no "type": "message") so a string content is
+        # passed through intact. With type="message" the Responses API expects
+        # content as a list of InputContent parts; a raw string gets dropped and
+        # the sub-agent receives an empty payload.
         response = await client.responses.create(
             model=f"apps/{app_name}",
-            input=[{"type": "message", "role": "user", "content": content}],
+            input=[{"role": "user", "content": content}],
         )
         return response.output_text
 
