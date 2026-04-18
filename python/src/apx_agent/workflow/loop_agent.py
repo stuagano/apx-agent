@@ -417,6 +417,15 @@ class LoopAgent:
             )
             return []
 
+    # Maps an evaluator agent type to the Hypothesis fitness field it populates.
+    # Composite fitness depends on these fields — without merging the agent's
+    # response back into the hypothesis, Pareto selection silently runs on zeros.
+    _AGENT_FITNESS_FIELD = {
+        "historian":   "fitness_semantic",
+        "critic":      "fitness_consistency",
+        "adversarial": "fitness_adversarial",
+    }
+
     async def _evaluate(self, candidates: list[Hypothesis], ws: WorkspaceClient) -> list[Hypothesis]:
         """Fan out evaluation tasks to fitness agent sub-agents in parallel."""
         # Statistical fitness is a data-only signal derived from the hypothesis —
@@ -431,16 +440,50 @@ class LoopAgent:
         adversarial_cutoff = max(1, int(len(ranked) * self.config.top_k_adversarial))
         adversarial_set = set(h.id for h in ranked[:adversarial_cutoff])
 
-        # Now run all other evaluators in parallel
+        # Run all evaluators in parallel, but track which (hypothesis, agent_type)
+        # each task corresponds to so we can merge the response back. The previous
+        # implementation discarded `gather`'s return value entirely — every
+        # historian/critic/adversarial score the sub-agents computed was thrown
+        # away, leaving 75% of composite_fitness (perplexity + semantic +
+        # consistency + adversarial) as zero.
+        targets: list[tuple[Hypothesis, str]] = []
         all_tasks = []
         for h in candidates:
-            all_tasks.append(self._call_fitness_agent(h, "historian"))
-            all_tasks.append(self._call_fitness_agent(h, "critic"))
+            for agent_type in ("historian", "critic"):
+                all_tasks.append(self._call_fitness_agent(h, agent_type))
+                targets.append((h, agent_type))
             if h.id in adversarial_set:
                 all_tasks.append(self._call_fitness_agent(h, "adversarial"))
+                targets.append((h, "adversarial"))
 
-        await asyncio.gather(*all_tasks, return_exceptions=True)
+        results = await asyncio.gather(*all_tasks, return_exceptions=True)
+        for (h, agent_type), result in zip(targets, results):
+            if isinstance(result, BaseException) or not isinstance(result, dict):
+                continue
+            self._merge_fitness_response(h, agent_type, result)
+
         return candidates
+
+    @classmethod
+    def _merge_fitness_response(
+        cls, h: "Hypothesis", agent_type: str, response: dict
+    ) -> None:
+        """Apply a fitness agent's response to the hypothesis.
+
+        Accepts both the agent-named key (``fitness_historian``) and the
+        underlying signal key (``fitness_semantic``) so the merge works whether
+        the agent uses domain-specific or framework-canonical naming.
+        """
+        target_field = cls._AGENT_FITNESS_FIELD.get(agent_type)
+        # Domain key from the agent (e.g. historian → "fitness_historian")
+        domain_key = f"fitness_{agent_type}"
+        for key in (target_field, domain_key):
+            if key and key in response and target_field:
+                try:
+                    setattr(h, target_field, float(response[key]))
+                    return
+                except (TypeError, ValueError):
+                    continue
 
     async def _call_fitness_agent(self, hypothesis: Hypothesis, agent_type: str) -> dict:
         """Call a single fitness agent endpoint for one hypothesis. Returns {} on failure."""
