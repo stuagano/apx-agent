@@ -99,6 +99,14 @@ export class PopulationStore {
     this.cache.clear();
   }
 
+  async flagForReview(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const idList = ids.map((id) => `'${esc(id)}'`).join(', ');
+    const statement = `UPDATE ${this.populationTable} SET flagged_for_review = true WHERE id IN (${idList})`;
+    await this.executeSql(statement);
+    this.cache.clear();
+  }
+
   async loadGeneration(generation: number): Promise<Hypothesis[]> {
     if (this.cacheEnabled && this.cache.has(generation)) {
       return this.cache.get(generation)!;

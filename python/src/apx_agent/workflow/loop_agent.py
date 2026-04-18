@@ -158,6 +158,20 @@ class Hypothesis:
 from .population_store import PopulationStore, pareto_frontier  # noqa: E402
 
 
+def _local_statistical_fitness(h: "Hypothesis") -> float:
+    """Lightweight statistical fitness from hypothesis shape alone.
+
+    Rewards hypotheses whose symbol_map covers the high-frequency Latin letters
+    (e-t-a-o-i-n-s-h-r-d-l-u) and penalizes empty maps. Range: [0.0, 1.0].
+    Used to rank candidates before more expensive agent-based evaluation.
+    """
+    if not h.symbol_map:
+        return 0.0
+    common = set("etaoinshrdlu")
+    covered = sum(1 for v in h.symbol_map.values() if isinstance(v, str) and v.lower() in common)
+    return min(1.0, covered / len(common))
+
+
 @dataclass
 class GenerationResult:
     generation: int
@@ -190,6 +204,16 @@ class LoopConfig:
         "fitness_semantic", "fitness_consistency",
     ])
     mlflow_experiment: str = "/voynich/evolutionary_search"
+
+    @property
+    def table_namespace(self) -> str:
+        """Return ``catalog.schema`` parsed from ``population_table``.
+
+        Used to place auxiliary tables (constraints, agent_evals) alongside the
+        population rather than in a hardcoded catalog that may not exist.
+        """
+        parts = self.population_table.rsplit(".", 1)
+        return parts[0] if len(parts) == 2 else ""
 
 
 # ---------------------------------------------------------------------------
@@ -395,14 +419,12 @@ class LoopAgent:
 
     async def _evaluate(self, candidates: list[Hypothesis], ws: WorkspaceClient) -> list[Hypothesis]:
         """Fan out evaluation tasks to fitness agent sub-agents in parallel."""
-        # Identify top-K% for adversarial eval (run stat eval first to rank)
-        stat_tasks = [self._call_fitness_agent(h, "statistical") for h in candidates]
-        stat_results = await asyncio.gather(*stat_tasks, return_exceptions=True)
-
-        for h, result in zip(candidates, stat_results):
-            if isinstance(result, Exception):
-                continue
-            h.fitness_statistical = result.get("score", 0.0)
+        # Statistical fitness is a data-only signal derived from the hypothesis —
+        # no sub-agent handles `evaluate_statistical`, so compute it locally here.
+        # Without this, fitness_statistical stays 0 and its 25% weight in
+        # composite_fitness silently drops out of Pareto selection.
+        for h in candidates:
+            h.fitness_statistical = _local_statistical_fitness(h)
 
         # Sort by stat score to identify top-K for adversarial
         ranked = sorted(candidates, key=lambda h: h.fitness_statistical, reverse=True)

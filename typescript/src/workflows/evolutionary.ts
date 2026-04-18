@@ -211,15 +211,17 @@ export class EvolutionaryAgent implements Runnable {
       this.config.populationSize,
     );
 
-    // 6. Escalate hypotheses above the escalation threshold
+    // 6. Escalate hypotheses above the escalation threshold.
+    // updateFitnessScores only persists fitness, so flag separately — otherwise
+    // flagged_for_review never reaches the store and the review queue stays empty.
     const escalated = survivors.filter(
       (h) => compositeFitness(h, this.config.fitnessWeights) >= this.escalationThreshold,
     );
     if (escalated.length > 0) {
-      const flagged = escalated.map((h) => ({ ...h, flagged_for_review: true }));
-      await this.config.store.updateFitnessScores(
-        flagged.map((h) => ({ id: h.id, fitness: h.fitness })),
-      );
+      await this.config.store.flagForReview(escalated.map((h) => h.id));
+      for (const h of escalated) {
+        h.flagged_for_review = true;
+      }
     }
 
     // 7. Check convergence
@@ -472,9 +474,7 @@ export class EvolutionaryAgent implements Runnable {
             this.config.fitnessWeights,
           );
           if (top.length === 0) return { error: 'No hypotheses to escalate', escalated: [] };
-          await this.config.store.updateFitnessScores(
-            top.map((h) => ({ id: h.id, fitness: h.fitness })),
-          );
+          await this.config.store.flagForReview(top.map((h) => h.id));
           return { escalated: top.map((h) => h.id), count: top.length };
         },
       }),
