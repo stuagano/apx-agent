@@ -24,6 +24,7 @@ function createMockStore() {
       }
     }),
     updateFitnessScores: vi.fn(async () => {}),
+    flagForReview: vi.fn(async () => {}),
     loadGeneration: vi.fn(async (gen: number) => hypotheses.get(gen) ?? []),
     loadTopSurvivors: vi.fn(async (gen: number, topN: number) =>
       (hypotheses.get(gen) ?? []).slice(0, topN),
