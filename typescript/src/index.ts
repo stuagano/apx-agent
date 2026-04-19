@@ -137,3 +137,14 @@ export type {
   GenerationResult,
   PopulationStoreConfig,
 } from './workflows/index.js';
+
+// Durable execution — WorkflowEngine interface + in-memory default backend
+export { InMemoryEngine, StepFailedError } from './workflows/index.js';
+export type {
+  WorkflowEngine,
+  RunStatus,
+  RunSnapshot,
+  RunSummary,
+  RunFilter,
+  StepRecord,
+} from './workflows/index.js';

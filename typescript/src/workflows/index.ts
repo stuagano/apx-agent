@@ -37,3 +37,15 @@ export type { PopulationStoreConfig } from './population.js';
 export { paretoDominates, paretoFrontier, selectSurvivors } from './pareto.js';
 export { createHypothesis, compositeFitness } from './hypothesis.js';
 export type { Hypothesis } from './hypothesis.js';
+
+// Durable execution — pluggable engine for step persistence and replay
+export { InMemoryEngine } from './engine-memory.js';
+export { StepFailedError } from './engine.js';
+export type {
+  WorkflowEngine,
+  RunStatus,
+  RunSnapshot,
+  RunSummary,
+  RunFilter,
+  StepRecord,
+} from './engine.js';
