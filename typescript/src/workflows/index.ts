@@ -40,6 +40,8 @@ export type { Hypothesis } from './hypothesis.js';
 
 // Durable execution — pluggable engine for step persistence and replay
 export { InMemoryEngine } from './engine-memory.js';
+export { DeltaEngine } from './engine-delta.js';
+export type { DeltaEngineConfig } from './engine-delta.js';
 export { StepFailedError } from './engine.js';
 export type {
   WorkflowEngine,

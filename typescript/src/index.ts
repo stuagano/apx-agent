@@ -138,10 +138,11 @@ export type {
   PopulationStoreConfig,
 } from './workflows/index.js';
 
-// Durable execution — WorkflowEngine interface + in-memory default backend
-export { InMemoryEngine, StepFailedError } from './workflows/index.js';
+// Durable execution — WorkflowEngine interface + backends
+export { InMemoryEngine, DeltaEngine, StepFailedError } from './workflows/index.js';
 export type {
   WorkflowEngine,
+  DeltaEngineConfig,
   RunStatus,
   RunSnapshot,
   RunSummary,
