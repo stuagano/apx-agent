@@ -19,6 +19,8 @@ import { z } from 'zod';
 import type { AgentTool } from '../agent/tools.js';
 import { defineTool } from '../agent/tools.js';
 import { resolveToken } from '../connectors/types.js';
+import type { WorkflowEngine } from './engine.js';
+import { InMemoryEngine } from './engine-memory.js';
 import type { Hypothesis } from './hypothesis.js';
 import { compositeFitness } from './hypothesis.js';
 import { paretoFrontier, selectSurvivors } from './pareto.js';
@@ -45,6 +47,20 @@ export interface EvolutionaryConfig {
   topKAdversarial?: number;        // default 0.05
   model?: string;
   instructions?: string;
+  /**
+   * Durable execution engine. If omitted, an in-process `InMemoryEngine` is
+   * used — preserves the pre-durable behavior (state lost on restart). Pass a
+   * `DeltaEngine` (or other backend) to survive restarts and redeploys.
+   */
+  engine?: WorkflowEngine;
+  /**
+   * If set, resume an existing run with this ID. On resume, the agent rebuilds
+   * `history` and `currentGeneration` from the persisted step log and picks up
+   * on the first uncompleted generation.
+   */
+  runId?: string;
+  /** Workflow name used when creating engine run records. Default: `evolutionary`. */
+  workflowName?: string;
 }
 
 export type EvolutionState = 'idle' | 'running' | 'paused' | 'converged' | 'completed';
@@ -76,6 +92,11 @@ export class EvolutionaryAgent implements Runnable {
   private threshold: number;
   private escalationThreshold: number;
   private topKAdversarial: number;
+  private engine: WorkflowEngine;
+  private workflowName: string;
+  private providedRunId: string | undefined;
+  private runId: string | null = null;
+  private initPromise: Promise<void> | null = null;
 
   constructor(config: EvolutionaryConfig) {
     this.config = config;
@@ -83,6 +104,9 @@ export class EvolutionaryAgent implements Runnable {
     this.threshold = config.convergenceThreshold ?? 0.001;
     this.escalationThreshold = config.escalationThreshold ?? 0.85;
     this.topKAdversarial = config.topKAdversarial ?? 0.05;
+    this.engine = config.engine ?? new InMemoryEngine();
+    this.workflowName = config.workflowName ?? 'evolutionary';
+    this.providedRunId = config.runId;
     this.tools = this.buildTools();
   }
 
@@ -91,11 +115,47 @@ export class EvolutionaryAgent implements Runnable {
   // ---------------------------------------------------------------------------
 
   async run(_messages: Message[]): Promise<string> {
+    await this.ensureInitialized();
     if (this.state === 'idle') {
       this.startLoop();
-      return `Evolution started. Running generation 0 of ${this.config.maxGenerations}.`;
+      return `Evolution started. Running generation ${this.currentGeneration} of ${this.config.maxGenerations}.`;
     }
     return this.stateSummary();
+  }
+
+  /**
+   * Open (or re-open) the run with the engine and, on resume, rebuild
+   * `history` and `currentGeneration` from the persisted `finalize-*` steps.
+   * Idempotent — safe to call multiple times; the work happens once.
+   */
+  private ensureInitialized(): Promise<void> {
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = (async () => {
+      const input = {
+        populationSize: this.config.populationSize,
+        mutationBatch: this.config.mutationBatch,
+        maxGenerations: this.config.maxGenerations,
+        paretoObjectives: this.config.paretoObjectives,
+        fitnessWeights: this.config.fitnessWeights,
+      };
+      this.runId = await this.engine.startRun(this.workflowName, input, {
+        runId: this.providedRunId,
+      });
+
+      // Replay finalized generations to rebuild in-memory history.
+      const snapshot = await this.engine.getRun(this.runId);
+      if (snapshot) {
+        const finalized = snapshot.steps
+          .filter((s) => s.stepKey.startsWith('finalize-') && s.status === 'completed')
+          .map((s) => s.output as GenerationResult)
+          .sort((a, b) => a.generation - b.generation);
+        if (finalized.length > 0) {
+          this.history = finalized;
+          this.currentGeneration = finalized[finalized.length - 1].generation + 1;
+        }
+      }
+    })();
+    return this.initPromise;
   }
 
   async *stream(messages: Message[]): AsyncGenerator<string> {
@@ -116,7 +176,10 @@ export class EvolutionaryAgent implements Runnable {
 
   startLoop(): void {
     this.state = 'running';
-    this.loopPromise = this.runLoop();
+    this.loopPromise = (async () => {
+      await this.ensureInitialized();
+      await this.runLoop();
+    })();
   }
 
   pauseLoop(): void {
@@ -126,7 +189,13 @@ export class EvolutionaryAgent implements Runnable {
   resumeLoop(): void {
     if (this.state === 'paused') {
       this.state = 'running';
-      this.loopPromise = this.runLoop();
+      this.loopPromise = (async () => {
+        // Re-open the persisted run so its status flips back to 'running'.
+        if (this.runId) {
+          await this.engine.startRun(this.workflowName, {}, { runId: this.runId });
+        }
+        await this.runLoop();
+      })();
     }
   }
 
@@ -161,28 +230,45 @@ export class EvolutionaryAgent implements Runnable {
     if (this.state === 'running') {
       this.state = 'completed';
     }
+
+    // Persist the terminal (or paused) state on the engine so it survives restart.
+    if (this.runId) {
+      await this.engine.finishRun(this.runId, this.state);
+    }
   }
 
   private async runGeneration(gen: number): Promise<GenerationResult> {
     const startTime = Date.now();
+    const runId = this.runId;
+    if (!runId) {
+      throw new Error('runGeneration called before ensureInitialized');
+    }
 
-    // 1. Load survivors from previous generation (or seed from gen 0 if first run)
+    // Each phase below is wrapped in engine.step so a completed phase replays
+    // from cache on resume instead of re-invoking the handler.
+
+    // 1. Load survivors from previous generation
     const prevGen = gen > 0 ? gen - 1 : 0;
-    const parents = await this.config.store.loadTopSurvivors(
-      prevGen,
-      this.config.populationSize,
-      this.config.fitnessWeights,
+    const parents = await this.engine.step<Hypothesis[]>(runId, `load-${gen}`, () =>
+      this.config.store.loadTopSurvivors(
+        prevGen,
+        this.config.populationSize,
+        this.config.fitnessWeights,
+      ),
     );
 
     // If no parents in store yet (bootstrap), skip mutation
     let candidates: Hypothesis[] = [];
     if (parents.length > 0) {
-      candidates = await this.mutate(parents, gen);
+      candidates = await this.engine.step<Hypothesis[]>(runId, `mutate-${gen}`, () =>
+        this.mutate(parents, gen),
+      );
     }
 
-    // If still empty, nothing to do this generation
+    // If still empty, nothing to do this generation — still persist a finalize
+    // record so replay is stable.
     if (candidates.length === 0) {
-      return {
+      return this.engine.step<GenerationResult>(runId, `finalize-${gen}`, async () => ({
         generation: gen,
         populationSize: 0,
         bestFitness: 0,
@@ -191,62 +277,69 @@ export class EvolutionaryAgent implements Runnable {
         escalated: [],
         wallTimeMs: Date.now() - startTime,
         converged: false,
-      };
+      }));
     }
 
     // 2. Evaluate fitness
-    const evaluated = await this.evaluate(candidates);
+    const evaluated = await this.engine.step<Hypothesis[]>(runId, `evaluate-${gen}`, () =>
+      this.evaluate(candidates),
+    );
 
     // 3. Judge the top cohort
-    const judged = await this.judge(evaluated);
-
-    // 4. Write to store
-    await this.config.store.writeHypotheses(judged);
-
-    // 5. Select survivors via Pareto + composite fitness
-    const survivors = selectSurvivors(
-      judged,
-      this.config.paretoObjectives,
-      this.config.fitnessWeights,
-      this.config.populationSize,
+    const judged = await this.engine.step<Hypothesis[]>(runId, `judge-${gen}`, () =>
+      this.judge(evaluated),
     );
 
-    // 6. Escalate hypotheses above the escalation threshold.
-    // updateFitnessScores only persists fitness, so flag separately — otherwise
-    // flagged_for_review never reaches the store and the review queue stays empty.
-    const escalated = survivors.filter(
-      (h) => compositeFitness(h, this.config.fitnessWeights) >= this.escalationThreshold,
-    );
-    if (escalated.length > 0) {
-      await this.config.store.flagForReview(escalated.map((h) => h.id));
-      for (const h of escalated) {
-        h.flagged_for_review = true;
+    // 4. Write to store — returned value is a no-op, but caching still avoids
+    // redundant writes on replay.
+    await this.engine.step<null>(runId, `write-${gen}`, async () => {
+      await this.config.store.writeHypotheses(judged);
+      return null;
+    });
+
+    // 5-7. Select, escalate, convergence check, and stats computation all
+    // collapse into one `finalize` step whose output is the GenerationResult
+    // we need for `history` reconstruction on resume.
+    return this.engine.step<GenerationResult>(runId, `finalize-${gen}`, async () => {
+      const survivors = selectSurvivors(
+        judged,
+        this.config.paretoObjectives,
+        this.config.fitnessWeights,
+        this.config.populationSize,
+      );
+
+      const escalated = survivors.filter(
+        (h) => compositeFitness(h, this.config.fitnessWeights) >= this.escalationThreshold,
+      );
+      if (escalated.length > 0) {
+        await this.config.store.flagForReview(escalated.map((h) => h.id));
+        for (const h of escalated) {
+          h.flagged_for_review = true;
+        }
       }
-    }
 
-    // 7. Check convergence
-    const fitnessHistory = await this.config.store.getFitnessHistory(
-      this.patience,
-      this.config.fitnessWeights,
-    );
-    const converged = this.checkConvergence(fitnessHistory);
+      const fitnessHistory = await this.config.store.getFitnessHistory(
+        this.patience,
+        this.config.fitnessWeights,
+      );
+      const converged = this.checkConvergence(fitnessHistory);
 
-    // Compute stats
-    const scores = survivors.map((h) => compositeFitness(h, this.config.fitnessWeights));
-    const bestFitness = scores.length > 0 ? Math.max(...scores) : 0;
-    const avgFitness = scores.length > 0 ? scores.reduce((s, v) => s + v, 0) / scores.length : 0;
-    const frontier = paretoFrontier(survivors, this.config.paretoObjectives);
+      const scores = survivors.map((h) => compositeFitness(h, this.config.fitnessWeights));
+      const bestFitness = scores.length > 0 ? Math.max(...scores) : 0;
+      const avgFitness = scores.length > 0 ? scores.reduce((s, v) => s + v, 0) / scores.length : 0;
+      const frontier = paretoFrontier(survivors, this.config.paretoObjectives);
 
-    return {
-      generation: gen,
-      populationSize: survivors.length,
-      bestFitness,
-      avgFitness,
-      paretoFrontierSize: frontier.length,
-      escalated,
-      wallTimeMs: Date.now() - startTime,
-      converged,
-    };
+      return {
+        generation: gen,
+        populationSize: survivors.length,
+        bestFitness,
+        avgFitness,
+        paretoFrontierSize: frontier.length,
+        escalated,
+        wallTimeMs: Date.now() - startTime,
+        converged,
+      };
+    });
   }
 
   // ---------------------------------------------------------------------------
