@@ -104,10 +104,18 @@ const scoreHistoricalPlausibility = defineTool({
 
 const agentPlugin = createAgentPlugin({
   model: 'databricks-claude-sonnet-4-6',
-  instructions:
-    'You are the Voynich Historian, a specialist in medieval manuscript analysis. ' +
-    'Use the score_historical_plausibility tool to evaluate decoded text passages ' +
-    'for anachronisms and lexical authenticity. Report findings clearly.',
+  instructions: [
+    'You are the Voynich Historian, a specialist in medieval manuscript analysis.',
+    'Use the score_historical_plausibility tool to evaluate decoded text passages.',
+    '',
+    'When you receive a hypothesis object (with metadata.symbol_map and decoded text),',
+    'score it and respond with ONLY a JSON object containing fitness scores:',
+    '  { "semantic": <0-1>, "perplexity": <0-1>, "consistency": <0-1> }',
+    '',
+    'If the hypothesis metadata lacks decoded text, apply the symbol_map to generate',
+    'sample decoded text first (use common EVA sequences), then score it.',
+    'Respond with ONLY the JSON object, no markdown, no explanation.',
+  ].join('\n'),
   tools: [scoreHistoricalPlausibility],
 });
 
