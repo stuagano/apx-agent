@@ -26,6 +26,17 @@ from .loop_agent import (
     SourceLanguage,
 )
 from .population_store import PopulationStore, pareto_frontier, pareto_dominates
+from .engine import (
+    WorkflowEngine,
+    RunStatus,
+    RunSnapshot,
+    RunSummary,
+    RunFilter,
+    StepRecord,
+    StepFailedError,
+)
+from .engine_memory import InMemoryEngine
+from .engine_delta import DeltaEngine
 
 __all__ = [
     "LoopAgent",
@@ -37,4 +48,14 @@ __all__ = [
     "PopulationStore",
     "pareto_frontier",
     "pareto_dominates",
+    # Durable execution
+    "WorkflowEngine",
+    "InMemoryEngine",
+    "DeltaEngine",
+    "RunStatus",
+    "RunSnapshot",
+    "RunSummary",
+    "RunFilter",
+    "StepRecord",
+    "StepFailedError",
 ]
