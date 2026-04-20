@@ -234,12 +234,32 @@ class LoopAgent:
     Integrates with apx-agent's create_app() — drop-in replacement for Agent().
     """
 
-    def __init__(self, config: LoopConfig, extra_tools: list[Callable] | None = None):
+    def __init__(
+        self,
+        config: LoopConfig,
+        extra_tools: list[Callable] | None = None,
+        *,
+        engine: "WorkflowEngine | None" = None,
+        run_id: str | None = None,
+        workflow_name: str = "loop",
+    ):
+        # Import locally so WorkflowEngine/InMemoryEngine aren't a hard import
+        # cycle — the workflow package imports loop_agent during init.
+        from .engine import WorkflowEngine  # noqa: F401 — re-expose for type narrowing
+        from .engine_memory import InMemoryEngine
+
         self.config = config
         self._extra_tools = extra_tools or []
         self._running = False
         self._current_generation = 0
         self._results: list[GenerationResult] = []
+
+        # Durable execution. Defaults to in-process engine so behavior is
+        # unchanged for callers who don't pass one.
+        self._engine = engine or InMemoryEngine()
+        self._provided_run_id = run_id
+        self._run_id: str | None = None
+        self._workflow_name = workflow_name
 
     # ------------------------------------------------------------------
     # Core loop
@@ -251,35 +271,55 @@ class LoopAgent:
         store.ensure_schema()
 
         mlflow.set_experiment(self.config.mlflow_experiment)
-        self._running = True
 
-        with mlflow.start_run(run_name="evolutionary_search") as parent_run:
-            mlflow.log_params({
+        # Open (or re-open) the durable run before starting the loop so its
+        # lifecycle is observable via the engine's run log.
+        self._run_id = await self._engine.start_run(
+            self._workflow_name,
+            {
                 "population_size": self.config.population_size,
                 "max_generations": self.config.max_generations,
-                "pareto_objectives": ",".join(self.config.pareto_objectives),
-            })
+                "pareto_objectives": self.config.pareto_objectives,
+            },
+            run_id=self._provided_run_id,
+        )
 
-            for gen in range(self.config.max_generations):
-                if not self._running:
-                    break
+        self._running = True
+        final_status: str = "completed"
 
-                self._current_generation = gen
-                result = await self._run_generation(gen, store, ws, parent_run.info.run_id)
-                self._results.append(result)
+        try:
+            with mlflow.start_run(run_name="evolutionary_search") as parent_run:
+                mlflow.log_params({
+                    "population_size": self.config.population_size,
+                    "max_generations": self.config.max_generations,
+                    "pareto_objectives": ",".join(self.config.pareto_objectives),
+                })
 
-                mlflow.log_metrics({
-                    "best_fitness": result.best_fitness,
-                    "pareto_size": result.pareto_frontier_size,
-                    "escalated_count": len(result.escalated),
-                    "wall_time_s": result.wall_time_s,
-                }, step=gen)
+                for gen in range(self.config.max_generations):
+                    if not self._running:
+                        final_status = "paused"
+                        break
 
-                if result.converged:
-                    mlflow.set_tag("termination", "converged")
-                    break
+                    self._current_generation = gen
+                    result = await self._run_generation(gen, store, ws, parent_run.info.run_id)
+                    self._results.append(result)
 
-        self._running = False
+                    mlflow.log_metrics({
+                        "best_fitness": result.best_fitness,
+                        "pareto_size": result.pareto_frontier_size,
+                        "escalated_count": len(result.escalated),
+                        "wall_time_s": result.wall_time_s,
+                    }, step=gen)
+
+                    if result.converged:
+                        mlflow.set_tag("termination", "converged")
+                        final_status = "converged"
+                        break
+        finally:
+            self._running = False
+            # Persist the terminal / paused state so it survives restart.
+            if self._run_id is not None:
+                await self._engine.finish_run(self._run_id, final_status)
 
     async def _run_generation(
         self,
