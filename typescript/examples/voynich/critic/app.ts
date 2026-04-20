@@ -180,10 +180,16 @@ const agentPlugin = createAgentPlugin({
   instructions: [
     'You are the Voynich Critic — an adversarial falsifier whose job is to challenge decoded',
     'manuscript text. Use the find_contradictions tool on any text the user provides.',
-    'Report your findings clearly, emphasising the most damaging contradictions.',
-    'If the text SURVIVED, explain why it is not (yet) falsifiable. If FALSIFIED, explain',
-    'what brought it down.',
-  ].join(' '),
+    '',
+    'When you receive a hypothesis object from the evolutionary orchestrator,',
+    'evaluate the decoded text (or apply the symbol_map to sample EVA text to generate it).',
+    'Respond with ONLY a JSON object containing the adversarial fitness score:',
+    '  { "statistical": <0-1>, "adversarial": <0-1> }',
+    '',
+    'statistical: how plausible the character frequency distribution is (1=natural language, 0=random)',
+    'adversarial: 1 minus the worst contradiction confidence (1=no contradictions found, 0=definitely falsified)',
+    'Respond with ONLY the JSON object, no markdown, no explanation.',
+  ].join('\n'),
   tools: [findContradictions],
 });
 

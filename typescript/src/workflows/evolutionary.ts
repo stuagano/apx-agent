@@ -481,18 +481,41 @@ export class EvolutionaryAgent implements Runnable {
     const data = await response.json() as unknown;
 
     // Unwrap Responses API envelope: { output_text: "..." } or { output: [...] }
+    let result: unknown = data;
     if (data && typeof data === 'object' && !Array.isArray(data)) {
       const envelope = data as Record<string, unknown>;
-      // Prefer output_text (flat text from Responses API)
       if ('output_text' in envelope && typeof envelope['output_text'] === 'string') {
-        return envelope['output_text'];
+        result = envelope['output_text'];
+      } else if ('output' in envelope) {
+        result = envelope['output'];
+      } else if ('content' in envelope) {
+        result = envelope['content'];
+      } else if ('result' in envelope) {
+        result = envelope['result'];
       }
-      if ('output' in envelope) return envelope['output'];
-      if ('content' in envelope) return envelope['content'];
-      if ('result' in envelope) return envelope['result'];
     }
 
-    return data;
+    // If result is a string, attempt JSON parse — LLM agents often return
+    // JSON inside markdown fences or with surrounding text.
+    if (typeof result === 'string') {
+      const text = result.trim();
+      // Try direct parse first
+      if (text.startsWith('{') || text.startsWith('[')) {
+        try { return JSON.parse(text); } catch { /* fall through */ }
+      }
+      // Extract from markdown code fences: ```json ... ``` or ``` ... ```
+      const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+      if (fenceMatch) {
+        try { return JSON.parse(fenceMatch[1].trim()); } catch { /* fall through */ }
+      }
+      // Last resort: find the first [ or { and try to parse from there
+      const jsonStart = text.search(/[\[{]/);
+      if (jsonStart >= 0) {
+        try { return JSON.parse(text.slice(jsonStart)); } catch { /* fall through */ }
+      }
+    }
+
+    return result;
   }
 
   // ---------------------------------------------------------------------------
