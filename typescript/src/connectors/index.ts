@@ -12,7 +12,7 @@ export type {
   DbFetchOptions,
 } from './types.js';
 
-export { parseEntitySchema, resolveHost, buildSqlParams, dbFetch } from './types.js';
+export { parseEntitySchema, resolveHost, resolveToken, buildSqlParams, dbFetch } from './types.js';
 
 // Lakebase
 export {
