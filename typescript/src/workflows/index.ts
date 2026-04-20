@@ -42,6 +42,8 @@ export type { Hypothesis } from './hypothesis.js';
 export { InMemoryEngine } from './engine-memory.js';
 export { DeltaEngine } from './engine-delta.js';
 export type { DeltaEngineConfig } from './engine-delta.js';
+export { InngestEngine } from './engine-inngest.js';
+export type { InngestStep } from './engine-inngest.js';
 export { StepFailedError } from './engine.js';
 export type {
   WorkflowEngine,

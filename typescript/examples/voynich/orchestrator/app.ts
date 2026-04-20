@@ -36,6 +36,8 @@ import {
   createDevPlugin,
   PopulationStore,
   EvolutionaryAgent,
+  DeltaEngine,
+  InMemoryEngine,
 } from '../../../src/index.js';
 import {
   VOYNICH_FITNESS_WEIGHTS,
@@ -70,6 +72,17 @@ if (fitnessAgentUrls.length === 0) {
   throw new Error('FITNESS_AGENT_URLS env var is required (comma-separated list of URLs)');
 }
 
+// Durable execution: if WORKFLOW_TABLE_PREFIX is set, the evolution run
+// persists each generation phase to Delta so it survives app restarts and
+// can resume via RUN_ID. Otherwise fall back to the in-memory engine
+// (original behavior — state lost on restart).
+const engine = process.env.WORKFLOW_TABLE_PREFIX
+  ? new DeltaEngine({
+      tablePrefix: process.env.WORKFLOW_TABLE_PREFIX,
+      warehouseId: process.env.DATABRICKS_WAREHOUSE_ID!,
+    })
+  : new InMemoryEngine();
+
 const evolutionaryAgent = new EvolutionaryAgent({
   store,
   populationSize: parseInt(process.env.POPULATION_SIZE ?? '50'),
@@ -85,6 +98,9 @@ const evolutionaryAgent = new EvolutionaryAgent({
     'You are the Voynich decipherment orchestrator. ' +
     'Manage and summarise the evolutionary search for a valid decipherment of the Voynich manuscript. ' +
     'Use your tools to inspect generation results, escalate top hypotheses, and pause or resume the loop on request.',
+  engine,
+  runId: process.env.RUN_ID,
+  workflowName: 'voynich-evolution',
 });
 
 // ---------------------------------------------------------------------------

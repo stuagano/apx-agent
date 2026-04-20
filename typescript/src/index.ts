@@ -139,10 +139,16 @@ export type {
 } from './workflows/index.js';
 
 // Durable execution — WorkflowEngine interface + backends
-export { InMemoryEngine, DeltaEngine, StepFailedError } from './workflows/index.js';
+export {
+  InMemoryEngine,
+  DeltaEngine,
+  InngestEngine,
+  StepFailedError,
+} from './workflows/index.js';
 export type {
   WorkflowEngine,
   DeltaEngineConfig,
+  InngestStep,
   RunStatus,
   RunSnapshot,
   RunSummary,
