@@ -177,6 +177,33 @@ Composable agent patterns for multi-step orchestration:
 | **RemoteAgent** | Cross-service agent communication |
 | **EvolutionaryAgent** | Population-based search with Pareto selection |
 
+#### Durable execution
+
+`SequentialAgent`, `LoopAgent`, and `EvolutionaryAgent` optionally persist each step's output through a pluggable `WorkflowEngine`, so a run can resume after a crash, redeploy, or pause. Completed steps replay from the persisted log; the first uncompleted step runs fresh.
+
+| Backend | When to use |
+|---------|-------------|
+| `InMemoryEngine` | Default — tests, dev, short-lived interactive runs |
+| `DeltaEngine` | Production — SQL Statements API against a Delta table; survives app restarts |
+| `InngestEngine` | Optional adapter — when you already run Inngest as your orchestrator |
+
+```typescript
+import { EvolutionaryAgent, DeltaEngine } from 'appkit-agent';
+
+const engine = new DeltaEngine({
+  tablePrefix: 'main.apx_agent.workflow',
+  warehouseId: process.env.DATABRICKS_WAREHOUSE_ID!,
+});
+
+const agent = new EvolutionaryAgent({
+  // ...existing config
+  engine,
+  runId: 'voynich-evolution-001', // pass to resume an existing run
+});
+```
+
+See `docs/superpowers/specs/2026-04-19-durable-workflows-design.md` for the full design.
+
 ### MCP server
 
 Every agent exposes MCP at `/mcp/sse` (SSE transport) and `/mcp` (streamable HTTP). Connect from Claude Desktop, Cursor, Genie Code, or Supervisor Agent.
