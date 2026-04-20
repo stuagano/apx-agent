@@ -3,7 +3,7 @@
  *
  * Each generation:
  *  1. Load top survivors from the previous generation
- *  2. Mutate them via a mutation agent (POST to /invocations)
+ *  2. Mutate them via a mutation agent (POST to /responses)
  *  3. Evaluate fitness via one or more fitness agents
  *  4. Optionally judge the top cohort via a judge agent
  *  5. Write new hypotheses + updated fitness back to the store
@@ -257,16 +257,21 @@ export class EvolutionaryAgent implements Runnable {
       ),
     );
 
-    // If no parents in store yet (bootstrap), skip mutation
+    // If no parents in store (bootstrap), call the mutation agent with an empty
+    // parent list to produce seed hypotheses. The mutation agent is expected to
+    // generate initial random hypotheses when given no parents.
     let candidates: Hypothesis[] = [];
     if (parents.length > 0) {
       candidates = await this.engine.step<Hypothesis[]>(runId, `mutate-${gen}`, () =>
         this.mutate(parents, gen),
       );
+    } else {
+      candidates = await this.engine.step<Hypothesis[]>(runId, `seed-${gen}`, () =>
+        this.mutate([], gen),
+      );
     }
 
-    // If still empty, nothing to do this generation — still persist a finalize
-    // record so replay is stable.
+    // If mutation/seeding returned nothing, skip this generation.
     if (candidates.length === 0) {
       return this.engine.step<GenerationResult>(runId, `finalize-${gen}`, async () => ({
         generation: gen,
@@ -462,7 +467,7 @@ export class EvolutionaryAgent implements Runnable {
       // No token available — proceed without auth (may fail downstream)
     }
 
-    const response = await fetch(`${url}/invocations`, {
+    const response = await fetch(`${url}/responses`, {
       method: 'POST',
       headers: callHeaders,
       body: JSON.stringify(body),
@@ -475,9 +480,13 @@ export class EvolutionaryAgent implements Runnable {
 
     const data = await response.json() as unknown;
 
-    // Unwrap common response envelopes
+    // Unwrap Responses API envelope: { output_text: "..." } or { output: [...] }
     if (data && typeof data === 'object' && !Array.isArray(data)) {
       const envelope = data as Record<string, unknown>;
+      // Prefer output_text (flat text from Responses API)
+      if ('output_text' in envelope && typeof envelope['output_text'] === 'string') {
+        return envelope['output_text'];
+      }
       if ('output' in envelope) return envelope['output'];
       if ('content' in envelope) return envelope['content'];
       if ('result' in envelope) return envelope['result'];
