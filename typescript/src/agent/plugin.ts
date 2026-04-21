@@ -189,10 +189,12 @@ export function createAgentPlugin(config: AgentConfig) {
     },
 
     injectRoutes(router: { get: Function; post: Function; all: Function }) {
-      // Health check
-      router.get(`${apiPrefix}/health`, (_req: Request, res: Response) => {
+      // Health check — also at /api/health for bearer-token access
+      const healthHandler = (_req: Request, res: Response) => {
         res.json({ status: 'ok' });
-      });
+      };
+      router.get(`${apiPrefix}/health`, healthHandler);
+      router.get('/api/health', healthHandler);
 
       // Individual tool endpoints (for loopback dispatch + direct use)
       for (const tool of tools) {
@@ -208,8 +210,10 @@ export function createAgentPlugin(config: AgentConfig) {
         });
       }
 
-      // Primary endpoint — Responses API format
-      router.post('/responses', async (req: Request, res: Response) => {
+      // Primary endpoint — Responses API format.
+      // Mounted at both /responses (interactive/SSO) and /api/responses
+      // (bearer-token auth for app-to-app calls via the Databricks Apps gateway).
+      const responsesHandler = async (req: Request, res: Response) => {
         try {
           const raw = req.body as ResponsesInput;
           const messages = parseInput(raw);
@@ -284,6 +288,9 @@ export function createAgentPlugin(config: AgentConfig) {
             res.write(`event: response.output_item.start\ndata: ${JSON.stringify({ item_id: itemId })}\n\n`);
 
             let fullText = '';
+            const heartbeat = setInterval(() => {
+              res.write(': keepalive\n\n');
+            }, 15_000);
             try {
               for await (const chunk of streamViaSDK({
                 model: config.model,
@@ -309,6 +316,8 @@ export function createAgentPlugin(config: AgentConfig) {
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
               res.write(`event: error\ndata: ${JSON.stringify({ item_id: itemId, error: message })}\n\n`);
+            } finally {
+              clearInterval(heartbeat);
             }
 
             res.end();
@@ -347,7 +356,9 @@ export function createAgentPlugin(config: AgentConfig) {
           const message = err instanceof Error ? err.message : String(err);
           res.status(500).json({ error: message });
         }
-      });
+      };
+      router.post('/responses', responsesHandler);
+      router.post('/api/responses', responsesHandler);
     },
 
     exports(): AgentExports {
