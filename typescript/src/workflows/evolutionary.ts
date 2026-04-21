@@ -47,6 +47,8 @@ export interface EvolutionaryConfig {
   topKAdversarial?: number;        // default 0.05
   model?: string;
   instructions?: string;
+  /** Per-generation timeout in milliseconds. Default: 600_000 (10 minutes). */
+  generationTimeoutMs?: number;
   /**
    * Durable execution engine. If omitted, an in-process `InMemoryEngine` is
    * used — preserves the pre-durable behavior (state lost on restart). Pass a
@@ -63,7 +65,7 @@ export interface EvolutionaryConfig {
   workflowName?: string;
 }
 
-export type EvolutionState = 'idle' | 'running' | 'paused' | 'converged' | 'completed';
+export type EvolutionState = 'idle' | 'running' | 'paused' | 'converged' | 'completed' | 'failed';
 
 export interface GenerationResult {
   generation: number;
@@ -179,7 +181,10 @@ export class EvolutionaryAgent implements Runnable {
     this.loopPromise = (async () => {
       await this.ensureInitialized();
       await this.runLoop();
-    })();
+    })().catch((err) => {
+      this.state = 'failed';
+      console.error('[EvolutionaryAgent] loop crashed:', err);
+    });
   }
 
   pauseLoop(): void {
@@ -187,7 +192,7 @@ export class EvolutionaryAgent implements Runnable {
   }
 
   resumeLoop(): void {
-    if (this.state === 'paused') {
+    if (this.state === 'paused' || this.state === 'failed') {
       this.state = 'running';
       this.loopPromise = (async () => {
         // Re-open the persisted run so its status flips back to 'running'.
@@ -195,7 +200,10 @@ export class EvolutionaryAgent implements Runnable {
           await this.engine.startRun(this.workflowName, {}, { runId: this.runId });
         }
         await this.runLoop();
-      })();
+      })().catch((err) => {
+        this.state = 'failed';
+        console.error('[EvolutionaryAgent] loop crashed:', err);
+      });
     }
   }
 
@@ -217,13 +225,26 @@ export class EvolutionaryAgent implements Runnable {
 
   private async runLoop(): Promise<void> {
     while (this.state === 'running' && this.currentGeneration < this.config.maxGenerations) {
-      const result = await this.runGeneration(this.currentGeneration);
-      this.history.push(result);
-      this.currentGeneration++;
+      const gen = this.currentGeneration;
+      const timeoutMs = this.config.generationTimeoutMs ?? 600_000;
+      const generationTimeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Generation ${gen} timed out after ${timeoutMs}ms`)), timeoutMs),
+      );
 
-      if (result.converged) {
-        this.state = 'converged';
-        break;
+      try {
+        const result = await Promise.race([this.runGeneration(gen), generationTimeout]);
+        this.history.push(result);
+        this.currentGeneration++;
+
+        if (result.converged) {
+          this.state = 'converged';
+          break;
+        }
+      } catch (err) {
+        console.error(`[EvolutionaryAgent] Generation ${gen} failed:`, err);
+        // Treat timed-out / failed generation as a skip — advance and continue.
+        this.currentGeneration++;
+        continue;
       }
     }
 
@@ -233,7 +254,8 @@ export class EvolutionaryAgent implements Runnable {
 
     // Persist the terminal (or paused) state on the engine so it survives restart.
     if (this.runId) {
-      await this.engine.finishRun(this.runId, this.state);
+      const status = this.state === 'idle' ? 'completed' : this.state;
+      await this.engine.finishRun(this.runId, status);
     }
   }
 
@@ -449,7 +471,7 @@ export class EvolutionaryAgent implements Runnable {
     return [...mergedTop, ...bottomCohort];
   }
 
-  private async callAgent(url: string, payload: unknown): Promise<unknown> {
+  private async callAgent(url: string, payload: unknown, retries = 3): Promise<unknown> {
     const body = {
       input: [
         {
@@ -463,59 +485,98 @@ export class EvolutionaryAgent implements Runnable {
     try {
       const callToken = await resolveToken();
       callHeaders.Authorization = `Bearer ${callToken}`;
-    } catch {
-      // No token available — proceed without auth (may fail downstream)
+    } catch (err) {
+      console.warn(`[callAgent] No auth token available for ${url}:`, (err as Error).message);
     }
 
-    const response = await fetch(`${url}/responses`, {
-      method: 'POST',
-      headers: callHeaders,
-      body: JSON.stringify(body),
-    });
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (attempt > 0) {
+        const delay = Math.min(1000 * 2 ** (attempt - 1), 30_000);
+        console.warn(`[callAgent] Retry ${attempt}/${retries} for ${url} after ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Agent call to ${url} failed ${response.status}: ${text}`);
+      let response: globalThis.Response;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 120_000);
+      try {
+        response = await fetch(`${url}/api/responses`, {
+          method: 'POST',
+          headers: callHeaders,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch (err) {
+        clearTimeout(timer);
+        lastError = new Error(`Agent call to ${url} network error: ${(err as Error).message}`);
+        continue;
+      }
+      clearTimeout(timer);
+
+      // Retryable server errors (502, 503, 429)
+      if (response.status === 502 || response.status === 503 || response.status === 429) {
+        const text = await response.text();
+        lastError = new Error(`Agent call to ${url} failed ${response.status}: ${text.slice(0, 500)}`);
+        continue;
+      }
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Agent call to ${url} failed ${response.status}: ${text.slice(0, 500)}`);
+      }
+
+      const contentType = response.headers.get('content-type') ?? '';
+      if (!contentType.includes('application/json')) {
+        const text = await response.text();
+        throw new Error(
+          `Agent call to ${url} returned ${contentType || 'no content-type'} instead of JSON ` +
+          `(likely an auth redirect). Body: ${text.slice(0, 200)}`,
+        );
+      }
+
+      const data = await response.json() as unknown;
+
+      // Unwrap Responses API envelope: { output_text: "..." } or { output: [...] }
+      let result: unknown = data;
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        const envelope = data as Record<string, unknown>;
+        if ('output_text' in envelope && typeof envelope['output_text'] === 'string') {
+          result = envelope['output_text'];
+        } else if ('output' in envelope) {
+          result = envelope['output'];
+        } else if ('content' in envelope) {
+          result = envelope['content'];
+        } else if ('result' in envelope) {
+          result = envelope['result'];
+        }
+      }
+
+      // If result is a string, attempt JSON parse — LLM agents often return
+      // JSON inside markdown fences or with surrounding text.
+      if (typeof result === 'string') {
+        const text = result.trim();
+        // Try direct parse first
+        if (text.startsWith('{') || text.startsWith('[')) {
+          try { return JSON.parse(text); } catch { /* fall through */ }
+        }
+        // Extract from markdown code fences: ```json ... ``` or ``` ... ```
+        const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+        if (fenceMatch) {
+          try { return JSON.parse(fenceMatch[1].trim()); } catch { /* fall through */ }
+        }
+        // Last resort: find the first [ or { and try to parse from there
+        const jsonStart = text.search(/[\[{]/);
+        if (jsonStart >= 0) {
+          try { return JSON.parse(text.slice(jsonStart)); } catch { /* fall through */ }
+        }
+      }
+
+      return result;
     }
 
-    const data = await response.json() as unknown;
-
-    // Unwrap Responses API envelope: { output_text: "..." } or { output: [...] }
-    let result: unknown = data;
-    if (data && typeof data === 'object' && !Array.isArray(data)) {
-      const envelope = data as Record<string, unknown>;
-      if ('output_text' in envelope && typeof envelope['output_text'] === 'string') {
-        result = envelope['output_text'];
-      } else if ('output' in envelope) {
-        result = envelope['output'];
-      } else if ('content' in envelope) {
-        result = envelope['content'];
-      } else if ('result' in envelope) {
-        result = envelope['result'];
-      }
-    }
-
-    // If result is a string, attempt JSON parse — LLM agents often return
-    // JSON inside markdown fences or with surrounding text.
-    if (typeof result === 'string') {
-      const text = result.trim();
-      // Try direct parse first
-      if (text.startsWith('{') || text.startsWith('[')) {
-        try { return JSON.parse(text); } catch { /* fall through */ }
-      }
-      // Extract from markdown code fences: ```json ... ``` or ``` ... ```
-      const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-      if (fenceMatch) {
-        try { return JSON.parse(fenceMatch[1].trim()); } catch { /* fall through */ }
-      }
-      // Last resort: find the first [ or { and try to parse from there
-      const jsonStart = text.search(/[\[{]/);
-      if (jsonStart >= 0) {
-        try { return JSON.parse(text.slice(jsonStart)); } catch { /* fall through */ }
-      }
-    }
-
-    return result;
+    // All retries exhausted
+    throw lastError ?? new Error(`Agent call to ${url} failed after ${retries} retries`);
   }
 
   // ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ import type { Express } from 'express';
 import type { AgentTool } from './tools.js';
 import { toStrictSchema, zodToJsonSchema } from './tools.js';
 import { runWithContext } from './request-context.js';
+import { resolveToken as resolveTokenFull } from '../connectors/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,14 +73,33 @@ function getHost(): string {
   return host.startsWith('http') ? host.replace(/\/$/, '') : `https://${host}`;
 }
 
-/** Extract the best available auth token from OBO headers or env. */
-function resolveToken(oboHeaders: Record<string, string>): string | undefined {
-  return (
-    oboHeaders['x-forwarded-access-token'] ||
-    (oboHeaders['authorization'] ?? '').replace(/^Bearer\s+/i, '') ||
-    process.env.DATABRICKS_TOKEN ||
-    undefined
-  );
+/**
+ * Resolve auth token for FMAPI calls.
+ *
+ * For FMAPI (model serving), the app should use its own identity — NOT the
+ * caller's OBO token, which may be another app's SP that lacks FMAPI access.
+ *
+ * Priority: DATABRICKS_TOKEN env → M2M OAuth (app's own SP credentials).
+ * OBO headers are intentionally skipped here; they are used for data
+ * operations (UC, SQL) where the caller's identity matters.
+ */
+function resolveToken(_oboHeaders: Record<string, string>): string | Promise<string> | undefined {
+  try {
+    // Pass no OBO headers so the chain falls through to DATABRICKS_TOKEN or M2M OAuth
+    return resolveTokenFull();
+  } catch {
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fetch with AbortController timeout
+// ---------------------------------------------------------------------------
+
+function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
 // ---------------------------------------------------------------------------
@@ -100,14 +120,18 @@ async function chatCompletions(
     body.tool_choice = 'auto';
   }
 
-  const res = await fetch(`${host}/serving-endpoints/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  const res = await fetchWithTimeout(
+    `${host}/serving-endpoints/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-  });
+    120_000,
+  );
 
   if (!res.ok) {
     const text = await res.text();
@@ -131,14 +155,18 @@ async function chatCompletionsStream(
     body.tool_choice = 'auto';
   }
 
-  const res = await fetch(`${host}/serving-endpoints/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  const res = await fetchWithTimeout(
+    `${host}/serving-endpoints/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-  });
+    180_000,
+  );
 
   if (!res.ok) {
     const text = await res.text();
@@ -247,7 +275,7 @@ export function toSubAgentTool(name: string, description: string, url: string, o
 
 /** Run the agent loop and return the final text. */
 export async function runViaSDK(params: RunParams): Promise<string> {
-  const token = resolveToken(params.oboHeaders);
+  const token = await resolveToken(params.oboHeaders);
   const toolMap = new Map(params.tools.map((t) => [t.name, t]));
   const subAgentMap = new Map(
     (params.subAgents ?? []).map((url, i) => [`sub_agent_${i}`, url]),
@@ -324,7 +352,7 @@ export async function runViaSDK(params: RunParams): Promise<string> {
 
 /** Stream the agent loop, yielding text chunks. */
 export async function* streamViaSDK(params: RunParams): AsyncGenerator<string> {
-  const token = resolveToken(params.oboHeaders);
+  const token = await resolveToken(params.oboHeaders);
   const toolMap = new Map(params.tools.map((t) => [t.name, t]));
   const subAgentMap = new Map(
     (params.subAgents ?? []).map((url, i) => [`sub_agent_${i}`, url]),
