@@ -70,15 +70,21 @@ const scoreHistoricalPlausibility = defineTool({
     );
 
     // Scoring
-    let score = 0.5;
-
-    // Subtract 0.1 per anachronism
-    score -= anachronisms.length * 0.1;
-
-    // Bonus for natural lexical diversity range (not too repetitive, not too random)
+    // Base score from lexical diversity — natural language text in [0.3, 0.8] range scores higher
+    let score = 0;
     if (lexicalDiversity >= 0.3 && lexicalDiversity <= 0.8) {
-      score += 0.2;
+      // Peak at 0.55 diversity, falls off at edges
+      score = 1.0 - Math.abs(lexicalDiversity - 0.55) * 4;
+    } else {
+      score = 0.1; // very repetitive or very random text
     }
+
+    // Penalize anachronisms heavily
+    score -= anachronisms.length * 0.2;
+
+    // Bonus for sufficient word count (real text has substance)
+    if (wordCount >= 20) score += 0.15;
+    if (wordCount >= 50) score += 0.1;
 
     // Clamp to [0, 1]
     score = Math.min(1, Math.max(0, score));
@@ -109,12 +115,13 @@ const agentPlugin = createAgentPlugin({
     'Use the score_historical_plausibility tool to evaluate decoded text passages.',
     '',
     'When you receive a hypothesis object (with metadata.symbol_map and decoded text),',
-    'score it and respond with ONLY a JSON object containing fitness scores:',
-    '  { "semantic": <0-1>, "perplexity": <0-1>, "consistency": <0-1> }',
+    'score it and respond with ONLY a JSON object containing the tool\'s output:',
+    '  { "semantic": <the tool\'s semantic score> }',
     '',
     'If the hypothesis metadata lacks decoded text, apply the symbol_map to generate',
     'sample decoded text first (use common EVA sequences), then score it.',
     'Respond with ONLY the JSON object, no markdown, no explanation.',
+    'Do NOT include perplexity, consistency, or any scores you did not compute with the tool.',
   ].join('\n'),
   tools: [scoreHistoricalPlausibility],
 });
