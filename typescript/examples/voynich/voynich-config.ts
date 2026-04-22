@@ -14,11 +14,12 @@
  * Must sum to 1.0. Used by EvolutionaryAgent and PopulationStore.
  */
 export const VOYNICH_FITNESS_WEIGHTS: Record<string, number> = {
-  statistical: 0.25,
-  perplexity: 0.25,
-  semantic: 0.30,
-  consistency: 0.15,
-  adversarial: 0.05,
+  semantic: 0.15,
+  perplexity: 0.10,
+  consistency: 0.05,
+  statistical: 0.10,
+  adversarial: 0.10,
+  grounding: 0.50,
 };
 
 // ---------------------------------------------------------------------------
@@ -31,10 +32,10 @@ export const VOYNICH_FITNESS_WEIGHTS: Record<string, number> = {
  * since it is a penalty rather than a primary objective.
  */
 export const VOYNICH_PARETO_OBJECTIVES: string[] = [
+  'grounding',
+  'semantic',
   'statistical',
   'perplexity',
-  'semantic',
-  'consistency',
 ];
 
 // ---------------------------------------------------------------------------
@@ -152,3 +153,19 @@ export const SECTION_TO_INDEX: Record<string, string> = {
   recipes: 'medieval_latin',
   stars: 'astrology',
 };
+
+// ---------------------------------------------------------------------------
+// Herbal folio manifest (Phase 1 grounding)
+// ---------------------------------------------------------------------------
+
+/**
+ * Herbal section folio identifiers for image grounding.
+ * Images are downloaded from Beinecke IIIF and cached in a UC Volume.
+ */
+export const HERBAL_FOLIOS: Array<{ folio_id: string; section: string }> = [
+  // f1 through f20, recto and verso
+  ...Array.from({ length: 20 }, (_, i) => [
+    { folio_id: `f${i + 1}r`, section: 'herbal' as const },
+    { folio_id: `f${i + 1}v`, section: 'herbal' as const },
+  ]).flat(),
+];
