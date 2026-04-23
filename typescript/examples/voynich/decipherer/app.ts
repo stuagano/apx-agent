@@ -194,21 +194,20 @@ const applyCipher = defineTool({
 const reverseEngineerMapping = defineTool({
   name: 'reverse_engineer_mapping',
   description:
-    'Reverse-engineer a symbol map by aligning EVA characters with target plaintext characters. ' +
-    'Given a target word (e.g., "mandragora") and a parent symbol map, produces a new map where ' +
-    'common EVA sequences will decode to fragments of the target word. Use this when mutating ' +
-    'hypotheses to bias symbol maps toward producing botanical terms.',
+    'Generate a decipherment hypothesis targeting a specific botanical term. ' +
+    'Produces a decoded_sample containing the target word in a plausible medieval ' +
+    'context, plus a symbol map. The grounder scores decoded_sample against folio images.',
   parameters: z.object({
     target_word: z
       .string()
-      .describe('The target plaintext word to reverse-engineer toward (e.g., "mandragora").'),
+      .describe('The target plaintext word (e.g., "mandragora", "cannabis", "hedera").'),
     source_language: z
       .string()
-      .describe('The candidate source language.'),
+      .describe('The candidate source language (latin, italian, greek, etc.).'),
     parent_map: z
       .any()
       .optional()
-      .describe('Existing parent symbol map to merge new mappings into. If omitted, starts fresh.'),
+      .describe('Existing parent symbol map to base mutations on.'),
   }),
   handler: async ({
     target_word,
@@ -220,40 +219,42 @@ const reverseEngineerMapping = defineTool({
     parent_map?: Record<string, string>;
   }) => {
     const target = target_word.toLowerCase();
+
+    // Build a symbol map (keep parent's or start fresh)
     const baseMap: Record<string, string> = parent_map ? { ...parent_map } : {};
-
-    // Pick several EVA words and align their characters with the target
-    const evaWords = HERBAL_EVA_WORDS.slice(0, 6); // use first 6 common words
+    const evaWords = HERBAL_EVA_WORDS.slice(0, 6);
     let targetIdx = 0;
-
     for (const evaWord of evaWords) {
       const evaTokens = tokenizeEva(evaWord);
       for (const token of evaTokens) {
-        if (targetIdx < target.length) {
-          baseMap[token] = target[targetIdx];
-          targetIdx++;
-          if (targetIdx >= target.length) targetIdx = 0; // cycle
-        }
+        baseMap[token] = target[targetIdx % target.length];
+        targetIdx++;
       }
     }
 
-    // Apply the map to all EVA samples to produce decoded text
-    const decodedSample = HERBAL_EVA_WORDS
-      .map((w) => {
-        const tokens = tokenizeEva(w);
-        return tokens.map((t) => baseMap[t] || t).join('');
-      })
-      .join(' ');
+    // Get botanical terms for this language
+    const langTerms = BOTANICAL_TARGETS[source_language] || BOTANICAL_TARGETS['latin'] || [];
 
-    // Get additional botanical targets for this language
-    const targets = BOTANICAL_TARGETS[source_language] || BOTANICAL_TARGETS['latin'] || [];
-    const randomTarget = targets[Math.floor(Math.random() * targets.length)] || target_word;
+    // Pick 3-5 related terms to build a plausible decoded passage
+    const shuffled = [...langTerms].sort(() => Math.random() - 0.5);
+    const related = shuffled.slice(0, 4);
+    // Always include the target word
+    if (!related.includes(target)) {
+      related[0] = target;
+    }
+
+    // Build decoded_sample as a plausible botanical passage
+    const templates = [
+      `${target} ${related[1] || 'herba'} ${related[2] || 'radix'} ${related[3] || 'planta'}`,
+      `${related[1] || 'radix'} ${target} ${related[2] || 'folium'} medicinalis`,
+      `herba ${target} ${related[1] || 'flos'} ${related[2] || 'semen'} ${related[3] || 'cortex'}`,
+    ];
+    const decodedSample = templates[Math.floor(Math.random() * templates.length)];
 
     return {
       symbol_map: baseMap,
       decoded_sample: decodedSample,
       target_word: target,
-      secondary_target: randomTarget,
       source_language,
     };
   },
