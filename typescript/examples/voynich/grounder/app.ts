@@ -130,6 +130,61 @@ async function loadAnalyses(): Promise<FolioAnalysis[]> {
 }
 
 // ---------------------------------------------------------------------------
+// EVA decoding
+// ---------------------------------------------------------------------------
+
+/**
+ * Common EVA word sequences from the herbal section, used to generate
+ * decoded text when a hypothesis provides a symbol_map but no decoded_sample.
+ */
+const HERBAL_EVA_SAMPLES = [
+  'daiin.chedy.qokeedy.shedy',
+  'otedy.qokain.chol.chor',
+  'shol.shory.cthy.dar.aly',
+  'oteey.chedy.qokaiin.dy',
+  'qokeey.qokeey.dal.okeey',
+  'cheol.chedy.otaiin.dy',
+  'ykeedy.qokedy.chedy.ol',
+  'otchedy.qokeedy.lchedy',
+  'shedy.qokain.chol.daiin',
+  'okeey.chey.daiin.cthor',
+];
+
+/**
+ * Apply a symbol map to EVA text to produce decoded text.
+ * Handles multi-char EVA symbols (ch, sh, th) by matching longest first.
+ */
+function applySymbolMap(evaText: string, symbolMap: Record<string, string>): string {
+  // Sort keys by length descending so multi-char symbols match first
+  const keys = Object.keys(symbolMap).sort((a, b) => b.length - a.length);
+  let result = '';
+  let i = 0;
+  const text = evaText.replace(/\./g, ' ');
+
+  while (i < text.length) {
+    if (text[i] === ' ') {
+      result += ' ';
+      i++;
+      continue;
+    }
+    let matched = false;
+    for (const key of keys) {
+      if (text.substring(i, i + key.length) === key) {
+        result += symbolMap[key];
+        i += key.length;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      result += text[i];
+      i++;
+    }
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Scoring logic
 // ---------------------------------------------------------------------------
 
@@ -183,7 +238,12 @@ const scoreImageGrounding = defineTool({
   parameters: z.object({
     decoded_text: z
       .string()
-      .describe('The decoded/translated text passage to evaluate.'),
+      .optional()
+      .describe('The decoded/translated text passage to evaluate. If missing, symbol_map will be applied to EVA samples.'),
+    symbol_map: z
+      .record(z.string())
+      .optional()
+      .describe('Symbol mapping from EVA characters to plaintext. Used to generate decoded text if decoded_text is missing.'),
     source_language: z
       .string()
       .describe('The candidate source language (e.g., latin, italian, hebrew).'),
@@ -198,14 +258,26 @@ const scoreImageGrounding = defineTool({
   }),
   handler: async ({
     decoded_text,
+    symbol_map,
     source_language,
     folio_id,
   }: {
-    decoded_text: string;
+    decoded_text?: string;
+    symbol_map?: Record<string, string>;
     source_language: string;
     section?: string;
     folio_id?: string;
   }) => {
+    // If no decoded text but we have a symbol map, apply it to EVA samples
+    let textToScore = decoded_text ?? '';
+    if (!textToScore && symbol_map) {
+      textToScore = HERBAL_EVA_SAMPLES
+        .map((eva) => applySymbolMap(eva, symbol_map))
+        .join(' ');
+    }
+    if (!textToScore) {
+      return { grounding: 0, error: 'No decoded_text or symbol_map provided' };
+    }
     const analyses = await loadAnalyses();
     const targets = folio_id
       ? analyses.filter((a) => a.folio_id === folio_id)
@@ -237,14 +309,14 @@ const scoreImageGrounding = defineTool({
         terms.push(...analysis.botanical_features);
       }
 
-      const score = scoreOverlap(decoded_text, terms);
+      const score = scoreOverlap(textToScore, terms);
       if (score > bestScore) {
         bestScore = score;
         bestFolio = analysis.folio_id;
         bestDepicted =
           analysis.subject_candidates[0]?.name ?? analysis.visual_description.slice(0, 50);
         bestMatched = terms.filter(
-          (t) => decoded_text.toLowerCase().includes(t.toLowerCase()),
+          (t) => textToScore.toLowerCase().includes(t.toLowerCase()),
         );
       }
     }
@@ -270,10 +342,14 @@ const agentPlugin = createAgentPlugin({
     'Use the score_image_grounding tool to evaluate whether a decoded text passage',
     'matches what is depicted in the manuscript herbal illustrations.',
     '',
-    'When you receive a hypothesis object, extract decoded_text and source_language,',
-    'then call score_image_grounding and respond with ONLY a JSON object:',
-    '  { "grounding": <0-1> }',
+    'When you receive a hypothesis object:',
+    '1. Extract source_language from hypothesis.metadata.source_language (or hypothesis.source_language)',
+    '2. Extract decoded_text from hypothesis.decoded_sample (or hypothesis.metadata.decoded_sample) if available',
+    '3. Extract symbol_map from hypothesis.metadata.symbol_map if available',
+    '4. Call score_image_grounding with decoded_text AND/OR symbol_map plus source_language',
+    '5. Respond with ONLY a JSON object: { "grounding": <the score from the tool> }',
     '',
+    'If both decoded_text and symbol_map are available, pass both. The tool will use decoded_text first.',
     'Do not add explanations. Respond with ONLY the JSON object.',
   ].join('\n'),
   tools: [scoreImageGrounding],
