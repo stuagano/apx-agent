@@ -69,9 +69,9 @@ export class PopulationStore {
     for (let i = 0; i < hypotheses.length; i += this.chunkSize) {
       const chunk = hypotheses.slice(i, i + this.chunkSize);
       const valuesList = chunk.map((h) => {
-        const id = esc(h.id);
+        const id = esc(safeName(h.id, 'hypothesis.id'));
         const generation = h.generation;
-        const parentId = esc(h.parent_id ?? '');
+        const parentId = h.parent_id ? esc(safeName(h.parent_id, 'hypothesis.parent_id')) : '';
         const fitness = esc(JSON.stringify(h.fitness));
         const metadata = esc(JSON.stringify(h.metadata));
         const flagged = h.flagged_for_review ? 'true' : 'false';
@@ -89,7 +89,7 @@ export class PopulationStore {
 
   async updateFitnessScores(updates: Array<{ id: string; fitness: Record<string, number> }>): Promise<void> {
     for (const { id, fitness } of updates) {
-      const escapedId = esc(id);
+      const escapedId = esc(safeName(id, 'hypothesis.id'));
       const escapedFitness = esc(JSON.stringify(fitness));
       const statement = `MERGE INTO ${this.populationTable} AS target USING (SELECT '${escapedId}' AS id, '${escapedFitness}' AS fitness) AS source ON target.id = source.id WHEN MATCHED THEN UPDATE SET target.fitness = source.fitness`;
       await this.executeSql(statement);
@@ -101,7 +101,7 @@ export class PopulationStore {
 
   async flagForReview(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
-    const idList = ids.map((id) => `'${esc(id)}'`).join(', ');
+    const idList = ids.map((id) => `'${esc(safeName(id, 'hypothesis.id'))}'`).join(', ');
     const statement = `UPDATE ${this.populationTable} SET flagged_for_review = true WHERE id IN (${idList})`;
     await this.executeSql(statement);
     this.cache.clear();
@@ -112,7 +112,15 @@ export class PopulationStore {
       return this.cache.get(generation)!;
     }
 
-    const statement = `SELECT * FROM ${this.populationTable} WHERE generation = ${generation}`;
+    // Use ROW_NUMBER to deduplicate by id, keeping the most recent row per id.
+    // This prevents stale rows from old runs (with recycled IDs) from polluting selection.
+    const statement = `
+      WITH ranked AS (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
+        FROM ${this.populationTable}
+        WHERE generation = ${generation}
+      )
+      SELECT * FROM ranked WHERE rn = 1`;
     const response = await this.executeSql(statement);
     const hypotheses = this.parseRows(response);
 
@@ -139,7 +147,15 @@ export class PopulationStore {
     nGenerations: number,
     weights: Record<string, number>,
   ): Promise<Array<{ generation: number; best: number; avg: number }>> {
-    const statement = `SELECT * FROM ${this.populationTable}`;
+    // Only fetch the generations we need, not the entire population table
+    const maxGen = `(SELECT MAX(generation) FROM ${this.populationTable})`;
+    const statement = `
+      WITH ranked AS (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
+        FROM ${this.populationTable}
+        WHERE generation > ${maxGen} - ${Math.max(1, Math.floor(nGenerations))}
+      )
+      SELECT * FROM ranked WHERE rn = 1`;
     const response = await this.executeSql(statement);
     const allHypotheses = this.parseRows(response);
 
@@ -236,7 +252,18 @@ export class PopulationStore {
 // Utility
 // ---------------------------------------------------------------------------
 
-/** Escape single quotes for inline SQL string values. */
+/** Escape values for inline SQL strings. Handles single quotes and backslashes. */
 function esc(s: string): string {
-  return s.replace(/'/g, "''");
+  return s.replace(/\\/g, '\\\\').replace(/'/g, "''");
+}
+
+/** Reject values containing obvious SQL injection patterns. */
+function safeName(s: string, label: string): string {
+  if (s.length > 1000) {
+    throw new Error(`${label} too long (${s.length} chars)`);
+  }
+  if (/;\s*(DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|EXEC|UNION)\b/i.test(s)) {
+    throw new Error(`Suspicious SQL pattern in ${label}`);
+  }
+  return s;
 }
