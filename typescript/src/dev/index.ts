@@ -391,103 +391,214 @@ function formatValue(value: unknown, accent: string): string {
   return `<span style="color:#ccc;">${escapeHtml(String(value))}</span>`;
 }
 
-function spanBubble(span: TraceSpan): string {
-  const colors: Record<TraceSpan['type'], { bg: string; label: string; accent: string; icon: string }> = {
-    request:    { bg: '#1e1e30', label: 'Request',   accent: '#7986cb', icon: '↓' },
-    llm:        { bg: '#0d2535', label: 'LLM',       accent: '#00bcd4', icon: '◆' },
-    tool:       { bg: '#2a2200', label: 'Tool',      accent: '#ffb300', icon: '⚙' },
-    agent_call: { bg: '#1a0a2e', label: 'Agent',     accent: '#ab47bc', icon: '→' },
-    response:   { bg: '#0d2a0d', label: 'Response',  accent: '#4caf50', icon: '↑' },
-    error:      { bg: '#2a0d0d', label: 'Error',     accent: '#f44336', icon: '✕' },
-  };
-
-  const c = colors[span.type] ?? colors.request;
-  const duration = span.duration_ms != null
-    ? `<span style="font-size:11px;color:#666;font-weight:400;margin-left:8px;">${span.duration_ms}ms</span>`
-    : '';
-
-  // Build title
-  let title = c.label;
-  if (span.type === 'llm' && span.metadata?.model) {
-    title = `LLM → ${escapeHtml(String(span.metadata.model))}`;
-  } else if (span.type === 'tool') {
-    title = `Tool → ${escapeHtml(span.name)}`;
-  } else if (span.type === 'agent_call') {
-    title = `Agent → ${escapeHtml(span.name)}`;
-  }
-
-  // Build body with smart formatting
-  let body = '';
-
-  if (span.input != null) {
-    const label = span.type === 'tool' ? 'Parameters' : span.type === 'llm' ? 'Prompt' : 'Input';
-    body += `<div style="margin-top:8px;"><div style="font-size:11px;color:${c.accent};text-transform:uppercase;margin-bottom:4px;">${label}</div>${formatValue(span.input, c.accent)}</div>`;
-  }
-
-  if (span.output != null) {
-    const label = span.type === 'tool' ? 'Result' : span.type === 'llm' ? 'Response' : 'Output';
-    body += `<div style="margin-top:8px;"><div style="font-size:11px;color:${c.accent};text-transform:uppercase;margin-bottom:4px;">${label}</div>${formatValue(span.output, c.accent)}</div>`;
-  }
-
-  // Metadata badges (model, streaming, tool count — not as JSON)
-  if (span.metadata && Object.keys(span.metadata).length > 0) {
-    const badges = Object.entries(span.metadata)
-      .filter(([k]) => k !== 'error')
-      .map(([k, v]) => `<span style="background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:10px;font-size:11px;color:#999;">${k}: ${v}</span>`)
-      .join(' ');
-    if (badges) {
-      body += `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">${badges}</div>`;
+/**
+ * Extract a readable message from a span's input/output.
+ * Tries to pull out the human-meaningful content instead of showing raw structures.
+ */
+function extractMessage(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') {
+    // Try to parse JSON and extract content
+    try {
+      const parsed = JSON.parse(value);
+      return extractMessage(parsed);
+    } catch {
+      return value.slice(0, 500);
     }
   }
+  if (typeof value === 'number') return String(value);
+  if (Array.isArray(value)) {
+    // Messages array — extract the last user/assistant content
+    for (let i = value.length - 1; i >= 0; i--) {
+      const msg = value[i];
+      if (msg && typeof msg === 'object' && 'content' in msg) {
+        return extractMessage(msg.content);
+      }
+    }
+    return value.map((v) => extractMessage(v)).filter(Boolean).join(', ').slice(0, 300);
+  }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    // Common patterns — extract the meaningful field
+    if ('content' in obj) return extractMessage(obj.content);
+    if ('text' in obj) return extractMessage(obj.text);
+    if ('output_text' in obj) return extractMessage(obj.output_text);
+    if ('message' in obj) return extractMessage(obj.message);
+    // For tool results, format as readable key-values
+    return Object.entries(obj)
+      .filter(([, v]) => v != null && v !== '')
+      .map(([k, v]) => {
+        if (typeof v === 'number') return `${k}: ${v}`;
+        if (typeof v === 'string') return v.length > 60 ? `${k}: ${v.slice(0, 60)}...` : `${k}: ${v}`;
+        if (Array.isArray(v)) return `${k}: [${v.length} items]`;
+        return `${k}: ${JSON.stringify(v).slice(0, 40)}`;
+      })
+      .join('\n');
+  }
+  return String(value).slice(0, 300);
+}
 
-  if (span.type === 'error' && span.metadata?.error) {
-    body += `<div style="margin-top:8px;padding:8px 10px;background:rgba(244,67,54,0.1);border-radius:6px;color:#f88;font-size:13px;">${escapeHtml(truncateStr(span.metadata.error, 300))}</div>`;
+function spanBubble(span: TraceSpan): string {
+  const duration = span.duration_ms != null ? `${(span.duration_ms / 1000).toFixed(1)}s` : '';
+
+  if (span.type === 'request') {
+    const msg = extractMessage(span.input);
+    return `<div class="step">
+      <div class="step-line"></div>
+      <div class="step-dot" style="background:#7986cb;"></div>
+      <div class="step-content">
+        <div class="step-header"><span class="who" style="color:#7986cb;">Caller</span></div>
+        <div class="bubble caller">${escapeHtml(msg || 'Request received')}</div>
+      </div>
+    </div>`;
   }
 
-  return `<div style="margin-bottom:12px;padding:12px 16px;border-radius:10px;background:${c.bg};border-left:3px solid ${c.accent};">
-    <div style="font-size:14px;font-weight:600;color:${c.accent};">${c.icon} ${title}${duration}</div>
-    ${body}
-  </div>`;
+  if (span.type === 'llm') {
+    const model = span.metadata?.model ? String(span.metadata.model).replace('databricks-', '') : 'LLM';
+    const input = extractMessage(span.input);
+    const output = extractMessage(span.output);
+    return `<div class="step">
+      <div class="step-line"></div>
+      <div class="step-dot" style="background:#00bcd4;"></div>
+      <div class="step-content">
+        <div class="step-header">
+          <span class="who" style="color:#00bcd4;">Agent asked ${escapeHtml(model)}</span>
+          ${duration ? `<span class="dur">${duration}</span>` : ''}
+        </div>
+        ${input ? `<div class="bubble agent-ask">${escapeHtml(input)}</div>` : ''}
+        ${output ? `<div class="bubble llm-reply">${escapeHtml(output)}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  if (span.type === 'tool') {
+    const input = extractMessage(span.input);
+    const output = extractMessage(span.output);
+    return `<div class="step">
+      <div class="step-line"></div>
+      <div class="step-dot" style="background:#ffb300;"></div>
+      <div class="step-content">
+        <div class="step-header">
+          <span class="who" style="color:#ffb300;">Called tool <em>${escapeHtml(span.name)}</em></span>
+          ${duration ? `<span class="dur">${duration}</span>` : ''}
+        </div>
+        ${input ? `<div class="bubble tool-in">${input.split('\n').map((l) => `<div class="kv">${escapeHtml(l)}</div>`).join('')}</div>` : ''}
+        ${output ? `<div class="bubble tool-out">${output.split('\n').map((l) => {
+          // Color-code numeric values
+          const match = l.match(/^(\w+):\s*([0-9.]+)$/);
+          if (match) {
+            const v = parseFloat(match[2]);
+            const color = v >= 0.5 ? '#4caf50' : v > 0 ? '#ffb74d' : '#888';
+            return `<div class="kv"><span class="kv-key">${escapeHtml(match[1])}</span><span style="color:${color};font-weight:600;">${match[2]}</span></div>`;
+          }
+          return `<div class="kv">${escapeHtml(l)}</div>`;
+        }).join('')}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  if (span.type === 'agent_call') {
+    const output = extractMessage(span.output);
+    return `<div class="step">
+      <div class="step-line"></div>
+      <div class="step-dot" style="background:#ab47bc;"></div>
+      <div class="step-content">
+        <div class="step-header">
+          <span class="who" style="color:#ab47bc;">Called agent <em>${escapeHtml(span.name)}</em></span>
+          ${duration ? `<span class="dur">${duration}</span>` : ''}
+        </div>
+        ${output ? `<div class="bubble agent-reply">${escapeHtml(output)}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  if (span.type === 'response') {
+    const msg = extractMessage(span.output);
+    return `<div class="step">
+      <div class="step-line"></div>
+      <div class="step-dot" style="background:#4caf50;"></div>
+      <div class="step-content">
+        <div class="step-header"><span class="who" style="color:#4caf50;">Agent responded</span></div>
+        <div class="bubble response">${escapeHtml(msg || 'Done')}</div>
+      </div>
+    </div>`;
+  }
+
+  if (span.type === 'error') {
+    const msg = span.metadata?.error ? String(span.metadata.error) : extractMessage(span.output);
+    return `<div class="step">
+      <div class="step-line"></div>
+      <div class="step-dot" style="background:#f44336;"></div>
+      <div class="step-content">
+        <div class="step-header"><span class="who" style="color:#f44336;">Error</span></div>
+        <div class="bubble error-msg">${escapeHtml(msg || 'Unknown error')}</div>
+      </div>
+    </div>`;
+  }
+
+  return '';
 }
 
 function traceDetailHtml(trace: Trace, basePath: string): string {
-  const duration = trace.duration_ms != null ? `${trace.duration_ms}ms` : 'running';
+  const duration = trace.duration_ms != null ? `${(trace.duration_ms / 1000).toFixed(1)}s` : 'in progress';
   const spans = trace.spans.map(spanBubble).join('\n');
+  const statusColor = trace.status === 'completed' ? '#4caf50' : trace.status === 'error' ? '#f44336' : '#ffb74d';
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Trace: ${escapeHtml(trace.agentName)} — ${escapeHtml(trace.id)}</title>
+  <title>Trace: ${escapeHtml(trace.agentName)}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; }
-    header { padding: 1rem; background: #16213e; border-bottom: 1px solid #333; }
-    header h1 { font-size: 1.1rem; font-weight: 600; }
-    nav { padding: 0.5rem 1rem; background: #16213e; font-size: 0.8rem; }
-    nav a { color: #e94560; margin-right: 1rem; text-decoration: none; }
-    nav a:hover { text-decoration: underline; }
-    .trace-meta { padding: 1rem; display: flex; gap: 1.5rem; align-items: center; font-size: 0.85rem; color: #aaa; border-bottom: 1px solid #333; }
-    .trace-meta .id { font-family: monospace; font-size: 0.8rem; color: #e0e0e0; }
-    .spans { padding: 1rem; max-width: 900px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a14; color: #e0e0e0; min-height: 100vh; }
+
+    .top-bar { padding: 12px 20px; background: #12121e; border-bottom: 1px solid #1e1e30; display: flex; align-items: center; gap: 12px; }
+    .top-bar a { color: #7986cb; text-decoration: none; font-size: 13px; }
+    .top-bar h1 { font-size: 16px; font-weight: 600; flex: 1; }
+    .top-bar .status { padding: 3px 10px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .top-bar .meta { font-size: 12px; color: #666; }
+
+    .conversation { max-width: 700px; margin: 0 auto; padding: 24px 20px; }
+
+    .step { position: relative; padding-left: 28px; margin-bottom: 4px; }
+    .step-line { position: absolute; left: 8px; top: 20px; bottom: -4px; width: 1px; background: #1e1e30; }
+    .step:last-child .step-line { display: none; }
+    .step-dot { position: absolute; left: 3px; top: 6px; width: 11px; height: 11px; border-radius: 50%; }
+    .step-content { padding-bottom: 12px; }
+    .step-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .who { font-size: 13px; font-weight: 600; }
+    .dur { font-size: 11px; color: #555; }
+
+    .bubble { padding: 10px 14px; border-radius: 10px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-width: 600px; }
+
+    .bubble.caller { background: #1a1a30; color: #b0b0c8; border: 1px solid #252545; }
+    .bubble.agent-ask { background: #0a1a25; color: #80cbc4; border: 1px solid #1a3040; font-size: 13px; }
+    .bubble.llm-reply { background: #12222e; color: #e0f0f0; border: 1px solid #1a3545; margin-top: 6px; }
+    .bubble.tool-in { background: #1a1800; color: #d4c87a; border: 1px solid #2a2500; font-size: 13px; }
+    .bubble.tool-out { background: #1a1a08; color: #e0d8a0; border: 1px solid #2a2810; margin-top: 6px; }
+    .bubble.agent-reply { background: #1a0a25; color: #d1a0e8; border: 1px solid #2a1a40; }
+    .bubble.response { background: #0a1a0a; color: #a0d8a0; border: 1px solid #1a3020; }
+    .bubble.error-msg { background: #1a0a0a; color: #f08080; border: 1px solid #3a1a1a; }
+
+    .kv { padding: 2px 0; }
+    .kv-key { color: #888; margin-right: 8px; }
+    .kv-key::after { content: ':'; }
   </style>
 </head>
 <body>
-  <header><h1>${escapeHtml(trace.agentName)}</h1></header>
+  <div class="top-bar">
+    <a href="${basePath}/traces">&larr; All traces</a>
+    <h1>${escapeHtml(trace.agentName)}</h1>
+    <span class="status" style="background:${statusColor}20;color:${statusColor};">${trace.status || 'unknown'}</span>
+    <span class="meta">${duration} &middot; ${trace.spans.length} steps</span>
+  </div>
   <nav>
     <a href="${basePath}/traces">&larr; Back to Traces</a>
     <a href="${basePath}/agent">Chat</a>
-    <a href="${basePath}/tools">Tools</a>
-  </nav>
-  <div class="trace-meta">
-    <div class="id">${escapeHtml(trace.id)}</div>
-    <div>${statusBadge(trace.status)}</div>
-    <div>Duration: <strong>${duration}</strong></div>
-    <div>Spans: <strong>${trace.spans.length}</strong></div>
-  </div>
-  <div class="spans">
-    ${spans || '<div style="padding:2rem;text-align:center;color:#666;">No spans recorded</div>'}
+  <div class="conversation">
+    ${spans || '<div style="padding:3rem;text-align:center;color:#555;">No steps recorded</div>'}
   </div>
 </body>
 </html>`;
