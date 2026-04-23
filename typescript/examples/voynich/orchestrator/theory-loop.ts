@@ -33,9 +33,11 @@ export interface Theory {
   id: string;
   proposed_at: string;
   source_language: string;
+  cipher_type: 'substitution' | 'polyalphabetic';
   target_folio: string;
   target_plant: string;
   symbol_map: Record<string, string>;
+  keyword?: string;
   decoded_text: string;
   grounding_score: number;
   consistency_score: number;
@@ -156,11 +158,38 @@ export async function proposeTheory(
   targetFolio: FolioInfo,
   allFolios: FolioInfo[],
   sourceLanguage: string,
+  cipherType: 'substitution' | 'polyalphabetic' = 'substitution',
 ): Promise<Theory> {
   const theoryId = Math.random().toString(36).slice(2, 10);
 
   // Step 1: Ask LLM to propose a decoding for this specific folio
-  const proposePrompt = `You are a medieval manuscript cryptanalyst working on the Voynich Manuscript.
+  const proposePrompt = cipherType === 'polyalphabetic'
+    ? `You are a medieval manuscript cryptanalyst working on the Voynich Manuscript.
+
+TASK: Propose a POLYALPHABETIC (Vigenere-style) decoding theory for folio ${targetFolio.folio_id}.
+
+WHAT THE IMAGE SHOWS: ${targetFolio.plant_name} (${targetFolio.plant_latin})
+Visual features: ${targetFolio.botanical_features.join(', ')}
+
+EVA TEXT ON THIS FOLIO: ${targetFolio.eva_sample}
+
+CANDIDATE LANGUAGE: ${sourceLanguage}
+
+Propose a keyword-based Vigenere-style system where:
+- A base symbol map maps EVA characters to ${sourceLanguage} letters
+- A keyword shifts certain mappings per folio (e.g., keyword "HERBA" means folio 1 shifts by H=7, folio 2 by E=4, etc., cycling through the keyword letters)
+
+Return a JSON object with:
+{
+  "base_map": {"d": "m", "a": "a", "i": "n", ...},
+  "keyword": "HERBA",
+  "decoded_text": "the resulting decoded passage for this folio"
+}
+
+The decoded text should read as a plausible medieval ${sourceLanguage} description of ${targetFolio.plant_name}, mentioning its properties, uses, or appearance.
+
+Return ONLY the JSON object.`
+    : `You are a medieval manuscript cryptanalyst working on the Voynich Manuscript.
 
 TASK: Propose a decoding theory for folio ${targetFolio.folio_id}.
 
@@ -187,16 +216,29 @@ Return ONLY the JSON object.`;
   const response = await callFMAPI(proposePrompt);
 
   // Parse the theory
-  let theory: { symbol_map: Record<string, string>; decoded_text: string; reasoning?: string };
+  let theory: { symbol_map: Record<string, string>; decoded_text: string; keyword?: string; reasoning?: string };
   try {
     const cleaned = response.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
-    theory = JSON.parse(cleaned);
+    const parsed = JSON.parse(cleaned);
+    if (cipherType === 'polyalphabetic') {
+      // Polyalphabetic responses use base_map instead of symbol_map
+      theory = {
+        symbol_map: parsed.base_map || parsed.symbol_map || {},
+        keyword: parsed.keyword || 'HERBA',
+        decoded_text: parsed.decoded_text || '',
+      };
+    } else {
+      theory = parsed;
+    }
   } catch {
     // Fallback: generate a simple theory
     theory = {
       symbol_map: { d: 'm', a: 'a', i: 'n', n: 'd', ch: 'r', e: 'a', y: 'g', o: 'o', r: 'r', s: 'a' },
       decoded_text: `${targetFolio.plant_latin || targetFolio.plant_name} herba medicinalis radix`,
     };
+    if (cipherType === 'polyalphabetic') {
+      theory.keyword = 'HERBA';
+    }
   }
 
   // Step 2: Test cross-folio consistency
@@ -207,9 +249,14 @@ Return ONLY the JSON object.`;
     .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
     .slice(0, 5); // test against 5 other high-confidence folios
 
-  for (const testFolio of testFolios) {
+  for (let fi = 0; fi < testFolios.length; fi++) {
+    const testFolio = testFolios[fi];
     // Apply symbol map to this folio's EVA text
-    const decoded = applyMap(testFolio.eva_sample, theory.symbol_map);
+    // For polyalphabetic theories, shift the base map per folio using the keyword
+    const effectiveMap = cipherType === 'polyalphabetic' && theory.keyword
+      ? applyKeywordShift(theory.symbol_map, theory.keyword, fi)
+      : theory.symbol_map;
+    const decoded = applyMap(testFolio.eva_sample, effectiveMap);
 
     // Check if decoded text matches expected plant
     const expectedTerms = [
@@ -245,9 +292,11 @@ Return ONLY the JSON object.`;
     id: theoryId,
     proposed_at: new Date().toISOString(),
     source_language: sourceLanguage,
+    cipher_type: cipherType,
     target_folio: targetFolio.folio_id,
     target_plant: targetFolio.plant_name,
     symbol_map: theory.symbol_map,
+    keyword: theory.keyword,
     decoded_text: theory.decoded_text,
     grounding_score: primaryGrounding,
     consistency_score: consistencyScore,
@@ -294,6 +343,29 @@ Return a JSON object:
 // ---------------------------------------------------------------------------
 // Scoring helpers (same as grounder)
 // ---------------------------------------------------------------------------
+
+function applyKeywordShift(
+  baseMap: Record<string, string>,
+  keyword: string,
+  folioIndex: number,
+): Record<string, string> {
+  const kw = keyword.toUpperCase();
+  const shiftChar = kw[folioIndex % kw.length];
+  const shift = shiftChar.charCodeAt(0) - 'A'.charCodeAt(0);
+  if (shift === 0) return baseMap;
+
+  const shifted: Record<string, string> = {};
+  for (const [eva, plainChar] of Object.entries(baseMap)) {
+    if (/^[a-z]$/i.test(plainChar)) {
+      const base = plainChar.toLowerCase().charCodeAt(0) - 'a'.charCodeAt(0);
+      const newChar = String.fromCharCode(((base + shift) % 26) + 'a'.charCodeAt(0));
+      shifted[eva] = newChar;
+    } else {
+      shifted[eva] = plainChar;
+    }
+  }
+  return shifted;
+}
 
 function applyMap(evaText: string, symbolMap: Record<string, string>): string {
   const keys = Object.keys(symbolMap).sort((a, b) => b.length - a.length);
@@ -350,10 +422,12 @@ export async function runTheoryLoop(maxRounds: number = 20): Promise<Theory[]> {
     const folio = highConfidence[Math.floor(Math.random() * highConfidence.length)];
     const lang = languages[Math.floor(Math.random() * languages.length)];
 
-    console.log(`[theory-loop] Round ${round}: ${folio.folio_id} (${folio.plant_name}) in ${lang}`);
+    const cipherType = round % 3 === 2 ? 'polyalphabetic' : 'substitution';
+
+    console.log(`[theory-loop] Round ${round}: ${folio.folio_id} (${folio.plant_name}) in ${lang} [${cipherType}]`);
 
     try {
-      const theory = await proposeTheory(folio, folios, lang);
+      const theory = await proposeTheory(folio, folios, lang, cipherType);
 
       console.log(`[theory-loop]   grounding=${theory.grounding_score.toFixed(3)} consistency=${theory.consistency_score.toFixed(3)} decoded="${theory.decoded_text.slice(0, 50)}"`);
 
@@ -386,7 +460,7 @@ export async function runTheoryLoop(maxRounds: number = 20): Promise<Theory[]> {
 
   console.log(`\n[theory-loop] === TOP 5 THEORIES ===`);
   for (const t of sorted.slice(0, 5)) {
-    console.log(`  ${t.target_folio} (${t.target_plant}): grd=${t.grounding_score.toFixed(3)} cons=${t.consistency_score.toFixed(3)} lang=${t.source_language}`);
+    console.log(`  ${t.target_folio} (${t.target_plant}): grd=${t.grounding_score.toFixed(3)} cons=${t.consistency_score.toFixed(3)} lang=${t.source_language} cipher=${t.cipher_type}`);
     console.log(`    "${t.decoded_text.slice(0, 60)}"`);
   }
 
@@ -403,9 +477,12 @@ async function persistTheory(theory: Theory, verdict: string): Promise<void> {
     const symbolMap = JSON.stringify(theory.symbol_map).replace(/'/g, "''");
     const crossFolio = JSON.stringify(theory.cross_folio_results).replace(/'/g, "''");
 
+    const cipherType = theory.cipher_type.replace(/'/g, "''");
+
     await executeSql(`
       CREATE TABLE IF NOT EXISTS serverless_stable_qh44kx_catalog.voynich.theories (
         id STRING, proposed_at TIMESTAMP, source_language STRING,
+        cipher_type STRING,
         target_folio STRING, target_plant STRING,
         symbol_map STRING, decoded_text STRING,
         grounding_score DOUBLE, consistency_score DOUBLE,
@@ -416,6 +493,7 @@ async function persistTheory(theory: Theory, verdict: string): Promise<void> {
     await executeSql(`
       INSERT INTO serverless_stable_qh44kx_catalog.voynich.theories VALUES (
         '${id}', current_timestamp(), '${lang}',
+        '${cipherType}',
         '${folio}', '${plant}',
         '${symbolMap}', '${decoded}',
         ${theory.grounding_score}, ${theory.consistency_score},
