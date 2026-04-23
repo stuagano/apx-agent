@@ -66,8 +66,14 @@ async function executeSql(statement: string): Promise<Array<Record<string, strin
     throw new Error(`SQL failed: ${data.status.error?.message}`);
   }
 
-  const columns = data.manifest?.columns?.map((c) => c.name) ?? [];
+  const columns = (data.manifest?.schema?.columns ?? data.manifest?.columns ?? []).map((c: { name: string }) => c.name);
   const rows = data.result?.data_array ?? [];
+  if (rows.length > 0) {
+    console.log(`[grounder-sql] ${rows.length} rows, columns=[${columns.join(',')}], firstRow keys=${rows[0]?.length ?? 0}`);
+    if (columns.length === 0 && data.manifest?.columns) {
+      console.log(`[grounder-sql] raw columns:`, JSON.stringify(data.manifest.columns[0]).slice(0, 200));
+    }
+  }
   return rows.map((row) => {
     const obj: Record<string, string> = {};
     columns.forEach((col, i) => {
@@ -295,6 +301,8 @@ const scoreImageGrounding = defineTool({
       return { grounding: 0, error: 'No folio analyses found' };
     }
 
+    console.log(`[grounder] scoring "${textToScore.slice(0, 50)}" against ${targets.length} folios, first folio=${targets[0]?.folio_id}, first candidates=${targets[0]?.subject_candidates?.length ?? 0}`);
+
     let bestScore = 0;
     let bestFolio = '';
     let bestDepicted = '';
@@ -318,6 +326,13 @@ const scoreImageGrounding = defineTool({
       }
 
       const score = scoreOverlap(textToScore, terms);
+      if (score > 0) {
+        console.log(`[grounder] MATCH ${analysis.folio_id}: score=${score}, terms=${terms.length}, matched with "${textToScore.slice(0,30)}"`);
+      }
+      // Log first folio's term count
+      if (analysis === targets[0]) {
+        console.log(`[grounder] first folio ${analysis.folio_id}: ${terms.length} terms, candidates=${analysis.subject_candidates.length}, features=${analysis.botanical_features.length}`);
+      }
       if (score > bestScore) {
         bestScore = score;
         bestFolio = analysis.folio_id;
