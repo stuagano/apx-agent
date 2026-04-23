@@ -340,19 +340,73 @@ function tracesListHtml(traces: Trace[], basePath: string): string {
 // Trace detail HTML
 // ---------------------------------------------------------------------------
 
+/**
+ * Format a value for display — avoids raw JSON dumps.
+ * Renders objects as key-value tables, arrays as lists, strings as text.
+ */
+function formatValue(value: unknown, accent: string): string {
+  if (value == null) return '';
+  if (typeof value === 'string') {
+    // If it looks like JSON, try to parse and render structured
+    if (value.startsWith('{') || value.startsWith('[')) {
+      try { return formatValue(JSON.parse(value), accent); } catch { /* fall through */ }
+    }
+    // Plain text — render as a readable block
+    const escaped = escapeHtml(value.slice(0, 400));
+    return `<div style="margin-top:4px;padding:8px 10px;background:rgba(0,0,0,0.25);border-radius:6px;font-size:13px;line-height:1.6;color:#ddd;">${escaped}${value.length > 400 ? '<span style="color:#666;"> ...</span>' : ''}</div>`;
+  }
+  if (typeof value === 'number') {
+    // Render numbers as styled values — scores get color treatment
+    const color = value >= 0.5 ? '#4caf50' : value > 0 ? '#ffb74d' : '#888';
+    return `<span style="font-size:18px;font-weight:600;color:${color};">${value}</span>`;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '<span style="color:#555;">empty</span>';
+    // Short arrays inline, long arrays as list
+    if (value.length <= 5 && value.every((v) => typeof v === 'string' || typeof v === 'number')) {
+      return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">${value.map((v) => `<span style="background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:4px;font-size:12px;color:#ccc;">${escapeHtml(String(v))}</span>`).join('')}</div>`;
+    }
+    return formatValue(JSON.stringify(value).slice(0, 300), accent);
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return '<span style="color:#555;">empty</span>';
+    // Render as a clean key-value table
+    const rows = entries.slice(0, 12).map(([k, v]) => {
+      let rendered: string;
+      if (typeof v === 'number') {
+        const color = v >= 0.5 ? '#4caf50' : v > 0 ? '#ffb74d' : '#888';
+        rendered = `<span style="font-weight:600;color:${color};">${v}</span>`;
+      } else if (typeof v === 'string' && v.length > 80) {
+        rendered = `<span style="color:#ccc;">${escapeHtml(v.slice(0, 80))}...</span>`;
+      } else if (typeof v === 'string') {
+        rendered = `<span style="color:#ccc;">${escapeHtml(v)}</span>`;
+      } else {
+        rendered = `<span style="color:#888;">${escapeHtml(JSON.stringify(v).slice(0, 60))}</span>`;
+      }
+      return `<div style="display:flex;gap:8px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04);"><span style="min-width:100px;font-size:11px;color:${accent};text-transform:uppercase;">${escapeHtml(k)}</span>${rendered}</div>`;
+    }).join('');
+    return `<div style="margin-top:4px;padding:6px 10px;background:rgba(0,0,0,0.2);border-radius:6px;">${rows}${entries.length > 12 ? '<div style="color:#555;font-size:11px;padding-top:4px;">+' + (entries.length - 12) + ' more</div>' : ''}</div>`;
+  }
+  return `<span style="color:#ccc;">${escapeHtml(String(value))}</span>`;
+}
+
 function spanBubble(span: TraceSpan): string {
-  const colors: Record<TraceSpan['type'], { bg: string; label: string; accent: string }> = {
-    request:    { bg: '#2a2a3e', label: 'Incoming Request',  accent: '#888' },
-    llm:        { bg: '#0a2a3e', label: 'LLM',              accent: '#00bcd4' },
-    tool:       { bg: '#2a2500', label: 'Tool',              accent: '#ffb300' },
-    agent_call: { bg: '#1a0a2e', label: 'Agent',            accent: '#ab47bc' },
-    response:   { bg: '#0a2a0a', label: 'Response',         accent: '#4caf50' },
-    error:      { bg: '#2a0a0a', label: 'Error',            accent: '#f44336' },
+  const colors: Record<TraceSpan['type'], { bg: string; label: string; accent: string; icon: string }> = {
+    request:    { bg: '#1e1e30', label: 'Request',   accent: '#7986cb', icon: '↓' },
+    llm:        { bg: '#0d2535', label: 'LLM',       accent: '#00bcd4', icon: '◆' },
+    tool:       { bg: '#2a2200', label: 'Tool',      accent: '#ffb300', icon: '⚙' },
+    agent_call: { bg: '#1a0a2e', label: 'Agent',     accent: '#ab47bc', icon: '→' },
+    response:   { bg: '#0d2a0d', label: 'Response',  accent: '#4caf50', icon: '↑' },
+    error:      { bg: '#2a0d0d', label: 'Error',     accent: '#f44336', icon: '✕' },
   };
 
   const c = colors[span.type] ?? colors.request;
-  const duration = span.duration_ms != null ? `<span style="float:right;font-size:0.75rem;color:#888;">${span.duration_ms}ms</span>` : '';
+  const duration = span.duration_ms != null
+    ? `<span style="font-size:11px;color:#666;font-weight:400;margin-left:8px;">${span.duration_ms}ms</span>`
+    : '';
 
+  // Build title
   let title = c.label;
   if (span.type === 'llm' && span.metadata?.model) {
     title = `LLM → ${escapeHtml(String(span.metadata.model))}`;
@@ -362,21 +416,36 @@ function spanBubble(span: TraceSpan): string {
     title = `Agent → ${escapeHtml(span.name)}`;
   }
 
+  // Build body with smart formatting
   let body = '';
+
   if (span.input != null) {
-    const label = span.type === 'tool' ? 'Params' : 'Input';
-    body += `<div style="margin-top:0.5rem;"><strong style="font-size:0.75rem;color:${c.accent};">${label}:</strong><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-all;font-size:0.8rem;color:#ccc;font-family:monospace;">${escapeHtml(truncateStr(span.input, 500))}</pre></div>`;
-  }
-  if (span.output != null) {
-    const label = span.type === 'tool' ? 'Result' : 'Output';
-    body += `<div style="margin-top:0.5rem;"><strong style="font-size:0.75rem;color:${c.accent};">${label}:</strong><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-all;font-size:0.8rem;color:#ccc;font-family:monospace;">${escapeHtml(truncateStr(span.output, 500))}</pre></div>`;
-  }
-  if (span.type === 'error' && span.metadata?.error) {
-    body += `<div style="margin-top:0.5rem;"><strong style="font-size:0.75rem;color:${c.accent};">Details:</strong><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-all;font-size:0.8rem;color:#f88;font-family:monospace;">${escapeHtml(truncateStr(span.metadata.error, 500))}</pre></div>`;
+    const label = span.type === 'tool' ? 'Parameters' : span.type === 'llm' ? 'Prompt' : 'Input';
+    body += `<div style="margin-top:8px;"><div style="font-size:11px;color:${c.accent};text-transform:uppercase;margin-bottom:4px;">${label}</div>${formatValue(span.input, c.accent)}</div>`;
   }
 
-  return `<div style="margin-bottom:0.75rem;padding:0.75rem 1rem;border-radius:8px;background:${c.bg};border-left:3px solid ${c.accent};">
-    <div style="font-size:0.85rem;font-weight:600;color:${c.accent};">${title}${duration}</div>
+  if (span.output != null) {
+    const label = span.type === 'tool' ? 'Result' : span.type === 'llm' ? 'Response' : 'Output';
+    body += `<div style="margin-top:8px;"><div style="font-size:11px;color:${c.accent};text-transform:uppercase;margin-bottom:4px;">${label}</div>${formatValue(span.output, c.accent)}</div>`;
+  }
+
+  // Metadata badges (model, streaming, tool count — not as JSON)
+  if (span.metadata && Object.keys(span.metadata).length > 0) {
+    const badges = Object.entries(span.metadata)
+      .filter(([k]) => k !== 'error')
+      .map(([k, v]) => `<span style="background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:10px;font-size:11px;color:#999;">${k}: ${v}</span>`)
+      .join(' ');
+    if (badges) {
+      body += `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">${badges}</div>`;
+    }
+  }
+
+  if (span.type === 'error' && span.metadata?.error) {
+    body += `<div style="margin-top:8px;padding:8px 10px;background:rgba(244,67,54,0.1);border-radius:6px;color:#f88;font-size:13px;">${escapeHtml(truncateStr(span.metadata.error, 300))}</div>`;
+  }
+
+  return `<div style="margin-bottom:12px;padding:12px 16px;border-radius:10px;background:${c.bg};border-left:3px solid ${c.accent};">
+    <div style="font-size:14px;font-weight:600;color:${c.accent};">${c.icon} ${title}${duration}</div>
     ${body}
   </div>`;
 }
