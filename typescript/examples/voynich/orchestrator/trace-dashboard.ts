@@ -1,325 +1,340 @@
 /**
  * Agent Trace Dashboard
  *
- * Serves an HTML page that visualizes the multi-agent orchestration loop:
- * - Which agents are called, in what order
- * - What tools each agent invokes
- * - Input/output data flowing between agents
- * - Timing per step
- *
- * Mounted at /_apx/traces on the orchestrator app.
+ * Two views:
+ * - /_apx/traces — list of all theories with links to detail view
+ * - /_apx/traces/:id — single trace showing agent-to-agent conversation
  */
 
 import type { Express } from 'express';
 
+const THEORIES_TABLE = 'serverless_stable_qh44kx_catalog.voynich.theories';
+
+async function querySql(statement: string): Promise<Array<Record<string, string>>> {
+  const { resolveToken: rt, resolveHost: rh } = await import('./appkit-agent/index.mjs');
+  const tk = await rt();
+  const h = rh();
+  const res = await fetch(h + '/api/2.0/sql/statements', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk },
+    body: JSON.stringify({
+      warehouse_id: process.env.DATABRICKS_WAREHOUSE_ID,
+      statement,
+      wait_timeout: '30s',
+    }),
+  });
+  const data = (await res.json()) as {
+    result?: { data_array?: string[][] };
+    manifest?: { schema?: { columns?: Array<{ name: string }> } };
+  };
+  const cols = (data.manifest?.schema?.columns ?? []).map((c) => c.name);
+  const rows = data.result?.data_array ?? [];
+  return rows.map((row) => {
+    const obj: Record<string, string> = {};
+    cols.forEach((col, i) => { obj[col] = row[i]; });
+    return obj;
+  });
+}
+
 export function mountTraceDashboard(app: Express): void {
 
-  // Trace event buffer — the theory loop pushes events here
-  const traceEvents: TraceEvent[] = [];
-  const MAX_EVENTS = 500;
-
-  app.get('/_apx/traces', (_req, res) => {
-    res.setHeader('Content-Type', 'text/html');
-    res.send(DASHBOARD_HTML);
-  });
-
-  // SSE stream for real-time updates
-  app.get('/_apx/traces/stream', (req, res) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    // Send existing events
-    for (const evt of traceEvents) {
-      res.write('data: ' + JSON.stringify(evt) + '\n\n');
-    }
-
-    // Keep connection open for new events
-    const interval = setInterval(() => {
-      res.write(': keepalive\n\n');
-    }, 15000);
-
-    req.on('close', () => clearInterval(interval));
-  });
-
-  // API to push trace events (called by theory loop)
-  app.post('/_apx/traces/event', (req, res) => {
-    const event = req.body as TraceEvent;
-    event.timestamp = Date.now();
-    traceEvents.push(event);
-    if (traceEvents.length > MAX_EVENTS) traceEvents.shift();
-    res.json({ ok: true });
-  });
-
-  // API to get all events
-  app.get('/_apx/traces/events', (_req, res) => {
-    res.json(traceEvents);
-  });
-
-  // SQL proxy for the dashboard
-  app.post('/_apx/traces/sql', async (req, res) => {
+  // ---------------------------------------------------------------------------
+  // List view: all theories
+  // ---------------------------------------------------------------------------
+  app.get('/_apx/traces', async (_req, res) => {
     try {
-      const { resolveToken: rt, resolveHost: rh } = await import('./appkit-agent/index.mjs');
-      const tk = await rt();
-      const h = rh();
-      const url = h + '/api/2.0/sql/statements';
-      const sqlRes = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk },
-        body: JSON.stringify({
-          warehouse_id: process.env.DATABRICKS_WAREHOUSE_ID,
-          statement: req.body.statement,
-          wait_timeout: '30s',
-        }),
-      });
-      const data = await sqlRes.json();
-      res.json(data);
+      const theories = await querySql(
+        `SELECT id, target_folio, target_plant, source_language,
+                ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons,
+                verdict, SUBSTRING(decoded_text, 1, 50) decoded, proposed_at
+         FROM ${THEORIES_TABLE} ORDER BY proposed_at DESC LIMIT 50`
+      );
+
+      const stats = await querySql(
+        `SELECT COUNT(*) total,
+                COUNT(CASE WHEN grounding_score > 0 THEN 1 END) grounded,
+                ROUND(MAX(grounding_score),3) best_grd,
+                ROUND(MAX(consistency_score),3) best_cons
+         FROM ${THEORIES_TABLE}`
+      );
+      const s = stats[0] || { total: '0', grounded: '0', best_grd: '0', best_cons: '0' };
+
+      const rows = theories.map((t) => {
+        const grdPct = Math.round(parseFloat(t.grd || '0') * 100);
+        const verdictClass = t.verdict === 'plausible' ? 'plausible' : t.verdict === 'weak' ? 'weak' : 'rejected';
+        return `<a href="/_apx/traces/${t.id}" class="trace-row">
+          <div class="folio">${t.target_folio}</div>
+          <div class="plant">${(t.target_plant || '').slice(0, 25)}</div>
+          <div class="lang">${t.source_language}</div>
+          <div class="bar-cell"><div class="bar"><div class="bar-fill" style="width:${grdPct}%"></div></div><span>${t.grd}</span></div>
+          <div class="verdict"><span class="tag ${verdictClass}">${t.verdict}</span></div>
+          <div class="decoded">${(t.decoded || '').slice(0, 40)}</div>
+        </a>`;
+      }).join('');
+
+      res.setHeader('Content-Type', 'text/html');
+      res.send(LIST_HTML(s, rows, theories.length));
     } catch (err) {
-      res.status(500).json({ error: String(err) });
+      res.status(500).send('Error: ' + String(err));
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Detail view: single trace conversation
+  // ---------------------------------------------------------------------------
+  app.get('/_apx/traces/:id', async (req, res) => {
+    try {
+      const id = req.params.id.replace(/[^a-zA-Z0-9_-]/g, '');
+      const results = await querySql(
+        `SELECT * FROM ${THEORIES_TABLE} WHERE id = '${id}' LIMIT 1`
+      );
+
+      if (results.length === 0) {
+        res.status(404).send('Theory not found');
+        return;
+      }
+
+      const t = results[0];
+      const crossFolio = JSON.parse(t.cross_folio_results || '[]');
+      const symbolMap = JSON.parse(t.symbol_map || '{}');
+
+      res.setHeader('Content-Type', 'text/html');
+      res.send(DETAIL_HTML(t, crossFolio, symbolMap));
+    } catch (err) {
+      res.status(500).send('Error: ' + String(err));
     }
   });
 }
 
-interface TraceEvent {
-  type: 'round_start' | 'agent_call' | 'tool_call' | 'agent_response' | 'verdict' | 'round_end';
-  round?: number;
-  agent?: string;
-  tool?: string;
-  folio?: string;
-  plant?: string;
-  language?: string;
-  cipher?: string;
-  input?: string;
-  output?: string;
-  duration_ms?: number;
-  grounding?: number;
-  consistency?: number;
-  verdict?: string;
-  timestamp?: number;
-}
+// ---------------------------------------------------------------------------
+// HTML Templates
+// ---------------------------------------------------------------------------
 
-// Expose for the theory loop to push events
-export function createTraceEmitter(baseUrl: string) {
-  return async function emit(event: Omit<TraceEvent, 'timestamp'>): Promise<void> {
-    try {
-      await fetch(baseUrl + '/_apx/traces/event', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(event),
-      });
-    } catch {
-      // Non-critical — don't crash the loop
-    }
-  };
-}
-
-const DASHBOARD_HTML = `<!DOCTYPE html>
+function LIST_HTML(stats: Record<string, string>, rows: string, count: number): string {
+  return `<!DOCTYPE html>
 <html>
 <head>
-  <title>Voynich Agent Traces</title>
+  <title>Agent Traces</title>
+  <meta http-equiv="refresh" content="20">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a1a; color: #e0e0e0; }
-
-    .header { padding: 20px 24px; border-bottom: 1px solid #1a1a2e; display: flex; align-items: center; gap: 16px; }
-    .header h1 { font-size: 20px; color: #fff; }
-    .header .badge { background: #1a3e1a; color: #4caf50; padding: 4px 10px; border-radius: 12px; font-size: 12px; }
-
-    .layout { display: grid; grid-template-columns: 300px 1fr; height: calc(100vh - 61px); }
-
-    /* Left panel: Agent constellation */
-    .agents-panel { border-right: 1px solid #1a1a2e; padding: 16px; overflow-y: auto; }
-    .agents-panel h2 { font-size: 13px; text-transform: uppercase; color: #666; margin-bottom: 12px; }
-
-    .agent-card { background: #1a1a2e; border: 1px solid #333; border-radius: 8px; padding: 12px; margin-bottom: 8px; transition: border-color 0.3s; }
-    .agent-card.active { border-color: #4dd0e1; box-shadow: 0 0 12px rgba(77,208,225,0.15); }
-    .agent-card .name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
-    .agent-card .role { font-size: 11px; color: #888; }
-    .agent-card .status { font-size: 11px; margin-top: 6px; }
-    .agent-card .status .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; }
-    .agent-card .status .dot.green { background: #4caf50; }
-    .agent-card .status .dot.gray { background: #555; }
-
-    .stats { margin-top: 16px; }
-    .stat { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1a1a2e; font-size: 13px; }
-    .stat .val { color: #4dd0e1; font-weight: 600; }
-
-    /* Right panel: Trace timeline */
-    .trace-panel { padding: 16px; overflow-y: auto; }
-    .trace-panel h2 { font-size: 13px; text-transform: uppercase; color: #666; margin-bottom: 12px; }
-
-    .trace-event { border-left: 2px solid #333; padding: 8px 0 8px 16px; margin-bottom: 2px; font-size: 13px; position: relative; }
-    .trace-event::before { content: ''; position: absolute; left: -5px; top: 12px; width: 8px; height: 8px; border-radius: 50%; background: #333; }
-
-    .trace-event.round_start { border-left-color: #7c5cbf; }
-    .trace-event.round_start::before { background: #7c5cbf; }
-    .trace-event.round_start .label { color: #b39ddb; font-weight: 600; }
-
-    .trace-event.agent_call { border-left-color: #4dd0e1; }
-    .trace-event.agent_call::before { background: #4dd0e1; }
-
-    .trace-event.tool_call { border-left-color: #ffb74d; }
-    .trace-event.tool_call::before { background: #ffb74d; }
-    .trace-event.tool_call .label { color: #ffb74d; }
-
-    .trace-event.agent_response { border-left-color: #81c784; }
-    .trace-event.agent_response::before { background: #81c784; }
-
-    .trace-event.verdict { border-left-color: #ef5350; }
-    .trace-event.verdict::before { background: #ef5350; }
-    .trace-event.verdict.plausible { border-left-color: #4caf50; }
-    .trace-event.verdict.plausible::before { background: #4caf50; }
-
-    .trace-event.round_end { border-left-color: #555; }
-    .trace-event.round_end::before { background: #555; }
-
-    .trace-event .label { font-size: 11px; text-transform: uppercase; color: #888; }
-    .trace-event .content { margin-top: 4px; }
-    .trace-event .data { font-family: monospace; font-size: 12px; color: #aaa; margin-top: 4px; background: #0f0f1f; padding: 6px 8px; border-radius: 4px; max-height: 60px; overflow: hidden; }
-    .trace-event .time { font-size: 10px; color: #555; float: right; }
-    .trace-event .score { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
-    .trace-event .score.high { background: #1a3e1a; color: #4caf50; }
-    .trace-event .score.mid { background: #3e3a1a; color: #ffb74d; }
-    .trace-event .score.low { background: #3e1a1a; color: #ef5350; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a1a; color: #e0e0e0; padding: 24px; }
+    h1 { font-size: 22px; color: #fff; margin-bottom: 4px; }
+    .sub { color: #666; font-size: 13px; margin-bottom: 20px; }
+    .cards { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+    .card { background: #1a1a2e; border: 1px solid #333; border-radius: 8px; padding: 14px 18px; min-width: 140px; }
+    .card .label { font-size: 10px; text-transform: uppercase; color: #666; }
+    .card .val { font-size: 24px; font-weight: 600; color: #4dd0e1; margin-top: 2px; }
+    .trace-row { display: grid; grid-template-columns: 50px 180px 60px 120px 80px 1fr; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #1a1a2e; text-decoration: none; color: #e0e0e0; transition: background 0.15s; }
+    .trace-row:hover { background: #1a1a2e; }
+    .folio { font-weight: 600; color: #4dd0e1; }
+    .plant { font-size: 13px; }
+    .lang { font-size: 12px; color: #888; }
+    .bar-cell { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+    .bar { width: 60px; height: 5px; background: #252540; border-radius: 3px; }
+    .bar-fill { height: 100%; background: #4dd0e1; border-radius: 3px; }
+    .tag { padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+    .tag.rejected { background: #2a1515; color: #ef5350; }
+    .tag.plausible { background: #152a15; color: #4caf50; }
+    .tag.weak { background: #2a2815; color: #ffb74d; }
+    .decoded { font-family: monospace; font-size: 12px; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .header-row { display: grid; grid-template-columns: 50px 180px 60px 120px 80px 1fr; gap: 8px; padding: 8px 12px; font-size: 10px; text-transform: uppercase; color: #555; border-bottom: 1px solid #252540; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>Agent Orchestration Traces</h1>
-    <span class="badge" id="status">Loading...</span>
+  <h1>Agent Orchestration Traces</h1>
+  <p class="sub">${count} theories tested across 38 herbal folios. Click a row to see the full agent conversation.</p>
+
+  <div class="cards">
+    <div class="card"><div class="label">Theories</div><div class="val">${stats.total}</div></div>
+    <div class="card"><div class="label">Grounded</div><div class="val">${stats.grounded}</div></div>
+    <div class="card"><div class="label">Best Grounding</div><div class="val">${stats.best_grd}</div></div>
+    <div class="card"><div class="label">Best Consistency</div><div class="val">${stats.best_cons}</div></div>
   </div>
 
-  <div class="layout">
-    <div class="agents-panel">
-      <h2>Agent Constellation</h2>
-      <div class="agent-card" id="agent-orchestrator">
-        <div class="name">Orchestrator</div>
-        <div class="role">Theory loop coordinator</div>
-        <div class="status"><span class="dot green"></span>Running</div>
-      </div>
-      <div class="agent-card" id="agent-proposer">
-        <div class="name">Proposer (FMAPI)</div>
-        <div class="role">Generates decoding theories per folio</div>
-        <div class="status"><span class="dot gray"></span>Idle</div>
-      </div>
-      <div class="agent-card" id="agent-grounder">
-        <div class="name">Grounder</div>
-        <div class="role">Scores against folio images</div>
-        <div class="status"><span class="dot gray"></span>Idle</div>
-      </div>
-      <div class="agent-card" id="agent-skeptic">
-        <div class="name">Skeptic (FMAPI)</div>
-        <div class="role">Cross-folio consistency check</div>
-        <div class="status"><span class="dot gray"></span>Idle</div>
-      </div>
-
-      <div class="stats">
-        <h2 style="margin-top:16px">Results</h2>
-        <div class="stat"><span>Theories</span><span class="val" id="stat-total">0</span></div>
-        <div class="stat"><span>Grounded</span><span class="val" id="stat-grounded">0</span></div>
-        <div class="stat"><span>Best Grounding</span><span class="val" id="stat-best-grd">0</span></div>
-        <div class="stat"><span>Best Consistency</span><span class="val" id="stat-best-cons">0</span></div>
-        <div class="stat"><span>Plausible</span><span class="val" id="stat-plausible">0</span></div>
-        <div class="stat"><span>Rejected</span><span class="val" id="stat-rejected">0</span></div>
-      </div>
-    </div>
-
-    <div class="trace-panel" id="traces">
-      <h2>Live Trace</h2>
-    </div>
+  <div class="header-row">
+    <span>Folio</span><span>Plant</span><span>Lang</span><span>Grounding</span><span>Verdict</span><span>Decoded</span>
   </div>
-
-  <script>
-    async function sql(stmt) {
-      const res = await fetch('/_apx/traces/sql', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ statement: stmt })
-      });
-      const d = await res.json();
-      const cols = (d.manifest?.schema?.columns || []).map(c => c.name);
-      return (d.result?.data_array || []).map(row => {
-        const obj = {};
-        cols.forEach((c, i) => obj[c] = row[i]);
-        return obj;
-      });
-    }
-
-    async function loadStats() {
-      try {
-        const r = await sql(\`SELECT COUNT(*) total,
-          COUNT(CASE WHEN grounding_score > 0 THEN 1 END) grounded,
-          ROUND(MAX(grounding_score),3) best_grd,
-          ROUND(MAX(consistency_score),3) best_cons,
-          COUNT(CASE WHEN verdict = 'plausible' THEN 1 END) plausible,
-          COUNT(CASE WHEN verdict = 'rejected' THEN 1 END) rejected
-          FROM serverless_stable_qh44kx_catalog.voynich.theories\`);
-        if (r[0]) {
-          document.getElementById('stat-total').textContent = r[0].total;
-          document.getElementById('stat-grounded').textContent = r[0].grounded;
-          document.getElementById('stat-best-grd').textContent = r[0].best_grd;
-          document.getElementById('stat-best-cons').textContent = r[0].best_cons;
-          document.getElementById('stat-plausible').textContent = r[0].plausible;
-          document.getElementById('stat-rejected').textContent = r[0].rejected;
-        }
-      } catch(e) { console.error(e); }
-    }
-
-    async function loadTraces() {
-      try {
-        const r = await sql(\`SELECT target_folio, target_plant, source_language,
-          ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons,
-          verdict, SUBSTRING(decoded_text, 1, 80) decoded, proposed_at
-          FROM serverless_stable_qh44kx_catalog.voynich.theories
-          ORDER BY proposed_at DESC LIMIT 30\`);
-
-        const panel = document.getElementById('traces');
-        let html = '<h2>Theory Timeline (latest first)</h2>';
-
-        for (const t of r) {
-          const grdClass = parseFloat(t.grd) > 0.1 ? 'high' : parseFloat(t.grd) > 0 ? 'mid' : 'low';
-          html += \`
-            <div class="trace-event round_start">
-              <span class="label">Theory</span>
-              <span class="time">\${t.proposed_at || ''}</span>
-              <div class="content">
-                <strong>\${t.target_folio}</strong> — \${t.target_plant} [\${t.source_language}]
-              </div>
-            </div>
-            <div class="trace-event agent_call">
-              <span class="label">Proposer → FMAPI</span>
-              <div class="content">Generate decoding for \${t.target_plant}</div>
-            </div>
-            <div class="trace-event agent_response">
-              <span class="label">Decoded Text</span>
-              <div class="data">\${t.decoded}</div>
-            </div>
-            <div class="trace-event tool_call">
-              <span class="label">Grounder → score_image_grounding</span>
-              <div class="content">Grounding: <span class="score \${grdClass}">\${t.grd}</span></div>
-            </div>
-            <div class="trace-event tool_call">
-              <span class="label">Cross-Folio Test</span>
-              <div class="content">Consistency: <span class="score \${parseFloat(t.cons) > 0 ? 'high' : 'low'}">\${t.cons}</span></div>
-            </div>
-            <div class="trace-event verdict \${t.verdict}">
-              <span class="label">Skeptic Verdict</span>
-              <div class="content"><span class="score \${t.verdict === 'plausible' ? 'high' : 'low'}">\${t.verdict}</span></div>
-            </div>
-            <div class="trace-event round_end">
-              <span class="label">Round Complete</span>
-            </div>
-          \`;
-        }
-
-        panel.innerHTML = html;
-        document.getElementById('status').textContent = 'Live — ' + r.length + ' theories';
-      } catch(e) { console.error(e); }
-    }
-
-    loadStats();
-    loadTraces();
-    setInterval(() => { loadStats(); loadTraces(); }, 15000);
-  </script>
+  ${rows}
 </body>
 </html>`;
+}
+
+function DETAIL_HTML(
+  t: Record<string, string>,
+  crossFolio: Array<{ folio_id: string; plant_expected: string; decoded_text: string; grounding_score: number }>,
+  symbolMap: Record<string, string>,
+): string {
+  const mapEntries = Object.entries(symbolMap).slice(0, 20)
+    .map(([k, v]) => `<span class="map-entry"><span class="eva">${k}</span> → <span class="plain">${v}</span></span>`)
+    .join('');
+
+  const crossRows = crossFolio.map((cf) => {
+    const score = (cf.grounding_score || 0).toFixed(3);
+    const cls = parseFloat(score) > 0 ? 'match' : 'miss';
+    return `<div class="cross-row ${cls}">
+      <span class="cf-folio">${cf.folio_id}</span>
+      <span class="cf-plant">${cf.plant_expected}</span>
+      <span class="cf-score">${score}</span>
+      <span class="cf-decoded">${(cf.decoded_text || '').slice(0, 40)}</span>
+    </div>`;
+  }).join('');
+
+  const verdictClass = t.verdict === 'plausible' ? 'plausible' : t.verdict === 'weak' ? 'weak' : 'rejected';
+  const grd = parseFloat(t.grounding_score || '0');
+  const cons = parseFloat(t.consistency_score || '0');
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <title>Trace: ${t.target_folio} — ${(t.target_plant || '').slice(0, 20)}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a1a; color: #e0e0e0; padding: 24px; max-width: 800px; margin: 0 auto; }
+    a { color: #4dd0e1; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .back { font-size: 13px; margin-bottom: 16px; display: block; }
+    h1 { font-size: 20px; color: #fff; margin-bottom: 4px; }
+    .sub { color: #666; font-size: 13px; margin-bottom: 24px; }
+
+    .msg { margin-bottom: 16px; padding: 16px; border-radius: 10px; }
+    .msg .sender { font-size: 11px; font-weight: 600; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px; }
+    .msg .body { font-size: 14px; line-height: 1.6; }
+    .msg .body code { background: #0f0f1f; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+
+    .msg.orchestrator { background: #1a1a30; border: 1px solid #2a2a4e; }
+    .msg.orchestrator .sender { color: #7c5cbf; }
+
+    .msg.proposer { background: #1a2a2a; border: 1px solid #2a4a4a; }
+    .msg.proposer .sender { color: #4dd0e1; }
+
+    .msg.grounder { background: #1a2a1a; border: 1px solid #2a4a2a; }
+    .msg.grounder .sender { color: #81c784; }
+
+    .msg.skeptic { background: #2a1a1a; border: 1px solid #4a2a2a; }
+    .msg.skeptic .sender { color: #ef5350; }
+
+    .msg.result { background: #1a1a2e; border: 1px solid #333; }
+    .msg.result .sender { color: #ffb74d; }
+
+    .decoded-block { font-family: 'Georgia', serif; font-size: 15px; line-height: 1.8; color: #c8b89a; background: #12100e; border: 1px solid #2a2520; padding: 16px; border-radius: 6px; margin: 8px 0; font-style: italic; }
+
+    .symbol-map { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+    .map-entry { background: #0f0f1f; padding: 3px 8px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+    .eva { color: #4dd0e1; }
+    .plain { color: #ffb74d; }
+
+    .cross-results { margin: 8px 0; }
+    .cross-row { display: grid; grid-template-columns: 50px 160px 60px 1fr; gap: 8px; padding: 6px 8px; font-size: 13px; border-bottom: 1px solid #1a1a2e; }
+    .cross-row.miss { opacity: 0.6; }
+    .cross-row.match { background: #0f1f0f; }
+    .cf-folio { font-weight: 600; color: #4dd0e1; }
+    .cf-plant { color: #aaa; }
+    .cf-score { font-family: monospace; }
+    .cf-decoded { font-family: monospace; font-size: 11px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .score-big { font-size: 32px; font-weight: 700; }
+    .score-big.high { color: #4caf50; }
+    .score-big.mid { color: #ffb74d; }
+    .score-big.low { color: #ef5350; }
+    .scores { display: flex; gap: 32px; margin: 8px 0; }
+    .score-item .label { font-size: 10px; text-transform: uppercase; color: #666; }
+
+    .tag { padding: 4px 12px; border-radius: 4px; font-size: 13px; font-weight: 600; }
+    .tag.rejected { background: #2a1515; color: #ef5350; }
+    .tag.plausible { background: #152a15; color: #4caf50; }
+    .tag.weak { background: #2a2815; color: #ffb74d; }
+  </style>
+</head>
+<body>
+  <a href="/_apx/traces" class="back">← All traces</a>
+  <h1>${t.target_folio} — ${t.target_plant}</h1>
+  <p class="sub">${t.source_language} · ${t.proposed_at || ''}</p>
+
+  <!-- Step 1: Orchestrator assigns the task -->
+  <div class="msg orchestrator">
+    <div class="sender">Orchestrator</div>
+    <div class="body">
+      Analyze folio <code>${t.target_folio}</code>. The image depicts <strong>${t.target_plant}</strong>.
+      Propose a ${t.source_language} decoding using a ${t.cipher_type || 'substitution'} cipher.
+    </div>
+  </div>
+
+  <!-- Step 2: Proposer generates theory -->
+  <div class="msg proposer">
+    <div class="sender">Proposer → FMAPI (Claude Sonnet 4.6)</div>
+    <div class="body">
+      Here is my proposed symbol map:
+      <div class="symbol-map">${mapEntries}</div>
+      Decoded text:
+      <div class="decoded-block">${t.decoded_text || ''}</div>
+    </div>
+  </div>
+
+  <!-- Step 3: Grounder scores against folio images -->
+  <div class="msg grounder">
+    <div class="sender">Grounder → score_image_grounding</div>
+    <div class="body">
+      Scored decoded text against 38 herbal folio vision analyses.
+      <div class="scores">
+        <div class="score-item">
+          <div class="label">Grounding</div>
+          <div class="score-big ${grd > 0.1 ? 'high' : grd > 0 ? 'mid' : 'low'}">${grd.toFixed(3)}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 4: Cross-folio consistency test -->
+  <div class="msg orchestrator">
+    <div class="sender">Orchestrator → Cross-Folio Test</div>
+    <div class="body">
+      Applied the same symbol map to ${crossFolio.length} other folios:
+      <div class="cross-results">
+        <div class="cross-row" style="font-size:10px;text-transform:uppercase;color:#555;">
+          <span>Folio</span><span>Expected Plant</span><span>Score</span><span>Decoded</span>
+        </div>
+        ${crossRows || '<div style="color:#555;padding:8px;">No cross-folio data</div>'}
+      </div>
+      <div class="scores" style="margin-top:12px">
+        <div class="score-item">
+          <div class="label">Consistency</div>
+          <div class="score-big ${cons > 0 ? 'high' : 'low'}">${cons.toFixed(3)}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 5: Skeptic challenges -->
+  <div class="msg skeptic">
+    <div class="sender">Skeptic → FMAPI (Claude Sonnet 4.6)</div>
+    <div class="body">
+      <span class="tag ${verdictClass}">${t.verdict || 'unknown'}</span>
+      <p style="margin-top:8px">The cross-folio test results ${cons > 0 ? 'show partial consistency' : 'constitute a fatal falsification'} of this theory.
+      ${cons === 0 ? 'The same symbol map produces gibberish on every other folio tested.' : ''}</p>
+    </div>
+  </div>
+
+  <!-- Final result -->
+  <div class="msg result">
+    <div class="sender">Result</div>
+    <div class="body">
+      <div class="scores">
+        <div class="score-item">
+          <div class="label">Grounding</div>
+          <div class="score-big ${grd > 0.1 ? 'high' : grd > 0 ? 'mid' : 'low'}">${grd.toFixed(3)}</div>
+        </div>
+        <div class="score-item">
+          <div class="label">Consistency</div>
+          <div class="score-big ${cons > 0 ? 'high' : 'low'}">${cons.toFixed(3)}</div>
+        </div>
+        <div class="score-item">
+          <div class="label">Verdict</div>
+          <div class="score-big ${verdictClass === 'plausible' ? 'high' : verdictClass === 'weak' ? 'mid' : 'low'}">${t.verdict || '?'}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+}
