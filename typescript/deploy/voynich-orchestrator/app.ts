@@ -288,11 +288,12 @@ app.get('/_apx/results', async (_req, res) => {
 app.post('/api/sql', async (req, res) => {
   try {
     const { resolveToken: rt, resolveHost: rh } = await import('./appkit-agent/index.mjs');
-    const token = await rt();
-    const host = rh();
-    const sqlRes = await fetch(\`\${host}/api/2.0/sql/statements\`, {
+    const tk = await rt();
+    const h = rh();
+    const url = h + '/api/2.0/sql/statements';
+    const sqlRes = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: \`Bearer \${token}\` },
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk },
       body: JSON.stringify({
         warehouse_id: process.env.DATABRICKS_WAREHOUSE_ID,
         statement: req.body.statement,
