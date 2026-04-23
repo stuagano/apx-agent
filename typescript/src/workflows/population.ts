@@ -65,6 +65,10 @@ export class PopulationStore {
 
   async writeHypotheses(hypotheses: Hypothesis[]): Promise<void> {
     if (hypotheses.length === 0) return;
+    // Debug: log first hypothesis fitness to verify grounding is present
+    if (hypotheses.length > 0) {
+      console.log(`[PopStore] writing ${hypotheses.length} hypotheses, first fitness: ${JSON.stringify(hypotheses[0].fitness)}`);
+    }
 
     for (let i = 0; i < hypotheses.length; i += this.chunkSize) {
       const chunk = hypotheses.slice(i, i + this.chunkSize);
@@ -75,8 +79,7 @@ export class PopulationStore {
         const fitness = esc(JSON.stringify(h.fitness));
         const metadata = esc(JSON.stringify(h.metadata));
         const flagged = h.flagged_for_review ? 'true' : 'false';
-        const createdAt = esc(h.created_at);
-        return `('${id}', ${generation}, '${parentId}', '${fitness}', '${metadata}', ${flagged}, '${createdAt}')`;
+        return `('${id}', ${generation}, '${parentId}', '${fitness}', '${metadata}', ${flagged}, current_timestamp())`;
       });
 
       const statement = `INSERT INTO ${this.populationTable} (id, generation, parent_id, fitness, metadata, flagged_for_review, created_at) VALUES ${valuesList.join(', ')}`;
