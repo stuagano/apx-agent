@@ -6,12 +6,12 @@
  *
  * Usage:
  *   import { createApp, server } from '@databricks/appkit';
- *   import { agent } from 'appkit-agent';
+ *   import { createAgentPlugin } from 'appkit-agent';
  *
  *   createApp({
  *     plugins: [
  *       server(),
- *       agent({
+ *       createAgentPlugin({
  *         model: 'databricks-claude-sonnet-4-6',
  *         instructions: 'You are a helpful assistant.',
  *         tools: [getTableLineage, findJobsForTable],
@@ -26,6 +26,7 @@ import type { AgentTool, FunctionSchema } from './tools.js';
 import { toolsToFunctionSchemas } from './tools.js';
 import { runViaSDK, streamViaSDK, initDatabricksClient } from './runner.js';
 import { runWithContext } from './request-context.js';
+import { createTrace, addSpan, endTrace, truncate } from '../trace.js';
 import { createMcpToolProvider } from './mcp-client.js';
 import type { Runnable, Message } from '../workflows/types.js';
 import { AgentState } from '../workflows/state.js';
@@ -35,6 +36,8 @@ import { AgentState } from '../workflows/state.js';
 // ---------------------------------------------------------------------------
 
 export interface AgentConfig {
+  /** Human-readable agent name (used in traces). */
+  name?: string;
   /** Model serving endpoint name (e.g. 'databricks-claude-sonnet-4-6'). */
   model: string;
   /** System prompt for the agent. */
@@ -214,6 +217,9 @@ export function createAgentPlugin(config: AgentConfig) {
       // Mounted at both /responses (interactive/SSO) and /api/responses
       // (bearer-token auth for app-to-app calls via the Databricks Apps gateway).
       const responsesHandler = async (req: Request, res: Response) => {
+        const trace = createTrace(config.name ?? 'agent');
+        addSpan(trace, { type: 'request', name: 'POST /responses', input: truncate(req.body) });
+
         try {
           const raw = req.body as ResponsesInput;
           const messages = parseInput(raw);
@@ -237,10 +243,12 @@ export function createAgentPlugin(config: AgentConfig) {
 
               let fullText = '';
               try {
-                for await (const chunk of config.workflow.stream(workflowMessages)) {
-                  fullText += chunk;
-                  res.write(`event: output_text.delta\ndata: ${JSON.stringify({ item_id: itemId, text: chunk })}\n\n`);
-                }
+                await runWithContext({ oboHeaders, trace }, async () => {
+                  for await (const chunk of config.workflow!.stream!(workflowMessages)) {
+                    fullText += chunk;
+                    res.write(`event: output_text.delta\ndata: ${JSON.stringify({ item_id: itemId, text: chunk })}\n\n`);
+                  }
+                });
 
                 const output = {
                   type: 'message',
@@ -248,9 +256,12 @@ export function createAgentPlugin(config: AgentConfig) {
                   content: [{ type: 'output_text', text: fullText }],
                 };
                 res.write(`event: response.output_item.done\ndata: ${JSON.stringify({ item_id: itemId, output })}\n\n`);
+                addSpan(trace, { type: 'response', name: 'response', output: truncate(fullText) });
+                endTrace(trace);
               } catch (err) {
                 const errMsg = err instanceof Error ? err.message : String(err);
                 res.write(`event: error\ndata: ${JSON.stringify({ item_id: itemId, error: errMsg })}\n\n`);
+                endTrace(trace, 'error');
               }
 
               res.end();
@@ -258,7 +269,9 @@ export function createAgentPlugin(config: AgentConfig) {
             }
 
             // Non-streaming workflow
-            const text = await config.workflow.run(workflowMessages);
+            const text = await runWithContext({ oboHeaders, trace }, () =>
+              config.workflow!.run(workflowMessages),
+            );
 
             const response: ResponsesOutput = {
               id: `resp_${Date.now()}`,
@@ -274,6 +287,8 @@ export function createAgentPlugin(config: AgentConfig) {
               output_text: text,
             };
 
+            addSpan(trace, { type: 'response', name: 'response', output: truncate(text) });
+            endTrace(trace);
             res.json(response);
             return;
           }
@@ -292,20 +307,22 @@ export function createAgentPlugin(config: AgentConfig) {
               res.write(': keepalive\n\n');
             }, 15_000);
             try {
-              for await (const chunk of streamViaSDK({
-                model: config.model,
-                instructions: config.instructions ?? '',
-                messages,
-                tools,
-                subAgents: config.subAgents,
-                maxTurns: config.maxIterations,
-                app,
-                oboHeaders,
-                apiPrefix,
-              })) {
-                fullText += chunk;
-                res.write(`event: output_text.delta\ndata: ${JSON.stringify({ item_id: itemId, text: chunk })}\n\n`);
-              }
+              await runWithContext({ oboHeaders, trace }, async () => {
+                for await (const chunk of streamViaSDK({
+                  model: config.model,
+                  instructions: config.instructions ?? '',
+                  messages,
+                  tools,
+                  subAgents: config.subAgents,
+                  maxTurns: config.maxIterations,
+                  app,
+                  oboHeaders,
+                  apiPrefix,
+                })) {
+                  fullText += chunk;
+                  res.write(`event: output_text.delta\ndata: ${JSON.stringify({ item_id: itemId, text: chunk })}\n\n`);
+                }
+              });
 
               const output = {
                 type: 'message',
@@ -313,9 +330,12 @@ export function createAgentPlugin(config: AgentConfig) {
                 content: [{ type: 'output_text', text: fullText }],
               };
               res.write(`event: response.output_item.done\ndata: ${JSON.stringify({ item_id: itemId, output })}\n\n`);
+              addSpan(trace, { type: 'response', name: 'response', output: truncate(fullText) });
+              endTrace(trace);
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
               res.write(`event: error\ndata: ${JSON.stringify({ item_id: itemId, error: message })}\n\n`);
+              endTrace(trace, 'error');
             } finally {
               clearInterval(heartbeat);
             }
@@ -325,17 +345,19 @@ export function createAgentPlugin(config: AgentConfig) {
           }
 
           // Non-streaming
-          const text = await runViaSDK({
-            model: config.model,
-            instructions: config.instructions ?? '',
-            messages,
-            tools,
-            subAgents: config.subAgents,
-            maxTurns: config.maxIterations,
-            app,
-            oboHeaders,
-            apiPrefix,
-          });
+          const text = await runWithContext({ oboHeaders, trace }, () =>
+            runViaSDK({
+              model: config.model,
+              instructions: config.instructions ?? '',
+              messages,
+              tools,
+              subAgents: config.subAgents,
+              maxTurns: config.maxIterations,
+              app,
+              oboHeaders,
+              apiPrefix,
+            }),
+          );
 
           const response: ResponsesOutput = {
             id: `resp_${Date.now()}`,
@@ -351,9 +373,12 @@ export function createAgentPlugin(config: AgentConfig) {
             output_text: text,
           };
 
+          addSpan(trace, { type: 'response', name: 'response', output: truncate(text) });
+          endTrace(trace);
           res.json(response);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          endTrace(trace, 'error');
           res.status(500).json({ error: message });
         }
       };

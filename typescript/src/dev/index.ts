@@ -9,6 +9,8 @@
 
 import type { Request, Response } from 'express';
 import type { AgentExports } from '../agent/index.js';
+import { getTraces, getTrace } from '../trace.js';
+import type { Trace, TraceSpan } from '../trace.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -66,6 +68,34 @@ export function createDevPlugin(config: DevUIConfig, agentExports: () => AgentEx
           res.status(400).json({ error: 'url query parameter required' });
           return;
         }
+
+        // Validate URL scheme and block private/internal addresses
+        let parsed: URL;
+        try {
+          parsed = new URL(targetUrl);
+        } catch {
+          res.status(400).json({ error: 'Invalid URL' });
+          return;
+        }
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          res.status(400).json({ error: 'Only http/https URLs allowed' });
+          return;
+        }
+        const host = parsed.hostname.toLowerCase();
+        if (
+          host === 'localhost' ||
+          host.startsWith('127.') ||
+          host.startsWith('10.') ||
+          host.startsWith('192.168.') ||
+          host === '169.254.169.254' ||
+          host.startsWith('0.') ||
+          host === '[::1]' ||
+          /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+        ) {
+          res.status(403).json({ error: 'Private/internal addresses not allowed' });
+          return;
+        }
+
         try {
           const start = Date.now();
           const response = await fetch(targetUrl);
@@ -78,6 +108,21 @@ export function createDevPlugin(config: DevUIConfig, agentExports: () => AgentEx
         } catch (err) {
           res.json({ url: targetUrl, error: err instanceof Error ? err.message : String(err) });
         }
+      });
+
+      // Trace list — recent traces overview
+      router.get(`${basePath}/traces`, (_req: Request, res: Response) => {
+        const traces = getTraces();
+        res.setHeader('Content-Type', 'text/html');
+        res.send(tracesListHtml(traces, basePath));
+      });
+
+      // Trace detail — single trace conversation view
+      router.get(`${basePath}/traces/:traceId`, (req: Request, res: Response) => {
+        const trace = getTrace(req.params.traceId as string);
+        if (!trace) { res.status(404).send('Trace not found'); return; }
+        res.setHeader('Content-Type', 'text/html');
+        res.send(traceDetailHtml(trace, basePath));
       });
     },
   };
@@ -113,6 +158,7 @@ function chatPageHtml(basePath: string): string {
   <nav>
     <a href="${basePath}/agent">Chat</a>
     <a href="${basePath}/tools">Tools</a>
+    <a href="${basePath}/traces">Traces</a>
     <a href="/.well-known/agent.json" target="_blank">Agent Card</a>
   </nav>
   <div id="messages"></div>
@@ -181,6 +227,199 @@ function chatPageHtml(basePath: string): string {
       return div;
     }
   </script>
+</body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------------
+// Trace list HTML
+// ---------------------------------------------------------------------------
+
+function truncateStr(value: unknown, maxLen = 120): string {
+  const s = typeof value === 'string' ? value : JSON.stringify(value);
+  if (!s) return '';
+  return s.length > maxLen ? s.slice(0, maxLen) + '...' : s;
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function statusBadge(status?: string): string {
+  const colors: Record<string, string> = {
+    in_progress: '#f0ad4e',
+    completed: '#5cb85c',
+    error: '#d9534f',
+  };
+  const color = colors[status ?? ''] ?? '#888';
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:4px;background:${color};color:#fff;font-size:0.75rem;font-weight:600;">${escapeHtml(status ?? 'unknown')}</span>`;
+}
+
+function tracesListHtml(traces: Trace[], basePath: string): string {
+  const total = traces.length;
+  const inProgress = traces.filter((t) => t.status === 'in_progress').length;
+  const completed = traces.filter((t) => t.status === 'completed').length;
+  const errored = traces.filter((t) => t.status === 'error').length;
+
+  const rows = traces
+    .map((t) => {
+      const firstInput = t.spans.find((s) => s.type === 'request');
+      const inputPreview = firstInput ? truncateStr(firstInput.input, 80) : '';
+      const duration = t.duration_ms != null ? `${t.duration_ms}ms` : 'running';
+      return `<tr onclick="location.href='${basePath}/traces/${t.id}'" style="cursor:pointer;">
+        <td style="padding:8px 12px;border-bottom:1px solid #333;font-family:monospace;font-size:0.8rem;">${escapeHtml(t.id)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #333;">${escapeHtml(t.agentName)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #333;">${statusBadge(t.status)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:center;">${t.spans.length}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right;font-family:monospace;">${duration}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #333;font-size:0.85rem;color:#aaa;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(inputPreview)}</td>
+      </tr>`;
+    })
+    .join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="10">
+  <title>Agent Traces</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; }
+    header { padding: 1rem; background: #16213e; border-bottom: 1px solid #333; }
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+    nav { padding: 0.5rem 1rem; background: #16213e; font-size: 0.8rem; }
+    nav a { color: #e94560; margin-right: 1rem; text-decoration: none; }
+    nav a:hover { text-decoration: underline; }
+    .summary { padding: 1rem; display: flex; gap: 1.5rem; font-size: 0.85rem; color: #aaa; }
+    .summary span { font-weight: 600; color: #e0e0e0; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; padding: 8px 12px; border-bottom: 2px solid #444; font-size: 0.8rem; color: #aaa; text-transform: uppercase; letter-spacing: 0.05em; }
+    tr:hover { background: #16213e; }
+  </style>
+</head>
+<body>
+  <header><h1>Agent Traces</h1></header>
+  <nav>
+    <a href="${basePath}/agent">Chat</a>
+    <a href="${basePath}/tools">Tools</a>
+    <a href="${basePath}/traces">Traces</a>
+    <a href="/.well-known/agent.json" target="_blank">Agent Card</a>
+  </nav>
+  <div class="summary">
+    <div>Total: <span>${total}</span></div>
+    <div>In Progress: <span>${inProgress}</span></div>
+    <div>Completed: <span>${completed}</span></div>
+    <div>Errors: <span>${errored}</span></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Trace ID</th>
+        <th>Agent</th>
+        <th>Status</th>
+        <th>Spans</th>
+        <th>Duration</th>
+        <th>Input</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows || '<tr><td colspan="6" style="padding:2rem;text-align:center;color:#666;">No traces yet</td></tr>'}
+    </tbody>
+  </table>
+</body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------------
+// Trace detail HTML
+// ---------------------------------------------------------------------------
+
+function spanBubble(span: TraceSpan): string {
+  const colors: Record<TraceSpan['type'], { bg: string; label: string; accent: string }> = {
+    request:    { bg: '#2a2a3e', label: 'Incoming Request',  accent: '#888' },
+    llm:        { bg: '#0a2a3e', label: 'LLM',              accent: '#00bcd4' },
+    tool:       { bg: '#2a2500', label: 'Tool',              accent: '#ffb300' },
+    agent_call: { bg: '#1a0a2e', label: 'Agent',            accent: '#ab47bc' },
+    response:   { bg: '#0a2a0a', label: 'Response',         accent: '#4caf50' },
+    error:      { bg: '#2a0a0a', label: 'Error',            accent: '#f44336' },
+  };
+
+  const c = colors[span.type] ?? colors.request;
+  const duration = span.duration_ms != null ? `<span style="float:right;font-size:0.75rem;color:#888;">${span.duration_ms}ms</span>` : '';
+
+  let title = c.label;
+  if (span.type === 'llm' && span.metadata?.model) {
+    title = `LLM → ${escapeHtml(String(span.metadata.model))}`;
+  } else if (span.type === 'tool') {
+    title = `Tool → ${escapeHtml(span.name)}`;
+  } else if (span.type === 'agent_call') {
+    title = `Agent → ${escapeHtml(span.name)}`;
+  }
+
+  let body = '';
+  if (span.input != null) {
+    const label = span.type === 'tool' ? 'Params' : 'Input';
+    body += `<div style="margin-top:0.5rem;"><strong style="font-size:0.75rem;color:${c.accent};">${label}:</strong><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-all;font-size:0.8rem;color:#ccc;font-family:monospace;">${escapeHtml(truncateStr(span.input, 500))}</pre></div>`;
+  }
+  if (span.output != null) {
+    const label = span.type === 'tool' ? 'Result' : 'Output';
+    body += `<div style="margin-top:0.5rem;"><strong style="font-size:0.75rem;color:${c.accent};">${label}:</strong><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-all;font-size:0.8rem;color:#ccc;font-family:monospace;">${escapeHtml(truncateStr(span.output, 500))}</pre></div>`;
+  }
+  if (span.type === 'error' && span.metadata?.error) {
+    body += `<div style="margin-top:0.5rem;"><strong style="font-size:0.75rem;color:${c.accent};">Details:</strong><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-all;font-size:0.8rem;color:#f88;font-family:monospace;">${escapeHtml(truncateStr(span.metadata.error, 500))}</pre></div>`;
+  }
+
+  return `<div style="margin-bottom:0.75rem;padding:0.75rem 1rem;border-radius:8px;background:${c.bg};border-left:3px solid ${c.accent};">
+    <div style="font-size:0.85rem;font-weight:600;color:${c.accent};">${title}${duration}</div>
+    ${body}
+  </div>`;
+}
+
+function traceDetailHtml(trace: Trace, basePath: string): string {
+  const duration = trace.duration_ms != null ? `${trace.duration_ms}ms` : 'running';
+  const spans = trace.spans.map(spanBubble).join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trace: ${escapeHtml(trace.agentName)} — ${escapeHtml(trace.id)}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; }
+    header { padding: 1rem; background: #16213e; border-bottom: 1px solid #333; }
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+    nav { padding: 0.5rem 1rem; background: #16213e; font-size: 0.8rem; }
+    nav a { color: #e94560; margin-right: 1rem; text-decoration: none; }
+    nav a:hover { text-decoration: underline; }
+    .trace-meta { padding: 1rem; display: flex; gap: 1.5rem; align-items: center; font-size: 0.85rem; color: #aaa; border-bottom: 1px solid #333; }
+    .trace-meta .id { font-family: monospace; font-size: 0.8rem; color: #e0e0e0; }
+    .spans { padding: 1rem; max-width: 900px; }
+  </style>
+</head>
+<body>
+  <header><h1>${escapeHtml(trace.agentName)}</h1></header>
+  <nav>
+    <a href="${basePath}/traces">&larr; Back to Traces</a>
+    <a href="${basePath}/agent">Chat</a>
+    <a href="${basePath}/tools">Tools</a>
+  </nav>
+  <div class="trace-meta">
+    <div class="id">${escapeHtml(trace.id)}</div>
+    <div>${statusBadge(trace.status)}</div>
+    <div>Duration: <strong>${duration}</strong></div>
+    <div>Spans: <strong>${trace.spans.length}</strong></div>
+  </div>
+  <div class="spans">
+    ${spans || '<div style="padding:2rem;text-align:center;color:#666;">No spans recorded</div>'}
+  </div>
 </body>
 </html>`;
 }
