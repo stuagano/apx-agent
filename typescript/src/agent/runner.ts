@@ -12,7 +12,8 @@
 import type { Express } from 'express';
 import type { AgentTool } from './tools.js';
 import { toStrictSchema, zodToJsonSchema } from './tools.js';
-import { runWithContext } from './request-context.js';
+import { runWithContext, getRequestContext } from './request-context.js';
+import { addSpan, endSpan, truncate } from '../trace.js';
 import { resolveToken as resolveTokenFull } from '../connectors/types.js';
 
 // ---------------------------------------------------------------------------
@@ -120,25 +121,35 @@ async function chatCompletions(
     body.tool_choice = 'auto';
   }
 
-  const res = await fetchWithTimeout(
-    `${host}/serving-endpoints/chat/completions`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  const ctx = getRequestContext();
+  const span = ctx?.trace ? addSpan(ctx.trace, { type: 'llm', name: model, input: truncate(messages), metadata: { model, tool_count: tools?.length ?? 0 } }) : null;
+
+  try {
+    const res = await fetchWithTimeout(
+      `${host}/serving-endpoints/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    },
-    120_000,
-  );
+      120_000,
+    );
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`FMAPI ${res.status}: ${text}`);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`FMAPI ${res.status}: ${text}`);
+    }
+
+    const result = await res.json() as ChatResponse;
+    if (span) { span.output = truncate(result); endSpan(span); }
+    return result;
+  } catch (err) {
+    if (span) { span.output = String(err); span.metadata = { ...span.metadata, error: true }; endSpan(span); }
+    throw err;
   }
-
-  return res.json() as Promise<ChatResponse>;
 }
 
 async function chatCompletionsStream(
@@ -155,25 +166,34 @@ async function chatCompletionsStream(
     body.tool_choice = 'auto';
   }
 
-  const res = await fetchWithTimeout(
-    `${host}/serving-endpoints/chat/completions`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  const ctx = getRequestContext();
+  const span = ctx?.trace ? addSpan(ctx.trace, { type: 'llm', name: model, input: truncate(messages), metadata: { model, tool_count: tools?.length ?? 0, streaming: true } }) : null;
+
+  try {
+    const res = await fetchWithTimeout(
+      `${host}/serving-endpoints/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    },
-    180_000,
-  );
+      180_000,
+    );
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`FMAPI ${res.status}: ${text}`);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`FMAPI ${res.status}: ${text}`);
+    }
+
+    if (span) { span.output = '[streaming response]'; endSpan(span); }
+    return res;
+  } catch (err) {
+    if (span) { span.output = String(err); span.metadata = { ...span.metadata, error: true }; endSpan(span); }
+    throw err;
   }
-
-  return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,10 +343,13 @@ export async function runViaSDK(params: RunParams): Promise<string> {
       const tool = toolMap.get(tc.function.name);
       const subAgentUrl = subAgentMap.get(tc.function.name);
 
+      const ctx = getRequestContext();
+      const toolSpan = ctx?.trace ? addSpan(ctx.trace, { type: 'tool', name: tc.function.name, input: truncate(tc.function.arguments) }) : null;
+
       if (tool) {
         try {
           const args = JSON.parse(tc.function.arguments);
-          const output = await runWithContext({ oboHeaders: params.oboHeaders }, () => tool.handler(args));
+          const output = await runWithContext({ oboHeaders: params.oboHeaders, trace: ctx?.trace }, () => tool.handler(args));
           result = typeof output === 'string' ? output : JSON.stringify(output);
         } catch (e) {
           result = `Tool error: ${e instanceof Error ? e.message : String(e)}`;
@@ -342,6 +365,7 @@ export async function runViaSDK(params: RunParams): Promise<string> {
         result = `Tool not found: ${tc.function.name}`;
       }
 
+      if (toolSpan) { toolSpan.output = truncate(result); endSpan(toolSpan); }
       messages.push({ role: 'tool', content: result, tool_call_id: tc.id });
     }
   }
@@ -404,10 +428,13 @@ export async function* streamViaSDK(params: RunParams): AsyncGenerator<string> {
       const tool = toolMap.get(tc.function.name);
       const subAgentUrl = subAgentMap.get(tc.function.name);
 
+      const ctx = getRequestContext();
+      const toolSpan = ctx?.trace ? addSpan(ctx.trace, { type: 'tool', name: tc.function.name, input: truncate(tc.function.arguments) }) : null;
+
       if (tool) {
         try {
           const args = JSON.parse(tc.function.arguments);
-          const output = await runWithContext({ oboHeaders: params.oboHeaders }, () => tool.handler(args));
+          const output = await runWithContext({ oboHeaders: params.oboHeaders, trace: ctx?.trace }, () => tool.handler(args));
           result = typeof output === 'string' ? output : JSON.stringify(output);
         } catch (e) {
           result = `Tool error: ${e instanceof Error ? e.message : String(e)}`;
@@ -423,6 +450,7 @@ export async function* streamViaSDK(params: RunParams): AsyncGenerator<string> {
         result = `Tool not found: ${tc.function.name}`;
       }
 
+      if (toolSpan) { toolSpan.output = truncate(result); endSpan(toolSpan); }
       messages.push({ role: 'tool', content: result, tool_call_id: tc.id });
     }
   }

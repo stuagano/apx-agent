@@ -60,6 +60,11 @@ export {
   RouterAgent,
   HandoffAgent,
   RemoteAgent,
+  AgentState,
+  Session,
+  InMemorySessionStore,
+  setDefaultSessionStore,
+  getDefaultSessionStore,
 } from './workflows/index.js';
 export type {
   Message,
@@ -69,6 +74,8 @@ export type {
   RouterConfig,
   HandoffConfig,
   RemoteAgentConfig,
+  SessionStore,
+  SessionSnapshot,
 } from './workflows/index.js';
 
 // Eval bridge — predict function + harness for /responses endpoints
@@ -155,3 +162,16 @@ export type {
   RunFilter,
   StepRecord,
 } from './workflows/index.js';
+
+// Trace system
+export {
+  createTrace,
+  addSpan,
+  endSpan,
+  endTrace,
+  getTraces,
+  getTrace,
+  storeTrace,
+  truncate,
+} from './trace.js';
+export type { Trace, TraceSpan, TraceContext } from './trace.js';
