@@ -184,7 +184,7 @@ for i, fi in enumerate(to_analyze):
             "botanical_features": json.dumps(analysis.get("botanical_features", [])),
             "expected_terms": "{}",
             "model_id": MODEL,
-            "analyzed_at": datetime.utcnow().isoformat(),
+            "analyzed_at": datetime.utcnow(),
             "prompt_version": PROMPT_VERSION,
         }
         results.append(result)
