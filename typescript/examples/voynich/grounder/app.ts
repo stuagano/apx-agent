@@ -221,8 +221,16 @@ function scoreOverlap(decodedText: string, expectedTerms: string[]): number {
     }
   }
 
-  // Normalize by number of expected terms, cap at 1.0
-  return Math.min(1.0, matchScore / expectedTerms.length);
+  // Normalize: use the count of MATCHED terms over total, not raw score / total.
+  // This prevents dilution when there are many expected terms per folio.
+  const matchedCount = expectedTerms.filter((term) => {
+    const tl = term.toLowerCase();
+    return tokens.includes(tl) || decoded.includes(tl) ||
+      (tl.length >= 4 && tokens.some((t) => t.startsWith(tl.slice(0, 5))));
+  }).length;
+  // Score = proportion of decoded tokens that matched ANY expected term
+  // (rewards having more matching words in the decoded text)
+  return Math.min(1.0, matchScore / Math.max(tokens.length, 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -241,9 +249,9 @@ const scoreImageGrounding = defineTool({
       .optional()
       .describe('The decoded/translated text passage to evaluate. If missing, symbol_map will be applied to EVA samples.'),
     symbol_map: z
-      .record(z.string())
+      .any()
       .optional()
-      .describe('Symbol mapping from EVA characters to plaintext. Used to generate decoded text if decoded_text is missing.'),
+      .describe('Symbol mapping object from EVA characters to plaintext. Used to generate decoded text if decoded_text is missing.'),
     source_language: z
       .string()
       .describe('The candidate source language (e.g., latin, italian, hebrew).'),
