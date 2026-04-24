@@ -2,7 +2,7 @@
  * Tests for all workflow agents: Sequential, Parallel, Loop, Router, Handoff.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Message, Runnable } from '../src/workflows/types.js';
 import { SequentialAgent } from '../src/workflows/sequential.js';
 import { ParallelAgent } from '../src/workflows/parallel.js';
@@ -484,6 +484,200 @@ describe('RouterAgent', () => {
     });
 
     expect(router.collectTools()).toEqual([tool1, tool2]);
+  });
+
+  // -------------------------------------------------------------------------
+  // LLM-based routing
+  // -------------------------------------------------------------------------
+
+  describe('LLM-based routing', () => {
+    const originalFetch = globalThis.fetch;
+    const originalEnv = process.env.DATABRICKS_HOST;
+
+    beforeEach(() => {
+      process.env.DATABRICKS_HOST = 'https://test.cloud.databricks.com';
+      process.env.DATABRICKS_TOKEN = 'test-token';
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+      if (originalEnv !== undefined) {
+        process.env.DATABRICKS_HOST = originalEnv;
+      } else {
+        delete process.env.DATABRICKS_HOST;
+      }
+    });
+
+    function mockFetchForRoute(routeName: string) {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [{
+            message: {
+              tool_calls: [{
+                id: 'call_1',
+                type: 'function',
+                function: {
+                  name: 'select_route',
+                  arguments: JSON.stringify({ route_name: routeName }),
+                },
+              }],
+            },
+          }],
+        }),
+      }) as any;
+    }
+
+    it('uses LLM to select route when model + instructions set and no condition matches', async () => {
+      const billing = spyRunnable('billing response');
+      const support = spyRunnable('support response');
+
+      mockFetchForRoute('support');
+
+      const router = new RouterAgent({
+        model: 'databricks-claude-sonnet-4-6',
+        instructions: 'Route to the appropriate agent.',
+        routes: [
+          { name: 'billing', description: 'Billing inquiries', agent: billing },
+          { name: 'support', description: 'Technical support', agent: support },
+        ],
+      });
+
+      const result = await router.run(makeMessages('my app is crashing'));
+      expect(result).toBe('support response');
+      expect(support.calls).toHaveLength(1);
+      expect(billing.calls).toHaveLength(0);
+    });
+
+    it('deterministic conditions take priority over LLM routing', async () => {
+      const billing = spyRunnable('billing response');
+      const support = spyRunnable('support response');
+
+      // LLM would pick support, but deterministic condition matches billing
+      mockFetchForRoute('support');
+
+      const router = new RouterAgent({
+        model: 'databricks-claude-sonnet-4-6',
+        instructions: 'Route to the appropriate agent.',
+        routes: [
+          { name: 'billing', description: 'Billing', agent: billing,
+            condition: (msgs) => msgs.some((m) => m.content.includes('bill')) },
+          { name: 'support', description: 'Support', agent: support },
+        ],
+      });
+
+      const result = await router.run(makeMessages('I have a bill question'));
+      expect(result).toBe('billing response');
+      // fetch should NOT have been called — deterministic matched first
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('falls back to fallback agent when LLM returns unknown route name', async () => {
+      const fallback = spyRunnable('fallback response');
+      mockFetchForRoute('nonexistent_route');
+
+      const router = new RouterAgent({
+        model: 'databricks-claude-sonnet-4-6',
+        instructions: 'Route appropriately.',
+        routes: [
+          { name: 'billing', description: 'Billing', agent: mockRunnable('billing') },
+        ],
+        fallback,
+      });
+
+      const result = await router.run(makeMessages('anything'));
+      expect(result).toBe('fallback response');
+    });
+
+    it('falls back when LLM call fails with network error', async () => {
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
+
+      const fallback = spyRunnable('fallback response');
+      const router = new RouterAgent({
+        model: 'databricks-claude-sonnet-4-6',
+        instructions: 'Route appropriately.',
+        routes: [
+          { name: 'billing', description: 'Billing', agent: mockRunnable('billing') },
+        ],
+        fallback,
+      });
+
+      const result = await router.run(makeMessages('anything'));
+      expect(result).toBe('fallback response');
+    });
+
+    it('falls back when LLM returns non-ok status', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: async () => 'Internal server error',
+      }) as any;
+
+      const first = spyRunnable('first route');
+      const router = new RouterAgent({
+        model: 'databricks-claude-sonnet-4-6',
+        instructions: 'Route appropriately.',
+        routes: [
+          { name: 'first', description: 'First', agent: first },
+        ],
+      });
+
+      const result = await router.run(makeMessages('anything'));
+      expect(result).toBe('first route');
+    });
+
+    it('does not attempt LLM routing when model is not set', async () => {
+      const fetchSpy = vi.fn();
+      globalThis.fetch = fetchSpy;
+
+      const first = spyRunnable('first route');
+      const router = new RouterAgent({
+        instructions: 'Route appropriately.',
+        routes: [
+          { name: 'first', description: 'First', agent: first },
+        ],
+      });
+
+      await router.run(makeMessages('anything'));
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('sends route names as enum in tool definition', async () => {
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [{
+            message: {
+              tool_calls: [{
+                id: 'call_1',
+                type: 'function',
+                function: {
+                  name: 'select_route',
+                  arguments: JSON.stringify({ route_name: 'alpha' }),
+                },
+              }],
+            },
+          }],
+        }),
+      });
+      globalThis.fetch = fetchSpy;
+
+      const router = new RouterAgent({
+        model: 'test-model',
+        instructions: 'Pick one.',
+        routes: [
+          { name: 'alpha', description: 'Alpha agent', agent: mockRunnable('a') },
+          { name: 'beta', description: 'Beta agent', agent: mockRunnable('b') },
+        ],
+      });
+
+      await router.run(makeMessages('go'));
+
+      const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+      const toolParams = body.tools[0].function.parameters;
+      expect(toolParams.properties.route_name.enum).toEqual(['alpha', 'beta']);
+      expect(body.tool_choice).toEqual({ type: 'function', function: { name: 'select_route' } });
+    });
   });
 });
 
