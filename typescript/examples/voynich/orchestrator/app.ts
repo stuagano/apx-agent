@@ -1,23 +1,29 @@
 /**
- * Voynich Orchestrator — evolutionary decipherment agent on Databricks AppKit.
+ * Voynich Orchestrator — LLM-routed decipherment agent on Databricks AppKit.
  *
- * Manages a multi-generation population of Voynich decipherment hypotheses,
- * scoring them against statistical, perplexity, semantic, consistency, and
- * adversarial fitness criteria across configurable remote sub-agents.
+ * Uses RouterAgent with LLM-based routing to dispatch user requests to:
+ *   1. EA Management  — evolutionary loop control, generation status, escalation
+ *   2. Theory Investigation — targeted theory-driven decoding with cross-folio
+ *      validation, skeptic challenge, and critic analysis
+ *
+ * Deterministic conditions catch simple keywords; when the intent is ambiguous,
+ * the LLM classifier picks the best route based on the conversation.
  *
  * Required environment variables:
- *   DATABRICKS_HOST          Workspace URL (e.g. https://adb-xxx.azuredatabricks.net)
+ *   DATABRICKS_HOST          Workspace URL
  *   DATABRICKS_TOKEN         PAT or OAuth token
  *   DATABRICKS_WAREHOUSE_ID  SQL warehouse for PopulationStore queries
  *   MUTATION_AGENT_URL       Base URL of the mutation sub-agent
  *   FITNESS_AGENT_URLS       Comma-separated list of fitness sub-agent base URLs
- *   JUDGE_AGENT_URL          (optional) Base URL of the judge sub-agent
  *
  * Optional:
+ *   JUDGE_AGENT_URL          Base URL of the judge sub-agent
  *   PORT                     HTTP listen port (default 8000)
  *   POPULATION_SIZE          Number of survivors per generation (default 50)
  *   MUTATION_BATCH           Mutations per generation (default 20)
  *   MAX_GENERATIONS          Maximum generations to run (default 500)
+ *   WORKFLOW_TABLE_PREFIX     Delta table prefix for durable execution
+ *   RUN_ID                   Resume an existing evolutionary run
  *
  * Run locally:
  *   DATABRICKS_HOST=https://your-workspace.azuredatabricks.net \
@@ -38,12 +44,14 @@ import {
   EvolutionaryAgent,
   DeltaEngine,
   InMemoryEngine,
+  RouterAgent,
 } from '../../../src/index.js';
 import {
   VOYNICH_FITNESS_WEIGHTS,
   VOYNICH_PARETO_OBJECTIVES,
   DEFAULT_POPULATION_TABLE,
 } from '../voynich-config.js';
+import { TheoryInvestigator } from './theory-investigator.js';
 
 // ---------------------------------------------------------------------------
 // Population store
@@ -55,7 +63,7 @@ const store = new PopulationStore({
 });
 
 // ---------------------------------------------------------------------------
-// Evolutionary agent
+// Route 1: Evolutionary Agent (EA loop management)
 // ---------------------------------------------------------------------------
 
 const mutationAgentUrl = process.env.MUTATION_AGENT_URL;
@@ -72,10 +80,6 @@ if (fitnessAgentUrls.length === 0) {
   throw new Error('FITNESS_AGENT_URLS env var is required (comma-separated list of URLs)');
 }
 
-// Durable execution: if WORKFLOW_TABLE_PREFIX is set, the evolution run
-// persists each generation phase to Delta so it survives app restarts and
-// can resume via RUN_ID. Otherwise fall back to the in-memory engine
-// (original behavior — state lost on restart).
 const engine = process.env.WORKFLOW_TABLE_PREFIX
   ? new DeltaEngine({
       tablePrefix: process.env.WORKFLOW_TABLE_PREFIX,
@@ -95,25 +99,86 @@ const evolutionaryAgent = new EvolutionaryAgent({
   maxGenerations: parseInt(process.env.MAX_GENERATIONS ?? '500'),
   model: 'databricks-claude-sonnet-4-6',
   instructions:
-    'You are the Voynich decipherment orchestrator. ' +
-    'Manage and summarise the evolutionary search for a valid decipherment of the Voynich manuscript. ' +
-    'Use your tools to inspect generation results, escalate top hypotheses, and pause or resume the loop on request.',
+    'You are the Voynich EA manager. ' +
+    'Manage and summarise the evolutionary search for a valid decipherment. ' +
+    'Use your tools to inspect generation results, escalate top hypotheses, and pause or resume the loop.',
   engine,
   runId: process.env.RUN_ID,
   workflowName: 'voynich-evolution',
 });
 
 // ---------------------------------------------------------------------------
-// Agent plugin
+// Route 2: Theory Investigator (targeted decoding + validation)
 // ---------------------------------------------------------------------------
+
+const theoryInvestigator = new TheoryInvestigator();
+
+// ---------------------------------------------------------------------------
+// LLM-routed orchestrator
+// ---------------------------------------------------------------------------
+
+const EA_KEYWORDS = ['generation', 'evolut', 'population', 'pareto', 'fitness', 'escalat', 'pause', 'resume', 'converge'];
+const THEORY_KEYWORDS = ['theory', 'theor', 'decode', 'decipher', 'cipher', 'symbol map', 'folio', 'propose', 'investigate', 'skeptic', 'cross-folio', 'latin', 'polyalphabetic', 'substitution'];
+
+const router = new RouterAgent({
+  model: 'databricks-claude-sonnet-4-6',
+  instructions: [
+    'You are routing requests for a Voynich manuscript decipherment system.',
+    'Choose between two specialist agents:',
+    '',
+    '- "ea_management": For managing the evolutionary algorithm loop — checking generation',
+    '  status, viewing fitness scores, pausing/resuming the loop, escalating hypotheses,',
+    '  or asking about population-level statistics.',
+    '',
+    '- "theory_investigation": For targeted decipherment work — proposing new decoding',
+    '  theories, testing symbol maps against folios, running cross-folio consistency checks,',
+    '  challenging theories with the skeptic, or investigating specific cipher types and languages.',
+    '',
+    'If the user asks a general question about Voynich progress or "what\'s working",',
+    'route to ea_management. If they want to try a new approach or test a specific idea,',
+    'route to theory_investigation.',
+  ].join('\n'),
+  routes: [
+    {
+      name: 'ea_management',
+      description: 'Evolutionary algorithm loop management — generation status, fitness scores, population stats, pause/resume, escalation',
+      agent: evolutionaryAgent,
+      condition: (msgs) => {
+        const last = msgs[msgs.length - 1]?.content?.toLowerCase() ?? '';
+        return EA_KEYWORDS.some((kw) => last.includes(kw));
+      },
+    },
+    {
+      name: 'theory_investigation',
+      description: 'Targeted decipherment — propose theories, test symbol maps, cross-folio validation, skeptic challenge, cipher type exploration',
+      agent: theoryInvestigator,
+      condition: (msgs) => {
+        const last = msgs[msgs.length - 1]?.content?.toLowerCase() ?? '';
+        return THEORY_KEYWORDS.some((kw) => last.includes(kw));
+      },
+    },
+  ],
+  fallback: evolutionaryAgent,
+});
+
+// ---------------------------------------------------------------------------
+// Agent plugin — exposes tools from both routes
+// ---------------------------------------------------------------------------
+
+const allTools = [
+  ...evolutionaryAgent.collectTools(),
+  ...theoryInvestigator.collectTools(),
+];
 
 const agentPlugin = createAgentPlugin({
   model: 'databricks-claude-sonnet-4-6',
-  instructions: evolutionaryAgent.tools.length > 0
-    ? 'You are the Voynich decipherment orchestrator. Use your tools to manage the evolutionary loop and answer questions about decipherment progress.'
-    : 'You are the Voynich decipherment orchestrator.',
-  tools: evolutionaryAgent.tools,
-  workflow: evolutionaryAgent,
+  instructions: [
+    'You are the Voynich decipherment orchestrator.',
+    'You manage both an evolutionary search loop and a targeted theory investigation system.',
+    'Use your tools to control the EA loop, propose and test decoding theories, and report progress.',
+  ].join(' '),
+  tools: allTools,
+  workflow: router,
 });
 
 const agentExports = () => agentPlugin.exports();
@@ -130,7 +195,7 @@ agentPlugin.setup(app);
 const discoveryPlugin = createDiscoveryPlugin(
   {
     name: 'voynich-orchestrator',
-    description: 'Evolutionary decipherment orchestrator for the Voynich manuscript',
+    description: 'LLM-routed Voynich decipherment orchestrator — evolutionary search + theory investigation',
   },
   agentExports,
 );
@@ -153,6 +218,7 @@ devPlugin.injectRoutes(app);
 const port = parseInt(process.env.PORT ?? '8000');
 app.listen(port, () => {
   console.log(`Voynich Orchestrator running at http://localhost:${port}`);
+  console.log(`  Routing: LLM-based (${router.collectTools().length} tools across 2 routes)`);
   console.log(`  POST /responses              — agent endpoint (Responses API)`);
   console.log(`  GET  /.well-known/agent.json — A2A discovery card`);
   console.log(`  /mcp                         — MCP server`);
