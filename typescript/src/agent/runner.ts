@@ -12,7 +12,9 @@
 import type { Express } from 'express';
 import type { AgentTool } from './tools.js';
 import { toStrictSchema, zodToJsonSchema } from './tools.js';
-import { runWithContext } from './request-context.js';
+import { runWithContext, getRequestContext } from './request-context.js';
+import { addSpan, endSpan, truncate } from '../trace.js';
+import { resolveToken as resolveTokenFull } from '../connectors/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,14 +74,33 @@ function getHost(): string {
   return host.startsWith('http') ? host.replace(/\/$/, '') : `https://${host}`;
 }
 
-/** Extract the best available auth token from OBO headers or env. */
-function resolveToken(oboHeaders: Record<string, string>): string | undefined {
-  return (
-    oboHeaders['x-forwarded-access-token'] ||
-    (oboHeaders['authorization'] ?? '').replace(/^Bearer\s+/i, '') ||
-    process.env.DATABRICKS_TOKEN ||
-    undefined
-  );
+/**
+ * Resolve auth token for FMAPI calls.
+ *
+ * For FMAPI (model serving), the app should use its own identity — NOT the
+ * caller's OBO token, which may be another app's SP that lacks FMAPI access.
+ *
+ * Priority: DATABRICKS_TOKEN env → M2M OAuth (app's own SP credentials).
+ * OBO headers are intentionally skipped here; they are used for data
+ * operations (UC, SQL) where the caller's identity matters.
+ */
+function resolveToken(_oboHeaders: Record<string, string>): string | Promise<string> | undefined {
+  try {
+    // Pass no OBO headers so the chain falls through to DATABRICKS_TOKEN or M2M OAuth
+    return resolveTokenFull();
+  } catch {
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fetch with AbortController timeout
+// ---------------------------------------------------------------------------
+
+function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
 // ---------------------------------------------------------------------------
@@ -100,21 +121,35 @@ async function chatCompletions(
     body.tool_choice = 'auto';
   }
 
-  const res = await fetch(`${host}/serving-endpoints/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
+  const ctx = getRequestContext();
+  const span = ctx?.trace ? addSpan(ctx.trace, { type: 'llm', name: model, input: truncate(messages), metadata: { model, tool_count: tools?.length ?? 0 } }) : null;
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`FMAPI ${res.status}: ${text}`);
+  try {
+    const res = await fetchWithTimeout(
+      `${host}/serving-endpoints/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      },
+      120_000,
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`FMAPI ${res.status}: ${text}`);
+    }
+
+    const result = await res.json() as ChatResponse;
+    if (span) { span.output = truncate(result); endSpan(span); }
+    return result;
+  } catch (err) {
+    if (span) { span.output = String(err); span.metadata = { ...span.metadata, error: true }; endSpan(span); }
+    throw err;
   }
-
-  return res.json() as Promise<ChatResponse>;
 }
 
 async function chatCompletionsStream(
@@ -131,21 +166,34 @@ async function chatCompletionsStream(
     body.tool_choice = 'auto';
   }
 
-  const res = await fetch(`${host}/serving-endpoints/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
+  const ctx = getRequestContext();
+  const span = ctx?.trace ? addSpan(ctx.trace, { type: 'llm', name: model, input: truncate(messages), metadata: { model, tool_count: tools?.length ?? 0, streaming: true } }) : null;
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`FMAPI ${res.status}: ${text}`);
+  try {
+    const res = await fetchWithTimeout(
+      `${host}/serving-endpoints/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      },
+      180_000,
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`FMAPI ${res.status}: ${text}`);
+    }
+
+    if (span) { span.output = '[streaming response]'; endSpan(span); }
+    return res;
+  } catch (err) {
+    if (span) { span.output = String(err); span.metadata = { ...span.metadata, error: true }; endSpan(span); }
+    throw err;
   }
-
-  return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +295,7 @@ export function toSubAgentTool(name: string, description: string, url: string, o
 
 /** Run the agent loop and return the final text. */
 export async function runViaSDK(params: RunParams): Promise<string> {
-  const token = resolveToken(params.oboHeaders);
+  const token = await resolveToken(params.oboHeaders);
   const toolMap = new Map(params.tools.map((t) => [t.name, t]));
   const subAgentMap = new Map(
     (params.subAgents ?? []).map((url, i) => [`sub_agent_${i}`, url]),
@@ -295,10 +343,13 @@ export async function runViaSDK(params: RunParams): Promise<string> {
       const tool = toolMap.get(tc.function.name);
       const subAgentUrl = subAgentMap.get(tc.function.name);
 
+      const ctx = getRequestContext();
+      const toolSpan = ctx?.trace ? addSpan(ctx.trace, { type: 'tool', name: tc.function.name, input: truncate(tc.function.arguments) }) : null;
+
       if (tool) {
         try {
           const args = JSON.parse(tc.function.arguments);
-          const output = await runWithContext({ oboHeaders: params.oboHeaders }, () => tool.handler(args));
+          const output = await runWithContext({ oboHeaders: params.oboHeaders, trace: ctx?.trace }, () => tool.handler(args));
           result = typeof output === 'string' ? output : JSON.stringify(output);
         } catch (e) {
           result = `Tool error: ${e instanceof Error ? e.message : String(e)}`;
@@ -314,6 +365,7 @@ export async function runViaSDK(params: RunParams): Promise<string> {
         result = `Tool not found: ${tc.function.name}`;
       }
 
+      if (toolSpan) { toolSpan.output = truncate(result); endSpan(toolSpan); }
       messages.push({ role: 'tool', content: result, tool_call_id: tc.id });
     }
   }
@@ -324,7 +376,7 @@ export async function runViaSDK(params: RunParams): Promise<string> {
 
 /** Stream the agent loop, yielding text chunks. */
 export async function* streamViaSDK(params: RunParams): AsyncGenerator<string> {
-  const token = resolveToken(params.oboHeaders);
+  const token = await resolveToken(params.oboHeaders);
   const toolMap = new Map(params.tools.map((t) => [t.name, t]));
   const subAgentMap = new Map(
     (params.subAgents ?? []).map((url, i) => [`sub_agent_${i}`, url]),
@@ -376,10 +428,13 @@ export async function* streamViaSDK(params: RunParams): AsyncGenerator<string> {
       const tool = toolMap.get(tc.function.name);
       const subAgentUrl = subAgentMap.get(tc.function.name);
 
+      const ctx = getRequestContext();
+      const toolSpan = ctx?.trace ? addSpan(ctx.trace, { type: 'tool', name: tc.function.name, input: truncate(tc.function.arguments) }) : null;
+
       if (tool) {
         try {
           const args = JSON.parse(tc.function.arguments);
-          const output = await runWithContext({ oboHeaders: params.oboHeaders }, () => tool.handler(args));
+          const output = await runWithContext({ oboHeaders: params.oboHeaders, trace: ctx?.trace }, () => tool.handler(args));
           result = typeof output === 'string' ? output : JSON.stringify(output);
         } catch (e) {
           result = `Tool error: ${e instanceof Error ? e.message : String(e)}`;
@@ -395,6 +450,7 @@ export async function* streamViaSDK(params: RunParams): AsyncGenerator<string> {
         result = `Tool not found: ${tc.function.name}`;
       }
 
+      if (toolSpan) { toolSpan.output = truncate(result); endSpan(toolSpan); }
       messages.push({ role: 'tool', content: result, tool_call_id: tc.id });
     }
   }

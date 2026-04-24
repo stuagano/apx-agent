@@ -7,10 +7,13 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { Trace } from '../trace.js';
 
 export interface RequestContext {
   /** OBO and auth headers forwarded from the incoming HTTP request. */
   oboHeaders: Record<string, string>;
+  /** Optional distributed-tracing handle for the current request. */
+  trace?: Trace;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();

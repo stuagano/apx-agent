@@ -26,6 +26,62 @@ import {
 } from '../voynich-config.js';
 
 // ---------------------------------------------------------------------------
+// EVA reference data for grounding-guided mutation
+// ---------------------------------------------------------------------------
+
+/**
+ * Common EVA word sequences from the herbal section.
+ * Used to reverse-engineer symbol maps from target plaintext.
+ */
+const HERBAL_EVA_WORDS = [
+  'daiin', 'chedy', 'qokeedy', 'shedy', 'otedy', 'qokain',
+  'chol', 'chor', 'shol', 'shory', 'dar', 'aly', 'okeey',
+  'chey', 'cthor', 'oteey', 'ykeedy', 'qokedy', 'lchedy',
+  'cheol', 'otaiin', 'dain', 'aiin', 'ol', 'or', 'ar',
+];
+
+/**
+ * Target botanical terms per candidate language, keyed by language.
+ * These are common plant-related words that the grounder expects.
+ */
+const BOTANICAL_TARGETS: Record<string, string[]> = {
+  latin: [
+    'mandragora', 'radix', 'herba', 'folium', 'flos', 'semen',
+    'cannabis', 'hedera', 'eryngium', 'carduus', 'campanula',
+    'geranium', 'planta', 'cortex', 'spina', 'medicinalis',
+  ],
+  italian: [
+    'mandragola', 'radice', 'erba', 'foglia', 'fiore', 'seme',
+    'canapa', 'edera', 'cardo', 'pianta', 'corteccia', 'spina',
+  ],
+  greek: ['mandragoras', 'rhiza', 'botanē', 'phyllon', 'anthos'],
+  hebrew: ['dudaim', 'shoresh', 'esev', 'aleh', 'perach'],
+  arabic: ['yabruh', 'jidr', 'ushb', 'waraqa', 'zahrah'],
+};
+
+/**
+ * Tokenize an EVA word into individual characters, handling digraphs.
+ */
+function tokenizeEva(word: string): string[] {
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < word.length) {
+    // Check for digraphs (ch, sh, th)
+    if (i + 1 < word.length) {
+      const pair = word.substring(i, i + 2);
+      if (pair === 'ch' || pair === 'sh' || pair === 'th') {
+        tokens.push(pair);
+        i += 2;
+        continue;
+      }
+    }
+    tokens.push(word[i]);
+    i++;
+  }
+  return tokens;
+}
+
+// ---------------------------------------------------------------------------
 // Tool: mutate_hypothesis
 // ---------------------------------------------------------------------------
 
@@ -132,6 +188,79 @@ const applyCipher = defineTool({
 });
 
 // ---------------------------------------------------------------------------
+// Tool: reverse_engineer_mapping
+// ---------------------------------------------------------------------------
+
+const reverseEngineerMapping = defineTool({
+  name: 'reverse_engineer_mapping',
+  description:
+    'Generate a decipherment hypothesis targeting a specific botanical term. ' +
+    'Produces a decoded_sample containing the target word in a plausible medieval ' +
+    'context, plus a symbol map. The grounder scores decoded_sample against folio images.',
+  parameters: z.object({
+    target_word: z
+      .string()
+      .describe('The target plaintext word (e.g., "mandragora", "cannabis", "hedera").'),
+    source_language: z
+      .string()
+      .describe('The candidate source language (latin, italian, greek, etc.).'),
+    parent_map: z
+      .any()
+      .optional()
+      .describe('Existing parent symbol map to base mutations on.'),
+  }),
+  handler: async ({
+    target_word,
+    source_language,
+    parent_map,
+  }: {
+    target_word: string;
+    source_language: string;
+    parent_map?: Record<string, string>;
+  }) => {
+    const target = target_word.toLowerCase();
+
+    // Build a symbol map (keep parent's or start fresh)
+    const baseMap: Record<string, string> = parent_map ? { ...parent_map } : {};
+    const evaWords = HERBAL_EVA_WORDS.slice(0, 6);
+    let targetIdx = 0;
+    for (const evaWord of evaWords) {
+      const evaTokens = tokenizeEva(evaWord);
+      for (const token of evaTokens) {
+        baseMap[token] = target[targetIdx % target.length];
+        targetIdx++;
+      }
+    }
+
+    // Get botanical terms for this language
+    const langTerms = BOTANICAL_TARGETS[source_language] || BOTANICAL_TARGETS['latin'] || [];
+
+    // Pick 3-5 related terms to build a plausible decoded passage
+    const shuffled = [...langTerms].sort(() => Math.random() - 0.5);
+    const related = shuffled.slice(0, 4);
+    // Always include the target word
+    if (!related.includes(target)) {
+      related[0] = target;
+    }
+
+    // Build decoded_sample as a plausible botanical passage
+    const templates = [
+      `${target} ${related[1] || 'herba'} ${related[2] || 'radix'} ${related[3] || 'planta'}`,
+      `${related[1] || 'radix'} ${target} ${related[2] || 'folium'} medicinalis`,
+      `herba ${target} ${related[1] || 'flos'} ${related[2] || 'semen'} ${related[3] || 'cortex'}`,
+    ];
+    const decodedSample = templates[Math.floor(Math.random() * templates.length)];
+
+    return {
+      symbol_map: baseMap,
+      decoded_sample: decodedSample,
+      target_word: target,
+      source_language,
+    };
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -152,25 +281,47 @@ function hashString(s: string): number {
 const agentPlugin = createAgentPlugin({
   model: 'databricks-claude-sonnet-4-6',
   instructions: [
-    'You are the Voynich Decipherer — a mutation agent responsible for evolving cipher hypotheses.',
-    `You understand the EVA transliteration alphabet. Common EVA characters include: ${EVA_COMMON_CHARS.join(', ')}.`,
-    `Supported cipher families: ${VOYNICH_CIPHER_TYPES.join(', ')}.`,
-    `Candidate source languages: ${VOYNICH_SOURCE_LANGUAGES.join(', ')}.`,
+    'You are the Voynich Decipherer, a mutation agent for evolving cipher hypotheses.',
     '',
-    'When you receive a request with parents and batch_size, you MUST respond with ONLY a JSON array of hypothesis objects.',
-    'If parents is empty, generate random seed hypotheses. If parents are provided, mutate them using mutate_hypothesis.',
+    'WHEN YOU RECEIVE A MESSAGE:',
+    '1. Parse the JSON input. It contains: parents (array), generation (number), batch_size (number).',
     '',
-    'Each hypothesis in the array must have this exact shape:',
-    '  { "id": "<8-char-hex>", "generation": <number>, "parent_id": <string|null>,',
-    '    "fitness": {}, "metadata": { "cipher_type": "...", "source_language": "...",',
-    '    "symbol_map": {...}, "null_chars": [...] }, "flagged_for_review": false,',
-    '    "created_at": "<ISO timestamp>" }',
+    '2. IF parents array is EMPTY (seeding):',
+    '   - For each hypothesis up to batch_size:',
+    '     a. Pick a random language from: latin, italian, greek, hebrew, arabic',
+    '     b. Call reverse_engineer_mapping with a random botanical target word and that language',
+    '     c. Build a hypothesis object from the result',
     '',
-    'For seed generation (empty parents): create diverse hypotheses with different cipher_types,',
-    'source_languages, and random symbol_maps (at least 10 EVA→plaintext mappings each).',
-    'Respond with ONLY the JSON array, no markdown, no explanation.',
+    '3. IF parents array is NOT EMPTY (mutation):',
+    '   - For each parent (up to batch_size, cycling if needed):',
+    '     a. Extract parent.metadata.source_language and parent.metadata.symbol_map',
+    '     b. Call reverse_engineer_mapping with a random botanical target word,',
+    '        the parent source_language, and the parent symbol_map as parent_map',
+    '     c. The tool returns a new symbol_map and decoded_sample',
+    '     d. Build a child hypothesis with the new symbol_map and decoded_sample',
+    '',
+    '4. Build each hypothesis object as:',
+    '   {',
+    '     "id": "<8 random hex chars>",',
+    '     "generation": <generation from input>,',
+    '     "parent_id": "<parent.id or empty string for seeds>",',
+    '     "fitness": {},',
+    '     "metadata": {',
+    '       "cipher_type": "substitution",',
+    '       "source_language": "<from tool result>",',
+    '       "symbol_map": <from tool result>,',
+    '       "null_chars": [],',
+    '       "decoded_sample": "<from tool result>"',
+    '     },',
+    '     "flagged_for_review": false',
+    '   }',
+    '',
+    '5. Return ONLY the JSON array of hypothesis objects. No markdown, no explanation.',
+    '',
+    'CRITICAL: Always call reverse_engineer_mapping for each mutation.',
+    'The decoded_sample field is essential — the grounder uses it for scoring.',
   ].join('\n'),
-  tools: [mutateHypothesis, applyCipher],
+  tools: [mutateHypothesis, applyCipher, reverseEngineerMapping],
 });
 
 const agentExports = () => agentPlugin.exports();
