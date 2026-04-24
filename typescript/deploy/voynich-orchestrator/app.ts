@@ -1,31 +1,13 @@
 /**
- * Voynich Orchestrator — evolutionary decipherment agent on Databricks AppKit.
+ * Voynich Orchestrator — LLM-routed decipherment agent on Databricks AppKit.
  *
- * Manages a multi-generation population of Voynich decipherment hypotheses,
- * scoring them against statistical, perplexity, semantic, consistency, and
- * adversarial fitness criteria across configurable remote sub-agents.
+ * Uses RouterAgent with LLM-based routing to dispatch user requests to:
+ *   1. EA Management  — evolutionary loop control, generation status, escalation
+ *   2. Theory Investigation — targeted theory-driven decoding with cross-folio
+ *      validation, skeptic challenge, and critic analysis
  *
- * Required environment variables:
- *   DATABRICKS_HOST          Workspace URL (e.g. https://adb-xxx.azuredatabricks.net)
- *   DATABRICKS_TOKEN         PAT or OAuth token
- *   DATABRICKS_WAREHOUSE_ID  SQL warehouse for PopulationStore queries
- *   MUTATION_AGENT_URL       Base URL of the mutation sub-agent
- *   FITNESS_AGENT_URLS       Comma-separated list of fitness sub-agent base URLs
- *   JUDGE_AGENT_URL          (optional) Base URL of the judge sub-agent
- *
- * Optional:
- *   PORT                     HTTP listen port (default 8000)
- *   POPULATION_SIZE          Number of survivors per generation (default 50)
- *   MUTATION_BATCH           Mutations per generation (default 20)
- *   MAX_GENERATIONS          Maximum generations to run (default 500)
- *
- * Run locally:
- *   DATABRICKS_HOST=https://your-workspace.azuredatabricks.net \
- *   DATABRICKS_TOKEN=your-token \
- *   DATABRICKS_WAREHOUSE_ID=your-warehouse-id \
- *   MUTATION_AGENT_URL=http://localhost:8001 \
- *   FITNESS_AGENT_URLS=http://localhost:8002,http://localhost:8003 \
- *   npx tsx app.ts
+ * Deterministic conditions catch simple keywords; when the intent is ambiguous,
+ * the LLM classifier picks the best route based on the conversation.
  */
 
 import express from 'express';
@@ -38,12 +20,14 @@ import {
   EvolutionaryAgent,
   DeltaEngine,
   InMemoryEngine,
+  RouterAgent,
 } from './appkit-agent/index.mjs';
 import {
   VOYNICH_FITNESS_WEIGHTS,
   VOYNICH_PARETO_OBJECTIVES,
   DEFAULT_POPULATION_TABLE,
 } from './voynich-config.ts';
+import { TheoryInvestigator } from './theory-investigator.ts';
 
 // ---------------------------------------------------------------------------
 // Population store
@@ -55,7 +39,7 @@ const store = new PopulationStore({
 });
 
 // ---------------------------------------------------------------------------
-// Evolutionary agent
+// Route 1: Evolutionary Agent (EA loop management)
 // ---------------------------------------------------------------------------
 
 const mutationAgentUrl = process.env.MUTATION_AGENT_URL;
@@ -72,10 +56,6 @@ if (fitnessAgentUrls.length === 0) {
   throw new Error('FITNESS_AGENT_URLS env var is required (comma-separated list of URLs)');
 }
 
-// Durable execution: if WORKFLOW_TABLE_PREFIX is set, the evolution run
-// persists each generation phase to Delta so it survives app restarts and
-// can resume via RUN_ID. Otherwise fall back to the in-memory engine
-// (original behavior — state lost on restart).
 const engine = process.env.WORKFLOW_TABLE_PREFIX
   ? new DeltaEngine({
       tablePrefix: process.env.WORKFLOW_TABLE_PREFIX,
@@ -95,25 +75,86 @@ const evolutionaryAgent = new EvolutionaryAgent({
   maxGenerations: parseInt(process.env.MAX_GENERATIONS ?? '500'),
   model: 'databricks-claude-sonnet-4-6',
   instructions:
-    'You are the Voynich decipherment orchestrator. ' +
-    'Manage and summarise the evolutionary search for a valid decipherment of the Voynich manuscript. ' +
-    'Use your tools to inspect generation results, escalate top hypotheses, and pause or resume the loop on request.',
+    'You are the Voynich EA manager. ' +
+    'Manage and summarise the evolutionary search for a valid decipherment. ' +
+    'Use your tools to inspect generation results, escalate top hypotheses, and pause or resume the loop.',
   engine,
   runId: process.env.RUN_ID,
   workflowName: 'voynich-evolution',
 });
 
 // ---------------------------------------------------------------------------
-// Agent plugin
+// Route 2: Theory Investigator (targeted decoding + validation)
 // ---------------------------------------------------------------------------
+
+const theoryInvestigator = new TheoryInvestigator();
+
+// ---------------------------------------------------------------------------
+// LLM-routed orchestrator
+// ---------------------------------------------------------------------------
+
+const EA_KEYWORDS = ['generation', 'evolut', 'population', 'pareto', 'fitness', 'escalat', 'pause', 'resume', 'converge'];
+const THEORY_KEYWORDS = ['theory', 'theor', 'decode', 'decipher', 'cipher', 'symbol map', 'folio', 'propose', 'investigate', 'skeptic', 'cross-folio', 'latin', 'polyalphabetic', 'substitution'];
+
+const router = new RouterAgent({
+  model: 'databricks-claude-sonnet-4-6',
+  instructions: [
+    'You are routing requests for a Voynich manuscript decipherment system.',
+    'Choose between two specialist agents:',
+    '',
+    '- "ea_management": For managing the evolutionary algorithm loop — checking generation',
+    '  status, viewing fitness scores, pausing/resuming the loop, escalating hypotheses,',
+    '  or asking about population-level statistics.',
+    '',
+    '- "theory_investigation": For targeted decipherment work — proposing new decoding',
+    '  theories, testing symbol maps against folios, running cross-folio consistency checks,',
+    '  challenging theories with the skeptic, or investigating specific cipher types and languages.',
+    '',
+    'If the user asks a general question about Voynich progress or "what\'s working",',
+    'route to ea_management. If they want to try a new approach or test a specific idea,',
+    'route to theory_investigation.',
+  ].join('\n'),
+  routes: [
+    {
+      name: 'ea_management',
+      description: 'Evolutionary algorithm loop management — generation status, fitness scores, population stats, pause/resume, escalation',
+      agent: evolutionaryAgent,
+      condition: (msgs) => {
+        const last = msgs[msgs.length - 1]?.content?.toLowerCase() ?? '';
+        return EA_KEYWORDS.some((kw) => last.includes(kw));
+      },
+    },
+    {
+      name: 'theory_investigation',
+      description: 'Targeted decipherment — propose theories, test symbol maps, cross-folio validation, skeptic challenge, cipher type exploration',
+      agent: theoryInvestigator,
+      condition: (msgs) => {
+        const last = msgs[msgs.length - 1]?.content?.toLowerCase() ?? '';
+        return THEORY_KEYWORDS.some((kw) => last.includes(kw));
+      },
+    },
+  ],
+  fallback: evolutionaryAgent,
+});
+
+// ---------------------------------------------------------------------------
+// Agent plugin — exposes tools from both routes
+// ---------------------------------------------------------------------------
+
+const allTools = [
+  ...evolutionaryAgent.collectTools(),
+  ...theoryInvestigator.collectTools(),
+];
 
 const agentPlugin = createAgentPlugin({
   model: 'databricks-claude-sonnet-4-6',
-  instructions: evolutionaryAgent.collectTools().length > 0
-    ? 'You are the Voynich decipherment orchestrator. Use your tools to manage the evolutionary loop and answer questions about decipherment progress.'
-    : 'You are the Voynich decipherment orchestrator.',
-  tools: evolutionaryAgent.collectTools(),
-  workflow: evolutionaryAgent,
+  instructions: [
+    'You are the Voynich decipherment orchestrator.',
+    'You manage both an evolutionary search loop and a targeted theory investigation system.',
+    'Use your tools to control the EA loop, propose and test decoding theories, and report progress.',
+  ].join(' '),
+  tools: allTools,
+  workflow: router,
 });
 
 const agentExports = () => agentPlugin.exports();
@@ -130,7 +171,7 @@ agentPlugin.setup(app);
 const discoveryPlugin = createDiscoveryPlugin(
   {
     name: 'voynich-orchestrator',
-    description: 'Evolutionary decipherment orchestrator for the Voynich manuscript',
+    description: 'LLM-routed Voynich decipherment orchestrator — evolutionary search + theory investigation',
   },
   agentExports,
 );
@@ -158,11 +199,6 @@ mountTraceDashboard(app);
 // ---------------------------------------------------------------------------
 
 app.get('/_apx/results', async (_req, res) => {
-  const host = process.env.DATABRICKS_HOST || '';
-  const warehouseId = process.env.DATABRICKS_WAREHOUSE_ID || '';
-
-  // The dashboard is a self-contained HTML page that fetches data client-side
-  // via the Databricks SQL API (using the app's auth token passed as a cookie)
   res.setHeader('Content-Type', 'text/html');
   res.send(`<!DOCTYPE html>
 <html>
@@ -180,7 +216,6 @@ app.get('/_apx/results', async (_req, res) => {
     .card .value { font-size: 28px; font-weight: 600; color: #4dd0e1; }
     .card .value.green { color: #4caf50; }
     .card .value.red { color: #ef5350; }
-    .card .value.amber { color: #ffb74d; }
     table { width: 100%; border-collapse: collapse; background: #1a1a2e; border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
     th { background: #252540; padding: 10px 12px; text-align: left; font-size: 12px; text-transform: uppercase; color: #888; }
     td { padding: 10px 12px; border-top: 1px solid #252540; font-size: 13px; }
@@ -198,93 +233,33 @@ app.get('/_apx/results', async (_req, res) => {
 </head>
 <body>
   <h1>Voynich Manuscript — Theory-Driven Decoding</h1>
-  <p class="subtitle">Auto-refreshes every 30 seconds. Theories tested against 38 herbal folio illustrations.</p>
+  <p class="subtitle">Auto-refreshes every 30 seconds. LLM-routed orchestrator with EA + theory investigation.</p>
   <span class="refreshing">Last refresh: <span id="ts"></span></span>
-
   <div class="grid" id="summary"></div>
-
-  <div class="section">
-    <h2>By Language</h2>
-    <div id="by-lang"></div>
-  </div>
-
+  <div class="section"><h2>By Language</h2><div id="by-lang"></div></div>
   <div class="section">
     <h2>Top Theories</h2>
     <table>
-      <thead><tr><th>Folio</th><th>Plant</th><th>Language</th><th>Grounding</th><th>Consistency</th><th>Verdict</th><th>Decoded Text</th></tr></thead>
+      <thead><tr><th>Folio</th><th>Plant</th><th>Language</th><th>Cipher</th><th>Grounding</th><th>Consistency</th><th>Verdict</th><th>Decoded Text</th></tr></thead>
       <tbody id="theories"></tbody>
     </table>
   </div>
-
   <script>
     document.getElementById('ts').textContent = new Date().toLocaleTimeString();
-
     async function query(sql) {
-      const res = await fetch('/api/sql', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ statement: sql })
-      });
+      const res = await fetch('/api/sql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ statement: sql }) });
       const d = await res.json();
       const cols = (d.manifest?.schema?.columns || []).map(c => c.name);
-      return (d.result?.data_array || []).map(row => {
-        const obj = {};
-        cols.forEach((c, i) => obj[c] = row[i]);
-        return obj;
-      });
+      return (d.result?.data_array || []).map(row => { const obj = {}; cols.forEach((c, i) => obj[c] = row[i]); return obj; });
     }
-
     async function load() {
-      // Summary
-      const summary = await query(\`
-        SELECT COUNT(*) total,
-          COUNT(CASE WHEN grounding_score > 0 THEN 1 END) grounded,
-          ROUND(MAX(grounding_score),3) best_grd,
-          ROUND(MAX(consistency_score),3) best_cons,
-          COUNT(CASE WHEN verdict = 'plausible' THEN 1 END) plausible,
-          COUNT(CASE WHEN verdict = 'rejected' THEN 1 END) rejected
-        FROM serverless_stable_qh44kx_catalog.voynich.theories
-      \`);
-      if (summary[0]) {
-        const s = summary[0];
-        document.getElementById('summary').innerHTML = \`
-          <div class="card"><div class="label">Total Theories</div><div class="value">\${s.total}</div></div>
-          <div class="card"><div class="label">Best Grounding</div><div class="value \${parseFloat(s.best_grd) > 0 ? 'green' : ''}">\${s.best_grd}</div></div>
-          <div class="card"><div class="label">Best Consistency</div><div class="value \${parseFloat(s.best_cons) > 0 ? 'green' : 'red'}">\${s.best_cons}</div></div>
-          <div class="card"><div class="label">Plausible</div><div class="value green">\${s.plausible}</div></div>
-          <div class="card"><div class="label">Rejected</div><div class="value red">\${s.rejected}</div></div>
-        \`;
-      }
-
-      // By language
-      const langs = await query(\`
-        SELECT source_language, COUNT(*) n, ROUND(AVG(grounding_score),3) avg_grd, ROUND(MAX(grounding_score),3) best_grd
-        FROM serverless_stable_qh44kx_catalog.voynich.theories GROUP BY source_language ORDER BY avg_grd DESC
-      \`);
-      document.getElementById('by-lang').innerHTML = '<table><thead><tr><th>Language</th><th>Theories</th><th>Avg Grounding</th><th>Best Grounding</th></tr></thead><tbody>' +
-        langs.map(l => \`<tr><td>\${l.source_language}</td><td>\${l.n}</td><td>\${l.avg_grd}</td><td>\${l.best_grd}</td></tr>\`).join('') +
-        '</tbody></table>';
-
-      // Top theories
-      const theories = await query(\`
-        SELECT target_folio, target_plant, source_language, ROUND(grounding_score,3) grd,
-          ROUND(consistency_score,3) cons, verdict, SUBSTRING(decoded_text, 1, 60) decoded
-        FROM serverless_stable_qh44kx_catalog.voynich.theories
-        ORDER BY (grounding_score + consistency_score) DESC LIMIT 20
-      \`);
-      document.getElementById('theories').innerHTML = theories.map(t => \`
-        <tr>
-          <td>\${t.target_folio}</td>
-          <td>\${t.target_plant}</td>
-          <td>\${t.source_language}</td>
-          <td><div class="bar"><div class="bar-fill" style="width:\${parseFloat(t.grd)*100}%"></div></div> \${t.grd}</td>
-          <td><div class="bar"><div class="bar-fill" style="width:\${parseFloat(t.cons)*100}%"></div></div> \${t.cons}</td>
-          <td><span class="tag \${t.verdict}">\${t.verdict}</span></td>
-          <td style="font-family:monospace;font-size:12px">\${t.decoded}</td>
-        </tr>
-      \`).join('');
+      const summary = await query(\`SELECT COUNT(*) total, COUNT(CASE WHEN grounding_score > 0 THEN 1 END) grounded, ROUND(MAX(grounding_score),3) best_grd, ROUND(MAX(consistency_score),3) best_cons, COUNT(CASE WHEN verdict = 'plausible' THEN 1 END) plausible, COUNT(CASE WHEN verdict = 'rejected' THEN 1 END) rejected FROM serverless_stable_qh44kx_catalog.voynich.theories\`);
+      if (summary[0]) { const s = summary[0]; document.getElementById('summary').innerHTML = \`<div class="card"><div class="label">Total Theories</div><div class="value">\${s.total}</div></div><div class="card"><div class="label">Best Grounding</div><div class="value \${parseFloat(s.best_grd) > 0 ? 'green' : ''}">\${s.best_grd}</div></div><div class="card"><div class="label">Best Consistency</div><div class="value \${parseFloat(s.best_cons) > 0 ? 'green' : 'red'}">\${s.best_cons}</div></div><div class="card"><div class="label">Plausible</div><div class="value green">\${s.plausible}</div></div><div class="card"><div class="label">Rejected</div><div class="value red">\${s.rejected}</div></div>\`; }
+      const langs = await query(\`SELECT source_language, COUNT(*) n, ROUND(AVG(grounding_score),3) avg_grd, ROUND(MAX(grounding_score),3) best_grd FROM serverless_stable_qh44kx_catalog.voynich.theories GROUP BY source_language ORDER BY avg_grd DESC\`);
+      document.getElementById('by-lang').innerHTML = '<table><thead><tr><th>Language</th><th>Theories</th><th>Avg Grounding</th><th>Best Grounding</th></tr></thead><tbody>' + langs.map(l => \`<tr><td>\${l.source_language}</td><td>\${l.n}</td><td>\${l.avg_grd}</td><td>\${l.best_grd}</td></tr>\`).join('') + '</tbody></table>';
+      const theories = await query(\`SELECT target_folio, target_plant, source_language, cipher_type, ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons, verdict, SUBSTRING(decoded_text, 1, 60) decoded FROM serverless_stable_qh44kx_catalog.voynich.theories ORDER BY (grounding_score + consistency_score) DESC LIMIT 20\`);
+      document.getElementById('theories').innerHTML = theories.map(t => \`<tr><td>\${t.target_folio}</td><td>\${t.target_plant}</td><td>\${t.source_language}</td><td>\${t.cipher_type || '-'}</td><td><div class="bar"><div class="bar-fill" style="width:\${parseFloat(t.grd)*100}%"></div></div> \${t.grd}</td><td><div class="bar"><div class="bar-fill" style="width:\${parseFloat(t.cons)*100}%"></div></div> \${t.cons}</td><td><span class="tag \${t.verdict}">\${t.verdict}</span></td><td style="font-family:monospace;font-size:12px">\${t.decoded}</td></tr>\`).join('');
     }
-
     load();
   </script>
 </body>
@@ -297,18 +272,12 @@ app.post('/api/sql', async (req, res) => {
     const { resolveToken: rt, resolveHost: rh } = await import('./appkit-agent/index.mjs');
     const tk = await rt();
     const h = rh();
-    const url = h + '/api/2.0/sql/statements';
-    const sqlRes = await fetch(url, {
+    const sqlRes = await fetch(h + '/api/2.0/sql/statements', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk },
-      body: JSON.stringify({
-        warehouse_id: process.env.DATABRICKS_WAREHOUSE_ID,
-        statement: req.body.statement,
-        wait_timeout: '30s',
-      }),
+      body: JSON.stringify({ warehouse_id: process.env.DATABRICKS_WAREHOUSE_ID, statement: req.body.statement, wait_timeout: '30s' }),
     });
-    const data = await sqlRes.json();
-    res.json(data);
+    res.json(await sqlRes.json());
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -321,20 +290,23 @@ app.post('/api/sql', async (req, res) => {
 const port = parseInt(process.env.PORT ?? '8000');
 const server = app.listen(port, () => {
   console.log(`Voynich Orchestrator running at http://localhost:${port}`);
+  console.log(`  Routing: LLM-based (${allTools.length} tools across 2 routes)`);
   console.log(`  POST /responses              — agent endpoint (Responses API)`);
   console.log(`  GET  /.well-known/agent.json — A2A discovery card`);
   console.log(`  /mcp                         — MCP server`);
   console.log(`  /_apx/agent                  — dev chat UI`);
   console.log(`  /_apx/tools                  — tool inspector`);
+  console.log(`  /_apx/results                — theory results dashboard`);
+  console.log(`  /_apx/traces                 — agent trace viewer`);
 });
-server.timeout = 300_000;         // 5 min max request time (orchestrator calls sub-agents in sequence)
-server.keepAliveTimeout = 90_000;  // longer than typical proxy keepalive (60s)
+server.timeout = 300_000;
+server.keepAliveTimeout = 90_000;
 
-// Mode: 'theory' runs the debate loop, 'evolution' runs the EA loop
+// Auto-start based on LOOP_MODE
 const mode = process.env.LOOP_MODE ?? 'theory';
 
 if (mode === 'theory') {
-  console.log('[orchestrator] starting theory-driven debate loop');
+  console.log('[orchestrator] starting theory-driven investigation loop');
   import('./theory-loop.ts').then((m) => {
     m.runTheoryLoop(50).then((theories) => {
       console.log(`[orchestrator] theory loop complete: ${theories.length} theories generated`);
