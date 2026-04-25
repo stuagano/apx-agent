@@ -14,7 +14,7 @@
  * separate from the EA loop.
  */
 
-import { resolveToken, resolveHost } from '../../../src/index.js';
+import { resolveToken, resolveHost } from './appkit-agent/index.mjs';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -479,6 +479,7 @@ async function persistTheory(theory: Theory, verdict: string): Promise<void> {
 
     const cipherType = theory.cipher_type.replace(/'/g, "''");
 
+    // Add cipher_type column if it doesn't exist (table may predate this field)
     await executeSql(`
       CREATE TABLE IF NOT EXISTS serverless_stable_qh44kx_catalog.voynich.theories (
         id STRING, proposed_at TIMESTAMP, source_language STRING,
