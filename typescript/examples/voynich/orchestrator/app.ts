@@ -175,10 +175,16 @@ const agentPlugin = createAgentPlugin({
   instructions: [
     'You are the Voynich decipherment orchestrator.',
     'You manage both an evolutionary search loop and a targeted theory investigation system.',
-    'Use your tools to control the EA loop, propose and test decoding theories, and report progress.',
-  ].join(' '),
+    '',
+    'You have two categories of tools:',
+    '  EA Management: evolution_status, best_hypothesis, generation_summary, pause_evolution, resume_evolution, force_escalate',
+    '  Theory Investigation: propose_theory, challenge_theory, run_theory_loop, list_theories',
+    '',
+    'When users ask about progress, status, generations, or fitness — use the EA tools.',
+    'When users want to try decoding theories, test cipher types, or investigate specific folios — use the theory tools.',
+    'Always call the relevant tool(s) to answer the question. Never guess — use tools to get real data.',
+  ].join('\n'),
   tools: allTools,
-  workflow: router,
 });
 
 const agentExports = () => agentPlugin.exports();
