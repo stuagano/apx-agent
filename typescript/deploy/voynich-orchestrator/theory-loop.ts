@@ -491,7 +491,9 @@ async function persistTheory(theory: Theory, verdict: string): Promise<void> {
       )
     `);
     // Schema migration: add cipher_type if table predates it
-    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (cipher_type STRING) IF NOT EXISTS`).catch(() => {});
+    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (cipher_type STRING)`).catch(() => {
+      // Column already exists — ignore
+    });
 
     await executeSql(`
       INSERT INTO serverless_stable_qh44kx_catalog.voynich.theories
