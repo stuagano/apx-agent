@@ -314,7 +314,7 @@ const mode = process.env.LOOP_MODE ?? 'theory';
 if (mode === 'theory') {
   console.log('[orchestrator] starting theory-driven investigation loop');
   import('./theory-loop.ts').then((m) => {
-    m.runTheoryLoop(50).then((theories) => {
+    m.runTheoryLoop(200).then((theories) => {
       console.log(`[orchestrator] theory loop complete: ${theories.length} theories generated`);
     }).catch((err) => {
       console.error('[orchestrator] theory loop crashed:', err);
