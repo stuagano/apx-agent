@@ -204,50 +204,104 @@ const COMMON_BIGRAMS: Record<string, string[]> = {
 };
 
 /**
- * Medieval Latin word list — common words in herbal/medical manuscripts.
- * Includes botanical terms, body parts, ailments, and high-frequency function words.
+ * Expanded medieval Latin word list — ~500 words from herbal/medical manuscripts,
+ * Dioscorides, Pliny, and medieval pharmacopoeias.
  */
 const LATIN_DICT = new Set([
-  // Function words
+  // High-frequency function words & particles
   'et','in','de','ad','cum','per','est','non','ex','ut','ab','hoc','quod','qui','que','sed',
-  'aut','vel','si','eius','habet','sunt','fuit','esse','item','vero','nam','enim','ita','sic',
-  // Botanical
-  'herba','radix','folia','folium','flos','flores','semen','cortex','ramus','rami','arbor',
-  'planta','fructus','succus','oleum','aqua','terra','humus','viridis','alba','nigra','rubra',
-  // Medical / pharmaceutical
-  'virtus','vires','calida','frigida','humida','sicca','cura','morbus','dolor','febris',
-  'venenum','remedium','potio','emplastrum','pulvis','unguentum','medicina','sanguis',
-  'corpus','caput','oculus','manus','pes','stomachus','hepar','vulnus','apostema',
-  // Properties
+  'aut','vel','si','eius','sunt','fuit','esse','item','vero','nam','enim','ita','sic','nec',
+  'ac','at','tam','tum','iam','pro','sub','ante','post','inter','contra','super','infra',
+  'autem','idem','ipse','ille','hic','haec','ubi','unde','ergo','igitur','quidem',
+  // Pronouns / demonstratives
+  'is','ea','id','nos','vos','se','me','te','suo','sua','suum','meum','tuum',
+  // Common verbs (various forms)
+  'est','sunt','sit','fuit','habet','facit','valet','sanat','tollit','purgat','iuvat',
+  'crescit','datur','bibitur','coquitur','ponitur','nascitur','invenitur','dicitur',
+  'potest','debet','solet','videtur','vocatur','appellatur','fit','dat','fert',
+  'curat','mundificat','confortat','colligitur','miscetur','additur','teritur',
+  'lavatur','siccatur','conteritur','bibat','sumat','ponat','accipiat',
+  // Botanical — plant parts
+  'herba','radix','folia','folium','flos','flores','semen','semina','cortex','ramus','rami',
+  'planta','fructus','succus','oleum','gummi','resina','spina','truncus','caulis',
+  'bacca','nux','bulbus','tuber','fibra','stipes','petiolus','calyx','pistillum',
+  // Botanical — descriptors
+  'viridis','alba','nigra','rubra','flava','purpurea','amara','dulcis','acris','aspera',
+  'laevis','mollis','dura','tenuis','crassa','longa','brevis','lata','rotunda','acuta',
+  'pilosa','glabra','spinosa','ramosa','repens','erecta','scandens',
+  // Medical — body parts
+  'corpus','caput','oculus','oculi','manus','pes','pedes','stomachus','hepar','vulnus',
+  'apostema','venter','pectus','dorsum','cutis','sanguis','os','ossa','nervus','vena',
+  'pulmo','cor','ren','renes','vesica','matrix','uterus','dens','dentes','gula','lingua',
+  // Medical — conditions & symptoms
+  'morbus','dolor','febris','tussis','tumor','ulcus','abscessus','inflammatio',
+  'venenum','pestis','lepra','scabies','pruritus','vertigo','paralysis','epilepsia',
+  'dysenteria','hydrops','icterus','calculus','fluxus','constipatio',
+  // Medical — treatments & preparations
+  'remedium','potio','emplastrum','pulvis','unguentum','medicina','cura','cataplasma',
+  'decoctum','infusum','electuarium','syrupus','pilula','collyrium','gargarisma',
+  'dosis','pondus','mensura','cochlear','manipulus','fasciculus',
+  // Properties — qualities
   'calor','humor','natura','forma','species','genus','color','odor','sapor',
-  // Verbs / descriptors
-  'facit','valet','sanat','tollit','purgat','mundificat','confortat','iuvat','crescit',
-  'habet','datur','bibitur','coquitur','ponitur','colligitur','nascitur','invenitur',
-  // Plant names that might appear
+  'virtus','vires','vis','potentia','qualitas','complexio','temperamentum',
+  'calida','frigida','humida','sicca','temperata','acuta','obtusa',
+  // Elements / substances
+  'aqua','ignis','terra','aer','sal','mel','vinum','acetum','lac','butyrum',
+  'cera','piper','ciminum','zingiber','crocus','cinnamomum',
+  // Numbers / measures
+  'unum','duo','tres','quatuor','quinque','sex','septem','octo','novem','decem',
+  'libra','uncia','drachma','scrupulum','granum','partem','dimidium','tertium',
+  // Plant names
   'mandragora','cannabis','papaver','rosa','lilium','salvia','urtica','absinthium',
   'artemisia','centaurea','plantago','verbena','malva','betonica','ruta','melissa',
   'eryngium','campanula','hedera','carduus','cirsium','ranunculus','aconitum',
+  'mentha','anethum','foeniculum','apium','petroselinum','coriandrum','cuminum',
+  'origanum','thymus','rosmarinus','lavandula','sambucus','hypericum','gentiana',
+  'valeriana','symphytum','consolida','cicuta','helleborus','atropa','hyoscyamus',
+  'solanum','datura','digitalis','colchicum','veratrum','opium','aloe','myrrha',
 ]);
 
 /**
- * Medieval Italian word list — common words in herbals and recipe books.
+ * Expanded medieval Italian word list — ~350 words from herbals and recipe books.
  */
 const ITALIAN_DICT = new Set([
   // Function words
   'e','il','la','le','lo','di','da','in','con','per','che','non','si','del','dei','della',
   'delle','una','uno','ha','sono','sua','suo','questo','quella','come','molto','bene','ogni',
-  // Botanical
+  'ma','se','anche','poi','dove','quando','ancora','sempre','mai','piu','meno','tanto',
+  'quale','chi','cosa','tutto','ogni','altro','stesso','primo','secondo','terzo',
+  'al','nel','dal','sul','col','fra','tra','senza','sopra','sotto','dentro','fuori',
+  // Botanical — plant parts
   'erba','radice','foglia','foglie','fiore','fiori','seme','semi','corteccia','ramo','rami',
-  'albero','pianta','frutto','succo','olio','acqua','terra','verde','bianco','nero','rosso',
-  // Medical
-  'virtu','cura','male','dolore','febbre','veleno','rimedio','polvere','unguento','medicina',
-  'sangue','corpo','testa','occhio','mano','piede','stomaco','fegato','ferita',
+  'albero','pianta','frutto','frutti','succo','olio','resina','spina','spine','tronco',
+  'gambo','bacca','noce','bulbo','tubero','fibra','petalo','calice','bocciolo',
+  // Botanical — descriptors
+  'verde','bianco','nero','rosso','giallo','azzurro','amaro','dolce','acre','aspro',
+  'liscio','molle','duro','sottile','grosso','lungo','corto','largo','rotondo','acuto',
+  'peloso','spinoso','ramoso','strisciante','eretto',
+  // Medical — body parts
+  'corpo','testa','occhio','occhi','mano','mani','piede','piedi','stomaco','fegato',
+  'ferita','ventre','petto','schiena','pelle','sangue','osso','ossa','nervo','vena',
+  'polmone','cuore','rene','reni','vescica','dente','denti','gola','lingua',
+  // Medical — conditions
+  'male','dolore','febbre','tosse','tumore','ulcera','veleno','peste','rogna',
+  'vertigine','paralisi','dissenteria','itterizia','flusso',
+  // Medical — treatments
+  'cura','rimedio','polvere','unguento','medicina','impiastro','decotto','infuso',
+  'sciroppo','pillola','dose','peso','misura','cucchiaio',
   // Properties
-  'caldo','freddo','umido','secco','forte','grande','piccolo','buono','amaro','dolce',
+  'virtu','caldo','freddo','umido','secco','forte','grande','piccolo','buono',
+  'natura','forma','colore','odore','sapore','qualita',
   // Verbs
   'fa','vale','guarisce','purga','cresce','nasce','trova','mette','prende','beve','cuoce',
+  'cura','lava','secca','macina','mescola','aggiunge','pesta','taglia','raccoglie',
+  // Elements / substances
+  'acqua','fuoco','terra','aria','sale','miele','vino','aceto','latte','burro',
+  'cera','pepe','zafferano','cannella',
   // Plants
   'mandragora','canapa','papavero','rosa','giglio','salvia','ortica','assenzio',
+  'menta','finocchio','prezzemolo','coriandolo','origano','timo','rosmarino',
+  'lavanda','sambuco','valeriana','consolida','cicuta','elleboro',
 ]);
 
 const DICT_BY_LANG: Record<string, Set<string>> = {
@@ -418,20 +472,62 @@ const SEED_MAPS = 4;
 // Low-stability assignments are left undefined for the hill-climber to explore.
 // ---------------------------------------------------------------------------
 
-/** Locked assignments — these glyphs converge across top maps. */
+/** Locked assignments — converging across top maps (>= 35% agreement). */
 const CONSENSUS_LOCKED: Record<string, Record<string, string>> = {
   latin: {
     e: 't', r: 'k', s: 'z', sh: 'a', ct: 'h', h: 'g', ok: 'q', qo: 'p',
-    y: 'd', l: 'v', t: 'v',
+    y: 'd', l: 'v', t: 'v', ch: 'i',  // ch→i: 7/10 top maps agree
   },
   italian: {
     e: 't', r: 'k', s: 'z', sh: 'a', ct: 'h', h: 'g', ok: 'q', qo: 'p',
-    y: 'd', l: 'v', t: 'v',
+    y: 'd', l: 'v', t: 'v', ch: 'i',
   },
 };
 
-/** Uncertain glyphs — these are the ones the hill-climber should focus on. */
-const UNCERTAIN_GLYPHS = ['d', 'a', 'i', 'n', 'o', 'k', 'ch', 'c', 'f', 'p', 'm'];
+/** Uncertain glyphs — the hill-climber focuses mutations here. */
+const UNCERTAIN_GLYPHS = ['d', 'a', 'i', 'n', 'o', 'k', 'c', 'f', 'p', 'm'];
+
+// ---------------------------------------------------------------------------
+// Crossbreeding — recombine uncertain glyphs from top-scoring maps
+// ---------------------------------------------------------------------------
+
+/**
+ * Elite pool of best maps, accumulated across rounds within one loop run.
+ * Used for crossbreeding — offspring inherit uncertain glyph assignments
+ * from two parents selected from this pool.
+ */
+const elitePool: Array<{ map: Record<string, string>; score: number; language: string }> = [];
+const ELITE_POOL_SIZE = 10;
+
+function addToElitePool(map: Record<string, string>, score: number, language: string): void {
+  elitePool.push({ map, score, language });
+  // Keep only the top N
+  elitePool.sort((a, b) => b.score - a.score);
+  if (elitePool.length > ELITE_POOL_SIZE) elitePool.length = ELITE_POOL_SIZE;
+}
+
+/**
+ * Crossbreed two parent maps — each uncertain glyph is inherited from
+ * one parent (50/50 coin flip per glyph). Locked glyphs are preserved.
+ */
+function crossbreed(
+  parentA: Record<string, string>,
+  parentB: Record<string, string>,
+  language: string,
+): Record<string, string> {
+  const locked = CONSENSUS_LOCKED[language] ?? CONSENSUS_LOCKED.latin;
+  const child = { ...parentA };
+
+  for (const glyph of UNCERTAIN_GLYPHS) {
+    if (glyph in parentB && Math.random() < 0.5) {
+      child[glyph] = parentB[glyph];
+    }
+  }
+
+  // Ensure locked assignments are preserved
+  Object.assign(child, locked);
+  return child;
+}
 
 /**
  * Build a consensus-seeded map: lock high-stability assignments,
@@ -516,17 +612,31 @@ export async function proposeTheory(
   const allEvaTexts = allFolios.map((f) => f.eva_sample).filter(Boolean);
   const evaFreqs = countEvaFrequencies(allEvaTexts);
 
-  // Step 2: Generate seed maps — consensus-seeded + frequency-perturbed variants
+  // Step 2: Generate seed maps — consensus, crossbred offspring, and perturbed variants
   const seeds: Array<{ map: Record<string, string>; decoded: string; score: number }> = [];
 
-  // Seed 0: pure consensus map (locked assignments + frequency fill)
+  // Seed 0: pure consensus map
   const consensusMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
   const consensusDecoded = applyMap(evaText, consensusMap);
   seeds.push({ map: consensusMap, decoded: consensusDecoded, score: hillClimbScore(consensusDecoded, sourceLanguage) });
 
-  // Seeds 1-3: consensus with increasing perturbation on uncertain glyphs
-  for (let s = 1; s < SEED_MAPS; s++) {
-    const perturbation = s / (SEED_MAPS - 1) * 0.5;
+  // Seeds from crossbreeding elite pool (if we have enough elites for this language)
+  const elitesForLang = elitePool.filter((e) => e.language === sourceLanguage);
+  if (elitesForLang.length >= 2) {
+    for (let s = 0; s < 2; s++) {
+      // Tournament selection: pick 2 random elites, breed the better ones
+      const idxA = Math.floor(Math.random() * elitesForLang.length);
+      let idxB = Math.floor(Math.random() * elitesForLang.length);
+      while (idxB === idxA && elitesForLang.length > 1) idxB = Math.floor(Math.random() * elitesForLang.length);
+      const child = crossbreed(elitesForLang[idxA].map, elitesForLang[idxB].map, sourceLanguage);
+      const decoded = applyMap(evaText, child);
+      seeds.push({ map: child, decoded, score: hillClimbScore(decoded, sourceLanguage) });
+    }
+  }
+
+  // Fill remaining seeds with perturbed consensus maps
+  while (seeds.length < SEED_MAPS) {
+    const perturbation = seeds.length / (SEED_MAPS - 1) * 0.5;
     const map = generateConsensusMap(evaFreqs, sourceLanguage, perturbation);
     const decoded = applyMap(evaText, map);
     seeds.push({ map, decoded, score: hillClimbScore(decoded, sourceLanguage) });
@@ -570,7 +680,10 @@ export async function proposeTheory(
     keyword = keywords[Math.floor(Math.random() * keywords.length)];
   }
 
-  console.log(`[theory-loop]   hill-climb: ${improvements} improvements in ${HILL_CLIMB_STEPS} steps, dict=${dictScore.toFixed(3)} bigram=${bigramFinal.toFixed(3)} combined=${bestHillScore.toFixed(3)}`);
+  // Add to elite pool for crossbreeding in future rounds
+  addToElitePool(bestMap, bestHillScore, sourceLanguage);
+
+  console.log(`[theory-loop]   hill-climb: ${improvements} improvements in ${HILL_CLIMB_STEPS} steps, dict=${dictScore.toFixed(3)} bigram=${bigramFinal.toFixed(3)} combined=${bestHillScore.toFixed(3)} elites=${elitePool.length}`);
 
   // Step 4: Test cross-folio consistency
   const crossFolioResults: Theory['cross_folio_results'] = [];
