@@ -1,17 +1,15 @@
 /**
- * Theory-Driven Decoding Loop
+ * Theory-Driven Decoding Loop — v3: Frequency-Constrained Generation
  *
- * Replaces the evolutionary approach with targeted hypothesis generation:
- * 1. Pick a folio with a confident plant identification
- * 2. Ask the LLM to propose a decoding theory (symbol map + decoded text)
- *    that makes the EVA text produce text about that plant
- * 3. Test the theory's symbol map against OTHER folios — does it produce
- *    plausible text for those plants too? (cross-folio consistency)
- * 4. Score by grounding (image match) + consistency (cross-folio)
- * 5. Keep theories that work across multiple folios
- *
- * This runs as a standalone Express endpoint on the orchestrator,
- * separate from the EA loop.
+ * Approach:
+ * 1. Count EVA glyph frequencies across the corpus
+ * 2. Generate candidate symbol maps by matching EVA frequencies to target
+ *    language letter frequencies, with random perturbations to explore
+ * 3. Mechanically apply each map to the EVA text
+ * 4. Use the LLM as an EVALUATOR — score whether the decoded output looks
+ *    like real language (not as a map generator)
+ * 5. Test the best map across other folios for consistency
+ * 6. Keep theories that score on both grounding and consistency
  */
 
 import { resolveToken, resolveHost } from './appkit-agent/index.mjs';
@@ -68,6 +66,131 @@ async function loadEvaCorpus(): Promise<Map<string, string>> {
 }
 
 const FALLBACK_EVA = 'daiin.chedy.qokeedy.shedy.otedy.qokain.chol.chor.shol.shory.cthy.dar.aly';
+
+// ---------------------------------------------------------------------------
+// Target language letter frequencies (by descending frequency)
+// ---------------------------------------------------------------------------
+
+const LANG_FREQ: Record<string, string[]> = {
+  latin:   ['e','i','a','u','t','s','n','r','o','l','c','m','d','p','b','q','g','v','f','h','x','y','k','z','j','w'],
+  italian: ['e','a','i','o','n','l','r','t','s','c','d','u','p','m','v','g','b','f','h','z','q','x','y','w','k','j'],
+  greek:   ['α','ι','ο','ε','ν','σ','τ','η','ρ','κ','π','μ','λ','υ','δ','θ','γ','ω','φ','χ','β','ξ','ζ','ψ'],
+};
+
+// ---------------------------------------------------------------------------
+// EVA glyph tokenizer — handles multi-char glyphs (ch, sh, th, etc.)
+// ---------------------------------------------------------------------------
+
+const EVA_MULTI_GLYPHS = ['ch', 'sh', 'th', 'ct', 'ck', 'qo', 'ok', 'ol', 'ai', 'ee', 'dy', 'ey', 'or', 'ar'];
+
+function tokenizeEva(evaText: string): string[] {
+  const text = evaText.replace(/\./g, ' ');
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === ' ') { i++; continue; }
+    let matched = false;
+    for (const glyph of EVA_MULTI_GLYPHS) {
+      if (text.substring(i, i + glyph.length) === glyph) {
+        tokens.push(glyph);
+        i += glyph.length;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) { tokens.push(text[i]); i++; }
+  }
+  return tokens;
+}
+
+/** Count glyph frequencies across all provided EVA texts, sorted descending. */
+function countEvaFrequencies(evaTexts: string[]): Array<[string, number]> {
+  const counts: Record<string, number> = {};
+  for (const text of evaTexts) {
+    for (const glyph of tokenizeEva(text)) {
+      counts[glyph] = (counts[glyph] ?? 0) + 1;
+    }
+  }
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+}
+
+// ---------------------------------------------------------------------------
+// Frequency-matched map generator
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a symbol map by aligning EVA glyph frequencies with target language
+ * letter frequencies. `perturbationRate` controls how many random swaps to
+ * apply (0 = pure frequency match, 1 = fully random).
+ */
+function generateFrequencyMap(
+  evaFreqs: Array<[string, number]>,
+  language: string,
+  perturbationRate: number = 0,
+): Record<string, string> {
+  const targetLetters = [...(LANG_FREQ[language] ?? LANG_FREQ.latin)];
+  const map: Record<string, string> = {};
+
+  // Assign by frequency rank
+  for (let i = 0; i < evaFreqs.length; i++) {
+    const evaGlyph = evaFreqs[i][0];
+    const letterIdx = Math.min(i, targetLetters.length - 1);
+    map[evaGlyph] = targetLetters[letterIdx];
+  }
+
+  // Apply random perturbations — swap N pairs
+  const glyphs = Object.keys(map);
+  const numSwaps = Math.floor(glyphs.length * perturbationRate);
+  for (let s = 0; s < numSwaps; s++) {
+    const i = Math.floor(Math.random() * glyphs.length);
+    const j = Math.floor(Math.random() * glyphs.length);
+    if (i !== j) {
+      const tmp = map[glyphs[i]];
+      map[glyphs[i]] = map[glyphs[j]];
+      map[glyphs[j]] = tmp;
+    }
+  }
+
+  return map;
+}
+
+// ---------------------------------------------------------------------------
+// LLM evaluator — scores decoded text for language plausibility
+// ---------------------------------------------------------------------------
+
+async function llmEvaluateDecoding(
+  decodedText: string,
+  language: string,
+  plantName: string,
+): Promise<{ plausibility: number; reasoning: string }> {
+  const prompt = `You are a medieval language expert evaluating whether decoded text is real ${language}.
+
+DECODED TEXT: "${decodedText}"
+EXPECTED TOPIC: A description of the plant "${plantName}"
+
+Score this text on a scale from 0.0 to 1.0:
+- 0.0 = complete gibberish, no recognizable words
+- 0.2 = a few letter sequences that could be word fragments
+- 0.4 = some recognizable words but mostly nonsense
+- 0.6 = multiple real ${language} words, some grammatical structure
+- 0.8 = mostly readable ${language}, botanical/medical context visible
+- 1.0 = fluent medieval ${language} about this plant
+
+Return ONLY a JSON object:
+{"plausibility": 0.0, "reasoning": "brief explanation"}`;
+
+  try {
+    const response = await callFMAPI(prompt);
+    const cleaned = response.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    return {
+      plausibility: typeof parsed.plausibility === 'number' ? parsed.plausibility : 0,
+      reasoning: parsed.reasoning || '',
+    };
+  } catch {
+    return { plausibility: 0, reasoning: 'evaluation failed' };
+  }
+}
 
 async function executeSql(statement: string): Promise<Array<Record<string, string>>> {
   const host = resolveHost();
@@ -168,6 +291,9 @@ export async function loadFolios(): Promise<FolioInfo[]> {
 // Theory generation
 // ---------------------------------------------------------------------------
 
+/** Number of candidate maps to generate and evaluate per theory round. */
+const CANDIDATES_PER_ROUND = 8;
+
 export async function proposeTheory(
   targetFolio: FolioInfo,
   allFolios: FolioInfo[],
@@ -175,79 +301,59 @@ export async function proposeTheory(
   cipherType: 'substitution' | 'polyalphabetic' = 'substitution',
 ): Promise<Theory> {
   const theoryId = Math.random().toString(36).slice(2, 10);
-
-  // Extract unique EVA characters from the target folio's text
   const evaText = targetFolio.eva_sample;
-  const evaChars = [...new Set(
-    evaText.replace(/\./g, ' ').split('').filter((c) => c !== ' ')
-  )];
-  // Multi-char EVA glyphs
-  const evaWords = evaText.replace(/\./g, ' ').split(/\s+/);
-  const multiCharGlyphs = ['ch', 'sh', 'th', 'ct', 'ck', 'qo', 'ok', 'ol', 'or', 'ar', 'ai', 'ee', 'dy', 'ey'];
-  const glyphsInText = multiCharGlyphs.filter((g) => evaText.includes(g));
 
-  // Step 1: Ask LLM for ONLY the symbol map — no decoded text
-  const proposePrompt = cipherType === 'polyalphabetic'
-    ? `You are a cryptanalyst proposing a Vigenere-style decoding for a Voynich Manuscript folio.
+  // Step 1: Count EVA glyph frequencies across ALL folios (not just target)
+  const allEvaTexts = allFolios.map((f) => f.eva_sample).filter(Boolean);
+  const evaFreqs = countEvaFrequencies(allEvaTexts);
 
-EVA TEXT: ${evaText}
-TARGET LANGUAGE: ${sourceLanguage}
-PLANT SHOWN: ${targetFolio.plant_name} (${targetFolio.plant_latin})
+  // Step 2: Generate N candidate maps with varying perturbation rates
+  const candidates: Array<{ map: Record<string, string>; keyword?: string; decoded: string }> = [];
 
-The EVA alphabet uses these characters/glyphs: ${[...glyphsInText, ...evaChars].join(', ')}
+  for (let c = 0; c < CANDIDATES_PER_ROUND; c++) {
+    // Perturbation ramps from 0 (pure frequency match) to 0.6 (heavily shuffled)
+    const perturbation = c / (CANDIDATES_PER_ROUND - 1) * 0.6;
+    const map = generateFrequencyMap(evaFreqs, sourceLanguage, perturbation);
+    let keyword: string | undefined;
 
-Propose a base symbol map and keyword. The map will be MECHANICALLY APPLIED to the EVA text — you do NOT write the decoded text yourself. Your map must cover the EVA characters above so the mechanical output produces ${sourceLanguage} text.
-
-Think about what ${sourceLanguage} words about ${targetFolio.plant_name} would need to appear, and work BACKWARDS from the EVA character positions to find a consistent mapping.
-
-Return ONLY a JSON object:
-{
-  "base_map": {"ch": "r", "sh": "e", "d": "m", "a": "a", "i": "n", ...},
-  "keyword": "HERBA",
-  "reasoning": "brief explanation"
-}`
-    : `You are a cryptanalyst proposing a substitution cipher for a Voynich Manuscript folio.
-
-EVA TEXT: ${evaText}
-TARGET LANGUAGE: ${sourceLanguage}
-PLANT SHOWN: ${targetFolio.plant_name} (${targetFolio.plant_latin})
-
-The EVA alphabet uses these characters/glyphs: ${[...glyphsInText, ...evaChars].join(', ')}
-
-Propose a symbol map from EVA characters to ${sourceLanguage} letters. The map will be MECHANICALLY APPLIED to the EVA text character by character — you do NOT write the decoded text yourself.
-
-IMPORTANT: Work backwards from the EVA text. Look at the EVA word "daiin" — what ${sourceLanguage} word could it be if d→?, a→?, i→?, n→?. Do this for each EVA word, trying to make the output read as a plant description.
-
-Multi-character EVA glyphs (ch, sh, th, etc.) should map to single letters.
-
-Return ONLY a JSON object:
-{
-  "symbol_map": {"ch": "r", "sh": "e", "d": "m", "a": "a", "i": "n", ...},
-  "reasoning": "brief explanation"
-}`;
-
-  const response = await callFMAPI(proposePrompt);
-
-  // Parse the symbol map — ignore any decoded_text the LLM provides
-  let symbolMap: Record<string, string> = {};
-  let keyword: string | undefined;
-  try {
-    const cleaned = response.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-    symbolMap = parsed.base_map || parsed.symbol_map || {};
     if (cipherType === 'polyalphabetic') {
-      keyword = parsed.keyword || 'HERBA';
+      // Pick a random keyword from common medieval Latin/Italian words
+      const keywords = ['HERBA', 'FLORA', 'RADIX', 'FOLIA', 'SEMEN', 'VIRTUS', 'MEDICA', 'PLANTA'];
+      keyword = keywords[Math.floor(Math.random() * keywords.length)];
     }
-  } catch {
-    // Fallback map
-    symbolMap = { d: 'h', a: 'e', i: 'r', n: 'b', ch: 'p', e: 'l', y: 'a', o: 'i', r: 's', s: 't', q: 'u', k: 'n', l: 'o', t: 'c', h: 'f' };
-    if (cipherType === 'polyalphabetic') keyword = 'HERBA';
+
+    const decoded = applyMap(evaText, map);
+    candidates.push({ map, keyword, decoded });
   }
 
-  // Step 2: MECHANICALLY decode the primary folio's EVA text
-  const primaryDecoded = applyMap(evaText, symbolMap);
+  // Step 3: Use LLM to evaluate the top candidates for language plausibility
+  // Pre-filter: skip candidates that are too short or all same character
+  const viable = candidates.filter((c) => {
+    const unique = new Set(c.decoded.replace(/\s/g, '').split(''));
+    return unique.size >= 5 && c.decoded.length >= 20;
+  });
 
-  // Step 3: Test cross-folio consistency — apply the SAME map to other folios
+  // Evaluate top candidates with LLM (limit to 4 to control cost)
+  const toEvaluate = viable.slice(0, 4);
+  const evaluations = await Promise.all(
+    toEvaluate.map(async (c) => {
+      const eval_ = await llmEvaluateDecoding(c.decoded, sourceLanguage, targetFolio.plant_name);
+      return { ...c, plausibility: eval_.plausibility, reasoning: eval_.reasoning };
+    }),
+  );
+
+  // Pick the best candidate by plausibility
+  evaluations.sort((a, b) => b.plausibility - a.plausibility);
+  const best = evaluations[0] ?? candidates[0];
+
+  const symbolMap = best.map;
+  const keyword = best.keyword;
+  const primaryDecoded = best.decoded;
+  const plausibility = 'plausibility' in best ? (best as any).plausibility : 0;
+
+  console.log(`[theory-loop]   candidates=${candidates.length} viable=${viable.length} best_plausibility=${plausibility.toFixed(3)}`);
+
+  // Step 4: Test cross-folio consistency — apply the SAME map to other folios
   const crossFolioResults: Theory['cross_folio_results'] = [];
   const testFolios = allFolios
     .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
@@ -276,7 +382,7 @@ Return ONLY a JSON object:
     });
   }
 
-  // Step 4: Score the MECHANICAL decode against expected terms
+  // Step 5: Score the MECHANICAL decode against expected terms
   const primaryTerms = [
     targetFolio.plant_name.toLowerCase(),
     targetFolio.plant_latin.toLowerCase(),
@@ -297,7 +403,7 @@ Return ONLY a JSON object:
     target_plant: targetFolio.plant_name,
     symbol_map: symbolMap,
     keyword,
-    decoded_text: primaryDecoded,  // MECHANICAL decode, not LLM fabrication
+    decoded_text: primaryDecoded,
     grounding_score: primaryGrounding,
     consistency_score: consistencyScore,
     cross_folio_results: crossFolioResults,
