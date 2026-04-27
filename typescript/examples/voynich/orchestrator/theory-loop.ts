@@ -192,6 +192,30 @@ Return ONLY a JSON object:
   }
 }
 
+// ---------------------------------------------------------------------------
+// Cheap bigram heuristic for hill-climbing between LLM evals
+// ---------------------------------------------------------------------------
+
+/** Common bigrams by language — used as a fast proxy for plausibility. */
+const COMMON_BIGRAMS: Record<string, string[]> = {
+  latin:   ['er','in','um','us','is','it','at','en','re','nt','am','es','ra','an','ti','ur','ta','tu','ae','et','ar','al','de','te','or','ri'],
+  italian: ['er','in','de','la','re','an','le','al','en','el','on','ar','to','ra','at','ne','te','co','io','di','no','ti','ta','li','un','si'],
+  greek:   ['αι','ου','ει','ον','τη','εν','ις','αν','ερ','ος','ασ','ιν','ησ','τα','ων','οι','εσ','ρο','κα','με','νο','πο','λα','αρ'],
+};
+
+function quickBigramScore(text: string, language: string): number {
+  const clean = text.toLowerCase().replace(/[^a-zα-ω]/g, '');
+  if (clean.length < 4) return 0;
+
+  const bigrams = COMMON_BIGRAMS[language] ?? COMMON_BIGRAMS.latin;
+  let hits = 0;
+  for (let i = 0; i < clean.length - 1; i++) {
+    const bg = clean.slice(i, i + 2);
+    if (bigrams.includes(bg)) hits++;
+  }
+  return hits / (clean.length - 1);
+}
+
 async function executeSql(statement: string): Promise<Array<Record<string, string>>> {
   const host = resolveHost();
   const token = await resolveToken();
@@ -291,8 +315,34 @@ export async function loadFolios(): Promise<FolioInfo[]> {
 // Theory generation
 // ---------------------------------------------------------------------------
 
-/** Number of candidate maps to generate and evaluate per theory round. */
-const CANDIDATES_PER_ROUND = 8;
+/** Hill-climbing iterations per theory round. */
+const HILL_CLIMB_STEPS = 20;
+/** Number of initial seed maps to try before hill-climbing the best. */
+const SEED_MAPS = 4;
+/** How many LLM evals to skip between checks (eval every Nth step to control cost). */
+const EVAL_EVERY = 5;
+
+/**
+ * Mutate a symbol map by swapping 1-2 random character assignments.
+ * Returns a new map (does not modify the input).
+ */
+function mutateMap(map: Record<string, string>): Record<string, string> {
+  const result = { ...map };
+  const glyphs = Object.keys(result);
+  if (glyphs.length < 2) return result;
+
+  const numSwaps = Math.random() < 0.7 ? 1 : 2;
+  for (let s = 0; s < numSwaps; s++) {
+    const i = Math.floor(Math.random() * glyphs.length);
+    const j = Math.floor(Math.random() * glyphs.length);
+    if (i !== j) {
+      const tmp = result[glyphs[i]];
+      result[glyphs[i]] = result[glyphs[j]];
+      result[glyphs[j]] = tmp;
+    }
+  }
+  return result;
+}
 
 export async function proposeTheory(
   targetFolio: FolioInfo,
@@ -303,57 +353,65 @@ export async function proposeTheory(
   const theoryId = Math.random().toString(36).slice(2, 10);
   const evaText = targetFolio.eva_sample;
 
-  // Step 1: Count EVA glyph frequencies across ALL folios (not just target)
+  // Step 1: Count EVA glyph frequencies across ALL folios
   const allEvaTexts = allFolios.map((f) => f.eva_sample).filter(Boolean);
   const evaFreqs = countEvaFrequencies(allEvaTexts);
 
-  // Step 2: Generate N candidate maps with varying perturbation rates
-  const candidates: Array<{ map: Record<string, string>; keyword?: string; decoded: string }> = [];
+  // Step 2: Generate seed maps with varying perturbation
+  const seeds: Array<{ map: Record<string, string>; decoded: string; plausibility: number }> = [];
 
-  for (let c = 0; c < CANDIDATES_PER_ROUND; c++) {
-    // Perturbation ramps from 0 (pure frequency match) to 0.6 (heavily shuffled)
-    const perturbation = c / (CANDIDATES_PER_ROUND - 1) * 0.6;
+  for (let s = 0; s < SEED_MAPS; s++) {
+    const perturbation = s / (SEED_MAPS - 1) * 0.4;
     const map = generateFrequencyMap(evaFreqs, sourceLanguage, perturbation);
-    let keyword: string | undefined;
-
-    if (cipherType === 'polyalphabetic') {
-      // Pick a random keyword from common medieval Latin/Italian words
-      const keywords = ['HERBA', 'FLORA', 'RADIX', 'FOLIA', 'SEMEN', 'VIRTUS', 'MEDICA', 'PLANTA'];
-      keyword = keywords[Math.floor(Math.random() * keywords.length)];
-    }
-
     const decoded = applyMap(evaText, map);
-    candidates.push({ map, keyword, decoded });
+    const eval_ = await llmEvaluateDecoding(decoded, sourceLanguage, targetFolio.plant_name);
+    seeds.push({ map, decoded, plausibility: eval_.plausibility });
   }
 
-  // Step 3: Use LLM to evaluate the top candidates for language plausibility
-  // Pre-filter: skip candidates that are too short or all same character
-  const viable = candidates.filter((c) => {
-    const unique = new Set(c.decoded.replace(/\s/g, '').split(''));
-    return unique.size >= 5 && c.decoded.length >= 20;
-  });
+  // Pick the best seed
+  seeds.sort((a, b) => b.plausibility - a.plausibility);
+  let bestMap = seeds[0].map;
+  let bestDecoded = seeds[0].decoded;
+  let bestScore = seeds[0].plausibility;
 
-  // Evaluate top candidates with LLM (limit to 4 to control cost)
-  const toEvaluate = viable.slice(0, 4);
-  const evaluations = await Promise.all(
-    toEvaluate.map(async (c) => {
-      const eval_ = await llmEvaluateDecoding(c.decoded, sourceLanguage, targetFolio.plant_name);
-      return { ...c, plausibility: eval_.plausibility, reasoning: eval_.reasoning };
-    }),
-  );
+  console.log(`[theory-loop]   seeds=${SEED_MAPS} best_seed=${bestScore.toFixed(3)} starting hill-climb...`);
 
-  // Pick the best candidate by plausibility
-  evaluations.sort((a, b) => b.plausibility - a.plausibility);
-  const best = evaluations[0] ?? candidates[0];
+  // Step 3: Hill-climb — mutate the best map, keep improvements
+  let improvements = 0;
+  for (let step = 0; step < HILL_CLIMB_STEPS; step++) {
+    const candidate = mutateMap(bestMap);
+    const decoded = applyMap(evaText, candidate);
 
-  const symbolMap = best.map;
-  const keyword = best.keyword;
-  const primaryDecoded = best.decoded;
-  const plausibility = 'plausibility' in best ? (best as any).plausibility : 0;
+    // Evaluate every Nth step with LLM, or on the last step
+    if (step % EVAL_EVERY === 0 || step === HILL_CLIMB_STEPS - 1) {
+      const eval_ = await llmEvaluateDecoding(decoded, sourceLanguage, targetFolio.plant_name);
+      if (eval_.plausibility > bestScore) {
+        bestMap = candidate;
+        bestDecoded = decoded;
+        bestScore = eval_.plausibility;
+        improvements++;
+      }
+    } else {
+      // Cheap heuristic between LLM evals: count recognizable bigrams
+      const bigramScore = quickBigramScore(decoded, sourceLanguage);
+      const bestBigram = quickBigramScore(bestDecoded, sourceLanguage);
+      if (bigramScore > bestBigram) {
+        bestMap = candidate;
+        bestDecoded = decoded;
+        // Don't update bestScore (LLM score) — let LLM confirm on next eval
+      }
+    }
+  }
 
-  console.log(`[theory-loop]   candidates=${candidates.length} viable=${viable.length} best_plausibility=${plausibility.toFixed(3)}`);
+  let keyword: string | undefined;
+  if (cipherType === 'polyalphabetic') {
+    const keywords = ['HERBA', 'FLORA', 'RADIX', 'FOLIA', 'SEMEN', 'VIRTUS', 'MEDICA', 'PLANTA'];
+    keyword = keywords[Math.floor(Math.random() * keywords.length)];
+  }
 
-  // Step 4: Test cross-folio consistency — apply the SAME map to other folios
+  console.log(`[theory-loop]   hill-climb: ${improvements} improvements, final_plausibility=${bestScore.toFixed(3)}`);
+
+  // Step 4: Test cross-folio consistency
   const crossFolioResults: Theory['cross_folio_results'] = [];
   const testFolios = allFolios
     .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
@@ -362,8 +420,8 @@ export async function proposeTheory(
   for (let fi = 0; fi < testFolios.length; fi++) {
     const testFolio = testFolios[fi];
     const effectiveMap = cipherType === 'polyalphabetic' && keyword
-      ? applyKeywordShift(symbolMap, keyword, fi)
-      : symbolMap;
+      ? applyKeywordShift(bestMap, keyword, fi)
+      : bestMap;
     const decoded = applyMap(testFolio.eva_sample, effectiveMap);
 
     const expectedTerms = [
@@ -388,7 +446,7 @@ export async function proposeTheory(
     targetFolio.plant_latin.toLowerCase(),
     ...targetFolio.botanical_features.map((f) => f.toLowerCase()),
   ].filter(Boolean);
-  const primaryGrounding = scoreOverlap(primaryDecoded, primaryTerms);
+  const primaryGrounding = scoreOverlap(bestDecoded, primaryTerms);
 
   const consistencyScore = crossFolioResults.length > 0
     ? crossFolioResults.reduce((sum, r) => sum + r.grounding_score, 0) / crossFolioResults.length
@@ -401,9 +459,9 @@ export async function proposeTheory(
     cipher_type: cipherType,
     target_folio: targetFolio.folio_id,
     target_plant: targetFolio.plant_name,
-    symbol_map: symbolMap,
+    symbol_map: bestMap,
     keyword,
-    decoded_text: primaryDecoded,
+    decoded_text: bestDecoded,
     grounding_score: primaryGrounding,
     consistency_score: consistencyScore,
     cross_folio_results: crossFolioResults,
