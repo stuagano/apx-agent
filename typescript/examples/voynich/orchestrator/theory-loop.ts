@@ -408,20 +408,89 @@ export async function loadFolios(): Promise<FolioInfo[]> {
 // ---------------------------------------------------------------------------
 
 /** Hill-climbing iterations per theory round (cheap — no LLM calls during climb). */
-const HILL_CLIMB_STEPS = 500;
+const HILL_CLIMB_STEPS = 1000;
 /** Number of initial seed maps to try before hill-climbing the best. */
 const SEED_MAPS = 4;
 
+// ---------------------------------------------------------------------------
+// Consensus map — derived from analysis of top-scoring theories.
+// High-stability assignments (>= 35% agreement across top 20 maps) are locked.
+// Low-stability assignments are left undefined for the hill-climber to explore.
+// ---------------------------------------------------------------------------
+
+/** Locked assignments — these glyphs converge across top maps. */
+const CONSENSUS_LOCKED: Record<string, Record<string, string>> = {
+  latin: {
+    e: 't', r: 'k', s: 'z', sh: 'a', ct: 'h', h: 'g', ok: 'q', qo: 'p',
+    y: 'd', l: 'v', t: 'v',
+  },
+  italian: {
+    e: 't', r: 'k', s: 'z', sh: 'a', ct: 'h', h: 'g', ok: 'q', qo: 'p',
+    y: 'd', l: 'v', t: 'v',
+  },
+};
+
+/** Uncertain glyphs — these are the ones the hill-climber should focus on. */
+const UNCERTAIN_GLYPHS = ['d', 'a', 'i', 'n', 'o', 'k', 'ch', 'c', 'f', 'p', 'm'];
+
 /**
- * Mutate a symbol map by swapping 1-2 random character assignments.
- * Returns a new map (does not modify the input).
+ * Build a consensus-seeded map: lock high-stability assignments,
+ * fill uncertain glyphs from frequency matching with perturbation.
  */
-function mutateMap(map: Record<string, string>): Record<string, string> {
+function generateConsensusMap(
+  evaFreqs: Array<[string, number]>,
+  language: string,
+  perturbationRate: number = 0,
+): Record<string, string> {
+  const locked = CONSENSUS_LOCKED[language] ?? CONSENSUS_LOCKED.latin;
+  const freqMap = generateFrequencyMap(evaFreqs, language, perturbationRate);
+
+  // Start with frequency map, then overwrite with locked consensus
+  const map = { ...freqMap, ...locked };
+  return map;
+}
+
+/**
+ * Mutate a symbol map — but only swap UNCERTAIN glyphs.
+ * Locked consensus assignments are preserved.
+ */
+function mutateMapFocused(
+  map: Record<string, string>,
+  language: string,
+): Record<string, string> {
+  const result = { ...map };
+  const locked = CONSENSUS_LOCKED[language] ?? CONSENSUS_LOCKED.latin;
+  const lockedGlyphs = new Set(Object.keys(locked));
+
+  // Only mutate unlocked glyphs
+  const mutableGlyphs = Object.keys(result).filter((g) => !lockedGlyphs.has(g));
+  if (mutableGlyphs.length < 2) return result;
+
+  const numSwaps = Math.random() < 0.7 ? 1 : 2;
+  for (let s = 0; s < numSwaps; s++) {
+    const i = Math.floor(Math.random() * mutableGlyphs.length);
+    const j = Math.floor(Math.random() * mutableGlyphs.length);
+    if (i !== j) {
+      const gi = mutableGlyphs[i];
+      const gj = mutableGlyphs[j];
+      const tmp = result[gi];
+      result[gi] = result[gj];
+      result[gj] = tmp;
+    }
+  }
+  return result;
+}
+
+/**
+ * Unfocused mutation — swaps any glyphs, including locked ones.
+ * Used for a fraction of mutations to escape local optima.
+ */
+function mutateMapWild(map: Record<string, string>): Record<string, string> {
   const result = { ...map };
   const glyphs = Object.keys(result);
   if (glyphs.length < 2) return result;
 
-  const numSwaps = Math.random() < 0.7 ? 1 : 2;
+  const numSwaps = Math.random() < 0.5 ? 1 : 2;
   for (let s = 0; s < numSwaps; s++) {
     const i = Math.floor(Math.random() * glyphs.length);
     const j = Math.floor(Math.random() * glyphs.length);
@@ -447,18 +516,22 @@ export async function proposeTheory(
   const allEvaTexts = allFolios.map((f) => f.eva_sample).filter(Boolean);
   const evaFreqs = countEvaFrequencies(allEvaTexts);
 
-  // Step 2: Generate seed maps with varying perturbation, score with dictionary+bigram
+  // Step 2: Generate seed maps — consensus-seeded + frequency-perturbed variants
   const seeds: Array<{ map: Record<string, string>; decoded: string; score: number }> = [];
 
-  for (let s = 0; s < SEED_MAPS; s++) {
-    const perturbation = s / (SEED_MAPS - 1) * 0.4;
-    const map = generateFrequencyMap(evaFreqs, sourceLanguage, perturbation);
+  // Seed 0: pure consensus map (locked assignments + frequency fill)
+  const consensusMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
+  const consensusDecoded = applyMap(evaText, consensusMap);
+  seeds.push({ map: consensusMap, decoded: consensusDecoded, score: hillClimbScore(consensusDecoded, sourceLanguage) });
+
+  // Seeds 1-3: consensus with increasing perturbation on uncertain glyphs
+  for (let s = 1; s < SEED_MAPS; s++) {
+    const perturbation = s / (SEED_MAPS - 1) * 0.5;
+    const map = generateConsensusMap(evaFreqs, sourceLanguage, perturbation);
     const decoded = applyMap(evaText, map);
-    const score = hillClimbScore(decoded, sourceLanguage);
-    seeds.push({ map, decoded, score });
+    seeds.push({ map, decoded, score: hillClimbScore(decoded, sourceLanguage) });
   }
 
-  // Pick the best seed
   seeds.sort((a, b) => b.score - a.score);
   let bestMap = seeds[0].map;
   let bestDecoded = seeds[0].decoded;
@@ -466,14 +539,16 @@ export async function proposeTheory(
 
   console.log(`[theory-loop]   seeds=${SEED_MAPS} best_seed=${bestScore.toFixed(3)} dict=${dictionaryScore(bestDecoded, sourceLanguage).toFixed(3)} starting hill-climb...`);
 
-  // Step 3: Hill-climb using dictionary + bigram score as the gradient.
-  // Dictionary hits are the strong signal; bigrams provide continuity.
-  // No LLM calls during the climb — pure algorithmic search.
+  // Step 3: Hill-climb — mostly focused mutations (uncertain glyphs only),
+  // with 10% wild mutations to escape local optima.
   let bestHillScore = hillClimbScore(bestDecoded, sourceLanguage);
   let improvements = 0;
 
   for (let step = 0; step < HILL_CLIMB_STEPS; step++) {
-    const candidate = mutateMap(bestMap);
+    // 90% focused (only uncertain glyphs), 10% wild (any glyph)
+    const candidate = Math.random() < 0.9
+      ? mutateMapFocused(bestMap, sourceLanguage)
+      : mutateMapWild(bestMap);
     const decoded = applyMap(evaText, candidate);
     const score = hillClimbScore(decoded, sourceLanguage);
 
