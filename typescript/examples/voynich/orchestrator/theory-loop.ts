@@ -462,9 +462,9 @@ export async function loadFolios(): Promise<FolioInfo[]> {
 // ---------------------------------------------------------------------------
 
 /** Hill-climbing iterations per theory round (cheap — no LLM calls during climb). */
-const HILL_CLIMB_STEPS = 1000;
+const HILL_CLIMB_STEPS = 2000;
 /** Number of initial seed maps to try before hill-climbing the best. */
-const SEED_MAPS = 4;
+const SEED_MAPS = 6;
 
 // ---------------------------------------------------------------------------
 // Consensus map — derived from analysis of top-scoring theories.
@@ -497,7 +497,7 @@ const UNCERTAIN_GLYPHS = ['d', 'a', 'i', 'n', 'o', 'k', 'c', 'f', 'p', 'm'];
  * from two parents selected from this pool.
  */
 const elitePool: Array<{ map: Record<string, string>; score: number; language: string }> = [];
-const ELITE_POOL_SIZE = 10;
+const ELITE_POOL_SIZE = 20;
 let elitePoolLoaded = false;
 
 /** Load elite pool from the best theories persisted in Delta. */
@@ -512,7 +512,7 @@ async function loadElitePool(): Promise<void> {
       WHERE source_language IN ('latin', 'italian')
         AND grounding_score + consistency_score > 0.2
       ORDER BY grounding_score + consistency_score DESC
-      LIMIT ${ELITE_POOL_SIZE}
+      LIMIT 20
     `);
     for (const row of rows) {
       try {
@@ -721,7 +721,7 @@ export async function proposeTheory(
   const crossFolioResults: Theory['cross_folio_results'] = [];
   const testFolios = allFolios
     .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
-    .slice(0, 5);
+    .slice(0, 10);
 
   for (let fi = 0; fi < testFolios.length; fi++) {
     const testFolio = testFolios[fi];
@@ -904,21 +904,23 @@ function broadGrounding(text: string, language: string, plantTerms: string[]): n
 // Main loop
 // ---------------------------------------------------------------------------
 
-export async function runTheoryLoop(maxRounds: number = 20): Promise<Theory[]> {
+export async function runTheoryLoop(maxRounds: number = 200): Promise<Theory[]> {
   const folios = await loadFolios();
   const highConfidence = folios.filter((f) => f.confidence >= 0.5);
-  const languages = ['latin', 'italian', 'greek'];
+  // Focus on Latin (strongest signal) and Italian (runner-up). Greek has no dictionary.
+  const languages = ['latin', 'latin', 'latin', 'italian', 'italian'];
 
-  console.log(`[theory-loop] Starting with ${highConfidence.length} high-confidence folios`);
+  console.log(`[theory-loop] Starting with ${highConfidence.length} high-confidence folios, ${maxRounds} rounds`);
 
   const theories: Theory[] = [];
 
   for (let round = 0; round < maxRounds; round++) {
-    // Pick a random folio and language
+    // Pick a random folio and language (weighted toward Latin)
     const folio = highConfidence[Math.floor(Math.random() * highConfidence.length)];
     const lang = languages[Math.floor(Math.random() * languages.length)];
 
-    const cipherType = round % 3 === 2 ? 'polyalphabetic' : 'substitution';
+    // Mostly substitution — it's outperforming polyalphabetic
+    const cipherType = round % 5 === 4 ? 'polyalphabetic' : 'substitution';
 
     console.log(`[theory-loop] Round ${round}: ${folio.folio_id} (${folio.plant_name}) in ${lang} [${cipherType}]`);
 
