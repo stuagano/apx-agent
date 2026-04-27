@@ -516,7 +516,7 @@ export async function proposeTheory(
       ...testFolio.botanical_features.map((f) => f.toLowerCase()),
     ].filter(Boolean);
 
-    const matchScore = scoreOverlap(decoded, expectedTerms);
+    const matchScore = broadGrounding(decoded, sourceLanguage, expectedTerms);
 
     crossFolioResults.push({
       folio_id: testFolio.folio_id,
@@ -526,13 +526,13 @@ export async function proposeTheory(
     });
   }
 
-  // Step 5: Score the MECHANICAL decode against expected terms
+  // Step 5: Broad grounding — plant terms + dictionary + bigrams
   const primaryTerms = [
     targetFolio.plant_name.toLowerCase(),
     targetFolio.plant_latin.toLowerCase(),
     ...targetFolio.botanical_features.map((f) => f.toLowerCase()),
   ].filter(Boolean);
-  const primaryGrounding = scoreOverlap(bestDecoded, primaryTerms);
+  const primaryGrounding = broadGrounding(bestDecoded, sourceLanguage, primaryTerms);
 
   const consistencyScore = crossFolioResults.length > 0
     ? crossFolioResults.reduce((sum, r) => sum + r.grounding_score, 0) / crossFolioResults.length
@@ -638,7 +638,11 @@ function applyMap(evaText: string, symbolMap: Record<string, string>): string {
   return result;
 }
 
-function scoreOverlap(text: string, terms: string[]): number {
+/**
+ * Score how well decoded text matches expected plant terms.
+ * Returns 0-1 based on exact matches, substring matches, and prefix matches.
+ */
+function scoreTermOverlap(text: string, terms: string[]): number {
   if (terms.length === 0) return 0;
   const decoded = text.toLowerCase().replace(/[^a-z\s]/g, ' ');
   const tokens = decoded.split(/\s+/).filter((t) => t.length > 2);
@@ -651,7 +655,29 @@ function scoreOverlap(text: string, terms: string[]): number {
     if (decoded.includes(tl)) { score += 0.7; continue; }
     if (tl.length >= 4 && tokens.some((t) => t.startsWith(tl.slice(0, 5)))) { score += 0.4; continue; }
   }
-  return Math.min(1.0, score / Math.max(tokens.length, 1));
+  return Math.min(1.0, score / Math.max(terms.length, 1));
+}
+
+/**
+ * Broad grounding score — combines three signals:
+ *
+ *   1. Plant-term overlap (30%) — does decoded text contain the expected
+ *      plant name, Latin binomial, or botanical features?
+ *   2. Dictionary coverage (40%) — what fraction of decoded words are real
+ *      words in the target language? (strongest signal for language quality)
+ *   3. Bigram plausibility (30%) — does the decoded text have character-pair
+ *      statistics consistent with the target language?
+ *
+ * This replaces the old scoreOverlap which ONLY checked plant terms —
+ * meaning maps that produced real language but not the exact plant name
+ * scored zero. Now any real-language output gets partial credit.
+ */
+function broadGrounding(text: string, language: string, plantTerms: string[]): number {
+  const termScore = scoreTermOverlap(text, plantTerms);
+  const dictScore_ = dictionaryScore(text, language);
+  const bigramScore = quickBigramScore(text, language);
+
+  return termScore * 0.3 + dictScore_ * 0.4 + bigramScore * 0.3;
 }
 
 // ---------------------------------------------------------------------------
