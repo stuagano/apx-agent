@@ -193,14 +193,66 @@ Return ONLY a JSON object:
 }
 
 // ---------------------------------------------------------------------------
-// Cheap bigram heuristic for hill-climbing between LLM evals
+// Dictionary + bigram scoring for hill-climbing
 // ---------------------------------------------------------------------------
 
-/** Common bigrams by language — used as a fast proxy for plausibility. */
+/** Common bigrams by language. */
 const COMMON_BIGRAMS: Record<string, string[]> = {
   latin:   ['er','in','um','us','is','it','at','en','re','nt','am','es','ra','an','ti','ur','ta','tu','ae','et','ar','al','de','te','or','ri'],
   italian: ['er','in','de','la','re','an','le','al','en','el','on','ar','to','ra','at','ne','te','co','io','di','no','ti','ta','li','un','si'],
   greek:   ['αι','ου','ει','ον','τη','εν','ις','αν','ερ','ος','ασ','ιν','ησ','τα','ων','οι','εσ','ρο','κα','με','νο','πο','λα','αρ'],
+};
+
+/**
+ * Medieval Latin word list — common words in herbal/medical manuscripts.
+ * Includes botanical terms, body parts, ailments, and high-frequency function words.
+ */
+const LATIN_DICT = new Set([
+  // Function words
+  'et','in','de','ad','cum','per','est','non','ex','ut','ab','hoc','quod','qui','que','sed',
+  'aut','vel','si','eius','habet','sunt','fuit','esse','item','vero','nam','enim','ita','sic',
+  // Botanical
+  'herba','radix','folia','folium','flos','flores','semen','cortex','ramus','rami','arbor',
+  'planta','fructus','succus','oleum','aqua','terra','humus','viridis','alba','nigra','rubra',
+  // Medical / pharmaceutical
+  'virtus','vires','calida','frigida','humida','sicca','cura','morbus','dolor','febris',
+  'venenum','remedium','potio','emplastrum','pulvis','unguentum','medicina','sanguis',
+  'corpus','caput','oculus','manus','pes','stomachus','hepar','vulnus','apostema',
+  // Properties
+  'calor','humor','natura','forma','species','genus','color','odor','sapor',
+  // Verbs / descriptors
+  'facit','valet','sanat','tollit','purgat','mundificat','confortat','iuvat','crescit',
+  'habet','datur','bibitur','coquitur','ponitur','colligitur','nascitur','invenitur',
+  // Plant names that might appear
+  'mandragora','cannabis','papaver','rosa','lilium','salvia','urtica','absinthium',
+  'artemisia','centaurea','plantago','verbena','malva','betonica','ruta','melissa',
+  'eryngium','campanula','hedera','carduus','cirsium','ranunculus','aconitum',
+]);
+
+/**
+ * Medieval Italian word list — common words in herbals and recipe books.
+ */
+const ITALIAN_DICT = new Set([
+  // Function words
+  'e','il','la','le','lo','di','da','in','con','per','che','non','si','del','dei','della',
+  'delle','una','uno','ha','sono','sua','suo','questo','quella','come','molto','bene','ogni',
+  // Botanical
+  'erba','radice','foglia','foglie','fiore','fiori','seme','semi','corteccia','ramo','rami',
+  'albero','pianta','frutto','succo','olio','acqua','terra','verde','bianco','nero','rosso',
+  // Medical
+  'virtu','cura','male','dolore','febbre','veleno','rimedio','polvere','unguento','medicina',
+  'sangue','corpo','testa','occhio','mano','piede','stomaco','fegato','ferita',
+  // Properties
+  'caldo','freddo','umido','secco','forte','grande','piccolo','buono','amaro','dolce',
+  // Verbs
+  'fa','vale','guarisce','purga','cresce','nasce','trova','mette','prende','beve','cuoce',
+  // Plants
+  'mandragora','canapa','papavero','rosa','giglio','salvia','ortica','assenzio',
+]);
+
+const DICT_BY_LANG: Record<string, Set<string>> = {
+  latin: LATIN_DICT,
+  italian: ITALIAN_DICT,
 };
 
 function quickBigramScore(text: string, language: string): number {
@@ -214,6 +266,46 @@ function quickBigramScore(text: string, language: string): number {
     if (bigrams.includes(bg)) hits++;
   }
   return hits / (clean.length - 1);
+}
+
+/**
+ * Dictionary score — fraction of decoded words that appear in the word list.
+ * Much stronger signal than bigrams: rewards actual word formation.
+ */
+function dictionaryScore(text: string, language: string): number {
+  const dict = DICT_BY_LANG[language];
+  if (!dict) return 0;
+
+  const words = text.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter((w) => w.length >= 2);
+  if (words.length === 0) return 0;
+
+  let hits = 0;
+  for (const word of words) {
+    if (dict.has(word)) {
+      hits++;
+    } else {
+      // Partial credit: check if any dict word is a prefix/suffix of the decoded word
+      // This catches inflected forms (e.g. "herbam" matches "herba")
+      for (const entry of dict) {
+        if (entry.length >= 4 && (word.startsWith(entry) || word.endsWith(entry.slice(-4)))) {
+          hits += 0.3;
+          break;
+        }
+      }
+    }
+  }
+  return hits / words.length;
+}
+
+/**
+ * Combined hill-climbing score: dictionary match (strong signal) + bigram
+ * similarity (weak but continuous signal). Dictionary is weighted 3x because
+ * a single word match is worth far more than bigram statistics.
+ */
+function hillClimbScore(text: string, language: string): number {
+  const dict = dictionaryScore(text, language);
+  const bigram = quickBigramScore(text, language);
+  return dict * 0.75 + bigram * 0.25;
 }
 
 async function executeSql(statement: string): Promise<Array<Record<string, string>>> {
@@ -316,7 +408,7 @@ export async function loadFolios(): Promise<FolioInfo[]> {
 // ---------------------------------------------------------------------------
 
 /** Hill-climbing iterations per theory round (cheap — no LLM calls during climb). */
-const HILL_CLIMB_STEPS = 200;
+const HILL_CLIMB_STEPS = 500;
 /** Number of initial seed maps to try before hill-climbing the best. */
 const SEED_MAPS = 4;
 
@@ -355,46 +447,47 @@ export async function proposeTheory(
   const allEvaTexts = allFolios.map((f) => f.eva_sample).filter(Boolean);
   const evaFreqs = countEvaFrequencies(allEvaTexts);
 
-  // Step 2: Generate seed maps with varying perturbation
-  const seeds: Array<{ map: Record<string, string>; decoded: string; plausibility: number }> = [];
+  // Step 2: Generate seed maps with varying perturbation, score with dictionary+bigram
+  const seeds: Array<{ map: Record<string, string>; decoded: string; score: number }> = [];
 
   for (let s = 0; s < SEED_MAPS; s++) {
     const perturbation = s / (SEED_MAPS - 1) * 0.4;
     const map = generateFrequencyMap(evaFreqs, sourceLanguage, perturbation);
     const decoded = applyMap(evaText, map);
-    const eval_ = await llmEvaluateDecoding(decoded, sourceLanguage, targetFolio.plant_name);
-    seeds.push({ map, decoded, plausibility: eval_.plausibility });
+    const score = hillClimbScore(decoded, sourceLanguage);
+    seeds.push({ map, decoded, score });
   }
 
   // Pick the best seed
-  seeds.sort((a, b) => b.plausibility - a.plausibility);
+  seeds.sort((a, b) => b.score - a.score);
   let bestMap = seeds[0].map;
   let bestDecoded = seeds[0].decoded;
-  let bestScore = seeds[0].plausibility;
+  let bestScore = seeds[0].score;
 
-  console.log(`[theory-loop]   seeds=${SEED_MAPS} best_seed=${bestScore.toFixed(3)} starting hill-climb...`);
+  console.log(`[theory-loop]   seeds=${SEED_MAPS} best_seed=${bestScore.toFixed(3)} dict=${dictionaryScore(bestDecoded, sourceLanguage).toFixed(3)} starting hill-climb...`);
 
-  // Step 3: Hill-climb using bigram score as the gradient (continuous signal).
-  // LLM evaluates only at the end to confirm the final result.
-  let bestBigram = quickBigramScore(bestDecoded, sourceLanguage);
+  // Step 3: Hill-climb using dictionary + bigram score as the gradient.
+  // Dictionary hits are the strong signal; bigrams provide continuity.
+  // No LLM calls during the climb — pure algorithmic search.
+  let bestHillScore = hillClimbScore(bestDecoded, sourceLanguage);
   let improvements = 0;
 
   for (let step = 0; step < HILL_CLIMB_STEPS; step++) {
     const candidate = mutateMap(bestMap);
     const decoded = applyMap(evaText, candidate);
-    const bigramScore = quickBigramScore(decoded, sourceLanguage);
+    const score = hillClimbScore(decoded, sourceLanguage);
 
-    if (bigramScore > bestBigram) {
+    if (score > bestHillScore) {
       bestMap = candidate;
       bestDecoded = decoded;
-      bestBigram = bigramScore;
+      bestHillScore = score;
       improvements++;
     }
   }
 
-  // Final LLM evaluation on the hill-climbed result
-  const finalEval = await llmEvaluateDecoding(bestDecoded, sourceLanguage, targetFolio.plant_name);
-  bestScore = finalEval.plausibility;
+  const dictScore = dictionaryScore(bestDecoded, sourceLanguage);
+  const bigramFinal = quickBigramScore(bestDecoded, sourceLanguage);
+  bestScore = bestHillScore;
 
   let keyword: string | undefined;
   if (cipherType === 'polyalphabetic') {
@@ -402,7 +495,7 @@ export async function proposeTheory(
     keyword = keywords[Math.floor(Math.random() * keywords.length)];
   }
 
-  console.log(`[theory-loop]   hill-climb: ${improvements} improvements in ${HILL_CLIMB_STEPS} steps, bigram=${bestBigram.toFixed(3)} plausibility=${bestScore.toFixed(3)}`);
+  console.log(`[theory-loop]   hill-climb: ${improvements} improvements in ${HILL_CLIMB_STEPS} steps, dict=${dictScore.toFixed(3)} bigram=${bigramFinal.toFixed(3)} combined=${bestHillScore.toFixed(3)}`);
 
   // Step 4: Test cross-folio consistency
   const crossFolioResults: Theory['cross_folio_results'] = [];
