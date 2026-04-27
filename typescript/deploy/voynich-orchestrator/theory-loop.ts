@@ -53,11 +53,21 @@ export interface Theory {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const HERBAL_EVA_SAMPLES: Record<string, string> = {
-  // Representative EVA word sequences per folio section
-  // (In a full implementation, these would come from the corpus table)
-  default: 'daiin.chedy.qokeedy.shedy.otedy.qokain.chol.chor.shol.shory.cthy.dar.aly',
-};
+// Per-folio EVA text cache — loaded from Delta on first use
+let evaCorpusCache: Map<string, string> | null = null;
+
+async function loadEvaCorpus(): Promise<Map<string, string>> {
+  if (evaCorpusCache) return evaCorpusCache;
+  const rows = await executeSql(`
+    SELECT folio_id, eva_text
+    FROM serverless_stable_qh44kx_catalog.voynich.eva_corpus
+    WHERE section = 'herbal'
+  `);
+  evaCorpusCache = new Map(rows.map((r) => [r.folio_id, r.eva_text]));
+  return evaCorpusCache;
+}
+
+const FALLBACK_EVA = 'daiin.chedy.qokeedy.shedy.otedy.qokain.chol.chor.shol.shory.cthy.dar.aly';
 
 async function executeSql(statement: string): Promise<Array<Record<string, string>>> {
   const host = resolveHost();
@@ -127,12 +137,15 @@ let folioCache: FolioInfo[] | null = null;
 export async function loadFolios(): Promise<FolioInfo[]> {
   if (folioCache) return folioCache;
 
-  const rows = await executeSql(`
-    SELECT folio_id, subject_candidates, botanical_features
-    FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis
-    WHERE section = 'herbal'
-    ORDER BY folio_id
-  `);
+  const [rows, evaCorpus] = await Promise.all([
+    executeSql(`
+      SELECT folio_id, subject_candidates, botanical_features
+      FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis
+      WHERE section = 'herbal'
+      ORDER BY folio_id
+    `),
+    loadEvaCorpus(),
+  ]);
 
   folioCache = rows.map((r) => {
     const candidates = JSON.parse(r.subject_candidates || '[]');
@@ -143,10 +156,11 @@ export async function loadFolios(): Promise<FolioInfo[]> {
       plant_latin: top.latin || '',
       confidence: top.confidence || 0,
       botanical_features: JSON.parse(r.botanical_features || '[]'),
-      eva_sample: HERBAL_EVA_SAMPLES.default,
+      eva_sample: evaCorpus.get(r.folio_id) || FALLBACK_EVA,
     };
   });
 
+  console.log(`[theory-loop] Loaded ${folioCache.length} folios, ${evaCorpus.size} with distinct EVA text`);
   return folioCache;
 }
 
@@ -162,103 +176,90 @@ export async function proposeTheory(
 ): Promise<Theory> {
   const theoryId = Math.random().toString(36).slice(2, 10);
 
-  // Step 1: Ask LLM to propose a decoding for this specific folio
+  // Extract unique EVA characters from the target folio's text
+  const evaText = targetFolio.eva_sample;
+  const evaChars = [...new Set(
+    evaText.replace(/\./g, ' ').split('').filter((c) => c !== ' ')
+  )];
+  // Multi-char EVA glyphs
+  const evaWords = evaText.replace(/\./g, ' ').split(/\s+/);
+  const multiCharGlyphs = ['ch', 'sh', 'th', 'ct', 'ck', 'qo', 'ok', 'ol', 'or', 'ar', 'ai', 'ee', 'dy', 'ey'];
+  const glyphsInText = multiCharGlyphs.filter((g) => evaText.includes(g));
+
+  // Step 1: Ask LLM for ONLY the symbol map — no decoded text
   const proposePrompt = cipherType === 'polyalphabetic'
-    ? `You are a medieval manuscript cryptanalyst working on the Voynich Manuscript.
+    ? `You are a cryptanalyst proposing a Vigenere-style decoding for a Voynich Manuscript folio.
 
-TASK: Propose a POLYALPHABETIC (Vigenere-style) decoding theory for folio ${targetFolio.folio_id}.
+EVA TEXT: ${evaText}
+TARGET LANGUAGE: ${sourceLanguage}
+PLANT SHOWN: ${targetFolio.plant_name} (${targetFolio.plant_latin})
 
-WHAT THE IMAGE SHOWS: ${targetFolio.plant_name} (${targetFolio.plant_latin})
-Visual features: ${targetFolio.botanical_features.join(', ')}
+The EVA alphabet uses these characters/glyphs: ${[...glyphsInText, ...evaChars].join(', ')}
 
-EVA TEXT ON THIS FOLIO: ${targetFolio.eva_sample}
+Propose a base symbol map and keyword. The map will be MECHANICALLY APPLIED to the EVA text — you do NOT write the decoded text yourself. Your map must cover the EVA characters above so the mechanical output produces ${sourceLanguage} text.
 
-CANDIDATE LANGUAGE: ${sourceLanguage}
+Think about what ${sourceLanguage} words about ${targetFolio.plant_name} would need to appear, and work BACKWARDS from the EVA character positions to find a consistent mapping.
 
-Propose a keyword-based Vigenere-style system where:
-- A base symbol map maps EVA characters to ${sourceLanguage} letters
-- A keyword shifts certain mappings per folio (e.g., keyword "HERBA" means folio 1 shifts by H=7, folio 2 by E=4, etc., cycling through the keyword letters)
-
-Return a JSON object with:
+Return ONLY a JSON object:
 {
-  "base_map": {"d": "m", "a": "a", "i": "n", ...},
+  "base_map": {"ch": "r", "sh": "e", "d": "m", "a": "a", "i": "n", ...},
   "keyword": "HERBA",
-  "decoded_text": "the resulting decoded passage for this folio"
-}
+  "reasoning": "brief explanation"
+}`
+    : `You are a cryptanalyst proposing a substitution cipher for a Voynich Manuscript folio.
 
-The decoded text should read as a plausible medieval ${sourceLanguage} description of ${targetFolio.plant_name}, mentioning its properties, uses, or appearance.
+EVA TEXT: ${evaText}
+TARGET LANGUAGE: ${sourceLanguage}
+PLANT SHOWN: ${targetFolio.plant_name} (${targetFolio.plant_latin})
 
-Return ONLY the JSON object.`
-    : `You are a medieval manuscript cryptanalyst working on the Voynich Manuscript.
+The EVA alphabet uses these characters/glyphs: ${[...glyphsInText, ...evaChars].join(', ')}
 
-TASK: Propose a decoding theory for folio ${targetFolio.folio_id}.
+Propose a symbol map from EVA characters to ${sourceLanguage} letters. The map will be MECHANICALLY APPLIED to the EVA text character by character — you do NOT write the decoded text yourself.
 
-WHAT THE IMAGE SHOWS: ${targetFolio.plant_name} (${targetFolio.plant_latin})
-Visual features: ${targetFolio.botanical_features.join(', ')}
+IMPORTANT: Work backwards from the EVA text. Look at the EVA word "daiin" — what ${sourceLanguage} word could it be if d→?, a→?, i→?, n→?. Do this for each EVA word, trying to make the output read as a plant description.
 
-EVA TEXT ON THIS FOLIO: ${targetFolio.eva_sample}
+Multi-character EVA glyphs (ch, sh, th, etc.) should map to single letters.
 
-CANDIDATE LANGUAGE: ${sourceLanguage}
-
-Propose a symbol-by-symbol mapping from EVA characters to ${sourceLanguage} letters that would make the EVA text produce a passage about ${targetFolio.plant_name}.
-
-Return a JSON object with:
+Return ONLY a JSON object:
 {
-  "symbol_map": {"d": "m", "a": "a", "i": "n", ...},
-  "decoded_text": "the resulting decoded passage",
-  "reasoning": "why these mappings make sense"
-}
-
-The decoded text should read as a plausible medieval ${sourceLanguage} description of ${targetFolio.plant_name}, mentioning its properties, uses, or appearance.
-
-Return ONLY the JSON object.`;
+  "symbol_map": {"ch": "r", "sh": "e", "d": "m", "a": "a", "i": "n", ...},
+  "reasoning": "brief explanation"
+}`;
 
   const response = await callFMAPI(proposePrompt);
 
-  // Parse the theory
-  let theory: { symbol_map: Record<string, string>; decoded_text: string; keyword?: string; reasoning?: string };
+  // Parse the symbol map — ignore any decoded_text the LLM provides
+  let symbolMap: Record<string, string> = {};
+  let keyword: string | undefined;
   try {
     const cleaned = response.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
     const parsed = JSON.parse(cleaned);
+    symbolMap = parsed.base_map || parsed.symbol_map || {};
     if (cipherType === 'polyalphabetic') {
-      // Polyalphabetic responses use base_map instead of symbol_map
-      theory = {
-        symbol_map: parsed.base_map || parsed.symbol_map || {},
-        keyword: parsed.keyword || 'HERBA',
-        decoded_text: parsed.decoded_text || '',
-      };
-    } else {
-      theory = parsed;
+      keyword = parsed.keyword || 'HERBA';
     }
   } catch {
-    // Fallback: generate a simple theory
-    theory = {
-      symbol_map: { d: 'm', a: 'a', i: 'n', n: 'd', ch: 'r', e: 'a', y: 'g', o: 'o', r: 'r', s: 'a' },
-      decoded_text: `${targetFolio.plant_latin || targetFolio.plant_name} herba medicinalis radix`,
-    };
-    if (cipherType === 'polyalphabetic') {
-      theory.keyword = 'HERBA';
-    }
+    // Fallback map
+    symbolMap = { d: 'h', a: 'e', i: 'r', n: 'b', ch: 'p', e: 'l', y: 'a', o: 'i', r: 's', s: 't', q: 'u', k: 'n', l: 'o', t: 'c', h: 'f' };
+    if (cipherType === 'polyalphabetic') keyword = 'HERBA';
   }
 
-  // Step 2: Test cross-folio consistency
-  // Apply the SAME symbol map to other folios and check if it produces
-  // text that matches THEIR identified plants
+  // Step 2: MECHANICALLY decode the primary folio's EVA text
+  const primaryDecoded = applyMap(evaText, symbolMap);
+
+  // Step 3: Test cross-folio consistency — apply the SAME map to other folios
   const crossFolioResults: Theory['cross_folio_results'] = [];
   const testFolios = allFolios
     .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
-    .slice(0, 5); // test against 5 other high-confidence folios
+    .slice(0, 5);
 
   for (let fi = 0; fi < testFolios.length; fi++) {
     const testFolio = testFolios[fi];
-    // Apply symbol map to this folio's EVA text
-    // For polyalphabetic theories, shift the base map per folio using the keyword
-    const effectiveMap = cipherType === 'polyalphabetic' && theory.keyword
-      ? applyKeywordShift(theory.symbol_map, theory.keyword, fi)
-      : theory.symbol_map;
+    const effectiveMap = cipherType === 'polyalphabetic' && keyword
+      ? applyKeywordShift(symbolMap, keyword, fi)
+      : symbolMap;
     const decoded = applyMap(testFolio.eva_sample, effectiveMap);
 
-    // Check if decoded text matches expected plant
     const expectedTerms = [
       testFolio.plant_name.toLowerCase(),
       testFolio.plant_latin.toLowerCase(),
@@ -275,15 +276,14 @@ Return ONLY the JSON object.`;
     });
   }
 
-  // Step 3: Score the primary folio's grounding
+  // Step 4: Score the MECHANICAL decode against expected terms
   const primaryTerms = [
     targetFolio.plant_name.toLowerCase(),
     targetFolio.plant_latin.toLowerCase(),
     ...targetFolio.botanical_features.map((f) => f.toLowerCase()),
   ].filter(Boolean);
-  const primaryGrounding = scoreOverlap(theory.decoded_text, primaryTerms);
+  const primaryGrounding = scoreOverlap(primaryDecoded, primaryTerms);
 
-  // Consistency = average cross-folio grounding (0 is expected for wrong maps)
   const consistencyScore = crossFolioResults.length > 0
     ? crossFolioResults.reduce((sum, r) => sum + r.grounding_score, 0) / crossFolioResults.length
     : 0;
@@ -295,9 +295,9 @@ Return ONLY the JSON object.`;
     cipher_type: cipherType,
     target_folio: targetFolio.folio_id,
     target_plant: targetFolio.plant_name,
-    symbol_map: theory.symbol_map,
-    keyword: theory.keyword,
-    decoded_text: theory.decoded_text,
+    symbol_map: symbolMap,
+    keyword,
+    decoded_text: primaryDecoded,  // MECHANICAL decode, not LLM fabrication
     grounding_score: primaryGrounding,
     consistency_score: consistencyScore,
     cross_folio_results: crossFolioResults,
@@ -479,7 +479,6 @@ async function persistTheory(theory: Theory, verdict: string): Promise<void> {
 
     const cipherType = theory.cipher_type.replace(/'/g, "''");
 
-    // Add cipher_type column if it doesn't exist (table may predate this field)
     await executeSql(`
       CREATE TABLE IF NOT EXISTS serverless_stable_qh44kx_catalog.voynich.theories (
         id STRING, proposed_at TIMESTAMP, source_language STRING,
