@@ -315,12 +315,10 @@ export async function loadFolios(): Promise<FolioInfo[]> {
 // Theory generation
 // ---------------------------------------------------------------------------
 
-/** Hill-climbing iterations per theory round. */
-const HILL_CLIMB_STEPS = 20;
+/** Hill-climbing iterations per theory round (cheap — no LLM calls during climb). */
+const HILL_CLIMB_STEPS = 200;
 /** Number of initial seed maps to try before hill-climbing the best. */
 const SEED_MAPS = 4;
-/** How many LLM evals to skip between checks (eval every Nth step to control cost). */
-const EVAL_EVERY = 5;
 
 /**
  * Mutate a symbol map by swapping 1-2 random character assignments.
@@ -376,32 +374,27 @@ export async function proposeTheory(
 
   console.log(`[theory-loop]   seeds=${SEED_MAPS} best_seed=${bestScore.toFixed(3)} starting hill-climb...`);
 
-  // Step 3: Hill-climb — mutate the best map, keep improvements
+  // Step 3: Hill-climb using bigram score as the gradient (continuous signal).
+  // LLM evaluates only at the end to confirm the final result.
+  let bestBigram = quickBigramScore(bestDecoded, sourceLanguage);
   let improvements = 0;
+
   for (let step = 0; step < HILL_CLIMB_STEPS; step++) {
     const candidate = mutateMap(bestMap);
     const decoded = applyMap(evaText, candidate);
+    const bigramScore = quickBigramScore(decoded, sourceLanguage);
 
-    // Evaluate every Nth step with LLM, or on the last step
-    if (step % EVAL_EVERY === 0 || step === HILL_CLIMB_STEPS - 1) {
-      const eval_ = await llmEvaluateDecoding(decoded, sourceLanguage, targetFolio.plant_name);
-      if (eval_.plausibility > bestScore) {
-        bestMap = candidate;
-        bestDecoded = decoded;
-        bestScore = eval_.plausibility;
-        improvements++;
-      }
-    } else {
-      // Cheap heuristic between LLM evals: count recognizable bigrams
-      const bigramScore = quickBigramScore(decoded, sourceLanguage);
-      const bestBigram = quickBigramScore(bestDecoded, sourceLanguage);
-      if (bigramScore > bestBigram) {
-        bestMap = candidate;
-        bestDecoded = decoded;
-        // Don't update bestScore (LLM score) — let LLM confirm on next eval
-      }
+    if (bigramScore > bestBigram) {
+      bestMap = candidate;
+      bestDecoded = decoded;
+      bestBigram = bigramScore;
+      improvements++;
     }
   }
+
+  // Final LLM evaluation on the hill-climbed result
+  const finalEval = await llmEvaluateDecoding(bestDecoded, sourceLanguage, targetFolio.plant_name);
+  bestScore = finalEval.plausibility;
 
   let keyword: string | undefined;
   if (cipherType === 'polyalphabetic') {
@@ -409,7 +402,7 @@ export async function proposeTheory(
     keyword = keywords[Math.floor(Math.random() * keywords.length)];
   }
 
-  console.log(`[theory-loop]   hill-climb: ${improvements} improvements, final_plausibility=${bestScore.toFixed(3)}`);
+  console.log(`[theory-loop]   hill-climb: ${improvements} improvements in ${HILL_CLIMB_STEPS} steps, bigram=${bestBigram.toFixed(3)} plausibility=${bestScore.toFixed(3)}`);
 
   // Step 4: Test cross-folio consistency
   const crossFolioResults: Theory['cross_folio_results'] = [];
