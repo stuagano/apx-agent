@@ -498,10 +498,39 @@ const UNCERTAIN_GLYPHS = ['d', 'a', 'i', 'n', 'o', 'k', 'c', 'f', 'p', 'm'];
  */
 const elitePool: Array<{ map: Record<string, string>; score: number; language: string }> = [];
 const ELITE_POOL_SIZE = 10;
+let elitePoolLoaded = false;
+
+/** Load elite pool from the best theories persisted in Delta. */
+async function loadElitePool(): Promise<void> {
+  if (elitePoolLoaded) return;
+  elitePoolLoaded = true;
+  try {
+    const rows = await executeSql(`
+      SELECT symbol_map, source_language,
+        ROUND(grounding_score + consistency_score, 4) AS combined
+      FROM serverless_stable_qh44kx_catalog.voynich.theories
+      WHERE source_language IN ('latin', 'italian')
+        AND grounding_score + consistency_score > 0.2
+      ORDER BY grounding_score + consistency_score DESC
+      LIMIT ${ELITE_POOL_SIZE}
+    `);
+    for (const row of rows) {
+      try {
+        const map = JSON.parse(row.symbol_map);
+        const score = parseFloat(row.combined);
+        elitePool.push({ map, score, language: row.source_language });
+      } catch { /* skip unparseable */ }
+    }
+    if (elitePool.length > 0) {
+      console.log(`[theory-loop] Loaded ${elitePool.length} elite maps from Delta (best=${elitePool[0].score.toFixed(3)})`);
+    }
+  } catch (err) {
+    console.warn('[theory-loop] Failed to load elite pool from Delta:', err);
+  }
+}
 
 function addToElitePool(map: Record<string, string>, score: number, language: string): void {
   elitePool.push({ map, score, language });
-  // Keep only the top N
   elitePool.sort((a, b) => b.score - a.score);
   if (elitePool.length > ELITE_POOL_SIZE) elitePool.length = ELITE_POOL_SIZE;
 }
@@ -607,6 +636,9 @@ export async function proposeTheory(
 ): Promise<Theory> {
   const theoryId = Math.random().toString(36).slice(2, 10);
   const evaText = targetFolio.eva_sample;
+
+  // Load elite pool from Delta on first call (persists across deploys)
+  await loadElitePool();
 
   // Step 1: Count EVA glyph frequencies across ALL folios
   const allEvaTexts = allFolios.map((f) => f.eva_sample).filter(Boolean);
