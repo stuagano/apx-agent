@@ -312,13 +312,23 @@ server.keepAliveTimeout = 90_000;
 const mode = process.env.LOOP_MODE ?? 'theory';
 
 if (mode === 'theory') {
-  console.log('[orchestrator] starting theory-driven investigation loop');
-  import('./theory-loop.ts').then((m) => {
-    m.runTheoryLoop(200).then((theories) => {
-      console.log(`[orchestrator] theory loop complete: ${theories.length} theories generated`);
-    }).catch((err) => {
-      console.error('[orchestrator] theory loop crashed:', err);
-    });
+  console.log('[orchestrator] starting continuous theory-driven investigation');
+  import('./theory-loop.ts').then(async (m) => {
+    let batch = 0;
+    while (true) {
+      batch++;
+      console.log(`[orchestrator] === BATCH ${batch} starting (200 rounds) ===`);
+      try {
+        const theories = await m.runTheoryLoop(200);
+        const best = theories[0];
+        const bestCombined = best ? (best.grounding_score + best.consistency_score).toFixed(3) : '0';
+        console.log(`[orchestrator] === BATCH ${batch} complete: ${theories.length} theories, best_combined=${bestCombined} ===`);
+      } catch (err) {
+        console.error(`[orchestrator] batch ${batch} crashed:`, err);
+        // Wait 30s before retrying on crash
+        await new Promise((r) => setTimeout(r, 30_000));
+      }
+    }
   });
 } else if (process.env.AUTO_START_LOOP !== 'false') {
   console.log('[orchestrator] auto-starting evolutionary loop');
