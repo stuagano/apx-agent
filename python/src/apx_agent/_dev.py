@@ -44,6 +44,8 @@ from ._ui_setup import (
 )
 from ._ui_probe import _generate_agent_instructions
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
+from ._ui_traces import _render_trace_detail_ui, _render_traces_list_ui
+from ._trace import get_trace, get_traces
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +106,17 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def probe_dev_ui() -> Any:
         from starlette.responses import RedirectResponse as _R
         return _R("/_apx/setup", status_code=302)
+
+    @router.get("/_apx/traces", include_in_schema=False)
+    async def traces_list_ui() -> HTMLResponse:
+        return HTMLResponse(_render_traces_list_ui(get_traces()))
+
+    @router.get("/_apx/traces/{trace_id}", include_in_schema=False)
+    async def trace_detail_ui(trace_id: str) -> HTMLResponse:
+        trace = get_trace(trace_id)
+        if trace is None:
+            return HTMLResponse("Trace not found", status_code=404)
+        return HTMLResponse(_render_trace_detail_ui(trace))
 
     @router.get("/_apx/edit", include_in_schema=False)
     async def edit_dev_ui(request: Request) -> HTMLResponse:
