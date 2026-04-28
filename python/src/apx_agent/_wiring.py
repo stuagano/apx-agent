@@ -18,6 +18,7 @@ from collections.abc import AsyncGenerator
 from ._agents import BaseAgent
 from ._inspection import _load_agent_config
 from ._mcp import _build_mcp_components
+from ._trace import add_span, create_trace, end_span, end_trace, truncate
 from ._models import (
     A2ASkill,
     AgentCard,
@@ -194,6 +195,20 @@ async def _handle_invocation(
     request.state.custom_outputs = {}
     messages = body.messages()
 
+    trace = create_trace(ctx.config.name)
+    request.state.trace = trace
+    request_span = add_span(
+        trace,
+        type="request",
+        name="POST /responses",
+        input={
+            "stream": body.stream,
+            "message_count": len(messages),
+            "last_message": truncate(messages[-1].content if messages else "", 200),
+        },
+    )
+    end_span(request_span)
+
     if body.stream:
         async def _sse_generator() -> AsyncGenerator[str, None]:
             item_id = "msg_001"
@@ -220,14 +235,43 @@ async def _handle_invocation(
                 custom_out = getattr(request.state, "custom_outputs", {})
                 if custom_out:
                     yield f"event: custom_outputs\ndata: {_json.dumps(custom_out)}\n\n"
+                response_span = add_span(
+                    trace, type="response", name="streaming response",
+                    output=truncate(full_text, 500),
+                )
+                end_span(response_span)
+                end_trace(trace, status="completed")
             except Exception as exc:
                 error_payload = {"item_id": item_id, "error": str(exc)}
                 yield f"event: error\ndata: {_json.dumps(error_payload)}\n\n"
                 logger.exception("Error during streaming invocation")
+                error_span = add_span(
+                    trace, type="error", name=type(exc).__name__,
+                    output=str(exc)[:500],
+                )
+                end_span(error_span)
+                end_trace(trace, status="error")
 
         return StreamingResponse(_sse_generator(), media_type="text/event-stream")
 
-    text = await ctx.agent.run(messages, request)
+    try:
+        text = await ctx.agent.run(messages, request)
+    except Exception as exc:
+        error_span = add_span(
+            trace, type="error", name=type(exc).__name__,
+            output=str(exc)[:500],
+        )
+        end_span(error_span)
+        end_trace(trace, status="error")
+        raise
+
+    response_span = add_span(
+        trace, type="response", name="non-streaming response",
+        output=truncate(text, 500),
+    )
+    end_span(response_span)
+    end_trace(trace, status="completed")
+
     custom_out = getattr(request.state, "custom_outputs", {})
     return InvocationResponse(
         output=[OutputItem(content=[OutputTextContent(text=text)])],

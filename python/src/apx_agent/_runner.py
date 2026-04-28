@@ -19,6 +19,7 @@ from typing import Any
 from fastapi import Request
 
 from ._models import AgentContext, AgentTool, Message
+from ._trace import add_span, end_span, truncate
 
 logger = logging.getLogger(__name__)
 
@@ -94,11 +95,31 @@ async def run_via_sdk(
         for m in input_messages
     ]
 
-    result = await Runner.run(
-        oai_agent,
-        sdk_input,
-        max_turns=effective_max_iter,
-    )
+    trace = getattr(request.state, "trace", None)
+    llm_span = None
+    if trace is not None:
+        llm_span = add_span(
+            trace,
+            type="llm",
+            name=effective_model or "unknown",
+            input={"messages": [{"role": m.role, "content": truncate(m.content, 200)} for m in input_messages]},
+            metadata={"tool_count": len(function_tools) + len(sub_agent_tools), "streaming": False},
+        )
+
+    try:
+        result = await Runner.run(
+            oai_agent,
+            sdk_input,
+            max_turns=effective_max_iter,
+        )
+    except Exception:
+        if llm_span is not None:
+            end_span(llm_span, metadata={"error": True})
+        raise
+
+    if llm_span is not None:
+        final = str(result.final_output) if result.final_output is not None else None
+        end_span(llm_span, output=truncate(final, 500) if final else None)
 
     # Extract final output text
     if result.final_output is not None:
@@ -178,22 +199,44 @@ async def stream_via_sdk(
         for m in input_messages
     ]
 
+    trace = getattr(request.state, "trace", None)
+    llm_span = None
+    if trace is not None:
+        llm_span = add_span(
+            trace,
+            type="llm",
+            name=effective_model or "unknown",
+            input={"messages": [{"role": m.role, "content": truncate(m.content, 200)} for m in input_messages]},
+            metadata={"tool_count": len(function_tools) + len(sub_agent_tools), "streaming": True},
+        )
+
     result = Runner.run_streamed(
         oai_agent,
         sdk_input,
         max_turns=effective_max_iter,
     )
 
-    async for event in result.stream_events():
-        # RawResponsesStreamEvent contains the raw model output deltas
-        if hasattr(event, 'data') and hasattr(event.data, 'delta'):
-            delta = event.data.delta
-            if isinstance(delta, str) and delta:
-                yield delta
-        # Also handle OutputTextDelta events from the Responses API format
-        elif hasattr(event, 'type') and 'output_text' in str(getattr(event, 'type', '')):
-            if hasattr(event, 'delta') and isinstance(event.delta, str):
-                yield event.delta
+    full_text = ""
+    try:
+        async for event in result.stream_events():
+            # RawResponsesStreamEvent contains the raw model output deltas
+            if hasattr(event, 'data') and hasattr(event.data, 'delta'):
+                delta = event.data.delta
+                if isinstance(delta, str) and delta:
+                    full_text += delta
+                    yield delta
+            # Also handle OutputTextDelta events from the Responses API format
+            elif hasattr(event, 'type') and 'output_text' in str(getattr(event, 'type', '')):
+                if hasattr(event, 'delta') and isinstance(event.delta, str):
+                    full_text += event.delta
+                    yield event.delta
+    except Exception:
+        if llm_span is not None:
+            end_span(llm_span, output=truncate(full_text, 500), metadata={"error": True})
+        raise
+
+    if llm_span is not None:
+        end_span(llm_span, output=truncate(full_text, 500))
 
 
 def _to_function_tool(
@@ -218,6 +261,17 @@ def _to_function_tool(
         arguments = _json.loads(args_json) if args_json else {}
         t0 = _time.monotonic()
         result_text = ""
+
+        trace = getattr(request.state, "trace", None)
+        tool_span = None
+        if trace is not None:
+            tool_span = add_span(
+                trace,
+                type="tool",
+                name=tool.name,
+                input=arguments,
+            )
+
         try:
             obo_headers = {
                 "Authorization": request.headers.get("Authorization", ""),
@@ -241,22 +295,26 @@ def _to_function_tool(
         except Exception as e:
             result_text = f"Tool error: {e}"
 
-        # Record trace for dev UI
+        # Record trace for dev UI (legacy SSE consumer format)
         elapsed = int((_time.monotonic() - t0) * 1000)
+        truncated_result = result_text[:500] if len(result_text) > 500 else result_text
         if hasattr(request.state, "tool_trace"):
             request.state.tool_trace.append({
                 "name": tool.name,
                 "args": arguments,
-                "result": result_text[:500] if len(result_text) > 500 else result_text,
+                "result": truncated_result,
                 "ms": elapsed,
             })
         else:
             request.state.tool_trace = [{
                 "name": tool.name,
                 "args": arguments,
-                "result": result_text[:500] if len(result_text) > 500 else result_text,
+                "result": truncated_result,
                 "ms": elapsed,
             }]
+
+        if tool_span is not None:
+            end_span(tool_span, output=truncated_result)
 
         return result_text
 
@@ -292,9 +350,22 @@ def _to_sub_agent_tool(
     async def _on_invoke(ctx_sdk: Any, args_json: str) -> str:
         t0 = _time.monotonic()
         result_text = ""
+        arguments: dict[str, Any] = {}
+        message = ""
+        trace = getattr(request.state, "trace", None) if request else None
+        agent_span = None
         try:
             arguments = _json.loads(args_json) if args_json else {}
             message = arguments.get("message", _json.dumps(arguments))
+
+            if trace is not None:
+                agent_span = add_span(
+                    trace,
+                    type="agent_call",
+                    name=tool.name,
+                    input={"message": truncate(message, 200)},
+                    metadata={"sub_agent_url": tool.sub_agent_url, "via_app": bool(app_name)},
+                )
 
             if app_name:
                 try:
@@ -359,19 +430,25 @@ def _to_sub_agent_tool(
             result_text = f"Sub-agent error: {e}"
             return result_text
         finally:
-            # Record trace for dev UI
+            # Record trace for dev UI (legacy SSE consumer format)
             elapsed = int((_time.monotonic() - t0) * 1000)
+            truncated_result = (
+                result_text[:500] if result_text and len(result_text) > 500 else (result_text or "")
+            )
             if request and hasattr(request, 'state'):
                 trace_entry = {
                     "name": f"🔗 {tool.name}" if app_name else tool.name,
-                    "args": {"message": message[:200]} if 'message' in dir() else {},
-                    "result": result_text[:500] if result_text and len(result_text) > 500 else (result_text or ""),
+                    "args": {"message": message[:200]} if message else {},
+                    "result": truncated_result,
                     "ms": elapsed,
                 }
                 if hasattr(request.state, "tool_trace"):
                     request.state.tool_trace.append(trace_entry)
                 else:
                     request.state.tool_trace = [trace_entry]
+
+            if agent_span is not None:
+                end_span(agent_span, output=truncated_result)
 
     return FunctionTool(
         name=tool.name,
