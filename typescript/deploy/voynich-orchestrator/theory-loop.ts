@@ -27,11 +27,13 @@ export interface FolioInfo {
   eva_sample: string; // placeholder — we don't have per-folio EVA yet
 }
 
+export type CipherType = 'substitution' | 'polyalphabetic' | 'substitution-strip' | 'verbose';
+
 export interface Theory {
   id: string;
   proposed_at: string;
   source_language: string;
-  cipher_type: 'substitution' | 'polyalphabetic';
+  cipher_type: CipherType;
   target_folio: string;
   target_plant: string;
   symbol_map: Record<string, string>;
@@ -45,6 +47,53 @@ export interface Theory {
     decoded_text: string;
     grounding_score: number;
   }>;
+}
+
+export type SeedMode = 'elite' | 'cold';
+
+export interface Strategy {
+  language: 'latin' | 'italian';
+  cipherType: CipherType;
+  seedMode: SeedMode;
+}
+
+const STRATEGIES: Strategy[] = [
+  // Substitution + substitution-strip run first — they populate the elite
+  // pool. Verbose seeds from those elites, so it must run after.
+  { language: 'latin',   cipherType: 'substitution',         seedMode: 'elite' },
+  { language: 'latin',   cipherType: 'substitution',         seedMode: 'cold'  },
+  { language: 'italian', cipherType: 'substitution',         seedMode: 'elite' },
+  { language: 'italian', cipherType: 'substitution',         seedMode: 'cold'  },
+  { language: 'latin',   cipherType: 'substitution-strip',   seedMode: 'elite' },
+  { language: 'latin',   cipherType: 'substitution-strip',   seedMode: 'cold'  },
+  { language: 'italian', cipherType: 'substitution-strip',   seedMode: 'elite' },
+  { language: 'italian', cipherType: 'substitution-strip',   seedMode: 'cold'  },
+  // Verbose runs last — by now the elite pool is populated under the
+  // corrected scorer, so elite seeding has real signal to work with.
+  { language: 'latin',   cipherType: 'verbose',              seedMode: 'elite' },
+  { language: 'latin',   cipherType: 'verbose',              seedMode: 'cold'  },
+  { language: 'italian', cipherType: 'verbose',              seedMode: 'elite' },
+  { language: 'italian', cipherType: 'verbose',              seedMode: 'cold'  },
+  // Polyalphabetic (keyword-shifted substitution)
+  { language: 'latin',   cipherType: 'polyalphabetic',       seedMode: 'elite' },
+  { language: 'italian', cipherType: 'polyalphabetic',       seedMode: 'cold'  },
+];
+
+const ROUNDS_PER_BURST = 20;
+const PROGRESS_THRESHOLD = 0.02;
+
+interface StrategyStat {
+  attempts: number;
+  best_score: number;
+  last_attempted_at: string;
+  exhausted: boolean;
+}
+
+const strategyStats = new Map<string, StrategyStat>();
+let strategyStatsLoaded = false;
+
+function strategyKey(s: Strategy): string {
+  return `${s.language}|${s.cipherType}|${s.seedMode}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -196,12 +245,109 @@ Return ONLY a JSON object:
 // Dictionary + bigram scoring for hill-climbing
 // ---------------------------------------------------------------------------
 
-/** Common bigrams by language. */
-const COMMON_BIGRAMS: Record<string, string[]> = {
-  latin:   ['er','in','um','us','is','it','at','en','re','nt','am','es','ra','an','ti','ur','ta','tu','ae','et','ar','al','de','te','or','ri'],
-  italian: ['er','in','de','la','re','an','le','al','en','el','on','ar','to','ra','at','ne','te','co','io','di','no','ti','ta','li','un','si'],
-  greek:   ['αι','ου','ει','ον','τη','εν','ις','αν','ερ','ος','ασ','ιν','ησ','τα','ων','οι','εσ','ρο','κα','με','νο','πο','λα','αρ'],
+// ---------------------------------------------------------------------------
+// Character n-gram language model
+// ---------------------------------------------------------------------------
+//
+// Reference corpora in medieval herbal Latin and Italian (volgare) style.
+// Used to train a character trigram model so the scorer can distinguish
+// real-language-shaped output from text that merely matches glyph frequencies.
+// Replaces the old hand-curated bigram list which was too coarse to break
+// past the 0.37 plateau seen in earlier runs.
+
+const LATIN_CORPUS = `
+herba haec nascitur in locis humidis et umbrosis radix eius est longa et alba
+recipe radicem mandragorae et folia eius pista et misce cum aqua frigida
+folium est latum et pilosum flores sunt purpurei semen est nigrum et acutum
+herba haec sanat morbos stomachi et iuvat digestionem cum bibitur in vino
+calida et sicca est in primo gradu valet contra dolorem capitis et oculorum
+recipe herbam istam et tere cum oleo rosaceo et impone super vulnus et sanat
+cocta in aqua cum melle et oleo facit emplastrum bonum contra apostemata
+herba sancti iohannis nascitur per agros et habet flores luteos et parvos
+folia papaveris cum semine eius valent contra insomniam et tussim antiquam
+infusio florum sambuci sumitur contra febrem et purgat humores grossos
+oleum rosarum frigidum est et confortat caput et stomachum et oculos
+mel et vinum coctum cum cinnamomo iuvat virtutes corporis et sanat tussim
+radix gentianae amara est et purgat venenum et sanat morsus serpentis
+folia salviae sicca cum vino calido valent contra dolorem dentium et gingivarum
+herba urtica est calida et purgat sanguinem et iuvat reumata articulorum
+flores camomillae cum oleo rosaceo applicantur super ventrem et tollit dolorem
+semina foeniculi cum aqua calida bibita iuvat oculos et purgat ventrem
+radix aristolochiae cum melle et vino tollit dolorem matricis et purgat humores
+unguentum compositum ex foliis rutae et cera valet contra paralysim membrorum
+herba betonica est virtutum multarum et sanat capitis dolorem antiquum
+recipe folia menthae et tere cum aceto et impone super tempora capitis
+malva calida est et humida temperat humores corporis et iuvat ventrem
+plantago herba est frigida et sicca et confortat virtutes stomachi et hepatis
+hedera nascitur in locis silvestribus et habet folia viridia et obscura
+verbena herba sacra est et habet flores parvos et purpureos contra venenum
+absinthium amarum est et tollit vermes et purgat hepar et lien et stomachum
+artemisia mater herbarum dicitur et iuvat morbos matricis et menstrua provocat
+melissa habet odorem suavem et confortat cor et oculos et virtutes vitales
+recipe semen anethi et tere subtiliter et misce cum oleo et vino calido
+folium hederae cum aceto bibitum tollit dolorem capitis et tussim purgat
+`;
+
+const ITALIAN_CORPUS = `
+piglia la radice di mandragora et le sue foglie et pesta con acqua fredda
+questa erba nasce nei luoghi umidi et ombrosi la sua radice è bianca et lunga
+la foglia è larga et pelosa i fiori sono porpora il seme è nero et acuto
+questa erba sana le malattie dello stomaco et giova la digestione con vino
+è calda et secca nel primo grado vale contro il dolore della testa et degli occhi
+piglia questa erba et pestala con olio rosato et mettila sopra la ferita et sana
+cotta in acqua con miele et olio fa un buon impiastro contro le apostemi
+erba di san giovanni nasce per i campi et ha fiori gialli et piccoli
+foglie di papavero con il suo seme valgono contro insonnia et tosse antica
+infuso di fiori di sambuco si prende contro la febbre et purga gli umori
+olio di rose è freddo et conforta la testa et lo stomaco et gli occhi
+miele et vino cotto con la cannella giova le virtù del corpo et sana la tosse
+radice di genziana è amara et purga il veleno et sana morsi di serpe
+foglie di salvia secca con vino caldo valgono contro il dolore dei denti
+ortica è calda et purga il sangue et giova ai reumi delle giunture
+fiori di camomilla con olio rosato si pongono sopra il ventre et tolgono dolore
+semi di finocchio con acqua calda bevuti giovano agli occhi et purgano il ventre
+radice di aristolochia con miele et vino toglie il dolore della matrice et purga
+unguento composto di foglie di ruta et cera vale contro la paralisia delle membra
+erba betonica è di molte virtù et sana il dolore della testa antico
+piglia foglie di menta et pestale con aceto et mettile sopra le tempie
+malva è calda et umida et tempera gli umori del corpo et giova il ventre
+piantaggine è erba fredda et secca et conforta le virtù dello stomaco
+edera nasce nei luoghi silvestri et ha foglie verdi et oscure
+verbena è erba sacra et ha fiori piccoli et porpora contro il veleno
+assenzio è amaro et toglie i vermi et purga il fegato et la milza
+artemisia è detta madre delle erbe et giova le malattie della matrice
+melissa ha odore soave et conforta il cuore et gli occhi et le virtù vitali
+piglia il seme di aneto et pestalo sottilmente et mescola con olio et vino
+foglia di edera con aceto bevuta toglie il dolore della testa et purga la tosse
+`;
+
+interface TrigramModel {
+  ngrams: Map<string, number>;
+  total: number;
+  vocabSize: number;
+}
+
+function buildTrigramModel(corpus: string): TrigramModel {
+  const text = ` ${corpus.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim()} `;
+  const ngrams = new Map<string, number>();
+  let total = 0;
+  for (let i = 0; i < text.length - 2; i++) {
+    const tg = text.slice(i, i + 3);
+    ngrams.set(tg, (ngrams.get(tg) ?? 0) + 1);
+    total++;
+  }
+  return { ngrams, total, vocabSize: ngrams.size };
+}
+
+const NGRAM_MODELS: Record<string, TrigramModel> = {
+  latin: buildTrigramModel(LATIN_CORPUS),
+  italian: buildTrigramModel(ITALIAN_CORPUS),
 };
+
+console.log(
+  `[theory-loop] n-gram models: latin=${NGRAM_MODELS.latin.total} trigrams (${NGRAM_MODELS.latin.vocabSize} unique), ` +
+  `italian=${NGRAM_MODELS.italian.total} trigrams (${NGRAM_MODELS.italian.vocabSize} unique)`,
+);
 
 /**
  * Expanded medieval Latin word list — ~500 words from herbal/medical manuscripts,
@@ -309,17 +455,38 @@ const DICT_BY_LANG: Record<string, Set<string>> = {
   italian: ITALIAN_DICT,
 };
 
-function quickBigramScore(text: string, language: string): number {
-  const clean = text.toLowerCase().replace(/[^a-zα-ω]/g, '');
-  if (clean.length < 4) return 0;
+/**
+ * Score decoded text under the language's character trigram model.
+ * Uses Laplace-smoothed log-probability, then linearly maps avg-log-prob
+ * to [0, 1] using empirically-tuned reference points for "real text" vs
+ * "random gibberish". Returns ~0.7+ for genuine Latin/Italian and ~0.1
+ * for scrambled output, replacing the old bigram-overlap heuristic.
+ */
+function langModelScore(text: string, language: string): number {
+  const model = NGRAM_MODELS[language] ?? NGRAM_MODELS.latin;
+  const clean = ` ${text.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim()} `;
+  if (clean.length < 5) return 0;
 
-  const bigrams = COMMON_BIGRAMS[language] ?? COMMON_BIGRAMS.latin;
-  let hits = 0;
-  for (let i = 0; i < clean.length - 1; i++) {
-    const bg = clean.slice(i, i + 2);
-    if (bigrams.includes(bg)) hits++;
+  const N = model.total;
+  const V = model.vocabSize;
+  let logProbSum = 0;
+  let count = 0;
+  for (let i = 0; i < clean.length - 2; i++) {
+    const tg = clean.slice(i, i + 3);
+    const c = model.ngrams.get(tg) ?? 0;
+    // Laplace smoothing: P(tg) = (count + 1) / (N + V)
+    logProbSum += Math.log((c + 1) / (N + V));
+    count++;
   }
-  return hits / (clean.length - 1);
+  if (count === 0) return 0;
+  const avgLogProb = logProbSum / count;
+  // Calibration tuned empirically (see local sanity check):
+  //   real Latin ~ -6.3, real-out-of-domain ~ -6.8, decoded gibberish ~ -7.5,
+  //   random scramble ~ -8.0. These references give real text ~0.7-0.85 and
+  //   gibberish ~0.20-0.35, a clear discriminative gradient.
+  const REF_BAD = -8.5;
+  const REF_GOOD = -5.5;
+  return Math.max(0, Math.min(1, (avgLogProb - REF_BAD) / (REF_GOOD - REF_BAD)));
 }
 
 /**
@@ -352,14 +519,74 @@ function dictionaryScore(text: string, language: string): number {
 }
 
 /**
- * Combined hill-climbing score: dictionary match (strong signal) + bigram
- * similarity (weak but continuous signal). Dictionary is weighted 3x because
- * a single word match is worth far more than bigram statistics.
+ * High-frequency function words per language. The hill-climber loves to map a
+ * few common EVA glyphs onto these (because they give cheap dictionary hits),
+ * producing decoded text saturated with `est`, `ita`, `ad`, `post`… while the
+ * rest stays gibberish. We use this set to penalise such "function-word trap"
+ * solutions in `dictionaryQuality`.
+ */
+const FUNCTION_WORDS: Record<string, Set<string>> = {
+  latin: new Set([
+    'est','et','ad','ut','in','de','ex','non','qui','quod','cum','sed','ita','sic',
+    'sunt','enim','aut','ab','ac','at','pro','per','nec','vel','si','nam','quam',
+    'quae','post','ante','sub','super','iam','tamen','etiam','autem','itaque',
+    'vero','dum','tum','tunc','hic','haec','hoc','eo','eam','eos','suum','suam',
+    'a','o','e','is','ea','id','me','te','se','nos','vos','iis','eis',
+  ]),
+  italian: new Set([
+    'e','il','la','di','che','a','in','un','non','per','con','del','come','ma','se',
+    'lo','gli','le','da','al','dei','delle','degli','nei','nelle','sul','sulla','sui',
+    'è','ha','ho','hai','sia','fu','era','ed','o','ne','ci','vi','si','mi','ti','tu',
+    'io','lui','lei','noi','voi','loro','suo','sua','suoi','sue','quel','quella',
+    'questo','questa','questi','queste','i','una','uno','agli','dal','dalla','nel',
+  ]),
+};
+
+/**
+ * Quality multiplier (0..1) applied to dictionary score. Penalises decoded
+ * text dominated by function words and rewards content-word diversity.
+ *
+ * - P1 (saturation): if >50% of words are function-word hits, decay linearly
+ *   to 0 at 100% (the trap).
+ * - P2 (diversity): unique dictionary-matched word types ÷ total words. Below
+ *   0.35 is thin vocabulary; 0.0 returns 0.
+ */
+function dictionaryQuality(text: string, language: string): number {
+  const dict = DICT_BY_LANG[language];
+  const funcSet = FUNCTION_WORDS[language];
+  if (!dict || !funcSet) return 1;
+
+  const words = text.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter((w) => w.length >= 2);
+  if (words.length < 4) return 1;
+
+  let funcHits = 0;
+  const uniqueDictTypes = new Set<string>();
+  for (const w of words) {
+    if (dict.has(w)) {
+      uniqueDictTypes.add(w);
+      if (funcSet.has(w)) funcHits++;
+    }
+  }
+
+  const funcRatio = funcHits / words.length;
+  const p1 = Math.max(0, Math.min(1, 1 - Math.max(0, funcRatio - 0.5) * 2.0));
+
+  const diversity = uniqueDictTypes.size / words.length;
+  const p2 = Math.max(0, Math.min(1, diversity / 0.35));
+
+  return p1 * p2;
+}
+
+/**
+ * Combined hill-climbing score: quality-adjusted dictionary match (strong
+ * signal) + bigram similarity (weak but continuous signal). The quality
+ * multiplier defends against the function-word trap — see `dictionaryQuality`.
  */
 function hillClimbScore(text: string, language: string): number {
   const dict = dictionaryScore(text, language);
-  const bigram = quickBigramScore(text, language);
-  return dict * 0.75 + bigram * 0.25;
+  const quality = dictionaryQuality(text, language);
+  const lm = langModelScore(text, language);
+  return (dict * quality) * 0.75 + lm * 0.25;
 }
 
 async function executeSql(statement: string): Promise<Array<Record<string, string>>> {
@@ -632,16 +859,26 @@ export async function proposeTheory(
   targetFolio: FolioInfo,
   allFolios: FolioInfo[],
   sourceLanguage: string,
-  cipherType: 'substitution' | 'polyalphabetic' = 'substitution',
+  cipherType: CipherType = 'substitution',
+  seedMode: SeedMode = 'elite',
 ): Promise<Theory> {
   const theoryId = Math.random().toString(36).slice(2, 10);
-  const evaText = targetFolio.eva_sample;
+  // For substitution-strip, preprocess all EVA text before any further work.
+  const stripPreprocess = cipherType === 'substitution-strip';
+  const evaText = stripPreprocess ? stripNulls(targetFolio.eva_sample) : targetFolio.eva_sample;
+
+  // Verbose cipher uses simulated annealing over a many-to-many map. Branch
+  // off entirely — the seed/hill-climb/elite-pool flow below targets 1:1 maps.
+  if (cipherType === 'verbose') {
+    return await proposeVerboseTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
+  }
 
   // Load elite pool from Delta on first call (persists across deploys)
   await loadElitePool();
 
-  // Step 1: Count EVA glyph frequencies across ALL folios
-  const allEvaTexts = allFolios.map((f) => f.eva_sample).filter(Boolean);
+  // Step 1: Count EVA glyph frequencies across ALL folios. For substitution-strip,
+  // run the same null preprocessor over the corpus so the seed alphabet matches.
+  const allEvaTexts = allFolios.map((f) => stripPreprocess ? stripNulls(f.eva_sample) : f.eva_sample).filter(Boolean);
   const evaFreqs = countEvaFrequencies(allEvaTexts);
 
   // Step 2: Generate diverse seed maps — exploitation AND exploration.
@@ -649,22 +886,24 @@ export async function proposeTheory(
   const seeds: Array<{ map: Record<string, string>; decoded: string; score: number; origin: string }> = [];
 
   // --- EXPLOITATION SEEDS (build on what works) ---
+  // Cold mode skips these entirely — no consensus anchoring, no elite influence.
+  if (seedMode === 'elite') {
+    // Seed: pure consensus map
+    const consensusMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
+    const consensusDecoded = applyMap(evaText, consensusMap);
+    seeds.push({ map: consensusMap, decoded: consensusDecoded, score: hillClimbScore(consensusDecoded, sourceLanguage), origin: 'consensus' });
 
-  // Seed: pure consensus map
-  const consensusMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
-  const consensusDecoded = applyMap(evaText, consensusMap);
-  seeds.push({ map: consensusMap, decoded: consensusDecoded, score: hillClimbScore(consensusDecoded, sourceLanguage), origin: 'consensus' });
-
-  // Seeds from crossbreeding elite pool
-  const elitesForLang = elitePool.filter((e) => e.language === sourceLanguage);
-  if (elitesForLang.length >= 2) {
-    for (let s = 0; s < 2; s++) {
-      const idxA = Math.floor(Math.random() * elitesForLang.length);
-      let idxB = Math.floor(Math.random() * elitesForLang.length);
-      while (idxB === idxA && elitesForLang.length > 1) idxB = Math.floor(Math.random() * elitesForLang.length);
-      const child = crossbreed(elitesForLang[idxA].map, elitesForLang[idxB].map, sourceLanguage);
-      const decoded = applyMap(evaText, child);
-      seeds.push({ map: child, decoded, score: hillClimbScore(decoded, sourceLanguage), origin: 'crossbred' });
+    // Seeds from crossbreeding elite pool
+    const elitesForLang = elitePool.filter((e) => e.language === sourceLanguage);
+    if (elitesForLang.length >= 2) {
+      for (let s = 0; s < 2; s++) {
+        const idxA = Math.floor(Math.random() * elitesForLang.length);
+        let idxB = Math.floor(Math.random() * elitesForLang.length);
+        while (idxB === idxA && elitesForLang.length > 1) idxB = Math.floor(Math.random() * elitesForLang.length);
+        const child = crossbreed(elitesForLang[idxA].map, elitesForLang[idxB].map, sourceLanguage);
+        const decoded = applyMap(evaText, child);
+        seeds.push({ map: child, decoded, score: hillClimbScore(decoded, sourceLanguage), origin: 'crossbred' });
+      }
     }
   }
 
@@ -732,10 +971,13 @@ export async function proposeTheory(
 
   console.log(`[theory-loop]   seeds=${seeds.length} best_seed=${bestScore.toFixed(3)} origin=${seedOrigin} dict=${dictionaryScore(bestDecoded, sourceLanguage).toFixed(3)} starting hill-climb...`);
 
-  // Step 3: Hill-climb — balance focused vs wild mutations based on seed origin.
+  // Step 3: Hill-climb — balance focused vs wild mutations based on seed origin and mode.
+  // Cold mode escapes the consensus basin: full wild mutation.
   // Exploration seeds get more wild mutations; exploitation seeds stay focused.
   const isExplorationSeed = ['reverse-freq', 'vowel-hyp', 'random', 'phonetic'].includes(seedOrigin);
-  const wildRate = isExplorationSeed ? 0.4 : 0.15;  // 40% wild for new architectures, 15% for exploitation
+  const wildRate = seedMode === 'cold' ? 0.6
+    : isExplorationSeed ? 0.4
+    : 0.15;
 
   let bestHillScore = hillClimbScore(bestDecoded, sourceLanguage);
   let improvements = 0;
@@ -756,7 +998,7 @@ export async function proposeTheory(
   }
 
   const dictScore = dictionaryScore(bestDecoded, sourceLanguage);
-  const bigramFinal = quickBigramScore(bestDecoded, sourceLanguage);
+  const bigramFinal = langModelScore(bestDecoded, sourceLanguage);
   bestScore = bestHillScore;
 
   let keyword: string | undefined;
@@ -768,7 +1010,7 @@ export async function proposeTheory(
   // Add to elite pool for crossbreeding in future rounds
   addToElitePool(bestMap, bestHillScore, sourceLanguage);
 
-  console.log(`[theory-loop]   hill-climb: ${improvements} improvements in ${HILL_CLIMB_STEPS} steps, dict=${dictScore.toFixed(3)} bigram=${bigramFinal.toFixed(3)} combined=${bestHillScore.toFixed(3)} elites=${elitePool.length}`);
+  console.log(`[theory-loop]   hill-climb: ${improvements} improvements in ${HILL_CLIMB_STEPS} steps, dict=${dictScore.toFixed(3)} lm=${bigramFinal.toFixed(3)} combined=${bestHillScore.toFixed(3)} elites=${elitePool.length}`);
 
   // Step 4: Test cross-folio consistency
   const crossFolioResults: Theory['cross_folio_results'] = [];
@@ -781,7 +1023,8 @@ export async function proposeTheory(
     const effectiveMap = cipherType === 'polyalphabetic' && keyword
       ? applyKeywordShift(bestMap, keyword, fi)
       : bestMap;
-    const decoded = applyMap(testFolio.eva_sample, effectiveMap);
+    const testEva = stripPreprocess ? stripNulls(testFolio.eva_sample) : testFolio.eva_sample;
+    const decoded = applyMap(testEva, effectiveMap);
 
     const expectedTerms = [
       testFolio.plant_name.toLowerCase(),
@@ -821,6 +1064,94 @@ export async function proposeTheory(
     symbol_map: bestMap,
     keyword,
     decoded_text: bestDecoded,
+    grounding_score: primaryGrounding,
+    consistency_score: consistencyScore,
+    cross_folio_results: crossFolioResults,
+  };
+}
+
+const VERBOSE_SA_STEPS = 8000;
+
+/**
+ * Verbose-cipher theory: many-to-many EVA→Latin map searched via simulated
+ * annealing. In `elite` seed mode, seeds the singles from a top-3 substitution
+ * elite for the language — this gives SA a hill-climbed starting point so it
+ * can spend its budget refining the multi-char extensions (bigrams, scribal
+ * abbreviations) rather than rediscovering the basic function-word mapping.
+ */
+async function proposeVerboseTheory(
+  theoryId: string,
+  targetFolio: FolioInfo,
+  allFolios: FolioInfo[],
+  sourceLanguage: string,
+  seedMode: SeedMode = 'cold',
+): Promise<Theory> {
+  const evaText = targetFolio.eva_sample;
+  await loadElitePool();
+
+  let seed = generateVerboseSeed(sourceLanguage);
+  let seedSource = 'fresh';
+  if (seedMode === 'elite') {
+    const elites = elitePool.filter((e) => e.language === sourceLanguage).slice(0, 3);
+    if (elites.length > 0) {
+      const pick = elites[Math.floor(Math.random() * elites.length)];
+      // Overlay elite single-glyph mappings; keep verbose-specific multi-char
+      // entries (bigrams + scribal abbrevs) from the fresh seed.
+      const merged = { ...seed };
+      for (const [k, v] of Object.entries(pick.map)) {
+        if (k.length === 1) merged[k] = v;
+      }
+      seed = merged;
+      seedSource = `elite(score=${pick.score.toFixed(3)})`;
+    }
+  }
+  const seedDecoded = applyMap(evaText, seed);
+  console.log(`[theory-loop]   verbose seed: ${Object.keys(seed).length} entries, source=${seedSource}, dict=${dictionaryScore(seedDecoded, sourceLanguage).toFixed(3)} starting SA...`);
+
+  const sa = simulatedAnnealVerbose(evaText, seed, sourceLanguage, VERBOSE_SA_STEPS);
+  const dictFinal = dictionaryScore(sa.decoded, sourceLanguage);
+  const bigramFinal = langModelScore(sa.decoded, sourceLanguage);
+  console.log(`[theory-loop]   verbose SA: ${sa.improvements} improvements in ${VERBOSE_SA_STEPS} steps, dict=${dictFinal.toFixed(3)} lm=${bigramFinal.toFixed(3)} combined=${sa.score.toFixed(3)}`);
+
+  // Cross-folio consistency
+  const crossFolioResults: Theory['cross_folio_results'] = [];
+  const testFolios = allFolios
+    .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
+    .slice(0, 10);
+  for (const testFolio of testFolios) {
+    const decoded = applyMap(testFolio.eva_sample, sa.map);
+    const expectedTerms = [
+      testFolio.plant_name.toLowerCase(),
+      testFolio.plant_latin.toLowerCase(),
+      ...testFolio.botanical_features.map((f) => f.toLowerCase()),
+    ].filter(Boolean);
+    crossFolioResults.push({
+      folio_id: testFolio.folio_id,
+      plant_expected: testFolio.plant_name,
+      decoded_text: decoded.slice(0, 50),
+      grounding_score: broadGrounding(decoded, sourceLanguage, expectedTerms),
+    });
+  }
+
+  const primaryTerms = [
+    targetFolio.plant_name.toLowerCase(),
+    targetFolio.plant_latin.toLowerCase(),
+    ...targetFolio.botanical_features.map((f) => f.toLowerCase()),
+  ].filter(Boolean);
+  const primaryGrounding = broadGrounding(sa.decoded, sourceLanguage, primaryTerms);
+  const consistencyScore = crossFolioResults.length > 0
+    ? crossFolioResults.reduce((sum, r) => sum + r.grounding_score, 0) / crossFolioResults.length
+    : 0;
+
+  return {
+    id: theoryId,
+    proposed_at: new Date().toISOString(),
+    source_language: sourceLanguage,
+    cipher_type: 'verbose',
+    target_folio: targetFolio.folio_id,
+    target_plant: targetFolio.plant_name,
+    symbol_map: sa.map,
+    decoded_text: sa.decoded,
     grounding_score: primaryGrounding,
     consistency_score: consistencyScore,
     cross_folio_results: crossFolioResults,
@@ -912,6 +1243,165 @@ function applyMap(evaText: string, symbolMap: Record<string, string>): string {
 }
 
 /**
+ * Reeds-style null preprocessor: strip word-initial `q` and word-final `y`.
+ * These two glyphs together account for ~25% of the EVA corpus and cluster
+ * suspiciously by word position — common candidates for scribal markers /
+ * filler rather than content. Stripping them before substitution gives the
+ * hill-climber a smaller, less constrained alphabet to fit.
+ */
+function stripNulls(evaText: string): string {
+  return evaText.split(/(\s+|\.+)/).map((tok) => {
+    if (/^[\s.]+$/.test(tok)) return tok;
+    let w = tok;
+    if (w.startsWith('q')) w = w.slice(1);
+    if (w.endsWith('y')) w = w.slice(0, -1);
+    return w;
+  }).join('');
+}
+
+// ---------------------------------------------------------------------------
+// Verbose cipher — many-to-many EVA→Latin map searched via simulated annealing
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a verbose seed map. Keys are EVA singles, bigrams, or trigrams; values
+ * are 0–3 plaintext characters. Covers scribal abbreviations as a special case
+ * (`y` → `us`, `dy` → `tio`).
+ */
+function generateVerboseSeed(language: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  const langLetters = LANG_FREQ[language] ?? LANG_FREQ.latin;
+
+  // Single glyphs — frequency-aligned to language baseline
+  const singles = ['o','a','i','n','s','e','l','r','c','d','t','k','f','p','m','h'];
+  singles.forEach((s, i) => { map[s] = langLetters[i % langLetters.length]; });
+
+  // EVA bigrams that appear unusually often → likely encode common 2-letter Latin sequences
+  const evaBigrams = ['qo','ch','sh','th','ct','ee','ar','or','ol','ai','ey'];
+  const latinSeqs = language === 'latin'
+    ? ['qu','ch','st','tu','ct','ee','ar','or','al','ae','er']
+    : ['qu','ch','sc','tt','tt','ee','ar','or','al','ai','er'];
+  evaBigrams.forEach((b, i) => { map[b] = latinSeqs[i] ?? langLetters[i % langLetters.length]; });
+
+  // Scribal abbreviation candidates — single EVA glyph or digraph → multi-char suffix
+  if (language === 'latin') {
+    map.y = 'us';
+    map.dy = 'tio';
+    map.aiin = 'ium';
+    map.iin = 'um';
+    map.q = '';
+  } else {
+    map.y = 'i';
+    map.dy = 'zione';
+    map.aiin = 'ione';
+    map.iin = 'one';
+    map.q = '';
+  }
+  return map;
+}
+
+/**
+ * Mutate a verbose map. One of: swap output values, change a char in an
+ * output, lengthen/shorten an output by 1, or add/remove a bigram entry.
+ */
+function mutateVerboseMap(map: Record<string, string>, language: string): Record<string, string> {
+  const result = { ...map };
+  const keys = Object.keys(result);
+  if (keys.length < 2) return result;
+  const langLetters = LANG_FREQ[language] ?? LANG_FREQ.latin;
+  const op = Math.random();
+
+  if (op < 0.4) {
+    // Swap output values between two entries
+    const i = Math.floor(Math.random() * keys.length);
+    let j = Math.floor(Math.random() * keys.length);
+    if (i === j) j = (j + 1) % keys.length;
+    [result[keys[i]], result[keys[j]]] = [result[keys[j]], result[keys[i]]];
+  } else if (op < 0.7) {
+    // Replace one character in an output
+    const k = keys[Math.floor(Math.random() * keys.length)];
+    const v = result[k];
+    if (v.length > 0) {
+      const ci = Math.floor(Math.random() * v.length);
+      const newChar = langLetters[Math.floor(Math.random() * langLetters.length)];
+      result[k] = v.slice(0, ci) + newChar + v.slice(ci + 1);
+    } else {
+      result[k] = langLetters[Math.floor(Math.random() * langLetters.length)];
+    }
+  } else if (op < 0.85) {
+    // Lengthen or shorten an output
+    const k = keys[Math.floor(Math.random() * keys.length)];
+    const v = result[k];
+    if (v.length > 0 && Math.random() < 0.5) {
+      result[k] = v.slice(0, -1);
+    } else if (v.length < 4) {
+      result[k] = v + langLetters[Math.floor(Math.random() * langLetters.length)];
+    }
+  } else {
+    // Add or remove an EVA bigram entry
+    const evaCandidates = ['qok','dy','ey','ar','or','ol','aiin','iin','chol','ched','shed','okeedy','chedy','shedy','qokeedy','qokedy','okain'];
+    const ec = evaCandidates[Math.floor(Math.random() * evaCandidates.length)];
+    if (ec in result && Math.random() < 0.5) {
+      delete result[ec];
+    } else {
+      const len = 1 + Math.floor(Math.random() * 3);
+      let newVal = '';
+      for (let c = 0; c < len; c++) {
+        newVal += langLetters[Math.floor(Math.random() * langLetters.length)];
+      }
+      result[ec] = newVal;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Simulated annealing search over verbose maps. Greedy hill-climbing fails
+ * here because the search space is much larger and full of plateaus —
+ * accepting occasional worsening moves (with cooling temperature) escapes
+ * local optima.
+ */
+function simulatedAnnealVerbose(
+  evaText: string,
+  initialMap: Record<string, string>,
+  language: string,
+  steps: number,
+): { map: Record<string, string>; decoded: string; score: number; improvements: number } {
+  let curMap = initialMap;
+  let curDecoded = applyMap(evaText, curMap);
+  let curScore = hillClimbScore(curDecoded, language);
+  let bestMap = curMap;
+  let bestDecoded = curDecoded;
+  let bestScore = curScore;
+  let improvements = 0;
+
+  const T_START = 0.08;
+  const T_END = 0.005;
+
+  for (let step = 0; step < steps; step++) {
+    const t = T_START * Math.pow(T_END / T_START, step / steps);
+    const cand = mutateVerboseMap(curMap, language);
+    const decoded = applyMap(evaText, cand);
+    const score = hillClimbScore(decoded, language);
+    const dScore = score - curScore;
+
+    if (dScore > 0 || Math.random() < Math.exp(dScore / Math.max(t, 1e-6))) {
+      curMap = cand;
+      curDecoded = decoded;
+      curScore = score;
+      if (score > bestScore) {
+        bestMap = cand;
+        bestDecoded = decoded;
+        bestScore = score;
+        improvements++;
+      }
+    }
+  }
+  return { map: bestMap, decoded: bestDecoded, score: bestScore, improvements };
+}
+
+/**
  * Score how well decoded text matches expected plant terms.
  * Returns 0-1 based on exact matches, substring matches, and prefix matches.
  */
@@ -948,60 +1438,188 @@ function scoreTermOverlap(text: string, terms: string[]): number {
 function broadGrounding(text: string, language: string, plantTerms: string[]): number {
   const termScore = scoreTermOverlap(text, plantTerms);
   const dictScore_ = dictionaryScore(text, language);
-  const bigramScore = quickBigramScore(text, language);
+  const lmScore = langModelScore(text, language);
+  const quality = dictionaryQuality(text, language);
 
-  return termScore * 0.3 + dictScore_ * 0.4 + bigramScore * 0.3;
+  return termScore * 0.3 + (dictScore_ * quality) * 0.4 + lmScore * 0.3;
 }
 
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 
-export async function runTheoryLoop(maxRounds: number = 200): Promise<Theory[]> {
+/** Optional callback for live activity reporting to the dashboard. */
+type TheoryResultCallback = (entry: {
+  round: number; batch: number; folio: string; plant: string; lang: string;
+  cipher: string; grounding: number; consistency: number; combined: number;
+  dictScore: number; improvements: number; seedOrigin: string; decoded: string;
+}) => void;
+
+let _onTheoryResult: TheoryResultCallback | null = null;
+export function setOnTheoryResult(cb: TheoryResultCallback) { _onTheoryResult = cb; }
+
+async function loadStrategyStats(): Promise<void> {
+  if (strategyStatsLoaded) return;
+  strategyStatsLoaded = true;
+  try {
+    await executeSql(`
+      CREATE TABLE IF NOT EXISTS serverless_stable_qh44kx_catalog.voynich.strategy_stats (
+        strategy_key STRING,
+        attempts INT,
+        best_score DOUBLE,
+        last_attempted_at TIMESTAMP,
+        exhausted BOOLEAN
+      ) USING DELTA
+    `);
+    const rows = await executeSql(`
+      SELECT strategy_key, attempts, best_score,
+             CAST(last_attempted_at AS STRING) AS last_attempted_at,
+             exhausted
+      FROM serverless_stable_qh44kx_catalog.voynich.strategy_stats
+    `);
+    for (const r of rows) {
+      const exhaustedRaw: unknown = r.exhausted;
+      strategyStats.set(r.strategy_key, {
+        attempts: parseInt(r.attempts),
+        best_score: parseFloat(r.best_score),
+        last_attempted_at: r.last_attempted_at,
+        exhausted: exhaustedRaw === true || exhaustedRaw === 'true',
+      });
+    }
+    if (strategyStats.size > 0) {
+      console.log(`[strategy] Loaded ${strategyStats.size} strategy stats from Delta`);
+    }
+  } catch (err) {
+    console.warn('[strategy] Failed to load strategy stats:', err);
+  }
+}
+
+async function persistStrategyStat(key: string, stat: StrategyStat): Promise<void> {
+  const ts = stat.last_attempted_at.replace('T', ' ').replace('Z', '');
+  try {
+    await executeSql(`
+      MERGE INTO serverless_stable_qh44kx_catalog.voynich.strategy_stats AS t
+      USING (SELECT
+        '${key}' AS strategy_key,
+        CAST(${stat.attempts} AS INT) AS attempts,
+        CAST(${stat.best_score} AS DOUBLE) AS best_score,
+        TIMESTAMP '${ts}' AS last_attempted_at,
+        ${stat.exhausted} AS exhausted
+      ) AS s
+      ON t.strategy_key = s.strategy_key
+      WHEN MATCHED THEN UPDATE SET
+        attempts = s.attempts,
+        best_score = s.best_score,
+        last_attempted_at = s.last_attempted_at,
+        exhausted = s.exhausted
+      WHEN NOT MATCHED THEN INSERT (strategy_key, attempts, best_score, last_attempted_at, exhausted)
+        VALUES (s.strategy_key, s.attempts, s.best_score, s.last_attempted_at, s.exhausted)
+    `);
+  } catch (err) {
+    console.warn(`[strategy] Failed to persist stat for ${key}:`, err);
+  }
+}
+
+function pickNextStrategy(): Strategy {
+  // 1. Untried strategies first
+  for (const s of STRATEGIES) {
+    if (!strategyStats.has(strategyKey(s))) return s;
+  }
+  // 2. Non-exhausted, oldest last_attempted_at
+  const live = STRATEGIES.filter((s) => !strategyStats.get(strategyKey(s))!.exhausted);
+  if (live.length > 0) {
+    live.sort((a, b) =>
+      strategyStats.get(strategyKey(a))!.last_attempted_at.localeCompare(
+        strategyStats.get(strategyKey(b))!.last_attempted_at
+      ),
+    );
+    return live[0];
+  }
+  // 3. All exhausted — clear flags and pick weakest (give losers another shot
+  //    against the now-richer elite pool).
+  console.log('[strategy] All strategies exhausted — resetting and trying weakest');
+  for (const s of STRATEGIES) strategyStats.get(strategyKey(s))!.exhausted = false;
+  const sorted = [...STRATEGIES].sort((a, b) =>
+    strategyStats.get(strategyKey(a))!.best_score - strategyStats.get(strategyKey(b))!.best_score
+  );
+  return sorted[0];
+}
+
+export async function runTheoryLoop(numBursts: number = 10, batch: number = 0): Promise<Theory[]> {
   const folios = await loadFolios();
   const highConfidence = folios.filter((f) => f.confidence >= 0.5);
-  // Focus on Latin (strongest signal) and Italian (runner-up). Greek has no dictionary.
-  const languages = ['latin', 'latin', 'latin', 'italian', 'italian'];
+  await loadStrategyStats();
 
-  console.log(`[theory-loop] Starting with ${highConfidence.length} high-confidence folios, ${maxRounds} rounds`);
+  console.log(`[theory-loop] Starting ${numBursts} bursts × ${ROUNDS_PER_BURST} rounds with ${highConfidence.length} high-confidence folios`);
 
   const theories: Theory[] = [];
 
-  for (let round = 0; round < maxRounds; round++) {
-    // Pick a random folio and language (weighted toward Latin)
-    const folio = highConfidence[Math.floor(Math.random() * highConfidence.length)];
-    const lang = languages[Math.floor(Math.random() * languages.length)];
+  for (let burst = 0; burst < numBursts; burst++) {
+    const strategy = pickNextStrategy();
+    const key = strategyKey(strategy);
+    const prevStat = strategyStats.get(key);
+    const prevBest = prevStat?.best_score ?? 0;
+    const attempts = prevStat?.attempts ?? 0;
 
-    // Mostly substitution — it's outperforming polyalphabetic
-    const cipherType = round % 5 === 4 ? 'polyalphabetic' : 'substitution';
+    console.log(`[strategy] BURST ${burst + 1}/${numBursts}: ${key} (prev_best=${prevBest.toFixed(3)}, attempts=${attempts})`);
 
-    console.log(`[theory-loop] Round ${round}: ${folio.folio_id} (${folio.plant_name}) in ${lang} [${cipherType}]`);
+    let burstBest = 0;
+    for (let round = 0; round < ROUNDS_PER_BURST; round++) {
+      const folio = highConfidence[Math.floor(Math.random() * highConfidence.length)];
+      console.log(`[theory-loop] Burst ${burst + 1} Round ${round}: ${folio.folio_id} (${folio.plant_name}) [${strategy.cipherType}/${strategy.seedMode}]`);
 
-    try {
-      const theory = await proposeTheory(folio, folios, lang, cipherType);
-
-      console.log(`[theory-loop]   grounding=${theory.grounding_score.toFixed(3)} consistency=${theory.consistency_score.toFixed(3)} decoded="${theory.decoded_text.slice(0, 50)}"`);
-
-      // Challenge the theory
-      const challenge = await challengeTheory(theory, folios);
-      let verdict = 'unknown';
       try {
-        const cleaned = challenge.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(cleaned);
-        verdict = parsed.verdict || 'unknown';
-        console.log(`[theory-loop]   skeptic: ${verdict} — ${(parsed.strongest_objection || '').slice(0, 80)}`);
-      } catch {
-        console.log(`[theory-loop]   skeptic: unparseable`);
+        const theory = await proposeTheory(folio, folios, strategy.language, strategy.cipherType, strategy.seedMode);
+        const combined = theory.grounding_score + theory.consistency_score;
+        if (combined > burstBest) burstBest = combined;
+
+        console.log(`[theory-loop]   grounding=${theory.grounding_score.toFixed(3)} consistency=${theory.consistency_score.toFixed(3)} decoded="${theory.decoded_text.slice(0, 50)}"`);
+
+        if (_onTheoryResult) {
+          _onTheoryResult({
+            round, batch: burst, folio: folio.folio_id, plant: folio.plant_name,
+            lang: strategy.language, cipher: strategy.cipherType,
+            grounding: theory.grounding_score, consistency: theory.consistency_score,
+            combined,
+            dictScore: dictionaryScore(theory.decoded_text, strategy.language),
+            improvements: 0, seedOrigin: strategy.seedMode,
+            decoded: theory.decoded_text,
+          });
+        }
+
+        const challenge = await challengeTheory(theory, folios);
+        let verdict = 'unknown';
+        try {
+          const cleaned = challenge.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
+          const parsed = JSON.parse(cleaned);
+          verdict = parsed.verdict || 'unknown';
+          console.log(`[theory-loop]   skeptic: ${verdict} — ${(parsed.strongest_objection || '').slice(0, 80)}`);
+        } catch {
+          console.log(`[theory-loop]   skeptic: unparseable`);
+        }
+
+        theories.push(theory);
+        await persistTheory(theory, verdict);
+      } catch (err) {
+        console.error(`[theory-loop] Burst ${burst + 1} Round ${round} failed:`, err);
       }
-
-      theories.push(theory);
-
-      // Persist to Delta
-      await persistTheory(theory, verdict);
-
-    } catch (err) {
-      console.error(`[theory-loop] Round ${round} failed:`, err);
     }
+
+    // Evaluate strategy progress
+    const delta = burstBest - prevBest;
+    const exhausted = delta < PROGRESS_THRESHOLD;
+    const newStat: StrategyStat = {
+      attempts: attempts + 1,
+      best_score: Math.max(prevBest, burstBest),
+      last_attempted_at: new Date().toISOString(),
+      exhausted,
+    };
+    strategyStats.set(key, newStat);
+    await persistStrategyStat(key, newStat);
+
+    const sign = delta >= 0 ? '+' : '';
+    const flag = exhausted ? '⊘ exhausted' : '✓ progressing';
+    console.log(`[strategy] BURST ${burst + 1} done: ${key} burst_best=${burstBest.toFixed(3)} (Δ=${sign}${delta.toFixed(3)}) ${flag}`);
   }
 
   // Report best theories
