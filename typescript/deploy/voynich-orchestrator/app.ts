@@ -201,6 +201,86 @@ import { mountTraceDashboard } from './trace-dashboard.ts';
 mountTraceDashboard(app);
 
 // ---------------------------------------------------------------------------
+// Live activity ring buffer — recent theory results for the dashboard
+// ---------------------------------------------------------------------------
+
+interface ActivityEntry {
+  time: string;
+  round: number;
+  batch: number;
+  folio: string;
+  plant: string;
+  lang: string;
+  cipher: string;
+  grounding: number;
+  consistency: number;
+  combined: number;
+  dictScore: number;
+  improvements: number;
+  seedOrigin: string;
+  decoded: string;
+}
+
+const activityLog: ActivityEntry[] = [];
+const ACTIVITY_LOG_SIZE = 50;
+let currentBurst = 0;
+let currentRound = 0;
+let activeStrategy = '';
+let allTimeBestCombined = 0;
+
+/** Called by the theory loop to push live results to the dashboard. */
+export function logActivity(entry: Omit<ActivityEntry, 'time'>) {
+  activityLog.push({ ...entry, time: new Date().toISOString() });
+  if (activityLog.length > ACTIVITY_LOG_SIZE) activityLog.shift();
+  if (entry.combined > allTimeBestCombined) allTimeBestCombined = entry.combined;
+  currentRound = entry.round;
+  currentBurst = entry.batch;
+  activeStrategy = `${entry.lang}|${entry.cipher}|${entry.seedOrigin}`;
+}
+
+// Expose activity as JSON endpoint
+app.get('/api/activity', (_req, res) => {
+  res.json({
+    burst: currentBurst,
+    round: currentRound,
+    activeStrategy,
+    allTimeBest: allTimeBestCombined,
+    entries: activityLog.slice(-30),
+  });
+});
+
+// Strategy stats endpoint — reads from Delta
+app.get('/api/strategies', async (_req, res) => {
+  try {
+    const { resolveToken: rt, resolveHost: rh } = await import('./appkit-agent/index.mjs');
+    const tk = await rt();
+    const h = rh();
+    const sqlRes = await fetch(h + '/api/2.0/sql/statements', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tk}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        warehouse_id: process.env.DATABRICKS_WAREHOUSE_ID,
+        statement: `SELECT strategy_key, attempts, ROUND(best_score,3) AS best_score,
+                           CAST(last_attempted_at AS STRING) AS last_attempted_at, exhausted
+                    FROM serverless_stable_qh44kx_catalog.voynich.strategy_stats
+                    ORDER BY best_score DESC`,
+        wait_timeout: '15s',
+      }),
+    });
+    const j: any = await sqlRes.json();
+    const cols = (j.manifest?.schema?.columns || []).map((c: any) => c.name);
+    const rows = (j.result?.data_array || []).map((row: any[]) => {
+      const obj: any = {};
+      cols.forEach((c: string, i: number) => (obj[c] = row[i]));
+      return obj;
+    });
+    res.json({ rows });
+  } catch (err: any) {
+    res.json({ rows: [], error: String(err?.message ?? err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Results dashboard
 // ---------------------------------------------------------------------------
 
@@ -210,63 +290,205 @@ app.get('/_apx/results', async (_req, res) => {
 <html>
 <head>
   <title>Voynich Theory Results</title>
-  <meta http-equiv="refresh" content="30">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a1a; color: #e0e0e0; padding: 24px; }
-    h1 { font-size: 24px; margin-bottom: 8px; color: #fff; }
-    .subtitle { color: #888; margin-bottom: 24px; font-size: 14px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .card { background: #1a1a2e; border: 1px solid #333; border-radius: 8px; padding: 16px; }
-    .card .label { font-size: 11px; text-transform: uppercase; color: #888; margin-bottom: 4px; }
-    .card .value { font-size: 28px; font-weight: 600; color: #4dd0e1; }
+    h1 { font-size: 24px; margin-bottom: 4px; color: #fff; }
+    .subtitle { color: #888; margin-bottom: 20px; font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .card { background: #1a1a2e; border: 1px solid #333; border-radius: 8px; padding: 14px; }
+    .card .label { font-size: 10px; text-transform: uppercase; color: #888; margin-bottom: 4px; }
+    .card .value { font-size: 26px; font-weight: 600; color: #4dd0e1; }
     .card .value.green { color: #4caf50; }
+    .card .value.amber { color: #ffb74d; }
     .card .value.red { color: #ef5350; }
-    table { width: 100%; border-collapse: collapse; background: #1a1a2e; border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
-    th { background: #252540; padding: 10px 12px; text-align: left; font-size: 12px; text-transform: uppercase; color: #888; }
-    td { padding: 10px 12px; border-top: 1px solid #252540; font-size: 13px; }
+    .card .sub { font-size: 11px; color: #666; margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; background: #1a1a2e; border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
+    th { background: #252540; padding: 8px 10px; text-align: left; font-size: 11px; text-transform: uppercase; color: #888; }
+    td { padding: 8px 10px; border-top: 1px solid #252540; font-size: 12px; }
     tr:hover { background: #252540; }
-    .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
-    .tag.rejected { background: #3e1a1a; color: #ef5350; }
-    .tag.plausible { background: #1a3e1a; color: #4caf50; }
-    .tag.weak { background: #3e3a1a; color: #ffb74d; }
-    .bar { height: 6px; border-radius: 3px; background: #333; }
+    .bar { height: 6px; border-radius: 3px; background: #333; display: inline-block; width: 60px; vertical-align: middle; }
     .bar-fill { height: 100%; border-radius: 3px; background: #4dd0e1; }
-    .section { margin-bottom: 24px; }
-    .section h2 { font-size: 16px; margin-bottom: 12px; color: #ccc; }
-    .refreshing { position: fixed; top: 12px; right: 12px; font-size: 11px; color: #555; }
+    .section { margin-bottom: 20px; }
+    .section h2 { font-size: 15px; margin-bottom: 10px; color: #ccc; display: flex; align-items: center; gap: 8px; }
+    .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #4caf50; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .activity-row { font-family: 'SF Mono', Monaco, monospace; font-size: 11px; line-height: 1.6; padding: 2px 0; border-bottom: 1px solid #1a1a2e; }
+    .activity-row:hover { background: #252540; }
+    .activity-row .time { color: #555; }
+    .activity-row .score { color: #4dd0e1; font-weight: 600; }
+    .activity-row .score.high { color: #4caf50; }
+    .activity-row .decoded { color: #aaa; }
+    .activity-row .origin { color: #7c4dff; font-size: 10px; }
+    .status-bar { position: fixed; top: 0; left: 0; right: 0; background: #1a1a2e; border-bottom: 1px solid #333; padding: 8px 24px; display: flex; gap: 24px; align-items: center; font-size: 12px; z-index: 100; }
+    .status-bar .live { color: #4caf50; }
+    body { padding-top: 52px; }
+    .tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; }
+    .tag.latin { background: #1a2e1a; color: #81c784; }
+    .tag.italian { background: #1a1a2e; color: #64b5f6; }
   </style>
 </head>
 <body>
-  <h1>Voynich Manuscript — Theory-Driven Decoding</h1>
-  <p class="subtitle">Auto-refreshes every 30 seconds. LLM-routed orchestrator with EA + theory investigation.</p>
-  <span class="refreshing">Last refresh: <span id="ts"></span></span>
+  <div class="status-bar">
+    <div><span class="live-dot" style="display:inline-block"></span></div>
+    <div>Burst <b id="sb-burst">-</b>/14 · Round <b id="sb-round">-</b>/20</div>
+    <div>🎯 <b id="sb-strategy" style="color:#bb86fc">-</b></div>
+    <div>Best: <b id="sb-best" style="color:#4caf50">-</b></div>
+    <div>Total: <b id="sb-total">-</b></div>
+    <div style="margin-left:auto;color:#555" id="sb-ts">-</div>
+  </div>
+
+  <h1>Voynich Manuscript — Decipherment Search</h1>
+  <p class="subtitle">Strategy-rotating hill-climb · 8 strategies × 20-round bursts · cold mode escapes the consensus basin</p>
+
   <div class="grid" id="summary"></div>
-  <div class="section"><h2>By Language</h2><div id="by-lang"></div></div>
+
   <div class="section">
-    <h2>Top Theories</h2>
+    <h2><span class="live-dot"></span> Strategy Rotation</h2>
+    <table id="strategies-table">
+      <thead><tr><th>Strategy</th><th>Lang</th><th>Cipher</th><th>Seed</th><th>Attempts</th><th>Best</th><th>Last Run</th><th>Status</th></tr></thead>
+      <tbody id="strategies"></tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2><span class="live-dot"></span> Live Activity</h2>
+    <div id="activity" style="background:#0d0d1a;border:1px solid #252540;border-radius:8px;padding:12px;max-height:360px;overflow-y:auto;font-family:'SF Mono',Monaco,monospace"></div>
+  </div>
+
+  <div class="section">
+    <h2>Top Theories (All Time)</h2>
     <table>
-      <thead><tr><th>Folio</th><th>Plant</th><th>Language</th><th>Cipher</th><th>Grounding</th><th>Consistency</th><th>Verdict</th><th>Decoded Text</th></tr></thead>
+      <thead><tr><th>Folio</th><th>Plant</th><th>Lang</th><th>Grounding</th><th>Consistency</th><th>Combined</th><th>Decoded Text</th></tr></thead>
       <tbody id="theories"></tbody>
     </table>
   </div>
+
+  <div class="section">
+    <h2>Recent Best (Last 100)</h2>
+    <table>
+      <thead><tr><th>Folio</th><th>Plant</th><th>Lang</th><th>Grounding</th><th>Consistency</th><th>Combined</th><th>Decoded Text</th></tr></thead>
+      <tbody id="recent"></tbody>
+    </table>
+  </div>
+
   <script>
-    document.getElementById('ts').textContent = new Date().toLocaleTimeString();
     async function query(sql) {
       const res = await fetch('/api/sql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ statement: sql }) });
       const d = await res.json();
       const cols = (d.manifest?.schema?.columns || []).map(c => c.name);
       return (d.result?.data_array || []).map(row => { const obj = {}; cols.forEach((c, i) => obj[c] = row[i]); return obj; });
     }
-    async function load() {
-      const summary = await query(\`SELECT COUNT(*) total, COUNT(CASE WHEN grounding_score > 0 THEN 1 END) grounded, ROUND(MAX(grounding_score),3) best_grd, ROUND(MAX(consistency_score),3) best_cons, COUNT(CASE WHEN verdict = 'plausible' THEN 1 END) plausible, COUNT(CASE WHEN verdict = 'rejected' THEN 1 END) rejected FROM serverless_stable_qh44kx_catalog.voynich.theories\`);
-      if (summary[0]) { const s = summary[0]; document.getElementById('summary').innerHTML = \`<div class="card"><div class="label">Total Theories</div><div class="value">\${s.total}</div></div><div class="card"><div class="label">Best Grounding</div><div class="value \${parseFloat(s.best_grd) > 0 ? 'green' : ''}">\${s.best_grd}</div></div><div class="card"><div class="label">Best Consistency</div><div class="value \${parseFloat(s.best_cons) > 0 ? 'green' : 'red'}">\${s.best_cons}</div></div><div class="card"><div class="label">Plausible</div><div class="value green">\${s.plausible}</div></div><div class="card"><div class="label">Rejected</div><div class="value red">\${s.rejected}</div></div>\`; }
-      const langs = await query(\`SELECT source_language, COUNT(*) n, ROUND(AVG(grounding_score),3) avg_grd, ROUND(MAX(grounding_score),3) best_grd FROM serverless_stable_qh44kx_catalog.voynich.theories GROUP BY source_language ORDER BY avg_grd DESC\`);
-      document.getElementById('by-lang').innerHTML = '<table><thead><tr><th>Language</th><th>Theories</th><th>Avg Grounding</th><th>Best Grounding</th></tr></thead><tbody>' + langs.map(l => \`<tr><td>\${l.source_language}</td><td>\${l.n}</td><td>\${l.avg_grd}</td><td>\${l.best_grd}</td></tr>\`).join('') + '</tbody></table>';
-      const theories = await query(\`SELECT target_folio, target_plant, source_language, cipher_type, ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons, verdict, SUBSTRING(decoded_text, 1, 60) decoded FROM serverless_stable_qh44kx_catalog.voynich.theories ORDER BY (grounding_score + consistency_score) DESC LIMIT 20\`);
-      document.getElementById('theories').innerHTML = theories.map(t => \`<tr><td>\${t.target_folio}</td><td>\${t.target_plant}</td><td>\${t.source_language}</td><td>\${t.cipher_type || '-'}</td><td><div class="bar"><div class="bar-fill" style="width:\${parseFloat(t.grd)*100}%"></div></div> \${t.grd}</td><td><div class="bar"><div class="bar-fill" style="width:\${parseFloat(t.cons)*100}%"></div></div> \${t.cons}</td><td><span class="tag \${t.verdict}">\${t.verdict}</span></td><td style="font-family:monospace;font-size:12px">\${t.decoded}</td></tr>\`).join('');
+
+    function barHtml(val) {
+      const pct = Math.min(parseFloat(val) * 100, 100);
+      const color = pct > 30 ? '#4caf50' : pct > 15 ? '#ffb74d' : '#4dd0e1';
+      return '<div class="bar"><div class="bar-fill" style="width:'+pct+'%;background:'+color+'"></div></div> '+val;
     }
-    load();
+
+    async function loadActivity() {
+      try {
+        const res = await fetch('/api/activity');
+        const data = await res.json();
+        document.getElementById('sb-burst').textContent = (data.burst ?? 0) + 1;
+        document.getElementById('sb-round').textContent = (data.round ?? 0) + 1;
+        document.getElementById('sb-strategy').textContent = data.activeStrategy || 'idle';
+        document.getElementById('sb-best').textContent = (data.allTimeBest || 0).toFixed(3);
+        document.getElementById('sb-ts').textContent = new Date().toLocaleTimeString();
+
+        const el = document.getElementById('activity');
+        if (!data.entries || data.entries.length === 0) {
+          el.innerHTML = '<div style="color:#555;padding:8px">Waiting for first result...</div>';
+          return;
+        }
+        el.innerHTML = data.entries.slice().reverse().map(e => {
+          const combined = (e.grounding + e.consistency).toFixed(3);
+          const isHigh = parseFloat(combined) > 0.3;
+          const t = new Date(e.time).toLocaleTimeString();
+          const seedTag = e.seedOrigin === 'cold'
+            ? '<span style="background:#3a1a2e;color:#ff6ec7;padding:1px 4px;border-radius:3px;font-size:9px;">COLD</span>'
+            : '<span style="background:#1a2e3a;color:#64b5f6;padding:1px 4px;border-radius:3px;font-size:9px;">ELITE</span>';
+          return '<div class="activity-row">' +
+            '<span class="time">'+t+'</span> ' +
+            'B'+(e.batch+1)+'/R'+(e.round+1)+' ' +
+            '<span class="tag '+(e.lang||'')+'">'+e.lang+'</span> ' +
+            '<span style="color:#aaa;font-size:10px">'+(e.cipher||'sub').slice(0,5)+'</span> ' +
+            seedTag+' ' +
+            e.folio+' ('+(e.plant||'').slice(0,18)+') ' +
+            '<span class="score'+(isHigh?' high':'')+'">'+combined+'</span> ' +
+            'grd='+e.grounding.toFixed(3)+' cons='+e.consistency.toFixed(3)+' ' +
+            'dict='+e.dictScore.toFixed(3)+' ' +
+            '<span class="decoded">"'+e.decoded.slice(0,50)+'"</span>' +
+            '</div>';
+        }).join('');
+      } catch(e) {}
+    }
+
+    async function loadStrategies() {
+      try {
+        const res = await fetch('/api/strategies');
+        const data = await res.json();
+        const active = (document.getElementById('sb-strategy').textContent || '').trim();
+        const tbody = document.getElementById('strategies');
+        if (!data.rows || data.rows.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="8" style="color:#555;text-align:center;padding:12px">No strategies attempted yet — first burst will populate this table.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = data.rows.map(r => {
+          const parts = (r.strategy_key||'').split('|');
+          const isActive = r.strategy_key === active;
+          const status = r.exhausted === 'true' || r.exhausted === true
+            ? '<span style="color:#ef5350">⊘ exhausted</span>'
+            : '<span style="color:#4caf50">✓ progressing</span>';
+          const seedColor = parts[2] === 'cold' ? '#ff6ec7' : '#64b5f6';
+          const lastRun = r.last_attempted_at ? new Date(r.last_attempted_at.replace(' ','T')+'Z').toLocaleTimeString() : '-';
+          const rowStyle = isActive ? 'background:#2a1f3d;border-left:3px solid #bb86fc' : '';
+          const activeMark = isActive ? '🎯 ' : '';
+          return '<tr style="'+rowStyle+'">' +
+            '<td><b>'+activeMark+(r.strategy_key||'')+'</b></td>' +
+            '<td><span class="tag '+parts[0]+'">'+parts[0]+'</span></td>' +
+            '<td style="color:#aaa">'+parts[1]+'</td>' +
+            '<td style="color:'+seedColor+';font-weight:600">'+parts[2]+'</td>' +
+            '<td>'+r.attempts+'</td>' +
+            '<td>'+barHtml(r.best_score)+'</td>' +
+            '<td style="color:#888;font-size:10px">'+lastRun+'</td>' +
+            '<td>'+status+'</td>' +
+            '</tr>';
+        }).join('');
+      } catch(e) {}
+    }
+
+    async function loadDb() {
+      const summary = await query('SELECT COUNT(*) total, ROUND(MAX(grounding_score+consistency_score),3) best, ROUND(MAX(grounding_score),3) best_grd, ROUND(MAX(consistency_score),3) best_cons, ROUND(AVG(grounding_score+consistency_score),3) avg FROM serverless_stable_qh44kx_catalog.voynich.theories');
+      if (summary[0]) {
+        const s = summary[0];
+        document.getElementById('sb-total').textContent = s.total;
+        document.getElementById('summary').innerHTML =
+          '<div class="card"><div class="label">Total Theories</div><div class="value">'+s.total+'</div></div>' +
+          '<div class="card"><div class="label">Best Combined</div><div class="value green">'+s.best+'</div></div>' +
+          '<div class="card"><div class="label">Best Grounding</div><div class="value">'+s.best_grd+'</div></div>' +
+          '<div class="card"><div class="label">Best Consistency</div><div class="value">'+s.best_cons+'</div></div>' +
+          '<div class="card"><div class="label">Avg Combined</div><div class="value amber">'+s.avg+'</div></div>';
+      }
+
+      const theories = await query('SELECT target_folio, target_plant, source_language, ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons, ROUND(grounding_score+consistency_score,3) combined, SUBSTRING(decoded_text, 1, 80) decoded FROM serverless_stable_qh44kx_catalog.voynich.theories ORDER BY (grounding_score+consistency_score) DESC LIMIT 15');
+      document.getElementById('theories').innerHTML = theories.map(t =>
+        '<tr><td>'+t.target_folio+'</td><td>'+t.target_plant+'</td><td><span class="tag '+t.source_language+'">'+t.source_language+'</span></td><td>'+barHtml(t.grd)+'</td><td>'+barHtml(t.cons)+'</td><td><b>'+t.combined+'</b></td><td style="font-family:monospace;font-size:11px">'+t.decoded+'</td></tr>'
+      ).join('');
+
+      const recent = await query('SELECT target_folio, target_plant, source_language, ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons, ROUND(grounding_score+consistency_score,3) combined, SUBSTRING(decoded_text, 1, 80) decoded FROM serverless_stable_qh44kx_catalog.voynich.theories ORDER BY proposed_at DESC LIMIT 15');
+      document.getElementById('recent').innerHTML = recent.map(t =>
+        '<tr><td>'+t.target_folio+'</td><td>'+t.target_plant+'</td><td><span class="tag '+t.source_language+'">'+t.source_language+'</span></td><td>'+barHtml(t.grd)+'</td><td>'+barHtml(t.cons)+'</td><td><b>'+t.combined+'</b></td><td style="font-family:monospace;font-size:11px">'+t.decoded+'</td></tr>'
+      ).join('');
+    }
+
+    // Poll activity every 3s, strategies every 8s, DB summary every 30s
+    loadActivity();
+    loadStrategies();
+    loadDb();
+    setInterval(loadActivity, 3000);
+    setInterval(loadStrategies, 8000);
+    setInterval(loadDb, 30000);
   </script>
 </body>
 </html>`);
@@ -314,18 +536,20 @@ const mode = process.env.LOOP_MODE ?? 'theory';
 if (mode === 'theory') {
   console.log('[orchestrator] starting continuous theory-driven investigation');
   import('./theory-loop.ts').then(async (m) => {
+    // Wire live activity reporting
+    m.setOnTheoryResult((entry) => logActivity(entry));
+
     let batch = 0;
     while (true) {
       batch++;
-      console.log(`[orchestrator] === BATCH ${batch} starting (200 rounds) ===`);
+      console.log(`[orchestrator] === BATCH ${batch} starting (14 bursts × 20 rounds) ===`);
       try {
-        const theories = await m.runTheoryLoop(200);
+        const theories = await m.runTheoryLoop(14, batch);
         const best = theories[0];
         const bestCombined = best ? (best.grounding_score + best.consistency_score).toFixed(3) : '0';
         console.log(`[orchestrator] === BATCH ${batch} complete: ${theories.length} theories, best_combined=${bestCombined} ===`);
       } catch (err) {
         console.error(`[orchestrator] batch ${batch} crashed:`, err);
-        // Wait 30s before retrying on crash
         await new Promise((r) => setTimeout(r, 30_000));
       }
     }
