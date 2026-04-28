@@ -227,9 +227,10 @@ async def stream_via_sdk(
                     yield delta
             # Also handle OutputTextDelta events from the Responses API format
             elif hasattr(event, 'type') and 'output_text' in str(getattr(event, 'type', '')):
-                if hasattr(event, 'delta') and isinstance(event.delta, str):
-                    full_text += event.delta
-                    yield event.delta
+                event_delta = getattr(event, 'delta', None)
+                if isinstance(event_delta, str):
+                    full_text += event_delta
+                    yield event_delta
     except Exception:
         if llm_span is not None:
             end_span(llm_span, output=truncate(full_text, 500), metadata={"error": True})
