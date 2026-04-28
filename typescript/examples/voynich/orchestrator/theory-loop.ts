@@ -644,51 +644,104 @@ export async function proposeTheory(
   const allEvaTexts = allFolios.map((f) => f.eva_sample).filter(Boolean);
   const evaFreqs = countEvaFrequencies(allEvaTexts);
 
-  // Step 2: Generate seed maps — consensus, crossbred offspring, and perturbed variants
-  const seeds: Array<{ map: Record<string, string>; decoded: string; score: number }> = [];
+  // Step 2: Generate diverse seed maps — exploitation AND exploration.
+  // Mix of: consensus/elite (exploit), radical new architectures (explore).
+  const seeds: Array<{ map: Record<string, string>; decoded: string; score: number; origin: string }> = [];
 
-  // Seed 0: pure consensus map
+  // --- EXPLOITATION SEEDS (build on what works) ---
+
+  // Seed: pure consensus map
   const consensusMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
   const consensusDecoded = applyMap(evaText, consensusMap);
-  seeds.push({ map: consensusMap, decoded: consensusDecoded, score: hillClimbScore(consensusDecoded, sourceLanguage) });
+  seeds.push({ map: consensusMap, decoded: consensusDecoded, score: hillClimbScore(consensusDecoded, sourceLanguage), origin: 'consensus' });
 
-  // Seeds from crossbreeding elite pool (if we have enough elites for this language)
+  // Seeds from crossbreeding elite pool
   const elitesForLang = elitePool.filter((e) => e.language === sourceLanguage);
   if (elitesForLang.length >= 2) {
     for (let s = 0; s < 2; s++) {
-      // Tournament selection: pick 2 random elites, breed the better ones
       const idxA = Math.floor(Math.random() * elitesForLang.length);
       let idxB = Math.floor(Math.random() * elitesForLang.length);
       while (idxB === idxA && elitesForLang.length > 1) idxB = Math.floor(Math.random() * elitesForLang.length);
       const child = crossbreed(elitesForLang[idxA].map, elitesForLang[idxB].map, sourceLanguage);
       const decoded = applyMap(evaText, child);
-      seeds.push({ map: child, decoded, score: hillClimbScore(decoded, sourceLanguage) });
+      seeds.push({ map: child, decoded, score: hillClimbScore(decoded, sourceLanguage), origin: 'crossbred' });
     }
   }
 
-  // Fill remaining seeds with perturbed consensus maps
+  // --- EXPLORATION SEEDS (radically different starting points) ---
+
+  // Seed: reverse frequency — map most common EVA to LEAST common target letters
+  const reverseLetters = [...(LANG_FREQ[sourceLanguage] ?? LANG_FREQ.latin)].reverse();
+  const reverseMap: Record<string, string> = {};
+  for (let i = 0; i < evaFreqs.length; i++) {
+    reverseMap[evaFreqs[i][0]] = reverseLetters[Math.min(i, reverseLetters.length - 1)];
+  }
+  const reverseDecoded = applyMap(evaText, reverseMap);
+  seeds.push({ map: reverseMap, decoded: reverseDecoded, score: hillClimbScore(reverseDecoded, sourceLanguage), origin: 'reverse-freq' });
+
+  // Seed: vowel hypothesis — map high-freq EVA glyphs to vowels, rest to consonants
+  const vowels = sourceLanguage === 'italian' ? ['e','a','i','o','u'] : ['e','i','a','u','o'];
+  const consonants = sourceLanguage === 'italian'
+    ? ['n','l','r','t','s','c','d','p','m','v','g','b','f','h','z','q']
+    : ['t','s','n','r','l','c','m','d','p','b','q','g','v','f','h','x'];
+  const vowelMap: Record<string, string> = {};
+  for (let i = 0; i < evaFreqs.length; i++) {
+    if (i < vowels.length) {
+      vowelMap[evaFreqs[i][0]] = vowels[i];
+    } else {
+      vowelMap[evaFreqs[i][0]] = consonants[Math.min(i - vowels.length, consonants.length - 1)];
+    }
+  }
+  const vowelDecoded = applyMap(evaText, vowelMap);
+  seeds.push({ map: vowelMap, decoded: vowelDecoded, score: hillClimbScore(vowelDecoded, sourceLanguage), origin: 'vowel-hyp' });
+
+  // Seed: fully random shuffle — complete restart, no assumptions
+  const randomMap: Record<string, string> = {};
+  const allLetters = [...(LANG_FREQ[sourceLanguage] ?? LANG_FREQ.latin)];
+  const shuffled = [...allLetters].sort(() => Math.random() - 0.5);
+  for (let i = 0; i < evaFreqs.length; i++) {
+    randomMap[evaFreqs[i][0]] = shuffled[Math.min(i, shuffled.length - 1)];
+  }
+  const randomDecoded = applyMap(evaText, randomMap);
+  seeds.push({ map: randomMap, decoded: randomDecoded, score: hillClimbScore(randomDecoded, sourceLanguage), origin: 'random' });
+
+  // Seed: historical Newbold-style — EVA 'o'→'a', 'a'→'e', 'i'→'i', 'd'→'d', etc.
+  // (phonetic similarity hypothesis — EVA chars look like the Latin letters they encode)
+  const phonMap: Record<string, string> = {
+    o: 'a', a: 'e', i: 'i', d: 'd', n: 'n', e: 'e', y: 'y', r: 'r', s: 's',
+    k: 'c', l: 'l', t: 't', h: 'h', c: 'c', f: 'f', p: 'p', m: 'm', q: 'q',
+    ch: 'k', sh: 'x', th: 'f', ct: 'st', ok: 'ac', qo: 'qu', ol: 'al', or: 'ar',
+    ai: 'ae', ee: 'ii', dy: 'dy', ey: 'ey', ar: 'ar', ck: 'ck',
+  };
+  const phonDecoded = applyMap(evaText, phonMap);
+  seeds.push({ map: phonMap, decoded: phonDecoded, score: hillClimbScore(phonDecoded, sourceLanguage), origin: 'phonetic' });
+
+  // Fill remaining with perturbed consensus
   while (seeds.length < SEED_MAPS) {
-    const perturbation = seeds.length / (SEED_MAPS - 1) * 0.5;
+    const perturbation = 0.3 + Math.random() * 0.4;  // 0.3-0.7 range — more aggressive
     const map = generateConsensusMap(evaFreqs, sourceLanguage, perturbation);
     const decoded = applyMap(evaText, map);
-    seeds.push({ map, decoded, score: hillClimbScore(decoded, sourceLanguage) });
+    seeds.push({ map, decoded, score: hillClimbScore(decoded, sourceLanguage), origin: 'perturbed' });
   }
 
   seeds.sort((a, b) => b.score - a.score);
   let bestMap = seeds[0].map;
   let bestDecoded = seeds[0].decoded;
   let bestScore = seeds[0].score;
+  const seedOrigin = seeds[0].origin;
 
-  console.log(`[theory-loop]   seeds=${SEED_MAPS} best_seed=${bestScore.toFixed(3)} dict=${dictionaryScore(bestDecoded, sourceLanguage).toFixed(3)} starting hill-climb...`);
+  console.log(`[theory-loop]   seeds=${seeds.length} best_seed=${bestScore.toFixed(3)} origin=${seedOrigin} dict=${dictionaryScore(bestDecoded, sourceLanguage).toFixed(3)} starting hill-climb...`);
 
-  // Step 3: Hill-climb — mostly focused mutations (uncertain glyphs only),
-  // with 10% wild mutations to escape local optima.
+  // Step 3: Hill-climb — balance focused vs wild mutations based on seed origin.
+  // Exploration seeds get more wild mutations; exploitation seeds stay focused.
+  const isExplorationSeed = ['reverse-freq', 'vowel-hyp', 'random', 'phonetic'].includes(seedOrigin);
+  const wildRate = isExplorationSeed ? 0.4 : 0.15;  // 40% wild for new architectures, 15% for exploitation
+
   let bestHillScore = hillClimbScore(bestDecoded, sourceLanguage);
   let improvements = 0;
 
   for (let step = 0; step < HILL_CLIMB_STEPS; step++) {
-    // 90% focused (only uncertain glyphs), 10% wild (any glyph)
-    const candidate = Math.random() < 0.9
+    const candidate = Math.random() < (1 - wildRate)
       ? mutateMapFocused(bestMap, sourceLanguage)
       : mutateMapWild(bestMap);
     const decoded = applyMap(evaText, candidate);
