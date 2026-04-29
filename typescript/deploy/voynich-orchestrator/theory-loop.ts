@@ -12,7 +12,44 @@
  * 6. Keep theories that score on both grounding and consistency
  */
 
-import { resolveToken, resolveHost } from './appkit-agent/index.mjs';
+import {
+  resolveToken,
+  resolveHost,
+  createTrace,
+  addSpan,
+  endTrace,
+  runWithContext,
+  truncate,
+} from './appkit-agent/index.mjs';
+
+/**
+ * Local equivalent of the framework's withAutonomousTrace — inlined here
+ * because the vendored appkit-agent bundle in this deploy predates that
+ * helper. After the next `scripts/build-deploy.sh` run, this can be
+ * replaced with a direct `withAutonomousTrace` import.
+ */
+async function withRoundTrace<T>(
+  agentName: string,
+  label: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const trace = createTrace(agentName);
+  addSpan(trace, { type: 'request', name: label, input: label });
+  try {
+    const result = await runWithContext({ oboHeaders: {}, trace }, fn);
+    addSpan(trace, { type: 'response', name: 'response', output: truncate(result) });
+    endTrace(trace);
+    return result;
+  } catch (err) {
+    addSpan(trace, {
+      type: 'error',
+      name: 'error',
+      metadata: { error: (err as Error).message ?? String(err) },
+    });
+    endTrace(trace, 'error');
+    throw err;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,10 +61,15 @@ export interface FolioInfo {
   plant_latin: string;
   confidence: number;
   botanical_features: string[];
-  eva_sample: string; // placeholder — we don't have per-folio EVA yet
+  /** Image-derived term lists per language. Populated from
+   * folio_vision_analysis.expected_terms (LLM-generated from visual_description).
+   * Each list has ~50 medieval botanical/anatomical/descriptive terms relevant
+   * to the actual plant depicted on the folio. */
+  expected_terms: Record<string, string[]>;
+  eva_sample: string;
 }
 
-export type CipherType = 'substitution' | 'polyalphabetic' | 'substitution-strip' | 'verbose';
+export type CipherType = 'substitution' | 'polyalphabetic' | 'substitution-strip' | 'verbose' | 'positional' | 'homophonic';
 
 export interface Theory {
   id: string;
@@ -68,12 +110,27 @@ const STRATEGIES: Strategy[] = [
   { language: 'latin',   cipherType: 'substitution-strip',   seedMode: 'cold'  },
   { language: 'italian', cipherType: 'substitution-strip',   seedMode: 'elite' },
   { language: 'italian', cipherType: 'substitution-strip',   seedMode: 'cold'  },
-  // Verbose runs last — by now the elite pool is populated under the
+  // Verbose runs after substitution — elite pool is populated under the
   // corrected scorer, so elite seeding has real signal to work with.
   { language: 'latin',   cipherType: 'verbose',              seedMode: 'elite' },
   { language: 'latin',   cipherType: 'verbose',              seedMode: 'cold'  },
   { language: 'italian', cipherType: 'verbose',              seedMode: 'elite' },
   { language: 'italian', cipherType: 'verbose',              seedMode: 'cold'  },
+  // Positional cipher — addresses Voynich's most distinctive structural
+  // anomaly (glyphs cluster strongly by word position). Elite mode seeds
+  // all three position-buckets with a substitution elite, then SA breaks
+  // the symmetry to find genuinely position-specific mappings.
+  { language: 'latin',   cipherType: 'positional',           seedMode: 'elite' },
+  { language: 'latin',   cipherType: 'positional',           seedMode: 'cold'  },
+  { language: 'italian', cipherType: 'positional',           seedMode: 'elite' },
+  { language: 'italian', cipherType: 'positional',           seedMode: 'cold'  },
+  // Homophonic (Naibbe-style) — many EVA tokens collapse to one plaintext
+  // letter. Inverse cardinality of verbose. Most likely to break the
+  // ~0.37 plateau under the 2025 Cryptologia hypothesis.
+  { language: 'latin',   cipherType: 'homophonic',           seedMode: 'elite' },
+  { language: 'latin',   cipherType: 'homophonic',           seedMode: 'cold'  },
+  { language: 'italian', cipherType: 'homophonic',           seedMode: 'elite' },
+  { language: 'italian', cipherType: 'homophonic',           seedMode: 'cold'  },
   // Polyalphabetic (keyword-shifted substitution)
   { language: 'latin',   cipherType: 'polyalphabetic',       seedMode: 'elite' },
   { language: 'italian', cipherType: 'polyalphabetic',       seedMode: 'cold'  },
@@ -492,7 +549,14 @@ function langModelScore(text: string, language: string): number {
 /**
  * Dictionary score — fraction of decoded words that appear in the word list.
  * Much stronger signal than bigrams: rewards actual word formation.
+ *
+ * Per-type cap: a single dictionary word contributes at most 2 hits, even if
+ * it appears 12 times. Without this cap, the hill-climber finds maps that
+ * saturate the output with one content word (e.g. `vino` ×12) and bank cheap
+ * dict score. The cap forces vocabulary diversity for high scores.
  */
+const PER_TYPE_HIT_CAP = 2;
+
 function dictionaryScore(text: string, language: string): number {
   const dict = DICT_BY_LANG[language];
   if (!dict) return 0;
@@ -500,20 +564,26 @@ function dictionaryScore(text: string, language: string): number {
   const words = text.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter((w) => w.length >= 2);
   if (words.length === 0) return 0;
 
-  let hits = 0;
+  const typeCounts = new Map<string, number>();
+  let partialHits = 0;
   for (const word of words) {
     if (dict.has(word)) {
-      hits++;
+      typeCounts.set(word, (typeCounts.get(word) ?? 0) + 1);
     } else {
       // Partial credit: check if any dict word is a prefix/suffix of the decoded word
       // This catches inflected forms (e.g. "herbam" matches "herba")
       for (const entry of dict) {
         if (entry.length >= 4 && (word.startsWith(entry) || word.endsWith(entry.slice(-4)))) {
-          hits += 0.3;
+          partialHits += 0.3;
           break;
         }
       }
     }
+  }
+
+  let hits = partialHits;
+  for (const count of typeCounts.values()) {
+    hits += Math.min(count, PER_TYPE_HIT_CAP);
   }
   return hits / words.length;
 }
@@ -659,7 +729,7 @@ export async function loadFolios(): Promise<FolioInfo[]> {
 
   const [rows, evaCorpus] = await Promise.all([
     executeSql(`
-      SELECT folio_id, subject_candidates, botanical_features
+      SELECT folio_id, subject_candidates, botanical_features, expected_terms
       FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis
       WHERE section = 'herbal'
       ORDER BY folio_id
@@ -670,12 +740,20 @@ export async function loadFolios(): Promise<FolioInfo[]> {
   folioCache = rows.map((r) => {
     const candidates = JSON.parse(r.subject_candidates || '[]');
     const top = candidates[0] || {};
+    let expected: Record<string, string[]> = {};
+    try {
+      const parsed = JSON.parse(r.expected_terms || '{}') as Record<string, string[]>;
+      for (const [lang, terms] of Object.entries(parsed)) {
+        if (Array.isArray(terms)) expected[lang] = terms.map((t) => String(t).toLowerCase());
+      }
+    } catch { /* leave empty */ }
     return {
       folio_id: r.folio_id,
       plant_name: top.name || 'unknown',
       plant_latin: top.latin || '',
       confidence: top.confidence || 0,
       botanical_features: JSON.parse(r.botanical_features || '[]'),
+      expected_terms: expected,
       eva_sample: evaCorpus.get(r.folio_id) || FALLBACK_EVA,
     };
   });
@@ -738,6 +816,7 @@ async function loadElitePool(): Promise<void> {
       FROM serverless_stable_qh44kx_catalog.voynich.theories
       WHERE source_language IN ('latin', 'italian')
         AND grounding_score + consistency_score > 0.2
+        AND cipher_type IN ('substitution', 'substitution-strip', 'verbose')
       ORDER BY grounding_score + consistency_score DESC
       LIMIT 20
     `);
@@ -871,6 +950,19 @@ export async function proposeTheory(
   // off entirely — the seed/hill-climb/elite-pool flow below targets 1:1 maps.
   if (cipherType === 'verbose') {
     return await proposeVerboseTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
+  }
+  // Positional cipher uses a position-conditional substitution (3 sub-maps
+  // for word-initial / middle / final). Also branches off — the maps are
+  // stored with i:/m:/f: key prefixes, incompatible with applyMap.
+  if (cipherType === 'positional') {
+    return await proposePositionalTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
+  }
+  // Homophonic cipher (Naibbe-style) — many EVA tokens collapse to one
+  // plaintext letter. Inverse cardinality of verbose. Branches off because
+  // the seed map structure is curated (fixed token list) rather than
+  // frequency-derived.
+  if (cipherType === 'homophonic') {
+    return await proposeHomophonicTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
   }
 
   // Load elite pool from Delta on first call (persists across deploys)
@@ -1026,11 +1118,7 @@ export async function proposeTheory(
     const testEva = stripPreprocess ? stripNulls(testFolio.eva_sample) : testFolio.eva_sample;
     const decoded = applyMap(testEva, effectiveMap);
 
-    const expectedTerms = [
-      testFolio.plant_name.toLowerCase(),
-      testFolio.plant_latin.toLowerCase(),
-      ...testFolio.botanical_features.map((f) => f.toLowerCase()),
-    ].filter(Boolean);
+    const expectedTerms = expectedTermsFor(testFolio, sourceLanguage);
 
     const matchScore = broadGrounding(decoded, sourceLanguage, expectedTerms);
 
@@ -1043,11 +1131,7 @@ export async function proposeTheory(
   }
 
   // Step 5: Broad grounding — plant terms + dictionary + bigrams
-  const primaryTerms = [
-    targetFolio.plant_name.toLowerCase(),
-    targetFolio.plant_latin.toLowerCase(),
-    ...targetFolio.botanical_features.map((f) => f.toLowerCase()),
-  ].filter(Boolean);
+  const primaryTerms = expectedTermsFor(targetFolio, sourceLanguage);
   const primaryGrounding = broadGrounding(bestDecoded, sourceLanguage, primaryTerms);
 
   const consistencyScore = crossFolioResults.length > 0
@@ -1120,11 +1204,7 @@ async function proposeVerboseTheory(
     .slice(0, 10);
   for (const testFolio of testFolios) {
     const decoded = applyMap(testFolio.eva_sample, sa.map);
-    const expectedTerms = [
-      testFolio.plant_name.toLowerCase(),
-      testFolio.plant_latin.toLowerCase(),
-      ...testFolio.botanical_features.map((f) => f.toLowerCase()),
-    ].filter(Boolean);
+    const expectedTerms = expectedTermsFor(testFolio, sourceLanguage);
     crossFolioResults.push({
       folio_id: testFolio.folio_id,
       plant_expected: testFolio.plant_name,
@@ -1133,11 +1213,7 @@ async function proposeVerboseTheory(
     });
   }
 
-  const primaryTerms = [
-    targetFolio.plant_name.toLowerCase(),
-    targetFolio.plant_latin.toLowerCase(),
-    ...targetFolio.botanical_features.map((f) => f.toLowerCase()),
-  ].filter(Boolean);
+  const primaryTerms = expectedTermsFor(targetFolio, sourceLanguage);
   const primaryGrounding = broadGrounding(sa.decoded, sourceLanguage, primaryTerms);
   const consistencyScore = crossFolioResults.length > 0
     ? crossFolioResults.reduce((sum, r) => sum + r.grounding_score, 0) / crossFolioResults.length
@@ -1152,6 +1228,372 @@ async function proposeVerboseTheory(
     target_plant: targetFolio.plant_name,
     symbol_map: sa.map,
     decoded_text: sa.decoded,
+    grounding_score: primaryGrounding,
+    consistency_score: consistencyScore,
+    cross_folio_results: crossFolioResults,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Positional cipher — same glyph maps to different output by word position.
+//
+// Voynich's most distinctive structural anomaly: glyphs cluster strongly by
+// position within a word. Gallows letters (k, t, p, f) and `q` skew toward
+// word-initial; `y`, `n`, `m` skew toward word-final. A position-conditional
+// substitution treats word-initial / middle / final positions as separate
+// alphabets. Maps are stored flat with i:/m:/f: prefixes so they fit in
+// the existing symbol_map: Record<string, string> field.
+// ---------------------------------------------------------------------------
+
+const POSITIONAL_SA_STEPS = 8000;
+
+function applyPositionalMap(evaText: string, posMap: Record<string, string>): string {
+  const text = evaText.replace(/\./g, ' ');
+  const tokens = text.split(/(\s+)/);
+  let result = '';
+  for (const tok of tokens) {
+    if (tok.length === 0) continue;
+    if (/^\s+$/.test(tok)) { result += tok; continue; }
+    if (tok.length === 1) {
+      result += posMap[`i:${tok}`] ?? tok;
+      continue;
+    }
+    result += posMap[`i:${tok[0]}`] ?? tok[0];
+    for (let i = 1; i < tok.length - 1; i++) {
+      result += posMap[`m:${tok[i]}`] ?? tok[i];
+    }
+    result += posMap[`f:${tok[tok.length - 1]}`] ?? tok[tok.length - 1];
+  }
+  return result;
+}
+
+/**
+ * Build a positional seed map. Three buckets (initial / middle / final),
+ * each with a randomized 1:1 mapping over the most common EVA glyphs.
+ * If a substitution elite is provided, it seeds all three buckets identically;
+ * SA mutations then break the symmetry to find position-specific mappings.
+ */
+function generatePositionalSeed(
+  language: string,
+  substitutionElite?: Record<string, string>,
+): Record<string, string> {
+  const evaGlyphs = ['o','a','e','i','y','c','h','d','k','l','n','r','s','t','q','p','f','m','g','x'];
+  const langLetters = LANG_FREQ[language] ?? LANG_FREQ.latin;
+  const seed: Record<string, string> = {};
+  if (substitutionElite) {
+    // Seed all three buckets with the elite substitution mapping (where
+    // the elite has single-char keys). SA will diverge them as it explores.
+    for (const g of evaGlyphs) {
+      const mapped = substitutionElite[g];
+      const v = mapped && mapped.length === 1 ? mapped : langLetters[Math.floor(Math.random() * langLetters.length)];
+      seed[`i:${g}`] = v;
+      seed[`m:${g}`] = v;
+      seed[`f:${g}`] = v;
+    }
+  } else {
+    const shuffleAlpha = () => [...langLetters].sort(() => Math.random() - 0.5);
+    const aI = shuffleAlpha();
+    const aM = shuffleAlpha();
+    const aF = shuffleAlpha();
+    for (let i = 0; i < evaGlyphs.length; i++) {
+      seed[`i:${evaGlyphs[i]}`] = aI[i % aI.length];
+      seed[`m:${evaGlyphs[i]}`] = aM[i % aM.length];
+      seed[`f:${evaGlyphs[i]}`] = aF[i % aF.length];
+    }
+  }
+  return seed;
+}
+
+function mutatePositionalMap(posMap: Record<string, string>, language: string): Record<string, string> {
+  const result = { ...posMap };
+  const keys = Object.keys(result);
+  if (keys.length === 0) return result;
+  const langLetters = LANG_FREQ[language] ?? LANG_FREQ.latin;
+  const r = Math.random();
+  if (r < 0.5) {
+    // Swap two values within the same position bucket
+    const k1 = keys[Math.floor(Math.random() * keys.length)];
+    const bucket = k1.slice(0, 2);
+    const sameBucketKeys = keys.filter((k) => k.startsWith(bucket));
+    const k2 = sameBucketKeys[Math.floor(Math.random() * sameBucketKeys.length)];
+    if (k1 !== k2) {
+      const tmp = result[k1];
+      result[k1] = result[k2];
+      result[k2] = tmp;
+    }
+  } else {
+    // Replace a single mapping with a fresh random letter
+    const k = keys[Math.floor(Math.random() * keys.length)];
+    result[k] = langLetters[Math.floor(Math.random() * langLetters.length)];
+  }
+  return result;
+}
+
+async function proposePositionalTheory(
+  theoryId: string,
+  targetFolio: FolioInfo,
+  allFolios: FolioInfo[],
+  sourceLanguage: string,
+  seedMode: SeedMode = 'cold',
+): Promise<Theory> {
+  const evaText = targetFolio.eva_sample;
+  await loadElitePool();
+
+  let substitutionElite: Record<string, string> | undefined;
+  let seedSource = 'fresh';
+  if (seedMode === 'elite') {
+    const elites = elitePool.filter((e) => e.language === sourceLanguage).slice(0, 3);
+    if (elites.length > 0) {
+      const pick = elites[Math.floor(Math.random() * elites.length)];
+      substitutionElite = pick.map;
+      seedSource = `elite(score=${pick.score.toFixed(3)})`;
+    }
+  }
+  const seed = generatePositionalSeed(sourceLanguage, substitutionElite);
+  const seedDecoded = applyPositionalMap(evaText, seed);
+  console.log(`[theory-loop]   positional seed: ${Object.keys(seed).length} entries, source=${seedSource}, dict=${dictionaryScore(seedDecoded, sourceLanguage).toFixed(3)} starting SA...`);
+
+  let curMap = seed;
+  let curScore = hillClimbScore(applyPositionalMap(evaText, curMap), sourceLanguage);
+  let bestMap = curMap;
+  let bestDecoded = applyPositionalMap(evaText, curMap);
+  let bestScore = curScore;
+  let improvements = 0;
+  const T_START = 0.08;
+  const T_END = 0.005;
+
+  for (let step = 0; step < POSITIONAL_SA_STEPS; step++) {
+    const t = T_START * Math.pow(T_END / T_START, step / POSITIONAL_SA_STEPS);
+    const cand = mutatePositionalMap(curMap, sourceLanguage);
+    const decoded = applyPositionalMap(evaText, cand);
+    const score = hillClimbScore(decoded, sourceLanguage);
+    const dScore = score - curScore;
+    if (dScore > 0 || Math.random() < Math.exp(dScore / Math.max(t, 1e-6))) {
+      curMap = cand;
+      curScore = score;
+      if (score > bestScore) {
+        bestMap = cand;
+        bestDecoded = decoded;
+        bestScore = score;
+        improvements++;
+      }
+    }
+  }
+
+  const dictFinal = dictionaryScore(bestDecoded, sourceLanguage);
+  const lmFinal = langModelScore(bestDecoded, sourceLanguage);
+  console.log(`[theory-loop]   positional SA: ${improvements} improvements in ${POSITIONAL_SA_STEPS} steps, dict=${dictFinal.toFixed(3)} lm=${lmFinal.toFixed(3)} combined=${bestScore.toFixed(3)}`);
+
+  const crossFolioResults: Theory['cross_folio_results'] = [];
+  const testFolios = allFolios
+    .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
+    .slice(0, 10);
+  for (const testFolio of testFolios) {
+    const decoded = applyPositionalMap(testFolio.eva_sample, bestMap);
+    const expectedTerms = expectedTermsFor(testFolio, sourceLanguage);
+    crossFolioResults.push({
+      folio_id: testFolio.folio_id,
+      plant_expected: testFolio.plant_name,
+      decoded_text: decoded.slice(0, 50),
+      grounding_score: broadGrounding(decoded, sourceLanguage, expectedTerms),
+    });
+  }
+
+  const primaryTerms = expectedTermsFor(targetFolio, sourceLanguage);
+  const primaryGrounding = broadGrounding(bestDecoded, sourceLanguage, primaryTerms);
+  const consistencyScore = crossFolioResults.length > 0
+    ? crossFolioResults.reduce((sum, r) => sum + r.grounding_score, 0) / crossFolioResults.length
+    : 0;
+
+  return {
+    id: theoryId,
+    proposed_at: new Date().toISOString(),
+    source_language: sourceLanguage,
+    cipher_type: 'positional',
+    target_folio: targetFolio.folio_id,
+    target_plant: targetFolio.plant_name,
+    symbol_map: bestMap,
+    decoded_text: bestDecoded,
+    grounding_score: primaryGrounding,
+    consistency_score: consistencyScore,
+    cross_folio_results: crossFolioResults,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Homophonic cipher — Naibbe-style verbose homophonic substitution.
+//
+// Inspired by Greshko et al. (Cryptologia 2025): each plaintext letter encodes
+// to one of MANY distinct multi-glyph Voynichese strings. Decryption inverts
+// this — many glyph-strings collapse to the same plaintext letter. This is
+// the inverse cardinality of our verbose cipher (which mapped one glyph to a
+// multi-char string). It explicitly attacks the central pathology Karl K
+// identified: a 1:1 substitution can't put Voynich's structural weirdness
+// anywhere except the plaintext, so it produces gibberish. Homophonic gives
+// the cipher somewhere to hide the structural variety.
+// ---------------------------------------------------------------------------
+
+const HOMOPHONIC_SA_STEPS = 8000;
+
+/**
+ * Curated EVA tokens used as homophone alphabet. Mix of single chars and
+ * common digraph/trigraph/word-fragment patterns from EVA literature.
+ * The hill-climber assigns each token a single plaintext letter; multiple
+ * tokens can share the same letter (homophonic). applyMap's longest-first
+ * matching greedily tokenizes Voynich text against this dictionary.
+ */
+const HOMOPHONIC_TOKENS: string[] = [
+  // Singles (most common EVA glyphs)
+  'o', 'a', 'e', 'i', 'y', 'c', 'h', 'd', 'k', 'l', 'n', 'r', 's', 't', 'q', 'p', 'f', 'm', 'g',
+  // Common digraphs
+  'ch', 'sh', 'ee', 'qo', 'dy', 'ar', 'or', 'ol', 'ed', 'ai', 'in', 'ck', 'th', 'oe', 'ho', 'ke', 'te', 'al',
+  // Common trigraphs / common word-fragments
+  'chy', 'shy', 'qok', 'qot', 'eed', 'edy', 'ody', 'oky', 'ain', 'ched', 'shed', 'okai', 'otai',
+  // Common 4+ grams (these are full Voynich words or near-words)
+  'aiin', 'chedy', 'shedy', 'daiin', 'qokai', 'qotai', 'okeedy', 'qokeedy',
+];
+
+/**
+ * Generate a homophonic seed map. Each token is assigned a single plaintext
+ * letter from the language alphabet, frequency-biased so that high-frequency
+ * letters (e, a, i, t, n in Latin/Italian) get more homophones — matching
+ * the encoding direction where common letters need more cipher options to
+ * avoid one-glyph-fits-all attacks.
+ */
+function generateHomophonicSeed(
+  language: string,
+  substitutionElite?: Record<string, string>,
+): Record<string, string> {
+  const langLetters = LANG_FREQ[language] ?? LANG_FREQ.latin;
+  // Top letters get sampled with higher probability — Zipf-like.
+  const weighted: string[] = [];
+  for (let i = 0; i < langLetters.length; i++) {
+    const w = Math.max(1, Math.round(8 / (i + 1)));
+    for (let j = 0; j < w; j++) weighted.push(langLetters[i]);
+  }
+  const pickLetter = () => weighted[Math.floor(Math.random() * weighted.length)];
+
+  const seed: Record<string, string> = {};
+  for (const tok of HOMOPHONIC_TOKENS) {
+    if (substitutionElite && tok.length === 1 && substitutionElite[tok] && substitutionElite[tok].length === 1) {
+      // Inherit single-char mappings from substitution elite — gives the search
+      // a head start on glyphs that already had a strong baseline.
+      seed[tok] = substitutionElite[tok];
+    } else {
+      seed[tok] = pickLetter();
+    }
+  }
+  return seed;
+}
+
+function mutateHomophonicMap(map: Record<string, string>, language: string): Record<string, string> {
+  const result = { ...map };
+  const keys = Object.keys(result);
+  if (keys.length === 0) return result;
+  const langLetters = LANG_FREQ[language] ?? LANG_FREQ.latin;
+  const r = Math.random();
+  if (r < 0.7) {
+    // Replace a single token's letter
+    const k = keys[Math.floor(Math.random() * keys.length)];
+    result[k] = langLetters[Math.floor(Math.random() * langLetters.length)];
+  } else {
+    // Swap letters between two tokens (can keep homophone counts balanced)
+    const k1 = keys[Math.floor(Math.random() * keys.length)];
+    const k2 = keys[Math.floor(Math.random() * keys.length)];
+    if (k1 !== k2) {
+      const tmp = result[k1];
+      result[k1] = result[k2];
+      result[k2] = tmp;
+    }
+  }
+  return result;
+}
+
+async function proposeHomophonicTheory(
+  theoryId: string,
+  targetFolio: FolioInfo,
+  allFolios: FolioInfo[],
+  sourceLanguage: string,
+  seedMode: SeedMode = 'cold',
+): Promise<Theory> {
+  const evaText = targetFolio.eva_sample;
+  await loadElitePool();
+
+  let substitutionElite: Record<string, string> | undefined;
+  let seedSource = 'fresh';
+  if (seedMode === 'elite') {
+    const elites = elitePool.filter((e) => e.language === sourceLanguage).slice(0, 3);
+    if (elites.length > 0) {
+      const pick = elites[Math.floor(Math.random() * elites.length)];
+      substitutionElite = pick.map;
+      seedSource = `elite(score=${pick.score.toFixed(3)})`;
+    }
+  }
+  const seed = generateHomophonicSeed(sourceLanguage, substitutionElite);
+  const seedDecoded = applyMap(evaText, seed);
+  console.log(`[theory-loop]   homophonic seed: ${Object.keys(seed).length} tokens, source=${seedSource}, dict=${dictionaryScore(seedDecoded, sourceLanguage).toFixed(3)} starting SA...`);
+
+  let curMap = seed;
+  let curScore = hillClimbScore(applyMap(evaText, curMap), sourceLanguage);
+  let bestMap = curMap;
+  let bestDecoded = applyMap(evaText, curMap);
+  let bestScore = curScore;
+  let improvements = 0;
+  const T_START = 0.08;
+  const T_END = 0.005;
+
+  for (let step = 0; step < HOMOPHONIC_SA_STEPS; step++) {
+    const t = T_START * Math.pow(T_END / T_START, step / HOMOPHONIC_SA_STEPS);
+    const cand = mutateHomophonicMap(curMap, sourceLanguage);
+    const decoded = applyMap(evaText, cand);
+    const score = hillClimbScore(decoded, sourceLanguage);
+    const dScore = score - curScore;
+    if (dScore > 0 || Math.random() < Math.exp(dScore / Math.max(t, 1e-6))) {
+      curMap = cand;
+      curScore = score;
+      if (score > bestScore) {
+        bestMap = cand;
+        bestDecoded = decoded;
+        bestScore = score;
+        improvements++;
+      }
+    }
+  }
+
+  const dictFinal = dictionaryScore(bestDecoded, sourceLanguage);
+  const lmFinal = langModelScore(bestDecoded, sourceLanguage);
+  console.log(`[theory-loop]   homophonic SA: ${improvements} improvements in ${HOMOPHONIC_SA_STEPS} steps, dict=${dictFinal.toFixed(3)} lm=${lmFinal.toFixed(3)} combined=${bestScore.toFixed(3)}`);
+
+  const crossFolioResults: Theory['cross_folio_results'] = [];
+  const testFolios = allFolios
+    .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
+    .slice(0, 10);
+  for (const testFolio of testFolios) {
+    const decoded = applyMap(testFolio.eva_sample, bestMap);
+    const expectedTerms = expectedTermsFor(testFolio, sourceLanguage);
+    crossFolioResults.push({
+      folio_id: testFolio.folio_id,
+      plant_expected: testFolio.plant_name,
+      decoded_text: decoded.slice(0, 50),
+      grounding_score: broadGrounding(decoded, sourceLanguage, expectedTerms),
+    });
+  }
+
+  const primaryTerms = expectedTermsFor(targetFolio, sourceLanguage);
+  const primaryGrounding = broadGrounding(bestDecoded, sourceLanguage, primaryTerms);
+  const consistencyScore = crossFolioResults.length > 0
+    ? crossFolioResults.reduce((sum, r) => sum + r.grounding_score, 0) / crossFolioResults.length
+    : 0;
+
+  return {
+    id: theoryId,
+    proposed_at: new Date().toISOString(),
+    source_language: sourceLanguage,
+    cipher_type: 'homophonic',
+    target_folio: targetFolio.folio_id,
+    target_plant: targetFolio.plant_name,
+    symbol_map: bestMap,
+    decoded_text: bestDecoded,
     grounding_score: primaryGrounding,
     consistency_score: consistencyScore,
     cross_folio_results: crossFolioResults,
@@ -1404,6 +1846,9 @@ function simulatedAnnealVerbose(
 /**
  * Score how well decoded text matches expected plant terms.
  * Returns 0-1 based on exact matches, substring matches, and prefix matches.
+ * Saturating denominator: 5 strong matches = full score. Critical when
+ * term lists vary in size — dividing by terms.length would penalize the
+ * richer image-derived term lists vs the thin baseline metadata.
  */
 function scoreTermOverlap(text: string, terms: string[]): number {
   if (terms.length === 0) return 0;
@@ -1411,14 +1856,36 @@ function scoreTermOverlap(text: string, terms: string[]): number {
   const tokens = decoded.split(/\s+/).filter((t) => t.length > 2);
   if (tokens.length === 0) return 0;
 
+  // Each unique decoded token can be credited at most once across all terms.
+  // Without this, a single repeated decoded word (e.g. `vino` x12) collects
+  // hits via prefix/substring matches against many similar terms in the list,
+  // faking a high score from low diversity.
+  const creditedTokens = new Set<string>();
   let score = 0;
   for (const term of terms) {
     const tl = term.toLowerCase();
-    if (tokens.includes(tl)) { score += 1.0; continue; }
-    if (decoded.includes(tl)) { score += 0.7; continue; }
-    if (tl.length >= 4 && tokens.some((t) => t.startsWith(tl.slice(0, 5)))) { score += 0.4; continue; }
+    if (tokens.includes(tl) && !creditedTokens.has(tl)) {
+      score += 1.0;
+      creditedTokens.add(tl);
+      continue;
+    }
+    if (decoded.includes(tl)) {
+      const matchTok = tokens.find((t) => t.includes(tl) && !creditedTokens.has(t));
+      if (matchTok) {
+        score += 0.7;
+        creditedTokens.add(matchTok);
+      }
+      continue;
+    }
+    if (tl.length >= 4) {
+      const matchTok = tokens.find((t) => t.startsWith(tl.slice(0, 5)) && !creditedTokens.has(t));
+      if (matchTok) {
+        score += 0.4;
+        creditedTokens.add(matchTok);
+      }
+    }
   }
-  return Math.min(1.0, score / Math.max(terms.length, 1));
+  return Math.min(1.0, score / 5.0);
 }
 
 /**
@@ -1442,6 +1909,22 @@ function broadGrounding(text: string, language: string, plantTerms: string[]): n
   const quality = dictionaryQuality(text, language);
 
   return termScore * 0.3 + (dictScore_ * quality) * 0.4 + lmScore * 0.3;
+}
+
+/**
+ * Build the term list for grounding a folio. Combines the thin metadata
+ * (plant name, Latin binomial, structured features) with the rich image-derived
+ * terms backfilled into folio_vision_analysis.expected_terms by an LLM that
+ * read the visual_description. Typically yields 50-60 terms per language.
+ */
+function expectedTermsFor(folio: FolioInfo, language: string): string[] {
+  const imageTerms = folio.expected_terms[language] ?? [];
+  return [
+    folio.plant_name.toLowerCase(),
+    folio.plant_latin.toLowerCase(),
+    ...folio.botanical_features.map((f) => f.toLowerCase()),
+    ...imageTerms,
+  ].filter(Boolean);
 }
 
 // ---------------------------------------------------------------------------
@@ -1568,38 +2051,42 @@ export async function runTheoryLoop(numBursts: number = 10, batch: number = 0): 
       const folio = highConfidence[Math.floor(Math.random() * highConfidence.length)];
       console.log(`[theory-loop] Burst ${burst + 1} Round ${round}: ${folio.folio_id} (${folio.plant_name}) [${strategy.cipherType}/${strategy.seedMode}]`);
 
+      const traceLabel = `burst ${burst + 1}/round ${round} ${folio.folio_id} [${strategy.cipherType}/${strategy.language}/${strategy.seedMode}]`;
       try {
-        const theory = await proposeTheory(folio, folios, strategy.language, strategy.cipherType, strategy.seedMode);
-        const combined = theory.grounding_score + theory.consistency_score;
+        const combined = await withRoundTrace('voynich-orchestrator', traceLabel, async () => {
+          const theory = await proposeTheory(folio, folios, strategy.language, strategy.cipherType, strategy.seedMode);
+          const c = theory.grounding_score + theory.consistency_score;
+
+          console.log(`[theory-loop]   grounding=${theory.grounding_score.toFixed(3)} consistency=${theory.consistency_score.toFixed(3)} decoded="${theory.decoded_text.slice(0, 50)}"`);
+
+          if (_onTheoryResult) {
+            _onTheoryResult({
+              round, batch: burst, folio: folio.folio_id, plant: folio.plant_name,
+              lang: strategy.language, cipher: strategy.cipherType,
+              grounding: theory.grounding_score, consistency: theory.consistency_score,
+              combined: c,
+              dictScore: dictionaryScore(theory.decoded_text, strategy.language),
+              improvements: 0, seedOrigin: strategy.seedMode,
+              decoded: theory.decoded_text,
+            });
+          }
+
+          const challenge = await challengeTheory(theory, folios);
+          let verdict = 'unknown';
+          try {
+            const cleaned = challenge.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
+            const parsed = JSON.parse(cleaned);
+            verdict = parsed.verdict || 'unknown';
+            console.log(`[theory-loop]   skeptic: ${verdict} — ${(parsed.strongest_objection || '').slice(0, 80)}`);
+          } catch {
+            console.log(`[theory-loop]   skeptic: unparseable`);
+          }
+
+          theories.push(theory);
+          await persistTheory(theory, verdict);
+          return c;
+        });
         if (combined > burstBest) burstBest = combined;
-
-        console.log(`[theory-loop]   grounding=${theory.grounding_score.toFixed(3)} consistency=${theory.consistency_score.toFixed(3)} decoded="${theory.decoded_text.slice(0, 50)}"`);
-
-        if (_onTheoryResult) {
-          _onTheoryResult({
-            round, batch: burst, folio: folio.folio_id, plant: folio.plant_name,
-            lang: strategy.language, cipher: strategy.cipherType,
-            grounding: theory.grounding_score, consistency: theory.consistency_score,
-            combined,
-            dictScore: dictionaryScore(theory.decoded_text, strategy.language),
-            improvements: 0, seedOrigin: strategy.seedMode,
-            decoded: theory.decoded_text,
-          });
-        }
-
-        const challenge = await challengeTheory(theory, folios);
-        let verdict = 'unknown';
-        try {
-          const cleaned = challenge.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
-          const parsed = JSON.parse(cleaned);
-          verdict = parsed.verdict || 'unknown';
-          console.log(`[theory-loop]   skeptic: ${verdict} — ${(parsed.strongest_objection || '').slice(0, 80)}`);
-        } catch {
-          console.log(`[theory-loop]   skeptic: unparseable`);
-        }
-
-        theories.push(theory);
-        await persistTheory(theory, verdict);
       } catch (err) {
         console.error(`[theory-loop] Burst ${burst + 1} Round ${round} failed:`, err);
       }

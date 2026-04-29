@@ -331,7 +331,7 @@ app.get('/_apx/results', async (_req, res) => {
 <body>
   <div class="status-bar">
     <div><span class="live-dot" style="display:inline-block"></span></div>
-    <div>Burst <b id="sb-burst">-</b>/14 · Round <b id="sb-round">-</b>/20</div>
+    <div>Burst <b id="sb-burst">-</b>/22 · Round <b id="sb-round">-</b>/20</div>
     <div>🎯 <b id="sb-strategy" style="color:#bb86fc">-</b></div>
     <div>Best: <b id="sb-best" style="color:#4caf50">-</b></div>
     <div>Total: <b id="sb-total">-</b></div>
@@ -542,9 +542,9 @@ if (mode === 'theory') {
     let batch = 0;
     while (true) {
       batch++;
-      console.log(`[orchestrator] === BATCH ${batch} starting (14 bursts × 20 rounds) ===`);
+      console.log(`[orchestrator] === BATCH ${batch} starting (22 bursts × 20 rounds) ===`);
       try {
-        const theories = await m.runTheoryLoop(14, batch);
+        const theories = await m.runTheoryLoop(22, batch);
         const best = theories[0];
         const bestCombined = best ? (best.grounding_score + best.consistency_score).toFixed(3) : '0';
         console.log(`[orchestrator] === BATCH ${batch} complete: ${theories.length} theories, best_combined=${bestCombined} ===`);
