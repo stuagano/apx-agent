@@ -460,19 +460,30 @@ function renderEval() {{
     const traceLink = r.trace_id
       ? `<a href="/_apx/traces/${{esc(r.trace_id)}}" target="_blank" style="font-size:10px;color:#60b0ff;text-decoration:none">→ trace</a>`
       : '';
+    const judgeBadge = r.judge_verdict
+      ? `<span title="${{esc(r.judge_reason || '')}}" style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:3px;`
+        + (r.judge_verdict === 'PASS'
+          ? `background:#052e16;color:#4ade80`
+          : `background:#2a0a0a;color:#f87171`)
+        + `">judge: ${{esc(r.judge_verdict)}}</span>`
+      : '';
     return `<div style="padding:8px 12px;border-bottom:1px solid #141414" data-idx="${{i}}">
       <div style="display:flex;align-items:flex-start;gap:8px">
         <span style="width:8px;height:8px;border-radius:50%;background:${{dot}};${{anim}};flex-shrink:0;margin-top:4px;display:inline-block"></span>
         <span style="font-size:12px;color:#ccc;flex:1;cursor:pointer" onclick="toggleEvalResp(this)">${{esc(r.question)}}</span>
-        ${{ms}} ${{traceLink}}
+        ${{judgeBadge}} ${{ms}} ${{traceLink}}
         <button onclick="runEvalCase(${{i}})" title="Run this case" style="background:transparent;color:#60b0ff;border:none;cursor:pointer;padding:0 4px;font-size:13px" ${{r.status === 'running' ? 'disabled' : ''}}>▶</button>
         <button onclick="deleteEvalCase(${{i}})" title="Delete" style="background:transparent;color:#555;border:none;cursor:pointer;padding:0 4px;font-size:13px">✕</button>
       </div>
       <div style="margin:4px 0 0 16px">
-        <input type="text" value="${{esc(r.expected || '')}}" placeholder="expected keywords (comma-separated, blank = pass on any text)"
+        <input type="text" value="${{esc(r.expected || '')}}" placeholder="expected keywords (comma-separated)"
           onblur="updateExpected(${{i}}, this.value)"
           style="width:100%;background:transparent;border:none;border-bottom:1px solid #1a1a1a;color:#888;font-size:11px;padding:2px 0;outline:none" />
+        <input type="text" value="${{esc(r.expected_judge || '')}}" placeholder="LLM judge criterion (e.g. 'answer mentions a temperature in fahrenheit') — overrides keywords"
+          onblur="updateExpectedJudge(${{i}}, this.value)"
+          style="width:100%;background:transparent;border:none;border-bottom:1px solid #1a1a1a;color:#888;font-size:11px;padding:2px 0;outline:none;margin-top:2px" />
       </div>
+      ${{r.judge_reason ? `<div style="font-size:11px;color:#888;margin:4px 0 0 16px;font-style:italic" class="eval-judge-reason">judge: ${{esc(r.judge_reason)}}</div>` : ''}}
       ${{r.response ? `<div style="font-size:11px;color:#666;margin:4px 0 0 16px;display:none;white-space:pre-wrap" class="eval-resp">${{esc(r.response.slice(0,400))}}${{r.response.length>400?'…':''}}</div>` : ''}}
     </div>`;
   }}).join('');
@@ -515,6 +526,12 @@ function saveEvalCases() {{
 function updateExpected(i, value) {{
   if (!evalRows[i]) return;
   evalRows[i].expected = value;
+  saveEvalCases();
+}}
+
+function updateExpectedJudge(i, value) {{
+  if (!evalRows[i]) return;
+  evalRows[i].expected_judge = value;
   saveEvalCases();
 }}
 
@@ -564,9 +581,35 @@ async function runEvalCase(i) {{
       }}
     }}
     r.response = text;
-    r.status = r.expected
-      ? r.expected.split(/[,;]/).map(k=>k.trim().toLowerCase()).filter(Boolean).every(k=>text.toLowerCase().includes(k)) ? 'pass' : 'fail'
-      : text.length > 10 ? 'pass' : 'fail';
+    // Judge takes precedence when set; otherwise keywords; otherwise length heuristic.
+    if ((r.expected_judge || '').trim()) {{
+      try {{
+        const j = await fetch('/_apx/eval/judge', {{
+          method: 'POST', headers: {{'Content-Type':'application/json'}},
+          body: JSON.stringify({{ question: r.question, response: text, criterion: r.expected_judge }}),
+        }});
+        const jdata = await j.json();
+        if (jdata.ok) {{
+          r.judge_verdict = jdata.verdict;
+          r.judge_reason = jdata.reason;
+          r.status = jdata.pass ? 'pass' : 'fail';
+        }} else {{
+          r.judge_verdict = 'ERROR';
+          r.judge_reason = jdata.error || 'Judge call failed';
+          r.status = 'fail';
+        }}
+      }} catch (jerr) {{
+        r.judge_verdict = 'ERROR';
+        r.judge_reason = jerr.message;
+        r.status = 'fail';
+      }}
+    }} else {{
+      r.judge_verdict = null;
+      r.judge_reason = null;
+      r.status = r.expected
+        ? r.expected.split(/[,;]/).map(k=>k.trim().toLowerCase()).filter(Boolean).every(k=>text.toLowerCase().includes(k)) ? 'pass' : 'fail'
+        : text.length > 10 ? 'pass' : 'fail';
+    }}
   }} catch(e) {{ r.response = 'Error: ' + e.message; r.status = 'fail'; }}
   r.trace_id = traceId;
   r.last_run_ms = Math.round(performance.now() - t0);
@@ -593,7 +636,11 @@ document.getElementById('eval-run-all').addEventListener('click', async () => {{
 }});
 
 document.getElementById('eval-reset').addEventListener('click', () => {{
-  evalRows.forEach(r => {{ r.status = 'pending'; r.response = ''; r.trace_id = null; r.last_run_ms = null; }});
+  evalRows.forEach(r => {{
+    r.status = 'pending'; r.response = '';
+    r.trace_id = null; r.last_run_ms = null;
+    r.judge_verdict = null; r.judge_reason = null;
+  }});
   document.getElementById('eval-progress-fill').style.width = '0%';
   document.getElementById('eval-status').textContent = '';
   renderEval();
