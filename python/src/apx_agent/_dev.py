@@ -44,7 +44,7 @@ from ._ui_setup import (
     _write_env_file,
     _render_setup_ui,
 )
-from ._ui_probe import _generate_agent_instructions
+from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
 from ._ui_traces import _render_trace_detail_ui, _render_traces_list_ui
 from ._trace import get_trace, get_traces
@@ -105,9 +105,14 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         return JSONResponse(_build_apx_openapi_spec(ctx, api_prefix))
 
     @router.get("/_apx/probe", include_in_schema=False)
-    async def probe_dev_ui() -> Any:
-        from starlette.responses import RedirectResponse as _R
-        return _R("/_apx/setup", status_code=302)
+    async def probe_dev_ui() -> HTMLResponse:
+        return HTMLResponse(_render_probe_ui())
+
+    @router.get("/_apx/probe/checks", include_in_schema=False)
+    async def probe_checks(request: Request) -> Any:
+        from fastapi.responses import JSONResponse
+        ctx: AgentContext | None = request.app.state.agent_context
+        return JSONResponse(await _run_probe_checks(ctx))
 
     @router.get("/_apx/traces", include_in_schema=False)
     async def traces_list_ui() -> HTMLResponse:

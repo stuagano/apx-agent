@@ -2,12 +2,232 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from typing import Any
 
 from ._models import AgentContext
+from ._ui_nav import _deploy_overlay_html
+from ._ui_setup import _find_env_path, _read_env_file
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Health checks — surfaced at /_apx/probe/checks
+# ---------------------------------------------------------------------------
+
+# Per-check timeout. The endpoint runs all checks in parallel so wall time
+# is roughly max(check_durations) + overhead.
+_CHECK_TIMEOUT_S = 4.0
+
+
+async def _check_workspace_auth() -> dict[str, Any]:
+    """Confirm a Databricks WorkspaceClient can authenticate."""
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        def _init() -> str:
+            ws = WorkspaceClient()
+            host = ws.config.host or "?"
+            return host
+
+        host = await asyncio.wait_for(asyncio.to_thread(_init), timeout=_CHECK_TIMEOUT_S)
+        return {
+            "name": "workspace_auth",
+            "status": "ok",
+            "message": f"Authenticated against {host}",
+            "hint": "",
+        }
+    except asyncio.TimeoutError:
+        return {
+            "name": "workspace_auth",
+            "status": "fail",
+            "message": "WorkspaceClient init timed out",
+            "hint": "Check DATABRICKS_HOST and credentials.",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "name": "workspace_auth",
+            "status": "fail",
+            "message": str(exc)[:200],
+            "hint": "Run `databricks auth login` or set DATABRICKS_HOST + DATABRICKS_TOKEN.",
+        }
+
+
+async def _check_model(ctx: AgentContext | None) -> dict[str, Any]:
+    """Issue a one-shot LLM call to ctx.config.model."""
+    if ctx is None or not getattr(ctx.config, "model", ""):
+        return {
+            "name": "model",
+            "status": "skip",
+            "message": "No model configured",
+            "hint": "Set `model` in pyproject.toml [tool.apx_agent].",
+        }
+
+    model = ctx.config.model
+    try:
+        from databricks_openai import AsyncDatabricksOpenAI
+
+        async def _call() -> str:
+            client = AsyncDatabricksOpenAI()
+            resp = await client.responses.create(
+                model=model,
+                input=[{"role": "user", "content": "ping"}],
+            )
+            return getattr(resp, "output_text", "") or ""
+
+        out = await asyncio.wait_for(_call(), timeout=_CHECK_TIMEOUT_S)
+        if out:
+            return {
+                "name": "model",
+                "status": "ok",
+                "message": f"{model} responded ({len(out)} chars)",
+                "hint": "",
+            }
+        return {
+            "name": "model",
+            "status": "warn",
+            "message": f"{model} returned empty output",
+            "hint": "Model is reachable but produced no text — check rate limits or model availability.",
+        }
+    except asyncio.TimeoutError:
+        return {
+            "name": "model",
+            "status": "fail",
+            "message": f"{model} timed out after {_CHECK_TIMEOUT_S}s",
+            "hint": "Model may be cold-starting or unreachable from this network.",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "name": "model",
+            "status": "fail",
+            "message": f"{model}: {str(exc)[:160]}",
+            "hint": "Verify DATABRICKS_HOST + the model serving endpoint is deployed.",
+        }
+
+
+async def _check_env_vars(ctx: AgentContext | None) -> dict[str, Any]:
+    """Compare keys declared in .env against the running process."""
+    env_path = _find_env_path()
+    declared: dict[str, str] = {}
+    if env_path and env_path.exists():
+        try:
+            declared = _read_env_file(env_path)
+        except Exception:
+            return {
+                "name": "env_vars",
+                "status": "warn",
+                "message": f"Failed to read {env_path}",
+                "hint": "Check the file syntax.",
+            }
+
+    if not declared:
+        return {
+            "name": "env_vars",
+            "status": "skip",
+            "message": "No .env file found — skipping",
+            "hint": "Add a .env via /_apx/setup if your tools need configuration.",
+        }
+
+    missing = [k for k, v in declared.items() if v and not os.environ.get(k)]
+    if not missing:
+        return {
+            "name": "env_vars",
+            "status": "ok",
+            "message": f"All {len(declared)} declared vars present in process",
+            "hint": "",
+        }
+    return {
+        "name": "env_vars",
+        "status": "warn",
+        "message": f"Missing in process: {', '.join(missing[:5])}" + ("…" if len(missing) > 5 else ""),
+        "hint": "Restart the dev server after editing .env, or export the vars manually.",
+    }
+
+
+async def _check_sub_agent(name: str, url: str) -> dict[str, Any]:
+    """Hit /.well-known/agent.json to confirm reachability."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=_CHECK_TIMEOUT_S) as client:
+            resp = await client.get(f"{url.rstrip('/')}/.well-known/agent.json")
+        if resp.status_code == 200:
+            return {
+                "name": f"sub_agent: {name}",
+                "status": "ok",
+                "message": f"{url} responded 200",
+                "hint": "",
+            }
+        return {
+            "name": f"sub_agent: {name}",
+            "status": "warn",
+            "message": f"{url} returned {resp.status_code}",
+            "hint": "Sub-agent is reachable but did not return its agent card. Check deployment status.",
+        }
+    except (httpx.TimeoutException, asyncio.TimeoutError):
+        return {
+            "name": f"sub_agent: {name}",
+            "status": "fail",
+            "message": f"{url} timed out after {_CHECK_TIMEOUT_S}s",
+            "hint": "Verify the sub-agent is running and reachable from this network.",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "name": f"sub_agent: {name}",
+            "status": "fail",
+            "message": f"{url}: {str(exc)[:160]}",
+            "hint": "Confirm the URL in pyproject.toml [tool.apx_agent.sub_agents].",
+        }
+
+
+async def _gather_sub_agent_checks(ctx: AgentContext | None) -> list[dict[str, Any]]:
+    sub_agents = (
+        getattr(ctx.config, "sub_agents", None) or []
+        if ctx is not None
+        else []
+    )
+    if not sub_agents:
+        return [{
+            "name": "sub_agents",
+            "status": "skip",
+            "message": "No sub-agents configured",
+            "hint": "Add URLs to pyproject.toml [tool.apx_agent].sub_agents to enable.",
+        }]
+    # Resolve $VAR / ${VAR} env refs the same way _wiring.py does.
+    resolved: list[tuple[str, str]] = []
+    for raw in sub_agents:
+        url = raw
+        if isinstance(url, str) and url.startswith("$"):
+            url = os.environ.get(url.lstrip("$").strip("{}"), "")
+        if url:
+            resolved.append((raw, url))
+    if not resolved:
+        return [{
+            "name": "sub_agents",
+            "status": "warn",
+            "message": "All sub-agent URLs resolved to empty (env refs unset)",
+            "hint": "Set the env vars referenced by sub_agents entries.",
+        }]
+    return list(await asyncio.gather(*[_check_sub_agent(raw, url) for raw, url in resolved]))
+
+
+async def _run_probe_checks(ctx: AgentContext | None) -> dict[str, Any]:
+    """Run every health check in parallel and assemble a single response."""
+    workspace, model, env_vars, sub_agents = await asyncio.gather(
+        _check_workspace_auth(),
+        _check_model(ctx),
+        _check_env_vars(ctx),
+        _gather_sub_agent_checks(ctx),
+    )
+    checks: list[dict[str, Any]] = [workspace, model, env_vars, *sub_agents]
+    counts = {"ok": 0, "warn": 0, "fail": 0, "skip": 0}
+    for c in checks:
+        counts[c["status"]] = counts.get(c["status"], 0) + 1
+    overall = "fail" if counts["fail"] else ("warn" if counts["warn"] else "ok")
+    return {"overall": overall, "counts": counts, "checks": checks}
 
 def _discover_vs_indexes(ws: "WorkspaceClient") -> list[dict[str, Any]]:
     """Discover available Mosaic AI Vector Search endpoints and indexes.
@@ -202,6 +422,23 @@ def _render_probe_ui(
                  white-space: pre; overflow-x: auto; }}
   .vs-error {{ color: #f87171; font-size: 12px; font-family: monospace; }}
   .vs-empty {{ color: #444; font-size: 12px; font-style: italic; }}
+  /* Health checks */
+  .checks-section {{ margin-bottom: 32px; }}
+  .check-row {{ display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px;
+                 background: #111; border: 1px solid #1f1f1f; border-radius: 8px;
+                 margin-bottom: 8px; }}
+  .check-dot {{ width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }}
+  .check-body {{ flex: 1; min-width: 0; }}
+  .check-name {{ font-size: 13px; color: #e8e8e8; font-weight: 500; }}
+  .check-msg {{ font-size: 12px; color: #888; margin-top: 2px; word-break: break-word; }}
+  .check-hint {{ font-size: 11px; color: #555; margin-top: 4px; font-style: italic; }}
+  .check-status {{ font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 10px;
+                    text-transform: uppercase; letter-spacing: .5px; flex-shrink: 0;
+                    align-self: flex-start; margin-top: 2px; }}
+  .check-status-ok {{ color: #4ade80; background: #052e16; }}
+  .check-status-warn {{ color: #facc15; background: #2a2400; }}
+  .check-status-fail {{ color: #f87171; background: #2a0a0a; }}
+  .check-status-skip {{ color: #666; background: #1a1a1a; }}
 </style>
 </head>
 <body>
@@ -224,14 +461,44 @@ def _render_probe_ui(
     Test outbound connectivity from this deployment. The request runs server-side,
     so the result reflects the network path available to your deployed app — not your browser.
   </p>
-  <form class="probe-form" method="get" action="/_apx/probe">
-    <input type="text" name="url" placeholder="https://api.example.com/health"
-           value="{{url_prefill}}" autofocus>
-    <button type="submit">Probe</button>
+  <section class="checks-section">
+    <h2 class="vs-title">Health checks</h2>
+    <p class="vs-desc">Live status of the agent's dependencies. Refresh the page to re-run.</p>
+    <div id="checks-list"><p class="vs-empty">Running checks…</p></div>
+  </section>
+  <form class="probe-form" method="get" action="/_apx/probe" style="margin-top:32px">
+    <input type="text" name="url" placeholder="https://api.example.com/health" autofocus>
+    <button type="submit">Probe URL</button>
   </form>
   {result_html}
   {vs_html}
 </main>
+<script>
+(async () => {{
+  const list = document.getElementById('checks-list');
+  const dot = (s) => ({{ok:'#4ade80', warn:'#facc15', fail:'#f87171', skip:'#444'}})[s] || '#888';
+  try {{
+    const r = await fetch('/_apx/probe/checks');
+    const data = await r.json();
+    if (!data.checks || !data.checks.length) {{
+      list.innerHTML = '<p class="vs-empty">No checks ran.</p>';
+      return;
+    }}
+    list.innerHTML = data.checks.map(c => `
+      <div class="check-row">
+        <span class="check-dot" style="background:${{dot(c.status)}}"></span>
+        <div class="check-body">
+          <div class="check-name">${{c.name}}</div>
+          <div class="check-msg">${{c.message || ''}}</div>
+          ${{c.hint ? `<div class="check-hint">${{c.hint}}</div>` : ''}}
+        </div>
+        <span class="check-status check-status-${{c.status}}">${{c.status}}</span>
+      </div>`).join('');
+  }} catch (e) {{
+    list.innerHTML = `<p class="vs-error">Failed to load checks: ${{e.message}}</p>`;
+  }}
+}})();
+</script>
 {_deploy_overlay_html()}
 </body>
 </html>"""
