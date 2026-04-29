@@ -82,6 +82,12 @@ def _find_deploy_root() -> "Path | None":
     return None
 
 
+def _find_evals_path() -> "Path | None":
+    """Return the path to evals.json colocated with agent_router.py."""
+    ar = _find_agent_router_path()
+    return ar.parent / "evals.json" if ar is not None else None
+
+
 # ---------------------------------------------------------------------------
 # Setup wizard helpers
 # ---------------------------------------------------------------------------
