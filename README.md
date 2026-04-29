@@ -206,7 +206,7 @@ See `docs/superpowers/specs/2026-04-19-durable-workflows-design.md` for the full
 
 ### MCP server
 
-Every agent exposes MCP at `/mcp/sse` (SSE transport) and `/mcp` (streamable HTTP). Connect from Claude Desktop, Cursor, Genie Code, or Supervisor Agent.
+Every agent exposes MCP at `/mcp` (streamable HTTP transport). Connect from Claude Desktop, Cursor, Genie Code, or Supervisor Agent.
 
 ### A2A discovery
 
@@ -240,12 +240,82 @@ agent = Agent(
 
 **TypeScript:**
 ```typescript
-agent({
+createAgentPlugin({
   tools: [getLineage],
   subAgents: ['$DATA_INSPECTOR_URL'],
   instructions: 'Use the data_inspector for SQL queries.',
 })
 ```
+
+### App-to-app authentication
+
+When each agent is a dedicated Databricks App, the orchestrating agent needs to call sub-agents over HTTP. Databricks Apps use an SSO gateway that requires specific configuration for programmatic access.
+
+**Key concepts:**
+
+1. **Routes under `/api/`** accept bearer tokens. All other routes trigger the interactive SSO login flow (302 redirect). apx-agent mounts every endpoint at both its natural path and an `/api/` mirror — `/responses` for interactive use and `/api/responses` for app-to-app calls.
+
+2. **Each app has a service principal.** The platform creates one automatically. The SP needs M2M OAuth credentials (`DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET`) to authenticate outbound calls to other apps and to the Foundation Model API.
+
+3. **CAN_USE permission** must be granted on the callee app for the caller's SP. Without this, the gateway returns 401.
+
+4. **FMAPI uses the app's own identity.** When app A calls app B, the request carries A's bearer token. But B's internal LLM calls (Foundation Model API) must use B's own SP token, not A's. apx-agent handles this automatically — `resolveToken()` uses the app's own M2M credentials for FMAPI, and incoming OBO tokens for data operations (Unity Catalog, SQL).
+
+**Setup checklist for multi-agent deployments:**
+
+```bash
+# 1. Create an OAuth secret for each app's service principal
+databricks api post /api/2.0/accounts/servicePrincipals/<SP_ID>/credentials/secrets \
+  --profile <profile> --json '{}'
+
+# 2. Set credentials in each app's app.yaml
+env:
+  - name: DATABRICKS_CLIENT_ID
+    value: "<app-sp-client-id>"
+  - name: DATABRICKS_CLIENT_SECRET
+    value: "<secret-from-step-1>"
+
+# 3. Grant the orchestrator's SP CAN_USE on each sub-agent app
+databricks api patch /api/2.0/permissions/apps/<sub-agent-name> \
+  --profile <profile> --json '{
+    "access_control_list": [{
+      "service_principal_name": "<orchestrator-sp-client-id>",
+      "permission_level": "CAN_USE"
+    }]
+  }'
+```
+
+**How the call flows:**
+
+```
+Orchestrator App                        Sub-Agent App
+─────────────────                       ──────────────────
+1. resolveToken()                       
+   → M2M OAuth (own SP)                
+   → Bearer token                      
+                                        
+2. POST /api/responses ──────────────→ 3. SSO gateway validates token
+   Authorization: Bearer <token>           ✓ /api/ prefix → bearer auth
+                                           ✓ CAN_USE permission → pass
+                                        
+                                        4. App receives request
+                                           resolveToken() for FMAPI
+                                           → skips incoming OBO token
+                                           → uses own SP credentials
+                                           → calls Foundation Model API
+                                        
+                  ←──────────────────── 5. Returns JSON response
+```
+
+**Common pitfalls:**
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| 302 redirect (HTML login page) | Calling `/responses` instead of `/api/responses` | Use `/api/` prefix for programmatic calls |
+| 401 Unauthorized | Caller's SP lacks CAN_USE on callee app | Grant permission via permissions API |
+| FMAPI 401 inside sub-agent | Sub-agent using caller's OBO token for LLM calls | Set `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET` on the sub-agent |
+| `invalid_client` on M2M token exchange | Wrong SP secret (app was recreated, SP changed) | Create a new secret for the current SP |
+| Process crash on auth failure | Unhandled promise rejection in background loop | apx-agent catches errors and sets state to `failed`; use `resume_evolution` tool to retry |
 
 ### Registry auto-registration
 
@@ -353,7 +423,7 @@ sub_agents = ["$OTHER_AGENT_URL"]
 **TypeScript** — plugin options:
 
 ```typescript
-agent({
+createAgentPlugin({
   model: 'databricks-claude-sonnet-4-6',
   instructions: 'System prompt for the agent',
   tools: [myTool],

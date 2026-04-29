@@ -55,6 +55,9 @@ jobs:
 
   typecheck-ts:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20', '22']
     defaults:
       run:
         working-directory: typescript
@@ -65,10 +68,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ matrix.node-version }}
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build
+        run: npm run build
 
       - name: Typecheck
         run: npm run typecheck
