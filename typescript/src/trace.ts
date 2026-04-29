@@ -31,6 +31,17 @@ export interface Trace {
   duration_ms?: number;
   spans: TraceSpan[];
   status?: 'in_progress' | 'completed' | 'error';
+  /**
+   * Trace id of the calling agent, when this trace was triggered by a
+   * cross-agent HTTP call. Set from inbound trace headers. The chat-style
+   * detail view uses this to render a "called by" link.
+   *
+   * Note: span-level parent IDs would be needed for OTel-grade span linkage;
+   * we intentionally only track trace-level parentage here (sufficient for
+   * the chat-style view).
+   */
+  parentTraceId?: string;
+  parentAgentName?: string;
 }
 
 export interface TraceContext {
@@ -104,4 +115,60 @@ export function truncate(value: unknown, maxLen = 200): string {
   const s = typeof value === 'string' ? value : JSON.stringify(value);
   if (!s) return '';
   return s.length > maxLen ? s.slice(0, maxLen) + '...' : s;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-agent trace propagation
+// ---------------------------------------------------------------------------
+
+/**
+ * HTTP headers used to propagate trace context across cross-agent calls.
+ * Both directions: caller sets on outbound request; callee echoes its own
+ * trace id on response so the caller can link parent → child.
+ */
+export const TRACE_ID_HEADER = 'x-apx-trace-id';
+export const PARENT_AGENT_HEADER = 'x-apx-parent-agent';
+
+/** Outbound headers to attach to a cross-agent fetch when a trace is active. */
+export function traceHeadersOut(trace: Trace | undefined): Record<string, string> {
+  if (!trace) return {};
+  return {
+    [TRACE_ID_HEADER]: trace.id,
+    [PARENT_AGENT_HEADER]: trace.agentName,
+  };
+}
+
+/**
+ * Extract parent-trace context from inbound HTTP headers. Express normalizes
+ * header names to lowercase; we accept either case to be defensive.
+ */
+export function traceHeadersIn(headers: Record<string, string | string[] | undefined>): {
+  parentTraceId?: string;
+  parentAgentName?: string;
+} {
+  const traceId = headers[TRACE_ID_HEADER] ?? headers[TRACE_ID_HEADER.toUpperCase()];
+  const agent = headers[PARENT_AGENT_HEADER] ?? headers[PARENT_AGENT_HEADER.toUpperCase()];
+  return {
+    parentTraceId: typeof traceId === 'string' ? traceId : undefined,
+    parentAgentName: typeof agent === 'string' ? agent : undefined,
+  };
+}
+
+/** Read the callee's trace id from a cross-agent response, if present. */
+export function traceIdFromResponse(response: { headers: { get(name: string): string | null } }): string | undefined {
+  return response.headers.get(TRACE_ID_HEADER) ?? undefined;
+}
+
+/**
+ * Derive a short, human-readable label from an agent URL — used as the span
+ * name when the caller doesn't have a friendlier name handy.
+ */
+export function agentNameFromUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/\.cloud\.databricks\.com$/, '').replace(/\.databricksapps\.com$/, '');
+    return host.split('.')[0] || url;
+  } catch {
+    return url;
+  }
 }

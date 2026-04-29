@@ -270,9 +270,13 @@ function tracesListHtml(traces: Trace[], basePath: string): string {
       const firstInput = t.spans.find((s) => s.type === 'request');
       const inputPreview = firstInput ? truncateStr(firstInput.input, 80) : '';
       const duration = t.duration_ms != null ? `${t.duration_ms}ms` : 'running';
+      const parent = t.parentAgentName
+        ? `<span style="color:#7986cb;">&larr; ${escapeHtml(t.parentAgentName)}</span>`
+        : '<span style="color:#444;">—</span>';
       return `<tr onclick="location.href='${basePath}/traces/${t.id}'" style="cursor:pointer;">
         <td style="padding:8px 12px;border-bottom:1px solid #333;font-family:monospace;font-size:0.8rem;">${escapeHtml(t.id)}</td>
         <td style="padding:8px 12px;border-bottom:1px solid #333;">${escapeHtml(t.agentName)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #333;font-size:0.85rem;">${parent}</td>
         <td style="padding:8px 12px;border-bottom:1px solid #333;">${statusBadge(t.status)}</td>
         <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:center;">${t.spans.length}</td>
         <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right;font-family:monospace;">${duration}</td>
@@ -322,6 +326,7 @@ function tracesListHtml(traces: Trace[], basePath: string): string {
       <tr>
         <th>Trace ID</th>
         <th>Agent</th>
+        <th>Parent</th>
         <th>Status</th>
         <th>Spans</th>
         <th>Duration</th>
@@ -329,7 +334,7 @@ function tracesListHtml(traces: Trace[], basePath: string): string {
       </tr>
     </thead>
     <tbody>
-      ${rows || '<tr><td colspan="6" style="padding:2rem;text-align:center;color:#666;">No traces yet</td></tr>'}
+      ${rows || '<tr><td colspan="7" style="padding:2rem;text-align:center;color:#666;">No traces yet</td></tr>'}
     </tbody>
   </table>
 </body>
@@ -499,14 +504,30 @@ function spanBubble(span: TraceSpan): string {
 
   if (span.type === 'agent_call') {
     const output = extractMessage(span.output);
+    const childUrl = span.metadata?.childUrl as string | undefined;
+    const childTraceId = span.metadata?.childTraceId as string | undefined;
+    const attempts = span.metadata?.attempts as number | undefined;
+
+    let nameHtml = `Called agent <em>${escapeHtml(span.name)}</em>`;
+    if (childUrl && childTraceId) {
+      const href = `${childUrl.replace(/\/$/, '')}/_apx/traces/${encodeURIComponent(childTraceId)}`;
+      nameHtml = `Called agent <em><a href="${escapeHtml(href)}" target="_blank" style="color:#ab47bc;text-decoration:underline;">${escapeHtml(span.name)}</a></em>`;
+    }
+
+    const meta: string[] = [];
+    if (attempts && attempts > 1) meta.push(`${attempts} attempts`);
+    if (childTraceId) meta.push(`trace ${childTraceId}`);
+    const metaLine = meta.length ? `<div style="font-size:11px;color:#666;margin-top:2px;">${escapeHtml(meta.join(' · '))}</div>` : '';
+
     return `<div class="step">
       <div class="step-line"></div>
       <div class="step-dot" style="background:#ab47bc;"></div>
       <div class="step-content">
         <div class="step-header">
-          <span class="who" style="color:#ab47bc;">Called agent <em>${escapeHtml(span.name)}</em></span>
+          <span class="who" style="color:#ab47bc;">${nameHtml}</span>
           ${duration ? `<span class="dur">${duration}</span>` : ''}
         </div>
+        ${metaLine}
         ${output ? `<div class="bubble agent-reply">${escapeHtml(output)}</div>` : ''}
       </div>
     </div>`;
@@ -543,6 +564,10 @@ function traceDetailHtml(trace: Trace, basePath: string): string {
   const duration = trace.duration_ms != null ? `${(trace.duration_ms / 1000).toFixed(1)}s` : 'in progress';
   const spans = trace.spans.map(spanBubble).join('\n');
   const statusColor = trace.status === 'completed' ? '#4caf50' : trace.status === 'error' ? '#f44336' : '#ffb74d';
+
+  const parentLine = trace.parentTraceId
+    ? `<div style="padding:6px 20px;font-size:12px;color:#888;background:#0e0e18;border-bottom:1px solid #1e1e30;">Called by <span style="color:#7986cb;">${escapeHtml(trace.parentAgentName ?? 'unknown')}</span> · <span style="font-family:monospace;color:#666;">${escapeHtml(trace.parentTraceId)}</span></div>`
+    : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -594,6 +619,7 @@ function traceDetailHtml(trace: Trace, basePath: string): string {
     <span class="status" style="background:${statusColor}20;color:${statusColor};">${trace.status || 'unknown'}</span>
     <span class="meta">${duration} &middot; ${trace.spans.length} steps</span>
   </div>
+  ${parentLine}
   <nav>
     <a href="${basePath}/traces">&larr; Back to Traces</a>
     <a href="${basePath}/agent">Chat</a>

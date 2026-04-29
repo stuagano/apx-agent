@@ -19,6 +19,15 @@ import { z } from 'zod';
 import type { AgentTool } from '../agent/tools.js';
 import { defineTool } from '../agent/tools.js';
 import { resolveToken } from '../connectors/types.js';
+import { getRequestContext, withAutonomousTrace } from '../agent/request-context.js';
+import {
+  addSpan,
+  endSpan,
+  truncate,
+  agentNameFromUrl,
+  traceHeadersOut,
+  traceIdFromResponse,
+} from '../trace.js';
 import type { WorkflowEngine } from './engine.js';
 import { InMemoryEngine } from './engine-memory.js';
 import type { Hypothesis } from './hypothesis.js';
@@ -83,11 +92,18 @@ export interface GenerationResult {
 // ---------------------------------------------------------------------------
 
 export class EvolutionaryAgent implements Runnable {
-  state: EvolutionState = 'idle';
-  currentGeneration: number = 0;
-  history: GenerationResult[] = [];
-  loopPromise: Promise<void> | null = null;
-  tools: AgentTool[];
+  private _state: EvolutionState = 'idle';
+  private _currentGeneration: number = 0;
+  private _history: GenerationResult[] = [];
+  private _loopPromise: Promise<void> | null = null;
+  private _tools: AgentTool[];
+
+  /** Current evolution state. */
+  get state(): EvolutionState { return this._state; }
+  /** Current generation number. */
+  get currentGeneration(): number { return this._currentGeneration; }
+  /** Completed generation results (read-only copy). */
+  get history(): readonly GenerationResult[] { return this._history; }
 
   private config: EvolutionaryConfig;
   private patience: number;
@@ -109,7 +125,7 @@ export class EvolutionaryAgent implements Runnable {
     this.engine = config.engine ?? new InMemoryEngine();
     this.workflowName = config.workflowName ?? 'evolutionary';
     this.providedRunId = config.runId;
-    this.tools = this.buildTools();
+    this._tools = this.buildTools();
   }
 
   // ---------------------------------------------------------------------------
@@ -118,9 +134,9 @@ export class EvolutionaryAgent implements Runnable {
 
   async run(_messages: Message[]): Promise<string> {
     await this.ensureInitialized();
-    if (this.state === 'idle') {
+    if (this._state === 'idle') {
       this.startLoop();
-      return `Evolution started. Running generation ${this.currentGeneration} of ${this.config.maxGenerations}.`;
+      return `Evolution started. Running generation ${this._currentGeneration} of ${this.config.maxGenerations}.`;
     }
     return this.stateSummary();
   }
@@ -152,8 +168,8 @@ export class EvolutionaryAgent implements Runnable {
           .map((s) => s.output as GenerationResult)
           .sort((a, b) => a.generation - b.generation);
         if (finalized.length > 0) {
-          this.history = finalized;
-          this.currentGeneration = finalized[finalized.length - 1].generation + 1;
+          this._history = finalized;
+          this._currentGeneration = finalized[finalized.length - 1].generation + 1;
         }
       }
     })();
@@ -165,7 +181,7 @@ export class EvolutionaryAgent implements Runnable {
   }
 
   collectTools(): AgentTool[] {
-    return this.tools;
+    return this._tools;
   }
 
   // ---------------------------------------------------------------------------
@@ -173,35 +189,35 @@ export class EvolutionaryAgent implements Runnable {
   // ---------------------------------------------------------------------------
 
   getState(): EvolutionState {
-    return this.state;
+    return this._state;
   }
 
   startLoop(): void {
-    this.state = 'running';
-    this.loopPromise = (async () => {
+    this._state = 'running';
+    this._loopPromise = (async () => {
       await this.ensureInitialized();
       await this.runLoop();
     })().catch((err) => {
-      this.state = 'failed';
+      this._state = 'failed';
       console.error('[EvolutionaryAgent] loop crashed:', err);
     });
   }
 
   pauseLoop(): void {
-    this.state = 'paused';
+    this._state = 'paused';
   }
 
   resumeLoop(): void {
-    if (this.state === 'paused' || this.state === 'failed') {
-      this.state = 'running';
-      this.loopPromise = (async () => {
+    if (this._state === 'paused' || this._state === 'failed') {
+      this._state = 'running';
+      this._loopPromise = (async () => {
         // Re-open the persisted run so its status flips back to 'running'.
         if (this.runId) {
           await this.engine.startRun(this.workflowName, {}, { runId: this.runId });
         }
         await this.runLoop();
       })().catch((err) => {
-        this.state = 'failed';
+        this._state = 'failed';
         console.error('[EvolutionaryAgent] loop crashed:', err);
       });
     }
@@ -224,37 +240,43 @@ export class EvolutionaryAgent implements Runnable {
   // ---------------------------------------------------------------------------
 
   private async runLoop(): Promise<void> {
-    while (this.state === 'running' && this.currentGeneration < this.config.maxGenerations) {
-      const gen = this.currentGeneration;
+    while (this._state === 'running' && this._currentGeneration < this.config.maxGenerations) {
+      const gen = this._currentGeneration;
       const timeoutMs = this.config.generationTimeoutMs ?? 600_000;
       const generationTimeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error(`Generation ${gen} timed out after ${timeoutMs}ms`)), timeoutMs),
       );
 
       try {
-        const result = await Promise.race([this.runGeneration(gen), generationTimeout]);
-        this.history.push(result);
-        this.currentGeneration++;
+        // Wrap each generation as its own trace so background-loop activity
+        // (mutate / evaluate / judge / agent_call spans) shows up in /_apx/traces.
+        const result = await withAutonomousTrace(
+          this.workflowName,
+          `generation ${gen}`,
+          () => Promise.race([this.runGeneration(gen), generationTimeout]),
+        );
+        this._history.push(result);
+        this._currentGeneration++;
 
         if (result.converged) {
-          this.state = 'converged';
+          this._state = 'converged';
           break;
         }
       } catch (err) {
         console.error(`[EvolutionaryAgent] Generation ${gen} failed:`, err);
         // Treat timed-out / failed generation as a skip — advance and continue.
-        this.currentGeneration++;
+        this._currentGeneration++;
         continue;
       }
     }
 
-    if (this.state === 'running') {
-      this.state = 'completed';
+    if (this._state === 'running') {
+      this._state = 'completed';
     }
 
     // Persist the terminal (or paused) state on the engine so it survives restart.
     if (this.runId) {
-      const status = this.state === 'idle' ? 'completed' : this.state;
+      const status = this._state === 'idle' ? 'completed' : this._state;
       await this.engine.finishRun(this.runId, status);
     }
   }
@@ -481,7 +503,20 @@ export class EvolutionaryAgent implements Runnable {
       ],
     };
 
-    const callHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+    const trace = getRequestContext()?.trace;
+    const span = trace
+      ? addSpan(trace, {
+          type: 'agent_call',
+          name: agentNameFromUrl(url),
+          input: truncate(payload),
+          metadata: { childUrl: url, attempts: 0 },
+        })
+      : null;
+
+    const callHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...traceHeadersOut(trace),
+    };
     try {
       const callToken = await resolveToken();
       callHeaders.Authorization = `Bearer ${callToken}`;
@@ -489,8 +524,32 @@ export class EvolutionaryAgent implements Runnable {
       console.warn(`[callAgent] No auth token available for ${url}:`, (err as Error).message);
     }
 
+    try {
+      const result = await this.fetchWithRetries(url, body, callHeaders, retries, span);
+      if (span) span.output = truncate(result);
+      return result;
+    } catch (err) {
+      if (span?.metadata) span.metadata.error = (err as Error).message;
+      throw err;
+    } finally {
+      if (span) endSpan(span);
+    }
+  }
+
+  /**
+   * Inner retry loop, extracted so the outer callAgent can wrap span lifecycle
+   * in a clean try/finally without duplicating exit points.
+   */
+  private async fetchWithRetries(
+    url: string,
+    body: unknown,
+    callHeaders: Record<string, string>,
+    retries: number,
+    span: { metadata?: Record<string, unknown> } | null,
+  ): Promise<unknown> {
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
+      if (span?.metadata) span.metadata.attempts = attempt + 1;
       if (attempt > 0) {
         const delay = Math.min(1000 * 2 ** (attempt - 1), 30_000);
         console.warn(`[callAgent] Retry ${attempt}/${retries} for ${url} after ${delay}ms`);
@@ -513,6 +572,9 @@ export class EvolutionaryAgent implements Runnable {
         continue;
       }
       clearTimeout(timer);
+
+      const childTraceId = traceIdFromResponse(response);
+      if (childTraceId && span?.metadata) span.metadata.childTraceId = childTraceId;
 
       // Retryable server errors (502, 503, 429)
       if (response.status === 502 || response.status === 503 || response.status === 429) {
@@ -590,10 +652,10 @@ export class EvolutionaryAgent implements Runnable {
         description: 'Get the current status of the evolutionary loop',
         parameters: z.object({}),
         handler: async () => ({
-          state: this.state,
-          currentGeneration: this.currentGeneration,
+          state: this._state,
+          currentGeneration: this._currentGeneration,
           maxGenerations: this.config.maxGenerations,
-          historyLength: this.history.length,
+          historyLength: this._history.length,
         }),
       }),
 
@@ -602,8 +664,8 @@ export class EvolutionaryAgent implements Runnable {
         description: 'Get the best hypothesis from the most recent completed generation',
         parameters: z.object({}),
         handler: async () => {
-          if (this.history.length === 0) return { error: 'No generations completed yet' };
-          const lastGen = this.currentGeneration > 0 ? this.currentGeneration - 1 : 0;
+          if (this._history.length === 0) return { error: 'No generations completed yet' };
+          const lastGen = this._currentGeneration > 0 ? this._currentGeneration - 1 : 0;
           const population = await this.config.store.loadTopSurvivors(
             lastGen,
             1,
@@ -620,7 +682,7 @@ export class EvolutionaryAgent implements Runnable {
           generation: z.number().int().min(0),
         }),
         handler: async ({ generation }) => {
-          const result = this.history.find((r) => r.generation === generation);
+          const result = this._history.find((r) => r.generation === generation);
           if (!result) return { error: `No results for generation ${generation}` };
           return result;
         },
@@ -632,7 +694,7 @@ export class EvolutionaryAgent implements Runnable {
         parameters: z.object({}),
         handler: async () => {
           this.pauseLoop();
-          return { success: true, state: this.state };
+          return { success: true, state: this._state };
         },
       }),
 
@@ -642,7 +704,7 @@ export class EvolutionaryAgent implements Runnable {
         parameters: z.object({}),
         handler: async () => {
           this.resumeLoop();
-          return { success: true, state: this.state };
+          return { success: true, state: this._state };
         },
       }),
 
@@ -653,7 +715,7 @@ export class EvolutionaryAgent implements Runnable {
           topN: z.number().int().min(1).default(5),
         }),
         handler: async ({ topN }) => {
-          const lastGen = this.currentGeneration > 0 ? this.currentGeneration - 1 : 0;
+          const lastGen = this._currentGeneration > 0 ? this._currentGeneration - 1 : 0;
           const top = await this.config.store.loadTopSurvivors(
             lastGen,
             topN,
@@ -672,10 +734,10 @@ export class EvolutionaryAgent implements Runnable {
   // ---------------------------------------------------------------------------
 
   private stateSummary(): string {
-    const last = this.history[this.history.length - 1];
+    const last = this._history[this._history.length - 1];
     const parts = [
-      `State: ${this.state}`,
-      `Generation: ${this.currentGeneration}/${this.config.maxGenerations}`,
+      `State: ${this._state}`,
+      `Generation: ${this._currentGeneration}/${this.config.maxGenerations}`,
     ];
     if (last) {
       parts.push(`Best fitness: ${last.bestFitness.toFixed(4)}`);

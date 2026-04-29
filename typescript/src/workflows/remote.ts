@@ -25,6 +25,15 @@
 import type { AgentCard } from '../discovery/index.js';
 import type { AgentTool } from '../agent/tools.js';
 import type { Message, Runnable } from './types.js';
+import { getRequestContext } from '../agent/request-context.js';
+import {
+  addSpan,
+  endSpan,
+  truncate,
+  agentNameFromUrl,
+  traceHeadersOut,
+  traceIdFromResponse,
+} from '../trace.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -156,6 +165,16 @@ export class RemoteAgent implements Runnable {
       })),
     };
 
+    const trace = getRequestContext()?.trace;
+    const span = trace
+      ? addSpan(trace, {
+          type: 'agent_call',
+          name: this.card?.name ?? agentNameFromUrl(this.baseUrl),
+          input: truncate(messages),
+          metadata: { childUrl: this.baseUrl },
+        })
+      : null;
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
@@ -165,10 +184,14 @@ export class RemoteAgent implements Runnable {
         headers: {
           'Content-Type': 'application/json',
           ...this.headers,
+          ...traceHeadersOut(trace),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
+
+      const childTraceId = traceIdFromResponse(res);
+      if (childTraceId && span?.metadata) span.metadata.childTraceId = childTraceId;
 
       if (!res.ok) {
         throw new Error(
@@ -177,9 +200,15 @@ export class RemoteAgent implements Runnable {
       }
 
       const data = await res.json() as ResponsesOutput;
-      return this.extractText(data);
+      const text = this.extractText(data);
+      if (span) span.output = truncate(text);
+      return text;
+    } catch (err) {
+      if (span?.metadata) span.metadata.error = (err as Error).message;
+      throw err;
     } finally {
       clearTimeout(timeout);
+      if (span) endSpan(span);
     }
   }
 
@@ -194,6 +223,16 @@ export class RemoteAgent implements Runnable {
       stream: true,
     };
 
+    const trace = getRequestContext()?.trace;
+    const span = trace
+      ? addSpan(trace, {
+          type: 'agent_call',
+          name: this.card?.name ?? agentNameFromUrl(this.baseUrl),
+          input: truncate(messages),
+          metadata: { childUrl: this.baseUrl, streaming: true },
+        })
+      : null;
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
@@ -204,10 +243,14 @@ export class RemoteAgent implements Runnable {
           'Content-Type': 'application/json',
           Accept: 'text/event-stream',
           ...this.headers,
+          ...traceHeadersOut(trace),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
+
+      const childTraceId = traceIdFromResponse(res);
+      if (childTraceId && span?.metadata) span.metadata.childTraceId = childTraceId;
 
       if (!res.ok) {
         throw new Error(
@@ -221,10 +264,16 @@ export class RemoteAgent implements Runnable {
       } else {
         // Fallback: non-streaming response — yield the full text
         const data = await res.json() as ResponsesOutput;
-        yield this.extractText(data);
+        const text = this.extractText(data);
+        if (span) span.output = truncate(text);
+        yield text;
       }
+    } catch (err) {
+      if (span?.metadata) span.metadata.error = (err as Error).message;
+      throw err;
     } finally {
       clearTimeout(timeout);
+      if (span) endSpan(span);
     }
   }
 

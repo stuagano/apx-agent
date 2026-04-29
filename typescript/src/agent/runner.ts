@@ -13,7 +13,7 @@ import type { Express } from 'express';
 import type { AgentTool } from './tools.js';
 import { toStrictSchema, zodToJsonSchema } from './tools.js';
 import { runWithContext, getRequestContext } from './request-context.js';
-import { addSpan, endSpan, truncate } from '../trace.js';
+import { addSpan, endSpan, truncate, agentNameFromUrl, traceHeadersOut, traceIdFromResponse } from '../trace.js';
 import { resolveToken as resolveTokenFull } from '../connectors/types.js';
 
 // ---------------------------------------------------------------------------
@@ -235,28 +235,49 @@ async function callSubAgent(
   message: string,
   oboHeaders: Record<string, string>,
 ): Promise<string> {
-  const res = await fetch(`${url.replace(/\/$/, '')}/responses`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...oboHeaders,
-    },
-    body: JSON.stringify({ input: [{ role: 'user', content: message }] }),
-  });
+  const trace = getRequestContext()?.trace;
+  const span = trace
+    ? addSpan(trace, {
+        type: 'agent_call',
+        name: agentNameFromUrl(url),
+        input: truncate(message),
+        metadata: { childUrl: url },
+      })
+    : null;
 
-  if (!res.ok) {
-    return `Sub-agent error (${res.status}): ${await res.text()}`;
-  }
+  try {
+    const res = await fetch(`${url.replace(/\/$/, '')}/responses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...oboHeaders,
+        ...traceHeadersOut(trace),
+      },
+      body: JSON.stringify({ input: [{ role: 'user', content: message }] }),
+    });
 
-  const data = await res.json() as Record<string, unknown>;
-  if (data.output_text && typeof data.output_text === 'string') {
-    return data.output_text;
+    const childTraceId = traceIdFromResponse(res);
+    if (childTraceId && span?.metadata) span.metadata.childTraceId = childTraceId;
+
+    if (!res.ok) {
+      const errMsg = `Sub-agent error (${res.status}): ${await res.text()}`;
+      if (span) span.output = truncate(errMsg);
+      return errMsg;
+    }
+
+    const data = await res.json() as Record<string, unknown>;
+    let result: string;
+    if (data.output_text && typeof data.output_text === 'string') {
+      result = data.output_text;
+    } else {
+      const output = data.output as Array<{ content: Array<{ text: string }> }> | undefined;
+      result = output?.[0]?.content?.[0]?.text ?? JSON.stringify(data);
+    }
+    if (span) span.output = truncate(result);
+    return result;
+  } finally {
+    if (span) endSpan(span);
   }
-  const output = data.output as Array<{ content: Array<{ text: string }> }> | undefined;
-  if (output?.[0]?.content?.[0]?.text) {
-    return output[0].content[0].text;
-  }
-  return JSON.stringify(data);
 }
 
 // ---------------------------------------------------------------------------
