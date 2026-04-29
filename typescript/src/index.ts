@@ -37,7 +37,7 @@
 export { createAgentPlugin, defineTool, zodToJsonSchema, toStrictSchema, toolsToFunctionSchemas } from './agent/index.js';
 export type { AgentConfig, AgentExports, AgentTool, FunctionSchema } from './agent/index.js';
 export { runViaSDK, streamViaSDK, initDatabricksClient, toFunctionTool, toSubAgentTool } from './agent/index.js';
-export { getRequestContext, runWithContext } from './agent/request-context.js';
+export { getRequestContext, runWithContext, withAutonomousTrace } from './agent/request-context.js';
 export type { RequestContext } from './agent/request-context.js';
 
 // Discovery plugin — A2A card, registry auto-registration

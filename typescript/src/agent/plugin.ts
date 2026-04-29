@@ -26,7 +26,7 @@ import type { AgentTool, FunctionSchema } from './tools.js';
 import { toolsToFunctionSchemas } from './tools.js';
 import { runViaSDK, streamViaSDK, initDatabricksClient } from './runner.js';
 import { runWithContext } from './request-context.js';
-import { createTrace, addSpan, endTrace, truncate } from '../trace.js';
+import { createTrace, addSpan, endTrace, truncate, traceHeadersIn, TRACE_ID_HEADER } from '../trace.js';
 import { createMcpToolProvider } from './mcp-client.js';
 import type { Runnable, Message } from '../workflows/types.js';
 import { AgentState } from '../workflows/state.js';
@@ -218,6 +218,18 @@ export function createAgentPlugin(config: AgentConfig) {
       // (bearer-token auth for app-to-app calls via the Databricks Apps gateway).
       const responsesHandler = async (req: Request, res: Response) => {
         const trace = createTrace(config.name ?? 'agent');
+
+        // Pick up cross-agent trace context from inbound headers so the
+        // dev UI can render parent → child trace links.
+        const inbound = traceHeadersIn(req.headers);
+        if (inbound.parentTraceId) trace.parentTraceId = inbound.parentTraceId;
+        if (inbound.parentAgentName) trace.parentAgentName = inbound.parentAgentName;
+
+        // Echo this trace's id back so the caller can link from its
+        // agent_call span to this trace. Set before any res.write/json
+        // so SSE and JSON responses both carry it.
+        res.setHeader(TRACE_ID_HEADER, trace.id);
+
         addSpan(trace, { type: 'request', name: 'POST /responses', input: truncate(req.body) });
 
         try {
