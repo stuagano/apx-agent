@@ -120,6 +120,31 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .panel-content {{ flex: 1; overflow-y: auto; }}
   .tab-panel {{ display: none; }}
   .tab-panel.active {{ display: block; }}
+  /* Trace tab uses flex column so trace-body can scroll independently */
+  #tab-trace.active {{ display: flex; flex-direction: column; height: 100%; }}
+
+  /* Trace tab — live span bubbles, mirrors /_apx/traces/{{id}} detail view */
+  .span-step {{ position: relative; padding-left: 22px; margin-bottom: 4px; }}
+  .span-step .step-line {{ position: absolute; left: 6px; top: 18px; bottom: -4px; width: 1px; background: #1e1e30; }}
+  .span-step:last-child .step-line {{ display: none; }}
+  .span-step .step-dot {{ position: absolute; left: 1px; top: 5px; width: 11px; height: 11px; border-radius: 50%; }}
+  .span-step.in-progress .step-dot {{ animation: span-pulse 1.2s ease-in-out infinite; }}
+  @keyframes span-pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.35; }} }}
+  .span-step .step-content {{ padding-bottom: 10px; }}
+  .span-step .step-header {{ display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; }}
+  .span-step .who {{ font-weight: 600; }}
+  .span-step .dur {{ font-size: 10px; color: #555; font-family: monospace; }}
+  .span-step .span-bubble {{ padding: 6px 10px; border-radius: 8px; font-size: 12px; line-height: 1.5;
+                              white-space: pre-wrap; word-break: break-word; max-width: 100%; }}
+  .span-step .span-bubble + .span-bubble {{ margin-top: 4px; }}
+  .span-bubble.caller {{ background: #1a1a30; color: #b0b0c8; border: 1px solid #252545; }}
+  .span-bubble.agent-ask {{ background: #0a1a25; color: #80cbc4; border: 1px solid #1a3040; }}
+  .span-bubble.llm-reply {{ background: #12222e; color: #e0f0f0; border: 1px solid #1a3545; }}
+  .span-bubble.tool-in {{ background: #1a1800; color: #d4c87a; border: 1px solid #2a2500; }}
+  .span-bubble.tool-out {{ background: #1a1a08; color: #e0d8a0; border: 1px solid #2a2810; }}
+  .span-bubble.agent-reply {{ background: #1a0a25; color: #d1a0e8; border: 1px solid #2a1a40; }}
+  .span-bubble.response {{ background: #0a1a0a; color: #a0d8a0; border: 1px solid #1a3020; }}
+  .span-bubble.error-msg {{ background: #1a0a0a; color: #f08080; border: 1px solid #3a1a1a; }}
 
   /* Events list */
   .event {{ display: flex; align-items: flex-start; gap: 10px; padding: 10px 16px; border-bottom: 1px solid #111;
@@ -248,12 +273,20 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
       <span id="copy-sse-ok" style="display:none;color:#4ade80">✓</span>
     </div>
     <div class="panel-tabs">
-      <button class="active" onclick="switchTab('tools',this)">Tools</button>
+      <button onclick="switchTab('tools',this)">Tools</button>
+      <button class="active" onclick="switchTab('trace',this)">Trace</button>
       <button onclick="switchTab('events',this)">Events</button>
       <button onclick="switchTab('eval',this)">Eval</button>
     </div>
     <div class="panel-content">
-      <div id="tab-tools" class="tab-panel active"></div>
+      <div id="tab-tools" class="tab-panel"></div>
+      <div id="tab-trace" class="tab-panel active">
+        <div id="trace-header" style="padding:8px 12px;border-bottom:1px solid #1a1a1a;font-size:11px;color:#666;display:flex;justify-content:space-between;align-items:center">
+          <span id="trace-status">No trace yet — send a message</span>
+          <a id="trace-link" href="#" target="_blank" style="display:none;color:#60b0ff;text-decoration:none;font-size:11px">open full →</a>
+        </div>
+        <div id="trace-body" style="overflow-y:auto;flex:1;padding:12px"></div>
+      </div>
       <div id="tab-events" class="tab-panel">
         <div id="events-list" class="empty-state">Send a message to see events</div>
       </div>
@@ -545,8 +578,8 @@ function showDetail(ev, el) {{
   }}
   detailBody.innerHTML = html;
   detailPanel.classList.add('open');
-  // Auto-switch to events tab
-  switchTab('events', document.querySelectorAll('.panel-tabs button')[1]);
+  // Auto-switch to events tab (3rd button: Tools, Trace, Events, Eval)
+  switchTab('events', document.querySelectorAll('.panel-tabs button')[2]);
 }}
 
 function closeDetail() {{
@@ -562,6 +595,123 @@ function addMsg(role, text, streaming) {{
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
   return div;
+}}
+
+// ── Trace tab: live span bubbles ──
+const traceBody = document.getElementById('trace-body');
+const traceStatusEl = document.getElementById('trace-status');
+const traceLinkEl = document.getElementById('trace-link');
+const spanNodes = new Map();  // span_key → DOM node
+
+function spanKey(span) {{
+  return `${{span.type}}:${{span.name}}:${{span.start_time}}`;
+}}
+
+function escHtml(s) {{
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}}
+
+function extractMsg(value) {{
+  if (value == null) return '';
+  if (typeof value === 'string') {{
+    try {{ return extractMsg(JSON.parse(value)); }} catch {{ return value.slice(0, 400); }}
+  }}
+  if (typeof value === 'number') return String(value);
+  if (Array.isArray(value)) {{
+    for (let i = value.length - 1; i >= 0; i--) {{
+      const m = value[i];
+      if (m && typeof m === 'object' && 'content' in m) return extractMsg(m.content);
+    }}
+    return value.map(extractMsg).filter(Boolean).join(', ').slice(0, 300);
+  }}
+  if (typeof value === 'object') {{
+    for (const k of ['content', 'text', 'output_text', 'message']) {{
+      if (k in value) return extractMsg(value[k]);
+    }}
+    return Object.entries(value).filter(([, v]) => v != null && v !== '')
+      .map(([k, v]) => typeof v === 'string'
+        ? (v.length > 60 ? `${{k}}: ${{v.slice(0, 60)}}…` : `${{k}}: ${{v}}`)
+        : `${{k}}: ${{typeof v === 'number' ? v : JSON.stringify(v).slice(0, 40)}}`)
+      .join('\\n');
+  }}
+  return String(value).slice(0, 300);
+}}
+
+const SPAN_STYLE = {{
+  request:    {{ color: '#7986cb', label: 'Caller',          bubble: 'caller'      }},
+  llm:        {{ color: '#00bcd4', label: 'Agent asked',     bubble: 'llm-reply'   }},
+  tool:       {{ color: '#ffb300', label: 'Called tool',     bubble: 'tool-out'    }},
+  agent_call: {{ color: '#ab47bc', label: 'Called agent',    bubble: 'agent-reply' }},
+  response:   {{ color: '#4caf50', label: 'Agent responded', bubble: 'response'    }},
+  error:      {{ color: '#f44336', label: 'Error',           bubble: 'error-msg'   }},
+}};
+
+function renderSpanStart(span) {{
+  const style = SPAN_STYLE[span.type] || {{ color: '#888', label: span.type, bubble: 'caller' }};
+  const node = document.createElement('div');
+  node.className = 'span-step in-progress';
+  let title = style.label;
+  if (span.type === 'llm') {{
+    const model = String((span.metadata && span.metadata.model) || span.name || 'LLM').replace('databricks-', '');
+    title = `Agent asked ${{escHtml(model)}}`;
+  }} else if (span.type === 'tool') {{
+    title = `Called tool <em style="font-style:italic;color:#ddd">${{escHtml(span.name)}}</em>`;
+  }} else if (span.type === 'agent_call') {{
+    title = `Called agent <em style="font-style:italic;color:#ddd">${{escHtml(span.name)}}</em>`;
+  }}
+  const inputMsg = extractMsg(span.input);
+  let inputHtml = '';
+  if (inputMsg) {{
+    const cls = span.type === 'tool' ? 'tool-in' : (span.type === 'llm' ? 'agent-ask' : style.bubble);
+    inputHtml = `<div class="span-bubble ${{cls}}">${{escHtml(inputMsg)}}</div>`;
+  }}
+  node.innerHTML =
+    `<div class="step-line"></div>` +
+    `<div class="step-dot" style="background:${{style.color}}"></div>` +
+    `<div class="step-content">` +
+      `<div class="step-header">` +
+        `<span class="who" style="color:${{style.color}}">${{title}}</span>` +
+        `<span class="dur" data-role="dur"></span>` +
+      `</div>` +
+      `<div data-role="input">${{inputHtml}}</div>` +
+      `<div data-role="output"></div>` +
+    `</div>`;
+  traceBody.appendChild(node);
+  traceBody.scrollTop = traceBody.scrollHeight;
+  spanNodes.set(spanKey(span), node);
+}}
+
+function renderSpanEnd(span) {{
+  const node = spanNodes.get(spanKey(span));
+  if (!node) return;
+  node.classList.remove('in-progress');
+  const durEl = node.querySelector('[data-role="dur"]');
+  if (durEl && span.duration_ms != null) {{
+    durEl.textContent = `${{(span.duration_ms / 1000).toFixed(2)}}s`;
+  }}
+  const outEl = node.querySelector('[data-role="output"]');
+  const outputMsg = extractMsg(span.output);
+  if (outEl && outputMsg) {{
+    const style = SPAN_STYLE[span.type] || {{ bubble: 'caller' }};
+    outEl.innerHTML = `<div class="span-bubble ${{style.bubble}}">${{escHtml(outputMsg)}}</div>`;
+  }}
+}}
+
+function resetTrace() {{
+  traceBody.innerHTML = '';
+  spanNodes.clear();
+  traceStatusEl.textContent = 'streaming…';
+  traceLinkEl.style.display = 'none';
+}}
+
+function finalizeTrace(traceId, status) {{
+  traceStatusEl.textContent = status === 'error' ? 'errored' : 'completed';
+  if (traceId) {{
+    traceLinkEl.href = `/_apx/traces/${{traceId}}`;
+    traceLinkEl.style.display = 'inline';
+  }}
 }}
 
 function addToolPills(trace) {{
@@ -623,10 +773,13 @@ form.addEventListener('submit', async e => {{
   addMsg('user', text);
   addEvent('user', text.slice(0, 80), null, {{ content: text }});
   history.push({{ role: 'user', content: text }});
+  resetTrace();
 
   const assistantDiv = addMsg('assistant', '', true);
   let full = '';
   let pendingTrace = null;
+  let traceId = null;
+  let traceStatus = 'completed';
 
   try {{
     const res = await fetch('/responses', {{
@@ -651,15 +804,25 @@ form.addEventListener('submit', async e => {{
         else if (line.startsWith('data: ')) {{
           try {{
             const payload = JSON.parse(line.slice(6));
-            if (eventType === 'output_text.delta' && payload.text) {{
+            if (eventType === 'response.output_item.start' && payload.trace_id) {{
+              traceId = payload.trace_id;
+            }} else if (eventType === 'output_text.delta' && payload.text) {{
               full += payload.text;
               assistantDiv.textContent = full;
               chat.scrollTop = chat.scrollHeight;
             }} else if (eventType === 'tool.trace') {{
-              // Render tool pills immediately as they arrive
+              // Inline tool pills — kept alongside the Trace tab's
+              // tool span bubbles intentionally; different views,
+              // both wanted.
               if (Array.isArray(payload) && payload.length) {{
                 addToolPills(payload);
               }}
+            }} else if (eventType === 'span.start') {{
+              renderSpanStart(payload);
+            }} else if (eventType === 'span.end') {{
+              renderSpanEnd(payload);
+            }} else if (eventType === 'error') {{
+              traceStatus = 'error';
             }}
           }} catch {{}}
         }}
@@ -668,11 +831,13 @@ form.addEventListener('submit', async e => {{
   }} catch (err) {{
     full = `Error: ${{err.message}}`;
     assistantDiv.textContent = full;
+    traceStatus = 'error';
   }}
 
   assistantDiv.classList.remove('streaming');
   addEvent('assistant', full.slice(0, 80) + (full.length > 80 ? '…' : ''), null, {{ content: full }});
   history.push({{ role: 'assistant', content: full }});
+  finalizeTrace(traceId, traceStatus);
   sendBtn.disabled = false;
   inputEl.focus();
 }});

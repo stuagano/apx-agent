@@ -11,11 +11,15 @@ without explicit passing.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Literal
+
+_logger = logging.getLogger(__name__)
 
 SpanType = Literal["request", "llm", "tool", "agent_call", "response", "error"]
 TraceStatus = Literal["in_progress", "completed", "error"]
@@ -32,6 +36,9 @@ class TraceSpan:
     input: Any = None
     output: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Back-reference set by add_span so end_span can emit on the same queue.
+    # Excluded from to_dict to keep the wire format clean.
+    _trace: Any = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +61,10 @@ class Trace:
     end_time: float | None = None
     duration_ms: float | None = None
     status: TraceStatus = "in_progress"
+    # Optional asyncio.Queue for live span event streaming. When attached
+    # by the SSE handler, add_span / end_span push (kind, span_dict) tuples
+    # so the dev UI can render the trace as it builds.
+    _event_queue: Any = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +76,21 @@ class Trace:
             "status": self.status,
             "spans": [s.to_dict() for s in self.spans],
         }
+
+
+def _emit(trace: Trace, kind: str, span: TraceSpan) -> None:
+    """Push a span lifecycle event to the trace's queue (if attached).
+
+    Non-blocking; safe to call from sync code on the same event loop as
+    the consumer. Drops events if the queue is full or unattached.
+    """
+    queue: asyncio.Queue[tuple[str, dict[str, Any]]] | None = trace._event_queue
+    if queue is None:
+        return
+    try:
+        queue.put_nowait((kind, span.to_dict()))
+    except asyncio.QueueFull:
+        _logger.warning("trace event queue full; dropping %s for %s", kind, span.name)
 
 
 _buffer: list[Trace] = []
@@ -99,8 +125,10 @@ def add_span(
         input=input,
         output=output,
         metadata=metadata or {},
+        _trace=trace,
     )
     trace.spans.append(span)
+    _emit(trace, "span_start", span)
     return span
 
 
@@ -110,6 +138,8 @@ def end_span(span: TraceSpan, output: Any = None, metadata: dict[str, Any] | Non
         span.output = output
     if metadata:
         span.metadata.update(metadata)
+    if span._trace is not None:
+        _emit(span._trace, "span_end", span)
 
 
 def end_trace(trace: Trace, status: TraceStatus = "completed") -> None:
