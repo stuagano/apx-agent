@@ -15,6 +15,7 @@ Usage::
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
 from typing import Any
@@ -28,6 +29,7 @@ from ._ui_chat import _render_agent_ui, _build_apx_openapi_spec
 from ._ui_edit import (
     _find_agent_router_path,
     _find_deploy_root,
+    _find_evals_path,
     _extract_schemas_from_source,
     _mine_schema_from_source,
     _render_edit_ui,
@@ -589,6 +591,34 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                     toml_path.write_text(updated)
 
         return JSONResponse({"ok": True})
+
+    @router.get("/_apx/eval/data", include_in_schema=False)
+    async def eval_data_get() -> Any:
+        """Read persisted eval cases. Returns [] if no file or no agent_router."""
+        from fastapi.responses import JSONResponse
+        path = _find_evals_path()
+        if path is None or not path.exists():
+            return JSONResponse([])
+        try:
+            return JSONResponse(_json.loads(path.read_text()))
+        except (OSError, ValueError) as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    @router.post("/_apx/eval/data", include_in_schema=False)
+    async def eval_data_post(request: Request) -> Any:
+        """Replace persisted eval cases with the request body (a list)."""
+        from fastapi.responses import JSONResponse
+        body = await request.json()
+        if not isinstance(body, list):
+            return JSONResponse({"ok": False, "error": "Body must be a list"}, status_code=400)
+        path = _find_evals_path()
+        if path is None:
+            return JSONResponse({"ok": False, "error": "agent_router.py not found in running process"}, status_code=503)
+        try:
+            path.write_text(_json.dumps(body, indent=2))
+        except OSError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": True, "count": len(body)})
 
     # Redirects for old routes
     @router.get("/_apx/eval", include_in_schema=False)
