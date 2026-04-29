@@ -125,6 +125,101 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return HTMLResponse("Trace not found", status_code=404)
         return HTMLResponse(_render_trace_detail_ui(trace))
 
+    @router.post("/_apx/replay/tool", include_in_schema=False)
+    async def replay_tool(request: Request) -> Any:
+        """Re-invoke a registered tool with arbitrary args. Used by the
+        trace detail view to debug-iterate without restarting a conversation."""
+        from fastapi.responses import JSONResponse
+        import time as _time
+        from httpx import ASGITransport, AsyncClient
+
+        ctx: AgentContext | None = request.app.state.agent_context
+        if ctx is None:
+            return JSONResponse({"ok": False, "error": "Agent not configured"}, status_code=503)
+
+        body = await request.json()
+        tool_name = body.get("tool_name", "")
+        args = body.get("args", {})
+        if not tool_name:
+            return JSONResponse({"ok": False, "error": "tool_name is required"}, status_code=400)
+        if tool_name not in ctx._tool_map:
+            return JSONResponse({"ok": False, "error": f"Tool '{tool_name}' not found"}, status_code=404)
+
+        # Forward OBO headers so workspace-scoped tools work the same way the
+        # runner invokes them.
+        obo_headers = {
+            "Authorization": request.headers.get("Authorization", ""),
+            "X-Forwarded-Access-Token": request.headers.get("X-Forwarded-Access-Token", ""),
+            "X-Forwarded-Host": request.headers.get("X-Forwarded-Host", ""),
+        }
+        t0 = _time.monotonic()
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=request.app),
+                base_url="http://internal",
+            ) as client:
+                resp = await client.post(
+                    f"{api_prefix}/tools/{tool_name}",
+                    json=args,
+                    headers=obo_headers,
+                )
+            elapsed = int((_time.monotonic() - t0) * 1000)
+            if resp.status_code >= 400:
+                return JSONResponse({
+                    "ok": False,
+                    "error": f"Tool returned {resp.status_code}: {resp.text}",
+                    "duration_ms": elapsed,
+                }, status_code=200)
+            result = resp.json()
+            output = result if isinstance(result, str) else _json.dumps(result)
+            return JSONResponse({"ok": True, "output": output, "duration_ms": elapsed})
+        except Exception as exc:  # noqa: BLE001
+            elapsed = int((_time.monotonic() - t0) * 1000)
+            return JSONResponse({
+                "ok": False,
+                "error": str(exc),
+                "duration_ms": elapsed,
+            }, status_code=200)
+
+    @router.post("/_apx/replay/llm", include_in_schema=False)
+    async def replay_llm(request: Request) -> Any:
+        """Re-invoke the configured model with edited messages. Returns
+        the model's output text — useful for "what if I had asked X instead?"."""
+        from fastapi.responses import JSONResponse
+        import time as _time
+
+        ctx: AgentContext | None = request.app.state.agent_context
+        if ctx is None:
+            return JSONResponse({"ok": False, "error": "Agent not configured"}, status_code=503)
+
+        body = await request.json()
+        messages = body.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return JSONResponse({"ok": False, "error": "messages must be a non-empty list"}, status_code=400)
+        model = body.get("model") or getattr(ctx.config, "model", "")
+        if not model:
+            return JSONResponse({"ok": False, "error": "No model configured"}, status_code=400)
+
+        try:
+            from databricks_openai import AsyncDatabricksOpenAI
+        except ImportError as exc:
+            return JSONResponse({"ok": False, "error": f"databricks_openai not available: {exc}"}, status_code=500)
+
+        t0 = _time.monotonic()
+        try:
+            client = AsyncDatabricksOpenAI()
+            resp = await client.responses.create(model=model, input=messages)
+            elapsed = int((_time.monotonic() - t0) * 1000)
+            output = getattr(resp, "output_text", "") or ""
+            return JSONResponse({"ok": True, "output": output, "duration_ms": elapsed, "model": model})
+        except Exception as exc:  # noqa: BLE001
+            elapsed = int((_time.monotonic() - t0) * 1000)
+            return JSONResponse({
+                "ok": False,
+                "error": str(exc),
+                "duration_ms": elapsed,
+            }, status_code=200)
+
     @router.get("/_apx/edit", include_in_schema=False)
     async def edit_dev_ui(request: Request) -> HTMLResponse:
         path = _find_agent_router_path()

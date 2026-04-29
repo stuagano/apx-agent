@@ -13,6 +13,19 @@ from typing import Any
 from ._trace import Trace, TraceSpan
 
 
+def _replay_payload(span: TraceSpan, idx: int) -> str:
+    """Serialize span input as a JSON-in-HTML-attr blob for the replay editor."""
+    if span.type == "tool":
+        body = {"kind": "tool", "tool_name": span.name, "args": span.input or {}}
+    elif span.type == "llm":
+        # input was recorded as {"messages": [{role, content}, ...]}
+        msgs = span.input.get("messages") if isinstance(span.input, dict) else None
+        body = {"kind": "llm", "messages": msgs or [], "model": (span.metadata or {}).get("model") or span.name}
+    else:
+        return ""
+    return escape(json.dumps({"idx": idx, **body}), quote=True)
+
+
 def _truncate(value: Any, max_len: int = 120) -> str:
     s = value if isinstance(value, str) else json.dumps(value, default=str)
     if not s:
@@ -142,9 +155,16 @@ def _render_traces_list_ui(traces: list[Trace], base_path: str = "") -> str:
 </html>"""
 
 
-def _span_bubble(span: TraceSpan) -> str:
+def _span_bubble(span: TraceSpan, idx: int = 0) -> str:
     duration = f"{span.duration_ms / 1000:.1f}s" if span.duration_ms is not None else ""
     dur_html = f'<span class="dur">{duration}</span>' if duration else ""
+    replay_btn = ""
+    if span.type in ("tool", "llm"):
+        payload = _replay_payload(span, idx)
+        replay_btn = (
+            f'<button class="replay-btn" type="button" data-replay="{payload}" '
+            f'title="Replay this step with edited input">↻ replay</button>'
+        )
 
     if span.type == "request":
         msg = _extract_message(span.input) or "Request received"
@@ -162,16 +182,18 @@ def _span_bubble(span: TraceSpan) -> str:
         model = str(model).replace("databricks-", "")
         input_msg = _extract_message(span.input)
         output_msg = _extract_message(span.output)
-        return f"""<div class="step">
+        return f"""<div class="step" data-span-idx="{idx}">
       <div class="step-line"></div>
       <div class="step-dot" style="background:#00bcd4;"></div>
       <div class="step-content">
         <div class="step-header">
           <span class="who" style="color:#00bcd4;">Agent asked {escape(model)}</span>
           {dur_html}
+          {replay_btn}
         </div>
         {f'<div class="bubble agent-ask">{escape(input_msg)}</div>' if input_msg else ''}
         {f'<div class="bubble llm-reply">{escape(output_msg)}</div>' if output_msg else ''}
+        <div class="replay-slot" data-slot="{idx}"></div>
       </div>
     </div>"""
 
@@ -188,16 +210,18 @@ def _span_bubble(span: TraceSpan) -> str:
             + "".join(f'<div class="kv">{escape(line)}</div>' for line in output_msg.split("\n"))
             + "</div>"
         ) if output_msg else ""
-        return f"""<div class="step">
+        return f"""<div class="step" data-span-idx="{idx}">
       <div class="step-line"></div>
       <div class="step-dot" style="background:#ffb300;"></div>
       <div class="step-content">
         <div class="step-header">
           <span class="who" style="color:#ffb300;">Called tool <em>{escape(span.name)}</em></span>
           {dur_html}
+          {replay_btn}
         </div>
         {in_html}
         {out_html}
+        <div class="replay-slot" data-slot="{idx}"></div>
       </div>
     </div>"""
 
@@ -246,7 +270,7 @@ def _render_trace_detail_ui(trace: Trace) -> str:
         if trace.duration_ms is not None
         else "in progress"
     )
-    spans_html = "\n".join(_span_bubble(s) for s in trace.spans) or (
+    spans_html = "\n".join(_span_bubble(s, i) for i, s in enumerate(trace.spans)) or (
         '<div style="padding:3rem;text-align:center;color:#555;">No steps recorded</div>'
     )
     status_color = (
@@ -288,6 +312,29 @@ def _render_trace_detail_ui(trace: Trace) -> str:
     .bubble.response {{ background: #0a1a0a; color: #a0d8a0; border: 1px solid #1a3020; }}
     .bubble.error-msg {{ background: #1a0a0a; color: #f08080; border: 1px solid #3a1a1a; }}
     .kv {{ padding: 2px 0; }}
+    /* Replay editor */
+    .replay-btn {{ background: transparent; border: 1px solid #2a2a2a; color: #888; cursor: pointer;
+                    padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: auto; }}
+    .replay-btn:hover {{ color: #ccc; border-color: #444; }}
+    .replay-slot {{ margin-top: 8px; }}
+    .replay-editor {{ background: #0a0a14; border: 1px solid #2a2a3a; border-radius: 8px;
+                       padding: 10px 12px; font-size: 12px; }}
+    .replay-editor textarea {{ width: 100%; min-height: 80px; background: #050510; border: 1px solid #1a1a2a;
+                                color: #ccc; border-radius: 4px; padding: 6px 8px; font-family: monospace;
+                                font-size: 12px; resize: vertical; outline: none; }}
+    .replay-editor textarea:focus {{ border-color: #3a7bd5; }}
+    .replay-actions {{ display: flex; gap: 6px; margin-top: 6px; align-items: center; }}
+    .replay-go {{ background: #1e3a5f; color: #60b0ff; border: 1px solid #2a5298; cursor: pointer;
+                   padding: 4px 12px; border-radius: 4px; font-size: 11px; }}
+    .replay-go:hover {{ background: #264a6f; }}
+    .replay-go:disabled {{ opacity: 0.5; cursor: wait; }}
+    .replay-cancel {{ background: transparent; color: #555; border: 1px solid #2a2a2a; cursor: pointer;
+                       padding: 4px 10px; border-radius: 4px; font-size: 11px; }}
+    .replay-result {{ margin-top: 8px; padding: 8px 10px; border-radius: 6px; font-size: 12px;
+                       white-space: pre-wrap; word-break: break-word; font-family: monospace; }}
+    .replay-result.ok {{ background: #0a1a0a; color: #a0d8a0; border: 1px solid #1a3020; }}
+    .replay-result.err {{ background: #1a0a0a; color: #f08080; border: 1px solid #3a1a1a; }}
+    .replay-meta {{ color: #555; font-size: 10px; }}
   </style>
 </head>
 <body>
@@ -300,5 +347,80 @@ def _render_trace_detail_ui(trace: Trace) -> str:
   <div class="conversation">
     {spans_html}
   </div>
+  <script>
+    document.querySelectorAll('.replay-btn').forEach(btn => {{
+      btn.addEventListener('click', e => {{
+        e.preventDefault();
+        const payload = JSON.parse(btn.getAttribute('data-replay'));
+        const slot = btn.closest('.step-content').querySelector('.replay-slot');
+        if (slot.firstElementChild) {{ slot.innerHTML = ''; return; }}  // toggle close
+        renderReplayEditor(slot, payload);
+      }});
+    }});
+
+    function renderReplayEditor(slot, payload) {{
+      const initial = payload.kind === 'tool'
+        ? JSON.stringify(payload.args, null, 2)
+        : JSON.stringify(payload.messages, null, 2);
+      const labelLine = payload.kind === 'tool'
+        ? `<div class="replay-meta">tool: <code>${{escapeHtml(payload.tool_name)}}</code> &middot; edit args below</div>`
+        : `<div class="replay-meta">model: <code>${{escapeHtml(payload.model || '(default)')}}</code> &middot; edit messages below</div>`;
+      slot.innerHTML = `
+        <div class="replay-editor">
+          ${{labelLine}}
+          <textarea spellcheck="false">${{escapeHtml(initial)}}</textarea>
+          <div class="replay-actions">
+            <button class="replay-go" type="button">Replay</button>
+            <button class="replay-cancel" type="button">Cancel</button>
+            <span class="replay-meta replay-status"></span>
+          </div>
+          <div class="replay-output"></div>
+        </div>`;
+      const ta = slot.querySelector('textarea');
+      const go = slot.querySelector('.replay-go');
+      const cancel = slot.querySelector('.replay-cancel');
+      const status = slot.querySelector('.replay-status');
+      const output = slot.querySelector('.replay-output');
+      cancel.addEventListener('click', () => {{ slot.innerHTML = ''; }});
+      go.addEventListener('click', async () => {{
+        let parsed;
+        try {{ parsed = JSON.parse(ta.value); }} catch (err) {{
+          output.innerHTML = `<div class="replay-result err">Invalid JSON: ${{escapeHtml(err.message)}}</div>`;
+          return;
+        }}
+        const url = payload.kind === 'tool' ? '/_apx/replay/tool' : '/_apx/replay/llm';
+        const body = payload.kind === 'tool'
+          ? {{ tool_name: payload.tool_name, args: parsed }}
+          : {{ messages: parsed, model: payload.model }};
+        go.disabled = true;
+        status.textContent = 'running…';
+        output.innerHTML = '';
+        try {{
+          const r = await fetch(url, {{
+            method: 'POST', headers: {{'Content-Type':'application/json'}},
+            body: JSON.stringify(body),
+          }});
+          const data = await r.json();
+          status.textContent = data.duration_ms != null ? `${{data.duration_ms}}ms` : '';
+          if (data.ok) {{
+            output.innerHTML = `<div class="replay-result ok">${{escapeHtml(data.output || '(no output)')}}</div>`;
+          }} else {{
+            output.innerHTML = `<div class="replay-result err">${{escapeHtml(data.error || 'Replay failed')}}</div>`;
+          }}
+        }} catch (err) {{
+          output.innerHTML = `<div class="replay-result err">${{escapeHtml(err.message)}}</div>`;
+          status.textContent = '';
+        }} finally {{
+          go.disabled = false;
+        }}
+      }});
+    }}
+
+    function escapeHtml(s) {{
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }}
+  </script>
 </body>
 </html>"""
