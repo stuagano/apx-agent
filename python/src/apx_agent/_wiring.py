@@ -14,8 +14,6 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.responses import Response
 
-from collections.abc import AsyncGenerator
-
 from ._agents import BaseAgent
 from ._inspection import _load_agent_config
 from ._mcp import _build_mcp_components
@@ -176,9 +174,22 @@ def _schedule_registration(app: FastAPI, registry_url: str, public_url: str) -> 
         except Exception as e:
             logger.warning("Failed to register with agent registry at %s: %s", url, e)
 
-    @app.on_event("startup")
-    async def _on_startup() -> None:
-        asyncio.create_task(_register())
+    # Fire-and-forget: schedule registration as a background task.
+    # This runs after the first request arrives (ensuring the server is up),
+    # which is the earliest safe point when setup_agent() is called outside
+    # of create_app()'s lifespan.
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class _RegisterOnceMiddleware(BaseHTTPMiddleware):
+        _registered = False
+
+        async def dispatch(self, request: Any, call_next: Any) -> Any:
+            if not _RegisterOnceMiddleware._registered:
+                _RegisterOnceMiddleware._registered = True
+                asyncio.create_task(_register())
+            return await call_next(request)
+
+    app.add_middleware(_RegisterOnceMiddleware)
 
 
 async def _handle_invocation(

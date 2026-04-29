@@ -11,6 +11,7 @@ to work — the SDK sees each tool as an opaque async function.
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import logging
 from collections.abc import AsyncGenerator
@@ -22,6 +23,13 @@ from ._models import AgentContext, AgentTool, Message
 from ._trace import add_span, end_span, truncate
 
 logger = logging.getLogger(__name__)
+
+# Module-level SDK client — initialized once, reused across requests.
+# This avoids the race condition of calling set_default_openai_client()
+# per-request under concurrent load.
+_sdk_initialized = False
+_sdk_init_lock = asyncio.Lock()
+_sdk_client: Any = None
 
 
 async def run_via_sdk(
@@ -41,16 +49,20 @@ async def run_via_sdk(
     """
     from agents import Agent as OAIAgent
     from agents import Runner, FunctionTool
-    from agents.run_config import RunConfig
     from databricks_openai import AsyncDatabricksOpenAI
     from agents import set_default_openai_client, set_default_openai_api
 
     ctx: AgentContext = request.app.state.agent_context
 
-    # Configure the SDK to use DatabricksOpenAI
-    client = AsyncDatabricksOpenAI()
-    set_default_openai_client(client)
-    set_default_openai_api("chat_completions")
+    # Initialize SDK globals once (thread-safe via asyncio lock)
+    global _sdk_initialized, _sdk_client
+    if not _sdk_initialized:
+        async with _sdk_init_lock:
+            if not _sdk_initialized:
+                _sdk_client = AsyncDatabricksOpenAI()
+                set_default_openai_client(_sdk_client)
+                set_default_openai_api("chat_completions")
+                _sdk_initialized = True
 
     effective_tools = tools if tools is not None else ctx.tools
 
@@ -73,7 +85,7 @@ async def run_via_sdk(
     # Convert sub-agent tools to SDK FunctionTool instances
     # These call DatabricksOpenAI.responses.create(model="apps/<name>") for OBO
     sub_agent_tools = [
-        _to_sub_agent_tool(t, client, request)
+        _to_sub_agent_tool(t, _sdk_client, request)
         for t in effective_tools
         if t.sub_agent_url
     ]
@@ -157,9 +169,15 @@ async def stream_via_sdk(
 
     ctx: AgentContext = request.app.state.agent_context
 
-    client = AsyncDatabricksOpenAI()
-    set_default_openai_client(client)
-    set_default_openai_api("chat_completions")
+    # Initialize SDK globals once (thread-safe via asyncio lock)
+    global _sdk_initialized, _sdk_client
+    if not _sdk_initialized:
+        async with _sdk_init_lock:
+            if not _sdk_initialized:
+                _sdk_client = AsyncDatabricksOpenAI()
+                set_default_openai_client(_sdk_client)
+                set_default_openai_api("chat_completions")
+                _sdk_initialized = True
 
     effective_tools = tools if tools is not None else ctx.tools
 
@@ -178,7 +196,7 @@ async def stream_via_sdk(
         if not t.sub_agent_url
     ]
     sub_agent_tools = [
-        _to_sub_agent_tool(t, client, request)
+        _to_sub_agent_tool(t, _sdk_client, request)
         for t in effective_tools
         if t.sub_agent_url
     ]

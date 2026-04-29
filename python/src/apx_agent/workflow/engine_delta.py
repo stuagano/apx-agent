@@ -40,8 +40,16 @@ def _now() -> str:
 
 
 def _esc(s: str) -> str:
-    """Escape single quotes for inline SQL string values."""
-    return s.replace("'", "''")
+    """Escape values for inline SQL string literals."""
+    return s.replace("\\", "\\\\").replace("'", "''")
+
+
+def _safe_name(s: str, label: str) -> str:
+    """Validate that an identifier-like value contains no SQL injection patterns."""
+    import re
+    if not re.match(r'^[\w.:\-]+$', s):
+        raise ValueError(f"Invalid {label}: must be alphanumeric/hyphens/underscores/dots/colons, got: {s!r}")
+    return s
 
 
 def _sql_literal(value: Any) -> str:
@@ -94,7 +102,8 @@ class DeltaEngine(WorkflowEngine):
     ) -> str:
         await self._bootstrap()
 
-        rid = run_id or str(uuid.uuid4())
+        rid = _safe_name(run_id or str(uuid.uuid4()), "run_id")
+        _safe_name(workflow_name, "workflow_name")
         input_json = json.dumps(input) if input is not None else "null"
         sql = f"""
             MERGE INTO {self._runs_table} AS target
@@ -128,7 +137,8 @@ class DeltaEngine(WorkflowEngine):
         cached = await self._lookup_step(run_id, step_key)
         if cached is not None:
             if cached.status == "completed":
-                return cached.output  # type: ignore[return-value]
+                import copy
+                return copy.deepcopy(cached.output)  # type: ignore[return-value]
             raise StepFailedError(step_key, cached.error or "step failed")
 
         start = time.monotonic()
@@ -167,6 +177,8 @@ class DeltaEngine(WorkflowEngine):
     ) -> None:
         await self._bootstrap()
 
+        _safe_name(run_id, "run_id")
+        _safe_name(status, "status")
         set_output = (
             ""
             if output is None

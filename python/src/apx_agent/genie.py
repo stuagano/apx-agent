@@ -71,6 +71,12 @@ def genie_tool(
                 return f"Genie query {status.lower()}."
             await asyncio.sleep(2)
 
+        # Check if the polling loop timed out without reaching a terminal state
+        final_status = msg_resp.get("status", "")
+        if final_status not in ("COMPLETED", "FAILED", "CANCELLED"):
+            logger.warning("Genie query timed out after 60s for space %s", space_id)
+            return "Genie query timed out after 60 seconds. Please try again or simplify the question."
+
         for att in msg_resp.get("attachments", []):
             text_block = att.get("text", {})
             if text_block.get("content"):
