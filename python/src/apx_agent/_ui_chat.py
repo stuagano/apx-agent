@@ -456,19 +456,33 @@ function renderEval() {{
   el.innerHTML = evalRows.map((r, i) => {{
     const dot = r.status === 'pass' ? '#4ade80' : r.status === 'fail' ? '#f87171' : r.status === 'running' ? '#facc15' : '#333';
     const anim = r.status === 'running' ? 'animation:pulse .8s infinite' : '';
+    const ms = r.last_run_ms ? `<span style="font-size:10px;color:#555;font-family:monospace">${{r.last_run_ms}}ms</span>` : '';
+    const traceLink = r.trace_id
+      ? `<a href="/_apx/traces/${{esc(r.trace_id)}}" target="_blank" style="font-size:10px;color:#60b0ff;text-decoration:none">→ trace</a>`
+      : '';
     return `<div style="padding:8px 12px;border-bottom:1px solid #141414" data-idx="${{i}}">
       <div style="display:flex;align-items:flex-start;gap:8px">
         <span style="width:8px;height:8px;border-radius:50%;background:${{dot}};${{anim}};flex-shrink:0;margin-top:4px;display:inline-block"></span>
         <span style="font-size:12px;color:#ccc;flex:1;cursor:pointer" onclick="toggleEvalResp(this)">${{esc(r.question)}}</span>
+        ${{ms}} ${{traceLink}}
+        <button onclick="runEvalCase(${{i}})" title="Run this case" style="background:transparent;color:#60b0ff;border:none;cursor:pointer;padding:0 4px;font-size:13px" ${{r.status === 'running' ? 'disabled' : ''}}>▶</button>
+        <button onclick="deleteEvalCase(${{i}})" title="Delete" style="background:transparent;color:#555;border:none;cursor:pointer;padding:0 4px;font-size:13px">✕</button>
       </div>
-      ${{r.response ? `<div style="font-size:11px;color:#666;margin:4px 0 0 16px;display:none" class="eval-resp">${{esc(r.response.slice(0,200))}}${{r.response.length>200?'…':''}}</div>` : ''}}
+      <div style="margin:4px 0 0 16px">
+        <input type="text" value="${{esc(r.expected || '')}}" placeholder="expected keywords (comma-separated, blank = pass on any text)"
+          onblur="updateExpected(${{i}}, this.value)"
+          style="width:100%;background:transparent;border:none;border-bottom:1px solid #1a1a1a;color:#888;font-size:11px;padding:2px 0;outline:none" />
+      </div>
+      ${{r.response ? `<div style="font-size:11px;color:#666;margin:4px 0 0 16px;display:none;white-space:pre-wrap" class="eval-resp">${{esc(r.response.slice(0,400))}}${{r.response.length>400?'…':''}}</div>` : ''}}
     </div>`;
   }}).join('');
 }}
 
 function toggleEvalResp(el) {{
-  const resp = el.parentElement.nextElementSibling;
-  if (resp && resp.classList.contains('eval-resp')) resp.style.display = resp.style.display === 'none' ? '' : 'none';
+  // Question span → div(case) → response is the last child .eval-resp
+  const wrapper = el.closest('[data-idx]');
+  const resp = wrapper && wrapper.querySelector('.eval-resp');
+  if (resp) resp.style.display = resp.style.display === 'none' ? '' : 'none';
 }}
 
 async function loadEvalCases() {{
@@ -476,30 +490,89 @@ async function loadEvalCases() {{
   try {{
     const r = await fetch('/_apx/eval/data');
     evalRows = await r.json();
+    if (!Array.isArray(evalRows)) evalRows = [];
     renderEval();
   }} catch(e) {{
     document.getElementById('eval-cases').innerHTML = '<div style="color:#f87171;font-size:12px;padding:12px">Failed to load: ' + e.message + '</div>';
   }}
 }}
 
+let _evalSaveTimer = null;
+function saveEvalCases() {{
+  // Debounce so per-keystroke edits don't hammer the disk.
+  clearTimeout(_evalSaveTimer);
+  _evalSaveTimer = setTimeout(async () => {{
+    try {{
+      await fetch('/_apx/eval/data', {{
+        method: 'POST',
+        headers: {{'Content-Type':'application/json'}},
+        body: JSON.stringify(evalRows),
+      }});
+    }} catch {{ /* offline; in-memory state still works */ }}
+  }}, 250);
+}}
+
+function updateExpected(i, value) {{
+  if (!evalRows[i]) return;
+  evalRows[i].expected = value;
+  saveEvalCases();
+}}
+
+function deleteEvalCase(i) {{
+  evalRows.splice(i, 1);
+  renderEval();
+  saveEvalCases();
+}}
+
 async function runEvalCase(i) {{
   const r = evalRows[i];
-  r.status = 'running'; r.response = '';
+  r.status = 'running'; r.response = ''; r.trace_id = null; r.last_run_ms = null;
   renderEval();
+  resetTrace();
+
+  const t0 = performance.now();
+  let text = '';
+  let traceId = null;
   try {{
     const resp = await fetch('/responses', {{
       method: 'POST', headers: {{'Content-Type':'application/json'}},
-      body: JSON.stringify({{input: [{{role:'user', content:r.question}}]}}),
+      body: JSON.stringify({{input: [{{role:'user', content:r.question}}], stream: true}}),
     }});
-    const data = await resp.json();
-    let text = '';
-    try {{ text = data.output[0].content[0].text; }} catch {{ text = JSON.stringify(data); }}
+    if (!resp.ok) throw new Error(`${{resp.status}} ${{await resp.text()}}`);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {{
+      const {{done, value}} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {{stream:true}});
+      const lines = buf.split('\\n');
+      buf = lines.pop();
+      let evt = '';
+      for (const line of lines) {{
+        if (line.startsWith('event: ')) evt = line.slice(7).trim();
+        else if (line.startsWith('data: ') && evt) {{
+          try {{
+            const payload = JSON.parse(line.slice(6));
+            if (evt === 'response.output_item.start' && payload.trace_id) traceId = payload.trace_id;
+            else if (evt === 'output_text.delta' && payload.text) text += payload.text;
+            else if (evt === 'span.start') renderSpanStart(payload);
+            else if (evt === 'span.end') renderSpanEnd(payload);
+          }} catch {{}}
+          evt = '';
+        }}
+      }}
+    }}
     r.response = text;
     r.status = r.expected
       ? r.expected.split(/[,;]/).map(k=>k.trim().toLowerCase()).filter(Boolean).every(k=>text.toLowerCase().includes(k)) ? 'pass' : 'fail'
       : text.length > 10 ? 'pass' : 'fail';
   }} catch(e) {{ r.response = 'Error: ' + e.message; r.status = 'fail'; }}
+  r.trace_id = traceId;
+  r.last_run_ms = Math.round(performance.now() - t0);
+  finalizeTrace(traceId, r.status === 'fail' ? 'error' : 'completed');
   renderEval();
+  saveEvalCases();
 }}
 
 document.getElementById('eval-run-all').addEventListener('click', async () => {{
@@ -520,10 +593,11 @@ document.getElementById('eval-run-all').addEventListener('click', async () => {{
 }});
 
 document.getElementById('eval-reset').addEventListener('click', () => {{
-  evalRows.forEach(r => {{ r.status = 'pending'; r.response = ''; }});
+  evalRows.forEach(r => {{ r.status = 'pending'; r.response = ''; r.trace_id = null; r.last_run_ms = null; }});
   document.getElementById('eval-progress-fill').style.width = '0%';
   document.getElementById('eval-status').textContent = '';
   renderEval();
+  saveEvalCases();
 }});
 
 document.getElementById('eval-add-btn').addEventListener('click', () => {{
@@ -532,6 +606,7 @@ document.getElementById('eval-add-btn').addEventListener('click', () => {{
   evalRows.push({{question: q, expected: '', status: 'pending', response: ''}});
   document.getElementById('eval-add-q').value = '';
   renderEval();
+  saveEvalCases();
 }});
 
 // ── State ──
