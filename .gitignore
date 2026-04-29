@@ -13,3 +13,6 @@ dist/
 
 # Databricks Apps deploy configs (contain client secrets)
 typescript/deploy/*/app.yaml
+
+# Claude Code skill scratch
+.superpowers/
