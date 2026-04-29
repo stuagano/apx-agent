@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -185,6 +186,7 @@ async def _handle_invocation(
     body: InvocationRequest,
 ) -> InvocationResponse | StreamingResponse:
     """Handle agent requests — returns JSON or SSE depending on body.stream."""
+    import asyncio as _asyncio
     import json as _json
 
     ctx: AgentContext | None = request.app.state.agent_context
@@ -197,41 +199,81 @@ async def _handle_invocation(
 
     trace = create_trace(ctx.config.name)
     request.state.trace = trace
-    request_span = add_span(
-        trace,
-        type="request",
-        name="POST /responses",
-        input={
-            "stream": body.stream,
-            "message_count": len(messages),
-            "last_message": truncate(messages[-1].content if messages else "", 200),
-        },
-    )
-    end_span(request_span)
 
     if body.stream:
         async def _sse_generator() -> AsyncGenerator[str, None]:
             item_id = "msg_001"
-            _emitted_trace_count = 0
-            yield f"event: response.output_item.start\ndata: {_json.dumps({'item_id': item_id})}\n\n"
-            full_text = ""
-            try:
-                async for chunk in ctx.agent.stream(messages, request):
-                    full_text += chunk
-                    yield f"event: output_text.delta\ndata: {_json.dumps({'item_id': item_id, 'text': chunk})}\n\n"
-                    # Emit tool traces incrementally as tools complete
+            yield f"event: response.output_item.start\ndata: {_json.dumps({'item_id': item_id, 'trace_id': trace.id})}\n\n"
+
+            # Live span event channel — span_start/span_end land here as
+            # add_span/end_span are called anywhere in the request path.
+            queue: _asyncio.Queue[tuple[str, Any]] = _asyncio.Queue()
+            trace._event_queue = queue
+
+            request_span = add_span(
+                trace, type="request", name="POST /responses",
+                input={
+                    "stream": True,
+                    "message_count": len(messages),
+                    "last_message": truncate(messages[-1].content if messages else "", 200),
+                },
+            )
+            end_span(request_span)
+
+            full_text_parts: list[str] = []
+            tool_trace_emitted = 0
+
+            async def _consume_stream() -> None:
+                nonlocal tool_trace_emitted
+                try:
+                    async for chunk in ctx.agent.stream(messages, request):
+                        full_text_parts.append(chunk)
+                        await queue.put(("text", chunk))
+                        # Legacy tool.trace pill format — keep emitting for the
+                        # chat UI's inline pills alongside the new span events.
+                        tool_trace = getattr(request.state, "tool_trace", [])
+                        if len(tool_trace) > tool_trace_emitted:
+                            await queue.put(("tool_trace", tool_trace[tool_trace_emitted:]))
+                            tool_trace_emitted = len(tool_trace)
                     tool_trace = getattr(request.state, "tool_trace", [])
-                    if len(tool_trace) > _emitted_trace_count:
-                        new_traces = tool_trace[_emitted_trace_count:]
-                        yield f"event: tool.trace\ndata: {_json.dumps(new_traces)}\n\n"
-                        _emitted_trace_count = len(tool_trace)
+                    if len(tool_trace) > tool_trace_emitted:
+                        await queue.put(("tool_trace", tool_trace[tool_trace_emitted:]))
+                        tool_trace_emitted = len(tool_trace)
+                    await queue.put(("eof", None))
+                except Exception as exc:  # noqa: BLE001
+                    await queue.put(("err", exc))
+
+            stream_task = _asyncio.create_task(_consume_stream())
+            err_obj: BaseException | None = None
+            done = False
+
+            try:
+                while not done:
+                    kind, payload = await queue.get()
+                    if kind == "span_start":
+                        yield f"event: span.start\ndata: {_json.dumps(payload)}\n\n"
+                    elif kind == "span_end":
+                        yield f"event: span.end\ndata: {_json.dumps(payload)}\n\n"
+                    elif kind == "text":
+                        yield f"event: output_text.delta\ndata: {_json.dumps({'item_id': item_id, 'text': payload})}\n\n"
+                    elif kind == "tool_trace":
+                        yield f"event: tool.trace\ndata: {_json.dumps(payload)}\n\n"
+                    elif kind == "eof":
+                        done = True
+                    elif kind == "err":
+                        err_obj = payload
+                        done = True
+            finally:
+                if not stream_task.done():
+                    stream_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await stream_task
+
+            full_text = "".join(full_text_parts)
+
+            if err_obj is None:
                 output_item = OutputItem(content=[OutputTextContent(text=full_text)])
                 yield f"event: response.output_item.done\ndata: {_json.dumps({'item_id': item_id, 'output': output_item.model_dump()})}\n\n"
-                # Emit any remaining traces
-                tool_trace = getattr(request.state, "tool_trace", [])
-                if len(tool_trace) > _emitted_trace_count:
-                    new_traces = tool_trace[_emitted_trace_count:]
-                    yield f"event: tool.trace\ndata: {_json.dumps(new_traces)}\n\n"
                 custom_out = getattr(request.state, "custom_outputs", {})
                 if custom_out:
                     yield f"event: custom_outputs\ndata: {_json.dumps(custom_out)}\n\n"
@@ -240,19 +282,47 @@ async def _handle_invocation(
                     output=truncate(full_text, 500),
                 )
                 end_span(response_span)
+                # Drain final span events into the SSE stream.
+                while not queue.empty():
+                    try:
+                        kind, payload = queue.get_nowait()
+                    except _asyncio.QueueEmpty:
+                        break
+                    if kind == "span_start":
+                        yield f"event: span.start\ndata: {_json.dumps(payload)}\n\n"
+                    elif kind == "span_end":
+                        yield f"event: span.end\ndata: {_json.dumps(payload)}\n\n"
                 end_trace(trace, status="completed")
-            except Exception as exc:
-                error_payload = {"item_id": item_id, "error": str(exc)}
-                yield f"event: error\ndata: {_json.dumps(error_payload)}\n\n"
-                logger.exception("Error during streaming invocation")
+            else:
+                yield f"event: error\ndata: {_json.dumps({'item_id': item_id, 'error': str(err_obj)})}\n\n"
+                logger.exception("Error during streaming invocation", exc_info=err_obj)
                 error_span = add_span(
-                    trace, type="error", name=type(exc).__name__,
-                    output=str(exc)[:500],
+                    trace, type="error", name=type(err_obj).__name__,
+                    output=str(err_obj)[:500],
                 )
                 end_span(error_span)
+                while not queue.empty():
+                    try:
+                        kind, payload = queue.get_nowait()
+                    except _asyncio.QueueEmpty:
+                        break
+                    if kind == "span_start":
+                        yield f"event: span.start\ndata: {_json.dumps(payload)}\n\n"
+                    elif kind == "span_end":
+                        yield f"event: span.end\ndata: {_json.dumps(payload)}\n\n"
                 end_trace(trace, status="error")
 
         return StreamingResponse(_sse_generator(), media_type="text/event-stream")
+
+    request_span = add_span(
+        trace, type="request", name="POST /responses",
+        input={
+            "stream": False,
+            "message_count": len(messages),
+            "last_message": truncate(messages[-1].content if messages else "", 200),
+        },
+    )
+    end_span(request_span)
 
     try:
         text = await ctx.agent.run(messages, request)

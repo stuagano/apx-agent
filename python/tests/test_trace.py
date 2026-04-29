@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -304,3 +306,79 @@ class TestRunnerSpans:
                 request,
             )
         assert text == "ok"
+
+
+class TestLiveSpanStream:
+    """SSE must surface span.start events live during slow agent steps."""
+
+    @pytest.mark.asyncio
+    async def test_span_start_emits_before_text_delta_during_slow_llm(self):
+        """When the agent's stream pauses (e.g. waiting on the LLM),
+        span.start events must reach the client before any
+        output_text.delta. Proves the queue-based merge actually
+        delivers live span events instead of degrading to
+        between-chunk polling.
+        """
+
+        class SlowAgent(BaseAgent):
+            async def run(self, messages: list[Message], request: Request) -> str:
+                return ""
+
+            async def stream(
+                self, messages: list[Message], request: Request
+            ) -> AsyncGenerator[str, None]:
+                trace = getattr(request.state, "trace", None)
+                # Simulate the agent calling the LLM: a span starts, the
+                # model takes time, then text arrives.
+                if trace is not None:
+                    span = _trace.add_span(trace, type="llm", name="claude-fake")
+                    await asyncio.sleep(0.05)
+                    _trace.end_span(span, output="hi")
+                yield "hi"
+
+        app = FastAPI()
+        agent = SlowAgent()
+        config = AgentConfig(name="slow-agent", description="Slow stub")
+        await setup_agent(app, agent, config)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream(
+                "POST",
+                "/responses",
+                json={"input": [{"role": "user", "content": "hi"}], "stream": True},
+            ) as resp:
+                assert resp.status_code == 200
+                event_order: list[tuple[str, str]] = []
+                event_type = ""
+                async for line in resp.aiter_lines():
+                    if line.startswith("event: "):
+                        event_type = line[7:].strip()
+                    elif line.startswith("data: ") and event_type:
+                        try:
+                            payload = json.loads(line[6:])
+                        except json.JSONDecodeError:
+                            payload = None
+                        kind = (
+                            payload.get("type")
+                            if isinstance(payload, dict)
+                            else None
+                        )
+                        event_order.append((event_type, kind or ""))
+                        event_type = ""
+
+        relevant = [
+            e for e in event_order
+            if e[0] in ("span.start", "span.end", "output_text.delta")
+        ]
+        first_text = next(
+            (i for i, e in enumerate(relevant) if e[0] == "output_text.delta"), -1
+        )
+        assert first_text > 0, f"No output_text.delta seen in {relevant}"
+        before_text = relevant[:first_text]
+        starts = [e[1] for e in before_text if e[0] == "span.start"]
+        assert "request" in starts, (
+            f"request span.start missing before text delta: {before_text}"
+        )
+        assert "llm" in starts, (
+            f"llm span.start missing before text delta: {before_text}"
+        )
