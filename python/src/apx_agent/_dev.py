@@ -52,6 +52,48 @@ from ._trace import get_trace, get_traces
 logger = logging.getLogger(__name__)
 
 
+def _parse_judge_output(text: str) -> tuple[str, str]:
+    """Extract verdict and reason from a judge model's output.
+
+    Expected format::
+
+        VERDICT: PASS
+        REASON: Response correctly identifies the answer.
+
+    Tolerant of: missing labels, swapped order, extra prose. Falls back to FAIL
+    if PASS isn't clearly indicated, so unclear judges count as failures.
+    """
+    verdict = "FAIL"
+    reason = ""
+    if not text:
+        return verdict, "No output from judge model"
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper.startswith("VERDICT:"):
+            tail = stripped.split(":", 1)[1].strip().upper()
+            verdict = "PASS" if tail.startswith("PASS") else "FAIL"
+        elif upper.startswith("REASON:"):
+            reason = stripped.split(":", 1)[1].strip()
+
+    if not reason:
+        # No labelled REASON line — use the first non-VERDICT line as the reason.
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.upper().startswith("VERDICT"):
+                reason = stripped
+                break
+
+    # If we never saw a VERDICT line, infer from the text body.
+    if verdict == "FAIL" and "VERDICT:" not in text.upper():
+        upper = text.upper()
+        if "PASS" in upper and "FAIL" not in upper:
+            verdict = "PASS"
+
+    return verdict, reason or "(no reason provided)"
+
+
 def inject_create_tool_meta(ctx: AgentContext) -> None:
     """Inject the create_tool meta-tool for dev mode."""
     _create_tool_meta = AgentTool(
@@ -624,6 +666,76 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         except OSError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
         return JSONResponse({"ok": True, "count": len(body)})
+
+    @router.post("/_apx/eval/judge", include_in_schema=False)
+    async def eval_judge(request: Request) -> Any:
+        """LLM-as-judge scoring for eval cases.
+
+        Body: {question, response, criterion, model?}. The judge prompt asks the
+        model to reply with PASS/FAIL + a one-sentence reason; we parse the
+        verdict deterministically and return {ok, pass, verdict, reason}.
+        """
+        from fastapi.responses import JSONResponse
+        import time as _time
+
+        ctx: AgentContext | None = request.app.state.agent_context
+        if ctx is None:
+            return JSONResponse({"ok": False, "error": "Agent not configured"}, status_code=503)
+
+        body = await request.json()
+        question = (body.get("question") or "").strip()
+        response = (body.get("response") or "").strip()
+        criterion = (body.get("criterion") or "").strip()
+        if not (question and response and criterion):
+            return JSONResponse(
+                {"ok": False, "error": "question, response, and criterion are all required"},
+                status_code=400,
+            )
+        model = body.get("model") or getattr(ctx.config, "model", "")
+        if not model:
+            return JSONResponse({"ok": False, "error": "No model configured"}, status_code=400)
+
+        try:
+            from databricks_openai import AsyncDatabricksOpenAI
+        except ImportError as exc:
+            return JSONResponse({"ok": False, "error": f"databricks_openai not available: {exc}"}, status_code=500)
+
+        prompt = (
+            "You are evaluating an AI agent's response against a criterion. "
+            "Reply on a single line in this exact format:\n"
+            "VERDICT: PASS|FAIL\n"
+            "REASON: <one sentence>\n\n"
+            f"Question: {question}\n"
+            f"Response: {response}\n"
+            f"Criterion: {criterion}\n"
+            "Strict pass: response clearly meets the criterion. If unclear or partial, FAIL."
+        )
+
+        t0 = _time.monotonic()
+        try:
+            client = AsyncDatabricksOpenAI()
+            resp = await client.responses.create(
+                model=model,
+                input=[{"role": "user", "content": prompt}],
+            )
+            elapsed = int((_time.monotonic() - t0) * 1000)
+            text = (getattr(resp, "output_text", "") or "").strip()
+            verdict, reason = _parse_judge_output(text)
+            return JSONResponse({
+                "ok": True,
+                "pass": verdict == "PASS",
+                "verdict": verdict,
+                "reason": reason,
+                "duration_ms": elapsed,
+                "model": model,
+            })
+        except Exception as exc:  # noqa: BLE001
+            elapsed = int((_time.monotonic() - t0) * 1000)
+            return JSONResponse({
+                "ok": False,
+                "error": str(exc),
+                "duration_ms": elapsed,
+            }, status_code=200)
 
     # Redirects for old routes
     @router.get("/_apx/eval", include_in_schema=False)
