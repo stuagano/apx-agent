@@ -20,7 +20,7 @@ export interface AgentTool {
   name: string;
   description: string;
   parameters: z.ZodType;
-  handler: (args: any) => Promise<unknown>;
+  handler: (args: unknown) => Promise<unknown>;
 }
 
 /** OpenAI function calling format. */

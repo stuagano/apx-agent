@@ -209,7 +209,7 @@ async function getM2mToken(): Promise<string> {
  * this function returns `string | Promise<string>`. All call sites already
  * run in async handlers, so `await resolveToken()` works everywhere.
  */
-export function resolveToken(oboHeaders?: Record<string, string>): string | Promise<string> {
+export async function resolveToken(oboHeaders?: Record<string, string>): Promise<string> {
   if (oboHeaders) {
     const auth = oboHeaders['authorization'] ?? oboHeaders['Authorization'];
     if (auth?.startsWith('Bearer ')) return auth.slice(7);

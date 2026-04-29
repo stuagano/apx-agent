@@ -175,8 +175,11 @@ class LlmAgent(BaseAgent):
             full_text += chunk
             yield chunk
 
+        # NOTE: In streaming mode, earlier tokens have already been delivered to the
+        # client. The guardrail replacement is appended rather than substituted.
+        # Callers requiring full replacement should use run() instead of stream().
         if replacement := await self._apply_output_guardrails(full_text):
-            yield f"\n\n[Guardrail override: {replacement}]"
+            yield f"\n\n---\n**[Content filtered]** {replacement}"
 
     def build_router(self) -> APIRouter:
         """Build an APIRouter with a POST route for each tool."""
@@ -389,6 +392,7 @@ class SequentialAgent(BaseAgent):
         """
         context = self._prepend_instructions(messages)
         total = len(self._agents)
+        result = ""
         for i, sub in enumerate(self._agents):
             step_num = i + 1
             if i > 0:

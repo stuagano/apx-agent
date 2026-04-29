@@ -96,8 +96,8 @@ export class DeltaEngine implements WorkflowEngine {
 
     const runId = opts?.runId ?? randomId();
     const inputJson = esc(JSON.stringify(input ?? null));
-    const escWorkflow = esc(workflowName);
-    const escRunId = esc(runId);
+    const escWorkflow = esc(safeName(workflowName, 'workflowName'));
+    const escRunId = esc(safeName(runId, 'runId'));
 
     // MERGE: re-open existing or insert new. Status flips to 'running' either
     // way — `startRun` is the canonical "this run is active" signal.
@@ -175,8 +175,8 @@ export class DeltaEngine implements WorkflowEngine {
         : `, output = '${esc(JSON.stringify(output))}'`;
     const statement = `
       UPDATE ${this.runsTable}
-      SET status = '${esc(status)}'${setOutput}, updated_at = current_timestamp()
-      WHERE run_id = '${esc(runId)}'
+      SET status = '${esc(safeName(status, 'status'))}'${setOutput}, updated_at = current_timestamp()
+      WHERE run_id = '${esc(safeName(runId, 'runId'))}'
     `;
     await this.executeSql(statement);
   }
@@ -185,14 +185,14 @@ export class DeltaEngine implements WorkflowEngine {
     await this.bootstrap();
 
     const runResp = await this.executeSql(
-      `SELECT run_id, workflow_name, status, input, output, started_at, updated_at FROM ${this.runsTable} WHERE run_id = '${esc(runId)}'`,
+      `SELECT run_id, workflow_name, status, input, output, started_at, updated_at FROM ${this.runsTable} WHERE run_id = '${esc(safeName(runId, 'runId'))}'`,
     );
     const runRows = parseRows(runResp);
     if (runRows.length === 0) return null;
     const row = runRows[0];
 
     const stepsResp = await this.executeSql(
-      `SELECT step_key, status, output, error, duration_ms, recorded_at FROM ${this.stepsTable} WHERE run_id = '${esc(runId)}'`,
+      `SELECT step_key, status, output, error, duration_ms, recorded_at FROM ${this.stepsTable} WHERE run_id = '${esc(safeName(runId, 'runId'))}'`,
     );
     const stepRows = parseRows(stepsResp);
 
@@ -219,8 +219,8 @@ export class DeltaEngine implements WorkflowEngine {
     await this.bootstrap();
 
     const conditions: string[] = [];
-    if (filter?.workflowName) conditions.push(`workflow_name = '${esc(filter.workflowName)}'`);
-    if (filter?.status) conditions.push(`status = '${esc(filter.status)}'`);
+    if (filter?.workflowName) conditions.push(`workflow_name = '${esc(safeName(filter.workflowName, 'workflowName'))}'`);
+    if (filter?.status) conditions.push(`status = '${esc(safeName(filter.status, 'status'))}'`);
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const limit = filter?.limit !== undefined ? `LIMIT ${Math.max(0, Math.floor(filter.limit))}` : '';
 
@@ -282,7 +282,7 @@ export class DeltaEngine implements WorkflowEngine {
     }
 
     const resp = await this.executeSql(
-      `SELECT step_key, status, output, error, duration_ms, recorded_at FROM ${this.stepsTable} WHERE run_id = '${esc(runId)}' AND step_key = '${esc(stepKey)}' LIMIT 1`,
+      `SELECT step_key, status, output, error, duration_ms, recorded_at FROM ${this.stepsTable} WHERE run_id = '${esc(safeName(runId, 'runId'))}' AND step_key = '${esc(safeName(stepKey, 'stepKey'))}' LIMIT 1`,
     );
     const rows = parseRows(resp);
     if (rows.length === 0) return null;
@@ -309,9 +309,9 @@ export class DeltaEngine implements WorkflowEngine {
     const statement = `
       MERGE INTO ${this.stepsTable} AS target
       USING (SELECT
-        '${esc(runId)}' AS run_id,
-        '${esc(record.stepKey)}' AS step_key,
-        '${esc(record.status)}' AS status,
+        '${esc(safeName(runId, 'runId'))}' AS run_id,
+        '${esc(safeName(record.stepKey, 'stepKey'))}' AS step_key,
+        '${esc(safeName(record.status, 'status'))}' AS status,
         ${outputJson} AS output,
         ${errorVal} AS error,
         ${record.durationMs} AS duration_ms
@@ -362,9 +362,20 @@ export class DeltaEngine implements WorkflowEngine {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Escape single quotes for inline SQL string values. */
+/** Escape values for inline SQL strings. Handles single quotes and backslashes. */
 function esc(s: string): string {
-  return s.replace(/'/g, "''");
+  return s.replace(/\\/g, '\\\\').replace(/'/g, "''");
+}
+
+/** Reject values containing obvious SQL injection patterns. */
+function safeName(s: string, label: string): string {
+  if (s.length > 1000) {
+    throw new Error(`${label} too long (${s.length} chars)`);
+  }
+  if (/;\s*(DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|EXEC|UNION)\b/i.test(s)) {
+    throw new Error(`Suspicious SQL pattern in ${label}`);
+  }
+  return s;
 }
 
 function cacheKey(runId: string, stepKey: string): string {
