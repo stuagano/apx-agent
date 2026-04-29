@@ -11,7 +11,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install apx-agent>=0.16.0
+# MAGIC %pip install /Volumes/serverless_stable_s0v155_catalog/voynich_evolution/wheels/apx_agent-0.16.0-py3-none-any.whl
 
 # COMMAND ----------
 
@@ -38,7 +38,7 @@ summary = spark.sql("""
         ROUND(MAX(fitness_composite), 4) as best_fitness,
         ROUND(AVG(fitness_composite), 4) as avg_fitness,
         SUM(CASE WHEN flagged_for_review THEN 1 ELSE 0 END) as flagged
-    FROM voynich.evolution.population
+    FROM serverless_stable_s0v155_catalog.voynich_evolution.population
     GROUP BY generation
     ORDER BY generation DESC
     LIMIT 10
@@ -65,8 +65,8 @@ review_queue = spark.sql("""
         p.agent_eval_historian,
         p.agent_eval_critic,
         SUBSTR(p.decoded_sample, 1, 200) as decoded_preview
-    FROM voynich.evolution.review_queue r
-    JOIN voynich.evolution.population p ON r.hypothesis_id = p.id
+    FROM serverless_stable_s0v155_catalog.voynich_evolution.review_queue r
+    JOIN serverless_stable_s0v155_catalog.voynich_evolution.population p ON r.hypothesis_id = p.id
     WHERE r.status = 'pending'
     ORDER BY p.fitness_composite DESC
 """)
@@ -89,7 +89,7 @@ agent_health = spark.sql("""
         ROUND(AVG(composite_eval_score), 4) as avg_score,
         ROUND(MIN(composite_eval_score), 4) as min_score,
         SUM(CASE WHEN action_triggered != 'OK' THEN 1 ELSE 0 END) as issues
-    FROM voynich.evolution.agent_evals
+    FROM serverless_stable_s0v155_catalog.voynich_evolution.agent_evals
     GROUP BY agent_name
     ORDER BY avg_score ASC
 """)
@@ -113,7 +113,7 @@ if poor_agents:
 
 constraints = spark.sql("""
     SELECT constraint_type, constraint_value, target_section, created_by, created_at
-    FROM voynich.evolution.constraints
+    FROM serverless_stable_s0v155_catalog.voynich_evolution.constraints
     WHERE active = true
     ORDER BY created_at DESC
 """)
@@ -157,7 +157,7 @@ if not APPROVED:
 
 # Log the approval
 spark.sql(f"""
-    INSERT INTO voynich.evolution.constraints
+    INSERT INTO serverless_stable_s0v155_catalog.voynich_evolution.constraints
     (constraint_type, constraint_value, target_section, active, created_by)
     VALUES ('review_gate', 'approved', 'all', false, 'researcher_approval')
 """)
@@ -172,7 +172,7 @@ print("✓ Review gate approved — continuing to generation batch 2")
 
 best = spark.sql("""
     SELECT *
-    FROM voynich.evolution.population
+    FROM serverless_stable_s0v155_catalog.voynich_evolution.population
     ORDER BY fitness_composite DESC
     LIMIT 3
 """)
