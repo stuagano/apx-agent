@@ -381,16 +381,18 @@ const EVA_MULTI_GLYPHS = ['ch', 'sh', 'th', 'ct', 'ck', 'qo', 'ok', 'ol', 'ai', 
 // are NOT meaningful linguistic units, multi-glyph mode is the wrong
 // hypothesis class. Single-char tests the alternative.
 type TokenizationMode = 'multi-glyph' | 'single-char';
-const EVA_TOKENIZATION: TokenizationMode =
-  process.env.EVA_TOKENIZATION === 'single-char' ? 'single-char' : 'multi-glyph';
+function getEvaTokenization(): TokenizationMode {
+  return process.env.EVA_TOKENIZATION === 'single-char' ? 'single-char' : 'multi-glyph';
+}
 
 function tokenizeEva(evaText: string): string[] {
   const text = evaText.replace(/\./g, ' ');
   const tokens: string[] = [];
+  const mode = getEvaTokenization();
   let i = 0;
   while (i < text.length) {
     if (text[i] === ' ') { i++; continue; }
-    if (EVA_TOKENIZATION === 'multi-glyph') {
+    if (mode === 'multi-glyph') {
       let matched = false;
       for (const glyph of EVA_MULTI_GLYPHS) {
         if (text.substring(i, i + glyph.length) === glyph) {
@@ -2229,12 +2231,17 @@ function pickNextStrategy(): Strategy {
   return sorted[0];
 }
 
-export async function runTheoryLoop(numBursts: number = 10, batch: number = 0): Promise<Theory[]> {
+export async function runTheoryLoop(
+  numBursts: number = 10,
+  batch: number = 0,
+  batchLabel?: string,
+): Promise<Theory[]> {
   const folios = await loadFolios();
   const highConfidence = folios.filter((f) => f.confidence >= 0.5);
   await loadStrategyStats();
 
-  console.log(`[theory-loop] Starting ${numBursts} bursts × ${ROUNDS_PER_BURST} rounds with ${highConfidence.length} high-confidence folios`);
+  const labelStr = batchLabel ? ` label="${batchLabel}"` : '';
+  console.log(`[theory-loop] Starting ${numBursts} bursts × ${ROUNDS_PER_BURST} rounds with ${highConfidence.length} high-confidence folios${labelStr}`);
 
   const theories: Theory[] = [];
 
@@ -2327,7 +2334,7 @@ export async function runTheoryLoop(numBursts: number = 10, batch: number = 0): 
           }
 
           theories.push(theory);
-          await persistTheory(theory, finalVerdict, criticVerdict, skepticVerdict);
+          await persistTheory(theory, finalVerdict, criticVerdict, skepticVerdict, batchLabel);
           return c;
         });
         if (combined > burstBest) burstBest = combined;
@@ -2372,6 +2379,7 @@ async function persistTheory(
   verdict: string,
   criticVerdict?: CriticVerdict,
   skepticVerdict?: string,
+  batchLabel?: string,
 ): Promise<void> {
   try {
     const id = theory.id.replace(/'/g, "''");
@@ -2385,6 +2393,7 @@ async function persistTheory(
     const cipherType = theory.cipher_type.replace(/'/g, "''");
     const escSk = (skepticVerdict ?? '').replace(/'/g, "''");
     const escJudge = (criticVerdict?.judge_verdict ?? '').replace(/'/g, "''");
+    const escBatchLabel = (batchLabel ?? '').replace(/'/g, "''");
 
     await executeSql(`
       CREATE TABLE IF NOT EXISTS serverless_stable_qh44kx_catalog.voynich.theories (
@@ -2407,6 +2416,7 @@ async function persistTheory(
       critic_null_distinguishable BOOLEAN,
       critic_judge_verdict STRING
     )`).catch(() => {});
+    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (batch_label STRING)`).catch(() => {});
 
     // SQL NULL for optional fields when the critic was unreachable / signal missing.
     const lik = criticVerdict?.likelihood;
@@ -2419,7 +2429,8 @@ async function persistTheory(
          symbol_map, decoded_text, grounding_score, consistency_score,
          cross_folio_results, verdict,
          skeptic_verdict, critic_likelihood, critic_adversarial,
-         critic_null_distinguishable, critic_judge_verdict)
+         critic_null_distinguishable, critic_judge_verdict,
+         batch_label)
       VALUES (
         '${id}', current_timestamp(), '${lang}',
         '${cipherType}',
@@ -2431,7 +2442,8 @@ async function persistTheory(
         ${lik !== undefined ? lik : 'NULL'},
         ${adv !== undefined ? adv : 'NULL'},
         ${nullDist !== undefined ? nullDist : 'NULL'},
-        ${escJudge ? `'${escJudge}'` : 'NULL'}
+        ${escJudge ? `'${escJudge}'` : 'NULL'},
+        ${escBatchLabel ? `'${escBatchLabel}'` : 'NULL'}
       )
     `);
   } catch (err) {
