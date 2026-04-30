@@ -2235,6 +2235,7 @@ export async function runTheoryLoop(
   numBursts: number = 10,
   batch: number = 0,
   batchLabel?: string,
+  strategyOverride?: Strategy,
 ): Promise<Theory[]> {
   const folios = await loadFolios();
   const highConfidence = folios.filter((f) => f.confidence >= 0.5);
@@ -2246,7 +2247,7 @@ export async function runTheoryLoop(
   const theories: Theory[] = [];
 
   for (let burst = 0; burst < numBursts; burst++) {
-    const strategy = pickNextStrategy();
+    const strategy = strategyOverride ?? pickNextStrategy();
     const key = strategyKey(strategy);
     const prevStat = strategyStats.get(key);
     const prevBest = prevStat?.best_score ?? 0;
