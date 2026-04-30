@@ -371,22 +371,41 @@ const LANG_FREQ: Record<string, string[]> = {
 
 const EVA_MULTI_GLYPHS = ['ch', 'sh', 'th', 'ct', 'ck', 'qo', 'ok', 'ol', 'ai', 'ee', 'dy', 'ey', 'or', 'ar'];
 
+// Tokenization mode: env-controlled experiment toggle.
+//   'multi-glyph' (default): treat 14 EVA digraphs as single tokens
+//   'single-char'          : every character is its own token
+//
+// The substitution-cipher hypothesis only makes sense relative to the
+// tokenization. Multi-restart calibration (commit bd75037) showed the
+// orchestrator stuck around combined=0.25 even with N=5; if the digraphs
+// are NOT meaningful linguistic units, multi-glyph mode is the wrong
+// hypothesis class. Single-char tests the alternative.
+type TokenizationMode = 'multi-glyph' | 'single-char';
+const EVA_TOKENIZATION: TokenizationMode =
+  process.env.EVA_TOKENIZATION === 'single-char' ? 'single-char' : 'multi-glyph';
+
 function tokenizeEva(evaText: string): string[] {
   const text = evaText.replace(/\./g, ' ');
   const tokens: string[] = [];
   let i = 0;
   while (i < text.length) {
     if (text[i] === ' ') { i++; continue; }
-    let matched = false;
-    for (const glyph of EVA_MULTI_GLYPHS) {
-      if (text.substring(i, i + glyph.length) === glyph) {
-        tokens.push(glyph);
-        i += glyph.length;
-        matched = true;
-        break;
+    if (EVA_TOKENIZATION === 'multi-glyph') {
+      let matched = false;
+      for (const glyph of EVA_MULTI_GLYPHS) {
+        if (text.substring(i, i + glyph.length) === glyph) {
+          tokens.push(glyph);
+          i += glyph.length;
+          matched = true;
+          break;
+        }
       }
+      if (!matched) { tokens.push(text[i]); i++; }
+    } else {
+      // single-char: every character is its own token
+      tokens.push(text[i]);
+      i++;
     }
-    if (!matched) { tokens.push(text[i]); i++; }
   }
   return tokens;
 }
@@ -2236,9 +2255,29 @@ export async function runTheoryLoop(numBursts: number = 10, batch: number = 0): 
       const traceLabel = `burst ${burst + 1}/round ${round} ${folio.folio_id} [${strategy.cipherType}/${strategy.language}/${strategy.seedMode}]`;
       try {
         const combined = await withRoundTrace('voynich-orchestrator', traceLabel, async () => {
-          const theory = await proposeTheory(folio, folios, strategy.language, strategy.cipherType, strategy.seedMode);
+          // Multi-restart: the decoder calibration test (commit bd75037) showed
+          // the hill-climber has a 13% per-trial success rate from cold starts —
+          // bimodal, not broken. N=5 restarts → ~51% per round.
+          const N_RESTARTS = parseInt(process.env.N_RESTARTS ?? '5');
+          const candidates = await Promise.all(
+            Array.from({ length: N_RESTARTS }, () =>
+              proposeTheory(folio, folios, strategy.language, strategy.cipherType, strategy.seedMode),
+            ),
+          );
+          // Keep the candidate with the highest combined grounding+consistency score.
+          // proposeTheory already runs cross-folio testing, so consistency_score
+          // is part of each candidate's evaluation.
+          const theory = candidates.reduce((best, t) => {
+            const a = best.grounding_score + best.consistency_score;
+            const b = t.grounding_score + t.consistency_score;
+            return b > a ? t : best;
+          });
           const c = theory.grounding_score + theory.consistency_score;
+          const allScores = candidates
+            .map((t) => (t.grounding_score + t.consistency_score).toFixed(3))
+            .join(',');
 
+          console.log(`[theory-loop]   N=${N_RESTARTS} restarts → best=${c.toFixed(3)} (all: [${allScores}])`);
           console.log(`[theory-loop]   grounding=${theory.grounding_score.toFixed(3)} consistency=${theory.consistency_score.toFixed(3)} decoded="${theory.decoded_text.slice(0, 50)}"`);
 
           if (_onTheoryResult) {
