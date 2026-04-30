@@ -24,31 +24,11 @@ import {
   createMcpPlugin,
   createDevPlugin,
   defineTool,
+  resolveToken,
+  resolveHost,
 } from '../../../src/index.js';
 import { POST_RENAISSANCE_CONCEPTS } from '../voynich-config.js';
-
-// ---------------------------------------------------------------------------
-// Latin n-gram reference frequencies (top bigrams from medieval Latin corpus)
-// Used to score whether decoded text has Latin-like character distribution.
-// ---------------------------------------------------------------------------
-
-const LATIN_BIGRAM_FREQ: Record<string, number> = {
-  'um': 0.032, 'us': 0.029, 'is': 0.027, 'er': 0.026, 'in': 0.025,
-  'it': 0.024, 'es': 0.023, 'am': 0.022, 'em': 0.021, 'at': 0.020,
-  'en': 0.019, 'an': 0.019, 're': 0.018, 'nt': 0.018, 'ti': 0.017,
-  'ra': 0.016, 'ur': 0.016, 'tu': 0.015, 'ta': 0.015, 'ae': 0.014,
-  'et': 0.014, 'ar': 0.013, 'al': 0.013, 'de': 0.013, 'te': 0.012,
-  'or': 0.012, 'ri': 0.012, 'li': 0.011, 'ro': 0.011, 'ni': 0.011,
-  'co': 0.010, 'on': 0.010, 'ab': 0.010, 'la': 0.010, 'di': 0.010,
-};
-
-// Common Latin word endings for morphological check
-const LATIN_ENDINGS = [
-  'us', 'um', 'is', 'am', 'em', 'as', 'es', 'os', 'ae', 'arum',
-  'orum', 'ibus', 'orum', 'ium', 'ens', 'ans', 'unt', 'unt',
-  'tur', 'atur', 'ere', 'ire', 'are', 'alis', 'ilis', 'inus',
-  'atus', 'itus', 'osis', 'onis', 'tio', 'tas', 'men', 'ment',
-];
+import { compositeLikelihood, LATIN_ENDINGS } from './scoring.js';
 
 // ---------------------------------------------------------------------------
 // Antonym pairs — if both terms appear within 15 words of each other the text
@@ -195,7 +175,7 @@ const findContradictions = defineTool({
 });
 
 // ---------------------------------------------------------------------------
-// Tool: score_latin_likelihood — n-gram + morphological analysis
+// Tool: score_latin_likelihood
 // ---------------------------------------------------------------------------
 
 const scoreLatinLikelihood = defineTool({
@@ -209,69 +189,11 @@ const scoreLatinLikelihood = defineTool({
     source_language: z.string().default('latin').describe('Expected source language'),
   }),
   handler: async ({ decoded_text, source_language }) => {
-    const text = decoded_text.toLowerCase().replace(/[^a-z\s]/g, '');
-    const chars = text.replace(/\s/g, '');
-
-    if (chars.length < 10) {
-      return { likelihood: 0, reason: 'Text too short for analysis', details: {} };
+    const breakdown = compositeLikelihood(decoded_text);
+    if (breakdown.likelihood === 0 && breakdown.total_words === 0) {
+      return { likelihood: 0, reason: 'Text too short for analysis', source_language };
     }
-
-    // --- Bigram frequency similarity ---
-    // Count bigrams in decoded text
-    const textBigrams: Record<string, number> = {};
-    let totalBigrams = 0;
-    for (let i = 0; i < chars.length - 1; i++) {
-      const bg = chars.slice(i, i + 2);
-      textBigrams[bg] = (textBigrams[bg] ?? 0) + 1;
-      totalBigrams++;
-    }
-
-    // Compute cosine similarity with Latin bigram reference
-    let dotProduct = 0;
-    let normText = 0;
-    let normRef = 0;
-    const allBigrams = new Set([...Object.keys(textBigrams), ...Object.keys(LATIN_BIGRAM_FREQ)]);
-    for (const bg of allBigrams) {
-      const textFreq = (textBigrams[bg] ?? 0) / totalBigrams;
-      const refFreq = LATIN_BIGRAM_FREQ[bg] ?? 0;
-      dotProduct += textFreq * refFreq;
-      normText += textFreq * textFreq;
-      normRef += refFreq * refFreq;
-    }
-    const bigramSimilarity = normText > 0 && normRef > 0
-      ? dotProduct / (Math.sqrt(normText) * Math.sqrt(normRef))
-      : 0;
-
-    // --- Morphological ending check ---
-    // What fraction of words end with common Latin suffixes?
-    const words = text.split(/\s+/).filter((w) => w.length >= 3);
-    const wordsWithLatinEnding = words.filter((w) =>
-      LATIN_ENDINGS.some((ending) => w.endsWith(ending))
-    );
-    const morphScore = words.length > 0 ? wordsWithLatinEnding.length / words.length : 0;
-
-    // --- Word length distribution ---
-    // Latin words average 5-7 characters; gibberish from EVA substitution tends to 3-5
-    const avgWordLen = words.length > 0
-      ? words.reduce((s, w) => s + w.length, 0) / words.length
-      : 0;
-    const wordLenScore = avgWordLen >= 4 && avgWordLen <= 8 ? 1.0 : avgWordLen >= 3 ? 0.5 : 0.2;
-
-    // --- Composite ---
-    const likelihood = Math.round(
-      (bigramSimilarity * 0.4 + morphScore * 0.35 + wordLenScore * 0.25) * 1000
-    ) / 1000;
-
-    return {
-      likelihood,
-      bigram_similarity: Math.round(bigramSimilarity * 1000) / 1000,
-      morphological_score: Math.round(morphScore * 1000) / 1000,
-      word_length_score: Math.round(wordLenScore * 1000) / 1000,
-      avg_word_length: Math.round(avgWordLen * 10) / 10,
-      words_with_latin_endings: wordsWithLatinEnding.length,
-      total_words: words.length,
-      source_language,
-    };
+    return { ...breakdown, source_language };
   },
 });
 
@@ -279,71 +201,242 @@ const scoreLatinLikelihood = defineTool({
 // Tool: null_baseline_test — shuffled text comparison
 // ---------------------------------------------------------------------------
 
+/**
+ * Two shuffle strategies for the null-hypothesis test.
+ *
+ * within-word: shuffles characters inside each word, preserving word boundaries
+ *   and per-word character bag. Preserves length distribution exactly. Easiest
+ *   null to beat — Latin endings like -us, -um, -is are so frequent that
+ *   within-word shuffles will land on them by chance.
+ *
+ * across-text: pools all characters, shuffles them, then re-splits at the
+ *   ORIGINAL word boundaries. Preserves length distribution but completely
+ *   destroys per-word character composition. Much harder null — text must
+ *   beat both to be credible.
+ */
+type ShuffleMode = 'within-word' | 'across-text';
+
+function shuffleArray<T>(arr: T[]): T[] {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+function shuffleText(text: string, mode: ShuffleMode): string {
+  const lowered = text.toLowerCase().replace(/[^a-z\s]/g, '');
+  const words = lowered.split(/\s+/).filter(Boolean);
+
+  if (mode === 'within-word') {
+    return words.map((w) => shuffleArray(w.split('')).join('')).join(' ');
+  }
+  // across-text: pool chars, shuffle, redistribute at original word lengths
+  const allChars = words.join('').split('');
+  const pool = shuffleArray(allChars);
+  const out: string[] = [];
+  let cursor = 0;
+  for (const w of words) {
+    out.push(pool.slice(cursor, cursor + w.length).join(''));
+    cursor += w.length;
+  }
+  return out.join(' ');
+}
+
+const N_SHUFFLES = 50;
+const P_VALUE_THRESHOLD = 0.1;
+
 const nullBaselineTest = defineTool({
   name: 'null_baseline_test',
   description:
-    'Test whether the decoded text scores significantly better than a null hypothesis ' +
-    '(randomly shuffled version of the same text). If the real score is not distinguishable ' +
-    'from the shuffled version, the decoding is likely meaningless.',
+    'Test whether the decoded text scores significantly better than a null hypothesis. ' +
+    'Runs TWO shuffles: within-word (preserves per-word char bag) and across-text (pools ' +
+    'all chars, redistributes at original word lengths). Both p-values must be < 0.1 for ' +
+    'the text to be credibly distinguishable from random. Scores use the full composite ' +
+    'likelihood (bigram + morph + word-length), not just morphology.',
   parameters: z.object({
     decoded_text: z.string().describe('The decoded text to test'),
     source_language: z.string().default('latin').describe('Expected source language'),
   }),
   handler: async ({ decoded_text, source_language: _source_language }) => {
-    const text = decoded_text.toLowerCase().replace(/[^a-z\s]/g, '');
-    const chars = text.replace(/\s/g, '');
+    const lowered = decoded_text.toLowerCase().replace(/[^a-z\s]/g, '');
+    const chars = lowered.replace(/\s/g, '');
 
     if (chars.length < 20) {
-      return { distinguishable: false, reason: 'Text too short', p_value: 1.0 };
+      return {
+        distinguishable: false,
+        reason: 'Text too short',
+        p_value_within: 1.0,
+        p_value_across: 1.0,
+      };
     }
 
-    // Score the real text
-    const realWords = text.split(/\s+/).filter((w) => w.length >= 3);
-    const realMorphScore = realWords.length > 0
-      ? realWords.filter((w) => LATIN_ENDINGS.some((e) => w.endsWith(e))).length / realWords.length
-      : 0;
+    const realScore = compositeLikelihood(decoded_text).likelihood;
 
-    // Generate N shuffled versions and score each
-    const N_SHUFFLES = 20;
-    const shuffleScores: number[] = [];
-
-    for (let i = 0; i < N_SHUFFLES; i++) {
-      // Shuffle characters within each word (preserving word boundaries)
-      const shuffledWords = realWords.map((w) => {
-        const arr = w.split('');
-        for (let j = arr.length - 1; j > 0; j--) {
-          const k = Math.floor(Math.random() * (j + 1));
-          [arr[j], arr[k]] = [arr[k], arr[j]];
-        }
-        return arr.join('');
-      });
-      const shuffleMorphScore = shuffledWords.length > 0
-        ? shuffledWords.filter((w) => LATIN_ENDINGS.some((e) => w.endsWith(e))).length / shuffledWords.length
-        : 0;
-      shuffleScores.push(shuffleMorphScore);
+    function pValueFor(mode: ShuffleMode): { p: number; mean: number; n_above: number } {
+      const scores: number[] = [];
+      for (let i = 0; i < N_SHUFFLES; i++) {
+        scores.push(compositeLikelihood(shuffleText(decoded_text, mode)).likelihood);
+      }
+      const nAbove = scores.filter((s) => s >= realScore).length;
+      const mean = scores.reduce((a, b) => a + b, 0) / N_SHUFFLES;
+      return {
+        p: Math.round((nAbove / N_SHUFFLES) * 1000) / 1000,
+        mean: Math.round(mean * 1000) / 1000,
+        n_above: nAbove,
+      };
     }
 
-    // How many shuffled versions score >= real?
-    const countBetter = shuffleScores.filter((s) => s >= realMorphScore).length;
-    const pValue = Math.round((countBetter / N_SHUFFLES) * 1000) / 1000;
+    const within = pValueFor('within-word');
+    const across = pValueFor('across-text');
 
-    // If >50% of shuffled texts score as well as real text, it's not distinguishable
-    const distinguishable = pValue < 0.1;
-    const shuffleMean = Math.round(
-      (shuffleScores.reduce((a, b) => a + b, 0) / N_SHUFFLES) * 1000
-    ) / 1000;
+    const distinguishableWithin = within.p < P_VALUE_THRESHOLD;
+    const distinguishableAcross = across.p < P_VALUE_THRESHOLD;
+    const distinguishable = distinguishableWithin && distinguishableAcross;
 
     return {
       distinguishable,
-      p_value: pValue,
-      real_score: Math.round(realMorphScore * 1000) / 1000,
-      shuffle_mean: shuffleMean,
-      shuffle_scores_above_real: countBetter,
+      real_score: Math.round(realScore * 1000) / 1000,
+      within_word: {
+        p_value: within.p,
+        shuffle_mean: within.mean,
+        shuffles_above_real: within.n_above,
+        distinguishable: distinguishableWithin,
+      },
+      across_text: {
+        p_value: across.p,
+        shuffle_mean: across.mean,
+        shuffles_above_real: across.n_above,
+        distinguishable: distinguishableAcross,
+      },
       total_shuffles: N_SHUFFLES,
       verdict: distinguishable
-        ? 'Text is statistically distinguishable from random — passes null test'
-        : 'Text is NOT distinguishable from shuffled version — likely meaningless',
+        ? 'Text is statistically distinguishable from BOTH null shuffles — passes null test'
+        : `Text is NOT distinguishable from ${distinguishableWithin ? 'across-text' : distinguishableAcross ? 'within-word' : 'either'} shuffle — likely meaningless`,
     };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Tool: llm_judge — strict PASS/FAIL on grammatical coherence
+// ---------------------------------------------------------------------------
+//
+// Mirrors the pattern from python apx_agent _dev.py /_apx/eval/judge (PR #22):
+// strict criterion-based PASS/FAIL with one-sentence reason. Costs one LLM
+// call per invocation — orchestrator should gate this on a heuristic threshold
+// (e.g. only call when composite likelihood > 0.3) to keep per-batch cost
+// bounded.
+//
+// Subsumes falsification-roadmap item 2 (syntactic well-formedness): a strict
+// LLM judge catches "Latin-shaped but ungrammatical" cases that POS heuristics
+// would miss.
+
+const JUDGE_MODEL = process.env.JUDGE_MODEL ?? 'databricks-claude-sonnet-4-6';
+
+function parseJudgeOutput(text: string): { verdict: 'PASS' | 'FAIL'; reason: string } {
+  const verdictMatch = text.match(/VERDICT:\s*(PASS|FAIL)/i);
+  const reasonMatch = text.match(/REASON:\s*(.+?)(?:\n|$)/i);
+
+  if (verdictMatch) {
+    return {
+      verdict: verdictMatch[1].toUpperCase() as 'PASS' | 'FAIL',
+      reason: reasonMatch?.[1].trim() ?? '',
+    };
+  }
+  // No labeled verdict — infer from content. Default to FAIL on ambiguity
+  // (conservative: unclear judge ≠ green).
+  const upper = text.toUpperCase();
+  if (upper.includes('FAIL') && !upper.includes('PASS')) {
+    return { verdict: 'FAIL', reason: text.trim().slice(0, 200) };
+  }
+  if (upper.includes('PASS') && !upper.includes('FAIL')) {
+    return { verdict: 'PASS', reason: text.trim().slice(0, 200) };
+  }
+  return { verdict: 'FAIL', reason: 'Judge output ambiguous; defaulting to FAIL' };
+}
+
+const llmJudge = defineTool({
+  name: 'llm_judge',
+  description:
+    'Strict LLM judge for grammatical coherence. Asks an LLM whether the decoded text ' +
+    'parses as grammatically coherent medieval Latin (or the target language) with valid ' +
+    'noun-verb agreement and recognizable sentence structure. Returns PASS only if the ' +
+    'judge is unambiguous; partial / fragmentary / Latin-shaped-but-incoherent text → FAIL. ' +
+    'Costs one LLM call per invocation; gate on heuristic threshold to bound batch cost.',
+  parameters: z.object({
+    decoded_text: z.string().describe('The decoded text to judge'),
+    source_language: z.string().default('latin').describe('Expected source language'),
+  }),
+  handler: async ({ decoded_text, source_language }) => {
+    if (decoded_text.trim().length < 20) {
+      return {
+        verdict: 'FAIL',
+        reason: 'Text too short for grammatical judgment',
+        duration_ms: 0,
+        model: JUDGE_MODEL,
+      };
+    }
+
+    const prompt = [
+      'You are evaluating a candidate decoding of a medieval manuscript fragment.',
+      'Reply on two lines in this exact format:',
+      'VERDICT: PASS|FAIL',
+      'REASON: <one sentence>',
+      '',
+      `Source language: ${source_language}`,
+      `Decoded text: ${decoded_text.slice(0, 1000)}`,
+      '',
+      `Strict pass: clearly grammatical ${source_language} prose with valid inflection,`,
+      'recognizable sentence structure, and coherent semantic content (e.g. botanical /',
+      'medical / herbal subject matter consistent with the manuscript).',
+      `Partial / fragmentary / ${source_language}-shaped-but-incoherent / random word salad: FAIL.`,
+      'When in doubt, FAIL.',
+    ].join('\n');
+
+    const t0 = Date.now();
+    try {
+      const host = resolveHost();
+      const token = await resolveToken();
+      const res = await fetch(`${host}/serving-endpoints/${JUDGE_MODEL}/invocations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          model: JUDGE_MODEL,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 200,
+        }),
+      });
+
+      if (!res.ok) {
+        return {
+          verdict: 'FAIL',
+          reason: `Judge request failed (${res.status})`,
+          duration_ms: Date.now() - t0,
+          model: JUDGE_MODEL,
+          error: await res.text().then((t) => t.slice(0, 200)),
+        };
+      }
+
+      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      const text = data.choices?.[0]?.message?.content ?? '';
+      const { verdict, reason } = parseJudgeOutput(text);
+
+      return {
+        verdict,
+        reason,
+        duration_ms: Date.now() - t0,
+        model: JUDGE_MODEL,
+      };
+    } catch (err) {
+      return {
+        verdict: 'FAIL',
+        reason: 'Judge call errored',
+        duration_ms: Date.now() - t0,
+        model: JUDGE_MODEL,
+        error: (err as Error).message,
+      };
+    }
   },
 });
 
@@ -357,22 +450,28 @@ const agentPlugin = createAgentPlugin({
     'You are the Voynich Critic — an adversarial falsifier. Your job is to determine',
     'whether decoded manuscript text is real language or meaningless gibberish.',
     '',
-    'For EVERY hypothesis you receive, run ALL THREE tools in order:',
+    'For EVERY hypothesis you receive, run the cheap heuristic tools first:',
     '1. find_contradictions — checks for anachronisms, antonym proximity, character anomalies',
-    '2. score_latin_likelihood — checks bigram frequencies and morphological endings against Latin',
-    '3. null_baseline_test — compares the text against shuffled versions (null hypothesis)',
+    '2. score_latin_likelihood — checks bigram frequencies, morphological endings, word length',
+    '3. null_baseline_test — compares the text against TWO shuffled nulls (within-word + across-text)',
+    '',
+    'Then, ONLY if likelihood >= 0.3 AND null_baseline distinguishable = true,',
+    'call the expensive llm_judge tool for grammatical coherence. Skip it on cheap rejects.',
+    '4. llm_judge — strict PASS/FAIL on whether the text parses as coherent Latin prose',
     '',
     'A decoding is only credible if it:',
     '  - Passes find_contradictions (adversarial >= 0.5)',
     '  - Has Latin-like structure (likelihood >= 0.3)',
-    '  - Is distinguishable from shuffled text (distinguishable = true)',
+    '  - Is distinguishable from BOTH null shuffles (distinguishable = true)',
+    '  - Passes llm_judge (verdict = PASS) when the judge was run',
     '',
     'Respond with ONLY a JSON object:',
-    '  { "adversarial": <0-1>, "likelihood": <0-1>, "null_test_passed": <true/false> }',
+    '  { "adversarial": <0-1>, "likelihood": <0-1>, "null_test_passed": <true/false>,',
+    '    "judge_verdict": "PASS"|"FAIL"|"SKIPPED" }',
     '',
     'Do NOT include scores you did not compute with a tool.',
   ].join('\n'),
-  tools: [findContradictions, scoreLatinLikelihood, nullBaselineTest],
+  tools: [findContradictions, scoreLatinLikelihood, nullBaselineTest, llmJudge],
 });
 
 const agentExports = () => agentPlugin.exports();
