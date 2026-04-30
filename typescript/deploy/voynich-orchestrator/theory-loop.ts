@@ -17,8 +17,10 @@ import {
   resolveHost,
   createTrace,
   addSpan,
+  endSpan,
   endTrace,
   runWithContext,
+  getRequestContext,
   truncate,
 } from './appkit-agent/index.mjs';
 
@@ -49,6 +51,177 @@ async function withRoundTrace<T>(
     endTrace(trace, 'error');
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Critic agent integration — direct per-tool calls, NOT the LLM-tool loop
+// ---------------------------------------------------------------------------
+//
+// The critic deploys an LLM agent that tool-calls 4 deterministic checks.
+// Going through the LLM loop just to fan-out to our own tools is expensive
+// theater — the LLM might skip tools, mis-order them, or wrap output in
+// markdown fences. We POST directly to each tool endpoint:
+//
+//   POST {CRITIC}/api/agent/tools/find_contradictions
+//   POST {CRITIC}/api/agent/tools/score_latin_likelihood
+//   POST {CRITIC}/api/agent/tools/null_baseline_test
+//   POST {CRITIC}/api/agent/tools/llm_judge      (only when gated)
+//
+// Each call emits its own agent_call span (visible in /_apx/traces) with
+// childUrl + childTraceId metadata for navigation into the critic's traces.
+
+const CRITIC_URL = process.env.CRITIC_AGENT_URL ?? '';
+
+/**
+ * POST to one of the critic's per-tool endpoints with trace propagation.
+ * Returns the parsed JSON result, or null on any failure (caller decides
+ * whether to retry / fall back / continue).
+ */
+async function callCriticTool(toolName: string, params: Record<string, unknown>): Promise<unknown | null> {
+  if (!CRITIC_URL) return null;
+
+  const url = `${CRITIC_URL.replace(/\/$/, '')}/api/agent/tools/${toolName}`;
+  const trace = getRequestContext()?.trace;
+  const span = trace
+    ? addSpan(trace, {
+        type: 'agent_call',
+        name: `critic/${toolName}`,
+        input: truncate(params),
+        metadata: { childUrl: CRITIC_URL, tool: toolName },
+      })
+    : null;
+
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    try {
+      headers.Authorization = `Bearer ${await resolveToken()}`;
+    } catch {
+      // No auth available — try unauthenticated (apps with auth.enabled=false)
+    }
+    if (trace) {
+      headers['x-apx-trace-id'] = trace.id;
+      headers['x-apx-parent-agent'] = 'voynich-orchestrator';
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 60_000);
+    let res: globalThis.Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(params),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const childTraceId = res.headers.get('x-apx-trace-id') ?? undefined;
+    if (childTraceId && span?.metadata) span.metadata.childTraceId = childTraceId;
+
+    if (!res.ok) {
+      if (span?.metadata) span.metadata.error = `http ${res.status}`;
+      return null;
+    }
+    const result = await res.json();
+    if (span) span.output = truncate(result);
+    return result;
+  } catch (err) {
+    if (span?.metadata) span.metadata.error = (err as Error).message;
+    return null;
+  } finally {
+    if (span) endSpan(span);
+  }
+}
+
+/**
+ * Result of one critic critique pass. All fields optional because individual
+ * tool calls can fail independently and the caller treats missing fields as
+ * "signal not available" rather than failure.
+ */
+export interface CriticVerdict {
+  adversarial?: number;            // 0-1 from find_contradictions
+  contradictions_count?: number;
+  likelihood?: number;             // 0-1 from score_latin_likelihood
+  null_distinguishable?: boolean;  // both shuffles distinguishable
+  null_p_within?: number;
+  null_p_across?: number;
+  judge_verdict?: 'PASS' | 'FAIL' | 'SKIPPED';
+  judge_reason?: string;
+  // Combined: the canonical pass/fail signal for downstream gating.
+  // 'rejected' if any hard check fails; 'plausible' only with all signals green.
+  composite_verdict: 'plausible' | 'weak' | 'rejected' | 'unknown';
+}
+
+const HEURISTIC_LIKELIHOOD_GATE = 0.3;
+
+/**
+ * Run the critic's deterministic checks, then conditionally invoke llm_judge.
+ * Returns a structured verdict; callers combine with their own signals.
+ */
+async function critiqueWithCritic(theory: Theory): Promise<CriticVerdict> {
+  if (!CRITIC_URL) {
+    return { composite_verdict: 'unknown' };
+  }
+
+  const decoded_text = theory.decoded_text;
+  const source_language = theory.source_language;
+  const section = 'herbal'; // theories table doesn't carry section yet
+
+  // Fan-out: cheap heuristic checks in parallel
+  const [contradictionsRaw, likelihoodRaw, nullRaw] = await Promise.all([
+    callCriticTool('find_contradictions', { decoded_text, section }),
+    callCriticTool('score_latin_likelihood', { decoded_text, source_language }),
+    callCriticTool('null_baseline_test', { decoded_text, source_language }),
+  ]);
+
+  const contradictions = contradictionsRaw as { adversarial?: number; contradictions?: unknown[] } | null;
+  const likelihood = likelihoodRaw as { likelihood?: number } | null;
+  const nullTest = nullRaw as { distinguishable?: boolean; within_word?: { p_value?: number }; across_text?: { p_value?: number } } | null;
+
+  const verdict: CriticVerdict = {
+    adversarial: contradictions?.adversarial,
+    contradictions_count: contradictions?.contradictions?.length,
+    likelihood: likelihood?.likelihood,
+    null_distinguishable: nullTest?.distinguishable,
+    null_p_within: nullTest?.within_word?.p_value,
+    null_p_across: nullTest?.across_text?.p_value,
+    composite_verdict: 'unknown',
+  };
+
+  // Gate llm_judge: only run if the heuristic signals look at least promising.
+  // Saves an LLM call per round when the cheap checks already say "no signal".
+  const heuristicsPromising =
+    (verdict.likelihood ?? 0) >= HEURISTIC_LIKELIHOOD_GATE &&
+    verdict.null_distinguishable === true;
+
+  if (heuristicsPromising) {
+    const judgeRaw = await callCriticTool('llm_judge', { decoded_text, source_language });
+    const judge = judgeRaw as { verdict?: 'PASS' | 'FAIL'; reason?: string } | null;
+    verdict.judge_verdict = judge?.verdict ?? 'FAIL';
+    verdict.judge_reason = judge?.reason;
+  } else {
+    verdict.judge_verdict = 'SKIPPED';
+  }
+
+  // Compose final verdict. 'rejected' on any hard fail; 'plausible' only when
+  // everything green; 'weak' for "promising heuristics but judge wasn't unambiguous".
+  if (
+    (verdict.adversarial !== undefined && verdict.adversarial < 0.5) ||
+    verdict.null_distinguishable === false ||
+    verdict.judge_verdict === 'FAIL'
+  ) {
+    verdict.composite_verdict = 'rejected';
+  } else if (verdict.judge_verdict === 'PASS') {
+    verdict.composite_verdict = 'plausible';
+  } else if (heuristicsPromising) {
+    verdict.composite_verdict = 'weak';
+  } else {
+    verdict.composite_verdict = 'rejected';
+  }
+
+  return verdict;
 }
 
 // ---------------------------------------------------------------------------
@@ -2071,19 +2244,42 @@ export async function runTheoryLoop(numBursts: number = 10, batch: number = 0): 
             });
           }
 
-          const challenge = await challengeTheory(theory, folios);
-          let verdict = 'unknown';
+          // Run skeptic prompt (free-form objection) and structured critic
+          // checks in parallel — they use different signals and we want both.
+          const [challenge, criticVerdict] = await Promise.all([
+            challengeTheory(theory, folios),
+            critiqueWithCritic(theory),
+          ]);
+
+          let skepticVerdict = 'unknown';
           try {
             const cleaned = challenge.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
             const parsed = JSON.parse(cleaned);
-            verdict = parsed.verdict || 'unknown';
-            console.log(`[theory-loop]   skeptic: ${verdict} — ${(parsed.strongest_objection || '').slice(0, 80)}`);
+            skepticVerdict = parsed.verdict || 'unknown';
+            console.log(`[theory-loop]   skeptic: ${skepticVerdict} — ${(parsed.strongest_objection || '').slice(0, 80)}`);
           } catch {
             console.log(`[theory-loop]   skeptic: unparseable`);
           }
 
+          // Critic's structured verdict takes precedence when available
+          // (it's based on deterministic + judge signals, not just an LLM opinion).
+          const finalVerdict =
+            criticVerdict.composite_verdict !== 'unknown'
+              ? criticVerdict.composite_verdict
+              : skepticVerdict;
+
+          if (criticVerdict.composite_verdict !== 'unknown') {
+            console.log(
+              `[theory-loop]   critic: ${criticVerdict.composite_verdict}` +
+              ` (lik=${(criticVerdict.likelihood ?? 0).toFixed(2)}` +
+              ` adv=${(criticVerdict.adversarial ?? 0).toFixed(2)}` +
+              ` null=${criticVerdict.null_distinguishable ? 'pass' : 'fail'}` +
+              ` judge=${criticVerdict.judge_verdict})`
+            );
+          }
+
           theories.push(theory);
-          await persistTheory(theory, verdict);
+          await persistTheory(theory, finalVerdict, criticVerdict, skepticVerdict);
           return c;
         });
         if (combined > burstBest) burstBest = combined;
@@ -2123,7 +2319,12 @@ export async function runTheoryLoop(numBursts: number = 10, batch: number = 0): 
   return sorted;
 }
 
-async function persistTheory(theory: Theory, verdict: string): Promise<void> {
+async function persistTheory(
+  theory: Theory,
+  verdict: string,
+  criticVerdict?: CriticVerdict,
+  skepticVerdict?: string,
+): Promise<void> {
   try {
     const id = theory.id.replace(/'/g, "''");
     const folio = theory.target_folio.replace(/'/g, "''");
@@ -2134,6 +2335,8 @@ async function persistTheory(theory: Theory, verdict: string): Promise<void> {
     const crossFolio = JSON.stringify(theory.cross_folio_results).replace(/'/g, "''");
 
     const cipherType = theory.cipher_type.replace(/'/g, "''");
+    const escSk = (skepticVerdict ?? '').replace(/'/g, "''");
+    const escJudge = (criticVerdict?.judge_verdict ?? '').replace(/'/g, "''");
 
     await executeSql(`
       CREATE TABLE IF NOT EXISTS serverless_stable_qh44kx_catalog.voynich.theories (
@@ -2145,23 +2348,42 @@ async function persistTheory(theory: Theory, verdict: string): Promise<void> {
         cross_folio_results STRING, verdict STRING
       )
     `);
-    // Schema migration: add cipher_type if table predates it
-    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (cipher_type STRING)`).catch(() => {
-      // Column already exists — ignore
-    });
+    // Schema migrations: add columns if the table predates each. Each ALTER
+    // is idempotent against re-runs because we catch + ignore the
+    // "column already exists" error.
+    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (cipher_type STRING)`).catch(() => {});
+    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (
+      skeptic_verdict STRING,
+      critic_likelihood DOUBLE,
+      critic_adversarial DOUBLE,
+      critic_null_distinguishable BOOLEAN,
+      critic_judge_verdict STRING
+    )`).catch(() => {});
+
+    // SQL NULL for optional fields when the critic was unreachable / signal missing.
+    const lik = criticVerdict?.likelihood;
+    const adv = criticVerdict?.adversarial;
+    const nullDist = criticVerdict?.null_distinguishable;
 
     await executeSql(`
       INSERT INTO serverless_stable_qh44kx_catalog.voynich.theories
         (id, proposed_at, source_language, cipher_type, target_folio, target_plant,
          symbol_map, decoded_text, grounding_score, consistency_score,
-         cross_folio_results, verdict)
+         cross_folio_results, verdict,
+         skeptic_verdict, critic_likelihood, critic_adversarial,
+         critic_null_distinguishable, critic_judge_verdict)
       VALUES (
         '${id}', current_timestamp(), '${lang}',
         '${cipherType}',
         '${folio}', '${plant}',
         '${symbolMap}', '${decoded}',
         ${theory.grounding_score}, ${theory.consistency_score},
-        '${crossFolio}', '${verdict}'
+        '${crossFolio}', '${verdict}',
+        ${escSk ? `'${escSk}'` : 'NULL'},
+        ${lik !== undefined ? lik : 'NULL'},
+        ${adv !== undefined ? adv : 'NULL'},
+        ${nullDist !== undefined ? nullDist : 'NULL'},
+        ${escJudge ? `'${escJudge}'` : 'NULL'}
       )
     `);
   } catch (err) {

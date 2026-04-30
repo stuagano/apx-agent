@@ -244,7 +244,12 @@ function shuffleText(text: string, mode: ShuffleMode): string {
   return out.join(' ');
 }
 
-const N_SHUFFLES = 50;
+// 25 shuffles per side = 50 total composite-score computations per call.
+// Was 50/side; dropped to 25 because the orchestrator now calls this per round
+// (~440/batch) and the critic is a single-process Node app — 22K computations
+// per batch could starve other requests. P-value resolution is 0.04 (1/25),
+// which still cleanly distinguishes p < 0.1 from non-distinguishable shuffles.
+const N_SHUFFLES = 25;
 const P_VALUE_THRESHOLD = 0.1;
 
 const nullBaselineTest = defineTool({
