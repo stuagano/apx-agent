@@ -28,7 +28,7 @@ import {
   resolveHost,
 } from './appkit-agent/index.mjs';
 import { POST_RENAISSANCE_CONCEPTS } from './voynich-config.ts';
-import { compositeLikelihood, LATIN_ENDINGS } from './scoring.js';
+import { compositeLikelihood, stripToLanguageChars, LATIN_ENDINGS } from './scoring.js';
 
 // ---------------------------------------------------------------------------
 // Antonym pairs — if both terms appear within 15 words of each other the text
@@ -189,7 +189,7 @@ const scoreLatinLikelihood = defineTool({
     source_language: z.string().default('latin').describe('Expected source language'),
   }),
   handler: async ({ decoded_text, source_language }) => {
-    const breakdown = compositeLikelihood(decoded_text);
+    const breakdown = compositeLikelihood(decoded_text, source_language);
     if (breakdown.likelihood === 0 && breakdown.total_words === 0) {
       return { likelihood: 0, reason: 'Text too short for analysis', source_language };
     }
@@ -225,8 +225,8 @@ function shuffleArray<T>(arr: T[]): T[] {
   return out;
 }
 
-function shuffleText(text: string, mode: ShuffleMode): string {
-  const lowered = text.toLowerCase().replace(/[^a-z\s]/g, '');
+function shuffleText(text: string, mode: ShuffleMode, language: string): string {
+  const lowered = stripToLanguageChars(text, language);
   const words = lowered.split(/\s+/).filter(Boolean);
 
   if (mode === 'within-word') {
@@ -264,8 +264,8 @@ const nullBaselineTest = defineTool({
     decoded_text: z.string().describe('The decoded text to test'),
     source_language: z.string().default('latin').describe('Expected source language'),
   }),
-  handler: async ({ decoded_text, source_language: _source_language }) => {
-    const lowered = decoded_text.toLowerCase().replace(/[^a-z\s]/g, '');
+  handler: async ({ decoded_text, source_language }) => {
+    const lowered = stripToLanguageChars(decoded_text, source_language);
     const chars = lowered.replace(/\s/g, '');
 
     if (chars.length < 20) {
@@ -277,12 +277,12 @@ const nullBaselineTest = defineTool({
       };
     }
 
-    const realScore = compositeLikelihood(decoded_text).likelihood;
+    const realScore = compositeLikelihood(decoded_text, source_language).likelihood;
 
     function pValueFor(mode: ShuffleMode): { p: number; mean: number; n_above: number } {
       const scores: number[] = [];
       for (let i = 0; i < N_SHUFFLES; i++) {
-        scores.push(compositeLikelihood(shuffleText(decoded_text, mode)).likelihood);
+        scores.push(compositeLikelihood(shuffleText(decoded_text, mode, source_language), source_language).likelihood);
       }
       const nAbove = scores.filter((s) => s >= realScore).length;
       const mean = scores.reduce((a, b) => a + b, 0) / N_SHUFFLES;
