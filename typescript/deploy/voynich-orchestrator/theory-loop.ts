@@ -70,7 +70,12 @@ async function withRoundTrace<T>(
 // Each call emits its own agent_call span (visible in /_apx/traces) with
 // childUrl + childTraceId metadata for navigation into the critic's traces.
 
-const CRITIC_URL = process.env.CRITIC_AGENT_URL ?? '';
+// NOT a module-level constant — app.ts populates process.env.CRITIC_AGENT_URL
+// via fallback AFTER this module is imported, so a const captured at import
+// time would freeze to '' and silently disable all critic calls.
+function getCriticUrl(): string {
+  return process.env.CRITIC_AGENT_URL ?? '';
+}
 
 /**
  * POST to one of the critic's per-tool endpoints with trace propagation.
@@ -78,16 +83,17 @@ const CRITIC_URL = process.env.CRITIC_AGENT_URL ?? '';
  * whether to retry / fall back / continue).
  */
 async function callCriticTool(toolName: string, params: Record<string, unknown>): Promise<unknown | null> {
-  if (!CRITIC_URL) return null;
+  const criticUrl = getCriticUrl();
+  if (!criticUrl) return null;
 
-  const url = `${CRITIC_URL.replace(/\/$/, '')}/api/agent/tools/${toolName}`;
+  const url = `${criticUrl.replace(/\/$/, '')}/api/agent/tools/${toolName}`;
   const trace = getRequestContext()?.trace;
   const span = trace
     ? addSpan(trace, {
         type: 'agent_call',
         name: `critic/${toolName}`,
         input: truncate(params),
-        metadata: { childUrl: CRITIC_URL, tool: toolName },
+        metadata: { childUrl: criticUrl, tool: toolName },
       })
     : null;
 
@@ -121,6 +127,8 @@ async function callCriticTool(toolName: string, params: Record<string, unknown>)
     if (childTraceId && span?.metadata) span.metadata.childTraceId = childTraceId;
 
     if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.warn(`[critic] ${toolName} failed: http ${res.status} ${body.slice(0, 200)}`);
       if (span?.metadata) span.metadata.error = `http ${res.status}`;
       return null;
     }
@@ -128,6 +136,7 @@ async function callCriticTool(toolName: string, params: Record<string, unknown>)
     if (span) span.output = truncate(result);
     return result;
   } catch (err) {
+    console.warn(`[critic] ${toolName} threw: ${(err as Error).message}`);
     if (span?.metadata) span.metadata.error = (err as Error).message;
     return null;
   } finally {
@@ -161,7 +170,7 @@ const HEURISTIC_LIKELIHOOD_GATE = 0.3;
  * Returns a structured verdict; callers combine with their own signals.
  */
 async function critiqueWithCritic(theory: Theory): Promise<CriticVerdict> {
-  if (!CRITIC_URL) {
+  if (!getCriticUrl()) {
     return { composite_verdict: 'unknown' };
   }
 
