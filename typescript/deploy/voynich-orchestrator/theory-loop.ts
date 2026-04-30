@@ -251,7 +251,7 @@ export interface FolioInfo {
   eva_sample: string;
 }
 
-export type CipherType = 'substitution' | 'polyalphabetic' | 'substitution-strip' | 'verbose' | 'positional' | 'homophonic';
+export type CipherType = 'substitution' | 'polyalphabetic' | 'substitution-strip' | 'verbose' | 'positional' | 'homophonic' | 'transposition';
 
 export interface Theory {
   id: string;
@@ -316,6 +316,13 @@ const STRATEGIES: Strategy[] = [
   // Polyalphabetic (keyword-shifted substitution)
   { language: 'latin',   cipherType: 'polyalphabetic',       seedMode: 'elite' },
   { language: 'italian', cipherType: 'polyalphabetic',       seedMode: 'cold'  },
+  // Transposition (columnar) — fundamentally different family: no substitution,
+  // letters of EVA ARE Latin letters but in permuted order. Tests the
+  // "alphabet is direct, layout is the cipher" hypothesis. K-sweep over
+  // common medieval column counts (4-8). Cross-folio-only — only seedMode
+  // 'cold' makes sense (no substitution elite pool to seed from).
+  { language: 'latin',   cipherType: 'transposition',        seedMode: 'cold'  },
+  { language: 'italian', cipherType: 'transposition',        seedMode: 'cold'  },
 ];
 
 const ROUNDS_PER_BURST = 20;
@@ -1167,6 +1174,13 @@ export async function proposeTheory(
   if (cipherType === 'homophonic') {
     return await proposeHomophonicTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
   }
+  // Columnar transposition — no substitution at all. EVA letters ARE Latin
+  // letters; the cipher is a per-K-column read-order permutation. Branches
+  // off entirely — no symbol map in the substitution sense; symbol_map
+  // encodes (K, perm) instead.
+  if (cipherType === 'transposition') {
+    return await proposeTranspositionTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
+  }
 
   // Load elite pool from Delta on first call (persists across deploys)
   await loadElitePool();
@@ -1796,6 +1810,216 @@ async function proposeHomophonicTheory(
     target_folio: targetFolio.folio_id,
     target_plant: targetFolio.plant_name,
     symbol_map: bestMap,
+    decoded_text: bestDecoded,
+    grounding_score: primaryGrounding,
+    consistency_score: consistencyScore,
+    cross_folio_results: crossFolioResults,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Columnar transposition cipher.
+//
+// Hypothesis: EVA letters ARE Latin letters (no substitution); the cipher is
+// a per-K-column read-order permutation. The decoder sweeps small K values
+// and hill-climbs the column permutation per K, keeping the best.
+//
+// Word boundaries are preserved at their ORIGINAL CHARACTER POSITIONS — the
+// transposition operates on the letter-only sequence, then spaces are
+// re-inserted at the same offsets they appeared at in the input. This is a
+// pragmatic choice: real columnar transposition wouldn't preserve word
+// boundaries, but the existing scorer (langModelScore + dictionaryScore)
+// needs words to evaluate anything, and recovering word boundaries from the
+// permuted sequence is a separate hard problem.
+// ---------------------------------------------------------------------------
+
+const TRANSPOSITION_K_VALUES = [4, 5, 6, 7, 8];
+const TRANSPOSITION_SA_STEPS_PER_K = 1500;
+
+/**
+ * Decode columnar transposition. `letters` is a contiguous letter sequence
+ * (no spaces). `K` is the column count; `perm` is the read-out order — i.e.
+ * during encoding, columns were emitted in the order `perm[0], perm[1], ...`.
+ *
+ * To decode: chunk the ciphertext by ROWS (n/K rows), assign chunks back to
+ * columns in the order specified by `perm`, then read row-by-row.
+ *
+ * Returns a letter sequence of the same length as the input.
+ */
+function decodeTranspositionLetters(letters: string, K: number, perm: number[]): string {
+  const n = letters.length;
+  if (n === 0 || K <= 0) return letters;
+  const rows = Math.ceil(n / K);
+  // Some columns may be one char shorter than others if n % K !== 0. We track
+  // length per column based on the original n. Convention: in the encoding,
+  // the LAST (rows*K - n) columns are short by one. The "last" here means
+  // last in plaintext-order (column index 0..K-1), not in read-order.
+  const colLengths: number[] = new Array(K).fill(rows);
+  const shortCount = rows * K - n;
+  for (let c = 0; c < shortCount; c++) {
+    colLengths[K - 1 - c] = rows - 1;
+  }
+
+  // Distribute ciphertext to columns according to perm: the first colLength
+  // chars of letters go to column perm[0], the next to perm[1], etc.
+  const cols: string[][] = Array.from({ length: K }, () => []);
+  let idx = 0;
+  for (let i = 0; i < K; i++) {
+    const colIdx = perm[i];
+    const len = colLengths[colIdx];
+    for (let r = 0; r < len; r++) {
+      if (idx < n) {
+        cols[colIdx].push(letters[idx]);
+        idx++;
+      }
+    }
+  }
+
+  // Read row-by-row.
+  let out = '';
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < K; c++) {
+      if (r < cols[c].length) out += cols[c][r];
+    }
+  }
+  return out;
+}
+
+/**
+ * Apply transposition decode to text WITH original word boundaries preserved.
+ * Strips spaces, decodes, re-inserts spaces at the same character offsets
+ * they had in the input.
+ */
+function applyTransposition(text: string, K: number, perm: number[]): string {
+  const cleaned = text.toLowerCase().replace(/\./g, ' ').replace(/[^a-z\s]/g, '');
+  const letters = cleaned.replace(/\s+/g, '');
+  const decoded = decodeTranspositionLetters(letters, K, perm);
+
+  // Re-insert spaces at the same offsets they had in the cleaned input.
+  let out = '';
+  let dIdx = 0;
+  for (let i = 0; i < cleaned.length; i++) {
+    if (cleaned[i] === ' ') {
+      out += ' ';
+    } else if (dIdx < decoded.length) {
+      out += decoded[dIdx];
+      dIdx++;
+    }
+  }
+  return out;
+}
+
+function randomPermutation(K: number): number[] {
+  const arr = Array.from({ length: K }, (_, i) => i);
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function swapTwoColumns(perm: number[]): number[] {
+  const out = [...perm];
+  if (out.length < 2) return out;
+  const i = Math.floor(Math.random() * out.length);
+  let j = Math.floor(Math.random() * out.length);
+  while (j === i) j = Math.floor(Math.random() * out.length);
+  [out[i], out[j]] = [out[j], out[i]];
+  return out;
+}
+
+async function proposeTranspositionTheory(
+  theoryId: string,
+  targetFolio: FolioInfo,
+  allFolios: FolioInfo[],
+  sourceLanguage: string,
+  _seedMode: SeedMode,
+): Promise<Theory> {
+  const evaText = targetFolio.eva_sample;
+
+  let bestK = TRANSPOSITION_K_VALUES[0];
+  let bestPerm: number[] = randomPermutation(bestK);
+  let bestScore = -Infinity;
+  let bestDecoded = '';
+
+  // Sweep K, hill-climb each. SA budget split across K values.
+  for (const K of TRANSPOSITION_K_VALUES) {
+    let curPerm = randomPermutation(K);
+    let curDecoded = applyTransposition(evaText, K, curPerm);
+    let curScore = hillClimbScore(curDecoded, sourceLanguage);
+    let kBestPerm = curPerm;
+    let kBestDecoded = curDecoded;
+    let kBestScore = curScore;
+
+    const T_START = 0.05;
+    const T_END = 0.002;
+    for (let step = 0; step < TRANSPOSITION_SA_STEPS_PER_K; step++) {
+      const t = T_START * Math.pow(T_END / T_START, step / TRANSPOSITION_SA_STEPS_PER_K);
+      const cand = swapTwoColumns(curPerm);
+      const decoded = applyTransposition(evaText, K, cand);
+      const score = hillClimbScore(decoded, sourceLanguage);
+      const dScore = score - curScore;
+      if (dScore > 0 || Math.random() < Math.exp(dScore / Math.max(t, 1e-6))) {
+        curPerm = cand;
+        curDecoded = decoded;
+        curScore = score;
+        if (score > kBestScore) {
+          kBestPerm = cand;
+          kBestDecoded = decoded;
+          kBestScore = score;
+        }
+      }
+    }
+
+    if (kBestScore > bestScore) {
+      bestK = K;
+      bestPerm = kBestPerm;
+      bestScore = kBestScore;
+      bestDecoded = kBestDecoded;
+    }
+  }
+
+  const dictFinal = dictionaryScore(bestDecoded, sourceLanguage);
+  const lmFinal = langModelScore(bestDecoded, sourceLanguage);
+  console.log(`[theory-loop]   transposition: bestK=${bestK} perm=[${bestPerm.join(',')}] dict=${dictFinal.toFixed(3)} lm=${lmFinal.toFixed(3)} combined=${bestScore.toFixed(3)}`);
+
+  const crossFolioResults: Theory['cross_folio_results'] = [];
+  const testFolios = allFolios
+    .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
+    .slice(0, 10);
+  for (const testFolio of testFolios) {
+    const decoded = applyTransposition(testFolio.eva_sample, bestK, bestPerm);
+    const expectedTerms = expectedTermsFor(testFolio, sourceLanguage);
+    crossFolioResults.push({
+      folio_id: testFolio.folio_id,
+      plant_expected: testFolio.plant_name,
+      decoded_text: decoded.slice(0, 50),
+      grounding_score: broadGrounding(decoded, sourceLanguage, expectedTerms),
+    });
+  }
+
+  const primaryTerms = expectedTermsFor(targetFolio, sourceLanguage);
+  const primaryGrounding = broadGrounding(bestDecoded, sourceLanguage, primaryTerms);
+  const consistencyScore = crossFolioResults.length > 0
+    ? crossFolioResults.reduce((s, r) => s + r.grounding_score, 0) / crossFolioResults.length
+    : 0;
+
+  // Encode (K, perm) into the symbol_map shape so persistence works unchanged.
+  // Reserved keys "_K" and "_perm" — never collide with EVA glyph keys (those
+  // are lowercase a-z).
+  const symbolMap: Record<string, string> = {
+    _K: String(bestK),
+    _perm: bestPerm.join(','),
+  };
+
+  return {
+    id: theoryId,
+    proposed_at: new Date().toISOString(),
+    source_language: sourceLanguage,
+    cipher_type: 'transposition',
+    target_folio: targetFolio.folio_id,
+    target_plant: targetFolio.plant_name,
+    symbol_map: symbolMap,
     decoded_text: bestDecoded,
     grounding_score: primaryGrounding,
     consistency_score: consistencyScore,
