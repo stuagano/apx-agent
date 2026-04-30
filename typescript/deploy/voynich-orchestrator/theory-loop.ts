@@ -834,7 +834,7 @@ function dictionaryQuality(text: string, language: string): number {
  * signal) + bigram similarity (weak but continuous signal). The quality
  * multiplier defends against the function-word trap — see `dictionaryQuality`.
  */
-function hillClimbScore(text: string, language: string): number {
+export function hillClimbScore(text: string, language: string): number {
   const dict = dictionaryScore(text, language);
   const quality = dictionaryQuality(text, language);
   const lm = langModelScore(text, language);
