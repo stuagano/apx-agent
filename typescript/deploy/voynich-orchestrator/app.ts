@@ -56,6 +56,21 @@ if (fitnessAgentUrls.length === 0) {
   throw new Error('FITNESS_AGENT_URLS env var is required (comma-separated list of URLs)');
 }
 
+// Critic agent URL for the per-round critique flow in runTheoryLoop.
+// Prefer an explicit CRITIC_AGENT_URL env var; fall back to a URL in
+// FITNESS_AGENT_URLS that contains 'critic'. Optional — if neither is
+// present, runTheoryLoop falls back to skeptic-only critique.
+const criticAgentUrl =
+  process.env.CRITIC_AGENT_URL ??
+  fitnessAgentUrls.find((u) => u.includes('critic')) ??
+  '';
+if (criticAgentUrl) {
+  process.env.CRITIC_AGENT_URL = criticAgentUrl;
+  console.log(`[orchestrator] critic agent: ${criticAgentUrl}`);
+} else {
+  console.warn('[orchestrator] CRITIC_AGENT_URL not set and no critic in FITNESS_AGENT_URLS — falling back to skeptic-only critique');
+}
+
 const engine = process.env.WORKFLOW_TABLE_PREFIX
   ? new DeltaEngine({
       tablePrefix: process.env.WORKFLOW_TABLE_PREFIX,

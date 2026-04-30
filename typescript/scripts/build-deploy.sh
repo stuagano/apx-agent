@@ -103,6 +103,8 @@ EOF
     value: "https://voynich-historian-$APP_DOMAIN,https://voynich-critic-$APP_DOMAIN,https://voynich-grounder-$APP_DOMAIN"
   - name: JUDGE_AGENT_URL
     value: "https://voynich-judge-$APP_DOMAIN"
+  - name: CRITIC_AGENT_URL
+    value: "https://voynich-critic-$APP_DOMAIN"
   - name: WORKFLOW_TABLE_PREFIX
     value: "$WF_PREFIX"
   - name: POPULATION_SIZE
