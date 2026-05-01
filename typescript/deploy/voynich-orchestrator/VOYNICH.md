@@ -179,11 +179,50 @@ Per-family breakdown (top families by within-group Jaccard):
 
 **Verdict**: lift=1.354x exceeds the >1.15 threshold — EVA vocabulary clusters by visual plant type. This is evidence that EVA word selection is not purely positional/generative — some words appear preferentially on specific plant families.
 
-**"Uncertain" anomaly**: The 33 low-confidence folios (non-identifiable plants, fantastical plants, zodiac/cosmological folios misclassified into the herbal section) have the highest within-group Jaccard (0.123). These folios cluster in the manuscript (f58r/v, f65r-f66v, f67r-f84v balneological region) — so their EVA vocabulary similarity is likely a quire/positional artifact rather than evidence of a hidden semantic category. The folios are adjacent in the codex and would share scribal conventions regardless of content.
+**"Uncertain" anomaly (resolved by spatial analysis)**: The 34 low-confidence folios have the highest within-group Jaccard (0.123). Spatial analysis (`spatial-layout-analysis.ts`) found mean gap between uncertain folios = 3.44 (≈ random expected 3.30), but median gap = 0.50 — meaning most consecutive uncertain pairs are adjacent pages. Two dense sub-clusters drive the Jaccard: (a) the balneological section f78v–f85r2 (8 folios depicting bathing scenes), and (b) the end-of-manuscript section f103v–f116v (20 folios with "no illustration visible"). These 28/34 uncertain folios are in contiguous runs — their EVA vocabulary similarity is a quire/scribal artifact, not evidence of a hidden semantic category. The Jaccard of 0.123 drops out of the lift calculation if uncertain folios are excluded; the remaining identified-family lift is real but modest.
 
-**Implication**: the lift=1.354x finding is real but modest. EVA vocabulary is partially structured by plant content AND by manuscript position. These are not cleanly separable with the current data.
+**Implication**: the lift=1.354x finding is real but modest. EVA vocabulary is partially structured by plant content AND by manuscript position (quire clustering). These are not cleanly separable with the current data.
 
-**TEST 2**: LLM coherence test (SKIP_LLM=1 on full run) — not yet executed at full scale.
+### Spatial layout analysis (`spatial-layout-analysis.ts`, 2026-05-01)
+
+Four analyses on LLM-generated text region positions for all 226 folios:
+
+**Layout by family** (regions / lines / EVA words):
+
+| family | n | regions | lines | words |
+|--------|---|---------|-------|-------|
+| uncertain | 34 | 4.7 | 54.6 | 368 |
+| solanaceae | 31 | 4.8 | 31.5 | 148 |
+| thistle | 30 | 2.4 | 17.9 | 86 |
+| plantago | 10 | 2.5 | 20.3 | 90 |
+
+Uncertainty folios have 4× the text lines of thistle/plantago. Most of this is driven by the f103v–f116v cluster (text-only folios with no plant illustration — dense paragraphs of EVA text).
+
+**Non-herbal fingerprinting**: Zodiac/balneological folios (38 identified) have 184.4 EVA words/folio vs. 113.3 for herbal-proper (+63%). But avg word length (5.22 vs. 5.21) and hapax rate (0.848 vs. 0.868) are indistinguishable. Non-herbal sections generate more EVA words (zodiac wheels require circumferential text) but use the same word morphology as herbal sections. This is consistent with a single scribal/generative process producing all EVA text regardless of section type.
+
+**Text region distribution** (858 regions across 226 folios, avg 3.8/folio):
+
+| position | count |
+|----------|-------|
+| top-left | 205 (24%) |
+| center | 167 (19%) |
+| top-right | 132 (15%) |
+| left | 119 (14%) |
+| bottom | 119 (14%) |
+
+Roles: description (516 / 60%), label (257 / 30%), unknown (76 / 9%). Correlation between region count and EVA word count: r=0.35 (more complex visual layouts → proportionally more text).
+
+**TEST 2: LLM coherence** (two runs 2026-05-01 — initial biased + corrected)
+
+Five folios analyzed (mix of zodiac and botanical, selection corrected to prefer botanical on second run): f13r (Mandrake, 72%, solanaceae), f16r (Cannabis/hemp, 72%), f70v1 (Pisces/zodiac, 75%), f71r (Aries/zodiac, 85%), f72v2 (zodiac, 85%).
+
+Key observations:
+
+- **Herbal section marker: `-chy` suffix cluster.** Both f13r (Mandrake) and f16r (Cannabis) independently showed dominant `-chy` terminal words: `qopchy, ykchy, kchy, dypchy, dychor, opchy, okchy, ychykchy`. These two folios are adjacent in the manuscript (f13r, f16r) — the shared distinctive suffix likely reflects quire position rather than plant type. The LLM noticed the pattern independently without knowing folio proximity.
+- **Zodiac section marker: `ot-` prefix cluster.** Three zodiac folios (f70v1, f71r, f72v2) independently showed dominant `ot-` initial words: `oteo, otal, oteoshey, oteody, otol, oty, otychal`. The LLM noted `ot-` appears "at fairly regular intervals" consistent with labeling repeated ring elements. The `ot-` pattern is a distinct EVA register from the herbal `-chy` pattern.
+- **Section-level vocabulary registers**: Herbal folios (early quires, `-chy`) and zodiac folios (f67–f72, `ot-`) have detectably different dominant EVA morphologies — consistent with the known Currier Hand A/B division. The LLM recovered this from word-shape alone.
+- **`daiin` and short structural words**: Across all sections, `daiin`, `al`, `ar` appear at regular intervals. The LLM called these "structural anchors" and "apparent spacers," consistent with the Voynich feature that certain short words serve a grammatical/delimiter role.
+- **LLM's epistemic rating**: All responses included explicit caveats attributing the patterns to known positional word constraints. No response claimed semantic correlation between EVA words and visual content. The LLM correctly identified structural regularities but declined to overinterpret them.
 
 ---
 

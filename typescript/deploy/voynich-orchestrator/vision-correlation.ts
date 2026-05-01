@@ -338,10 +338,15 @@ async function main(): Promise<void> {
     console.log('(Asking an LLM to look for pattern between EVA word shape and visual content)');
     console.log('');
 
-    // Pick 5 representative folios from different families with high confidence
+    // Pick one folio from each of the top botanical families with high confidence.
+    // Exclude non-botanical families ('n', 'non-botanical') which sort to the top by confidence
+    // but are zodiac/astronomical diagrams — not useful for content-word correlation.
+    const NON_BOTANICAL = new Set(['n', 'non-botanical', 'uncertain', 'unknown']);
+    const seenFamilies = new Set<string>();
     const candidates = profiles
-      .filter((p) => p.confidence >= 0.50 && p.family !== 'uncertain' && p.family !== 'unknown')
+      .filter((p) => p.confidence >= 0.45 && !NON_BOTANICAL.has(p.family))
       .sort((a, b) => b.confidence - a.confidence)
+      .filter((p) => !seenFamilies.has(p.family) && seenFamilies.add(p.family) !== undefined)
       .slice(0, 5);
 
     for (const p of candidates) {
