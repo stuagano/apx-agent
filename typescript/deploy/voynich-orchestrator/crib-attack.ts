@@ -75,26 +75,11 @@ async function executeSql(statement: string): Promise<Array<Record<string, strin
 // EVA tokenizer (multi-glyph)
 // ---------------------------------------------------------------------------
 
-const EVA_MULTI_GLYPHS = ['ch', 'sh', 'th', 'ct', 'ck', 'qo', 'ok', 'ol', 'ai', 'ee', 'dy', 'ey', 'or', 'ar'];
-
+// Crib alignment uses single-char tokenization — each EVA character is one token.
+// This makes crib length matching tractable: "daiin" = 5 chars matches 5-char Latin words.
+// The SA over the herbal corpus also uses single-char so the glyph set is consistent.
 function tokenizeEva(evaText: string): string[] {
-  const text = evaText.replace(/\./g, ' ');
-  const tokens: string[] = [];
-  let i = 0;
-  while (i < text.length) {
-    if (text[i] === ' ') { i++; continue; }
-    let matched = false;
-    for (const g of EVA_MULTI_GLYPHS) {
-      if (text.substring(i, i + g.length) === g) {
-        tokens.push(g);
-        i += g.length;
-        matched = true;
-        break;
-      }
-    }
-    if (!matched) { tokens.push(text[i]); i++; }
-  }
-  return tokens;
+  return evaText.replace(/\./g, ' ').split('').filter((c) => c !== ' ');
 }
 
 function evaWords(evaText: string): string[] {
@@ -131,49 +116,56 @@ interface CribPair {
   source: string;          // where this crib came from
 }
 
+// Under single-char tokenization: "otalchy" = 7 chars, "daiin" = 5 chars, etc.
 const KNOWN_CRIBS: CribPair[] = [
-  // Month name cribs (from Voynich zodiac label scholarship)
+  // Zodiac label cribs — 7-char EVA words matching 7-char Latin month names
   {
     evaWord: 'otalchy',
     evaTokens: tokenizeEva('otalchy'),
-    latinCandidates: ['martius', 'march', 'aries'],
-    source: 'zodiac f70v Aries label (Zandbergen)',
+    latinCandidates: ['martius', 'aprilis', 'maialis'],
+    source: 'zodiac Aries label, 7-char (Zandbergen)',
   },
-  {
-    evaWord: 'otar',
-    evaTokens: tokenizeEva('otar'),
-    latinCandidates: ['aries', 'april', 'aprilis'],
-    source: 'zodiac Aries short label',
-  },
-  {
-    evaWord: 'otchy',
-    evaTokens: tokenizeEva('otchy'),
-    latinCandidates: ['taurus', 'tauri', 'maius'],
-    source: 'zodiac Taurus label hypothesis',
-  },
-  {
-    evaWord: 'otshy',
-    evaTokens: tokenizeEva('otshy'),
-    latinCandidates: ['taurus', 'aprilis', 'maior'],
-    source: 'zodiac Taurus/April label variant',
-  },
+  // 5-char cribs — "daiin" is the most common EVA word; try plausible 5-char Latin
   {
     evaWord: 'daiin',
     evaTokens: tokenizeEva('daiin'),
-    latinCandidates: ['datum', 'datur', 'dicto', 'dixit'],
-    source: 'high-frequency herbal word (content word crib)',
+    latinCandidates: ['datum', 'datur', 'herba', 'radix', 'folia', 'flores', 'succo'],
+    source: 'most-frequent herbal EVA word (5 chars)',
   },
+  // 5-char cribs — "chedy" (2nd most frequent)
   {
     evaWord: 'chedy',
     evaTokens: tokenizeEva('chedy'),
-    latinCandidates: ['herba', 'causa', 'calor', 'cedri'],
-    source: 'high-frequency herbal word',
+    latinCandidates: ['herba', 'calor', 'ramus', 'planta', 'succo', 'recipe'],
+    source: '2nd-most-frequent herbal EVA word (5 chars)',
   },
+  // 4-char cribs — "otar" = [o,t,a,r]
+  {
+    evaWord: 'otar',
+    evaTokens: tokenizeEva('otar'),
+    latinCandidates: ['alba', 'acer', 'aqua', 'olei', 'ossa', 'esse', 'nota'],
+    source: 'zodiac short label / common EVA pattern (4 chars)',
+  },
+  // 5-char cribs — "otchy" = [o,t,c,h,y]
+  {
+    evaWord: 'otchy',
+    evaTokens: tokenizeEva('otchy'),
+    latinCandidates: ['olear', 'oleum', 'ortus', 'ossis', 'optio'],
+    source: 'zodiac Taurus label hypothesis (5 chars)',
+  },
+  // 7-char cribs — "qokeedy" = [q,o,k,e,e,d,y]
   {
     evaWord: 'qokeedy',
     evaTokens: tokenizeEva('qokeedy'),
-    latinCandidates: ['quaerit', 'quomodo', 'quoddam'],
-    source: 'common herbal EVA pattern (qo-prefix)',
+    latinCandidates: ['quaerit', 'quomodo', 'quoddam', 'quoniam', 'quarere'],
+    source: 'qo-prefix EVA pattern (7 chars)',
+  },
+  // 3-char cribs — "al" = [a,l]... too short, skip. Try "aiin" = [a,i,i,n]
+  {
+    evaWord: 'aiin',
+    evaTokens: tokenizeEva('aiin'),
+    latinCandidates: ['aion', 'albi', 'anni', 'alte', 'aqua', 'alia', 'ante'],
+    source: 'common EVA pattern (4 chars)',
   },
 ];
 
