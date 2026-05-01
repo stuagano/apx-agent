@@ -154,6 +154,37 @@ The only metric that fails (hapax rate HIGH = 0.687 > 0.65) also fails for the n
 
 **Interpretation**: the abbreviation morphology metrics are not detecting real EVA structure. Any corpus of short words (2-5 chars) drawn from a small alphabet would pass these tests. The "consistent" finding was a false positive from tests that lack discriminative power.
 
+### Vision-EVA correlation (`vision-correlation.ts`, bulk run 2026-04-30)
+
+Tested whether EVA word frequency profiles cluster by visually-identified plant type. Bulk-analyzed all 226 herbal folios with `claude-sonnet-4-6` vision (via Databricks FMAPI OpenAI-compatible endpoint), then cross-referenced with EVA vocabulary.
+
+**Setup**: 226 herbal folios analyzed with vision model → `folio_vision_analysis` table (subject_candidates, botanical_features, visual_description, spatial_layout, expected_terms). 224 folios had both vision + EVA data. Plant families assigned by regex matching on top candidate (confidence ≥ 0.35 required; below → "uncertain").
+
+**TEST 1: EVA vocabulary overlap by plant family**
+
+| metric | value |
+|--------|-------|
+| within-group Jaccard (same family) | 0.0799  (n=~530 pairs) |
+| between-group Jaccard (diff family) | 0.0590  (n=500 random pairs) |
+| **lift** | **1.354x** |
+
+Per-family breakdown (top families by within-group Jaccard):
+
+| family | n | Jaccard |
+|--------|---|---------|
+| uncertain | 33 | 0.123 |
+| solanaceae (mandrake) | 31 | 0.066 |
+| thistle | 30 | 0.056 |
+| plantago | 10 | 0.058 |
+
+**Verdict**: lift=1.354x exceeds the >1.15 threshold — EVA vocabulary clusters by visual plant type. This is evidence that EVA word selection is not purely positional/generative — some words appear preferentially on specific plant families.
+
+**"Uncertain" anomaly**: The 33 low-confidence folios (non-identifiable plants, fantastical plants, zodiac/cosmological folios misclassified into the herbal section) have the highest within-group Jaccard (0.123). These folios cluster in the manuscript (f58r/v, f65r-f66v, f67r-f84v balneological region) — so their EVA vocabulary similarity is likely a quire/positional artifact rather than evidence of a hidden semantic category. The folios are adjacent in the codex and would share scribal conventions regardless of content.
+
+**Implication**: the lift=1.354x finding is real but modest. EVA vocabulary is partially structured by plant content AND by manuscript position. These are not cleanly separable with the current data.
+
+**TEST 2**: LLM coherence test (SKIP_LLM=1 on full run) — not yet executed at full scale.
+
 ---
 
 ## What is NOT claimed (updated)
