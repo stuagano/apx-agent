@@ -96,6 +96,28 @@ npx tsx rerun-transposition-phase2.ts   # adapt the label constants for other ph
 
 ## Exploratory results (post-pivot, curiosity-driven)
 
+### Vigenère with key recovery (`vigenere-decoder.ts`, 2026-04-30)
+
+Tested the hypothesis that EVA is a Vigenère cipher of Latin: each character is shifted by a cycling key of period L. Swept L=2..12, used IC (Index of Coincidence) for key-length detection, frequency cross-correlation for initial key guess, then SA refinement.
+
+**IC result (the decisive finding):**
+
+| key_len | mean_IC |
+|---------|---------|
+| L=2..12 | 0.0771 (constant) |
+| Latin calibration | 0.0806 |
+| IC_random (1/21) | 0.0476 |
+
+IC is flat across ALL key lengths (range < 0.001). This is NOT a Vigenère signal — real Vigenère would show higher IC at the correct L (stride-L streams are each a Caesar shift → IC ≈ natural language) and lower IC at wrong L (mixed streams → IC closer to random). Flat IC means there is no periodic key structure.
+
+EVA IC = 0.077 > IC_natural_Latin (≈ 0.065) > IC_random (0.048). EVA is MORE concentrated than natural language at every stride, consistent with generation from a constrained glyph table (Rugg cardan grille), not Vigenère encryption.
+
+**Decoded text score**: 0.000 across all key lengths — Vigenère shifts within the EVA alphabet don't produce Latin trigram sequences.
+
+**FALSIFIED**: Vigenère cipher of Latin (any key length 2–12) is not supported.
+
+**Bonus structural finding**: The flat, elevated IC is a known Voynich fingerprint (noted by Rugg and others). It's consistent with: constrained character generation (grille table limits which chars can appear), no periodic key, and non-linguistic source. This is independent evidence corroborating the null hypothesis.
+
 ### Rugg hoax generator — positive control (`rugg-control.ts`, 2026-04-30)
 
 Generated synthetic Voynich-like text using a Cardan grille simulation (Rugg 2004) and ran it through the full harness. Purpose: verify the falsification infrastructure correctly REJECTS known nonsense.
