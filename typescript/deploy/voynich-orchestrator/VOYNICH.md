@@ -96,6 +96,22 @@ npx tsx rerun-transposition-phase2.ts   # adapt the label constants for other ph
 
 ## Exploratory results (post-pivot, curiosity-driven)
 
+### Rugg hoax generator — positive control (`rugg-control.ts`, 2026-04-30)
+
+Generated synthetic Voynich-like text using a Cardan grille simulation (Rugg 2004) and ran it through the full harness. Purpose: verify the falsification infrastructure correctly REJECTS known nonsense.
+
+**Result: CONTROL PASS** — all three trials rejected at the heuristic gate.
+
+| trial | words | likelihood | null_dist | verdict |
+|-------|-------|-----------|-----------|---------|
+| single-grille-200 | 200 | 0.287 | false | rejected |
+| mixed-grille-400 | 384 | 0.256 | false | rejected |
+| mixed-grille-900 | 864 | 0.268 | false | rejected |
+
+Rejection mechanism: Rugg-generated text fails the null-baseline test (null_dist=false) — it's statistically indistinguishable from within-word shuffled versions of itself. This is correct: procedurally generated text has no positional structure that shuffling would destroy. Likelihood 0.26–0.29, below the 0.30 gate.
+
+**Implication**: the 1091-round null result is a functioning detector. The harness can distinguish EVA decoder output (which at least produces Latin-shaped character sequences — heuristic likelihood 0.36–0.47) from pure cardan-grille nonsense (0.26–0.29). Both fail, but for the right reasons: EVA decoder output is Latin-shaped but incoherent (LLM judge rejects); Rugg output isn't even Latin-shaped.
+
 ### Word-level codebook decoder (`wordlevel-decoder.ts`, 2026-04-30)
 
 Tested the hypothesis that each EVA word type maps to one Latin word (EVA word → Latin word codebook).
