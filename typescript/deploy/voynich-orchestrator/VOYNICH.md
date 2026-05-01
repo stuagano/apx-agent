@@ -94,13 +94,33 @@ npx tsx rerun-transposition-phase2.ts   # adapt the label constants for other ph
 
 ---
 
-## Next experiments (not run, ranked by decisiveness for the null hypothesis)
+## Exploratory results (post-pivot, curiosity-driven)
 
-| Experiment | Effort | Decisive for (C) if 0 PASS? |
-|------------|--------|------------------------------|
-| Vigenère with key recovery (keyed substitution) | Medium — new `proposeKeyedTheory`, key length sweep | Yes — rules out keyed monoalphabetic |
-| Codebook cipher (EVA token → whole word) | Medium — new decoder, larger search space | Partial — rules out one more family |
-| Non-Latin language (Greek, Hebrew, Czech) | Low — add bigram table + endings + charset to LANG_REFERENCES | No — falsifies Latin only, not the family |
-| Rugg-style hoax generator control | Low — generate cardan-grille text, run through same harness | Calibration: confirms plateau is intrinsic to Voynich structure |
+### Word-level codebook decoder (`wordlevel-decoder.ts`, 2026-04-30)
 
-If Vigenère + codebook both return 0 PASS, the (C) claim strengthens considerably: the manuscript is effectively resistant to all classical cipher families under a calibrated empirical rejection criterion.
+Tested the hypothesis that each EVA word type maps to one Latin word (EVA word → Latin word codebook).
+
+**Calibration failure**: SA cannot recover a known Latin word→code mapping (best 0.332 vs ground-truth 0.388, −14%). The char-trigram LM gradient is too weak at word level: 164 vocabulary items over 353 tokens provides ~2.15 repetitions per type — not enough for reliable hill-climbing.
+
+**EVA phase**: best score 0.215 (below the 0.40 meaningful threshold), restart spread 0.013 (marginal, like transposition). The EVA corpus has **8,168 unique word types** from 36,290 tokens. A word→word codebook of Latin (max ~500 words) could only explain ~6% of the EVA type vocabulary. The type count alone falsifies a simple codebook.
+
+**Verdict**: word-level codebook is not supported at any of three diagnostic levels — calibration, score threshold, or type-count feasibility.
+
+### Abbreviation morphology null test (`abbreviation-analysis.ts` update, 2026-04-30)
+
+Added a shuffled-EVA null: characters within each EVA word shuffled randomly (word boundaries preserved), same 7 metrics computed.
+
+**Result**: **0 EVA-specific passes**. All 6 passing metrics (type/token ratio, word length, % 2-7 tokens, initial/terminal concentration, pos-last entropy) are also satisfied by the shuffled null. The "consistent with medieval Latin abbreviation norms" verdict from the prior run was an artifact of the word-length distribution — not of actual positional structure within EVA words.
+
+The only metric that fails (hapax rate HIGH = 0.687 > 0.65) also fails for the null. EVA words have too many hapaxes relative to abbreviation text norms.
+
+**Interpretation**: the abbreviation morphology metrics are not detecting real EVA structure. Any corpus of short words (2-5 chars) drawn from a small alphabet would pass these tests. The "consistent" finding was a false positive from tests that lack discriminative power.
+
+---
+
+## What is NOT claimed (updated)
+
+- Greek, Hebrew, Old Czech, or other language targets have not been tested under substitution.
+- Fractionated ciphers (Polybius square), Vigenère with key recovery have not been tested.
+- The null result does not rule out: (a) a cipher family outside those tested, (b) a real but extremely unusual language, or (c) a key-based cipher where key recovery is the bottleneck.
+- Abbreviation morphology analysis shows EVA is *consistent with* short-word corpora in general — not specifically with medieval Latin abbreviation conventions.

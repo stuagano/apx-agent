@@ -284,6 +284,35 @@ function printReport(r: StructuralReport): void {
 }
 
 // ---------------------------------------------------------------------------
+// Shuffled-EVA null: shuffle chars within each word, preserving word boundaries.
+// If real EVA and shuffled EVA produce similar metrics, the metrics aren't
+// detecting actual EVA structure — they're trivially satisfied by the
+// word-length distribution alone.
+// ---------------------------------------------------------------------------
+
+function shuffleWordChars(word: string): string {
+  const chars = word.split('');
+  // Fisher-Yates with a fixed-ish seed per word (reproducible)
+  let seed = word.length * 31 + word.charCodeAt(0);
+  for (let i = chars.length - 1; i > 0; i--) {
+    seed = (seed * 1664525 + 1013904223) & 0x7fffffff;
+    const j = seed % (i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+}
+
+function makeShuffledNull(stats: WordStats): WordStats {
+  const shuffledWords = stats.words.map(shuffleWordChars);
+  const shuffledTokenized = shuffledWords.map(tokenizeEvaWord);
+  return {
+    sectionLabel: `${stats.sectionLabel} (shuffled-null)`,
+    words: shuffledWords,
+    tokenized: shuffledTokenized,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Reference: compute the same metrics on real Latin text for calibration
 // ---------------------------------------------------------------------------
 
@@ -369,10 +398,10 @@ async function main(): Promise<void> {
     printReport(report);
   }
 
-  // 4. Cross-section comparison table
+  // 4. Cross-section comparison table (with shuffled-null column)
   console.log('\n=== Cross-section comparison ===');
   console.log(
-    'section'.padEnd(20) +
+    'section'.padEnd(24) +
     'words'.padStart(8) +
     'types'.padStart(8) +
     'ttr'.padStart(7) +
@@ -385,16 +414,23 @@ async function main(): Promise<void> {
     'pos0H'.padStart(7) +
     'termH'.padStart(7)
   );
-  console.log('-'.repeat(110));
+  console.log('-'.repeat(114));
 
+  const sectionDataArray = [...sectionData.values()];
   const allReports = [
     computeReport(latinCalibrationStats()),
-    ...[...sectionData.values()].map(computeReport),
+    ...sectionDataArray.map(computeReport),
+    ...sectionDataArray.map((s) => computeReport(makeShuffledNull(s))),
   ];
 
   for (const r of allReports) {
+    const label = r.sectionLabel
+      .replace(/^(Section: |CALIBRATION: )/, '')
+      .replace('herbal (shuffled-null)', 'herbal SHUFFLED')
+      .slice(0, 24)
+      .padEnd(24);
     console.log(
-      r.sectionLabel.replace(/^(Section: |CALIBRATION: )/, '').slice(0, 20).padEnd(20) +
+      label +
       r.totalTokens.toString().padStart(8) +
       r.uniqueTypes.toString().padStart(8) +
       r.typeTokenRatio.toFixed(3).padStart(7) +
@@ -410,34 +446,62 @@ async function main(): Promise<void> {
   }
 
   // 5. Key question: are Voynich EVA words consistent with abbreviation morphology?
+  //    And do those metrics survive the shuffled-null test?
   console.log('\n=== Abbreviation morphology verdict ===');
   console.log('(Checking herbal section as the main corpus)');
   const herbalStats = sectionData.get('herbal');
   if (herbalStats) {
     const hr = computeReport(herbalStats);
-    const checks: Array<[string, string]> = [
-      ['type/token ratio',      inRange(hr.typeTokenRatio, ABBREV_NORMS.typeTokenRatio.lo, ABBREV_NORMS.typeTokenRatio.hi)],
-      ['hapax rate',            inRange(hr.hapaxRate, ABBREV_NORMS.hapaxRate.lo, ABBREV_NORMS.hapaxRate.hi)],
-      ['mean word length',      inRange(hr.lengthMean, ABBREV_NORMS.lengthMean.lo, ABBREV_NORMS.lengthMean.hi)],
-      ['% words 2-7 tokens',   inRange(hr.pctLen2to7, ABBREV_NORMS.pctLen2to7.lo, ABBREV_NORMS.pctLen2to7.hi)],
-      ['initial top-3 glyph',  inRange(hr.initialTop3Pct, ABBREV_NORMS.initialTop3Pct.lo, ABBREV_NORMS.initialTop3Pct.hi)],
-      ['terminal top-3 glyph', inRange(hr.terminalTop3Pct, ABBREV_NORMS.terminalTop3Pct.lo, ABBREV_NORMS.terminalTop3Pct.hi)],
-      ['pos-last entropy',      inRange(hr.posEntropy.posLast, ABBREV_NORMS.posLastEntropy.lo, ABBREV_NORMS.posLastEntropy.hi)],
-    ];
-    let okCount = 0;
-    for (const [metric, result] of checks) {
-      const ok = result.startsWith('OK');
-      if (ok) okCount++;
-      console.log(`  ${ok ? '✓' : '✗'} ${metric.padEnd(26)} ${result}`);
-    }
+    const shuffled = computeReport(makeShuffledNull(herbalStats));
+
+    type MetricKey = keyof typeof ABBREV_NORMS;
+    const metricValues: Record<MetricKey, { eva: number; null_: number }> = {
+      typeTokenRatio:  { eva: hr.typeTokenRatio,    null_: shuffled.typeTokenRatio },
+      hapaxRate:       { eva: hr.hapaxRate,          null_: shuffled.hapaxRate },
+      lengthMean:      { eva: hr.lengthMean,         null_: shuffled.lengthMean },
+      pctLen2to7:      { eva: hr.pctLen2to7,         null_: shuffled.pctLen2to7 },
+      initialTop3Pct:  { eva: hr.initialTop3Pct,     null_: shuffled.initialTop3Pct },
+      terminalTop3Pct: { eva: hr.terminalTop3Pct,    null_: shuffled.terminalTop3Pct },
+      posLastEntropy:  { eva: hr.posEntropy.posLast, null_: shuffled.posEntropy.posLast },
+    };
+
     console.log('');
-    console.log(`  ${okCount}/${checks.length} metrics within medieval abbreviation norms.`);
+    console.log('  ' + 'metric'.padEnd(26) + 'EVA result'.padEnd(28) + 'null result'.padEnd(28) + 'null also OK?');
+    console.log('  ' + '-'.repeat(90));
+
+    let okCount = 0;
+    let nullAlsoOk = 0;
+    for (const [key, norm] of Object.entries(ABBREV_NORMS) as Array<[MetricKey, typeof ABBREV_NORMS[MetricKey]]>) {
+      const { eva, null_ } = metricValues[key];
+      const evaResult = inRange(eva, norm.lo, norm.hi);
+      const nullResult = inRange(null_, norm.lo, norm.hi);
+      const evaOk = evaResult.startsWith('OK');
+      const nullOk = nullResult.startsWith('OK');
+      if (evaOk) okCount++;
+      if (evaOk && nullOk) nullAlsoOk++;
+      const nullFlag = evaOk && nullOk ? '⚠ (null also passes)' : evaOk && !nullOk ? '✓ (EVA-specific)' : '';
+      console.log(`  ${evaOk ? '✓' : '✗'} ${norm.label.padEnd(26)} ${evaResult.padEnd(28)} ${nullResult.padEnd(28)} ${nullFlag}`);
+    }
+
+    console.log('');
+    console.log(`  ${okCount}/${Object.keys(ABBREV_NORMS).length} metrics within medieval abbreviation norms.`);
+    console.log(`  Of those, ${nullAlsoOk} also pass on shuffled-null (may reflect word-length distribution rather than EVA structure).`);
+    const evaSpecific = okCount - nullAlsoOk;
+    console.log(`  EVA-specific passes (null fails): ${evaSpecific} — these are the strongest evidence of real structure.`);
+    console.log('');
+
     const verdict = okCount >= 5
       ? 'CONSISTENT: EVA word structure matches abbreviation morphology patterns.'
       : okCount >= 3
       ? 'PARTIAL: Some consistency with abbreviation morphology; key deviations noted.'
       : 'INCONSISTENT: EVA word structure deviates substantially from abbreviation norms.';
-    console.log(`  Verdict: ${verdict}`);
+    const nullVerdict = evaSpecific >= 3
+      ? 'STRUCTURAL: Multiple metrics are EVA-specific (not explained by word-length distribution alone).'
+      : evaSpecific >= 1
+      ? 'MARGINAL: Only a few EVA-specific passes; most structure may be an artifact of word-length distribution.'
+      : 'TRIVIAL: No EVA-specific passes — shuffled-null matches EVA on all passing metrics. Metrics not detecting real EVA structure.';
+    console.log(`  Metric verdict  : ${verdict}`);
+    console.log(`  Null-test verdict: ${nullVerdict}`);
   } else {
     console.log('  No herbal section data found.');
   }
