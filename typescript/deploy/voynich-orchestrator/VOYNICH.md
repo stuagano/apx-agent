@@ -181,7 +181,41 @@ Per-family breakdown (top families by within-group Jaccard):
 
 **"Uncertain" anomaly (resolved by spatial analysis)**: The 34 low-confidence folios have the highest within-group Jaccard (0.123). Spatial analysis (`spatial-layout-analysis.ts`) found mean gap between uncertain folios = 3.44 (≈ random expected 3.30), but median gap = 0.50 — meaning most consecutive uncertain pairs are adjacent pages. Two dense sub-clusters drive the Jaccard: (a) the balneological section f78v–f85r2 (8 folios depicting bathing scenes), and (b) the end-of-manuscript section f103v–f116v (20 folios with "no illustration visible"). These 28/34 uncertain folios are in contiguous runs — their EVA vocabulary similarity is a quire/scribal artifact, not evidence of a hidden semantic category. The Jaccard of 0.123 drops out of the lift calculation if uncertain folios are excluded; the remaining identified-family lift is real but modest.
 
-**Implication**: the lift=1.354x finding is real but modest. EVA vocabulary is partially structured by plant content AND by manuscript position (quire clustering). These are not cleanly separable with the current data.
+**Implication**: the lift=1.354x finding is real but modest. EVA vocabulary is partially structured by plant content AND by manuscript position (quire clustering). The distance-controlled test below partially separates these.
+
+### Distance-controlled Jaccard (`family-distance-test.ts`, 2026-05-02)
+
+Tests whether within-family Jaccard lift is flat vs. decaying as folio-rank distance increases. A flat lift = content-driven signal; a decaying lift = quire-positional artifact.
+
+**Setup**: 94 herbal folios with both a recognized botanical family (confidence ≥ 0.35) and EVA text. 4,371 pairs total. Pairs bucketed by |rank_a − rank_b| using 5-quantile breakpoints derived from all pair distances (breaks at ranks 10, 22, 35, 52).
+
+**Results**:
+
+| Dist bin | Within-fam Jac | (n pairs) | Between-fam Jac | (n pairs) | Lift |
+|----------|---------------|-----------|----------------|-----------|------|
+| [1–10]   | 0.0739        | (321)     | 0.0667         | (564)     | 1.11x |
+| [11–22]  | 0.0680        | (266)     | 0.0611         | (664)     | 1.11x |
+| [23–35]  | 0.0543        | (186)     | 0.0577         | (659)     | 0.94x |
+| [36–52]  | 0.0533        | (140)     | 0.0509         | (710)     | 1.05x |
+| [53+]    | 0.0423        | (129)     | 0.0482         | (732)     | 0.88x |
+
+**Overall**: within-family Jaccard 0.0622 vs. between 0.0564, lift=1.10x. Q1→Q5 decay=21%.
+
+**Per-family breakdown**:
+
+| Family (n) | Q1 lift | Q2 lift | Q3 lift | Q4 lift | Q5 lift |
+|------------|---------|---------|---------|---------|---------|
+| solanaceae (33) | 1.11x | 1.18x | 1.11x | 1.16x | 0.82x |
+| thistle (30)    | 1.10x | 0.96x | 0.81x | 1.00x | 0.97x |
+| plantago (10)   | 0.85x | 1.12x | 0.87x | 1.05x |   —   |
+
+**Verdict**: BORDERLINE CONTENT-DRIVEN. The 21% decay from Q1 to Q5 falls below the 25% MIXED threshold, but the overall picture is noisy.
+
+- **Solanaceae** shows the strongest and most consistent signal: 1.11–1.18x lift across Q1–Q4, only dropping at Q5 (very distant pairs, n=66). This is the most botanically coherent family in the corpus.
+- **Thistle** shows weaker and more variable lift — no clear gradient.
+- **Plantago** (n=10) has insufficient pairs for reliable inference.
+
+**Conclusion**: the quire-positional confound is real (absolute Jaccard values are higher for nearby pairs regardless of family label) but does NOT fully explain the within-family lift for solanaceae. The solanaceae vocabulary signal survives distance control through Q4 (~85% of pairs), which is positive evidence of content-encoding — the weakest defensible claim that EVA contains semantic structure correlated with botanical identity.
 
 ### Spatial layout analysis (`spatial-layout-analysis.ts`, 2026-05-01)
 
