@@ -261,11 +261,59 @@ Key observations:
   - lily-family (f79r): `ol-/sh-` clusters (`ol, oly, qol, sheol, shedy`); short 2-3 char forms alternate with longer phrase-terminators
   - mint-family (f21r): `chol/qotchol` repetition; `ch-` and `qo-` as morphological prefixes across multiple word types
 
-- **`qo-` prefix as inter-family signal**: `qo-` appears distinctively on thistle (f18v), lily-family (f79r), and mint-family (f21r), but is NOT the dominant marker on solanaceae (f13r) or poppy (f33r) where `-chy/-dy` suffixes dominate instead. This prefix/suffix axis is family-correlated but the LLM could not determine directionality.
+- **`qo-` prefix as inter-family signal**: `qo-` appears distinctively on thistle (f18v), lily-family (f79r), and mint-family (f21r), but is NOT the dominant marker on solanaceae (f13r) or poppy (f33r) where `-chy/-dy` suffixes dominate instead. This prefix/suffix axis is family-correlated but the LLM could not determine directionality. *Note: scale test below partially revises this.*
 
 - **LLM's epistemic rating**: All five responses explicitly disclaimed visual analogy and attributed patterns to positional/scribal constraints. The LLM identified `ch/k` consonant dominance, `qo-` prefix frequency, and length alternation as structural regularities. It made no claim that patterns correlate with plant content — and it correctly noted that "positional word-class rules" and "quire-level orthographic habits" are confounders that cannot be ruled out without a decipherment framework.
 
 - **Implication**: Botanical families DO show distinct dominant EVA morphologies, but whether this reflects plant-content encoding or positional/quire structure is not separable from the current data. The 1.33x lift from TEST 1 (EVA vocabulary clusters by plant family) is consistent with both explanations.
+
+### Prefix/suffix axis at scale (`prefix-suffix-axis.ts`, 2026-05-02)
+
+Tested whether the `qo-`/suffix axis observed on 5 individual folios in TEST 2 holds across all 94 botanically-classified herbal folios. Computed per-folio morphological rates and effect sizes (rank-biserial correlation, r).
+
+**Per-family morphological rates (top families)**:
+
+| Family | n | qo-prefix | -chy sfx | -dy sfx | ch-init | short(≤3) |
+|--------|---|-----------|----------|---------|---------|-----------|
+| solanaceae | 33 | **0.159** | 0.025 | **0.175** | 0.153 | 0.147 |
+| thistle    | 30 | 0.096 | **0.053** | 0.132 | 0.178 | **0.186** |
+| plantago   | 10 | 0.089 | 0.063 | 0.065 | 0.260 | 0.176 |
+| poppy      | 7  | 0.092 | 0.070 | 0.090 | 0.166 | 0.166 |
+| mint-family| 3  | 0.134 | 0.054 | **0.198** | 0.196 | 0.093 |
+
+**Solanaceae vs. other botanical (effect sizes)**:
+
+| Feature | Solan | Other | r | Interpretation |
+|---------|-------|-------|---|----------------|
+| qo-prefix | 0.159 | 0.099 | **+0.538** | LARGE — solan highest |
+| -chy suffix | 0.025 | 0.056 | **−0.442** | LARGE — solan LOWEST |
+| -dy suffix | 0.175 | 0.116 | +0.376 | medium |
+| ch-init | 0.153 | 0.197 | −0.262 | medium — solan lower |
+| short words | 0.147 | 0.170 | −0.289 | medium — solan fewer |
+
+**Revised axis finding**: TEST 2's single-folio impression was misleading. The scale data shows solanaceae has the HIGHEST `qo-` prefix rate of any family (r=+0.538, large effect) — not lower. What's actually low on solanaceae is `-chy` (r=−0.442). The real distinction:
+
+- **Solanaceae**: `qo-` prefix HIGH, `-dy` suffix HIGH, `-chy` suffix very LOW, short words fewer
+- **Thistle**: `qo-` prefix lower, `-chy` suffix higher, more short words
+
+The TEST 2 confusion arose because solanaceae example words (`qopchy, ykchy`) appear suffix-focused at first glance, but `qopchy` is also a `qo-` word. At scale, the `qo-`+`-dy` combination is the solanaceae signature.
+
+**Top solanaceae-specific EVA words** (by log-odds ratio vs. other botanical families):
+
+| Word | LOR | Notes |
+|------|-----|-------|
+| oldaiin | 2.94 | not qo, not suffix |
+| lchedy | 2.82 | `-dy` suffix |
+| pchedy | 2.94 | `-dy` suffix |
+| chedaiin | 2.94 | |
+| kain | 3.05 | short distinctive |
+| qokeo | 2.50 | `qo-` prefix |
+| qopchedy | 2.50 | `qo-` prefix + `-dy` suffix |
+| cheom | 2.67 | |
+
+**Top thistle-specific EVA words**: `okeeor`, `okchor`, `keody`, `shodaiin`, `chokor` — predominantly ending-variation forms without the solanaceae `qo-` or `-dy` markers.
+
+**Alignment with distance test**: The solanaceae vocabulary signal that survives quire-distance control (Q1–Q4 lift in `family-distance-test.ts`) is now traceable to specific word types: the `qo-`+`-dy` compound forms and named words like `oldaiin`, `lchedy`, `cheom`. These are not high-frequency corpus words (low count-out), which explains why the Jaccard lift is real but modest.
 
 ---
 
