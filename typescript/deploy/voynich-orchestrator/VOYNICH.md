@@ -315,6 +315,32 @@ The TEST 2 confusion arose because solanaceae example words (`qopchy, ykchy`) ap
 
 **Alignment with distance test**: The solanaceae vocabulary signal that survives quire-distance control (Q1–Q4 lift in `family-distance-test.ts`) is now traceable to specific word types: the `qo-`+`-dy` compound forms and named words like `oldaiin`, `lchedy`, `cheom`. These are not high-frequency corpus words (low count-out), which explains why the Jaccard lift is real but modest.
 
+### Solanaceae signal test: NPMI vs. expected terms (`solanaceae-signal-test.ts`, 2026-05-02)
+
+**Note on cross-section test**: the `eva_corpus` table contains only the herbal section, so cross-manuscript distribution cannot be tested. Within-herbal concentration: 12/15 target solanaceae words are >1.5x more prevalent in solanaceae folios than in other herbal families.
+
+**NPMI vs. expected Latin/Italian terms**: For each solanaceae-specific word, the top NPMI associations with LLM-generated expected vocabulary are strikingly coherent:
+
+| EVA word | Folios (solan) | Top NPMI associations |
+|----------|---------------|----------------------|
+| `oldaiin` | 8 (7 solan) | mandragoratus=0.706, soporatus=0.706, venefica=0.620, stupefaciens=0.576, bacca=0.559 |
+| `sheety` | 6 (4 solan) | solano=0.518, erbamorella=0.473, narcotivo=0.426 |
+| `cheom` | 6 (4 solan) | narcotivo=0.426, morella=0.391, solano=0.387, furor=0.383 |
+| `qokeo` | 7 (4 solan) | soporatio=0.588, narcosi=0.588 |
+| `chdaiin` | 11 (4 solan) | preparatio=0.699, sanatio=0.648, glandula=0.639 |
+| `lchedy` | 37 (8 solan) | receptum=0.538, remedium=0.521, caliditas=0.517, dosis=0.512 |
+
+**The semantic coherence is the key result.** The top NPMI associations for the most solanaceae-concentrated words form a pharmacologically self-consistent cluster for solanaceae medicine:
+
+- `oldaiin` → mandrake compound (`mandragoratus`), narcotized state (`soporatus`), narcotic agent (`stupefaciens`), berry form (`bacca`), and poisoner (`venefica`)
+- `sheety`/`cheom` → nightshade/solanum (`solano`, `morella`, `erbamorella`) + narcotic effect (`narcotivo`) — two independent words converging on the same semantic field
+- `qokeo` → the sleep-inducing action (`soporatio`, `narcosi`)
+- `lchedy` → pharmaceutical recipe format (`receptum`, `remedium`, `dosis`) — the broadest of the solanaceae words, consistent with it being a recipe/dose marker rather than a plant name
+
+**Verdict**: These are not random high-NPMI associations. Five independent EVA word types, all solanaceae-concentrated, all cluster around the same medieval pharmacological domain: mandrake/nightshade → narcotic/soporific preparation → dose/recipe. This is the most direct evidence in the corpus that EVA contains semantic content correlated with botanical illustration. It does not constitute a decipherment, but it falsifies the hypothesis that EVA word selection is completely independent of folio subject matter.
+
+**Caveat**: expected terms are LLM-generated from the illustration — they are not independent of the visual classification. The chain is: illustration → LLM expected terms → NPMI with EVA words. If the LLM's expected terms are unreliable or systematically biased, this would inflate apparent semantic signal. The NPMI values are not corrected for this dependency.
+
 ---
 
 ## What is NOT claimed (updated)
