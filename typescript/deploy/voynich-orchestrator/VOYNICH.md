@@ -212,17 +212,26 @@ Uncertainty folios have 4× the text lines of thistle/plantago. Most of this is 
 
 Roles: description (516 / 60%), label (257 / 30%), unknown (76 / 9%). Correlation between region count and EVA word count: r=0.35 (more complex visual layouts → proportionally more text).
 
-**TEST 2: LLM coherence** (two runs 2026-05-01 — initial biased + corrected)
+**TEST 2: LLM coherence** (corrected run 2026-05-01 — botanical-only, allowlist filter)
 
-Five folios analyzed (mix of zodiac and botanical, selection corrected to prefer botanical on second run): f13r (Mandrake, 72%, solanaceae), f16r (Cannabis/hemp, 72%), f70v1 (Pisces/zodiac, 75%), f71r (Aries/zodiac, 85%), f72v2 (zodiac, 85%).
+Five folios selected via allowlist (solanaceae, poppy, thistle, lily-family, mint-family) — one per family, sorted by confidence. Prior runs using a blocklist (`NON_BOTANICAL`) still admitted zodiac folios (family names like `pisces`, `aries` bypass a string blocklist). This run uses a set of 12 known botanical family names as an allowlist.
+
+Folios: f13r (Mandrake, 72%, solanaceae), f33r (Poppy, 65%), f18v (Thistle, 62%), f79r (Water lily, 55%, lily-family), f21r (Thyme, 52%, mint-family).
 
 Key observations:
 
-- **Herbal section marker: `-chy` suffix cluster.** Both f13r (Mandrake) and f16r (Cannabis) independently showed dominant `-chy` terminal words: `qopchy, ykchy, kchy, dypchy, dychor, opchy, okchy, ychykchy`. These two folios are adjacent in the manuscript (f13r, f16r) — the shared distinctive suffix likely reflects quire position rather than plant type. The LLM noticed the pattern independently without knowing folio proximity.
-- **Zodiac section marker: `ot-` prefix cluster.** Three zodiac folios (f70v1, f71r, f72v2) independently showed dominant `ot-` initial words: `oteo, otal, oteoshey, oteody, otol, oty, otychal`. The LLM noted `ot-` appears "at fairly regular intervals" consistent with labeling repeated ring elements. The `ot-` pattern is a distinct EVA register from the herbal `-chy` pattern.
-- **Section-level vocabulary registers**: Herbal folios (early quires, `-chy`) and zodiac folios (f67–f72, `ot-`) have detectably different dominant EVA morphologies — consistent with the known Currier Hand A/B division. The LLM recovered this from word-shape alone.
-- **`daiin` and short structural words**: Across all sections, `daiin`, `al`, `ar` appear at regular intervals. The LLM called these "structural anchors" and "apparent spacers," consistent with the Voynich feature that certain short words serve a grammatical/delimiter role.
-- **LLM's epistemic rating**: All responses included explicit caveats attributing the patterns to known positional word constraints. No response claimed semantic correlation between EVA words and visual content. The LLM correctly identified structural regularities but declined to overinterpret them.
+- **Family-level morphological fingerprints** — each family showed a different dominant EVA pattern:
+  - solanaceae (f13r): heavy `-chy` suffix cluster (`qopchy, ykchy, kchy, dypchy, shkchy`); `ch/k` consonant dominance
+  - poppy (f33r): `-dy` suffix concentration (`shepchdy, yfoldy, qofody, shedy`); `ch-/sh-` initials front-loaded in first lines; `aiin` variants as connective tissue
+  - thistle (f18v): `qo-` prefix dominates (`qokchy, qotchy, qokol, qoky, qokay`); words cluster in middle section
+  - lily-family (f79r): `ol-/sh-` clusters (`ol, oly, qol, sheol, shedy`); short 2-3 char forms alternate with longer phrase-terminators
+  - mint-family (f21r): `chol/qotchol` repetition; `ch-` and `qo-` as morphological prefixes across multiple word types
+
+- **`qo-` prefix as inter-family signal**: `qo-` appears distinctively on thistle (f18v), lily-family (f79r), and mint-family (f21r), but is NOT the dominant marker on solanaceae (f13r) or poppy (f33r) where `-chy/-dy` suffixes dominate instead. This prefix/suffix axis is family-correlated but the LLM could not determine directionality.
+
+- **LLM's epistemic rating**: All five responses explicitly disclaimed visual analogy and attributed patterns to positional/scribal constraints. The LLM identified `ch/k` consonant dominance, `qo-` prefix frequency, and length alternation as structural regularities. It made no claim that patterns correlate with plant content — and it correctly noted that "positional word-class rules" and "quire-level orthographic habits" are confounders that cannot be ruled out without a decipherment framework.
+
+- **Implication**: Botanical families DO show distinct dominant EVA morphologies, but whether this reflects plant-content encoding or positional/quire structure is not separable from the current data. The 1.33x lift from TEST 1 (EVA vocabulary clusters by plant family) is consistent with both explanations.
 
 ---
 

@@ -339,12 +339,16 @@ async function main(): Promise<void> {
     console.log('');
 
     // Pick one folio from each of the top botanical families with high confidence.
-    // Exclude non-botanical families ('n', 'non-botanical') which sort to the top by confidence
-    // but are zodiac/astronomical diagrams — not useful for content-word correlation.
-    const NON_BOTANICAL = new Set(['n', 'non-botanical', 'uncertain', 'unknown']);
+    // Use an allowlist (not a blocklist) — zodiac folios like f70v1 (Pisces) get family
+    // names like 'pisces' or 'aries' which a blocklist misses entirely.
+    const BOTANICAL_FAMILIES = new Set([
+      'solanaceae', 'thistle', 'plantago', 'poppy', 'rose',
+      'mint-family', 'ranunculaceae', 'apiaceae', 'verbena',
+      'artemisia', 'brassicaceae', 'lily-family',
+    ]);
     const seenFamilies = new Set<string>();
     const candidates = profiles
-      .filter((p) => p.confidence >= 0.45 && !NON_BOTANICAL.has(p.family))
+      .filter((p) => p.confidence >= 0.45 && BOTANICAL_FAMILIES.has(p.family))
       .sort((a, b) => b.confidence - a.confidence)
       .filter((p) => !seenFamilies.has(p.family) && seenFamilies.add(p.family) !== undefined)
       .slice(0, 5);
