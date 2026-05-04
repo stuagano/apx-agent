@@ -73,6 +73,43 @@ The qo-prefix real value (r=+0.532) is entirely outside the permutation null dis
 
 **What it shows:** The solanaceae morphological fingerprint is statistically robust (p<0.001 on three features), cannot arise from random family assignment, and is not concentrated in any quire. This is the strongest single statistical result in the corpus.
 
+#### Multi-family extension — thistle and plantago fingerprints (EA population, gen-8+)
+
+Systematic rank-biserial tests across all 7 viable families × 10 EVA features (run via statistical EA loop, batch "morpho-seed"), with all significant findings validated by 1,000-shuffle permutation test. Five high-significance results emerged (statistical critic scores 0.69–0.76):
+
+**Thistle fingerprint (thistle vs. all-botanical, n=30 vs. n=63):**
+
+| Feature | r | p |
+|---------|---|---|
+| qo-prefix rate | −0.340 | 0.003 |
+| short word rate (≤3 chars) | +0.340 | 0.006 |
+| unique word ratio | +0.297 | 0.021 |
+
+**Plantago fingerprint (plantago vs. all-botanical, n=10 vs. n=83):**
+
+| Feature | r | p |
+|---------|---|---|
+| ch-init rate | +0.563 | 0.007 |
+| -dy suffix rate | −0.449 | 0.032 |
+| -chy suffix rate | +0.402 | 0.037 |
+
+**Cross-family comparison — morphological signatures:**
+
+| Feature | Solanaceae (n=33) | Thistle (n=30) | Plantago (n=10) |
+|---------|:-----------------:|:--------------:|:---------------:|
+| qo-prefix | **+0.532 \*\*\*** | **−0.340 \*\*\*** | — |
+| -dy suffix | **+0.367 \*\*\*** | — | **−0.449 \*** |
+| -chy suffix | **−0.435 \*\*\*** | — | **+0.402 \*** |
+| ch-init | −0.249 \* | — | **+0.563 \*\*\*** |
+| short words | −0.300 \*\* | **+0.340 \*\*** | — |
+| unique word ratio | — | +0.297 \* | — |
+
+(\*\*\* p<0.01, \*\* p<0.01, \* p<0.05, all permutation-validated)
+
+**Anti-correlation pattern:** Solanaceae and plantago have *inverse* -dy and -chy signatures — solanaceae elevates -dy and suppresses -chy; plantago does the exact opposite. Solanaceae and thistle have *opposite* qo-prefix directions. The three families span a triangulated morphological space where no two share the same directional signature on any tested feature.
+
+**What it shows:** Morphological fingerprinting extends beyond solanaceae. The anti-correlation pattern strengthens the content-encoding hypothesis: random or procedural EVA generation would not systematically invert the same morphological features across distinct plant families.
+
 ---
 
 ### 3. Two-Tier Vocabulary Structure
@@ -156,6 +193,7 @@ The cardan grille / Timm-Schinner model generates EVA text by mechanical templat
 - No morphological fingerprint correlated with botanical family ✗ (r=+0.532, p<0.001)
 - No two-tier label/text structure within families ✗ (13 significant label words)
 - No text-tier family signal independent of label words ✗ (88.7% retention after label removal)
+- No systematic anti-correlation of morphological features across different plant families ✗ (solanaceae ↑-dy ↓-chy; plantago ↓-dy ↑-chy; solanaceae ↑qo; thistle ↓qo)
 
 A procedural-generation model that coincidentally produces all four of these patterns simultaneously, stably across 10 quires, with consistent family-pharmacology NPMI alignment, requires substantial ad hoc explanation.
 
@@ -184,6 +222,8 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `label-word-test.ts` | Once-per-folio label analysis | 13 significant words |
 | `jaccard-decomposition.ts` | Label vs. text tier decomposition | 88.7% text retention |
 | `cross-section-test.ts` | Section-specificity via ZL file | 5/13 botanical-specific |
+
+The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
 
 All scripts require Databricks credentials except `cross-section-test.ts` (downloads ZL file directly).
 
