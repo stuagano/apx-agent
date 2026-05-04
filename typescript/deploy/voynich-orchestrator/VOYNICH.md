@@ -315,6 +315,27 @@ The TEST 2 confusion arose because solanaceae example words (`qopchy, ykchy`) ap
 
 **Alignment with distance test**: The solanaceae vocabulary signal that survives quire-distance control (Q1–Q4 lift in `family-distance-test.ts`) is now traceable to specific word types: the `qo-`+`-dy` compound forms and named words like `oldaiin`, `lchedy`, `cheom`. These are not high-frequency corpus words (low count-out), which explains why the Jaccard lift is real but modest.
 
+### Morphological axis permutation test (`morpho-axis-permutation.ts`, 2026-05-02)
+
+Permutation test for the morphological axis effect sizes. N=1000 shuffles of family labels among 93 botanical herbal folios (preserving family sizes). One-tailed empirical p-value per feature.
+
+**Results** (solanaceae vs. other botanical):
+
+| Feature | Real r | Perm mean | Perm max | p-value | Sig |
+|---------|--------|-----------|----------|---------|-----|
+| qo-prefix | **+0.532** | −0.002 | 0.415 | **< 0.001** | *** |
+| -chy suffix | **−0.435** | +0.004 | 0.392 | **< 0.001** | *** |
+| -dy suffix | **+0.367** | −0.002 | 0.365 | **< 0.001** | *** |
+| chy+dy sfx | +0.121 | +0.001 | 0.378 | 0.185 | — |
+| ch-init | −0.249 | +0.003 | 0.394 | 0.017 | * |
+| short(≤3) | −0.300 | +0.005 | 0.415 | 0.003 | ** |
+
+**Key finding**: the qo-prefix signal (r=+0.532) sits entirely outside the permutation null distribution — the permutation max across 1000 shuffles was 0.415, never approaching the real value. The -chy and -dy features are similarly unambiguous (p<0.001). The combined suffix rate (chy+dy) is not significant, which is consistent with the two features pulling in opposite directions (solanaceae is HIGH -dy, LOW -chy), averaging out when combined.
+
+**What this establishes**: the solanaceae morphological fingerprint — HIGH `qo-prefix`, HIGH `-dy`, LOW `-chy` — is statistically robust. It cannot arise from random family assignment of the same folios. This result is completely independent of the NPMI methodology that failed the permutation test, and is now the strongest single statistical result in the corpus.
+
+**Interpretation**: the `qo-` prefix and `-dy` suffix are not uniformly distributed across botanical families. Solanaceae folios use these morphological forms at a significantly higher rate than all other botanical families combined, and suppress `-chy` endings. Whether this reflects content encoding (different plant morphology maps to different scribal conventions) or a different scribal hand for solanaceae folios is not distinguishable from the data, but the effect is real.
+
 ### Solanaceae signal test: NPMI vs. expected terms (`solanaceae-signal-test.ts`, 2026-05-02)
 
 **Note on cross-section test**: the `eva_corpus` table contains only the herbal section, so cross-manuscript distribution cannot be tested. Within-herbal concentration: 12/15 target solanaceae words are >1.5x more prevalent in solanaceae folios than in other herbal families.
