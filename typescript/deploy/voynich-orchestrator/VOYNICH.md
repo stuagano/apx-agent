@@ -389,6 +389,25 @@ Three controls to check whether the 15/15 NPMI result is a methodological artifa
 
 **Revised interpretation**: the NPMI ≥ 0.4 binary threshold is permissive and should not be the primary claim. The meaningful discriminator is Control B: **1/30 cross-family vs. 15/15 same-family** shows the associations are locked to the correct botanical family, not a methodological artifact. Characteristic words also show substantially higher NPMI on taxonomically specific terms (named genera, specific pharmacological actions) compared to the generic terms that neutral and high-frequency words associate with.
 
+### Permutation test (`permutation-test.ts`, 2026-05-04)
+
+**Empirical p-value for the NPMI ≥ 0.4 count: p = 0.212 — not significant.**
+
+Shuffled expected-term assignment across 224 folios 500 times while keeping EVA word-folio sets fixed. Permutation mean: 13.63/15. Real score: 15/15. 106/500 random shuffles matched or exceeded the real score.
+
+Tried stricter threshold (NPMI ≥ 0.6): real score drops to 4/15, permutation mean is 2.70, p = 0.256 — still not significant.
+
+**Root cause**: with MIN_JOINT=2 and ~200+ expected terms distributed across 224 folios, any word appearing on ≥6 folios will find some term producing NPMI ≥ 0.4 by chance. The permutation test confirms what Control A showed: the threshold-count approach is not a valid statistical criterion regardless of where the threshold is set.
+
+**What this undermines**: the "15/15 words show NPMI ≥ 0.4" framing as a statistical claim. The permutation null model routinely produces the same result.
+
+**What this does NOT undermine**:
+- The **specific semantic coherence** of the top associations (`oldaiin` → *mandragoratus*, `okeeor` → *silybum*, `qotchor` → *haemorrhagia*) — these are qualitatively notable but cannot be claimed statistically significant with this methodology
+- **Control B** (1/30 cross-family) — this is a co-occurrence presence test: characteristic words barely appear on wrong-family folios, so joint < MIN_JOINT → no associations found regardless of threshold. The 33× ratio is still meaningful.
+- The **distance-controlled Jaccard** and **morphological axis** results, which are entirely independent of the NPMI methodology
+
+**Revised claim**: the NPMI associations are qualitatively coherent (named taxa, specific pharmacological actions), and Control B shows they are family-locked. But the count of words crossing any NPMI threshold cannot be asserted as statistically significant. A more discriminative test would require either pre-specifying the expected terms per family before seeing the data, or using a null model that also randomizes word-folio assignments.
+
 **Cumulative verdict across all NPMI tests**:
 
 Three independent botanical families, 15 characteristic EVA words total, all 15 show NPMI > 0.4 to family-appropriate medieval pharmacological vocabulary:
