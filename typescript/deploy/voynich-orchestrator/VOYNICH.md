@@ -525,6 +525,39 @@ The distance-binned breakdown (5 bins) shows the full and text-only lift profile
 
 **Verdict**: the two-tier structure has two genuinely independent signals. Label words are family markers (high lift per word, family-specific), but the text tier carries the bulk of the detectable family structure by itself. The family clustering is not an artifact of a handful of distinctive label words; it is distributed throughout the running vocabulary of each folio.
 
+### Cross-section specificity test (`cross-section-test.ts`, 2026-05-04)
+
+Downloads the Zandbergen-Landini full-manuscript EVA transcription (ZL3b-n.txt, 226 folios, 402 KB) and compares the 13 label words and 7 running-text words across all eight ZL section codes (H=herbal, P=pharmaceutical, B=balneological, Z=zodiac, S=stars, A=astrological, C=cosmological, T=text/label).
+
+**Two confounds discovered:**
+
+1. **Section-classification mismatch**: Our Databricks corpus labels all botanical folios as "herbal" (224 folios). The ZL transcription splits herbal-A (f1–f57, $I=H, 129 folios) from herbal-B/pharmaceutical (f87–f102, $I=P, 16 folios). The solanaceae label words (`qokeody`, `qockhol`, `olaiin`, etc.) appear prominently in ZL's pharmaceutical section (e.g. `qokeody` 0.69) because those folios are the same botanical pages our DB calls herbal.
+
+2. **EVA transcription differences**: ZL uses EVA 2.0; our DB uses an unspecified EVA version. High-frequency running-text words show implausible cross-source discrepancies: `lchedy` appears on 37 herbal folios in our DB (16.5%) but only 0.02 rate in ZL herbal (≈2 folios). These words cannot be reliably compared across the two transcriptions.
+
+**Results with section mismatch corrected (H+P combined vs. B+Z+S+A+C):**
+
+| Word | Type | Botanical (H+P) | Non-botanical | Ratio |
+|------|------|----------------|---------------|-------|
+| `kchy` | thistle label | 0.179 | 0.041 | 4.4× |
+| `ckhey` | solan label | 0.117 | 0.027 | 4.3× |
+| `qockhol` | solan label | 0.048 | 0.014 | 3.6× |
+| `ty` | thistle label | 0.103 | 0.041 | 2.6× |
+| `oldaiin` | solan label | 0.062 | 0.000 | botanical-only |
+| `olaiin` | solan label | 0.117 | 0.270 | 0.4× (anti-specific) |
+| `qokan` | solan label | 0.007 | 0.095 | 0.1× (anti-specific) |
+| `daiin` | text | 0.945 | 0.838 | 1.1× (diffuse) |
+
+**Verdict: mixed.** Five of the 13 label words show clear botanical specificity (≥2.5× ratio), including both reliable thistle label words (`kchy`, `ty`) and the one solanaceae word with strongest prior evidence (`oldaiin`). But several solanaceae label words (`olaiin`, `qokan`, `qokeody`) are not botanical-specific — they appear at comparable or higher rates in non-botanical sections.
+
+The running-text word comparison is not interpretable due to the EVA transcription mismatch.
+
+**Revised interpretation of the label tier**: the label tier is not a homogeneous class. At minimum two sub-types:
+- **Section-specific labels** (kchy, ckhey, qockhol, ty, oldaiin): genuinely concentrated in botanical content. These are the strongest candidates for plant-name identifiers or herbal-specific headings.
+- **Corpus-wide once-per-folio words** (olaiin, qokan): appear once per folio throughout the manuscript, not just in the herbal section. These may be grammatical markers (paragraph openers, topic markers) that happen to be rare enough to appear once per folio everywhere — their once-per-folio pattern is a statistical property of their frequency, not semantic specificity.
+
+This refinement is a genuine finding: the label-word test correctly identified a structurally distinctive word class (once-per-folio, family-concentrated), but that class is heterogeneous. The subset with botanical specificity (≥2.5×) is the cleaner hypothesis target.
+
 ---
 
 ## What is NOT claimed (updated)
