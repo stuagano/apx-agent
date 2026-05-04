@@ -29,6 +29,7 @@ import {
 } from './appkit-agent/index.mjs';
 import { POST_RENAISSANCE_CONCEPTS } from './voynich-config.ts';
 import { compositeLikelihood, stripToLanguageChars, LATIN_ENDINGS } from './scoring.js';
+import { FINDINGS_SUMMARY } from '../voynich-orchestrator/stat-types.ts';
 
 // ---------------------------------------------------------------------------
 // Antonym pairs — if both terms appear within 15 words of each other the text
@@ -446,6 +447,124 @@ const llmJudge = defineTool({
 });
 
 // ---------------------------------------------------------------------------
+// Tool: score_statistical_finding — score a StatFinding on validity/novelty/interpretability
+// ---------------------------------------------------------------------------
+
+const scoreStatisticalFinding = defineTool({
+  name: 'score_statistical_finding',
+  description:
+    'Score a statistical finding about Voynich EVA vocabulary. ' +
+    'Evaluates validity (p-value, effect size, sample size), novelty relative to FINDINGS.md, ' +
+    'and interpretability. Returns a 0-1 critic_score and text feedback.',
+  parameters: z.object({
+    finding: z.object({
+      spec: z.object({
+        feature: z.string(),
+        method: z.string(),
+        family_a: z.string(),
+        family_b: z.string(),
+        rationale: z.string(),
+      }),
+      effect_size: z.number(),
+      p_value: z.number(),
+      n_samples: z.number(),
+      interpretation: z.string(),
+    }),
+  }),
+  handler: async ({ finding }) => {
+    // Quick heuristic gate — skip LLM for obviously invalid findings
+    const heuristicValidity =
+      finding.p_value < 0.05 &&
+      Math.abs(finding.effect_size) >= 0.2 &&
+      finding.n_samples >= 10;
+
+    if (!heuristicValidity) {
+      const reasons: string[] = [];
+      if (finding.p_value >= 0.05) reasons.push(`p=${finding.p_value} not significant`);
+      if (Math.abs(finding.effect_size) < 0.2) reasons.push(`|r|=${Math.abs(finding.effect_size)} too small`);
+      if (finding.n_samples < 10) reasons.push(`n=${finding.n_samples} < 10`);
+      return {
+        critic_score: 0.1,
+        validity: 0.1,
+        novelty: 0,
+        interpretability: 0,
+        critic_feedback: `Rejected by heuristic gate: ${reasons.join('; ')}`,
+      };
+    }
+
+    const prompt = [
+      'You are evaluating a statistical finding about EVA vocabulary in the Voynich manuscript.',
+      'Reply on four lines in this exact format:',
+      'VALIDITY_SCORE: <0-100>',
+      'NOVELTY_SCORE: <0-100>',
+      'INTERPRETABILITY_SCORE: <0-100>',
+      'REASON: <one sentence>',
+      '',
+      `Feature: ${finding.spec.feature}`,
+      `Method: ${finding.spec.method}`,
+      `Family A: ${finding.spec.family_a}  Family B: ${finding.spec.family_b}`,
+      `Effect size (r): ${finding.effect_size}`,
+      `P-value: ${finding.p_value}`,
+      `N samples: ${finding.n_samples}`,
+      `Interpretation: ${finding.interpretation}`,
+      '',
+      'ESTABLISHED PRIOR WORK (deduct novelty if this replicates without extension):',
+      FINDINGS_SUMMARY,
+      '',
+      'VALIDITY (0-100): Is p<0.05? Is |r|>0.2? Is n≥10? Is the method appropriate for the data?',
+      'NOVELTY (0-100): Does this test a feature/family/comparison NOT already established?',
+      'INTERPRETABILITY (0-100): Can this result be stated as a clear, falsifiable claim?',
+      'Score 0 for replicated-without-extension results on NOVELTY, not for all three.',
+    ].join('\n');
+
+    const t0 = Date.now();
+    const host = resolveHost();
+    const token = await resolveToken();
+    try {
+      const res = await fetch(`${host}/serving-endpoints/${JUDGE_MODEL}/invocations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          model: JUDGE_MODEL,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 300,
+        }),
+      });
+
+      if (!res.ok) {
+        return { critic_score: 0.3, validity: 0.5, novelty: 0, interpretability: 0,
+          critic_feedback: `Judge call failed (${res.status})`, duration_ms: Date.now() - t0 };
+      }
+
+      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      const text = data.choices?.[0]?.message?.content ?? '';
+
+      const valMatch = text.match(/VALIDITY_SCORE:\s*(\d+)/i);
+      const novMatch = text.match(/NOVELTY_SCORE:\s*(\d+)/i);
+      const intMatch = text.match(/INTERPRETABILITY_SCORE:\s*(\d+)/i);
+      const reasonMatch = text.match(/REASON:\s*(.+?)(?:\n|$)/i);
+
+      const validity = (parseInt(valMatch?.[1] ?? '0') / 100);
+      const novelty = (parseInt(novMatch?.[1] ?? '0') / 100);
+      const interpretability = (parseInt(intMatch?.[1] ?? '0') / 100);
+      const critic_score = Math.round((0.4 * validity + 0.4 * novelty + 0.2 * interpretability) * 1000) / 1000;
+
+      return {
+        critic_score,
+        validity,
+        novelty,
+        interpretability,
+        critic_feedback: reasonMatch?.[1].trim() ?? text.trim().slice(0, 200),
+        duration_ms: Date.now() - t0,
+      };
+    } catch (err) {
+      return { critic_score: 0.2, validity: 0, novelty: 0, interpretability: 0,
+        critic_feedback: `Judge threw: ${(err as Error).message}`, duration_ms: Date.now() - t0 };
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
 // AppKit wiring
 // ---------------------------------------------------------------------------
 
@@ -475,8 +594,10 @@ const agentPlugin = createAgentPlugin({
     '    "judge_verdict": "PASS"|"FAIL"|"SKIPPED" }',
     '',
     'Do NOT include scores you did not compute with a tool.',
+    '',
+    '5. score_statistical_finding — when given a StatFinding JSON, score its validity, novelty, and interpretability.',
   ].join('\n'),
-  tools: [findContradictions, scoreLatinLikelihood, nullBaselineTest, llmJudge],
+  tools: [findContradictions, scoreLatinLikelihood, nullBaselineTest, llmJudge, scoreStatisticalFinding],
 });
 
 const agentExports = () => agentPlugin.exports();
