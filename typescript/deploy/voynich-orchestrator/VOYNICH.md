@@ -509,6 +509,22 @@ The gap is wide and consistent across all three families. `daiin` appears 141 ti
 
 This structural distinction is statistically confirmed for solanaceae and thistle. It is independent of the NPMI methodology (no expected terms involved) and independent of the morphological axis work. It constitutes a third independent line of evidence for semantic organization in EVA.
 
+### Jaccard signal decomposition: label vs. text tier (`jaccard-decomposition.ts`, 2026-05-04)
+
+Tests how much of the Jaccard family lift (from `family-distance-test.ts`) is carried by the 13 label words vs. the remaining text-tier vocabulary.
+
+| Vocabulary | Within-family J | Between-family J | Lift |
+|-----------|----------------|-----------------|------|
+| Full (all words) | 0.0622 | 0.0564 | **1.102×** |
+| Text-only (labels removed) | 0.0616 | 0.0565 | **1.091×** |
+| Label-only (13 words) | 0.0839 | 0.0478 | **1.757×** |
+
+**Text tier retains 88.7% of the family signal** after removing all 13 label words. The label-only vocabulary shows a much stronger lift (1.757×) but on only 13 words; the text tier, spanning the full running vocabulary, independently maintains the family clustering.
+
+The distance-binned breakdown (5 bins) shows the full and text-only lift profiles are nearly identical at every distance — no bin changes character when labels are removed.
+
+**Verdict**: the two-tier structure has two genuinely independent signals. Label words are family markers (high lift per word, family-specific), but the text tier carries the bulk of the detectable family structure by itself. The family clustering is not an artifact of a handful of distinctive label words; it is distributed throughout the running vocabulary of each folio.
+
 ---
 
 ## What is NOT claimed (updated)
