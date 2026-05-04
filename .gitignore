@@ -16,3 +16,6 @@ typescript/deploy/*/app.yaml
 
 # Claude Code skill scratch
 .superpowers/
+
+# Git worktrees
+.worktrees/
