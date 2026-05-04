@@ -464,6 +464,51 @@ Three independent botanical families, 15 characteristic EVA words total, all 15 
 
 The probability that random word selection produces this three-way family-pharmacology alignment is extremely low. This is the strongest available evidence that EVA vocabulary encodes botanical content — not as a cipher breakthrough, but as a statistical signature of semantic organization. The caveat about expected-term dependency (LLM-generated) still applies, but now applies equally to all three families, making a systematic LLM bias explanation less plausible (the LLM would have to produce coherent pharmacological vocabulary for all three families, and that coherent vocabulary would have to accidentally align with a separate EVA frequency signal).
 
+### Label-word distributional analysis (`label-word-test.ts`, 2026-05-04)
+
+Tests whether certain EVA words function as plant-name headings or identifiers — appearing exactly once per folio, concentrated in one botanical family. Hypothesis derived from the NPMI observation that `oldaiin` appeared exactly once on 86% of solanaceae folios and `qotchor` exactly once on 100% of plantago folios.
+
+**Method**: for each word appearing on ≥3 folios within a botanical family, compute `once_rate` (fraction of occupied folios with exactly 1 token) and `mean_tok` (N/K). Label candidate: `once_rate ≥ 0.70`, `mean_tok ≤ 1.5`, `LOR ≥ 1.0`. Permutation null: distribute N tokens randomly across K family folios weighted by folio word count; empirical p-value from 2000 shuffles.
+
+**Bimodal structure confirmed**:
+
+| Type | Example words | once_rate | mean_tok |
+|------|--------------|-----------|----------|
+| Label | `olaiin`, `qokeody`, `kchy`, `oldaiin` | 0.75–1.00 | ~1.0 |
+| Running text | `daiin`, `qokeedy`, `lchedy`, `shedy` | 0.10–0.25 | 3–11 |
+
+The gap is wide and consistent across all three families. `daiin` appears 141 times across 30 solanaceae folios (4.7 per folio); `olaiin` appears 14 times across 12 solanaceae folios and exactly once on 11 of them.
+
+**Statistically significant label words** (p<0.05, 2000 permutations):
+
+| Word | Family | once_rate | K | p-value | Notes |
+|------|--------|-----------|---|---------|-------|
+| `olaiin` | solanaceae | 0.917 | 12 | **<0.001** | strongest result; 11/12 folios exactly once |
+| `qokeody` | solanaceae | 0.875 | 8 | **<0.001** | 7/8 folios exactly once |
+| `kchy` | thistle | 1.000 | 8 | 0.002 | 8/8 folios exactly once |
+| `qockhey` | solanaceae | 0.778 | 9 | 0.003 | |
+| `ckhey` | solanaceae | 0.778 | 9 | 0.006 | |
+| `sy` | solanaceae | 0.833 | 6 | 0.011 | |
+| `oldaiin` | solanaceae | 0.857 | 7 | 0.014 | already known from NPMI |
+| `cphey` | solanaceae | 1.000 | 5 | 0.015 | |
+| `okor` | solanaceae | 0.750 | 8 | 0.021 | |
+| `qockhol` | solanaceae | 1.000 | 5 | 0.023 | |
+| `ydaiin` | thistle | 1.000 | 5 | 0.035 | |
+| `qokan` | solanaceae | 1.000 | 4 | 0.040 | |
+| `ty` | thistle | 0.833 | 6 | 0.047 | |
+
+13 significant label words total: 10 solanaceae, 3 thistle. Plantago has no significant results (power-limited: only 10 folios, so K≥3 words have too few observations for the permutation test to resolve).
+
+**Cross-family check**: most solanaceae label words do not appear in thistle or plantago folios at all. `olaiin` and `sy` appear in a minority of thistle folios (5/30 and 4/30 respectively) but are still primarily solanaceae words. `kchy` and `ydaiin` (thistle) are absent from plantago and appear rarely in solanaceae (2/33). The family specificity holds.
+
+**Many words with once_rate = 1.000 but N=3, K=3 do not reach significance** because the permutation null is unresolved at that sample size (p ≈ 0.15–0.25). These are not null results — they are underpowered observations. The words that do reach significance (larger K) uniformly show the label pattern.
+
+**Interpretation**: EVA vocabulary has a two-tier structure within botanical families:
+- A **label tier**: words appearing once per folio, family-concentrated, low LOR outside their family. Consistent with plant-name headings, specimen identifiers, or chapter openers.
+- A **text tier**: words appearing multiple times per folio, broader distribution, higher corpus frequency. Consistent with running pharmacological description.
+
+This structural distinction is statistically confirmed for solanaceae and thistle. It is independent of the NPMI methodology (no expected terms involved) and independent of the morphological axis work. It constitutes a third independent line of evidence for semantic organization in EVA.
+
 ---
 
 ## What is NOT claimed (updated)
