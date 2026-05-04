@@ -136,9 +136,12 @@ async function persistFinding(
   criticFeedback: string,
 ): Promise<void> {
   const id = crypto.randomUUID();
-  const specJson = JSON.stringify(finding.spec).replace(/'/g, "''");
-  const findingJson = JSON.stringify(finding).replace(/'/g, "''");
-  const feedbackEsc = criticFeedback.replace(/'/g, "''");
+  // Escape backslashes first (Databricks SQL interprets \n, \t etc. in string literals),
+  // then escape single quotes for SQL.
+  const sqlEsc = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "''");
+  const specJson = sqlEsc(JSON.stringify(finding.spec));
+  const findingJson = sqlEsc(JSON.stringify(finding));
+  const feedbackEsc = sqlEsc(criticFeedback);
 
   await executeSql(`
     INSERT INTO ${STAT_TABLE} (id, generation, batch_label, spec, finding, critic_score, critic_feedback, created_at)
@@ -296,7 +299,7 @@ export class StatEvolutionaryAgent {
         const rows = await executeSql(`
           SELECT id, generation, batch_label, spec, finding, critic_score, critic_feedback, created_at
           FROM ${STAT_TABLE}
-          ORDER BY critic_score DESC
+          ORDER BY critic_score DESC, created_at DESC
           LIMIT ${limit}
         `);
         return rows.map((r) => {
