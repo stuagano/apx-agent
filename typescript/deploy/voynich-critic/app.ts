@@ -29,7 +29,7 @@ import {
 } from './appkit-agent/index.mjs';
 import { POST_RENAISSANCE_CONCEPTS } from './voynich-config.ts';
 import { compositeLikelihood, stripToLanguageChars, LATIN_ENDINGS } from './scoring.js';
-import { FINDINGS_SUMMARY } from '../voynich-orchestrator/stat-types.ts';
+import { FINDINGS_SUMMARY } from './stat-types.ts';
 
 // ---------------------------------------------------------------------------
 // Antonym pairs — if both terms appear within 15 words of each other the text

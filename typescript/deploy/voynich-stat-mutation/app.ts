@@ -10,7 +10,7 @@ import {
   resolveHost,
   resolveToken,
 } from './appkit-agent/index.mjs';
-import { type HypothesisSpec, FINDINGS_SUMMARY } from '../voynich-orchestrator/stat-types.ts';
+import { type HypothesisSpec, FINDINGS_SUMMARY } from './stat-types.ts';
 
 const JUDGE_MODEL = process.env.JUDGE_MODEL ?? 'databricks-claude-sonnet-4-6';
 

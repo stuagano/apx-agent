@@ -20,7 +20,7 @@ import {
   shuffle,
   computeFeature,
   approxPValue,
-} from '../voynich-orchestrator/stat-types.ts';
+} from './stat-types.ts';
 
 // ---------------------------------------------------------------------------
 // SQL helper — same pattern as morpho-axis-permutation.ts
