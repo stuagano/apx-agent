@@ -19,7 +19,7 @@ async function executeSql(statement: string): Promise<Array<Record<string, strin
   const res = await fetch(`${host}/api/2.0/sql/statements`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ warehouse_id: warehouseId, statement, wait_timeout: '60s' }),
+    body: JSON.stringify({ warehouse_id: warehouseId, statement, wait_timeout: '50s' }),
   });
   if (!res.ok) throw new Error(`SQL ${res.status}: ${await res.text()}`);
   const data = (await res.json()) as {
