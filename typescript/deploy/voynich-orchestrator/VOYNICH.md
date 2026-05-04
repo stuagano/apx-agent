@@ -377,6 +377,18 @@ Per-folio token counts reveal two behavioral classes:
 - **Label words** (≥75% appear exactly once per folio): `oldaiin` (86% once-only, solanaceae → mandrake), `keody` (100%, thistle → benedictus), `dshy` (100%, thistle → cirsio), `qotchor` (100%, plantago → haemorrhagia) — these likely function as headings or plant-name labels
 - **Running-text words** (mean >2 per folio): `lchedy` (mean 4.6x per folio, max 10 → receptum/remedium/dosis) — this is a functional recipe/text word appearing throughout the folio body
 
+### Negative control (`negative-control.ts`, 2026-05-04)
+
+Three controls to check whether the 15/15 NPMI result is a methodological artifact:
+
+**Control A — Neutral words** (18 words with |LOR| < 0.3 relative to all three families, ≥ 10 folios): **9/15 reach NPMI ≥ 0.4**. The threshold is too permissive as a binary. However, neutral word associations are generic pharmacological terms (`caliditas`, `dosis`, `remedium`, `radicum`, `herbariumque`) whereas characteristic word associations are specific named taxa and pharmacological actions (`mandragoratus`, `silybum`, `haemorrhagia`, `cirsio`). NPMI magnitude also differs: neutral words top out at 0.70 on generic terms; characteristic words reach 0.73–0.914 on specific terms.
+
+**Control B — Cross-family NPMI** (characteristic words tested against the *wrong* family's folios): **1/30 reach NPMI ≥ 0.4**. This is the clean control. Solanaceae words (`oldaiin`, `lchedy`, etc.) produce no associations on thistle or plantago folios; thistle words produce no associations on solanaceae folios. The one exception (`qotor` × thistle, 0.41) is borderline. This 1/30 vs. 15/15 ratio (33× better in same-family) directly shows the associations are family-specific, not a property of the NPMI method.
+
+**Control C — High-frequency corpus words** (top 20 by corpus frequency): **6/20 reach NPMI ≥ 0.4**, all at 0.40–0.49 and all on generic terms (`remedium`, `indeterminata`, `incognita`, `mirabilis`). None reach the 0.65+ range seen for characteristic words on specific taxa.
+
+**Revised interpretation**: the NPMI ≥ 0.4 binary threshold is permissive and should not be the primary claim. The meaningful discriminator is Control B: **1/30 cross-family vs. 15/15 same-family** shows the associations are locked to the correct botanical family, not a methodological artifact. Characteristic words also show substantially higher NPMI on taxonomically specific terms (named genera, specific pharmacological actions) compared to the generic terms that neutral and high-frequency words associate with.
+
 **Cumulative verdict across all NPMI tests**:
 
 Three independent botanical families, 15 characteristic EVA words total, all 15 show NPMI > 0.4 to family-appropriate medieval pharmacological vocabulary:
