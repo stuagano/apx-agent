@@ -222,6 +222,7 @@ export class StatEvolutionaryAgent {
         const generation = (parseInt(rows[0]?.maxgen ?? '0') || 0) + 1;
 
         const results: Array<{ spec: HypothesisSpec; effect_size: number; p_value: number; critic_score: number }> = [];
+        const batchTested: string[] = [];
 
         for (let round = 0; round < n_rounds; round++) {
           console.log(`[stat-ea] gen=${generation} round=${round + 1}/${n_rounds}`);
@@ -231,6 +232,7 @@ export class StatEvolutionaryAgent {
           const spec = await callAgentTool(self.mutationAgentUrl, 'generate_hypothesis', {
             top_findings: topFindings,
             generation,
+            batch_tested: batchTested,
           }) as HypothesisSpec | null;
 
           if (!spec?.feature) {
@@ -258,6 +260,7 @@ export class StatEvolutionaryAgent {
 
           // 4. Persist
           await persistFinding(generation, label, finding, criticScore, criticFeedback);
+          batchTested.push(`"${spec.feature}" + ${spec.family_a} vs ${spec.family_b}`);
 
           results.push({
             spec,

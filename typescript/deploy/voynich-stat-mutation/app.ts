@@ -8,19 +8,43 @@ import {
   createDiscoveryPlugin,
   createDevPlugin,
   resolveHost,
-  resolveToken,
 } from './appkit-agent/index.mjs';
 import { type HypothesisSpec, FINDINGS_SUMMARY } from './stat-types.ts';
 
-const JUDGE_MODEL = process.env.JUDGE_MODEL ?? 'databricks-claude-sonnet-4-6';
+const JUDGE_MODEL = process.env.JUDGE_MODEL ?? process.env.MODEL ?? 'databricks-claude-sonnet-4-6';
 
 // ---------------------------------------------------------------------------
-// LLM helper — same pattern as voynich-critic llmJudge
+// M2M token cache — bypasses OBO token (limited scopes) for serving endpoint calls
+// ---------------------------------------------------------------------------
+
+let cachedM2mToken: string | null = null;
+let cachedM2mExpiry = 0;
+
+async function getM2mToken(): Promise<string> {
+  if (cachedM2mToken && Date.now() < cachedM2mExpiry) return cachedM2mToken;
+  const host = resolveHost();
+  const clientId = process.env.DATABRICKS_CLIENT_ID;
+  const clientSecret = process.env.DATABRICKS_CLIENT_SECRET;
+  if (!clientId || !clientSecret) throw new Error('DATABRICKS_CLIENT_ID/SECRET not set');
+  const res = await fetch(`${host}/oidc/v1/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret, scope: 'all-apis' }).toString(),
+  });
+  if (!res.ok) throw new Error(`M2M token failed: ${res.status}`);
+  const data = await res.json() as { access_token: string; expires_in?: number };
+  cachedM2mToken = data.access_token;
+  cachedM2mExpiry = Date.now() + ((data.expires_in ?? 3600) - 60) * 1000;
+  return cachedM2mToken;
+}
+
+// ---------------------------------------------------------------------------
+// LLM helper
 // ---------------------------------------------------------------------------
 
 async function callLlm(prompt: string): Promise<string> {
   const host = resolveHost();
-  const token = await resolveToken();
+  const token = await getM2mToken();
   const res = await fetch(`${host}/serving-endpoints/${JUDGE_MODEL}/invocations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -59,22 +83,34 @@ const generateHypothesis = defineTool({
   parameters: z.object({
     top_findings: z.array(TopFindingSchema).describe('Top-scored findings from the current population'),
     generation: z.number().describe('Current EA generation number'),
+    batch_tested: z.array(z.string()).optional().describe('Combinations already tested this batch — do not repeat'),
   }),
-  handler: async ({ top_findings, generation }) => {
+  handler: async ({ top_findings, generation, batch_tested = [] }) => {
     const findingsSummary = top_findings.length > 0
       ? top_findings.map((f, i) =>
-          `${i + 1}. feature="${f.feature}", method="${f.method}", ${f.family_a} vs ${f.family_b}, r=${f.effect_size}, p=${f.p_value}, critic_score=${f.critic_score}\n   feedback: ${f.critic_feedback}`
+          `${i + 1}. feature="${f.feature}", ${f.family_a} vs ${f.family_b}, r=${f.effect_size}, p=${f.p_value}, score=${f.critic_score} — ${f.critic_feedback}`
         ).join('\n')
       : 'No findings yet — this is generation 1.';
+
+    // Build exclusion list: DB top findings + within-batch already tested
+    const alreadyTested = [
+      ...top_findings.map((f) => `"${f.feature}" + ${f.family_a} vs ${f.family_b}`),
+      ...batch_tested,
+    ].filter((v, i, a) => a.indexOf(v) === i).join('; ');
 
     const KNOWN_FEATURES = [
       'qo-prefix rate', '-chy suffix rate', '-dy suffix rate',
       'ch-init rate', 'short word rate',
     ];
+    // Only families with ≥3 herbal folios in the corpus (queried 2026-05-04)
     const ALL_FAMILIES = [
-      'solanaceae', 'thistle', 'plantago', 'poppy', 'rose',
-      'mint-family', 'ranunculaceae', 'apiaceae', 'verbena',
-      'artemisia', 'brassicaceae', 'lily-family',
+      'solanaceae', // n=33
+      'thistle',    // n=30
+      'plantago',   // n=10
+      'poppy',      // n=7
+      'lily-family', // n=4
+      'mint-family', // n=3
+      'artemisia',  // n=3
     ];
     const NEW_FEATURES = [
       'unique word ratio', 'word entropy', 'oq-prefix rate',
@@ -84,19 +120,23 @@ const generateHypothesis = defineTool({
     const prompt = [
       'You are generating a new statistical hypothesis about EVA vocabulary in the Voynich manuscript.',
       '',
-      'ESTABLISHED RESULTS (do NOT reproduce these — propose something new):',
+      'ESTABLISHED RESULTS (do NOT reproduce):',
       FINDINGS_SUMMARY,
       '',
       `CURRENT GENERATION: ${generation}`,
       '',
-      'TOP FINDINGS SO FAR (highest critic scores — build on these or explore gaps):',
+      'ALREADY TESTED THIS SESSION (do NOT reproduce any of these exact feature+family combinations):',
+      alreadyTested || 'none yet',
+      '',
+      'TOP FINDINGS SO FAR (for context — use them to guide what to explore NEXT, not repeat):',
       findingsSummary,
       '',
-      'YOUR TASK: Propose ONE new HypothesisSpec that either:',
-      '  A) Extends an existing result to a new family (e.g., run morpho permutation test on thistle or plantago)',
-      '  B) Tests a new feature not yet explored (e.g., unique word ratio, word entropy, oq-prefix)',
-      '  C) Tests a cross-family comparison (e.g., thistle vs plantago instead of vs all-botanical)',
-      '  D) Uses a stronger null model (e.g., permutation-test instead of rank-biserial)',
+      'YOUR TASK: Propose ONE novel HypothesisSpec not in either exclusion list above. Options:',
+      '  A) Take a SIGNIFICANT result (score > 0.3) and test it in a new family',
+      '  B) Take an UNTESTED feature and test it in any botanical family',
+      '  C) Test a family-vs-family comparison (e.g., thistle vs plantago)',
+      '  D) Test a new feature+family pair not in any list above',
+      '  IMPORTANT: vary both the feature AND the family from round to round.',
       '',
       `Available features: ${[...KNOWN_FEATURES, ...NEW_FEATURES].join(', ')}`,
       `Available families: ${ALL_FAMILIES.join(', ')} or "all-botanical"`,

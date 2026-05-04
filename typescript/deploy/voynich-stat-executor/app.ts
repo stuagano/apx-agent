@@ -8,7 +8,6 @@ import {
   createDiscoveryPlugin,
   createDevPlugin,
   resolveHost,
-  resolveToken,
 } from './appkit-agent/index.mjs';
 import {
   type HypothesisSpec,
@@ -23,12 +22,37 @@ import {
 } from './stat-types.ts';
 
 // ---------------------------------------------------------------------------
-// SQL helper — same pattern as morpho-axis-permutation.ts
+// M2M token cache — bypasses OBO token (limited scopes) for SQL/API calls
+// ---------------------------------------------------------------------------
+
+let cachedM2mToken: string | null = null;
+let cachedM2mExpiry = 0;
+
+async function getM2mToken(): Promise<string> {
+  if (cachedM2mToken && Date.now() < cachedM2mExpiry) return cachedM2mToken;
+  const host = resolveHost();
+  const clientId = process.env.DATABRICKS_CLIENT_ID;
+  const clientSecret = process.env.DATABRICKS_CLIENT_SECRET;
+  if (!clientId || !clientSecret) throw new Error('DATABRICKS_CLIENT_ID/SECRET not set');
+  const res = await fetch(`${host}/oidc/v1/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret, scope: 'all-apis' }).toString(),
+  });
+  if (!res.ok) throw new Error(`M2M token failed: ${res.status}`);
+  const data = await res.json() as { access_token: string; expires_in?: number };
+  cachedM2mToken = data.access_token;
+  cachedM2mExpiry = Date.now() + ((data.expires_in ?? 3600) - 60) * 1000;
+  return cachedM2mToken;
+}
+
+// ---------------------------------------------------------------------------
+// SQL helper
 // ---------------------------------------------------------------------------
 
 async function executeSql(statement: string): Promise<Array<Record<string, string | null>>> {
   const host = resolveHost();
-  const token = await resolveToken();
+  const token = await getM2mToken();
   const warehouseId = process.env.DATABRICKS_WAREHOUSE_ID;
   if (!warehouseId) throw new Error('DATABRICKS_WAREHOUSE_ID not set');
   const res = await fetch(`${host}/api/2.0/sql/statements`, {
