@@ -138,6 +138,16 @@ Six independent features with divergent solanaceae/plantago directions — the t
 
 **Interpretation:** qo-internal null is structurally significant: qo appears exclusively at word boundaries as a prefix, not internally. This constrains the EVA generative model — whatever produces qo-prefix words does not allow qo-internal substitution.
 
+**Quire invariance of new confirmed features (`quire-new-features.ts`, 2026-05-04):** Applied the per-quire breakdown test (solanaceae vs. other botanical, per mixed quire) to k-init and -al suffix, using qo-prefix as a reference.
+
+| Feature | Direction | Quires consistent | Verdict |
+|---------|-----------|:-----------------:|---------|
+| qo-prefix rate | solanaceae HIGH | 8/9 (89%) | CONSISTENT |
+| -al suffix rate | solanaceae HIGH | 6/9 (67%) | MIXED |
+| k-init rate | solanaceae LOW | 5/9 (56%) | MIXED |
+
+The new features are real (p<0.01) but quire-MIXED: their solanaceae-vs-other contrast holds in 56–67% of mixed quires compared to 89% for qo-prefix. This suggests k-init and -al suffix are either driven by a subset of quires or are noisier signals that sit lower in the same morphological dimension. They are secondary features that reinforce the primary fingerprint rather than independent encoding axes.
+
 #### Comprehensive grid scan — all 15 features × 7 families (`morpho-grid-scan.ts`, 2026-05-04)
 
 Full 420-test matrix: 15 features × 7 families vs all-botanical + all 21 pairwise combinations. 1,000 permutations per test. 60 significant results (p<0.05), 63 with |r|≥0.2 persisted to `stat_findings` (batch "grid-scan-v1").
@@ -460,6 +470,7 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `feature-robustness-test.ts` | Definitional variant analysis for all 17 fingerprints | 11/17 ROBUST, 35/57 variants in expected direction |
 | `within-folio-correlation-test.ts` | Within-folio half-split test for feature anti-correlations | -dy vs -chy p<0.001; qo/ch-init/short-word not within-folio |
 | `folio-pair-distance-test.ts` | Within-family morphological × lexical channel co-variation | r=+0.371 pooled (6,444 pairs), solanaceae r=+0.572, 4/4 large families *** |
+| `quire-new-features.ts` | Quire invariance for new confirmed features (k-init, -al suffix) | k-init 5/9 MIXED, -al 6/9 MIXED, qo-prefix 8/9 CONSISTENT (reference) |
 | `species-level-test.ts` | Species-level Jaccard clustering within solanaceae | Infeasible — 32/33 folios classified as mandrake |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).

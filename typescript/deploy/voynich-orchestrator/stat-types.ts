@@ -95,12 +95,18 @@ NEWLY CONFIRMED (targeted scan 2026-05-04):
   -dy-edy combined: solanaceae r=+0.237 p=0.043* (combined rate significant)
   qo-internal rate: NULL for solanaceae and thistle — qo is strictly word-initial in EVA.
 
+QUIRE INVARIANCE for new features (quire-new-features.ts, 2026-05-04):
+  qo-prefix rate: 8/9 quires (89%) CONSISTENT — reference signal
+  -al suffix rate: 6/9 quires (67%) MIXED — real but less consistent than qo-prefix
+  k-init rate: 5/9 quires (56%) MIXED — real but noisier
+  Interpretation: new features are secondary reinforcements, not independent encoding axes.
+
 GENUINELY UNTESTED DIMENSIONS (remaining):
-  - Summarize new solanaceae fingerprint for all features (complete the picture)
   - -al suffix rate: test against poppy, lily, artemisia (other small families — directional test)
   - k-init rate: test against poppy, lily, artemisia (is the anti-correlation general?)
-  - Composite fingerprint scoring: can LOO accuracy improve using all confirmed features (including new ones)?
-  - -eedy suffix: test against solanaceae vs plantago DIRECTLY (follow-up on anti-correlation axis)
+  - -am suffix rate: test plantago and poppy directly (thistle borderline r=+0.214 p=0.090)
+  - -ain suffix rate: test solanaceae and plantago (grid-scan showed thistle LOW r=-0.353; does sol/plantago mirror?)
+  - -eedy suffix: test solanaceae vs plantago DIRECTLY (follow-up on anti-correlation axis)
 
 What failed: NPMI threshold-count permutation test (p=0.212).
 `.trim();
