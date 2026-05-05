@@ -118,6 +118,62 @@ class TestGetUserClient:
             assert "auth_type" not in kwargs
 
 
+class TestMakeWorkspaceClient:
+    """_make_workspace_client resolves the Databricks Apps auth conflict."""
+
+    def test_no_conflict_calls_default(self):
+        from unittest.mock import patch
+        from apx_agent._defaults import _make_workspace_client
+
+        with patch("apx_agent._defaults.WorkspaceClient") as MockWS, \
+             patch.dict("os.environ", {}, clear=False):
+            # Ensure neither conflict key is set
+            import os
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET", "DATABRICKS_TOKEN")}
+            with patch.dict("os.environ", env, clear=True):
+                MockWS.return_value = MagicMock()
+                _make_workspace_client()
+                MockWS.assert_called_once_with()
+
+    def test_oauth_and_pat_conflict_prefers_oauth(self):
+        """When both OAuth M2M and PAT are set, use OAuth M2M explicitly."""
+        from unittest.mock import patch
+        from apx_agent._defaults import _make_workspace_client
+
+        conflict_env = {
+            "DATABRICKS_CLIENT_ID": "my-client-id",
+            "DATABRICKS_CLIENT_SECRET": "my-client-secret",
+            "DATABRICKS_TOKEN": "dapi-my-pat",
+            "DATABRICKS_HOST": "https://workspace.databricks.com",
+        }
+        with patch("apx_agent._defaults.WorkspaceClient") as MockWS, \
+             patch.dict("os.environ", conflict_env, clear=True):
+            MockWS.return_value = MagicMock()
+            _make_workspace_client()
+            MockWS.assert_called_once_with(
+                client_id="my-client-id",
+                client_secret="my-client-secret",
+                host="https://workspace.databricks.com",
+            )
+
+    def test_explicit_kwargs_bypass_conflict_detection(self):
+        """Explicit kwargs (e.g. OBO token) are forwarded unchanged."""
+        from unittest.mock import patch
+        from apx_agent._defaults import _make_workspace_client
+
+        conflict_env = {
+            "DATABRICKS_CLIENT_ID": "my-client-id",
+            "DATABRICKS_CLIENT_SECRET": "my-client-secret",
+            "DATABRICKS_TOKEN": "dapi-my-pat",
+        }
+        with patch("apx_agent._defaults.WorkspaceClient") as MockWS, \
+             patch.dict("os.environ", conflict_env, clear=True):
+            MockWS.return_value = MagicMock()
+            _make_workspace_client(token="obo-token", host="https://ws.databricks.com")
+            MockWS.assert_called_once_with(token="obo-token", host="https://ws.databricks.com")
+
+
 class TestDependenciesClass:
     def test_type_aliases_exist(self):
         assert Dependencies.Client is not None
