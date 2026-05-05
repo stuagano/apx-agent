@@ -499,7 +499,27 @@ Thistle's lead bigram is `chol → cthy` (3.10×), pairing the common `chol` wit
 
 Bigrams alone over-specialize: plantago reaches 90% (its bigrams are highly distinctive) but thistle collapses to 23% and poppy to 0% — the 31 binary features are too sparse for a stable nearest-centroid solution. Combined with rate features the bigrams add exactly +1 folio (thistle improves 40%→43%), the same marginal gain seen for structural features. The rate-feature ceiling persists.
 
-**What it shows:** EVA word sequence structure is family-organized, not just word choice. The bigram lift is statistically significant (p=0.038), and the over-specialization pattern in the binary classifier confirms that sequence features are carrying *specific* content — plantago's bigrams are distinctive enough to classify 9/10 folios correctly in isolation. The 52–54% ceiling is a property of the nearest-centroid architecture, not a lack of signal in the data.
+**Why plantago hits 90% — absence, not presence (`plantago-sequence.ts`, 2026-05-05):**
+
+The plantago 90% accuracy from bigram features is counterintuitive because plantago had *no* characteristic bigrams in Part 3 above (empty list at k≥3). Investigation reveals the mechanism:
+
+- 30 of 31 discriminative bigrams belong to solanaceae; plantago contributes 0, poppy contributes 0.
+- Solanaceae folios contain on average **3.0** discriminative bigrams; plantago folios only **0.5**.
+- The nearest-centroid correctly identifies plantago folios by their near-zero score on all 31 features — they contain almost none of the solanaceae qo-word transitions.
+- **Ablation confirms:** using only plantago's own 6 bigrams (k≥2, enrichment≥1.5), plantago LOO accuracy collapses to 20%. Plantago has almost no positive sequence identity — it cannot recognize itself from its own bigrams.
+
+Plantago does have weakly enriched bigrams at k=2: `dain → qotor` (9.30×), `chy → shol` (6.20×), but these appear in only 2/10 folios — too sparse to be reliable features.
+
+**The sequence structure directly reflects the morphological fingerprint:**
+
+| Context | Plantago (top successors/predecessors) | Solanaceae (top successors/predecessors) |
+|---------|----------------------------------------|------------------------------------------|
+| After ch-init words | daiin(8), **shol(7), chol(6), chy(5)** | daiin(32), **qokain(14), qokeedy(9), qokedy(9)** |
+| Before -chy words | **chy(4), chol(3)** + rare others | scattered qo-words at low frequency |
+
+In plantago, ch-init words are followed by more ch-words (`chol`, `chy`, `chey`) — ch clusters with ch. In solanaceae, ch-init words are frequently followed by qo-words (`qokain` 14 times) — ch and qo appear in the same local context. The `chy → chy` self-repetition in plantago (4 occurrences, 6.20× enriched as `chy → shol`) further indicates ch-morpheme clustering. This is the sequence-level consequence of plantago's HIGH ch-init + HIGH -chy + LOW qo-prefix morphological fingerprint: a text full of ch-words has no room for qo-word transitions, and ch-words group together in sequence.
+
+**What it shows:** Plantago's sequence identity is primarily negative — defined by the absence of solanaceae's qo-word transition patterns. This is not a weakness of the result; it is what you would expect if the morphological fingerprint drives the sequence structure. A text with LOW qo-prefix cannot have qo-word bigrams, so its bigram profile is fundamentally different from solanaceae's even without having distinctive sequences of its own. The sequence and morphological signals are not independent — they are two views of the same underlying content organization.
 
 ---
 
@@ -613,6 +633,7 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `loo-structural.ts` | LOO classifier with structural features | +1 folio with l-containing or CV; baseline 6-feature set remains optimal |
 | `sequence-features.ts` | Bigram Jaccard clustering, bigram entropy, characteristic bigrams | Bigram lift 1.277× > unigram 1.102×; word order encodes family; thistle `chol→cthy` 3.10×, solanaceae `chedy↔qokain` 2.82× |
 | `bigram-classifier.ts` | Permutation test on bigram lift + bigram-feature LOO classifier | Bigram lift p=0.038*; bigrams over-specialize (plantago 90% alone); combined +1 folio |
+| `plantago-sequence.ts` | Plantago sequence investigation — why 90%? | Absence-driven (30/31 disc. bigrams are solanaceae's); ch→ch clustering vs sol ch→qo; ablation confirms plantago has no positive sequence identity |
 | `species-level-test.ts` | Species-level Jaccard clustering within solanaceae | Infeasible — 32/33 folios classified as mandrake |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
