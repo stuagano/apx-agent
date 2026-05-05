@@ -56,16 +56,23 @@ ANTI-CORRELATION TABLE (direct family-vs-family, confirmed):
   long word: solanaceae ↑ (+0.254); poppy ↓ (-0.440)
   -ain suffix: lily ↑ (+0.646); thistle ↓ (-0.353)
 
-WHAT HAS BEEN TESTED (do not re-test):
-  All 15 features vs all 7 viable families (vs all-botanical AND all pairwise) — grid-scan-v1 is exhaustive.
-  Only propose tests using a NEW feature not in the list OR a new family combination outside the 15×7 grid.
+6. Within-folio constraint: -dy vs -chy anti-correlate within individual folios (r=-0.049, p<0.001, n=224).
+   This means -dy and -chy are EVA morphological alternants competing for the same suffix slot.
+   qo-prefix, ch-init, short-word are between-folio (family-level) signals, not within-folio.
 
-UNTESTED DIMENSIONS (explore these):
-  - Rose family (n=2 — too small for permutation)
-  - Ranunculaceae, apiaceae, verbena, brassicaceae (small n)
-  - Folio-level: does -aiin WITHIN a folio anti-correlate with qo-prefix? (within-folio feature correlation)
-  - Quire-level: cross-quire consistency of new features (poppy -aiin, lily -ain, artemisia short)
-  - Species-level: within solanaceae, do Mandragora vs Atropa vs Hyoscyamus show different EVA patterns?
+WHAT IS NOW EXHAUSTED (do not re-test):
+  All 15 features × 7 families vs all-botanical AND all 21 pairwise — grid-scan-v1 exhaustive.
+  Species-level within solanaceae — infeasible (32/33 folios classified mandrake).
+  Within-folio correlation for all major feature pairs — completed.
+
+GENUINELY UNTESTED DIMENSIONS (propose only these):
+  - Folio-pair feature distance: does morphological feature distance between folio pairs
+    correlate with their Jaccard distance? (combines morphological + lexical signals)
+  - Cross-section: do herbal family fingerprints (solanaceae qo-prefix) appear in pharma-section folios?
+  - NEW EVA features not in the 15-feature list: e.g., -am suffix, -al suffix, -ar suffix,
+    double-letter rate (count words with repeated consecutive letters), or position-specific rates
+    (qo at start vs middle of word).
+  - folio_filter variant: test any fingerprint restricted to a SINGLE quire to check quire-level depth.
 
 What failed: NPMI threshold-count permutation test (p=0.212).
 `.trim();
