@@ -8,6 +8,7 @@ Static seed agents are kept for agents that haven't been deployed yet.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 
 import httpx
@@ -32,7 +33,6 @@ def _seed_stub(
     agent_id: str,
     display_name: str,
     description: str,
-    workstream: str = "",
     tags: list[str] | None = None,
     tools: list[AgentTool] | None = None,
 ) -> None:
@@ -46,128 +46,66 @@ def _seed_stub(
             status="stub",
             url="",
             tools=tools or [],
-            workstream=workstream,
             tags=tags or [],
         )
 
 
-# Seed stubs for planned agents
-_AGENTS["contract-parsing-agent"] = AgentCard(
-    id="contract-parsing-agent",
-    name="contract_parsing_agent",
-    display_name="Contract Parsing",
-    description="Extract structured data from utility contracts — pricing terms, service periods, SLAs, and regulatory clauses.",
-    status="live",
-    url="https://contract-parsing-agent-7474652869938903.aws.databricksapps.com",
-    workstream="uplight-contract-parsing-genai",
-    tags=["genai", "contracts", "vector-search"],
-    supports_invoke=True,
-    tools=[
-        AgentTool(name="list_contracts", description="List contracts in the system"),
-        AgentTool(name="get_contract_summary", description="Structured summary of a contract"),
-        AgentTool(name="extract_pricing_terms", description="Pricing tiers, demand charges, escalation clauses"),
-        AgentTool(name="search_contracts", description="Semantic search across contracts"),
-    ],
+# ---------------------------------------------------------------------------
+# Generic seed agents — replace with your real agents
+#
+# 1. live-example  — wire a real deployed agent via EXAMPLE_AGENT_URL
+# 2. planned-agent — stub for a planned-but-not-deployed agent
+# 3. offline-agent — shows what an unreachable agent looks like in the UI
+# ---------------------------------------------------------------------------
+
+_EXAMPLE_AGENT_URL = os.environ.get("EXAMPLE_AGENT_URL", "")
+
+_AGENTS["live-example"] = AgentCard(
+    id="live-example",
+    name="live_example",
+    display_name="Live Example Agent",
+    description=(
+        "A deployed agent. Set EXAMPLE_AGENT_URL to point to your "
+        "Databricks App and this card will be populated automatically on startup."
+    ),
+    status="live" if _EXAMPLE_AGENT_URL else "unreachable",
+    url=_EXAMPLE_AGENT_URL,
+    tags=["example"],
+    tools=[],
+    supports_invoke=bool(_EXAMPLE_AGENT_URL),
 )
+
 _seed_stub(
-    "entity-resolution-agent",
-    "Entity Resolution",
-    "Resolve and deduplicate customer/account entities across utility data systems.",
-    workstream="uplight-fuzzy-match-entity-resolution",
-    tags=["deduplication", "fuzzy-match", "master-data"],
+    "planned-agent",
+    "Planned Agent",
+    "A placeholder for an agent that is planned but not yet deployed. "
+    "Stubs appear in the list but cannot be selected for chat.",
+    tags=["planned"],
     tools=[
-        AgentTool(name="find_matching_accounts", description="Fuzzy-match customer accounts"),
-        AgentTool(name="get_canonical_identity", description="Golden record for a resolved entity"),
-        AgentTool(name="list_duplicate_clusters", description="Top duplicate account clusters"),
+        AgentTool(name="example_tool", description="An example tool this agent will expose"),
     ],
 )
 
-# Seed live agents (deployed apps with known tools)
-_AGENTS["data-triage-agent"] = AgentCard(
-    id="data-triage-agent",
-    name="data_triage_agent",
-    display_name="Data Triage",
-    description="Investigate why data is missing from Databricks tables or APIs — traces lineage, checks job failures, and inspects source code.",
-    status="live",
-    url="https://mcp-data-triage-7474652869938903.aws.databricksapps.com",
-    workstream="data-triage",
-    tags=["lineage", "jobs", "sql", "genie", "python"],
-    supports_invoke=True,
-    tools=[
-        AgentTool(name="run_sql_query", description="Execute a read-only SQL query"),
-        AgentTool(name="get_table_info", description="Schema, row count, and freshness for a UC table"),
-        AgentTool(name="get_table_lineage", description="Upstream sources via Unity Catalog lineage"),
-        AgentTool(name="find_jobs_for_table", description="Jobs that write to a given table"),
-        AgentTool(name="get_job_run_history", description="Recent run history for a job"),
-        AgentTool(name="get_job_run_logs", description="Error output from a failed run"),
-        AgentTool(name="get_job_source_paths", description="Notebook/file paths for a job"),
-        AgentTool(name="list_genie_spaces", description="List available Genie Spaces"),
-        AgentTool(name="query_genie_space", description="Ask a question to a Genie Space"),
-        AgentTool(name="read_github_file", description="Read a source file from GitHub"),
-        AgentTool(name="search_github_code", description="Search for code patterns in GitHub"),
-    ],
-)
-
-_AGENTS["data-triage-agent-ts"] = AgentCard(
-    id="data-triage-agent-ts",
-    name="data_triage_agent_ts",
-    display_name="Data Triage (TypeScript)",
-    description="Investigate why data is missing from Databricks tables or APIs — TypeScript port with esbuild bundle deployment.",
-    status="live",
-    url="https://data-triage-agent-ts-7474652869938903.aws.databricksapps.com",
-    workstream="data-triage",
-    tags=["lineage", "jobs", "sql", "genie", "typescript"],
-    supports_invoke=True,
-    tools=[
-        AgentTool(name="run_sql_query", description="Execute a read-only SQL query"),
-        AgentTool(name="get_table_info", description="Schema, row count, and freshness for a UC table"),
-        AgentTool(name="get_table_lineage", description="Upstream sources via Unity Catalog lineage"),
-        AgentTool(name="find_jobs_for_table", description="Jobs that write to a given table"),
-        AgentTool(name="get_job_run_history", description="Recent run history for a job"),
-        AgentTool(name="get_job_run_logs", description="Error output from a failed run"),
-        AgentTool(name="get_job_source_paths", description="Notebook/file paths for a job"),
-        AgentTool(name="list_genie_spaces", description="List available Genie Spaces"),
-        AgentTool(name="query_genie_space", description="Ask a question to a Genie Space"),
-        AgentTool(name="read_github_file", description="Read a source file from GitHub"),
-        AgentTool(name="search_github_code", description="Search for code patterns in GitHub"),
-    ],
-)
-
-_AGENTS["data-inspector"] = AgentCard(
-    id="data-inspector",
-    name="data_inspector",
-    display_name="Data Inspector",
-    description="SQL queries, table schemas, Delta forensics (bisect, diff, audit) for Databricks tables.",
-    status="live",
-    url="https://data-inspector-7474652869938903.aws.databricksapps.com",
-    workstream="data-triage",
-    tags=["sql", "delta", "forensics"],
-    supports_invoke=True,
-    tools=[
-        AgentTool(name="run_sql_query", description="Execute a read-only SQL query"),
-        AgentTool(name="get_table_info", description="Schema, row count, freshness"),
-    ],
-)
-
-_AGENTS["explain-my-bill"] = AgentCard(
-    id="explain-my-bill",
-    name="explain_my_bill",
-    display_name="Explain My Bill",
-    description="Help utility customers understand their energy bill — line items, charges, and usage patterns.",
-    status="live",
-    url="https://mcp-explain-my-bill-7474652869938903.aws.databricksapps.com",
-    workstream="uplight-customer-facing-chatbot",
-    tags=["customer-facing", "billing", "genai"],
-    supports_invoke=True,
+_AGENTS["offline-agent"] = AgentCard(
+    id="offline-agent",
+    name="offline_agent",
+    display_name="Offline Agent",
+    description=(
+        "An agent whose URL is configured but cannot be reached. "
+        "The hub marks it unreachable after a failed crawl."
+    ),
+    status="unreachable",
+    url="https://example.invalid",
+    tags=["example"],
     tools=[],
 )
 
-# URLs for auto-crawl refresh (inter-app auth required)
+# URLs to auto-crawl on startup. Set AGENT_HUB_AGENT_URLS to a comma-separated
+# list of deployed agent base URLs. Each URL must serve /.well-known/agent.json.
 _AUTO_REGISTER_URLS = [
-    "https://data-triage-agent-ts-7474652869938903.aws.databricksapps.com",
-    "https://mcp-data-triage-7474652869938903.aws.databricksapps.com",
-    "https://data-inspector-7474652869938903.aws.databricksapps.com",
-    "https://mcp-explain-my-bill-7474652869938903.aws.databricksapps.com",
+    u.strip()
+    for u in os.environ.get("AGENT_HUB_AGENT_URLS", "").split(",")
+    if u.strip()
 ]
 
 
@@ -190,7 +128,6 @@ async def _crawl_agent(url: str) -> dict | None:
 def _card_from_a2a(
     a2a: dict,
     url: str,
-    workstream: str = "",
     tags: list[str] | None = None,
 ) -> AgentCard:
     """Build an AgentCard from an A2A discovery document."""
@@ -207,7 +144,6 @@ def _card_from_a2a(
         status="live",
         url=url.rstrip("/"),
         tools=tools,
-        workstream=workstream,
         tags=tags or [],
         mcp_endpoint=a2a.get("mcpEndpoint"),
         last_seen=datetime.now(timezone.utc),
@@ -238,7 +174,7 @@ async def register_agent(req: RegisterRequest):
             status_code=502,
             detail=f"Could not fetch /.well-known/agent.json from {req.url}",
         )
-    card = _card_from_a2a(a2a, req.url, workstream=req.workstream, tags=req.tags)
+    card = _card_from_a2a(a2a, req.url, tags=req.tags)
     _AGENTS[card.id] = card
     logger.info("Registered agent '%s' from %s (%d tools)", card.id, req.url, len(card.tools))
     return card
@@ -286,7 +222,7 @@ async def refresh_agent(agent_id: str):
         agent.last_seen = None
         return agent
 
-    updated = _card_from_a2a(a2a, agent.url, workstream=agent.workstream, tags=agent.tags)
+    updated = _card_from_a2a(a2a, agent.url, tags=agent.tags)
     _AGENTS[agent_id] = updated
     return updated
 
@@ -301,7 +237,7 @@ async def refresh_all_agents():
             continue
         a2a = await _crawl_agent(agent.url)
         if a2a:
-            updated = _card_from_a2a(a2a, agent.url, workstream=agent.workstream, tags=agent.tags)
+            updated = _card_from_a2a(a2a, agent.url, tags=agent.tags)
             _AGENTS[agent_id] = updated
             results.append(updated)
         else:
