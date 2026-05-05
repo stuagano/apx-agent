@@ -11,6 +11,30 @@ Agents can be registered three ways:
 - **Auto-register** — set `AGENT_HUB_AGENT_URLS` to a comma-separated list of URLs; the hub crawls each one at startup
 - **On-demand** — POST to `/api/agents/register` with a `{"url": "..."}` body
 
+For auto-register and on-demand registration to work, the target agent must serve a `/.well-known/agent.json` discovery document (the A2A spec).
+
+## Prerequisites
+
+- Node.js 20+ and npm
+- Python 3.11+ with [uv](https://docs.astral.sh/uv/)
+- [Databricks CLI](https://docs.databricks.com/dev-tools/cli/databricks-cli.html) configured with a profile
+
+This project uses `apx-agent` as a path dependency — clone the full `apx-agent` repository rather than just this directory.
+
+## Run locally
+
+```bash
+# Install Python deps
+uv sync
+
+# Install Node deps and start dev server
+npm install
+npm run dev       # starts Vite on http://localhost:5173
+
+# In a separate terminal, start the backend
+uv run uvicorn agent_hub.backend.app:app --reload
+```
+
 ## Required env vars
 
 | Variable | Description |
@@ -42,6 +66,10 @@ databricks apps deploy agent-hub \
   --profile <profile>
 ```
 
+Replace `/path/in/workspace` with a Databricks workspace path (e.g. `/Workspace/Users/you@company.com/agent-hub`).
+
 ## Registering your own agents
 
-To add your own agents, edit `src/agent_hub/backend/router.py`. Replace the placeholder seeds with real `AgentCard` entries pointing to your deployed Databricks App URLs, or add them to `AGENT_HUB_AGENT_URLS` for auto-discovery.
+The lowest-friction way to add agents is via env vars: set `AGENT_HUB_AGENT_URLS` to a comma-separated list of deployed agent URLs and they will be crawled on startup.
+
+To hard-code agents or customize their display names and descriptions, edit `src/agent_hub/backend/router.py` and replace the placeholder seeds with real `AgentCard` entries.
