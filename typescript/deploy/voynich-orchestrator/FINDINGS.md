@@ -185,6 +185,18 @@ Thistle uses more words with gallows letters (k, t, p, f); plantago uses fewer. 
 
 **`consecutive-repeat rate`:** null across all 28 tested comparisons. Adjacent word repetition in EVA is not family-specific.
 
+**LOO classifier with structural features (`loo-structural.ts`, 2026-05-05):**
+
+| Feature set | Accuracy | sol | thi | pla | pop |
+|------------|:--------:|:---:|:---:|:---:|:---:|
+| baseline (6) | **52.5%** (42/80) | 67% | 40% | 60% | 29% |
+| 6 + l-containing | 53.8% (43/80) | 70% | 40% | 60% | 29% |
+| 6 + word-length CV | 53.8% (43/80) | 67% | 43% | 60% | 29% |
+| 6 + both structural | 53.8% (43/80) | 70% | 40% | 60% | 29% |
+| 6 + gallows | 50.0% (40/80) | 67% | 37% | 60% | 14% |
+
+l-containing and word-length CV each add exactly 1 folio (solanaceae +1 and thistle +1 respectively), but combining them does not compound — they share information. Gallows hurts poppy classification (29% → 14%): the gallows signal is thistle-plantago specific and misfires on poppy. The 6-feature baseline remains the practical optimum; the structural features reinforce the solanaceae fingerprint but do not add independent discriminative axes.
+
 **Solanaceae structural profile (now 8 confirmed axes):**
 
 | Feature | Direction | Strongest comparison |
@@ -537,6 +549,7 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `quire-new-features.ts` | Quire invariance for new confirmed features (k-init, -al suffix) | k-init 5/9 MIXED, -al 6/9 MIXED, qo-prefix 8/9 CONSISTENT (reference) |
 | `targeted-gen19.ts` | Gen-19 exhaustive scan — remaining small-family + follow-up tests | k-init artemisia r=+0.728 p=0.025*; all other untested dimensions null |
 | `structural-scan.ts` | Gen-20 structural features — gallows, l-containing, word-length CV, consecutive-repeat | l-containing solanaceae HIGH (4 comparisons **); word-length CV solanaceae LOW (*); gallows thistle HIGH vs plantago * |
+| `loo-structural.ts` | LOO classifier with structural features | +1 folio with l-containing or CV; baseline 6-feature set remains optimal |
 | `species-level-test.ts` | Species-level Jaccard clustering within solanaceae | Infeasible — 32/33 folios classified as mandrake |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
