@@ -625,11 +625,82 @@ These predictions are derivable from the anti-correlation hypothesis and make it
 
 ---
 
+### Candidate Hypotheses for EVA Encoding
+
+The evidence rules out pure procedural generation. Three candidates survive. They are ranked by consistency with the full evidence profile, not by prior plausibility.
+
+---
+
+**Candidate A — Real language in an undeciphered script**
+
+EVA words are words in a real language. The botanical content emerges because the herbal section text *describes* plants in that language. The morphological patterns (qo-prefix, -dy, -chy) are lexical and grammatical features of the underlying language that happen to be semantically organized by botanical domain — just as English uses "photosynthesis" and "chlorophyll" in biology but not cooking.
+
+*Evidence for:*
+- **Within-folio -dy/-chy alternants** (p<0.001): the most natural interpretation is inflectional alternation — a grammatical rule operating within the text of a single folio, independent of illustrated content. This is harder to explain in any non-linguistic model.
+- **N-gram lift grows monotonically to 3.098×**: natural languages have phrase-level structure that produces this curve. A mechanical notation system would plateau at n=1.
+- **Two-tier label/text structure**: nouns (used once as folio labels) vs. running prose is a natural linguistic distinction. The label words function like botanical proper names.
+- **NPMI semantic alignment**: qualitatively coherent (mandragoratus, silybum, haemorrhagia) — consistent with actual botanical vocabulary in the text.
+- **Portfolio effect in trigrams**: many sparse family-specific sequences rather than a few dominant formulas — the signature of a generative grammar, not a template.
+
+*Challenges:*
+- EVA has unusually high word-repetition rates compared to most natural languages.
+- No prior decipherment attempt has found a coherent linguistic reading.
+- The statistical regularity of the morphological fingerprints (8 confirmed axes for solanaceae alone) may be more systematic than natural lexical variation.
+
+---
+
+**Candidate B — Word-level cipher of a known language**
+
+Each EVA word corresponds to a word or morpheme in a base language (Latin, Italian, medieval Hebrew, or similar). The cipher operates at the word level rather than letter-by-letter substitution, so the base language's phrase structure and morphological variation are preserved in EVA. The botanical content encodes because the underlying text describes plants.
+
+*Evidence for:*
+- All evidence for A applies — phrase structure, within-folio grammar, two-tier structure would all be inherited from the base language.
+- A word-level cipher (code-book substitution) is historically plausible for a 15th-century manuscript.
+- Consistent with the NPMI semantic alignment surviving cipher transformation.
+
+*Challenges:*
+- The morphological anti-correlations between families (solanaceae HIGH qo / thistle LOW qo) would require the cipher key to vary systematically by botanical context — unusual for a cipher, which is typically a fixed mapping.
+- A word-level cipher preserving both morphological statistics AND phrase structure AND semantic alignment AND two-tier lexical categories is a highly constrained requirement. A is simpler.
+- Attempts to match EVA word-frequency distributions to known languages have not produced convincing fits.
+
+---
+
+**Candidate C — Content-aware botanical notation**
+
+EVA is not a language but a private notation system developed by the author(s) to record botanical knowledge. Morphological markers encode plant family identity deliberately (qo-words = solanaceous plants, ch-words = plantago-type plants). The label tier contains plant identifiers; the text tier encodes properties or uses in a systematic morphological code. The scribe invented this notation; it is not derived from a natural language.
+
+*Evidence for:*
+- The extreme systematicity of the morphological fingerprints (8 confirmed axes for solanaceae, clean anti-correlations between families) is more consistent with deliberate design than incidental linguistic variation.
+- The two-tier structure is cleanest under this model: labels are plant names; text words encode properties through morphological form.
+- The LOO accuracy (52.5% from morphological patterns alone) is surprisingly high for incidental content and consistent with a designed encoding.
+
+*Evidence against (the strongest objections):*
+- **Within-folio -dy/-chy grammar**: a pure notation system recording botanical properties would not need grammatical alternation rules operating within a single folio. There is no botanical reason why -dy and -chy should compete within the text of one folio if they simply mark different properties. This observation is the hardest to reconcile with C.
+- **N-gram phrase structure growing to 3.098×**: a notation system would be expected to be formulaic (small set of repeated templates) or purely combinatorial (flat n-gram lift). Monotonically growing lift with order is the signature of a compositional system — a language.
+- **Portfolio effect**: many sparse trigrams rather than a few dominant templates contradicts what you'd expect from a notation with fixed templates.
+
+---
+
+**Assessment**
+
+C is the most parsimonious explanation for the extreme morphological regularity, but fails on the within-folio grammar and n-gram phrase structure. A explains all observations and requires only that the language has botanical vocabulary organized by plant family — a modest requirement for any real language describing plants. B is equally consistent with all observations but adds unnecessary complexity (a fixed code-book on top of A's requirements).
+
+**The evidence is most consistent with A.** The decisive observations are:
+1. The -dy/-chy within-folio alternant (grammatical rule, not content marker)
+2. The monotonically increasing n-gram lift (compositional phrase structure, not template)
+3. The portfolio effect in trigrams (generative grammar, not notation)
+
+These three observations together describe a system with internal grammatical rules, phrase-level composition, and a large generative vocabulary — the defining properties of a language. The botanical content organization is then a semantic property of what the language is *about* in the herbal section, not a property of how EVA is *constructed*.
+
+**Most discriminating untested prediction:** If A is correct, EVA's statistical structure (morphological alternants, n-gram lift, entropy) should be consistent across manuscript sections — the grammar should not change between herbal, balneological, and zodiac folios, even though the vocabulary may. If the -dy/-chy within-folio alternant holds in the balneological section (which has no botanical content), that would be strong evidence for A over C. If it disappears outside the herbal section, C becomes more plausible.
+
+---
+
 ### What this is not
 
 - **Not a decipherment.** No EVA word has been assigned a reliable meaning. The NPMI associations are qualitatively compelling but statistically unproven.
-- **Not proof of language.** The encoding mechanism is unknown. These results are consistent with a real language, with a content-aware cipher, or with a scribal convention where EVA morphology tracks plant type without full semantic encoding.
-- **Not a claim about the full manuscript.** All analyses are herbal-section only. The balneological, zodiac, and star sections have different visual content and may have different EVA structure.
+- **Not proof of language.** The within-folio grammar and n-gram structure are most consistent with Candidate A, but cannot by themselves rule out a highly structured notation (C) or a language-level cipher (B).
+- **Not a claim about the full manuscript.** All analyses are herbal-section only. The balneological, zodiac, and star sections have different visual content and may have different EVA structure — testing whether the grammar persists across sections is the most important remaining analysis.
 
 ---
 
