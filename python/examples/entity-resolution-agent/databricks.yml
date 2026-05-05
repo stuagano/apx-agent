@@ -1,0 +1,28 @@
+bundle:
+  name: entity-resolution-agent
+
+sync:
+  include:
+    - .build
+
+artifacts:
+  default:
+    build: UV_OFFLINE=1 apx build && cp pyproject.toml .build/
+
+resources:
+  apps:
+    entity-resolution-agent-app:
+      name: "entity-resolution-agent"
+      description: "entity-resolution-agent created with apx"
+      source_code_path: ./.build
+
+env:
+  VECTOR_SEARCH_ENDPOINT_NAME: "PLACEHOLDER — set when Uplight provides endpoint name"
+  VECTOR_SEARCH_INDEX_NAME: "PLACEHOLDER — e.g. catalog.schema.utility_account_idx"
+  UTILITY_ACCOUNT_TABLE: "PLACEHOLDER — e.g. catalog.schema.utility_accounts"
+  AFR_DECISION_TABLE: "PLACEHOLDER — e.g. catalog.schema.afr_processing"
+
+targets:
+  dev:
+    mode: development
+    default: true

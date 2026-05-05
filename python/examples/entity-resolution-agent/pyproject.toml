@@ -1,0 +1,45 @@
+[project]
+name = "entity-resolution-agent"
+version = "0.1.0"
+description = "Fuzzy-match and resolve customer/account entities using a Supervisor → Evaluator HandoffAgent with Databricks Vector Search"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+keywords = ["databricks", "apx-agent", "entity-resolution", "fuzzy-match", "vector-search"]
+dependencies = [
+    "apx-agent>=0.16.0",
+    "fastapi>=0.119.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.11.0",
+    "uvicorn>=0.37.0",
+    "databricks-sdk>=0.74.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[tool.apx.metadata]
+app-name = "entity-resolution-agent"
+app-slug = "entity_resolution_agent"
+app-entrypoint = "entity_resolution_agent.backend.app:app"
+api-prefix = "/api"
+
+[tool.apx.agent]
+name = "entity_resolution_agent"
+description = "Resolve and deduplicate customer/account entities — fuzzy-matches applications against utility account data using Vector Search (default) and SQL fallback"
+model = "databricks-claude-sonnet-4-6"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/entity_resolution_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
