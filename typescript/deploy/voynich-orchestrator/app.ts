@@ -28,6 +28,7 @@ import {
   DEFAULT_POPULATION_TABLE,
 } from './voynich-config.ts';
 import { TheoryInvestigator } from './theory-investigator.ts';
+import { StatEvolutionaryAgent } from './stat-evolutionary-agent.ts';
 
 // ---------------------------------------------------------------------------
 // Population store
@@ -105,17 +106,37 @@ const evolutionaryAgent = new EvolutionaryAgent({
 const theoryInvestigator = new TheoryInvestigator();
 
 // ---------------------------------------------------------------------------
+// Route 3: Statistical EA (hypothesis generation + execution + critic scoring)
+// ---------------------------------------------------------------------------
+
+const statMutationUrl = process.env.STAT_MUTATION_AGENT_URL ?? '';
+const statExecutorUrl = process.env.STAT_EXECUTOR_AGENT_URL ?? '';
+if (!statMutationUrl) {
+  console.warn('[orchestrator] STAT_MUTATION_AGENT_URL not set — stat EA will be unavailable');
+}
+if (!statExecutorUrl) {
+  console.warn('[orchestrator] STAT_EXECUTOR_AGENT_URL not set — stat EA will be unavailable');
+}
+
+const statAgent = new StatEvolutionaryAgent({
+  mutationAgentUrl: statMutationUrl,
+  executorAgentUrl: statExecutorUrl,
+  criticAgentUrl: criticAgentUrl,
+});
+
+// ---------------------------------------------------------------------------
 // LLM-routed orchestrator
 // ---------------------------------------------------------------------------
 
 const EA_KEYWORDS = ['generation', 'evolut', 'population', 'pareto', 'fitness', 'escalat', 'pause', 'resume', 'converge'];
 const THEORY_KEYWORDS = ['theory', 'theor', 'decode', 'decipher', 'cipher', 'symbol map', 'folio', 'propose', 'investigate', 'skeptic', 'cross-folio', 'latin', 'polyalphabetic', 'substitution'];
+const STAT_KEYWORDS = ['analyz', 'hypothesis', 'statistic', 'run stat', 'finding', 'test feature', 'test family', 'ea loop', 'stat loop'];
 
 const router = new RouterAgent({
   model: 'databricks-claude-sonnet-4-6',
   instructions: [
     'You are routing requests for a Voynich manuscript decipherment system.',
-    'Choose between two specialist agents:',
+    'Choose between three specialist agents:',
     '',
     '- "ea_management": For managing the evolutionary algorithm loop — checking generation',
     '  status, viewing fitness scores, pausing/resuming the loop, escalating hypotheses,',
@@ -125,9 +146,13 @@ const router = new RouterAgent({
     '  theories, testing symbol maps against folios, running cross-folio consistency checks,',
     '  challenging theories with the skeptic, or investigating specific cipher types and languages.',
     '',
+    '- "statistical_analysis": For statistical hypothesis testing about EVA vocabulary — ',
+    '  running the statistical EA loop, listing findings, testing features or family comparisons.',
+    '',
     'If the user asks a general question about Voynich progress or "what\'s working",',
     'route to ea_management. If they want to try a new approach or test a specific idea,',
-    'route to theory_investigation.',
+    'route to theory_investigation. If they want to analyze EVA features or run statistical tests,',
+    'route to statistical_analysis.',
   ].join('\n'),
   routes: [
     {
@@ -148,6 +173,15 @@ const router = new RouterAgent({
         return THEORY_KEYWORDS.some((kw) => last.includes(kw));
       },
     },
+    {
+      name: 'statistical_analysis',
+      description: 'Statistical hypothesis generation — propose and test new features/family comparisons about EVA vocabulary',
+      agent: statAgent,
+      condition: (msgs) => {
+        const last = msgs[msgs.length - 1]?.content?.toLowerCase() ?? '';
+        return STAT_KEYWORDS.some((kw) => last.includes(kw));
+      },
+    },
   ],
   fallback: evolutionaryAgent,
 });
@@ -159,20 +193,23 @@ const router = new RouterAgent({
 const allTools = [
   ...evolutionaryAgent.collectTools(),
   ...theoryInvestigator.collectTools(),
+  ...statAgent.collectTools(),
 ];
 
 const agentPlugin = createAgentPlugin({
   model: 'databricks-claude-sonnet-4-6',
   instructions: [
     'You are the Voynich decipherment orchestrator.',
-    'You manage both an evolutionary search loop and a targeted theory investigation system.',
+    'You manage an evolutionary search loop, a targeted theory investigation system, and a statistical analysis EA.',
     '',
-    'You have two categories of tools:',
+    'You have three categories of tools:',
     '  EA Management: evolution_status, best_hypothesis, generation_summary, pause_evolution, resume_evolution, force_escalate',
     '  Theory Investigation: propose_theory, challenge_theory, run_theory_loop, list_theories',
+    '  Statistical Analysis: run_stat_loop, list_findings',
     '',
     'When users ask about progress, status, generations, or fitness — use the EA tools.',
     'When users want to try decoding theories, test cipher types, or investigate specific folios — use the theory tools.',
+    'When users ask about analyzing EVA features, testing hypotheses, or running statistical tests — use the stat tools.',
     'Always call the relevant tool(s) to answer the question. Never guess — use tools to get real data.',
   ].join('\n'),
   tools: allTools,

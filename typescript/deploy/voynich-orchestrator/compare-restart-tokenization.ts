@@ -19,34 +19,40 @@
  *   export MUTATION_AGENT_URL=...   # theory-loop's module init may import other agent URLs
  *   npx tsx compare-restart-tokenization.ts
  *
+ * Strategy is PINNED to latin|substitution|cold across all 3 phases via
+ * runTheoryLoop's strategyOverride argument. Rationale:
+ *   - matches the bd75037 calibration (random per-trial seeds, substitution)
+ *   - tokenization toggle is meaningful here (single-char vs multi-glyph
+ *     materially differs only for substitution-family ciphers)
+ *   - apples-to-apples: phase differences reflect N_RESTARTS and tokenization,
+ *     not which cipher family pickNextStrategy happened to rotate to
+ *
  * Tunables:
  *   COMPARE_BURSTS=1   default; each burst = ROUNDS_PER_BURST (20) rounds.
- *                      With 1 burst per phase, each phase uses ONE strategy
- *                      for 20 rounds; phases may pick different strategies
- *                      from pickNextStrategy(). Bump to 2-3 if you want
- *                      strategy diversity within each phase.
  *
  * Cost (numBursts=1):
  *   60 rounds total. ~78 LLM calls (skeptic + gated judge).
  *   Phase-1 ~40k scorer evals, phases 2 and 3 ~200k each.
- *
- * Notes / caveats:
- *   - Tokenization toggle only affects substitution-family ciphers; the other
- *     5 families (verbose/positional/homophonic/...) have their own code paths
- *     and won't differ between phase 2 and phase 3.
- *   - Multi-restart for non-substitution ciphers reruns the corresponding
- *     proposeXxxTheory function N times, which is the same independence
- *     assumption (each starts from random seeds), but the bimodal calibration
- *     was measured on substitution. Generalization is plausible but not
- *     measured.
  */
 
-import { runTheoryLoop } from './theory-loop.js';
+import { runTheoryLoop, type Strategy } from './theory-loop.js';
 import { resolveHost, resolveToken } from './appkit-agent/index.mjs';
 
 const TABLE = 'serverless_stable_qh44kx_catalog.voynich.theories';
 const NUM_BURSTS = parseInt(process.env.COMPARE_BURSTS ?? '1');
 const RUN_ID = `cmp-${Date.now()}`;
+
+// Pinned strategy across all phases — apples-to-apples comparison.
+// latin|substitution|cold matches the bd75037 calibration assumption: random
+// per-trial seeds (cold mode skips elite seeding), substitution cipher (the
+// hypothesis class the bimodal calibration measured), latin language (the
+// canonical target). Tokenization toggle is meaningful for substitution; for
+// other cipher families it's a no-op or near-no-op.
+const PINNED_STRATEGY: Strategy = {
+  language: 'latin',
+  cipherType: 'substitution',
+  seedMode: 'cold',
+};
 
 interface Phase {
   label: string;
@@ -102,7 +108,8 @@ async function runPhase(phase: Phase, phaseIdx: number): Promise<void> {
   console.log('');
   console.log(`=== Phase ${phaseIdx + 1}/${PHASES.length}: ${phase.label} ===`);
   console.log(`    N_RESTARTS=${phase.N_RESTARTS} EVA_TOKENIZATION=${phase.EVA_TOKENIZATION} bursts=${NUM_BURSTS}`);
-  await runTheoryLoop(NUM_BURSTS, phaseIdx, phase.label);
+  console.log(`    pinned strategy: ${PINNED_STRATEGY.language}|${PINNED_STRATEGY.cipherType}|${PINNED_STRATEGY.seedMode}`);
+  await runTheoryLoop(NUM_BURSTS, phaseIdx, phase.label, PINNED_STRATEGY);
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   console.log(`=== Phase ${phaseIdx + 1} done in ${elapsed}s ===`);
 }

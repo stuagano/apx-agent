@@ -1,0 +1,47 @@
+bundle:
+  name: contract-parsing-agent
+
+sync:
+  include:
+    - .build
+
+artifacts:
+  default:
+    build: UV_OFFLINE=1 apx build && cp pyproject.toml .build/ && mkdir -p .build/client && cp -r client/dist .build/client/dist
+
+resources:
+  apps:
+    contract-parsing-agent-app:
+      name: "contract-parsing-agent"
+      description: "contract-parsing-agent created with apx"
+      source_code_path: ./.build
+      config:
+        env_variables:
+          - name: CATALOG
+            value: ${var.catalog}
+          - name: SCHEMA
+            value: ${var.schema}
+          - name: VOLUMES_RAW
+            value: ${var.volumes_raw}
+          - name: VOLUMES_UPLOADS
+            value: ${var.volumes_uploads}
+
+variables:
+  catalog:
+    description: Unity Catalog catalog name
+  schema:
+    description: Unity Catalog schema name
+  volumes_raw:
+    description: Full UC volume path for raw contract PDFs
+  volumes_uploads:
+    description: Full UC volume path for uploaded contracts
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      catalog: ""
+      schema: ""
+      volumes_raw: ""
+      volumes_uploads: ""

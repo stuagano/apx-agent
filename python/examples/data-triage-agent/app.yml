@@ -1,0 +1,6 @@
+command: ["uvicorn", "data_triage_agent.backend.app:app", "--workers", "2"]
+env:
+  - name: DATA_INSPECTOR_URL
+    value: ""
+  - name: AGENT_HUB_URL
+    value: ""

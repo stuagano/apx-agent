@@ -1,0 +1,1 @@
+command: ["uvicorn", "data_inspector.backend.app:app", "--workers", "2"]
