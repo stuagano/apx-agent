@@ -26,26 +26,48 @@ export const BOTANICAL_FAMILIES = new Set([
 ]);
 
 export const FINDINGS_SUMMARY = `
-Established findings (FINDINGS.md, 2026-05-04; EA gen-8 morpho-seed, 2026-05-04):
+Established findings (FINDINGS.md + grid-scan-v1, 2026-05-04):
 
 1. Jaccard clustering: within-family lift = 1.10× overall (r=-0.003, no distance decay).
-2. Morphological fingerprints — permutation-tested (N=1000), all p<0.05:
+2. Morphological fingerprints — all permutation-tested (N≥1000), all p<0.05:
    Solanaceae (n=33) vs all-botanical:
      qo-prefix: r=+0.532 p<0.001 | -chy: r=-0.435 p<0.001 | -dy: r=+0.367 p<0.001
-     ch-init: r=-0.249 p=0.017  | short (≤3): r=-0.300 p=0.003
+     ch-init: r=-0.249 p=0.017 | short (≤3): r=-0.300 p=0.015 | word entropy: r=+0.426 p=0.002
+     long word rate: r=+0.254 p=0.042
    Thistle (n=30) vs all-botanical:
-     qo-prefix: r=-0.340 p=0.003 | short word: r=+0.340 p=0.006 | unique word ratio: r=+0.297 p=0.021
+     qo-prefix: r=-0.340 p=0.013 | short word: r=+0.340 p=0.005 | unique word ratio: r=+0.297 p=0.015
+     -ain suffix: r=-0.353 p=0.004
    Plantago (n=10) vs all-botanical:
-     ch-init: r=+0.563 p=0.007 | -dy: r=-0.449 p=0.032 | -chy: r=+0.402 p=0.037
-   Anti-correlation: solanaceae ↑qo ↑-dy ↓-chy; thistle ↓qo ↑short; plantago ↑ch-init ↓-dy ↑-chy.
+     ch-init: r=+0.563 p<0.001 | -dy: r=-0.449 p=0.018 | -chy: r=+0.402 p=0.039 | ok-prefix: r=-0.465 p=0.015
+   Poppy (n=7) vs all-botanical:
+     -aiin suffix: r=+0.625 p=0.004 | long word rate: r=-0.440 p=0.044
+   Lily-family (n=4) vs all-botanical:
+     -ain suffix: r=+0.646 p=0.024 | sh-init: r=+0.604 p=0.043
+   Artemisia (n=3) vs all-botanical:
+     short word: r=-0.770 p=0.015 | ok-prefix: r=-0.700 p=0.038
 3. Two-tier label/text structure: 13 significant label words (p<0.05, 2000-perm null).
-   5/13 cross-section-confirmed: kchy, ckhey, qockhol, ty, oldaiin.
-4. NPMI: qualitative coherence only (p=0.212 — method invalid).
+4. LOO family attribution: 52.5% accuracy (4-class, chance=25%), lift=2.10×, p<0.0001.
+5. Grid scan (gen-11, grid-scan-v1): 60 significant results / 420 tests (14.3% hit rate).
 
-What has NOT been tested: mean word length, long word rate, -aiin suffix, sh-init rate, ok-prefix rate.
-What has NOT been tested: poppy, mint-family, artemisia fingerprints (small n=3–7, may need permutation).
-What has NOT been tested: family-vs-family comparisons (e.g. thistle vs plantago directly).
-What failed: NPMI threshold-count permutation test.
+ANTI-CORRELATION TABLE (direct family-vs-family, confirmed):
+  qo-prefix: solanaceae +0.532 vs all; thistle -0.340 vs all; direct: sol vs thistle r=+0.560***
+  -dy/-chy: solanaceae ↑-dy ↓-chy; plantago ↓-dy ↑-chy; direct: sol vs plantago -chy r=-0.697***
+  short word: thistle ↑; solanaceae ↓; artemisia ↓ (r=-0.770)
+  long word: solanaceae ↑ (+0.254); poppy ↓ (-0.440)
+  -ain suffix: lily ↑ (+0.646); thistle ↓ (-0.353)
+
+WHAT HAS BEEN TESTED (do not re-test):
+  All 15 features vs all 7 viable families (vs all-botanical AND all pairwise) — grid-scan-v1 is exhaustive.
+  Only propose tests using a NEW feature not in the list OR a new family combination outside the 15×7 grid.
+
+UNTESTED DIMENSIONS (explore these):
+  - Rose family (n=2 — too small for permutation)
+  - Ranunculaceae, apiaceae, verbena, brassicaceae (small n)
+  - Folio-level: does -aiin WITHIN a folio anti-correlate with qo-prefix? (within-folio feature correlation)
+  - Quire-level: cross-quire consistency of new features (poppy -aiin, lily -ain, artemisia short)
+  - Species-level: within solanaceae, do Mandragora vs Atropa vs Hyoscyamus show different EVA patterns?
+
+What failed: NPMI threshold-count permutation test (p=0.212).
 `.trim();
 
 export function extractEvaWords(evaText: string): string[] {
