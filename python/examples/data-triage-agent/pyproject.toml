@@ -1,0 +1,52 @@
+[project]
+name = "data-triage-agent"
+version = "0.1.0"
+description = "Investigate why data is missing from Databricks tables — traces lineage, checks job failures, and inspects source code"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "apx-agent",
+    "fastapi>=0.119.0",
+    "pydantic-settings>=2.11.0",
+    "uvicorn>=0.37.0",
+    "databricks-sdk>=0.74.0",
+    "httpx>=0.27.0",
+]
+
+[dependency-groups]
+dev = [
+    "ty>=0.0.12",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "respx>=0.21.0",
+]
+
+[tool.uv.sources]
+apx-agent = { path = "../../src", editable = true }
+
+[project.scripts]
+investigate = "data_triage_agent.jobs.investigate:main"
+
+[tool.apx.metadata]
+app-name = "data-triage-agent"
+app-slug = "data_triage_agent"
+app-entrypoint = "data_triage_agent.backend.app:app"
+api-prefix = "/api"
+metadata-path = "src/data_triage_agent/_metadata.py"
+
+[tool.apx.agent]
+name = "data_triage_agent"
+description = "Investigate why data is missing from Databricks tables or APIs — traces lineage, checks job failures, and inspects source code"
+model = "databricks-claude-sonnet-4-6"
+url = ""
+registry = ""
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/data_triage_agent"]

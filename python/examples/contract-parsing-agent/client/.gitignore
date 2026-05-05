@@ -1,0 +1,4 @@
+# Allow dist/ to be committed — required for Databricks Apps deployment
+# (overrides the root .gitignore dist/ rule)
+!dist/
+!dist/**
