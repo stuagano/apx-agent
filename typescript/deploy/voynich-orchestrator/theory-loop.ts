@@ -982,25 +982,65 @@ const HILL_CLIMB_STEPS = 2000;
 const SEED_MAPS = 6;
 
 // ---------------------------------------------------------------------------
-// Consensus map — derived from analysis of top-scoring theories.
-// High-stability assignments (>= 35% agreement across top 20 maps) are locked.
-// Low-stability assignments are left undefined for the hill-climber to explore.
+// Locked character assignments fed into every SA seed and mutation.
+//
+// v1 (frequency consensus): derived from top-scoring theories by frequency
+//    matching. Replaced by v2 — statistical cribs are stronger evidence.
+//
+// v2 (statistical cribs, function-word-cribs.ts, 2026-05-05):
+//   Positional grammar analysis on ZL full-manuscript corpus (36,937 tokens).
+//   "am" is 72% line-final (vs 14% baseline) → almost certainly a sentence-final
+//   particle. Best Latin match: "et" (2 chars, most common Latin word, clause-final).
+//   "sol" is 55% line-initial → sentence-opener. Best Latin match: "sol" (sun) —
+//   identity mapping. Both cribs are confirmed by 128/128 SA runs across the
+//   herbal section. Three v1 assignments dropped due to direct conflict:
+//     s→z (was frequency-consensus; overwrote by s→s from sol crib)
+//     l→v (was frequency-consensus; overwrote by l→l from sol crib)
+//     e→t (conflicts with m→t from am crib; left open for homophonic runs)
+//   qo→p and t→v dropped: no statistical basis, low run-to-run stability.
+//
+// v3 addition (f5r Latin decode analysis, 2026-05-05):
+//   Best Latin homophonic theory (f5r Mandrake, combined=0.482) decoded
+//   "chocthy" → "sanat" (heals/cures) twice in the Mandrake folio.
+//   Trace: ch→s + o→a + c→n + th→a + y→t. The standalone EVA 'c' (distinct
+//   from the 'ch' and 'ck' ligatures) maps to Latin 'n'. Also confirmed in
+//   "cthey" → "nait" (targeting "nati") and consistent with "cheor" → "sic"
+//   (where the trailing 'c' in "sic" comes from digraph or→c, not standalone).
+//   "sanat" = 3rd-person singular of sanare (to heal) — exact medicinal vocabulary
+//   for the botanical herbal section. Domain-appropriate for Mandrake folio.
 // ---------------------------------------------------------------------------
 
-/** Locked assignments — converging across top maps (>= 35% agreement). */
+/** Locked assignments — statistical cribs + surviving frequency consensus. */
 const CONSENSUS_LOCKED: Record<string, Record<string, string>> = {
   latin: {
-    e: 't', r: 'k', s: 'z', sh: 'a', ct: 'h', h: 'g', ok: 'q', qo: 'p',
-    y: 'd', l: 'v', t: 'v', ch: 'i',  // ch→i: 7/10 top maps agree
+    // Statistical cribs (function-word-cribs.ts):
+    a: 'e',   // am→et: 72% line-final particle; "et" is Latin sentence-final conjunction
+    m: 't',   // am→et: same crib
+    s: 's',   // sol→sol: 55% line-initial; Latin "sol" (sun) is identity mapping
+    o: 'o',   // sol→sol: same crib
+    l: 'l',   // sol→sol: same crib
+    // f5r decode analysis (chocthy→sanat, ×2 in Mandrake folio):
+    c: 'n',   // standalone 'c' (not ch/ck ligatures) → Latin 'n'
+    // Surviving frequency consensus (no conflict with cribs):
+    r: 'k', sh: 'a', ct: 'h', h: 'g', ok: 'q',
+    // v4 (2026-05-05): updated from sanat-theory analysis.
+    //   Top-10 Latin homophonic theories have y→t at positions 1, 2, 4; y→d appears
+    //   zero times. ch→i appears zero times in top-10; ch→e is modal (6/10) but
+    //   ch→s is required for the clearest decode (sanat, ×2) and is used by the
+    //   2nd-ranked theory. Changing to match the sanat-theory signature unblocks
+    //   the hill-climber from an otherwise unreachable solution region.
+    y: 't', ch: 's',
   },
   italian: {
-    e: 't', r: 'k', s: 'z', sh: 'a', ct: 'h', h: 'g', ok: 'q', qo: 'p',
-    y: 'd', l: 'v', t: 'v', ch: 'i',
+    a: 'e', m: 't', s: 's', o: 'o', l: 'l',
+    c: 'n',
+    r: 'k', sh: 'a', ct: 'h', h: 'g', ok: 'q',
+    y: 't', ch: 's',
   },
 };
 
 /** Uncertain glyphs — the hill-climber focuses mutations here. */
-const UNCERTAIN_GLYPHS = ['d', 'a', 'i', 'n', 'o', 'k', 'c', 'f', 'p', 'm'];
+const UNCERTAIN_GLYPHS = ['d', 'i', 'n', 'k', 'f', 'p', 'e', 't', 'q'];
 
 // ---------------------------------------------------------------------------
 // Crossbreeding — recombine uncertain glyphs from top-scoring maps
