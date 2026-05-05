@@ -1,13 +1,20 @@
 import base64
+from dataclasses import dataclass
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.workspace import ImportFormat
 from apx_agent import Dependencies
 
 
+@dataclass
+class GenieSpace:
+    id: str
+    name: str
+
+
 def _generate_files(
     use_case: str,
     tables: list[str],
-    genie_spaces: list[dict],
+    genie_spaces: list[GenieSpace],
     app_name: str,
     include_lineage: bool = False,
 ) -> dict[str, str]:
@@ -23,7 +30,7 @@ def _generate_files(
     if genie_spaces:
         tool_imports.append("genie_tool")
         for space in genie_spaces:
-            tool_calls.append(f'    genie_tool("{space["id"]}"),  # {space["name"]}')
+            tool_calls.append(f'    genie_tool("{space.id}"),  # {space.name}')
 
     if include_lineage:
         tool_imports.append("lineage_tool")
@@ -89,7 +96,7 @@ def _upload_files(ws: WorkspaceClient, files: dict[str, str], workspace_path: st
 def scaffold_project(
     use_case: str,
     tables: list[str],
-    genie_spaces: list[dict],
+    genie_spaces: list[GenieSpace],
     app_name: str,
     include_lineage: bool,
     ws: Dependencies.UserClient,
