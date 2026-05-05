@@ -116,17 +116,18 @@ const generateHypothesis = defineTool({
       'artemisia',  // n=3
     ];
     // NEW features not tested in grid-scan-v1 — these are the ONLY untested territory
+    // Gen-15/16 results: k-init solanaceae r=-0.441***, -edy solanaceae r=+0.261*
+    //   Still needed: k-init vs thistle/plantago; -edy/-eedy vs thistle/plantago/poppy;
+    //   -am/-al/-ar/-dy-edy-combined entirely untested; qo-internal untested
     const NEW_FEATURES = [
-      'd-init rate',       // words starting with d — untested
-      'k-init rate',       // words starting with k — untested
-      't-init rate',       // words starting with t — untested
-      'p-init rate',       // words starting with p — untested
-      'f-init rate',       // words starting with f — untested
-      '-edy suffix rate',  // words ending in edy — common EVA ending, untested
-      '-eedy suffix rate', // words ending in eedy — untested
-      'double-i rate',     // words containing ii anywhere — untested
-      '-or suffix rate',   // words ending in or — untested
-      '-oy suffix rate',   // words ending in oy — untested
+      'k-init rate',       // gen-16 hit: solanaceae LOW (r=-0.441***). Test thistle, plantago next.
+      '-edy suffix rate',  // gen-16 hit: solanaceae HIGH (r=+0.261*). Test thistle, plantago, poppy.
+      '-eedy suffix rate', // gen-16 hit: solanaceae HIGH (r=+0.210*). Test other families.
+      '-am suffix rate',   // completely untested
+      '-al suffix rate',   // completely untested
+      '-ar suffix rate',   // completely untested
+      'qo-internal rate',  // qo NOT at word start — completely untested
+      '-dy-edy combined',  // combined -dy and -edy rate — untested
     ];
 
     const prompt = [

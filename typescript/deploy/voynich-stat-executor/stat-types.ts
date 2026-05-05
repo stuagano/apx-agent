@@ -71,23 +71,27 @@ WHAT IS NOW EXHAUSTED (do not re-test):
   Species-level within solanaceae — infeasible (32/33 folios classified mandrake).
   Within-folio correlation for all major feature pairs — completed.
   New EVA features tested in gen-15/16 (all combinations with major families now in DB):
-    d-init, k-init, t-init, p-init, f-init rates — all tested vs solanaceae/thistle/plantago.
-    double-i rate — tested vs solanaceae, thistle.
-    -edy, -eedy, -oy, -or, -oy suffix rates — tested vs solanaceae.
+    d-init, t-init, p-init, f-init rates — all tested vs solanaceae/thistle/plantago — ALL NULL.
+    double-i rate — tested vs solanaceae, thistle — NULL.
+    -oy, -or suffix rates — tested vs solanaceae — NULL.
+    k-init, -edy, -eedy — significant hits (see NEW FINDINGS below).
 
-NEW FINDINGS from gen-15/16 (add to fingerprint table, confirm with additional families):
+NEW FINDINGS from gen-15/16 (confirmed, recorded):
   k-init rate: solanaceae r=-0.441 p<0.0001*** (LOW k-init — solanaceae avoids k-initial words)
   -edy suffix rate: solanaceae r=+0.261 p=0.022* (HIGH -edy — solanaceae-specific -dy variant)
   -eedy suffix rate: solanaceae r=+0.210 p=0.041* (HIGH -eedy — longer variant of -edy)
-  k-init rate: plantago r=+0.334 p=0.073~ (borderline, plantago may be HIGH k-init opposite solanaceae)
+  k-init rate: plantago r=+0.334 p=0.073~ (borderline HIGH — opposite to solanaceae, anti-correlation predicted)
 
 GENUINELY UNTESTED DIMENSIONS (propose only these):
-  - k-init rate: test against thistle, plantago directly (expected opposite to solanaceae — anti-correlation)
-  - -edy suffix: test against thistle, plantago, poppy (may show the same anti-correlation as -dy)
-  - Cross-section: do herbal family fingerprints (solanaceae qo-prefix, k-init) appear in pharma-section folios?
-  - folio_filter variant: test any confirmed fingerprint restricted to a SINGLE quire.
-  - -am suffix, -al suffix, -ar suffix rates — untested entirely.
-  - qo-internal rate (qo NOT at start of word) — tests whether qo is positional or anywhere.
+  - k-init rate: test against thistle (expected LOW like solanaceae, both avoid k-initial? or HIGH?)
+  - k-init rate: test solanaceae vs plantago DIRECTLY (direct anti-correlation test, r predicted ~+0.4)
+  - -edy suffix: test against thistle, plantago, poppy (may show anti-correlation like -dy)
+  - -eedy suffix: test against thistle, plantago (follow up gen-16 solanaceae hit)
+  - -am suffix rate: completely untested
+  - -al suffix rate: completely untested
+  - -ar suffix rate: completely untested
+  - qo-internal rate (qo NOT at word start): completely untested — tests positional specificity of qo
+  - -dy-edy combined rate: combined signal — may be stronger than either alone
 
 What failed: NPMI threshold-count permutation test (p=0.212).
 `.trim();
@@ -185,6 +189,11 @@ export function computeFeature(words: string[], feature: string): number | null 
     case '-oy suffix rate':   return words.filter(w => w.endsWith('oy')).length / n;
     case 'p-init rate':       return words.filter(w => w.startsWith('p')).length / n;
     case 'f-init rate':       return words.filter(w => w.startsWith('f')).length / n;
+    case '-am suffix rate':   return words.filter(w => w.endsWith('am')).length / n;
+    case '-al suffix rate':   return words.filter(w => w.endsWith('al')).length / n;
+    case '-ar suffix rate':   return words.filter(w => w.endsWith('ar')).length / n;
+    case 'qo-internal rate':  return words.filter(w => !w.startsWith('qo') && w.includes('qo')).length / n;
+    case '-dy-edy combined':  return words.filter(w => w.endsWith('dy') || w.endsWith('edy')).length / n;
     default: return null;
   }
 }
