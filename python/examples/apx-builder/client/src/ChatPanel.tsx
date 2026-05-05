@@ -41,8 +41,8 @@ export function ChatPanel({ messages, isLoading, onSend, onReset }: Props) {
             Tell me what you want your agent to do.
           </p>
         )}
-        {messages.map((m, i) => (
-          <div key={i} style={{ marginBottom: 16, textAlign: m.role === 'user' ? 'right' : 'left' }}>
+        {messages.map((m) => (
+          <div key={m.id} style={{ marginBottom: 16, textAlign: m.role === 'user' ? 'right' : 'left' }}>
             <span style={{
               display: 'inline-block',
               padding: '8px 14px',
