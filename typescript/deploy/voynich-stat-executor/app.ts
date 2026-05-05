@@ -76,6 +76,52 @@ async function executeSql(statement: string): Promise<Array<Record<string, strin
 }
 
 // ---------------------------------------------------------------------------
+// In-memory corpus cache — EVA words and family per folio (corpus is static)
+// ---------------------------------------------------------------------------
+
+interface FolioEntry { family: string; words: string[]; }
+
+let corpusCache: FolioEntry[] | null = null;
+
+async function loadCorpus(): Promise<FolioEntry[]> {
+  if (corpusCache) return corpusCache;
+
+  const [visionRows, evaRows] = await Promise.all([
+    executeSql(`
+      SELECT folio_id, subject_candidates
+      FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis
+      WHERE section = 'herbal'
+      ORDER BY folio_id
+    `),
+    executeSql(`
+      SELECT folio_id, eva_text
+      FROM serverless_stable_qh44kx_catalog.voynich.eva_corpus
+      WHERE section = 'herbal'
+      ORDER BY folio_id
+    `),
+  ]);
+
+  const evaMap = new Map<string, string[]>();
+  for (const r of evaRows) {
+    if (r.folio_id && r.eva_text) evaMap.set(r.folio_id, extractEvaWords(r.eva_text));
+  }
+
+  const entries: FolioEntry[] = [];
+  for (const r of visionRows) {
+    if (!r.folio_id) continue;
+    const words = evaMap.get(r.folio_id) ?? [];
+    if (words.length < 10) continue;
+    const family = classifyPlantFamily(r.subject_candidates ?? '[]');
+    if (!BOTANICAL_FAMILIES.has(family)) continue;
+    entries.push({ family, words });
+  }
+
+  corpusCache = entries;
+  console.log(`[executor] corpus loaded: ${entries.length} botanical folios (cached)`);
+  return entries;
+}
+
+// ---------------------------------------------------------------------------
 // Permutation p-value — same approach as morpho-axis-permutation.ts
 // ---------------------------------------------------------------------------
 
@@ -130,37 +176,13 @@ const executeStatTest = defineTool({
       return { error: `Unknown family_b: ${spec.family_b}. Use a family name or "all-botanical"` };
     }
 
-    // Load folio data
-    const [visionRows, evaRows] = await Promise.all([
-      executeSql(`
-        SELECT folio_id, subject_candidates
-        FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis
-        WHERE section = 'herbal'
-        ORDER BY folio_id
-      `),
-      executeSql(`
-        SELECT folio_id, eva_text
-        FROM serverless_stable_qh44kx_catalog.voynich.eva_corpus
-        WHERE section = 'herbal'
-        ORDER BY folio_id
-      `),
-    ]);
+    // Load corpus (cached after first call within this app instance)
+    const corpus = await loadCorpus();
 
-    // Build EVA word map
-    const evaMap = new Map<string, string[]>();
-    for (const r of evaRows) {
-      if (r.folio_id && r.eva_text) evaMap.set(r.folio_id, extractEvaWords(r.eva_text));
-    }
-
-    // Build folio records
+    // Compute feature values for this specific test
     interface FolioRecord { family: string; value: number; }
     const folios: FolioRecord[] = [];
-    for (const r of visionRows) {
-      if (!r.folio_id) continue;
-      const words = evaMap.get(r.folio_id) ?? [];
-      if (words.length < 10) continue;
-      const family = classifyPlantFamily(r.subject_candidates ?? '[]');
-      if (!BOTANICAL_FAMILIES.has(family)) continue;
+    for (const { family, words } of corpus) {
       const value = computeFeature(words, spec.feature);
       if (value === null) continue;
       folios.push({ family, value });
