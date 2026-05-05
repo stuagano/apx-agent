@@ -128,14 +128,23 @@ async function loadCorpus(): Promise<FolioEntry[]> {
 function computePermutationP(
   folios: Array<{ family: string; value: number }>,
   familyA: string,
+  familyB: string,
   realR: number,
   nPerms: number,
 ): number {
+  // For family-vs-family, only permute within the two families (correct null model).
+  // For family-vs-all-botanical, permute all labels.
+  const pool = familyB === 'all-botanical'
+    ? folios
+    : folios.filter((f) => f.family === familyA || f.family === familyB);
+
   let nAbove = 0;
   for (let i = 0; i < nPerms; i++) {
-    const shuffled = shuffle(folios.map((f) => f.family));
-    const groupA = folios.filter((_, j) => shuffled[j] === familyA).map((f) => f.value);
-    const groupB = folios.filter((_, j) => shuffled[j] !== familyA).map((f) => f.value);
+    const shuffled = shuffle(pool.map((f) => f.family));
+    const groupA = pool.filter((_, j) => shuffled[j] === familyA).map((f) => f.value);
+    const groupB = familyB === 'all-botanical'
+      ? pool.filter((_, j) => shuffled[j] !== familyA).map((f) => f.value)
+      : pool.filter((_, j) => shuffled[j] === familyB).map((f) => f.value);
     const permR = rankBiserial(groupA, groupB);
     if (Math.abs(permR) >= Math.abs(realR)) nAbove++;
   }
@@ -205,7 +214,7 @@ const executeStatTest = defineTool({
     const r = rankBiserial(groupA, groupB);
     const N_PERMS = spec.method === 'permutation-test' ? 1000 : 0;
     const pValue = N_PERMS > 0
-      ? computePermutationP(folios, spec.family_a, r, N_PERMS)
+      ? computePermutationP(folios, spec.family_a, spec.family_b, r, N_PERMS)
       : approxPValue(r, groupA.length, groupB.length);
 
     const direction = r > 0 ? 'higher' : 'lower';
