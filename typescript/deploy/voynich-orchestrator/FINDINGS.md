@@ -197,6 +197,42 @@ The cardan grille / Timm-Schinner model generates EVA text by mechanical templat
 
 A procedural-generation model that coincidentally produces all four of these patterns simultaneously, stably across 10 quires, with consistent family-pharmacology NPMI alignment, requires substantial ad hoc explanation.
 
+### Predictions from the anti-correlation theory
+
+The anti-correlation pattern generates specific, falsifiable predictions for untested comparisons. If the encoding is real and consistent, these should hold in the grid scan:
+
+**Direct family-vs-family comparisons (predicted direction):**
+
+| Test | Prediction | Basis |
+|------|-----------|-------|
+| solanaceae vs thistle — qo-prefix | large positive r (>0.5) | sol HIGH vs thistle LOW, both vs all-botanical |
+| solanaceae vs plantago — -dy | large positive r (>0.3) | sol HIGH, plantago LOW |
+| solanaceae vs plantago — -chy | large negative r (<−0.3) | sol LOW, plantago HIGH |
+| solanaceae vs plantago — ch-init | large negative r (<−0.4) | sol LOW (−0.249), plantago HIGH (+0.563) |
+| thistle vs plantago — short word | positive r | thistle HIGH, plantago direction unknown |
+
+**Untested features on known families (predicted direction, less certain):**
+
+| Test | Prediction | Basis |
+|------|-----------|-------|
+| plantago — qo-prefix vs all-botanical | negative r | follows thistle/solanaceae anti-correlation, qo seems solanaceae-specific |
+| thistle — -dy vs all-botanical | neutral or negative r | solanaceae HIGH, plantago LOW, thistle may be near-zero or LOW |
+| thistle — -chy vs all-botanical | neutral or positive r | solanaceae LOW, plantago HIGH, thistle may follow plantago |
+
+**New features (unknown direction, informative either way):**
+
+- `-aiin suffix rate`: daiin is the most common EVA word overall. If family-specific, this is a new dimension of content encoding.
+- `mean word length`: does one family use systematically longer/shorter words?
+- `sh-init rate`: sh- words include shed, she, shol — common across EVA; family bias unknown.
+
+**Null predictions (expected no significance):**
+- `oq-prefix rate`: low-frequency prefix, likely no family signal
+- `-ain suffix rate`: less common than -aiin; expected null
+
+These predictions are derivable from the anti-correlation hypothesis and make it falsifiable. If the direct family-vs-family comparisons do NOT show the predicted large effect sizes, the anti-correlation claim would need revision.
+
+---
+
 ### What this is not
 
 - **Not a decipherment.** No EVA word has been assigned a reliable meaning. The NPMI associations are qualitatively compelling but statistically unproven.
@@ -222,6 +258,7 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `label-word-test.ts` | Once-per-folio label analysis | 13 significant words |
 | `jaccard-decomposition.ts` | Label vs. text tier decomposition | 88.7% text retention |
 | `cross-section-test.ts` | Section-specificity via ZL file | 5/13 botanical-specific |
+| `morpho-grid-scan.ts` | Full feature × family matrix (15 features × 7 families, pairwise + vs-all) | pending — run after IP unblock |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
 
