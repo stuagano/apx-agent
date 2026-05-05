@@ -451,16 +451,29 @@ The solanaceae effect is the largest (r=+0.572) — consistent with solanaceae h
 
 **Method:** Three analyses using word sequences rather than word-rate bags-of-words. (1) Bigram Jaccard clustering: compute pairwise Jaccard similarity on word-pair sets instead of word sets, compare within-family vs. between-family lift. (2) Bigram entropy and bigram type/token ratio as per-folio scalars, tested via rank-biserial + 2,000-perm null. (3) Characteristic bigrams: bigrams appearing in ≥3 folios of a target family, ranked by enrichment relative to all-botanical rate.
 
-**Part 1 — Bigram Jaccard clustering:**
+**Part 1 — N-gram Jaccard lift curve (`ngram-lift.ts`, 2026-05-05):**
 
-| Metric | Within-family | Between-family | Lift |
-|--------|:------------:|:--------------:|:----:|
-| Unigram Jaccard | 0.0622 | 0.0564 | **1.102×** |
-| Bigram Jaccard | 0.0013 | 0.0010 | **1.277×** |
+| n | Within-fam J | Between-fam J | Lift | Lift / unigram | p-value |
+|---|:------------:|:-------------:|:----:|:--------------:|:-------:|
+| 1 (words) | 0.06219 | 0.05643 | **1.102×** | 1.000 | 0.001 \*\* |
+| 2 (bigrams) | 0.00130 | 0.00102 | **1.277×** | 1.159× | 0.036 \* |
+| 3 (trigrams) | 0.000010 | 0.000003 | **3.098×** | 2.811× | 0.096 ~ |
+| 4 (4-grams) | ≈0 | ≈0 | — | — | (sparsity floor: no 4-gram shared by any two folios) |
 
-Bigram lift is 16% higher than unigram lift (ratio: 1.159×). Same-family folios share more word *sequences* than their shared vocabulary alone would predict. The absolute bigram overlap is sparse (exact sequence matches are rare), but the relative enrichment is larger than for vocabulary — word order contributes family signal beyond word choice.
+The lift increases monotonically from n=1 to n=3: the longer the sequence, the more tightly same-family folios cluster relative to between-family folios. The jump from n=2 (1.277×) to n=3 (3.098×) is striking — specific 3-word sequences are highly family-concentrated. p-values degrade with n because absolute overlap counts shrink (the test is underpowered at n=3), but the direction is consistent. At n=4 there are no exact sequence matches between any folio pair — the meaningful sequence-length range is n=1 to n=3.
 
-**What this means:** If EVA text were a bag of family-characteristic words arranged in random order, bigram lift would equal unigram lift. The excess bigram clustering means the *ordering* of words is also family-specific. A cardan-grille model that generates words from a lookup table but imposes no ordering constraints would not produce this — the sequential structure carries additional content signal.
+**Per-family bigram lift (n=2):**
+
+| Family | Within-fam J | Between-fam J | Lift |
+|--------|:------------:|:-------------:|:----:|
+| solanaceae | 0.00130 | 0.00090 | **1.454×** |
+| thistle | 0.00130 | 0.00093 | **1.397×** |
+| poppy | 0.00195 | 0.00126 | **1.546×** |
+| plantago | 0.00083 | 0.00110 | **0.748×** |
+
+Solanaceae, thistle, and poppy all show within-family bigram enrichment. **Plantago is below 1 (0.748×)**: plantago folios share fewer bigrams with each other than with folios from other families. This quantifies the absence story from the plantago investigation — plantago text uses common EVA bigrams that appear broadly across families rather than family-specific sequences. Plantago's sequence identity is entirely negative (absence of solanaceae's qo-transitions), confirmed here by its sub-1 within-family bigram lift.
+
+**What this means:** If EVA text were a bag of family-characteristic words in random order, bigram lift would equal unigram lift. The monotonically increasing curve means word *ordering* carries progressively more family signal as sequence length grows. A cardan-grille model with no ordering constraints would produce a flat curve at 1.0× across all n — the observed curve is the opposite.
 
 **Part 2 — Bigram entropy as a feature:**
 
@@ -555,7 +568,7 @@ The cardan grille / Timm-Schinner model generates EVA text by mechanical templat
 - No comprehensive grid scan finding 60 significant morphological signals across 420 tests, spanning 6 of 7 tested botanical families ✗ (grid-scan-v1, generation 11)
 - No within-family folio-pair co-variation between morphological and lexical channels ✗ (r=+0.371 pooled over 6,444 pairs, p<0.0001; solanaceae r=+0.572)
 - No new EVA feature signals beyond the original 15 ✗ (k-init solanaceae r=−0.441***; l-containing solanaceae r=+0.260* confirmed across 4 comparisons; word-length CV solanaceae LOW; gallows rate thistle HIGH vs plantago r=+0.497*)
-- No word sequence structure by botanical family ✗ (bigram Jaccard lift 1.277× vs unigram 1.102×; characteristic transitions solanaceae `chedy ↔ qokain` 2.82×, thistle `chol → cthy` 3.10×)
+- No word sequence structure by botanical family ✗ (n-gram lift curve: 1.102× → 1.277× → 3.098× for n=1,2,3; monotonically increasing; solanaceae/thistle/poppy bigram lift >1, plantago 0.748× confirming absence-driven sequence identity)
 
 A procedural-generation model that coincidentally produces all eight of these patterns simultaneously, stably across ≥10 quires, with consistent family-pharmacology NPMI alignment, pre-registered prediction accuracy, and a 14.3% hit rate in a blind 420-test scan, requires substantial ad hoc explanation.
 
@@ -634,6 +647,7 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `sequence-features.ts` | Bigram Jaccard clustering, bigram entropy, characteristic bigrams | Bigram lift 1.277× > unigram 1.102×; word order encodes family; thistle `chol→cthy` 3.10×, solanaceae `chedy↔qokain` 2.82× |
 | `bigram-classifier.ts` | Permutation test on bigram lift + bigram-feature LOO classifier | Bigram lift p=0.038*; bigrams over-specialize (plantago 90% alone); combined +1 folio |
 | `plantago-sequence.ts` | Plantago sequence investigation — why 90%? | Absence-driven (30/31 disc. bigrams are solanaceae's); ch→ch clustering vs sol ch→qo; ablation confirms plantago has no positive sequence identity |
+| `ngram-lift.ts` | N-gram lift curve n=1..4 with permutation tests + per-family bigram breakdown | 1.102→1.277→3.098× monotonic; n=4 sparsity floor; plantago n=2 lift=0.748× (only family below 1) |
 | `species-level-test.ts` | Species-level Jaccard clustering within solanaceae | Infeasible — 32/33 folios classified as mandrake |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
