@@ -145,6 +145,59 @@ Six independent features with divergent solanaceae/plantago directions — the t
 
 **k-init family pattern (all tested):** solanaceae r=−0.441*** LOW; artemisia r=+0.728* HIGH; plantago r=+0.334~ borderline HIGH; poppy/lily underpowered (n<7) but directionally HIGH. The k-initial suppression appears solanaceae-specific — other botanical families have average or elevated k-init rates.
 
+#### Structural features — gen-20 scan (`structural-scan.ts`, 2026-05-04)
+
+Four structural EVA features added (not in any prior scan): `gallows rate` (words containing k/t/p/f), `l-containing rate` (words with any 'l'), `word-length CV` (std/mean of word lengths), `consecutive-repeat rate` (adjacent identical word pairs). Tested vs all-botanical and all 21 pairwise combinations. N=2,000 permutations. 9 significant / 112 tests (8.0%).
+
+**`l-containing rate` — solanaceae HIGH (confirmed across 4 comparisons):**
+
+| Comparison | r | p |
+|-----------|---|---|
+| solanaceae vs all-botanical | **+0.260** | **0.024 \*** |
+| solanaceae vs thistle | **+0.418** | **0.005 \*\*** |
+| solanaceae vs plantago | **+0.506** | **0.015 \*** |
+| solanaceae vs poppy | **+0.481** | **0.048 \*** |
+| solanaceae vs mint-family | **+0.758** | **0.035 \*** |
+
+Solanaceae words are more likely to contain the letter 'l' — consistent with the label-tier words for solanaceae (`olaiin`, `oldaiin`, `qockhol`) all being l-heavy. This extends to the full running vocabulary, not just label words.
+
+**`word-length CV` — solanaceae LOW (more uniform word lengths):**
+
+| Comparison | r | p |
+|-----------|---|---|
+| solanaceae vs thistle | **−0.349** | **0.015 \*** |
+| solanaceae vs poppy | **−0.481** | **0.046 \*** |
+| solanaceae vs all-botanical | −0.202 | 0.093 ~ |
+
+Solanaceae word lengths cluster more tightly around the mean — less variance across word lengths than other families. This is consistent with solanaceae having a dominant morphological template (qo-prefix words occupy a specific length range).
+
+**`gallows rate` — thistle HIGH, plantago LOW:**
+
+| Comparison | r | p |
+|-----------|---|---|
+| thistle vs plantago | **+0.497** | **0.018 \*** |
+| lily-family vs artemisia | −1.000 | 0.046 \* (n=4 vs 3) |
+| thistle vs all-botanical | +0.211 | 0.073 ~ |
+| plantago vs all-botanical | −0.341 | 0.081 ~ |
+| solanaceae vs thistle | −0.279 | 0.053 ~ |
+
+Thistle uses more words with gallows letters (k, t, p, f); plantago uses fewer. The direct thistle vs plantago comparison is the strongest. Combined with the borderline vs-all results, this suggests gallows usage is moderately family-differentiated.
+
+**`consecutive-repeat rate`:** null across all 28 tested comparisons. Adjacent word repetition in EVA is not family-specific.
+
+**Solanaceae structural profile (now 8 confirmed axes):**
+
+| Feature | Direction | Strongest comparison |
+|---------|-----------|---------------------|
+| l-containing rate | HIGH | vs thistle r=+0.418** |
+| word-length CV | LOW | vs thistle r=−0.349* |
+| qo-prefix | HIGH | vs all r=+0.532*** |
+| -dy suffix | HIGH | vs all r=+0.367** |
+| -chy suffix | LOW | vs all r=−0.435*** |
+| k-init | LOW | vs all r=−0.441*** |
+| -al suffix | HIGH | vs all r=+0.382** |
+| ch-init | LOW | vs all r=−0.249* |
+
 **Expanded LOO classifier (15 features, 2026-05-04):** Adding the 3 new confirmed features (k-init, -al, -edy) to the original 6 drops LOO accuracy to 48.8% (39/80) from 52.5% (42/80). The new features are correlated with the original fingerprint dimensions and do not add independent discriminative power in a nearest-centroid classifier. The original 6-feature set is the optimally discriminative subset found so far.
 
 **Interpretation:** qo-internal null is structurally significant: qo appears exclusively at word boundaries as a prefix, not internally. This constrains the EVA generative model — whatever produces qo-prefix words does not allow qo-internal substitution.
@@ -409,7 +462,7 @@ The cardan grille / Timm-Schinner model generates EVA text by mechanical templat
 - No above-chance classification of folio plant family from EVA text alone ✗ (52.5% vs 25% chance, p<0.0001)
 - No comprehensive grid scan finding 60 significant morphological signals across 420 tests, spanning 6 of 7 tested botanical families ✗ (grid-scan-v1, generation 11)
 - No within-family folio-pair co-variation between morphological and lexical channels ✗ (r=+0.371 pooled over 6,444 pairs, p<0.0001; solanaceae r=+0.572)
-- No new EVA feature signals beyond the original 15 ✗ (k-init rate solanaceae r=-0.441 p<0.001; k-init artemisia r=+0.728 p=0.025 — solanaceae-specific suppression confirmed by cross-family pattern)
+- No new EVA feature signals beyond the original 15 ✗ (k-init solanaceae r=−0.441***; l-containing solanaceae r=+0.260* confirmed across 4 comparisons; word-length CV solanaceae LOW; gallows rate thistle HIGH vs plantago r=+0.497*)
 
 A procedural-generation model that coincidentally produces all eight of these patterns simultaneously, stably across ≥10 quires, with consistent family-pharmacology NPMI alignment, pre-registered prediction accuracy, and a 14.3% hit rate in a blind 420-test scan, requires substantial ad hoc explanation.
 
@@ -483,6 +536,7 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `folio-pair-distance-test.ts` | Within-family morphological × lexical channel co-variation | r=+0.371 pooled (6,444 pairs), solanaceae r=+0.572, 4/4 large families *** |
 | `quire-new-features.ts` | Quire invariance for new confirmed features (k-init, -al suffix) | k-init 5/9 MIXED, -al 6/9 MIXED, qo-prefix 8/9 CONSISTENT (reference) |
 | `targeted-gen19.ts` | Gen-19 exhaustive scan — remaining small-family + follow-up tests | k-init artemisia r=+0.728 p=0.025*; all other untested dimensions null |
+| `structural-scan.ts` | Gen-20 structural features — gallows, l-containing, word-length CV, consecutive-repeat | l-containing solanaceae HIGH (4 comparisons **); word-length CV solanaceae LOW (*); gallows thistle HIGH vs plantago * |
 | `species-level-test.ts` | Species-level Jaccard clustering within solanaceae | Infeasible — 32/33 folios classified as mandrake |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).

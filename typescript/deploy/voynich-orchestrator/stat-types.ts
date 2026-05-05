@@ -110,7 +110,22 @@ GEN-19 TARGETED SCAN (2026-05-04) — all remaining untested dimensions closed:
 WHAT IS NOW FULLY EXHAUSTED (all genuinely untested items closed):
   All small-family tests for -al suffix rate and k-init rate completed.
   -am, -ain, -eedy all tested across all viable comparisons.
-  No genuinely untested dimensions remain in the current feature × family matrix.
+  Prior feature × family matrix fully exhausted after gen-19.
+
+GEN-20 STRUCTURAL SCAN (structural-scan.ts, 2026-05-04) — 9/112 significant (8.0%):
+  l-containing rate: solanaceae r=+0.260* vs all-botanical; r=+0.418** vs thistle; r=+0.506* vs plantago; r=+0.481* vs poppy
+  word-length CV: solanaceae r=-0.349* vs thistle (LOW CV = more uniform lengths); r=-0.481* vs poppy
+  gallows rate: thistle r=+0.497* vs plantago; borderline thistle HIGH/plantago LOW vs all-botanical
+  consecutive-repeat rate: NULL across all comparisons — do not re-test.
+
+NULL in gen-20 (do not re-test): consecutive-repeat all families; l-containing thistle/plantago vs all-botanical;
+  gallows solanaceae vs all-botanical; word-length CV plantago/thistle vs all-botanical.
+
+GENUINELY UNTESTED DIMENSIONS (remaining after gen-20):
+  - l-containing rate: test thistle and plantago directly (both tested vs solanaceae but not vs all-botanical)
+  - gallows rate: follow-up solanaceae vs thistle direct (borderline p=0.053) — is gallows a solanaceae-LOW signal?
+  - word-length CV: test across more family pairs (only solanaceae tested so far)
+  - Composite: l-containing + word-length CV for LOO classifier (do these improve accuracy?)
 
 What failed: NPMI threshold-count permutation test (p=0.212).
 `.trim();
@@ -213,6 +228,21 @@ export function computeFeature(words: string[], feature: string): number | null 
     case '-ar suffix rate':   return words.filter(w => w.endsWith('ar')).length / n;
     case 'qo-internal rate':  return words.filter(w => !w.startsWith('qo') && w.includes('qo')).length / n;
     case '-dy-edy combined':  return words.filter(w => w.endsWith('dy') || w.endsWith('edy')).length / n;
+    // Structural features — gen-20
+    case 'gallows rate':      return words.filter(w => /[ktpf]/.test(w)).length / n;
+    case 'l-containing rate': return words.filter(w => w.includes('l')).length / n;
+    case 'consecutive-repeat rate': {
+      if (n < 2) return 0;
+      let repeats = 0;
+      for (let i = 1; i < n; i++) if (words[i] === words[i - 1]) repeats++;
+      return repeats / (n - 1);
+    }
+    case 'word-length CV': {
+      const mean = words.reduce((s, w) => s + w.length, 0) / n;
+      if (mean === 0) return 0;
+      const variance = words.reduce((s, w) => s + (w.length - mean) ** 2, 0) / n;
+      return Math.sqrt(variance) / mean;
+    }
     default: return null;
   }
 }
