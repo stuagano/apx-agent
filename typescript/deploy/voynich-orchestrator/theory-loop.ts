@@ -982,25 +982,46 @@ const HILL_CLIMB_STEPS = 2000;
 const SEED_MAPS = 6;
 
 // ---------------------------------------------------------------------------
-// Consensus map — derived from analysis of top-scoring theories.
-// High-stability assignments (>= 35% agreement across top 20 maps) are locked.
-// Low-stability assignments are left undefined for the hill-climber to explore.
+// Locked character assignments fed into every SA seed and mutation.
+//
+// v1 (frequency consensus): derived from top-scoring theories by frequency
+//    matching. Replaced by v2 — statistical cribs are stronger evidence.
+//
+// v2 (statistical cribs, function-word-cribs.ts, 2026-05-05):
+//   Positional grammar analysis on ZL full-manuscript corpus (36,937 tokens).
+//   "am" is 72% line-final (vs 14% baseline) → almost certainly a sentence-final
+//   particle. Best Latin match: "et" (2 chars, most common Latin word, clause-final).
+//   "sol" is 55% line-initial → sentence-opener. Best Latin match: "sol" (sun) —
+//   identity mapping. Both cribs are confirmed by 128/128 SA runs across the
+//   herbal section. Three v1 assignments dropped due to direct conflict:
+//     s→z (was frequency-consensus; overwrote by s→s from sol crib)
+//     l→v (was frequency-consensus; overwrote by l→l from sol crib)
+//     e→t (conflicts with m→t from am crib; left open for homophonic runs)
+//   qo→p and t→v dropped: no statistical basis, low run-to-run stability.
 // ---------------------------------------------------------------------------
 
-/** Locked assignments — converging across top maps (>= 35% agreement). */
+/** Locked assignments — statistical cribs + surviving frequency consensus. */
 const CONSENSUS_LOCKED: Record<string, Record<string, string>> = {
   latin: {
-    e: 't', r: 'k', s: 'z', sh: 'a', ct: 'h', h: 'g', ok: 'q', qo: 'p',
-    y: 'd', l: 'v', t: 'v', ch: 'i',  // ch→i: 7/10 top maps agree
+    // Statistical cribs (function-word-cribs.ts):
+    a: 'e',   // am→et: 72% line-final particle; "et" is Latin sentence-final conjunction
+    m: 't',   // am→et: same crib
+    s: 's',   // sol→sol: 55% line-initial; Latin "sol" (sun) is identity mapping
+    o: 'o',   // sol→sol: same crib
+    l: 'l',   // sol→sol: same crib
+    // Surviving frequency consensus (no conflict with cribs):
+    r: 'k', sh: 'a', ct: 'h', h: 'g', ok: 'q',
+    y: 'd', ch: 'i',
   },
   italian: {
-    e: 't', r: 'k', s: 'z', sh: 'a', ct: 'h', h: 'g', ok: 'q', qo: 'p',
-    y: 'd', l: 'v', t: 'v', ch: 'i',
+    a: 'e', m: 't', s: 's', o: 'o', l: 'l',
+    r: 'k', sh: 'a', ct: 'h', h: 'g', ok: 'q',
+    y: 'd', ch: 'i',
   },
 };
 
 /** Uncertain glyphs — the hill-climber focuses mutations here. */
-const UNCERTAIN_GLYPHS = ['d', 'a', 'i', 'n', 'o', 'k', 'c', 'f', 'p', 'm'];
+const UNCERTAIN_GLYPHS = ['d', 'i', 'n', 'k', 'c', 'f', 'p', 'e', 't', 'q'];
 
 // ---------------------------------------------------------------------------
 // Crossbreeding — recombine uncertain glyphs from top-scoring maps
