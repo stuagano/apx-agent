@@ -124,6 +124,13 @@ Systematic rank-biserial tests across all 7 viable families × 10 EVA features (
 
 The solanaceae and thistle qo-prefix fingerprints are quire-consistent (≥75% threshold), ruling out scribal-hand confound for both. Thistle's short-word and unique-word-ratio signals are noisier per-quire. Plantago's quire results are inconclusive at n=10 with 6 mixed quires — the per-quire comparison has typically n=1–3 per group, which has high variance.
 
+**Feature definition robustness (`feature-robustness-test.ts`, 2026-05-04):** For each of the 11 confirmed fingerprints, tested 3-4 definitional variants (e.g., qo-prefix vs. q-prefix vs. qo+long; -chy vs. -hy vs. -y; short≤3 vs. short≤2 vs. short≤4) using 1,000 permutations each. Result: **10/11 ROBUST** (canonical significant AND ≥50% of variants in same direction). Key insights:
+- qo-prefix (solanaceae/thistle): all 3-4 variants significant — signal is specifically qo-, not any q-word in general but extending to consonant-following qo combinations
+- -chy (solanaceae): robust to -hy but NOT -y — the specificity is the `ch` onset before `y`, not any y-ending
+- plantago -chy: only canonical significant (FRAGILE) — the -chy signal for plantago is definition-sensitive; plantago ch-init remains robust (3/3 variants)
+- short word: ≤3 and ≤4 work; ≤2 does not — shortest words are not family-specific, the signal is 2-3 char words
+- Overall: 27/37 variants significant in expected direction. No alternate definitions reverse the direction.
+
 **Pre-registered directional predictions confirmed (`targeted-predictions-test.ts`, 2026-05-04):** Five family-vs-family comparisons were derived from the anti-correlation table and tested before execution:
 
 | Test | Predicted | Observed | p | Verdict |
