@@ -1,12 +1,28 @@
 bundle:
   name: agent-hub
 
+sync:
+  include:
+    - .build
+  exclude:
+    - .venv
+    - .apx
+    - "**/__pycache__"
+    - "**/*.pyc"
+    - "*.egg-info"
+    - node_modules
+    - uv.lock
+
+artifacts:
+  default:
+    build: UV_OFFLINE=1 apx build && cp pyproject.toml .build/
+
 resources:
   apps:
-    agent-hub:
+    agent-hub-app:
       name: "agent-hub"
-      description: "Unified catalog and chat interface for workspace agents"
-      source_code_path: .
+      description: "Agent Hub — portal for all deployed AI agents"
+      source_code_path: ./.build
 
 targets:
   dev:
