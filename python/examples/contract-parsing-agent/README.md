@@ -4,7 +4,7 @@ Extract structured data from contracts using GenAI — identifies pricing terms,
 
 ## What it does
 
-Maintains a portfolio of parsed contracts in Unity Catalog. Supports uploading new contracts (PDF or text) via a `/upload` endpoint, which triggers GenAI extraction into a structured schema. Provides tools to query the portfolio, summarize individual contracts, and search semantically across the corpus using vector search.
+Maintains a portfolio of parsed contracts in Unity Catalog. Supports uploading new contracts (PDF or text) via a `/upload` endpoint, which triggers GenAI extraction into a structured schema. Provides tools to query the portfolio, summarize individual contracts, and find contracts expiring soon.
 
 ## Required env vars
 
@@ -32,8 +32,6 @@ apx deploy --profile <your-profile>
 | Tool | Description |
 |---|---|
 | `query_portfolio` | Filter and list contracts by counterparty, type, date range |
-| `get_contract_summary` | Structured summary of a specific contract |
-| `extract_pricing_terms` | Pricing tiers, demand charges, escalation clauses |
-| `search_contracts` | Semantic search across contracts via vector search |
+| `summarize_contract` | Structured summary of a specific contract by ID |
 | `find_contracts_expiring` | Contracts expiring within N days |
 | `extract_new_contract` | Extract and store a new contract from a volume path |
