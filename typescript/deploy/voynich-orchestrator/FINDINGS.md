@@ -754,11 +754,45 @@ Candidate C (botanical notation) is thereby weakened further: a notation system 
 
 ---
 
+### Section 10: Section Vocabulary Overlap
+
+**Method (`section-vocabulary.ts`, 2026-05-05):** Pairwise vocabulary Jaccard between all manuscript sections and herbal plant families. Overlap coefficient (|A∩B|/min(|A|,|B|)) for balneological vs. each family. Words enriched ≥2× in balneological with folio presence ≥40%. Words shared between balneological and solanaceae (both ≥30%). Cross-section function word candidates (appear in ≥50% of folios in every major section).
+
+**Vocabulary distances:**
+
+| | solanaceae | thistle | plantago | balneo | stars |
+|---|---|---|---|---|---|
+| balneo | 0.135 | **0.157** | 0.121 | — | **0.170** |
+| herbal-all | 0.196 | 0.344 | 0.163 | 0.147 | 0.186 |
+
+Balneological is NOT closer to solanaceae than to other herbal families. Its highest vocabulary Jaccard is with *stars* (0.170) and *thistle* (0.157), not solanaceae (0.135). The overlap coefficient of balneo vs. solanaceae (0.388) is comparable to balneo vs. plantago (0.403) and thistle (0.310) — the shared vocabulary is diffuse, not solanaceae-specific.
+
+**Balneological-exclusive words (88 words, ≥40% folio presence, ≥2× lift over herbal):** Dominated by `ol-` prefix forms: `olshedy`, `olchedy`, `olkedy`, `olkeey`, `olkain`, `olkeedy`, `okal` — and `l-` prefix forms: `lchedy`, `lshedy`, `lchey`. These are nearly absent from solanaceae. The `qo`-prefix balneo words (`qoteedy` 17/19, `qol` 19/19, `qokain` 19/19, `qotal` 13/19) are among the strongest balneo-exclusive words, confirming the morphological register but as a different word inventory.
+
+**Shared vocabulary between balneological and solanaceae (21 words, both ≥30%):** The overlap consists almost entirely of universal EVA words: `daiin`, `or`, `ol`, `dar`, `dy`, `chedy`. These words are equally common in thistle and herbal-all. No content-specific vocabulary is shared between bathing text and nightshade text.
+
+**Function word candidates — 4 words appear in ≥50% of folios across every major section (H, B, S, P):**
+
+| Word | Herbal | Balneo | Stars | Pharma | Notes |
+|------|--------|--------|-------|--------|-------|
+| `daiin` | 0.95 | 0.89 | 0.92 | 1.00 | Nearly universal |
+| `or` | 0.51 | 0.95 | 0.96 | 0.75 | 3-letter, very frequent |
+| `dar` | 0.52 | 0.84 | 0.80 | 0.75 | 3-letter, very frequent |
+| `dy` | 0.61 | 0.89 | 0.52 | 0.75 | Also a suffix component |
+
+These four words are EVA's strongest function word candidates. `daiin` in particular appears in 89–100% of folios in every section tested — it is plausibly an EVA equivalent of a definite article or high-frequency preposition.
+
+**Interpretation:** The balneological section shares EVA's morphological register (high qo-prefix, high -dy, low -chy) with solanaceae text but uses an entirely different vocabulary. This is the grammatical register pattern expected of a real language: the same grammatical forms (morphological class) applied to different content domains. A botanical notation system has no mechanism to produce this pattern — there is no botanical reason to use solanaceae-style morphological markers when writing about bathing rituals.
+
+This finding adds a tenth independent line of evidence for Candidate A: shared morphological grammar without lexical overlap across semantically unrelated sections is a defining property of natural language, not notation.
+
+---
+
 ### What this is not
 
-- **Not a decipherment.** No EVA word has been assigned a reliable meaning. The NPMI associations are qualitatively compelling but statistically unproven.
-- **Not proof of language.** The within-folio grammar and n-gram structure are most consistent with Candidate A, but cannot by themselves rule out a highly structured notation (C) or a language-level cipher (B).
-- **Cross-section coverage update.** The -dy/-chy grammar was tested in all sections accessible via the ZL full-manuscript transcription. The stars section provides significant confirmation; other sections are underpowered due to small folio counts (8–19 folios).
+- **Not a decipherment.** No EVA word has been assigned a reliable meaning. The four function word candidates (daiin, or, dar, dy) are statistically identified but their meanings are unknown.
+- **Not proof of language.** The within-folio grammar, n-gram structure, and cross-section register sharing are most consistent with Candidate A, but cannot by themselves rule out a highly structured notation (C) or a language-level cipher (B).
+- **Cross-section coverage update.** The -dy/-chy grammar was tested in all sections accessible via the ZL full-manuscript transcription. The stars section provides significant confirmation; vocabulary structure was tested across all 4 major sections (H, B, S, P).
 
 ---
 
@@ -796,6 +830,7 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `ngram-lift.ts` | N-gram lift curve n=1..4 with permutation tests + per-family bigram breakdown | 1.102→1.277→3.098× monotonic; n=4 sparsity floor; plantago n=2 lift=0.748× (only family below 1) |
 | `characteristic-trigrams.ts` | Top enriched trigrams per family with permutation tests | Family-exclusive trigrams confirmed; no individual significance (portfolio effect); plantago 0 trigrams at k≥2 |
 | `cross-section-grammar.ts` | Cross-section grammar replication — -dy/-chy alternant + feature rates + vocabulary clustering | Stars section r=−0.437 p=0.003**; balneological morphological anomaly (qo=0.244, -dy=0.311, -chy=0.009); grammar persists outside herbal |
+| `section-vocabulary.ts` | Section vocabulary overlap — does balneo share vocabulary with solanaceae? | Vocabulary distinct (Jaccard 0.135, lower than balneo-thistle 0.157 or balneo-stars 0.170); shared words are universal function words; 4 function word candidates (daiin, or, dar, dy); balneo has 88 exclusive `ol-`-prefix words absent from solanaceae; morphological register shared without lexical overlap |
 | `species-level-test.ts` | Species-level Jaccard clustering within solanaceae | Infeasible — 32/33 folios classified as mandrake |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
