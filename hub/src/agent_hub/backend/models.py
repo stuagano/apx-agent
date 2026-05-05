@@ -1,18 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from importlib.metadata import version
 
 from pydantic import BaseModel
-
-from .. import __version__
-
-
-class VersionOut(BaseModel):
-    version: str
-
-    @classmethod
-    def from_metadata(cls):
-        return cls(version=__version__)
 
 
 class AgentTool(BaseModel):
@@ -25,21 +16,31 @@ class AgentCard(BaseModel):
     name: str
     display_name: str
     description: str
-    status: str  # "live" | "unreachable" | "stub" | "planned"
+    status: str
     url: str
     tools: list[AgentTool]
-    workstream: str = ""
     tags: list[str] = []
     mcp_endpoint: str | None = None
     last_seen: datetime | None = None
-    supports_invoke: bool = False  # True if agent exposes POST /responses
+    supports_invoke: bool = False
 
 
 class RegisterRequest(BaseModel):
     url: str
-    workstream: str = ""
     tags: list[str] = []
 
 
 class InvokeRequest(BaseModel):
     input: str
+
+
+class VersionOut(BaseModel):
+    version: str
+
+    @classmethod
+    def from_metadata(cls) -> "VersionOut":
+        try:
+            v = version("agent-hub")
+        except Exception:
+            v = "dev"
+        return cls(version=v)
