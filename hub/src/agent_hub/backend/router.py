@@ -68,7 +68,7 @@ _AGENTS["live-example"] = AgentCard(
         "A deployed agent. Set EXAMPLE_AGENT_URL to point to your "
         "Databricks App and this card will be populated automatically on startup."
     ),
-    status="live" if _EXAMPLE_AGENT_URL else "unreachable",
+    status="live" if _EXAMPLE_AGENT_URL else "stub",
     url=_EXAMPLE_AGENT_URL,
     tags=["example"],
     tools=[],

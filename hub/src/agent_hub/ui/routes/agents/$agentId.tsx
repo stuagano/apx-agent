@@ -203,11 +203,6 @@ function AgentDetail() {
                     MCP enabled
                   </span>
                 )}
-                {agent.workstream && (
-                  <span className="inline-flex items-center gap-1.5">
-                    workstream: {agent.workstream}
-                  </span>
-                )}
               </div>
 
               {/* Tags */}
