@@ -7,6 +7,7 @@ template offers, but without requiring the APX template scaffolding.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from typing import Annotated, Any, TypeAlias
 from uuid import UUID
@@ -16,6 +17,30 @@ from fastapi import Depends, Header, Request
 from pydantic import BaseModel, SecretStr
 
 logger = logging.getLogger(__name__)
+
+
+def _make_workspace_client(**kwargs: Any) -> WorkspaceClient:
+    """Create a WorkspaceClient, resolving the Databricks Apps auth conflict.
+
+    Databricks Apps injects both OAuth M2M credentials (DATABRICKS_CLIENT_ID /
+    DATABRICKS_CLIENT_SECRET) and a PAT (DATABRICKS_TOKEN) into the environment
+    simultaneously.  ``WorkspaceClient()`` with no arguments fails with
+    ``validate: more than one authorization method configured: oauth and pat``
+    when both are present.  This helper detects that situation and prefers the
+    OAuth M2M credentials so the client initializes cleanly.
+
+    Any explicit ``kwargs`` are forwarded unchanged (e.g. ``token=`` for OBO).
+    """
+    if kwargs:
+        return WorkspaceClient(**kwargs)
+    client_id = os.environ.get("DATABRICKS_CLIENT_ID")
+    client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET")
+    token = os.environ.get("DATABRICKS_TOKEN")
+    host = os.environ.get("DATABRICKS_HOST")
+    if client_id and client_secret and token:
+        # Both OAuth M2M and PAT present — prefer OAuth M2M
+        return WorkspaceClient(client_id=client_id, client_secret=client_secret, host=host)
+    return WorkspaceClient()
 
 
 # ---------------------------------------------------------------------------
@@ -78,8 +103,8 @@ def _get_user_client(headers: HeadersDependency) -> WorkspaceClient:
     """
     if not headers.token:
         logger.info("No OBO token — falling back to CLI credentials for local dev")
-        return WorkspaceClient()
-    return WorkspaceClient(
+        return _make_workspace_client()
+    return _make_workspace_client(
         token=headers.token.get_secret_value(),
         host=f"https://{headers.host}" if headers.host else None,
     )
@@ -123,9 +148,9 @@ def _get_sql_runner(headers: HeadersDependency) -> SqlRunnerFn:
 
     if not headers.token:
         logger.info("No OBO token — SQL runner using CLI credentials for local dev")
-        ws = WorkspaceClient()
+        ws = _make_workspace_client()
     else:
-        ws = WorkspaceClient(
+        ws = _make_workspace_client(
             token=headers.token.get_secret_value(),
             host=f"https://{headers.host}" if headers.host else None,
         )

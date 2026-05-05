@@ -11,6 +11,7 @@ from typing import Any
 
 from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, FastAPI, HTTPException, Request
+from ._defaults import _make_workspace_client
 from fastapi.responses import StreamingResponse
 from starlette.responses import Response
 
@@ -559,7 +560,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Initialize workspace client
-        app.state.workspace_client = WorkspaceClient()
+        app.state.workspace_client = _make_workspace_client()
 
         # Setup agent protocol
         ctx = await setup_agent(app, agent, config, pyproject_path=pyproject_path)
