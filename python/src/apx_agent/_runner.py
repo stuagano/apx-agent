@@ -59,6 +59,8 @@ async def run_via_sdk(
     if not _sdk_initialized:
         async with _sdk_init_lock:
             if not _sdk_initialized:
+                from agents import set_tracing_disabled
+                set_tracing_disabled(True)
                 _sdk_client = AsyncDatabricksOpenAI()
                 set_default_openai_client(_sdk_client)
                 set_default_openai_api("chat_completions")
@@ -174,6 +176,8 @@ async def stream_via_sdk(
     if not _sdk_initialized:
         async with _sdk_init_lock:
             if not _sdk_initialized:
+                from agents import set_tracing_disabled
+                set_tracing_disabled(True)
                 _sdk_client = AsyncDatabricksOpenAI()
                 set_default_openai_client(_sdk_client)
                 set_default_openai_api("chat_completions")
