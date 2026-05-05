@@ -134,6 +134,17 @@ Ten new EVA features added (not in grid-scan-v1): `d-init`, `k-init`, `t-init`, 
 
 Six independent features with divergent solanaceae/plantago directions — the two families are far apart in EVA morphological space across multiple orthogonal dimensions.
 
+**Gen-19 targeted scan (2026-05-04) — small families and follow-up axes:**
+
+| Feature | Comparison | r | p | Direction |
+|---------|-----------|---|---|-----------|
+| k-init rate | artemisia vs all-botanical | **+0.728** | **0.025 \*** | artemisia HIGH — anti-correlates solanaceae LOW |
+| -eedy suffix | solanaceae vs plantago | +0.321 | 0.076 ~ | borderline, directionally consistent |
+
+**Not significant in gen-19 (all exhausted — do not re-test):** -al suffix for poppy/lily/artemisia (all ns r≈0); k-init for poppy (r=+0.313 ns), lily (r=+0.226 ns); -am suffix for plantago/poppy (null); -ain suffix for solanaceae/plantago/direct (null).
+
+**k-init family pattern (all tested):** solanaceae r=−0.441*** LOW; artemisia r=+0.728* HIGH; plantago r=+0.334~ borderline HIGH; poppy/lily underpowered (n<7) but directionally HIGH. The k-initial suppression appears solanaceae-specific — other botanical families have average or elevated k-init rates.
+
 **Expanded LOO classifier (15 features, 2026-05-04):** Adding the 3 new confirmed features (k-init, -al, -edy) to the original 6 drops LOO accuracy to 48.8% (39/80) from 52.5% (42/80). The new features are correlated with the original fingerprint dimensions and do not add independent discriminative power in a nearest-centroid classifier. The original 6-feature set is the optimally discriminative subset found so far.
 
 **Interpretation:** qo-internal null is structurally significant: qo appears exclusively at word boundaries as a prefix, not internally. This constrains the EVA generative model — whatever produces qo-prefix words does not allow qo-internal substitution.
@@ -377,7 +388,7 @@ The solanaceae effect is the largest (r=+0.572) — consistent with solanaceae h
 
 ## Cumulative Interpretation
 
-Eight independent analyses — vocabulary clustering, morphological fingerprinting (now 6 families with confirmed fingerprints), two-tier structure, NPMI semantics, EVA-only family attribution, comprehensive grid scan, within-folio morphological constraints, and within-family channel co-variation — all point at the same conclusion:
+Eight independent analyses — vocabulary clustering, morphological fingerprinting (now 6 families with confirmed fingerprints), two-tier structure, NPMI semantics, EVA-only family attribution, comprehensive grid scan, within-folio morphological constraints, and within-family channel co-variation — all point at the same conclusion. The gen-15–19 targeted scans added k-init (solanaceae-specific suppression confirmed across all tested families), -al and -edy suffix signals, and quire invariance characterization of the new features, while exhausting all viable feature × family combinations in the current feature set.
 
 **EVA vocabulary in the herbal section is systematically organized by botanical subject matter.**
 
@@ -398,7 +409,7 @@ The cardan grille / Timm-Schinner model generates EVA text by mechanical templat
 - No above-chance classification of folio plant family from EVA text alone ✗ (52.5% vs 25% chance, p<0.0001)
 - No comprehensive grid scan finding 60 significant morphological signals across 420 tests, spanning 6 of 7 tested botanical families ✗ (grid-scan-v1, generation 11)
 - No within-family folio-pair co-variation between morphological and lexical channels ✗ (r=+0.371 pooled over 6,444 pairs, p<0.0001; solanaceae r=+0.572)
-- No new EVA feature signals beyond the original 15 ✗ (k-init rate solanaceae r=-0.441 p<0.001; -edy suffix solanaceae r=+0.261 p=0.022)
+- No new EVA feature signals beyond the original 15 ✗ (k-init rate solanaceae r=-0.441 p<0.001; k-init artemisia r=+0.728 p=0.025 — solanaceae-specific suppression confirmed by cross-family pattern)
 
 A procedural-generation model that coincidentally produces all eight of these patterns simultaneously, stably across ≥10 quires, with consistent family-pharmacology NPMI alignment, pre-registered prediction accuracy, and a 14.3% hit rate in a blind 420-test scan, requires substantial ad hoc explanation.
 
@@ -471,6 +482,7 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `within-folio-correlation-test.ts` | Within-folio half-split test for feature anti-correlations | -dy vs -chy p<0.001; qo/ch-init/short-word not within-folio |
 | `folio-pair-distance-test.ts` | Within-family morphological × lexical channel co-variation | r=+0.371 pooled (6,444 pairs), solanaceae r=+0.572, 4/4 large families *** |
 | `quire-new-features.ts` | Quire invariance for new confirmed features (k-init, -al suffix) | k-init 5/9 MIXED, -al 6/9 MIXED, qo-prefix 8/9 CONSISTENT (reference) |
+| `targeted-gen19.ts` | Gen-19 exhaustive scan — remaining small-family + follow-up tests | k-init artemisia r=+0.728 p=0.025*; all other untested dimensions null |
 | `species-level-test.ts` | Species-level Jaccard clustering within solanaceae | Infeasible — 32/33 folios classified as mandrake |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).

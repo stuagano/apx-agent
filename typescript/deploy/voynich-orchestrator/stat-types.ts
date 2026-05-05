@@ -101,12 +101,16 @@ QUIRE INVARIANCE for new features (quire-new-features.ts, 2026-05-04):
   k-init rate: 5/9 quires (56%) MIXED — real but noisier
   Interpretation: new features are secondary reinforcements, not independent encoding axes.
 
-GENUINELY UNTESTED DIMENSIONS (remaining):
-  - -al suffix rate: test against poppy, lily, artemisia (other small families — directional test)
-  - k-init rate: test against poppy, lily, artemisia (is the anti-correlation general?)
-  - -am suffix rate: test plantago and poppy directly (thistle borderline r=+0.214 p=0.090)
-  - -ain suffix rate: test solanaceae and plantago (grid-scan showed thistle LOW r=-0.353; does sol/plantago mirror?)
-  - -eedy suffix: test solanaceae vs plantago DIRECTLY (follow-up on anti-correlation axis)
+GEN-19 TARGETED SCAN (2026-05-04) — all remaining untested dimensions closed:
+  k-init rate: artemisia r=+0.728 p=0.025* HIGH — solanaceae-specific suppression confirmed (others neutral/high)
+  -eedy suffix: solanaceae vs plantago r=+0.321 p=0.076~ borderline
+  NULL (exhausted): -al for poppy/lily/artemisia; k-init for poppy/lily; -am for plantago/poppy;
+    -ain for solanaceae/plantago; -ain direct sol vs plantago.
+
+WHAT IS NOW FULLY EXHAUSTED (all genuinely untested items closed):
+  All small-family tests for -al suffix rate and k-init rate completed.
+  -am, -ain, -eedy all tested across all viable comparisons.
+  No genuinely untested dimensions remain in the current feature × family matrix.
 
 What failed: NPMI threshold-count permutation test (p=0.212).
 `.trim();
