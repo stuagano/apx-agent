@@ -1,0 +1,21 @@
+# Env / secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+.pytest_cache/
+
+# Databricks
+.databricks/
+.build/
+
+# Node
+client/node_modules/
+
+# IDE / local state
+.superpowers/
+.DS_Store
