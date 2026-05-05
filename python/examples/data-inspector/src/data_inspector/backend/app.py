@@ -10,7 +10,6 @@ app = create_app(agent)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://fevm-serverless-stable-qh44kx.cloud.databricks.com",
         "https://*.cloud.databricks.com",
         "https://*.databricks.com",
     ],
