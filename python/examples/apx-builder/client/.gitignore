@@ -1,0 +1,3 @@
+node_modules/
+# dist/ is committed so FastAPI can serve the built frontend
+!dist/
