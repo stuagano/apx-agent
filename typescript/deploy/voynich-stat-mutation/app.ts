@@ -116,18 +116,16 @@ const generateHypothesis = defineTool({
       'artemisia',  // n=3
     ];
     // NEW features not tested in grid-scan-v1 — these are the ONLY untested territory
-    // Gen-15/16 results: k-init solanaceae r=-0.441***, -edy solanaceae r=+0.261*
-    //   Still needed: k-init vs thistle/plantago; -edy/-eedy vs thistle/plantago/poppy;
-    //   -am/-al/-ar/-dy-edy-combined entirely untested; qo-internal untested
+    // Gen-15/16/17 results:
+    //   CONFIRMED: k-init solanaceae r=-0.441***, -al solanaceae r=+0.382**, -edy solanaceae r=+0.261*
+    //   NULL: -edy thistle/plantago, -am solanaceae, -ar solanaceae, d/t/p/f-init all families
+    //   BORDERLINE: k-init plantago r=+0.334 p=0.073~; -am thistle r=+0.214 p=0.090~
     const NEW_FEATURES = [
-      'k-init rate',       // gen-16 hit: solanaceae LOW (r=-0.441***). Test thistle, plantago next.
-      '-edy suffix rate',  // gen-16 hit: solanaceae HIGH (r=+0.261*). Test thistle, plantago, poppy.
-      '-eedy suffix rate', // gen-16 hit: solanaceae HIGH (r=+0.210*). Test other families.
-      '-am suffix rate',   // completely untested
-      '-al suffix rate',   // completely untested
-      '-ar suffix rate',   // completely untested
-      'qo-internal rate',  // qo NOT at word start — completely untested
-      '-dy-edy combined',  // combined -dy and -edy rate — untested
+      'k-init rate',        // Follow-up: test thistle directly; test solanaceae vs plantago (anti-corr)
+      '-al suffix rate',    // gen-17 hit: solanaceae r=+0.382**. Test thistle, plantago, poppy next.
+      'qo-internal rate',   // qo NOT at word start — completely untested in any family
+      '-dy-edy combined',   // combined -dy and -edy — may be stronger than either alone
+      '-am suffix rate',    // borderline thistle p=0.090~; test plantago, poppy
     ];
 
     const prompt = [

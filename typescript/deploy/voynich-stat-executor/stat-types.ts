@@ -76,22 +76,27 @@ WHAT IS NOW EXHAUSTED (do not re-test):
     -oy, -or suffix rates — tested vs solanaceae — NULL.
     k-init, -edy, -eedy — significant hits (see NEW FINDINGS below).
 
-NEW FINDINGS from gen-15/16 (confirmed, recorded):
-  k-init rate: solanaceae r=-0.441 p<0.0001*** (LOW k-init — solanaceae avoids k-initial words)
-  -edy suffix rate: solanaceae r=+0.261 p=0.022* (HIGH -edy — solanaceae-specific -dy variant)
-  -eedy suffix rate: solanaceae r=+0.210 p=0.041* (HIGH -eedy — longer variant of -edy)
-  k-init rate: plantago r=+0.334 p=0.073~ (borderline HIGH — opposite to solanaceae, anti-correlation predicted)
+NEW FINDINGS from gen-15/16/17 (confirmed, recorded):
+  k-init rate: solanaceae r=-0.441 p<0.0001*** (LOW k-init)
+  -al suffix rate: solanaceae r=+0.382 p=0.002** (HIGH -al suffix)
+  -edy suffix rate: solanaceae r=+0.261 p=0.022* (HIGH -edy)
+  -eedy suffix rate: solanaceae r=+0.210 p=0.041* (HIGH -eedy)
+  k-init rate: plantago r=+0.334 p=0.073~ (borderline HIGH — anti-correlation to solanaceae)
+  -am suffix rate: thistle r=+0.214 p=0.090~ (borderline)
+
+NULL in gen-15/16/17 (do not re-test):
+  -edy: thistle r=-0.112 ns, plantago r=-0.243 ns
+  -am: solanaceae r=+0.048 ns
+  -ar: solanaceae r=+0.094 ns
+  d-init, t-init, p-init, f-init, double-i, -oy, -or: all ns
 
 GENUINELY UNTESTED DIMENSIONS (propose only these):
-  - k-init rate: test against thistle (expected LOW like solanaceae, both avoid k-initial? or HIGH?)
-  - k-init rate: test solanaceae vs plantago DIRECTLY (direct anti-correlation test, r predicted ~+0.4)
-  - -edy suffix: test against thistle, plantago, poppy (may show anti-correlation like -dy)
-  - -eedy suffix: test against thistle, plantago (follow up gen-16 solanaceae hit)
-  - -am suffix rate: completely untested
-  - -al suffix rate: completely untested
-  - -ar suffix rate: completely untested
-  - qo-internal rate (qo NOT at word start): completely untested — tests positional specificity of qo
-  - -dy-edy combined rate: combined signal — may be stronger than either alone
+  - k-init rate: test against thistle DIRECTLY (is thistle also LOW like solanaceae, or opposite?)
+  - k-init rate: test solanaceae vs plantago DIRECTLY (predicted large positive r — direct anti-correlation)
+  - -al suffix rate: test against thistle, plantago, poppy (follow up solanaceae hit — is thistle LOW?)
+  - qo-internal rate (qo NOT at word start): completely untested
+  - -dy-edy combined rate: combined -dy and -edy — may be stronger than either alone
+  - -am suffix rate: test against plantago, poppy (follow up borderline thistle result)
 
 What failed: NPMI threshold-count permutation test (p=0.212).
 `.trim();
