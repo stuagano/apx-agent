@@ -98,13 +98,20 @@ async function main() {
 
   // Tests: family fingerprint × feature, per-quire breakdown
   const TESTS: Array<{ family: string; feature: string; expectedDir: '+' | '-' }> = [
-    { family: 'thistle',  feature: 'qo-prefix rate',   expectedDir: '-' },
-    { family: 'thistle',  feature: 'short word rate',   expectedDir: '+' },
-    { family: 'thistle',  feature: 'unique word ratio', expectedDir: '+' },
-    { family: 'plantago', feature: 'ch-init rate',      expectedDir: '+' },
-    { family: 'plantago', feature: '-dy suffix rate',   expectedDir: '-' },
-    { family: 'plantago', feature: '-chy suffix rate',  expectedDir: '+' },
-    { family: 'solanaceae', feature: 'qo-prefix rate',  expectedDir: '+' }, // known — use as positive control
+    { family: 'thistle',    feature: 'qo-prefix rate',    expectedDir: '-' },
+    { family: 'thistle',    feature: 'short word rate',    expectedDir: '+' },
+    { family: 'thistle',    feature: 'unique word ratio',  expectedDir: '+' },
+    { family: 'plantago',   feature: 'ch-init rate',       expectedDir: '+' },
+    { family: 'plantago',   feature: '-dy suffix rate',    expectedDir: '-' },
+    { family: 'plantago',   feature: '-chy suffix rate',   expectedDir: '+' },
+    { family: 'solanaceae', feature: 'qo-prefix rate',     expectedDir: '+' }, // known — positive control
+    // New family fingerprints from grid-scan-v1
+    { family: 'poppy',      feature: '-aiin suffix rate',  expectedDir: '+' },
+    { family: 'poppy',      feature: 'long word rate',     expectedDir: '-' },
+    { family: 'lily-family', feature: '-ain suffix rate',  expectedDir: '+' },
+    { family: 'lily-family', feature: 'sh-init rate',      expectedDir: '+' },
+    { family: 'artemisia',  feature: 'short word rate',    expectedDir: '-' },
+    { family: 'artemisia',  feature: 'ok-prefix rate',     expectedDir: '-' },
   ];
 
   for (const { family, feature, expectedDir } of TESTS) {

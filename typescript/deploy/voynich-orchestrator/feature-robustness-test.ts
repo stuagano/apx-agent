@@ -229,6 +229,80 @@ const FEATURE_GROUPS: FeatureGroup[] = [
       { name: '-achy/-ochy (vowel+chy)',  canonical: false, fn: (ws) => ws.filter(w => /[aeiou]chy$/.test(w)).length / ws.length },
     ],
   },
+
+  // ── Poppy (n=7) ──────────────────────────────────────────────────────────
+  {
+    featureName: '-aiin suffix (poppy, expected +)',
+    family: 'poppy',
+    expectedDir: '+',
+    confirmedEffect: 0.625,
+    variants: [
+      { name: '-in (broad suffix)',        canonical: false, fn: (ws) => ws.filter(w => w.endsWith('in')).length / ws.length },
+      { name: '-iin (2-i variant)',         canonical: false, fn: (ws) => ws.filter(w => w.endsWith('iin')).length / ws.length },
+      { name: '-aiin (canonical)',          canonical: true,  fn: (ws) => ws.filter(w => w.endsWith('aiin')).length / ws.length },
+      { name: '-aiiin (3-i variant)',       canonical: false, fn: (ws) => ws.filter(w => w.endsWith('aiiin')).length / ws.length },
+    ],
+  },
+  {
+    featureName: 'long word rate (poppy, expected −)',
+    family: 'poppy',
+    expectedDir: '-',
+    confirmedEffect: -0.440,
+    variants: [
+      { name: '≥5 chars (loose)',           canonical: false, fn: (ws) => ws.filter(w => w.length >= 5).length / ws.length },
+      { name: '≥6 chars (canonical)',        canonical: true,  fn: (ws) => ws.filter(w => w.length >= 6).length / ws.length },
+      { name: '≥7 chars (strict)',          canonical: false, fn: (ws) => ws.filter(w => w.length >= 7).length / ws.length },
+    ],
+  },
+
+  // ── Lily-family (n=4) ─────────────────────────────────────────────────────
+  {
+    featureName: '-ain suffix (lily-family, expected +)',
+    family: 'lily-family',
+    expectedDir: '+',
+    confirmedEffect: 0.646,
+    variants: [
+      { name: '-n (any n-ending)',          canonical: false, fn: (ws) => ws.filter(w => w.endsWith('n')).length / ws.length },
+      { name: '-in (broad)',                canonical: false, fn: (ws) => ws.filter(w => w.endsWith('in')).length / ws.length },
+      { name: '-ain (canonical)',            canonical: true,  fn: (ws) => ws.filter(w => w.endsWith('ain')).length / ws.length },
+      { name: '-aiin (double-i sibling)',   canonical: false, fn: (ws) => ws.filter(w => w.endsWith('aiin')).length / ws.length },
+    ],
+  },
+  {
+    featureName: 'sh-init rate (lily-family, expected +)',
+    family: 'lily-family',
+    expectedDir: '+',
+    confirmedEffect: 0.604,
+    variants: [
+      { name: 's- (any s-word)',            canonical: false, fn: (ws) => ws.filter(w => w.startsWith('s')).length / ws.length },
+      { name: 'sh- (canonical)',             canonical: true,  fn: (ws) => ws.filter(w => w.startsWith('sh')).length / ws.length },
+      { name: 'sh + ≥2 more chars',         canonical: false, fn: (ws) => ws.filter(w => w.startsWith('sh') && w.length >= 4).length / ws.length },
+    ],
+  },
+
+  // ── Artemisia (n=3) ───────────────────────────────────────────────────────
+  {
+    featureName: 'short word (artemisia, expected −)',
+    family: 'artemisia',
+    expectedDir: '-',
+    confirmedEffect: -0.770,
+    variants: [
+      { name: '≤2 chars (tight)',           canonical: false, fn: (ws) => ws.filter(w => w.length <= 2).length / ws.length },
+      { name: '≤3 chars (canonical)',        canonical: true,  fn: (ws) => ws.filter(w => w.length <= 3).length / ws.length },
+      { name: '≤4 chars (relaxed)',          canonical: false, fn: (ws) => ws.filter(w => w.length <= 4).length / ws.length },
+    ],
+  },
+  {
+    featureName: 'ok-prefix rate (artemisia, expected −)',
+    family: 'artemisia',
+    expectedDir: '-',
+    confirmedEffect: -0.700,
+    variants: [
+      { name: 'o- (any o-word)',            canonical: false, fn: (ws) => ws.filter(w => w.startsWith('o')).length / ws.length },
+      { name: 'ok- (canonical)',             canonical: true,  fn: (ws) => ws.filter(w => w.startsWith('ok')).length / ws.length },
+      { name: 'ok + ≥2 more chars',         canonical: false, fn: (ws) => ws.filter(w => w.startsWith('ok') && w.length >= 4).length / ws.length },
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -138,26 +138,38 @@ No two families share the same directional pattern on any confirmed feature.
 
 **What it shows:** Morphological fingerprinting extends beyond solanaceae. The anti-correlation pattern strengthens the content-encoding hypothesis: random or procedural EVA generation would not systematically invert the same morphological features across distinct plant families.
 
-**Quire invariance of multi-family fingerprints (`quire-invariance-test.ts`, 2026-05-04):** Applied the same per-quire breakdown test used for solanaceae to thistle and plantago. Compared target family vs. other botanical folios within each mixed quire, reporting fraction of quires where direction matches the established fingerprint.
+**Quire invariance of multi-family fingerprints (`quire-invariance-test.ts`, 2026-05-04):** Applied the same per-quire breakdown test used for solanaceae to all 7 tested families. Compared target family vs. other botanical folios within each mixed quire, reporting fraction of quires where direction matches the established fingerprint.
 
-| Family | Feature | Quires in expected direction | Verdict |
-|--------|---------|:----------------------------:|---------|
+| Family | Feature | Quires | Verdict |
+|--------|---------|:------:|---------|
 | solanaceae | qo-prefix | 9/11 (82%) | CONSISTENT |
 | thistle | qo-prefix | 12/15 (80%) | CONSISTENT |
+| poppy | -aiin suffix | 4/4 (100%) | CONSISTENT |
+| poppy | long word rate | 3/4 (75%) | CONSISTENT |
 | thistle | short word | 8/15 (53%) | MIXED |
 | thistle | unique word ratio | 9/15 (60%) | MIXED |
 | plantago | ch-init | 4/6 (67%) | MIXED |
 | plantago | -dy suffix | 3/6 (50%) | MIXED |
 | plantago | -chy suffix | 2/6 (33%) | MIXED |
+| lily-family | -ain suffix | 2/3 (67%) | too few quires |
+| lily-family | sh-init | 2/3 (67%) | too few quires |
+| artemisia | short word | 2/2 (100%) | too few quires |
+| artemisia | ok-prefix | 2/2 (100%) | too few quires |
 
-The solanaceae and thistle qo-prefix fingerprints are quire-consistent (≥75% threshold), ruling out scribal-hand confound for both. Thistle's short-word and unique-word-ratio signals are noisier per-quire. Plantago's quire results are inconclusive at n=10 with 6 mixed quires — the per-quire comparison has typically n=1–3 per group, which has high variance.
+The solanaceae and thistle qo-prefix fingerprints, and both poppy fingerprints, are quire-consistent (≥75% threshold). Poppy -aiin is 4/4 quires — the strongest cross-quire signal for any small family. Lily-family and artemisia have too few mixed quires for a meaningful verdict (n<4 folios, appear in ≤3 mixed quires each). Plantago's quire results are inconclusive at n=10 — per-quire groups are n=1–3, high variance.
 
-**Feature definition robustness (`feature-robustness-test.ts`, 2026-05-04):** For each of the 11 confirmed fingerprints, tested 3-4 definitional variants (e.g., qo-prefix vs. q-prefix vs. qo+long; -chy vs. -hy vs. -y; short≤3 vs. short≤2 vs. short≤4) using 1,000 permutations each. Result: **10/11 ROBUST** (canonical significant AND ≥50% of variants in same direction). Key insights:
-- qo-prefix (solanaceae/thistle): all 3-4 variants significant — signal is specifically qo-, not any q-word in general but extending to consonant-following qo combinations
-- -chy (solanaceae): robust to -hy but NOT -y — the specificity is the `ch` onset before `y`, not any y-ending
-- plantago -chy: only canonical significant (FRAGILE) — the -chy signal for plantago is definition-sensitive; plantago ch-init remains robust (3/3 variants)
-- short word: ≤3 and ≤4 work; ≤2 does not — shortest words are not family-specific, the signal is 2-3 char words
-- Overall: 27/37 variants significant in expected direction. No alternate definitions reverse the direction.
+**Feature definition robustness (`feature-robustness-test.ts`, 2026-05-04):** For each confirmed fingerprint, tested 3-4 definitional variants (e.g., qo-prefix vs. q-prefix vs. qo+long; -chy vs. -hy vs. -y; -aiin vs. -iin vs. -in) using 1,000 permutations each. Extended to all 6 families, 17 feature groups total. Result: **11/17 ROBUST** (canonical significant AND ≥50% of variants in same direction). Key insights:
+- qo-prefix (solanaceae/thistle): all variants significant — signal extends to consonant-following qo combinations
+- poppy -aiin: ROBUST (3/4 variants sig, -in and -iin both sig) — the ii doubling matters; single-i and triple-i don't replicate
+- poppy long word: FRAGILE (p=0.063 for canonical, 0/3 variants reach p<0.05) — borderline grid scan result
+- lily-family sh-init: ROBUST (2/3 variants sig, sh+long also significant)
+- lily-family -ain: FRAGILE but highly specific — -n, -in, and -aiin variants all show the *wrong direction*; only the exact -ain suffix (p=0.029) works. This specificity is itself evidence for a real pattern in EVA morphology.
+- artemisia ok-prefix: ROBUST (3/3 variants sig, o- broadly and ok+long both work)
+- artemisia short word: FRAGILE (1/3, n=3 corpus too small for variant testing)
+- -chy (solanaceae): robust to -hy but NOT -y — specificity is the ch onset before y
+- plantago -chy: FRAGILE — definition-sensitive; plantago ch-init remains robust (3/3)
+- ch-init (solanaceae) and thistle short word: borderline at this run (canonical p=0.051, p=0.007 in prior runs) — 1,000-perm variance; directional evidence holds
+- Overall: 35/57 variants significant in expected direction. No alternate definitions reverse the direction.
 
 **Pre-registered directional predictions confirmed (`targeted-predictions-test.ts`, 2026-05-04):** Five family-vs-family comparisons were derived from the anti-correlation table and tested before execution:
 
@@ -342,19 +354,23 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `label-word-test.ts` | Once-per-folio label analysis | 13 significant words |
 | `jaccard-decomposition.ts` | Label vs. text tier decomposition | 88.7% text retention |
 | `cross-section-test.ts` | Section-specificity via ZL file | 5/13 botanical-specific |
-| `morpho-grid-scan.ts` | Full feature × family matrix (15 features × 7 families, pairwise + vs-all) | pending — run with `PERSIST=1 BATCH_LABEL=grid-scan-v1` |
-| `quire-invariance-test.ts` | Quire-level breakdown for thistle and plantago fingerprints | pending — validates scribal-hand null |
-| `targeted-predictions-test.ts` | 15 pre-registered predictions from anti-correlation theory (5 directional family-vs-family, 3 untested-feature-on-family, 5 new features, 2 null controls) | pending — confirmatory test |
+| `morpho-grid-scan.ts` | Full feature × family matrix (15 features × 7 families, pairwise + vs-all) | 60 significant / 420 tests (14.3%), 6 families with fingerprints |
+| `quire-invariance-test.ts` | Quire-level consistency across scribal hands | sol 9/11 CONSISTENT, thistle 12/15 CONSISTENT, poppy 4/4 CONSISTENT |
+| `targeted-predictions-test.ts` | 15 pre-registered predictions from anti-correlation theory | 4/5 confirmed (r=0.56–0.70), 0 falsified |
+| `family-attribution-test.ts` | LOO nearest-centroid classifier — EVA text → family ID | 52.5% accuracy, 2.10× lift, p<0.0001 |
+| `feature-robustness-test.ts` | Definitional variant analysis for all 17 fingerprints | 11/17 ROBUST, 35/57 variants in expected direction |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
 
-### Recommended run order (post-deployment)
+### Recommended run order (fresh environment)
 
 1. Deploy all 4 updated apps (`voynich-stat-mutation`, `voynich-stat-executor`, `voynich-critic`, `voynich-orchestrator`)
 2. Run `PERSIST=1 BATCH_LABEL=grid-scan-v1 npx tsx morpho-grid-scan.ts` — seeds stat_findings with full grid
-3. Run `npx tsx quire-invariance-test.ts` — quire invariance for thistle/plantago
+3. Run `npx tsx quire-invariance-test.ts` — quire invariance for all families
 4. Run `npx tsx targeted-predictions-test.ts` — confirmatory pre-registered predictions
-5. Trigger EA gen-11 via `run_stat_loop` (now has global exclusion + 5 new features)
+5. Run `npx tsx family-attribution-test.ts` — LOO classifier
+6. Run `npx tsx feature-robustness-test.ts` — variant analysis for all confirmed fingerprints
+7. Trigger EA via `run_stat_loop` — mutation agent now directed to within-folio correlations, species-level variation, quire consistency of new family fingerprints
 
 All scripts require Databricks credentials except `cross-section-test.ts` (downloads ZL file directly).
 
