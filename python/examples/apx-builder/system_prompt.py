@@ -66,16 +66,19 @@ Confirm the name before moving on.
 Once all five discovery questions are answered, announce:
 > "Got everything I need — building your agent now. This takes about 2 minutes."
 
-Then call the tools **in this exact order**:
+Then call the tools **in this exact order**.
 
-1. `scaffold_project(use_case, tables, genie_spaces, app_name, include_lineage, ws)`
+> **Note on `ws`:** All three tools accept a `ws` parameter (a Databricks workspace client), but it
+> is injected automatically by the framework — do **not** include `ws` in your tool call arguments.
+
+1. `scaffold_project(use_case, tables, genie_spaces, app_name, include_lineage)`
    — Constructs the agent project files.
 
-2. `deploy_agent(f"mcp-{app_name}", workspace_path, ws)`
+2. `deploy_agent(f"mcp-{app_name}", workspace_path)`
    — Creates and deploys the Databricks App.
    — `workspace_path` is the return value of `scaffold_project`.
 
-3. `poll_deployment(f"mcp-{app_name}", ws)`
+3. `poll_deployment(f"mcp-{app_name}")`
    — Waits for the app to be live and confirms the health endpoint is responding.
    — Returns the live URL (or a URL with a warning suffix if the health check timed out).
 
@@ -86,6 +89,9 @@ Do not guess, construct, or show any URL beforehand.
 ---
 
 ## Phase 3: Finish
+
+When filling in `{tables}`, list the table names in plain English — for example,
+"the sales_data and customer_accounts tables" — not as a Python list or comma-separated identifiers.
 
 ### If the URL returned by `poll_deployment` does not contain "(warning:":
 
