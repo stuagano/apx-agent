@@ -475,6 +475,23 @@ Solanaceae, thistle, and poppy all show within-family bigram enrichment. **Plant
 
 **What this means:** If EVA text were a bag of family-characteristic words in random order, bigram lift would equal unigram lift. The monotonically increasing curve means word *ordering* carries progressively more family signal as sequence length grows. A cardan-grille model with no ordering constraints would produce a flat curve at 1.0× across all n — the observed curve is the opposite.
 
+**Characteristic trigrams (`characteristic-trigrams.ts`, 2026-05-05):**
+
+Top enriched trigrams per family (k≥2, permutation-tested):
+
+| Family | Trigram | k | Enrich | p |
+|--------|---------|:-:|:------:|---|
+| solanaceae | `or  ol  aiin` | 2/33 | 2.8× | 0.121 ns |
+| solanaceae | `chor  cheky  chol` | 2/33 | 2.8× | 0.127 ns |
+| thistle | `sho  cthy  daiin` | 2/30 | 3.1× | 0.111 ns |
+| plantago | — | — | — | no trigrams at k≥2 |
+
+All top trigrams are family-exclusive (0 occurrences in the other families). However, none individually reach significance — each appears in only 2/30–33 folios, making the permutation test underpowered for individual trigrams. **The 3.098× aggregate trigram lift is a portfolio effect**: many sparse family-exclusive 3-word sequences, each too rare to be individually significant, collectively produce a strong population-level signal. No small set of dominant formulas drives the result.
+
+Plantago has zero trigrams at k≥2, extending the absence story to n=3: plantago text produces no repeated 3-word sequences within the family at all.
+
+The two solanaceae trigrams are structurally consistent with the fingerprint: `chor cheky chol` is a sequence of three ch-containing words (ch-clustering within solanaceae text); `or ol aiin` connects short common words. The thistle trigram `sho cthy daiin` places the thistle-specific `cthy` morpheme between the common `sho` and `daiin` — a family-characteristic word embedded in common context words, consistent with thistle having a distinctive suffix morpheme (`cthy` = `-cthy`) that appears alongside corpus-wide high-frequency words.
+
 **Part 2 — Bigram entropy as a feature:**
 
 | Feature | Solanaceae | Other families |
@@ -648,6 +665,7 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `bigram-classifier.ts` | Permutation test on bigram lift + bigram-feature LOO classifier | Bigram lift p=0.038*; bigrams over-specialize (plantago 90% alone); combined +1 folio |
 | `plantago-sequence.ts` | Plantago sequence investigation — why 90%? | Absence-driven (30/31 disc. bigrams are solanaceae's); ch→ch clustering vs sol ch→qo; ablation confirms plantago has no positive sequence identity |
 | `ngram-lift.ts` | N-gram lift curve n=1..4 with permutation tests + per-family bigram breakdown | 1.102→1.277→3.098× monotonic; n=4 sparsity floor; plantago n=2 lift=0.748× (only family below 1) |
+| `characteristic-trigrams.ts` | Top enriched trigrams per family with permutation tests | Family-exclusive trigrams confirmed; no individual significance (portfolio effect); plantago 0 trigrams at k≥2 |
 | `species-level-test.ts` | Species-level Jaccard clustering within solanaceae | Infeasible — 32/33 folios classified as mandrake |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
