@@ -127,7 +127,7 @@ eval_data = [
         },
     },
     {
-        "inputs": {"question": f"The data in {CATALOG}.{SCHEMA}.ami_hourly_rollups seems stale. When was it last updated?"},
+        "inputs": {"question": f"The data in {CATALOG}.{SCHEMA}.meter_readings seems stale. When was it last updated?"},
         "expectations": {
             "expected_facts": ["version", "update"],
             "guidelines": "Should check table freshness via table info or version history.",

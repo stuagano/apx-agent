@@ -1,22 +1,17 @@
--- Data Triage Agent — fe-stable fixture data
--- Creates the schema + tables referenced by eval_cases.md
--- Run with: databricks api post /api/2.0/sql/statements --profile fe-stable --json @<query.json>
--- Or via Databricks SQL editor on the workspace.
+-- Data Triage Agent — fixture data
+-- Creates the schema + tables referenced by the eval dataset
+-- Run via: bash fixtures/run_setup.sh
+--
+-- Replace <catalog> and <schema> with your Unity Catalog values before running.
+-- Example: CATALOG=my_catalog SCHEMA=data_triage_demo bash fixtures/run_setup.sh
 
--- Default catalog/schema can be overridden by setting CATALOG before running.
--- Sticking with serverless_stable_qh44kx_catalog (fe-stable workspace native catalog).
-
--- Variables (set via SQL widget OR substitute via sed before running)
--- CATALOG = serverless_stable_qh44kx_catalog
--- SCHEMA  = explain_my_bill
-
-CREATE SCHEMA IF NOT EXISTS serverless_stable_qh44kx_catalog.explain_my_bill;
+CREATE SCHEMA IF NOT EXISTS <catalog>.<schema>;
 
 -- ----------------------------------------------------------------------
 -- customers — 10 rows, CUST-0001..0010 (CUST-0011 deliberately missing)
 -- Used by eval cases #1, #2, #3, #4, #7
 -- ----------------------------------------------------------------------
-CREATE OR REPLACE TABLE serverless_stable_qh44kx_catalog.explain_my_bill.customers (
+CREATE OR REPLACE TABLE <catalog>.<schema>.customers (
   customer_id STRING,
   name STRING,
   plan STRING,
@@ -25,7 +20,7 @@ CREATE OR REPLACE TABLE serverless_stable_qh44kx_catalog.explain_my_bill.custome
   active BOOLEAN
 ) USING DELTA;
 
-INSERT INTO serverless_stable_qh44kx_catalog.explain_my_bill.customers VALUES
+INSERT INTO <catalog>.<schema>.customers VALUES
   ('CUST-0001', 'Alice Johnson',  'Standard Plan',     '12 Main St',     DATE '2024-01-15', true),
   ('CUST-0002', 'Bob Martinez',   'Premium Plan',      '47 Oak Ave',     DATE '2024-02-22', true),
   ('CUST-0003', 'Priya Patel',    'Green Energy Plan', '88 Sunset Blvd', DATE '2024-03-08', true),
@@ -40,7 +35,7 @@ INSERT INTO serverless_stable_qh44kx_catalog.explain_my_bill.customers VALUES
 -- ----------------------------------------------------------------------
 -- billing_history — has a deliberate March 2026 gap for eval #10
 -- ----------------------------------------------------------------------
-CREATE OR REPLACE TABLE serverless_stable_qh44kx_catalog.explain_my_bill.billing_history (
+CREATE OR REPLACE TABLE <catalog>.<schema>.billing_history (
   bill_id STRING,
   customer_id STRING,
   bill_month DATE,
@@ -49,23 +44,23 @@ CREATE OR REPLACE TABLE serverless_stable_qh44kx_catalog.explain_my_bill.billing
 ) USING DELTA;
 
 -- Generate billing data Jan 2026 - Apr 2026, but skip March 2026 entirely (data gap)
-INSERT INTO serverless_stable_qh44kx_catalog.explain_my_bill.billing_history
+INSERT INTO <catalog>.<schema>.billing_history
 SELECT
   concat('BILL-', cast(row_number() OVER (ORDER BY c.customer_id, m.bill_month) AS STRING)) AS bill_id,
   c.customer_id,
   m.bill_month,
   CAST(75 + rand() * 200 AS DECIMAL(10,2)) AS amount_usd,
   'paid' AS status
-FROM serverless_stable_qh44kx_catalog.explain_my_bill.customers c
+FROM <catalog>.<schema>.customers c
 CROSS JOIN (
   SELECT explode(array(DATE '2026-01-01', DATE '2026-02-01', DATE '2026-04-01')) AS bill_month
 ) m
 WHERE c.active = true;
 
 -- ----------------------------------------------------------------------
--- ami_hourly_rollups — STALE: latest data is from Feb 2026 (eval #9)
+-- meter_readings — STALE: latest data is from Feb 2026 (eval #9)
 -- ----------------------------------------------------------------------
-CREATE OR REPLACE TABLE serverless_stable_qh44kx_catalog.explain_my_bill.ami_hourly_rollups (
+CREATE OR REPLACE TABLE <catalog>.<schema>.meter_readings (
   customer_id STRING,
   meter_id STRING,
   hour_ts TIMESTAMP,
@@ -73,14 +68,14 @@ CREATE OR REPLACE TABLE serverless_stable_qh44kx_catalog.explain_my_bill.ami_hou
   ingested_at TIMESTAMP
 ) USING DELTA;
 
-INSERT INTO serverless_stable_qh44kx_catalog.explain_my_bill.ami_hourly_rollups
+INSERT INTO <catalog>.<schema>.meter_readings
 SELECT
   c.customer_id,
   concat('METER-', c.customer_id) AS meter_id,
   hour_ts,
   CAST(0.1 + rand() * 3.0 AS DECIMAL(10,3)) AS kwh,
   TIMESTAMP '2026-02-28 23:59:00' AS ingested_at
-FROM serverless_stable_qh44kx_catalog.explain_my_bill.customers c
+FROM <catalog>.<schema>.customers c
 CROSS JOIN (
   SELECT TIMESTAMP '2026-02-15 00:00:00' + (n * INTERVAL '1' HOUR) AS hour_ts
   FROM (SELECT explode(sequence(0, 23)) AS n)
@@ -90,6 +85,6 @@ WHERE c.active = true;
 -- ----------------------------------------------------------------------
 -- Verify
 -- ----------------------------------------------------------------------
-SELECT 'customers' AS tbl, COUNT(*) AS n FROM serverless_stable_qh44kx_catalog.explain_my_bill.customers
-UNION ALL SELECT 'billing_history', COUNT(*) FROM serverless_stable_qh44kx_catalog.explain_my_bill.billing_history
-UNION ALL SELECT 'ami_hourly_rollups', COUNT(*) FROM serverless_stable_qh44kx_catalog.explain_my_bill.ami_hourly_rollups;
+SELECT 'customers' AS tbl, COUNT(*) AS n FROM <catalog>.<schema>.customers
+UNION ALL SELECT 'billing_history', COUNT(*) FROM <catalog>.<schema>.billing_history
+UNION ALL SELECT 'meter_readings', COUNT(*) FROM <catalog>.<schema>.meter_readings;

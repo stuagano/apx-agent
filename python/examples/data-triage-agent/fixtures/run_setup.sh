@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Splits setup.sql on ; boundaries and runs each statement individually.
+# Usage: CATALOG=<catalog> SCHEMA=<schema> PROFILE=<profile> WAREHOUSE=<warehouse-id> bash fixtures/run_setup.sh
 set -euo pipefail
-PROFILE="${PROFILE:-fe-stable}"
-WAREHOUSE="${WAREHOUSE:-76cf70399b8d0ef0}"
+PROFILE="${PROFILE:?Set PROFILE to your Databricks CLI profile name}"
+WAREHOUSE="${WAREHOUSE:?Set WAREHOUSE to your SQL warehouse ID}"
 SQL_FILE="${1:-$(dirname "$0")/setup.sql}"
 
 # Strip comments and split on ;
@@ -10,6 +11,10 @@ python3 <<PY
 import json, re, subprocess, sys
 
 sql_text = open("$SQL_FILE").read()
+catalog = "${CATALOG:?Set CATALOG to your Unity Catalog catalog name}"
+schema = "${SCHEMA:?Set SCHEMA to your Unity Catalog schema name}"
+sql_text = sql_text.replace("<catalog>", catalog).replace("<schema>", schema)
+
 # strip line comments
 clean = "\n".join(line for line in sql_text.splitlines() if not line.strip().startswith("--"))
 stmts = [s.strip() for s in clean.split(";") if s.strip()]
