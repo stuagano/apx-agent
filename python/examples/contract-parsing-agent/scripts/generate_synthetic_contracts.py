@@ -91,7 +91,7 @@ def _render_pdf(path: Path, gt: GroundTruth) -> None:
     flow.append(Paragraph(f"Contract ID: {gt.contract_id}", styles["Normal"]))
     flow.append(Spacer(1, 12))
     body = [
-        f"<b>Counterparty.</b> This agreement is entered into by Uplight, Inc. and "
+        f"<b>Counterparty.</b> This agreement is entered into by Demo Energy Co. and "
         f"{gt.counterparty} (the 'Counterparty').",
     ]
     if gt.contract_type == "ppa":
