@@ -447,7 +447,51 @@ The solanaceae effect is the largest (r=+0.572) — consistent with solanaceae h
 
 ---
 
-### 8. Species-Level Clustering Within Solanaceae
+### 8. Word Sequence Structure (`sequence-features.ts`, 2026-05-05)
+
+**Method:** Three analyses using word sequences rather than word-rate bags-of-words. (1) Bigram Jaccard clustering: compute pairwise Jaccard similarity on word-pair sets instead of word sets, compare within-family vs. between-family lift. (2) Bigram entropy and bigram type/token ratio as per-folio scalars, tested via rank-biserial + 2,000-perm null. (3) Characteristic bigrams: bigrams appearing in ≥3 folios of a target family, ranked by enrichment relative to all-botanical rate.
+
+**Part 1 — Bigram Jaccard clustering:**
+
+| Metric | Within-family | Between-family | Lift |
+|--------|:------------:|:--------------:|:----:|
+| Unigram Jaccard | 0.0622 | 0.0564 | **1.102×** |
+| Bigram Jaccard | 0.0013 | 0.0010 | **1.277×** |
+
+Bigram lift is 16% higher than unigram lift (ratio: 1.159×). Same-family folios share more word *sequences* than their shared vocabulary alone would predict. The absolute bigram overlap is sparse (exact sequence matches are rare), but the relative enrichment is larger than for vocabulary — word order contributes family signal beyond word choice.
+
+**What this means:** If EVA text were a bag of family-characteristic words arranged in random order, bigram lift would equal unigram lift. The excess bigram clustering means the *ordering* of words is also family-specific. A cardan-grille model that generates words from a lookup table but imposes no ordering constraints would not produce this — the sequential structure carries additional content signal.
+
+**Part 2 — Bigram entropy as a feature:**
+
+| Feature | Solanaceae | Other families |
+|---------|-----------|----------------|
+| Bigram entropy | r=+0.226, p=0.051 ~ | all ns |
+| Unigram entropy (reference) | r=+0.275, p=0.018 * | poppy r=−0.375 ~ |
+| Bigram type/token ratio | all ns | all ns |
+
+Bigram entropy for solanaceae is borderline (p=0.051), consistent in direction with the confirmed unigram entropy signal (p=0.018). Bigrams add marginal information over unigrams for this feature — most bigrams are unique to a single folio, so bigram entropy closely tracks unigram entropy. Bigram type/token ratio is null across all families.
+
+**Part 3 — Characteristic bigrams (top by enrichment vs. all-botanical):**
+
+| Family | Bigram | k (folios) | Family rate | All-bot rate | Enrichment |
+|--------|--------|:----------:|:-----------:|:------------:|:----------:|
+| thistle | `chol → cthy` | 4 | 0.133 | 0.043 | **3.10×** |
+| solanaceae | `qokeey → qoky` | 3 | 0.091 | 0.032 | **2.82×** |
+| solanaceae | `chedy → qokain` | 5 | 0.152 | 0.054 | **2.82×** |
+| solanaceae | `qokain → chedy` | 3 | 0.091 | 0.032 | **2.82×** |
+| solanaceae | `qokedy → qokedy` | 3 | 0.091 | 0.032 | 2.82× |
+| thistle | `daiin → chcthy` | 3 | 0.100 | 0.043 | 2.32× |
+
+Solanaceae's characteristic bigrams are sequences of qo-words: `chedy ↔ qokain` appears to be a bidirectional transition (both directions enriched at 2.82×), and `qokedy → qokedy` is a self-transition (the same qo-word repeating). These transitions match the solanaceae morphological fingerprint — the qo-words are appearing in clusters, not scattered randomly through the text.
+
+Thistle's lead bigram is `chol → cthy` (3.10×), pairing the common `chol` with the thistle-specific `cthy` morpheme. This is a *transition* between a common EVA word and a thistle-characteristic word — the sequence structure is exploiting the combination, not just the presence of `cthy` alone.
+
+**What it shows:** EVA word sequence structure is family-organized, not just word choice. The bigram lift result is the cleanest evidence: same-family folios share word-pair patterns at 1.277× rate vs. 1.102× for individual words. The characteristic bigram analysis shows these are not random — they are specific transitions between family-characteristic words and common EVA words, suggesting sentence-level structure that tracks botanical content.
+
+---
+
+### 9. Species-Level Clustering Within Solanaceae
 
 **Method (`species-level-test.ts`, 2026-05-04):** Attempted to apply the Jaccard clustering test within solanaceae, comparing within-species vs. between-species vocabulary similarity. Vision model classification of 33 solanaceae folios by species.
 
@@ -457,7 +501,7 @@ The solanaceae effect is the largest (r=+0.572) — consistent with solanaceae h
 
 ## Cumulative Interpretation
 
-Eight independent analyses — vocabulary clustering, morphological fingerprinting (now 6 families with confirmed fingerprints), two-tier structure, NPMI semantics, EVA-only family attribution, comprehensive grid scan, within-folio morphological constraints, and within-family channel co-variation — all point at the same conclusion. The gen-15–19 targeted scans added k-init (solanaceae-specific suppression confirmed across all tested families), -al and -edy suffix signals, and quire invariance characterization of the new features, while exhausting all viable feature × family combinations in the current feature set.
+Nine independent analyses — vocabulary clustering, morphological fingerprinting (now 6 families with confirmed fingerprints), two-tier structure, NPMI semantics, EVA-only family attribution, comprehensive grid scan, within-folio morphological constraints, within-family channel co-variation, and word sequence structure — all point at the same conclusion. The gen-15–20 scans added k-init, -al/-edy suffix, structural features (l-containing, word-length CV), and bigram-level sequence analysis, all converging on the same families.
 
 **EVA vocabulary in the herbal section is systematically organized by botanical subject matter.**
 
@@ -479,6 +523,7 @@ The cardan grille / Timm-Schinner model generates EVA text by mechanical templat
 - No comprehensive grid scan finding 60 significant morphological signals across 420 tests, spanning 6 of 7 tested botanical families ✗ (grid-scan-v1, generation 11)
 - No within-family folio-pair co-variation between morphological and lexical channels ✗ (r=+0.371 pooled over 6,444 pairs, p<0.0001; solanaceae r=+0.572)
 - No new EVA feature signals beyond the original 15 ✗ (k-init solanaceae r=−0.441***; l-containing solanaceae r=+0.260* confirmed across 4 comparisons; word-length CV solanaceae LOW; gallows rate thistle HIGH vs plantago r=+0.497*)
+- No word sequence structure by botanical family ✗ (bigram Jaccard lift 1.277× vs unigram 1.102×; characteristic transitions solanaceae `chedy ↔ qokain` 2.82×, thistle `chol → cthy` 3.10×)
 
 A procedural-generation model that coincidentally produces all eight of these patterns simultaneously, stably across ≥10 quires, with consistent family-pharmacology NPMI alignment, pre-registered prediction accuracy, and a 14.3% hit rate in a blind 420-test scan, requires substantial ad hoc explanation.
 
@@ -554,6 +599,7 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `targeted-gen19.ts` | Gen-19 exhaustive scan — remaining small-family + follow-up tests | k-init artemisia r=+0.728 p=0.025*; all other untested dimensions null |
 | `structural-scan.ts` | Gen-20 structural features — gallows, l-containing, word-length CV, consecutive-repeat | l-containing solanaceae HIGH (4 comparisons **); word-length CV solanaceae LOW (*); gallows thistle HIGH vs plantago * |
 | `loo-structural.ts` | LOO classifier with structural features | +1 folio with l-containing or CV; baseline 6-feature set remains optimal |
+| `sequence-features.ts` | Bigram Jaccard clustering, bigram entropy, characteristic bigrams | Bigram lift 1.277× > unigram 1.102×; word order encodes family; thistle `chol→cthy` 3.10×, solanaceae `chedy↔qokain` 2.82× |
 | `species-level-test.ts` | Species-level Jaccard clustering within solanaceae | Infeasible — 32/33 folios classified as mandrake |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
