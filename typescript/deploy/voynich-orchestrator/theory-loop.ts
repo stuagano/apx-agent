@@ -998,6 +998,16 @@ const SEED_MAPS = 6;
 //     l→v (was frequency-consensus; overwrote by l→l from sol crib)
 //     e→t (conflicts with m→t from am crib; left open for homophonic runs)
 //   qo→p and t→v dropped: no statistical basis, low run-to-run stability.
+//
+// v3 addition (f5r Latin decode analysis, 2026-05-05):
+//   Best Latin homophonic theory (f5r Mandrake, combined=0.482) decoded
+//   "chocthy" → "sanat" (heals/cures) twice in the Mandrake folio.
+//   Trace: ch→s + o→a + c→n + th→a + y→t. The standalone EVA 'c' (distinct
+//   from the 'ch' and 'ck' ligatures) maps to Latin 'n'. Also confirmed in
+//   "cthey" → "nait" (targeting "nati") and consistent with "cheor" → "sic"
+//   (where the trailing 'c' in "sic" comes from digraph or→c, not standalone).
+//   "sanat" = 3rd-person singular of sanare (to heal) — exact medicinal vocabulary
+//   for the botanical herbal section. Domain-appropriate for Mandrake folio.
 // ---------------------------------------------------------------------------
 
 /** Locked assignments — statistical cribs + surviving frequency consensus. */
@@ -1009,19 +1019,28 @@ const CONSENSUS_LOCKED: Record<string, Record<string, string>> = {
     s: 's',   // sol→sol: 55% line-initial; Latin "sol" (sun) is identity mapping
     o: 'o',   // sol→sol: same crib
     l: 'l',   // sol→sol: same crib
+    // f5r decode analysis (chocthy→sanat, ×2 in Mandrake folio):
+    c: 'n',   // standalone 'c' (not ch/ck ligatures) → Latin 'n'
     // Surviving frequency consensus (no conflict with cribs):
     r: 'k', sh: 'a', ct: 'h', h: 'g', ok: 'q',
-    y: 'd', ch: 'i',
+    // v4 (2026-05-05): updated from sanat-theory analysis.
+    //   Top-10 Latin homophonic theories have y→t at positions 1, 2, 4; y→d appears
+    //   zero times. ch→i appears zero times in top-10; ch→e is modal (6/10) but
+    //   ch→s is required for the clearest decode (sanat, ×2) and is used by the
+    //   2nd-ranked theory. Changing to match the sanat-theory signature unblocks
+    //   the hill-climber from an otherwise unreachable solution region.
+    y: 't', ch: 's',
   },
   italian: {
     a: 'e', m: 't', s: 's', o: 'o', l: 'l',
+    c: 'n',
     r: 'k', sh: 'a', ct: 'h', h: 'g', ok: 'q',
-    y: 'd', ch: 'i',
+    y: 't', ch: 's',
   },
 };
 
 /** Uncertain glyphs — the hill-climber focuses mutations here. */
-const UNCERTAIN_GLYPHS = ['d', 'i', 'n', 'k', 'c', 'f', 'p', 'e', 't', 'q'];
+const UNCERTAIN_GLYPHS = ['d', 'i', 'n', 'k', 'f', 'p', 'e', 't', 'q'];
 
 // ---------------------------------------------------------------------------
 // Crossbreeding — recombine uncertain glyphs from top-scoring maps
