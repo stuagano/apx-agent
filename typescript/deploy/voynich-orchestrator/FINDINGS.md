@@ -258,9 +258,19 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `label-word-test.ts` | Once-per-folio label analysis | 13 significant words |
 | `jaccard-decomposition.ts` | Label vs. text tier decomposition | 88.7% text retention |
 | `cross-section-test.ts` | Section-specificity via ZL file | 5/13 botanical-specific |
-| `morpho-grid-scan.ts` | Full feature × family matrix (15 features × 7 families, pairwise + vs-all) | pending — run after IP unblock |
+| `morpho-grid-scan.ts` | Full feature × family matrix (15 features × 7 families, pairwise + vs-all) | pending — run with `PERSIST=1 BATCH_LABEL=grid-scan-v1` |
+| `quire-invariance-test.ts` | Quire-level breakdown for thistle and plantago fingerprints | pending — validates scribal-hand null |
+| `targeted-predictions-test.ts` | 15 pre-registered predictions from anti-correlation theory (5 directional family-vs-family, 3 untested-feature-on-family, 5 new features, 2 null controls) | pending — confirmatory test |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
+
+### Recommended run order (post-deployment)
+
+1. Deploy all 4 updated apps (`voynich-stat-mutation`, `voynich-stat-executor`, `voynich-critic`, `voynich-orchestrator`)
+2. Run `PERSIST=1 BATCH_LABEL=grid-scan-v1 npx tsx morpho-grid-scan.ts` — seeds stat_findings with full grid
+3. Run `npx tsx quire-invariance-test.ts` — quire invariance for thistle/plantago
+4. Run `npx tsx targeted-predictions-test.ts` — confirmatory pre-registered predictions
+5. Trigger EA gen-11 via `run_stat_loop` (now has global exclusion + 5 new features)
 
 All scripts require Databricks credentials except `cross-section-test.ts` (downloads ZL file directly).
 
