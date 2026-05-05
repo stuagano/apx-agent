@@ -125,6 +125,24 @@ async function getTopFindings(n = 5): Promise<Array<{
 }
 
 // ---------------------------------------------------------------------------
+// All historically tested feature+family combinations (for global exclusion)
+// ---------------------------------------------------------------------------
+
+async function getTestedCombinations(): Promise<string[]> {
+  const rows = await executeSql(`
+    SELECT DISTINCT spec FROM ${STAT_TABLE}
+  `).catch(() => []);
+  return rows.flatMap((r) => {
+    try {
+      const spec = JSON.parse(r.spec ?? '{}') as HypothesisSpec;
+      return spec.feature && spec.family_a && spec.family_b
+        ? [`"${spec.feature}" + ${spec.family_a} vs ${spec.family_b}`]
+        : [];
+    } catch { return []; }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Persist one finding
 // ---------------------------------------------------------------------------
 
@@ -227,6 +245,10 @@ export class StatEvolutionaryAgent {
         const results: Array<{ spec: HypothesisSpec; effect_size: number; p_value: number; critic_score: number }> = [];
         const batchTested: string[] = [];
 
+        // Load global exclusion list once per batch (all historically tested combinations)
+        const globalTested = await getTestedCombinations();
+        console.log(`[stat-ea] gen=${generation}: ${globalTested.length} combinations already in DB`);
+
         for (let round = 0; round < n_rounds; round++) {
           console.log(`[stat-ea] gen=${generation} round=${round + 1}/${n_rounds}`);
 
@@ -235,7 +257,7 @@ export class StatEvolutionaryAgent {
           const spec = await callAgentTool(self.mutationAgentUrl, 'generate_hypothesis', {
             top_findings: topFindings,
             generation,
-            batch_tested: batchTested,
+            batch_tested: [...globalTested, ...batchTested],
           }) as HypothesisSpec | null;
 
           if (!spec?.feature) {
@@ -250,6 +272,7 @@ export class StatEvolutionaryAgent {
 
           if (!finding || finding.error) {
             console.warn(`[stat-ea] round ${round + 1}: executor returned error: ${finding?.error}`);
+            batchTested.push(`"${spec.feature}" + ${spec.family_a} vs ${spec.family_b}`);
             continue;
           }
 
