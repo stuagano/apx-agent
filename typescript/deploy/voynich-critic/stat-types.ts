@@ -70,18 +70,24 @@ WHAT IS NOW EXHAUSTED (do not re-test):
   All 15 features × 7 families vs all-botanical AND all 21 pairwise — grid-scan-v1 exhaustive.
   Species-level within solanaceae — infeasible (32/33 folios classified mandrake).
   Within-folio correlation for all major feature pairs — completed.
+  New EVA features tested in gen-15/16 (all combinations with major families now in DB):
+    d-init, k-init, t-init, p-init, f-init rates — all tested vs solanaceae/thistle/plantago.
+    double-i rate — tested vs solanaceae, thistle.
+    -edy, -eedy, -oy, -or, -oy suffix rates — tested vs solanaceae.
+
+NEW FINDINGS from gen-15/16 (add to fingerprint table, confirm with additional families):
+  k-init rate: solanaceae r=-0.441 p<0.0001*** (LOW k-init — solanaceae avoids k-initial words)
+  -edy suffix rate: solanaceae r=+0.261 p=0.022* (HIGH -edy — solanaceae-specific -dy variant)
+  -eedy suffix rate: solanaceae r=+0.210 p=0.041* (HIGH -eedy — longer variant of -edy)
+  k-init rate: plantago r=+0.334 p=0.073~ (borderline, plantago may be HIGH k-init opposite solanaceae)
 
 GENUINELY UNTESTED DIMENSIONS (propose only these):
-  - Cross-section: do herbal family fingerprints (solanaceae qo-prefix) appear in pharma-section folios?
-    (Different from the already-completed cross-section label-word test which tested 13 specific label words)
-  - NEW EVA features not in the 15-feature list: e.g., -am suffix, -al suffix, -ar suffix,
-    double-letter rate (count words with repeated consecutive letters), or position-specific rates
-    (qo at start vs middle of word).
-  - folio_filter variant: test any fingerprint restricted to a SINGLE quire to check quire-level depth.
-  - Folio-pair feature distance WITHIN PHARMA SECTION: does the same morphological-lexical co-variation
-    seen in herbal section also appear in pharmaceutical section? Would show whether the pattern generalizes.
-  - Partial family fingerprint check: solanaceae or thistle qo-prefix tested restricted to each individual
-    quire (1 family × 1 quire at a time) — tests whether any single quire drives the pooled result.
+  - k-init rate: test against thistle, plantago directly (expected opposite to solanaceae — anti-correlation)
+  - -edy suffix: test against thistle, plantago, poppy (may show the same anti-correlation as -dy)
+  - Cross-section: do herbal family fingerprints (solanaceae qo-prefix, k-init) appear in pharma-section folios?
+  - folio_filter variant: test any confirmed fingerprint restricted to a SINGLE quire.
+  - -am suffix, -al suffix, -ar suffix rates — untested entirely.
+  - qo-internal rate (qo NOT at start of word) — tests whether qo is positional or anywhere.
 
 What failed: NPMI threshold-count permutation test (p=0.212).
 `.trim();

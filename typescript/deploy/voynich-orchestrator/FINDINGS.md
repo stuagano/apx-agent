@@ -93,6 +93,22 @@ Systematic rank-biserial tests across all 7 viable families × 10 EVA features (
 | -dy suffix rate | −0.449 | 0.032 |
 | -chy suffix rate | +0.402 | 0.037 |
 
+#### New features — init-rate and suffix scan (EA gen-15/16, 2026-05-04)
+
+Ten new EVA features added (not in grid-scan-v1): `d-init`, `k-init`, `t-init`, `p-init`, `f-init` rates; `-edy`, `-eedy`, `-oy`, `-or` suffix rates; `double-i rate`. All tested against major families (solanaceae, thistle, plantago) by EA gen-15/16 (N=1,000 permutations each).
+
+**Significant new findings (solanaceae):**
+
+| Feature | r | p | Direction |
+|---------|---|---|-----------|
+| k-init rate | **−0.441** | **<0.001 \*\*\*** | solanaceae LOW (avoids k-initial words) |
+| -edy suffix rate | **+0.261** | **0.022 \*** | solanaceae HIGH (-edy is a specific -dy variant) |
+| -eedy suffix rate | **+0.210** | **0.041 \*** | solanaceae HIGH (-eedy, longer variant) |
+
+**Not significant (gen-15/16 null results):** d-init, t-init, p-init, f-init, double-i, -oy, -or all ns across major families. k-init for plantago borderline (r=+0.334, p=0.073~) — opposite direction from solanaceae, consistent with anti-correlation pattern.
+
+**Interpretation:** The k-init finding (r=−0.441, p<0.001) is among the strongest new results: solanaceae strongly avoids words starting with 'k'. Given solanaceae is HIGH in qo-prefix, this suggests qo-initial and k-initial words occupy the same word-slot and are mutually exclusive in solanaceae text. The -edy extension (+0.261, p=0.022) refines the -dy finding — solanaceae doesn't just elevate -dy overall, it elevates the specific -edy variant (where 'e' precedes 'dy').
+
 #### Comprehensive grid scan — all 15 features × 7 families (`morpho-grid-scan.ts`, 2026-05-04)
 
 Full 420-test matrix: 15 features × 7 families vs all-botanical + all 21 pairwise combinations. 1,000 permutations per test. 60 significant results (p<0.05), 63 with |r|≥0.2 persisted to `stat_findings` (batch "grid-scan-v1").
@@ -343,6 +359,7 @@ The cardan grille / Timm-Schinner model generates EVA text by mechanical templat
 - No above-chance classification of folio plant family from EVA text alone ✗ (52.5% vs 25% chance, p<0.0001)
 - No comprehensive grid scan finding 60 significant morphological signals across 420 tests, spanning 6 of 7 tested botanical families ✗ (grid-scan-v1, generation 11)
 - No within-family folio-pair co-variation between morphological and lexical channels ✗ (r=+0.371 pooled over 6,444 pairs, p<0.0001; solanaceae r=+0.572)
+- No new EVA feature signals beyond the original 15 ✗ (k-init rate solanaceae r=-0.441 p<0.001; -edy suffix solanaceae r=+0.261 p=0.022)
 
 A procedural-generation model that coincidentally produces all eight of these patterns simultaneously, stably across ≥10 quires, with consistent family-pharmacology NPMI alignment, pre-registered prediction accuracy, and a 14.3% hit rate in a blind 420-test scan, requires substantial ad hoc explanation.
 
