@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -16,7 +17,7 @@ class AgentCard(BaseModel):
     name: str
     display_name: str
     description: str
-    status: str
+    status: Literal["live", "unreachable", "stub", "planned"] = "stub"
     url: str
     tools: list[AgentTool]
     tags: list[str] = []
@@ -41,6 +42,6 @@ class VersionOut(BaseModel):
     def from_metadata(cls) -> "VersionOut":
         try:
             v = version("agent-hub")
-        except Exception:
+        except PackageNotFoundError:
             v = "dev"
         return cls(version=v)
