@@ -228,7 +228,7 @@ const executeStatTest = defineTool({
       spec: spec as HypothesisSpec,
       effect_size: Math.round(r * 1000) / 1000,
       p_value: Math.round(pValue * 1000) / 1000,
-      n_samples: folios.length,
+      n_samples: groupA.length + groupB.length,
       result_table,
       interpretation:
         `${spec.family_a} folios show ${direction} ${spec.feature} than ${spec.family_b} ` +
