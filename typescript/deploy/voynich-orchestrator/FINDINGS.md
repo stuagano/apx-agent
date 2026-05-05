@@ -694,201 +694,13 @@ These three observations together describe a system with internal grammatical ru
 
 **Most discriminating untested prediction:** If A is correct, EVA's statistical structure (morphological alternants, n-gram lift, entropy) should be consistent across manuscript sections — the grammar should not change between herbal, balneological, and zodiac folios, even though the vocabulary may. If the -dy/-chy within-folio alternant holds in the balneological section (which has no botanical content), that would be strong evidence for A over C. If it disappears outside the herbal section, C becomes more plausible.
 
-**This prediction was tested** (`cross-section-grammar.ts`, 2026-05-04). See Section 9 below.
-
----
-
-### Section 9: Cross-Section Grammar Replication
-
-**Method (`cross-section-grammar.ts`, 2026-05-04):** Zandbergen-Landini full-manuscript transcription (ZL3b-n.txt, public). Sections: H=herbal, B=balneological, Z=zodiac, P=pharmaceutical, A=astrological, S=stars. For each section with ≥8 folios of ≥20 words: (1) within-folio half-split -dy/-chy correlation as in Section 6, permutation test (N=1000); (2) mean morphological feature rates; (3) raw vocabulary Jaccard clustering with shuffled null.
-
-*Note on corpus coverage:* ZL parsing yields 128 herbal folios vs. 224 in the Databricks EVA corpus; the herbal baseline r=−0.010 (ns) is consistent with a true effect of r≈−0.049 being underpowered at n=128. Stars, balneological, and zodiac sections are available only in the ZL file, so the cross-section comparison is internally consistent within the same dataset.
-
-#### Feature rates by section
-
-| Section | n | -dy | -chy | qo-prefix | ch-init | short word |
-|---------|---|-----|------|-----------|---------|-----------|
-| H herbal | 128 | 0.119 | 0.055 | 0.098 | 0.196 | 0.185 |
-| B balneological | 19 | **0.311** | **0.009** | **0.244** | 0.118 | 0.185 |
-| Z zodiac | 12 | 0.129 | 0.015 | 0.013 | 0.153 | 0.143 |
-| P pharmaceutical | 16 | 0.099 | 0.010 | 0.117 | 0.188 | 0.145 |
-| A astrological | 8 | 0.135 | 0.049 | 0.043 | 0.165 | 0.133 |
-| S stars | 25 | 0.192 | 0.016 | 0.170 | 0.165 | 0.131 |
-| C cosmological | 10 | 0.143 | 0.026 | 0.054 | 0.136 | 0.220 |
-
-**Balneological morphological anomaly:** The balneological section (women bathing figures, no botanical content) has the most extreme EVA morphological profile in the entire manuscript: -dy elevated 2.6× above herbal, qo-prefix elevated 2.5×, -chy nearly absent (0.009 vs. herbal 0.055). This mirrors the "solanaceae phenotype" but at section scale, suggesting EVA morphology tracks subject matter across sections just as it tracks plant families within the herbal section.
-
-#### Within-folio -dy vs -chy anti-correlation by section
-
-| Section | n | r | p | sig |
-|---------|---|---|---|-----|
-| H herbal (ZL, reference) | 128 | −0.010 | 0.395 | ns |
-| **S stars** | **25** | **−0.437** | **0.003** | **\*\*** |
-| B balneological | 19 | −0.044 | 0.879 | ns |
-| Z zodiac | 12 | +0.507 | 0.975 | ns |
-| A astrological | 8 | −0.493 | 0.277 | ns |
-| P pharmaceutical | 16 | +0.564 | 0.795 | ns |
-| C cosmological | 10 | +0.355 | 0.423 | ns |
-
-**Key finding:** The stars section (text-only pages, no botanical imagery, no plant families) shows the strongest -dy/-chy within-folio anti-correlation in the dataset: r=−0.437, p=0.003**. This directly confirms the Candidate A prediction that the morphological grammar should persist outside the herbal section.
-
-**Null results caveat:** Balneological (n=19), zodiac (n=12), and other sections are underpowered to detect a small within-folio effect (r≈−0.05–0.10). The mixed signs (positive r in zodiac, pharmaceutical, cosmological) are consistent with noise at these sample sizes, not with genuine reversals. The stars result (n=25, strongly significant) is the relevant signal.
-
-#### Vocabulary clustering by section
-
-| Section | n | mean Jaccard | p (vs. shuffled null) |
-|---------|---|---|---|
-| B balneological | 19 | 0.188 | <0.001 *** |
-| S stars | 25 | 0.136 | <0.001 *** |
-| P pharmaceutical | 16 | 0.102 | <0.001 *** |
-| H herbal | 128 | 0.067 | 0.018 * |
-| Z zodiac | 12 | 0.079 | 0.132 ns |
-
-All major sections show significantly elevated within-section vocabulary similarity compared to random folio sampling. Balneological has the highest clustering (mean J=0.188), over 2.8× the herbal baseline — consistent with the balneological section using a more restricted vocabulary and the same repetitive EVA patterns throughout.
-
-#### Interpretation
-
-The Candidate A prediction is confirmed in the stars section. Text-only pages with no botanical content retain the -dy/-chy morphological alternant relationship (r=−0.437, p=0.003**), showing this constraint is a property of EVA as a writing system, not of botanical content annotation. The balneological section shows an independent line of evidence: its extreme morphological profile (dominant qo/-dy, near-absent -chy) demonstrates that EVA morphological features track subject matter across sections, paralleling the family-level tracking within herbal.
-
-Candidate C (botanical notation) is thereby weakened further: a notation system specifically encoding plant properties has no mechanism to generate the same grammatical constraints in a section about bathing rituals.
-
----
-
-### Section 10: Section Vocabulary Overlap
-
-**Method (`section-vocabulary.ts`, 2026-05-05):** Pairwise vocabulary Jaccard between all manuscript sections and herbal plant families. Overlap coefficient (|A∩B|/min(|A|,|B|)) for balneological vs. each family. Words enriched ≥2× in balneological with folio presence ≥40%. Words shared between balneological and solanaceae (both ≥30%). Cross-section function word candidates (appear in ≥50% of folios in every major section).
-
-**Vocabulary distances:**
-
-| | solanaceae | thistle | plantago | balneo | stars |
-|---|---|---|---|---|---|
-| balneo | 0.135 | **0.157** | 0.121 | — | **0.170** |
-| herbal-all | 0.196 | 0.344 | 0.163 | 0.147 | 0.186 |
-
-Balneological is NOT closer to solanaceae than to other herbal families. Its highest vocabulary Jaccard is with *stars* (0.170) and *thistle* (0.157), not solanaceae (0.135). The overlap coefficient of balneo vs. solanaceae (0.388) is comparable to balneo vs. plantago (0.403) and thistle (0.310) — the shared vocabulary is diffuse, not solanaceae-specific.
-
-**Balneological-exclusive words (88 words, ≥40% folio presence, ≥2× lift over herbal):** Dominated by `ol-` prefix forms: `olshedy`, `olchedy`, `olkedy`, `olkeey`, `olkain`, `olkeedy`, `okal` — and `l-` prefix forms: `lchedy`, `lshedy`, `lchey`. These are nearly absent from solanaceae. The `qo`-prefix balneo words (`qoteedy` 17/19, `qol` 19/19, `qokain` 19/19, `qotal` 13/19) are among the strongest balneo-exclusive words, confirming the morphological register but as a different word inventory.
-
-**Shared vocabulary between balneological and solanaceae (21 words, both ≥30%):** The overlap consists almost entirely of universal EVA words: `daiin`, `or`, `ol`, `dar`, `dy`, `chedy`. These words are equally common in thistle and herbal-all. No content-specific vocabulary is shared between bathing text and nightshade text.
-
-**Function word candidates — 4 words appear in ≥50% of folios across every major section (H, B, S, P):**
-
-| Word | Herbal | Balneo | Stars | Pharma | Notes |
-|------|--------|--------|-------|--------|-------|
-| `daiin` | 0.95 | 0.89 | 0.92 | 1.00 | Nearly universal |
-| `or` | 0.51 | 0.95 | 0.96 | 0.75 | 3-letter, very frequent |
-| `dar` | 0.52 | 0.84 | 0.80 | 0.75 | 3-letter, very frequent |
-| `dy` | 0.61 | 0.89 | 0.52 | 0.75 | Also a suffix component |
-
-These four words are EVA's strongest function word candidates. `daiin` in particular appears in 89–100% of folios in every section tested — it is plausibly an EVA equivalent of a definite article or high-frequency preposition.
-
-**Interpretation:** The balneological section shares EVA's morphological register (high qo-prefix, high -dy, low -chy) with solanaceae text but uses an entirely different vocabulary. This is the grammatical register pattern expected of a real language: the same grammatical forms (morphological class) applied to different content domains. A botanical notation system has no mechanism to produce this pattern — there is no botanical reason to use solanaceae-style morphological markers when writing about bathing rituals.
-
-This finding adds a tenth independent line of evidence for Candidate A: shared morphological grammar without lexical overlap across semantically unrelated sections is a defining property of natural language, not notation.
-
----
-
-### Section 11: Language Statistics — Canonical Tests of Candidate A
-
-**Method (`language-statistics.ts`, 2026-05-05):** Full ZL manuscript transcription (36,937 tokens, 7,785 types, 5,144 lines). Four tests: (1) Zipf power-law fit; (2) Heaps vocabulary growth; (3) conditional entropy reduction H₂/H₁; (4) positional grammar via chi-square on top-100 words.
-
-#### Test 1: Zipf's law — PASS
-
-| Quantity | EVA | Natural language range | Verdict |
-|----------|-----|----------------------|---------|
-| Zipf exponent α | **1.000** | 0.8–1.2 | ✓ |
-| R² | **0.981** | > 0.95 | ✓ |
-
-EVA follows a textbook Zipf distribution. The top words (`daiin`, `ol`, `chedy`, `aiin`, `shedy`) are all slightly *less* frequent than the fit predicts — a "flat top" pattern that is common in natural languages where no word is excessively dominant.
-
-#### Test 2: Heaps' law — ANOMALOUS (β=0.749, above natural language range 0.40–0.60)
-
-Vocabulary grows as V ~ 3.0 × N^0.749 (R²=0.998). The exponent is elevated above the typical natural language range. Three mitigating factors: (a) the ZL corpus is multi-domain (six sections each contributing unique vocabulary — this is known to inflate β); (b) β=0.749 is in the range of highly inflected Latin corpora; (c) a fixed-codebook cipher would give β→0 (vocabulary saturates), not 0.75. EVA's high TTR (21% type-token ratio vs ~12% for English at this scale) is the proximate driver, which could reflect rich morphology rather than encoding issues.
-
-#### Test 3: Conditional entropy — PASS (stronger than English)
-
-| | H₁ (unigram) | H₂ (bigram cond.) | H₂/H₁ |
-|--|--|--|--|
-| EVA (full) | 10.39 bits | 4.39 bits | **0.422** |
-| English (reference) | ~11.5 bits | ~8.3 bits | ~0.72 |
-| Random text (reference) | — | — | ~1.00 |
-
-Knowing the previous EVA word eliminates 57.8% of uncertainty about the next — stronger than English (28% reduction). This holds across every section tested: herbal 0.33, stars 0.35, balneological 0.43, pharmaceutical 0.25. The consistent cross-section reduction rules out the herbal section being an outlier.
-
-The lower-than-English ratio is consistent with a more syntactically constrained (e.g., agglutinative or SOV) language, not with a weaker or absent grammar.
-
-#### Test 4: Positional grammar — PASS (79/100 significant)
-
-79 of the top-100 frequency words have p<0.01 positional preference (chi-square test for line-initial / line-medial / line-final position). Key patterns:
-
-**Line-final markers** (words that cluster at line end):
-| Word | Line-final % | Baseline | Notes |
-|------|-------------|----------|-------|
-| `am` | 72% | 14% | Near-exclusive line terminator |
-| `oly` | 68% | 14% | Strong line terminator |
-| `dam` | 62% | 14% | Possible `d-` prefix + `am` |
-| `cthy` | 29% | 14% | -chy suffix word |
-| `dy` | 36% | 14% | Also common standalone |
-
-**Line-initial markers** (words that cluster at line start):
-| Word | Line-initial % | Baseline | Notes |
-|------|--------------|----------|-------|
-| `sain` | 57% | 14% | `s-` initial |
-| `sol` | 55% | 14% | `s-` initial |
-| `saiin` | 45% | 14% | `s-` initial |
-| `sar` | 39% | 14% | `s-` initial |
-| `sho` | 25% | 14% | `s-` initial |
-| `dain` | 23% | 14% | `d-` initial |
-
-The `s-`initial words (`sain`, `sol`, `saiin`, `sar`, `sho`) form a coherent class of line-initial words — they appear at the beginning of lines 2–4× more often than chance. This is consistent with EVA having a syntactic category (e.g., subject, topic marker, sentence opener) realized by `s-`initial words. `am` and `oly` as near-exclusive line terminators suggest a sentence-final particle class.
-
-#### Scorecard
-
-| Test | Result | Verdict |
-|------|--------|---------|
-| Zipf's law (α, R²) | α=1.000, R²=0.981 | ✓ PASS |
-| Heaps' law (β) | β=0.749 | ⚠ ANOMALOUS (multi-domain corpus, possible rich morphology) |
-| Conditional entropy H₂/H₁ | 0.422 (57.8% reduction) | ✓ PASS — stronger than English |
-| Positional grammar (top 100) | 79/100 p<0.01 | ✓ PASS — strong syntactic word order |
-
-**Interpretation:** Three of four tests confirm Candidate A (real language). The one anomaly (Heaps β) is most naturally explained by corpus composition (multi-domain ZL file) and possible morphological richness. The conditional entropy reduction (stronger than English) and positional grammar (79% of words position-sensitive) provide the strongest evidence yet for EVA having syntactic structure — properties that a notation system or simple cipher would not generate.
-
----
-
-### Section 12: Timm-Schinner Null Model
-
-**Method (`timm-schinner-null.ts`, 2026-05-05):** The Timm-Schinner (2004) self-citation model proposes the Voynich scribe generated text by copying words from a sliding window of recently written text, with occasional character substitution. This mechanism is known to reproduce Zipf's law mechanically. The question: does Timm-Schinner text *also* pass the full test battery from Section 11 (all four tests)? If yes, the "real language" evidence from Section 11 would be weakened — the tests would not discriminate EVA from a known non-linguistic generator.
-
-**Parameters:** Window W=7 (look back 7 positions in generated text), mutation rate P_MUT=0.15 (15% probability of single-character EVA substitution), seed = first 20 real EVA words. Generated ~36,947 tokens organized into 5,142 lines matching the real corpus line-length distribution.
-
-**Side-by-side comparison:**
-
-| Test | Real EVA | TS Synthetic | Discriminates? |
-|------|----------|--------------|----------------|
-| Zipf α (target 0.8–1.2, R²>0.95) | ✓ α=1.000, R²=0.981 | ✗ α=0.746, R²=0.899 | **YES** |
-| Heaps β (target 0.40–0.65) | ✗ β=0.749 | ✗ β=0.981 | no (both fail) |
-| H₂/H₁ (target 0.50–0.88) | ✗ 0.422 | ✗ 0.142 | 3× separation |
-| Positional grammar (target ≥30%) | ✓ 79/100 = 79% | ✗ 13/100 = 13% | **YES** |
-
-**Interpretation:**
-
-The Timm-Schinner model **fails two of four tests outright** (Zipf and positional grammar), where real EVA passes both. These are genuine discriminators — they identify structure in real EVA that self-citation copying cannot reproduce.
-
-The H₂/H₁ comparison is nuanced: both values fall outside the natural language reference range (0.50–0.88), but from different sides. Real EVA at 0.422 is close to the natural language lower bound and consistent with a highly constrained grammar. TS synthetic at 0.142 is far more extreme — near-total predictability from the previous word — because the sliding-window copy mechanism means consecutive words are always drawn from a tiny pool. The 3× separation (0.422 vs. 0.142) shows real EVA has substantially *more* independence between consecutive words than self-citation predicts. This is the opposite of what a null model should produce.
-
-The Heaps anomaly (β=0.749 for real EVA, β=0.981 for TS) is informative in the same direction: the TS model drives β toward 1.0 because mutations constantly generate novel word forms, inflating the type count without linguistic constraint. Real EVA's β=0.749, while above the natural language range, is far below the TS model's ceiling.
-
-**Note on TS synthetic vocabulary:** The TS top words (`duasu`, `sibkn`, `cdmiu`) are heavily mutated forms bearing no resemblance to real EVA. After many cycles of sampling and mutation, word forms drift from the seed vocabulary. This divergence is itself a discriminator: real EVA word types are structured (EVA morphological classes persist; qo-, ch-, -dy patterns hold across the manuscript). Mutated TS text loses all morphological structure within a few hundred tokens.
-
-**Conclusion:** The test battery from Section 11 is not trivially fooled by the Timm-Schinner self-citation null model. Zipf's law and positional grammar directly discriminate real EVA from self-citation text. The evidence from Section 11 is genuine — the "real language" conclusion withstands this falsification attempt.
-
 ---
 
 ### What this is not
 
-- **Not a decipherment.** No EVA word has been assigned a reliable meaning. The four function word candidates (daiin, or, dar, dy) and the sentence-final particles (am, oly) are statistically identified but their meanings are unknown.
-- **Not proof of language.** The Zipf distribution, conditional entropy reduction, and positional grammar are all consistent with Candidate A, but cannot by themselves rule out a highly structured notation (C) or a language-level cipher (B) that inherits these properties from the underlying language.
-- **Cross-section coverage update.** All four language statistics tests use the full ZL manuscript transcription. The conditional entropy reduction is confirmed in every section tested (herbal, balneological, stars, pharmaceutical, zodiac).
+- **Not a decipherment.** No EVA word has been assigned a reliable meaning. The NPMI associations are qualitatively compelling but statistically unproven.
+- **Not proof of language.** The within-folio grammar and n-gram structure are most consistent with Candidate A, but cannot by themselves rule out a highly structured notation (C) or a language-level cipher (B).
+- **Not a claim about the full manuscript.** All analyses are herbal-section only. The balneological, zodiac, and star sections have different visual content and may have different EVA structure — testing whether the grammar persists across sections is the most important remaining analysis.
 
 ---
 
@@ -925,10 +737,6 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `plantago-sequence.ts` | Plantago sequence investigation — why 90%? | Absence-driven (30/31 disc. bigrams are solanaceae's); ch→ch clustering vs sol ch→qo; ablation confirms plantago has no positive sequence identity |
 | `ngram-lift.ts` | N-gram lift curve n=1..4 with permutation tests + per-family bigram breakdown | 1.102→1.277→3.098× monotonic; n=4 sparsity floor; plantago n=2 lift=0.748× (only family below 1) |
 | `characteristic-trigrams.ts` | Top enriched trigrams per family with permutation tests | Family-exclusive trigrams confirmed; no individual significance (portfolio effect); plantago 0 trigrams at k≥2 |
-| `cross-section-grammar.ts` | Cross-section grammar replication — -dy/-chy alternant + feature rates + vocabulary clustering | Stars section r=−0.437 p=0.003**; balneological morphological anomaly (qo=0.244, -dy=0.311, -chy=0.009); grammar persists outside herbal |
-| `section-vocabulary.ts` | Section vocabulary overlap — does balneo share vocabulary with solanaceae? | Vocabulary distinct (Jaccard 0.135, lower than balneo-thistle 0.157 or balneo-stars 0.170); shared words are universal function words; 4 function word candidates (daiin, or, dar, dy); balneo has 88 exclusive `ol-`-prefix words absent from solanaceae; morphological register shared without lexical overlap |
-| `language-statistics.ts` | Canonical language tests — Zipf, Heaps, conditional entropy, positional grammar | Zipf α=1.000 R²=0.981 ✓; Heaps β=0.749 ⚠ (multi-domain corpus); H₂/H₁=0.422 (58% reduction, stronger than English) ✓; 79/100 top words position-sensitive ✓; 3/4 tests pass |
-| `timm-schinner-null.ts` | Null model — generates ~37K tokens via W=7 sliding-window self-citation, runs full test battery vs. real EVA | TS synthetic fails Zipf (α=0.746) and positional grammar (13%); H₂/H₁ separation 3× (0.142 vs 0.422); test battery is genuine discriminator |
 | `species-level-test.ts` | Species-level Jaccard clustering within solanaceae | Infeasible — 32/33 folios classified as mandrake |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
@@ -943,7 +751,7 @@ The gen-8 morpho-seed findings and subsequent EA generations are persisted in `s
 6. Run `npx tsx feature-robustness-test.ts` — variant analysis for all confirmed fingerprints
 7. Trigger EA via `run_stat_loop` — mutation agent now directed to within-folio correlations, species-level variation, quire consistency of new family fingerprints
 
-All scripts require Databricks credentials except `cross-section-test.ts`, `cross-section-grammar.ts`, `language-statistics.ts`, and `timm-schinner-null.ts` (download ZL file directly from voynich.nu).
+All scripts require Databricks credentials except `cross-section-test.ts` (downloads ZL file directly).
 
 Required environment variables:
 ```bash
