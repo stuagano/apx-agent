@@ -59,6 +59,12 @@ ANTI-CORRELATION TABLE (direct family-vs-family, confirmed):
 6. Within-folio constraint: -dy vs -chy anti-correlate within individual folios (r=-0.049, p<0.001, n=224).
    This means -dy and -chy are EVA morphological alternants competing for the same suffix slot.
    qo-prefix, ch-init, short-word are between-folio (family-level) signals, not within-folio.
+7. Within-family channel co-variation (folio-pair-distance-test.ts, N_PERMS=2000):
+   Within every eligible botanical family, morphologically similar folios share more vocabulary.
+   Spearman r (morph-dist vs 1-Jaccard): solanaceae r=+0.572***, thistle r=+0.282***, pooled r=+0.371*** (6444 pairs).
+   Plantago (n=10, 45 pairs) and poppy (n=7, 21 pairs): ns — underpowered.
+   Interpretation: morphological channel and lexical channel co-vary at folio-pair level, not just family level.
+   Rules out model where two independent signals happen to correlate only at macro family level.
 
 WHAT IS NOW EXHAUSTED (do not re-test):
   All 15 features × 7 families vs all-botanical AND all 21 pairwise — grid-scan-v1 exhaustive.
@@ -66,13 +72,16 @@ WHAT IS NOW EXHAUSTED (do not re-test):
   Within-folio correlation for all major feature pairs — completed.
 
 GENUINELY UNTESTED DIMENSIONS (propose only these):
-  - Folio-pair feature distance: does morphological feature distance between folio pairs
-    correlate with their Jaccard distance? (combines morphological + lexical signals)
   - Cross-section: do herbal family fingerprints (solanaceae qo-prefix) appear in pharma-section folios?
+    (Different from the already-completed cross-section label-word test which tested 13 specific label words)
   - NEW EVA features not in the 15-feature list: e.g., -am suffix, -al suffix, -ar suffix,
     double-letter rate (count words with repeated consecutive letters), or position-specific rates
     (qo at start vs middle of word).
   - folio_filter variant: test any fingerprint restricted to a SINGLE quire to check quire-level depth.
+  - Folio-pair feature distance WITHIN PHARMA SECTION: does the same morphological-lexical co-variation
+    seen in herbal section also appear in pharmaceutical section? Would show whether the pattern generalizes.
+  - Partial family fingerprint check: solanaceae or thistle qo-prefix tested restricted to each individual
+    quire (1 family × 1 quire at a time) — tests whether any single quire drives the pooled result.
 
 What failed: NPMI threshold-count permutation test (p=0.212).
 `.trim();

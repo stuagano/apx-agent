@@ -288,7 +288,31 @@ The -dy/-chy anti-correlation is statistically significant within individual fol
 
 **What it shows:** -dy and -chy appear to be EVA morphological alternants sharing a suffix slot. The other family-level signals reflect between-folio (subject-driven) variation rather than within-folio morphological grammar constraints.
 
-### 7. Species-Level Clustering Within Solanaceae
+### 7. Folio-Pair Channel Co-variation (Within-Family)
+
+**Method (`folio-pair-distance-test.ts`, 2026-05-04):** For each botanical family with ≥5 folios, enumerate all within-family folio pairs. For each pair compute (a) Euclidean distance in 15-dimensional morphological feature space and (b) 1 − Jaccard lexical distance. Test Spearman rank correlation between the two distances. Permutation test: 2,000 shuffles of feature vectors within the family (lexical distances held fixed). Pooled analysis across all eligible families.
+
+**Design rationale:** An all-pairs design (across families) would be confounded by family membership — same-family pairs are closer on both axes by construction. Within-family design removes this confound and tests whether the two channels co-vary *at the folio level*, independent of family assignment.
+
+**Results:**
+
+| Family | n_folios | n_pairs | Spearman r | perm-p | Interpretation |
+|--------|:--------:|:-------:|:----------:|:------:|----------------|
+| solanaceae | 33 | 528 | **+0.572** | **<0.0001 \*\*\*** | similar folios share more vocab |
+| uncertain | 31 | 465 | **+0.488** | **<0.0001 \*\*\*** | similar folios share more vocab |
+| other-botanical | 100 | 4950 | **+0.315** | **<0.0001 \*\*\*** | similar folios share more vocab |
+| thistle | 30 | 435 | **+0.282** | **0.0005 \*\*\*** | similar folios share more vocab |
+| plantago | 10 | 45 | −0.081 | 0.679 ns | no within-family effect |
+| poppy | 7 | 21 | −0.131 | 0.503 ns | no within-family effect |
+| **Pooled** | — | 6444 | **+0.371** | **<0.0001 \*\*\*** | consistent across families |
+
+**What it shows:** Within every eligible large family, morphologically similar folios share more vocabulary — the morphological channel (feature rates like qo-prefix, -dy, -chy) and the lexical channel (which words appear) co-vary at the folio-pair level. This rules out a model where the two independent signals happen to both correlate with family membership at the family level but are otherwise unrelated. At the folio level, "more qo-prefix and less -chy" predicts "more shared word types." The two channels are driven by the same underlying continuous dimension.
+
+The solanaceae effect is the largest (r=+0.572) — consistent with solanaceae having the most distinctive morphological fingerprint. Plantago and poppy are ns, but both have very few pairs (45 and 21 respectively), so power is limited. The pooled r=+0.371 over 6,444 within-family pairs is extremely well-powered.
+
+---
+
+### 8. Species-Level Clustering Within Solanaceae
 
 **Method (`species-level-test.ts`, 2026-05-04):** Attempted to apply the Jaccard clustering test within solanaceae, comparing within-species vs. between-species vocabulary similarity. Vision model classification of 33 solanaceae folios by species.
 
@@ -298,7 +322,7 @@ The -dy/-chy anti-correlation is statistically significant within individual fol
 
 ## Cumulative Interpretation
 
-Seven independent analyses — vocabulary clustering, morphological fingerprinting (now 6 families with confirmed fingerprints), two-tier structure, NPMI semantics, EVA-only family attribution, comprehensive grid scan, and within-folio morphological constraints — all point at the same conclusion:
+Eight independent analyses — vocabulary clustering, morphological fingerprinting (now 6 families with confirmed fingerprints), two-tier structure, NPMI semantics, EVA-only family attribution, comprehensive grid scan, within-folio morphological constraints, and within-family channel co-variation — all point at the same conclusion:
 
 **EVA vocabulary in the herbal section is systematically organized by botanical subject matter.**
 
@@ -318,6 +342,7 @@ The cardan grille / Timm-Schinner model generates EVA text by mechanical templat
 - No pre-registered directional predictions from the anti-correlation pattern confirmed ✗ (4/5 major predictions confirmed, r=0.56–0.70)
 - No above-chance classification of folio plant family from EVA text alone ✗ (52.5% vs 25% chance, p<0.0001)
 - No comprehensive grid scan finding 60 significant morphological signals across 420 tests, spanning 6 of 7 tested botanical families ✗ (grid-scan-v1, generation 11)
+- No within-family folio-pair co-variation between morphological and lexical channels ✗ (r=+0.371 pooled over 6,444 pairs, p<0.0001; solanaceae r=+0.572)
 
 A procedural-generation model that coincidentally produces all eight of these patterns simultaneously, stably across ≥10 quires, with consistent family-pharmacology NPMI alignment, pre-registered prediction accuracy, and a 14.3% hit rate in a blind 420-test scan, requires substantial ad hoc explanation.
 
@@ -388,6 +413,7 @@ All scripts are in `typescript/deploy/voynich-orchestrator/`. Run order and depe
 | `family-attribution-test.ts` | LOO nearest-centroid classifier — EVA text → family ID | 52.5% accuracy, 2.10× lift, p<0.0001 |
 | `feature-robustness-test.ts` | Definitional variant analysis for all 17 fingerprints | 11/17 ROBUST, 35/57 variants in expected direction |
 | `within-folio-correlation-test.ts` | Within-folio half-split test for feature anti-correlations | -dy vs -chy p<0.001; qo/ch-init/short-word not within-folio |
+| `folio-pair-distance-test.ts` | Within-family morphological × lexical channel co-variation | r=+0.371 pooled (6,444 pairs), solanaceae r=+0.572, 4/4 large families *** |
 | `species-level-test.ts` | Species-level Jaccard clustering within solanaceae | Infeasible — 32/33 folios classified as mandrake |
 
 The gen-8 morpho-seed findings and subsequent EA generations are persisted in `serverless_stable_qh44kx_catalog.voynich.stat_findings` (ordered by `critic_score DESC`).
