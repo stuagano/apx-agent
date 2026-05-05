@@ -1,0 +1,22 @@
+bundle:
+  name: data-inspector
+
+sync:
+  include:
+    - .build
+
+artifacts:
+  default:
+    build: UV_OFFLINE=1 apx build && cp pyproject.toml .build/
+
+resources:
+  apps:
+    mcp-data-inspector-app:
+      name: "mcp-data-inspector"
+      description: "MCP-enabled — Delta forensics, table discovery, schema inspection"
+      source_code_path: ./.build
+
+targets:
+  dev:
+    mode: development
+    default: true
