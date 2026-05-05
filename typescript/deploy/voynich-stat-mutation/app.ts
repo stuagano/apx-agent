@@ -98,9 +98,12 @@ const generateHypothesis = defineTool({
       ...batch_tested,
     ].filter((v, i, a) => a.indexOf(v) === i).join('; ');
 
-    const KNOWN_FEATURES = [
-      'qo-prefix rate', '-chy suffix rate', '-dy suffix rate',
-      'ch-init rate', 'short word rate',
+    // ALL 15 grid-scan-v1 features are exhausted (all family × feature combinations tested).
+    // Only the NEW_FEATURES below are genuinely untested territory.
+    const GRID_SCAN_EXHAUSTED_FEATURES = [
+      'qo-prefix rate', '-chy suffix rate', '-dy suffix rate', 'ch-init rate', 'short word rate',
+      'unique word ratio', 'word entropy', 'oq-prefix rate', '-ol suffix rate', '-ain suffix rate',
+      '-aiin suffix rate', 'sh-init rate', 'ok-prefix rate', 'mean word length', 'long word rate',
     ];
     // Only families with ≥3 herbal folios in the corpus (queried 2026-05-04)
     const ALL_FAMILIES = [
@@ -112,11 +115,18 @@ const generateHypothesis = defineTool({
       'mint-family', // n=3
       'artemisia',  // n=3
     ];
+    // NEW features not tested in grid-scan-v1 — these are the ONLY untested territory
     const NEW_FEATURES = [
-      'unique word ratio', 'word entropy', 'oq-prefix rate',
-      '-ol suffix rate', '-ain suffix rate',
-      '-aiin suffix rate', 'sh-init rate', 'ok-prefix rate',
-      'mean word length', 'long word rate',
+      'd-init rate',       // words starting with d — untested
+      'k-init rate',       // words starting with k — untested
+      't-init rate',       // words starting with t — untested
+      'p-init rate',       // words starting with p — untested
+      'f-init rate',       // words starting with f — untested
+      '-edy suffix rate',  // words ending in edy — common EVA ending, untested
+      '-eedy suffix rate', // words ending in eedy — untested
+      'double-i rate',     // words containing ii anywhere — untested
+      '-or suffix rate',   // words ending in or — untested
+      '-oy suffix rate',   // words ending in oy — untested
     ];
 
     const prompt = [
@@ -134,16 +144,24 @@ const generateHypothesis = defineTool({
       findingsSummary,
       '',
       'YOUR TASK: Propose ONE novel HypothesisSpec not in either exclusion list above.',
+      '',
+      'CRITICAL: The 15-feature grid-scan-v1 is COMPLETELY EXHAUSTED — all family×feature combinations',
+      'for the original 15 features have been tested. You MUST use a NEW feature from the list below.',
+      '',
       'Priority order (choose the highest-priority option available):',
-      '  1. [HIGHEST] Test any NEW feature (mean word length, long word rate, -aiin suffix, sh-init rate, ok-prefix rate) against solanaceae, thistle, or plantago — these are completely untested.',
-      '  2. Test a direct family-vs-family comparison that isolates the anti-correlation (e.g., thistle vs plantago, solanaceae vs plantago) — only "all-botanical" has been used as family_b so far.',
-      '  3. Test any feature against poppy, mint-family, or artemisia — small families (n=3–7) but untested.',
-      '  4. Test a new combination of an already-established feature with a family where it has not yet been confirmed.',
+      '  1. [ONLY VALID] Choose ONE NEW feature from this exact list:',
+      `     ${NEW_FEATURES.join(', ')}`,
+      '     Test it against solanaceae, thistle, or plantago (the families with the strongest fingerprints).',
+      '  2. After testing new features against major families, try new features against poppy, mint-family, artemisia.',
+      '  3. Try new features in direct family-vs-family comparisons (e.g. solanaceae vs thistle, solanaceae vs plantago).',
+      '  FORBIDDEN: Any feature from this exhausted list (all tested, all in DB):',
+      `     ${GRID_SCAN_EXHAUSTED_FEATURES.join(', ')}`,
       '  NEVER reproduce: any feature+family_a+family_b triple in the ESTABLISHED RESULTS or ALREADY TESTED list.',
       '  ALWAYS use permutation-test method (not rank-biserial) — it gives exact p-values.',
       '',
-      `Available features: ${[...KNOWN_FEATURES, ...NEW_FEATURES].join(', ')}`,
+      `Available NEW features (use these): ${NEW_FEATURES.join(', ')}`,
       `Available families: ${ALL_FAMILIES.join(', ')} or "all-botanical"`,
+      'IMPORTANT: Do NOT propose any feature from the exhausted list above. Only NEW features.',
       `Method: always use "permutation-test" (1000-shuffle permutation — gives exact p-values)`,
       '',
       'Reply with ONLY a JSON object on a single line (no markdown fences):',

@@ -168,6 +168,17 @@ export function computeFeature(words: string[], feature: string): number | null 
     case 'ok-prefix rate':    return words.filter(w => w.startsWith('ok')).length / n;
     case 'mean word length':  return words.reduce((s, w) => s + w.length, 0) / n;
     case 'long word rate':    return words.filter(w => w.length >= 6).length / n;
+    // New features — not in grid-scan-v1
+    case 'd-init rate':       return words.filter(w => w.startsWith('d')).length / n;
+    case 'k-init rate':       return words.filter(w => w.startsWith('k')).length / n;
+    case 't-init rate':       return words.filter(w => w.startsWith('t')).length / n;
+    case '-edy suffix rate':  return words.filter(w => w.endsWith('edy')).length / n;
+    case '-eedy suffix rate': return words.filter(w => w.endsWith('eedy')).length / n;
+    case 'double-i rate':     return words.filter(w => w.includes('ii')).length / n;
+    case '-or suffix rate':   return words.filter(w => w.endsWith('or')).length / n;
+    case '-oy suffix rate':   return words.filter(w => w.endsWith('oy')).length / n;
+    case 'p-init rate':       return words.filter(w => w.startsWith('p')).length / n;
+    case 'f-init rate':       return words.filter(w => w.startsWith('f')).length / n;
     default: return null;
   }
 }
