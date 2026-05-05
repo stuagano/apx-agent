@@ -24,7 +24,6 @@ export interface AgentCard {
     tags?: string[];
     tools: AgentTool[];
     url: string;
-    workstream?: string;
 }
 export interface AgentTool {
     description: string;
@@ -50,7 +49,6 @@ export interface Name {
 export interface RegisterRequest {
     tags?: string[];
     url: string;
-    workstream?: string;
 }
 export interface User {
     active?: boolean | null;
