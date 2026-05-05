@@ -12,8 +12,10 @@
  *   npx tsx morpho-grid-scan.ts
  *
  * Optional:
- *   N_PERMS=500 npx tsx morpho-grid-scan.ts   # faster, less precise p-values
- *   MIN_R=0.2 npx tsx morpho-grid-scan.ts     # only show |r| >= threshold
+ *   N_PERMS=500 npx tsx morpho-grid-scan.ts           # faster, less precise p-values
+ *   MIN_R=0.2 npx tsx morpho-grid-scan.ts             # only show |r| >= threshold
+ *   PERSIST=1 npx tsx morpho-grid-scan.ts             # save significant results to stat_findings table
+ *   BATCH_LABEL=grid-scan-v1 npx tsx morpho-grid-scan.ts  # custom batch label
  */
 
 import { resolveHost, resolveToken } from './appkit-agent/index.mjs';
@@ -22,8 +24,11 @@ import {
   computeFeature, BOTANICAL_FAMILIES,
 } from './stat-types.ts';
 
-const N_PERMS = parseInt(process.env.N_PERMS ?? '1000');
-const MIN_R    = parseFloat(process.env.MIN_R ?? '0.0');
+const N_PERMS     = parseInt(process.env.N_PERMS ?? '1000');
+const MIN_R       = parseFloat(process.env.MIN_R ?? '0.0');
+const PERSIST     = process.env.PERSIST === '1';
+const BATCH_LABEL = process.env.BATCH_LABEL ?? `grid-scan-${new Date().toISOString().slice(0, 10)}`;
+const STAT_TABLE  = process.env.STAT_POPULATION_TABLE ?? 'serverless_stable_qh44kx_catalog.voynich.stat_findings';
 
 // ---------------------------------------------------------------------------
 // SQL helper
@@ -52,6 +57,43 @@ async function executeSql(statement: string): Promise<Array<Record<string, strin
     cols.forEach((c, i) => { obj[c] = row[i]; });
     return obj;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Persist significant result to stat_findings table
+// ---------------------------------------------------------------------------
+
+async function persistResult(row: {
+  feature: string; family_a: string; family_b: string;
+  nA: number; nB: number; r: number; p: number;
+}, generation: number): Promise<void> {
+  const sqlEsc = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "''");
+  const id = crypto.randomUUID();
+  const spec = {
+    feature: row.feature, method: 'permutation-test',
+    family_a: row.family_a, family_b: row.family_b,
+    rationale: `Grid scan systematic test — ${row.feature} ${row.family_a} vs ${row.family_b}`,
+  };
+  const finding = {
+    spec, effect_size: Math.round(row.r * 1000) / 1000,
+    p_value: Math.round(row.p * 1000) / 1000,
+    n_samples: row.nA + row.nB,
+    interpretation: `${row.family_a} shows ${row.r > 0 ? 'higher' : 'lower'} ${row.feature} than ${row.family_b} (r=${row.r.toFixed(3)}, p=${row.p.toFixed(3)}, n_a=${row.nA}, n_b=${row.nB}). Method: permutation-test (${N_PERMS} permutations).`,
+  };
+  const specJson  = sqlEsc(JSON.stringify(spec));
+  const findJson  = sqlEsc(JSON.stringify(finding));
+  const feedback  = sqlEsc(`Grid scan: r=${row.r.toFixed(3)}, p=${row.p.toFixed(3)}, n=${row.nA}+${row.nB}`);
+  const criticScore = row.p < 0.001 ? 0.65 : row.p < 0.01 ? 0.55 : 0.45;
+  await executeSql(`
+    CREATE TABLE IF NOT EXISTS ${STAT_TABLE} (
+      id STRING, generation INT, batch_label STRING, spec STRING,
+      finding STRING, critic_score DOUBLE, critic_feedback STRING, created_at TIMESTAMP
+    )
+  `);
+  await executeSql(`
+    INSERT INTO ${STAT_TABLE} (id, generation, batch_label, spec, finding, critic_score, critic_feedback, created_at)
+    VALUES ('${id}', ${generation}, '${BATCH_LABEL}', '${specJson}', '${findJson}', ${criticScore}, '${feedback}', current_timestamp())
+  `);
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +290,27 @@ async function main() {
         }
       }
     }
+  }
+
+  // Persist to stat_findings table if requested
+  if (PERSIST) {
+    const toSave = sig.filter(r => Math.abs(r.r) >= 0.2);
+    console.log(`\nPersisting ${toSave.length} significant results (|r|≥0.2) to ${STAT_TABLE}...`);
+    // Determine next generation number
+    const genRows = await executeSql(`SELECT MAX(generation) AS maxgen FROM ${STAT_TABLE}`).catch(() => []);
+    const generation = (parseInt(genRows[0]?.maxgen ?? '0') || 0) + 1;
+    let saved = 0;
+    for (const row of toSave) {
+      try {
+        await persistResult(row, generation);
+        saved++;
+      } catch (err) {
+        console.warn(`  Failed to save ${row.feature} ${row.family_a} vs ${row.family_b}: ${(err as Error).message}`);
+      }
+    }
+    console.log(`Saved ${saved}/${toSave.length} findings as generation ${generation}, batch "${BATCH_LABEL}".`);
+  } else {
+    console.log('\n(Run with PERSIST=1 to save significant results to stat_findings table.)');
   }
 }
 
