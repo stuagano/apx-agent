@@ -106,9 +106,16 @@ Ten new EVA features added (not in grid-scan-v1): `d-init`, `k-init`, `t-init`, 
 | -edy suffix rate | **+0.261** | **0.022 \*** | solanaceae HIGH (-edy is a specific -dy variant) |
 | -eedy suffix rate | **+0.210** | **0.041 \*** | solanaceae HIGH (-eedy, longer variant) |
 
-**Not significant (gen-15/17 null results):** d-init, t-init, p-init, f-init, double-i, -oy, -or, -ar, -am all ns for solanaceae. -edy for thistle (r=−0.112 ns) and plantago (r=−0.243 ns) — opposite direction from solanaceae but not significant. k-init for plantago borderline (r=+0.334, p=0.073~). -am for thistle borderline (r=+0.214, p=0.090~).
+**Additional significant findings (targeted scan, 2026-05-04):**
 
-**Interpretation:** The k-init finding (r=−0.441, p<0.001) is among the strongest new results: solanaceae strongly avoids words starting with 'k'. Given solanaceae is HIGH in qo-prefix, this suggests qo-initial and k-initial words occupy the same word-slot and are mutually exclusive in solanaceae text. The -al suffix finding (+0.382, p=0.002) adds a new dimension to the solanaceae suffix fingerprint — solanaceae elevates multiple -l-terminal suffixes. The -edy extension (+0.261, p=0.022) refines the -dy finding — solanaceae elevates the specific -edy variant.
+| Feature | Comparison | r | p | Direction |
+|---------|-----------|---|---|-----------|
+| k-init rate | solanaceae vs plantago (direct) | **−0.597** | **0.005 \*\*** | solanaceae LOW, plantago HIGH — anti-correlation confirmed |
+| -dy-edy combined | solanaceae vs all-botanical | **+0.237** | **0.043 \*** | combined rate elevated — stronger than -edy alone |
+
+**Not significant (gen-15/16/17/18 + targeted scan):** d-init, t-init, p-init, f-init, double-i, -oy, -or, -ar, -am all ns for solanaceae. -edy/-eedy for thistle/plantago all ns. k-init thistle ns (r=+0.103). -al plantago ns (r=−0.289). qo-internal null for both solanaceae and thistle — qo is strictly word-initial.
+
+**Interpretation:** The k-init direct comparison (solanaceae vs plantago r=−0.597, p=0.005) is a strong anti-correlation: solanaceae uses LOW k-initial words, plantago uses HIGH k-initial words. This adds a third axis to the solanaceae-vs-plantago divergence (alongside -dy↑↓ and -chy↓↑). The qo-internal null result confirms that qo is exclusively a word-prefix in EVA — it does not appear internally. The -al suffix finding (+0.382, p=0.002) and -dy-edy combined (+0.237, p=0.043) both reinforce the solanaceae suffix fingerprint.
 
 #### Comprehensive grid scan — all 15 features × 7 families (`morpho-grid-scan.ts`, 2026-05-04)
 

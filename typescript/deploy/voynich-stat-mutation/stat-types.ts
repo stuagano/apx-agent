@@ -90,13 +90,17 @@ NULL in gen-15/16/17 (do not re-test):
   -ar: solanaceae r=+0.094 ns
   d-init, t-init, p-init, f-init, double-i, -oy, -or: all ns
 
-GENUINELY UNTESTED DIMENSIONS (propose only these):
-  - k-init rate: test against thistle DIRECTLY (is thistle also LOW like solanaceae, or opposite?)
-  - k-init rate: test solanaceae vs plantago DIRECTLY (predicted large positive r — direct anti-correlation)
-  - -al suffix rate: test against thistle, plantago, poppy (follow up solanaceae hit — is thistle LOW?)
-  - qo-internal rate (qo NOT at word start): completely untested
-  - -dy-edy combined rate: combined -dy and -edy — may be stronger than either alone
-  - -am suffix rate: test against plantago, poppy (follow up borderline thistle result)
+NEWLY CONFIRMED (targeted scan 2026-05-04):
+  k-init rate: solanaceae vs plantago r=-0.597 p=0.005** (direct anti-correlation, solanaceae LOW plantago HIGH)
+  -dy-edy combined: solanaceae r=+0.237 p=0.043* (combined rate significant)
+  qo-internal rate: NULL for solanaceae and thistle — qo is strictly word-initial in EVA.
+
+GENUINELY UNTESTED DIMENSIONS (remaining):
+  - Summarize new solanaceae fingerprint for all features (complete the picture)
+  - -al suffix rate: test against poppy, lily, artemisia (other small families — directional test)
+  - k-init rate: test against poppy, lily, artemisia (is the anti-correlation general?)
+  - Composite fingerprint scoring: can LOO accuracy improve using all confirmed features (including new ones)?
+  - -eedy suffix: test against solanaceae vs plantago DIRECTLY (follow-up on anti-correlation axis)
 
 What failed: NPMI threshold-count permutation test (p=0.212).
 `.trim();
