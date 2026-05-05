@@ -14,7 +14,7 @@ def _col(n):
 def set_env(monkeypatch):
     monkeypatch.setenv("VECTOR_SEARCH_ENDPOINT_NAME", "test-endpoint")
     monkeypatch.setenv("VECTOR_SEARCH_INDEX_NAME", "catalog.schema.test_idx")
-    monkeypatch.setenv("UTILITY_ACCOUNT_TABLE", "catalog.schema.utility_accounts")
+    monkeypatch.setenv("ACCOUNT_TABLE", "catalog.schema.accounts")
 
 
 def test_normalize_record_basic(mock_ws):

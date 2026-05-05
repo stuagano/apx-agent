@@ -1,4 +1,4 @@
-"""Supervisor agent — normalizes AFR records and searches for candidates.
+"""Supervisor agent — normalizes applicant records and searches for candidates.
 
 Default path: Vector Search (Databricks VS index).
 Fallback path: SQL ILIKE search for records with initials or acronyms
@@ -40,7 +40,7 @@ def normalize_record(
     account_number: str = "",
     ws: Workspace = None,
 ) -> dict[str, Any]:
-    """Normalize an AFR applicant record and decide the search strategy.
+    """Normalize an applicant record and decide the search strategy.
 
     Returns a dict with normalized fields and 'strategy': 'vector' | 'sql'.
     name: applicant full name (raw, may have extra spaces or punctuation)
@@ -116,9 +116,9 @@ def sql_search(
         candidates = sql_search_demo(name, address)
         return {"candidates": candidates, "count": len(candidates), "source": "demo"}
 
-    table = os.environ.get("UTILITY_ACCOUNT_TABLE", "")
+    table = os.environ.get("ACCOUNT_TABLE", "")
     if not table:
-        return {"error": "UTILITY_ACCOUNT_TABLE not configured", "candidates": [], "count": 0}
+        return {"error": "ACCOUNT_TABLE not configured", "candidates": [], "count": 0}
 
     tokens = [_escape(t.strip(".,")) for t in name.split() if len(t.strip(".,")) > 1]
     name_conditions = " AND ".join(f"name ILIKE '%{t}%'" for t in tokens)
@@ -158,7 +158,7 @@ def sql_search(
 
 
 SUPERVISOR_INSTRUCTIONS = """
-You are the Supervisor in an entity resolution system for utility company AFR (Affordable Rate) applications.
+You are the Supervisor in an entity resolution system for utility company intake applications.
 
 Your job:
 1. Call normalize_record on the applicant's name, address, and account number.

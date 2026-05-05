@@ -12,8 +12,8 @@ class VersionOut(BaseModel):
         return cls(version=__version__)
 
 
-class AfrApplication(BaseModel):
-    """Normalized AFR application record passed to the agent."""
+class Application(BaseModel):
+    """Normalized intake application record passed to the agent."""
     applicant_name: str
     address: str = ""
     account_number: str = ""
@@ -30,7 +30,7 @@ class Candidate(BaseModel):
 
 
 class EnrollmentDecision(BaseModel):
-    """Final output written to afr_processing."""
+    """Final output written to match_decisions."""
     matched: bool
     account_id: str | None = None  # canonical match, if any
     category: str  # "EXACT", "HIGH_CONFIDENCE", "LOW_CONFIDENCE", "NO_MATCH"

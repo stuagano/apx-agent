@@ -3,7 +3,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def set_env(monkeypatch):
-    monkeypatch.setenv("AFR_DECISION_TABLE", "catalog.schema.afr_processing")
+    monkeypatch.setenv("DECISION_TABLE", "catalog.schema.match_decisions")
 
 
 SAMPLE_CANDIDATES = [
@@ -72,4 +72,4 @@ def test_log_decision_writes_sql(mock_ws):
     mock_ws.statement_execution.execute_statement.assert_called_once()
     call_sql = mock_ws.statement_execution.execute_statement.call_args[1]["statement"]
     assert "INSERT" in call_sql.upper()
-    assert "afr_processing" in call_sql
+    assert "match_decisions" in call_sql

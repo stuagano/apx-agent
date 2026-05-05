@@ -18,9 +18,9 @@ resources:
 
 env:
   VECTOR_SEARCH_ENDPOINT_NAME: "PLACEHOLDER — set when Uplight provides endpoint name"
-  VECTOR_SEARCH_INDEX_NAME: "PLACEHOLDER — e.g. catalog.schema.utility_account_idx"
-  UTILITY_ACCOUNT_TABLE: "PLACEHOLDER — e.g. catalog.schema.utility_accounts"
-  AFR_DECISION_TABLE: "PLACEHOLDER — e.g. catalog.schema.afr_processing"
+  VECTOR_SEARCH_INDEX_NAME: "PLACEHOLDER — e.g. catalog.schema.account_idx"
+  ACCOUNT_TABLE: "PLACEHOLDER — e.g. catalog.schema.accounts"
+  DECISION_TABLE: "PLACEHOLDER — e.g. catalog.schema.match_decisions"
 
 targets:
   dev:

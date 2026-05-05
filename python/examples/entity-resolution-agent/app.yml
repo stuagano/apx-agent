@@ -2,7 +2,7 @@ command: ["uvicorn", "entity_resolution_agent.backend.app:app", "--workers", "2"
 
 env:
   DEMO_MODE: "true"
-  VECTOR_SEARCH_ENDPOINT_NAME: "uplight-entity-resolution"
-  VECTOR_SEARCH_INDEX_NAME: "uplight_prod.afr.utility_account_idx"
-  UTILITY_ACCOUNT_TABLE: "uplight_prod.afr.utility_accounts"
-  AFR_DECISION_TABLE: "uplight_prod.afr.afr_processing"
+  VECTOR_SEARCH_ENDPOINT_NAME: "entity-resolution"
+  VECTOR_SEARCH_INDEX_NAME: "catalog.schema.account_idx"
+  ACCOUNT_TABLE: "catalog.schema.accounts"
+  DECISION_TABLE: "catalog.schema.match_decisions"

@@ -1,6 +1,6 @@
 """Evaluator agent — fuzzy reasoning to produce an enrollment decision.
 
-Receives the original AFR application and the Supervisor's candidate shortlist.
+Receives the original intake application and the Supervisor's candidate shortlist.
 Applies rule-based edge case detection before returning a structured decision.
 """
 
@@ -43,7 +43,7 @@ def evaluate_candidates(
     candidates: list[dict[str, Any]],
     ws: Workspace = None,
 ) -> dict[str, Any]:
-    """Evaluate a list of candidates against the original AFR application.
+    """Evaluate a list of candidates against the original intake application.
 
     Returns a structured decision dict with category, rationale, confidence, and matched flag.
     applicant: normalized applicant record (name, address, account_number)
@@ -112,15 +112,15 @@ def log_decision(
     decision: dict[str, Any],
     ws: Workspace = None,
 ) -> dict[str, Any]:
-    """Write the enrollment decision to the afr_processing table.
+    """Write the enrollment decision to the match_decisions table.
 
     decision: dict with keys: applicant_name, matched, account_id, category, rationale, confidence, candidates_reviewed"""
     if os.environ.get("DEMO_MODE", "").lower() == "true":
         return {"status": "logged (demo mode — no real write)", "decision": decision}
 
-    table = os.environ.get("AFR_DECISION_TABLE", "")
+    table = os.environ.get("DECISION_TABLE", "")
     if not table:
-        return {"status": "skipped", "reason": "AFR_DECISION_TABLE not configured"}
+        return {"status": "skipped", "reason": "DECISION_TABLE not configured"}
 
     def _get_warehouse_id(workspace: Any) -> str:
         for wh in workspace.warehouses.list():
@@ -163,9 +163,9 @@ def log_decision(
 
 
 EVALUATOR_INSTRUCTIONS = """
-You are the Evaluator in an entity resolution system for utility company AFR (Affordable Rate) applications.
+You are the Evaluator in an entity resolution system for utility company intake applications.
 
-You receive an AFR applicant record and a candidate shortlist from the Supervisor.
+You receive an applicant record and a candidate shortlist from the Supervisor.
 
 Your job:
 1. Call evaluate_candidates with the applicant dict and candidates list.

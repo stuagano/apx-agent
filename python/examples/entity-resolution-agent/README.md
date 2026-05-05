@@ -2,12 +2,12 @@
 
 Fuzzy-match and resolve customer/account entities using a two-agent `HandoffAgent` pipeline built on [apx-agent](https://github.com/stuagano/apx-agent) and Databricks.
 
-Designed for utility companies matching AFR (Affordable Rate) applications against a customer master database. Demonstrates `HandoffAgent` with a Supervisor → Evaluator loop, Vector Search as the primary search tool, and SQL fallback for records with initials or acronyms.
+Demonstrates matching intake applications against a customer master database using `HandoffAgent` with a Supervisor → Evaluator loop, Vector Search as the primary search tool, and SQL fallback for records with initials or acronyms.
 
 ## Architecture
 
 ```
-AFR application
+intake application
       │
       ▼
 ┌─────────────┐   vector_search (default)   ┌──────────────────────┐
@@ -23,7 +23,7 @@ AFR application
 │  EVALUATOR   │  fuzzy reasoning, edge cases
 │  (smart)     │  (familial matches, nicknames,
 │              │   secondary addresses)
-│              │──▶ enrollment decision + log
+│              │──▶ match decision + log
 └──────┬───────┘
        │ low confidence?
        └──▶ transfer_to_supervisor (retry with hints)
@@ -62,9 +62,9 @@ Then open `http://localhost:8001` and try prompts like:
 |---------|-------------|-----------------|
 | `DEMO_MODE` | `true` | `false` |
 | `VECTOR_SEARCH_ENDPOINT_NAME` | _(ignored in demo)_ | Your VS endpoint name |
-| `VECTOR_SEARCH_INDEX_NAME` | _(ignored in demo)_ | `catalog.schema.utility_account_idx` |
-| `UTILITY_ACCOUNT_TABLE` | _(ignored in demo)_ | `catalog.schema.utility_accounts` |
-| `AFR_DECISION_TABLE` | _(ignored in demo)_ | `catalog.schema.afr_processing` |
+| `VECTOR_SEARCH_INDEX_NAME` | _(ignored in demo)_ | `catalog.schema.account_idx` |
+| `ACCOUNT_TABLE` | _(ignored in demo)_ | `catalog.schema.accounts` |
+| `DECISION_TABLE` | _(ignored in demo)_ | `catalog.schema.match_decisions` |
 
 ## Project Structure
 
@@ -74,7 +74,7 @@ entity-resolution-agent/
 │   └── backend/
 │       ├── agent_router.py        # HandoffAgent wiring (supervisor + evaluator)
 │       ├── app.py                 # FastAPI app
-│       ├── models.py              # AfrApplication, Candidate, EnrollmentDecision
+│       ├── models.py              # Application, Candidate, MatchDecision
 │       └── core/
 │           ├── supervisor.py      # normalize_record, vector_search, sql_search
 │           ├── evaluator.py       # evaluate_candidates, log_decision
