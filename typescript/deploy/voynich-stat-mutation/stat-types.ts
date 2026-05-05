@@ -26,23 +26,26 @@ export const BOTANICAL_FAMILIES = new Set([
 ]);
 
 export const FINDINGS_SUMMARY = `
-Prior work established four lines of evidence (FINDINGS.md, 2026-05-04):
+Established findings (FINDINGS.md, 2026-05-04; EA gen-8 morpho-seed, 2026-05-04):
 
-1. Jaccard clustering: within-family lift = 1.10× overall (flat across distance bins, r=-0.003).
-2. Morphological fingerprint (solanaceae only — permutation-tested):
-   - qo-prefix: r=+0.532, p<0.001 (permutation max=0.415, N=1000)
-   - -chy suffix: r=-0.435, p<0.001
-   - -dy suffix: r=+0.367, p<0.001
-   - ch-init: r=-0.249, p=0.017
-   - short (≤3): r=-0.300, p=0.003
-3. Two-tier label/text structure: 13 significant label words (once_rate≥0.70, p<0.05).
-   5/13 confirmed botanical-specific (cross-section test): kchy, ckhey, qockhol, ty, oldaiin.
-4. NPMI semantic coherence: qualitative only (p=0.212 for permutation test — method invalid).
-   Control B: 1/30 cross-family vs 15/15 same-family NPMI associations.
+1. Jaccard clustering: within-family lift = 1.10× overall (r=-0.003, no distance decay).
+2. Morphological fingerprints — permutation-tested (N=1000), all p<0.05:
+   Solanaceae (n=33) vs all-botanical:
+     qo-prefix: r=+0.532 p<0.001 | -chy: r=-0.435 p<0.001 | -dy: r=+0.367 p<0.001
+     ch-init: r=-0.249 p=0.017  | short (≤3): r=-0.300 p=0.003
+   Thistle (n=30) vs all-botanical:
+     qo-prefix: r=-0.340 p=0.003 | short word: r=+0.340 p=0.006 | unique word ratio: r=+0.297 p=0.021
+   Plantago (n=10) vs all-botanical:
+     ch-init: r=+0.563 p=0.007 | -dy: r=-0.449 p=0.032 | -chy: r=+0.402 p=0.037
+   Anti-correlation: solanaceae ↑qo ↑-dy ↓-chy; thistle ↓qo ↑short; plantago ↑ch-init ↓-dy ↑-chy.
+3. Two-tier label/text structure: 13 significant label words (p<0.05, 2000-perm null).
+   5/13 cross-section-confirmed: kchy, ckhey, qockhol, ty, oldaiin.
+4. NPMI: qualitative coherence only (p=0.212 — method invalid).
 
-What has NOT been permutation-tested: thistle and plantago morphological fingerprints.
-What has NOT been tested: word entropy, unique-word ratio, bigram diversity per family.
-What failed: NPMI threshold-count permutation test — needs a different statistical approach.
+What has NOT been tested: mean word length, long word rate, -aiin suffix, sh-init rate, ok-prefix rate.
+What has NOT been tested: poppy, mint-family, artemisia fingerprints (small n=3–7, may need permutation).
+What has NOT been tested: family-vs-family comparisons (e.g. thistle vs plantago directly).
+What failed: NPMI threshold-count permutation test.
 `.trim();
 
 export function extractEvaWords(evaText: string): string[] {
@@ -122,6 +125,11 @@ export function computeFeature(words: string[], feature: string): number | null 
     case 'oq-prefix rate':    return words.filter(w => w.startsWith('oq')).length / n;
     case '-ol suffix rate':   return words.filter(w => w.endsWith('ol')).length / n;
     case '-ain suffix rate':  return words.filter(w => w.endsWith('ain')).length / n;
+    case '-aiin suffix rate': return words.filter(w => w.endsWith('aiin')).length / n;
+    case 'sh-init rate':      return words.filter(w => w.startsWith('sh')).length / n;
+    case 'ok-prefix rate':    return words.filter(w => w.startsWith('ok')).length / n;
+    case 'mean word length':  return words.reduce((s, w) => s + w.length, 0) / n;
+    case 'long word rate':    return words.filter(w => w.length >= 6).length / n;
     default: return null;
   }
 }

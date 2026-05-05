@@ -115,6 +115,8 @@ const generateHypothesis = defineTool({
     const NEW_FEATURES = [
       'unique word ratio', 'word entropy', 'oq-prefix rate',
       '-ol suffix rate', '-ain suffix rate',
+      '-aiin suffix rate', 'sh-init rate', 'ok-prefix rate',
+      'mean word length', 'long word rate',
     ];
 
     const prompt = [
