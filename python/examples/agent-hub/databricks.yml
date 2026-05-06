@@ -12,7 +12,7 @@ sync:
 
 artifacts:
   default:
-    build: uv build --wheel -o .build/ && ls .build/*.whl | xargs basename > .build/requirements.txt
+    build: npm run build && uv build --wheel -o .build/ && ls -t .build/*.whl | tail -n +2 | xargs rm -f && ls -t .build/*.whl | head -1 | xargs basename > .build/requirements.txt
 
 resources:
   apps:
