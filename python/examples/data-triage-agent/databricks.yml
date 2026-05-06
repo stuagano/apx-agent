@@ -7,7 +7,7 @@ sync:
 
 artifacts:
   default:
-    build: UV_OFFLINE=1 apx build && find .build -maxdepth 1 -name "data_triage_agent-*.whl" -not -name "*latest*" -exec cp {} .build/data_triage_agent-latest.whl \;
+    build: uv build --wheel -o .build/ && ls .build/*.whl | xargs basename > .build/requirements.txt
 
 resources:
   apps:
