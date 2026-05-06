@@ -13,11 +13,13 @@ from databricks_tools_core.auth import set_databricks_auth, clear_databricks_aut
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
+from anthropic_proxy import router as proxy_router
 from mcp_loader import get_mcp_servers
 from system_prompt import get_system_prompt
 
 logger = logging.getLogger(__name__)
 app = FastAPI()
+app.include_router(proxy_router)
 
 
 def _collect_result(user_message: str, options: ClaudeAgentOptions, q: queue.Queue, ctx) -> None:
@@ -109,9 +111,9 @@ async def responses(request: Request):
             system_prompt=get_system_prompt(user_email),
             env={
                 "ANTHROPIC_API_KEY": token,
-                "ANTHROPIC_BASE_URL": f"{host}/serving-endpoints/anthropic",
+                "ANTHROPIC_BASE_URL": "http://localhost:8000",
                 "ANTHROPIC_MODEL": "databricks-claude-sonnet-4-6",
-                "ANTHROPIC_CUSTOM_HEADERS": "x-databricks-disable-beta-headers: true",
+                "DATABRICKS_HOST": host,
             },
         )
 
