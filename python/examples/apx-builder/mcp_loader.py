@@ -147,7 +147,15 @@ def get_mcp_servers() -> tuple[dict, list[str]]:
                 from databricks_mcp_server.tools import sql, file, genie, compute  # noqa: F401
 
                 import asyncio
-                mcp_tools = asyncio.run(mcp.list_tools())
+                import concurrent.futures
+
+                # asyncio.run() cannot be called from a running event loop (e.g. uvicorn),
+                # so we load tools in a worker thread that has no event loop.
+                def _load():
+                    return asyncio.run(mcp.list_tools())
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
+                    mcp_tools = _ex.submit(_load).result()
 
                 sdk_tools = []
                 names = []
