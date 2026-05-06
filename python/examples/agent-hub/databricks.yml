@@ -1,0 +1,29 @@
+bundle:
+  name: agent-hub
+
+sync:
+  include:
+    - .build
+  exclude:
+    - .venv
+    - node_modules
+    - "**/__pycache__"
+    - "**/*.pyc"
+
+artifacts:
+  default:
+    build: uv build --wheel -o .build/ && ls .build/*.whl | xargs basename > .build/requirements.txt
+
+resources:
+  apps:
+    agent-hub-app:
+      name: "agent-hub"
+      description: "Agent Hub — portal for all deployed apx-agent apps"
+      source_code_path: ./.build
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production

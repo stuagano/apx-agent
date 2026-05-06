@@ -1,0 +1,9 @@
+node_modules/
+.build/
+src/agent_hub/__dist__/
+src/agent_hub/_version.py
+*.whl
+*.egg-info/
+__pycache__/
+.venv/
+uv.lock
