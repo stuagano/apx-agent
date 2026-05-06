@@ -121,3 +121,7 @@ When filling in `{tables}`, list the table names in plain English — for exampl
 - Never ask more than one question per message.
 - The flow should feel like chatting with a helpful colleague who happens to know how to build agents.
 """
+
+
+def get_system_prompt(user_email: str) -> str:
+    return SYSTEM_PROMPT
