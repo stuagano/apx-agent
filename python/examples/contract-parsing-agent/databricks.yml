@@ -7,7 +7,7 @@ sync:
 
 artifacts:
   default:
-    build: UV_OFFLINE=1 apx build && cp pyproject.toml .build/ && mkdir -p .build/client && cp -r client/dist .build/client/dist
+    build: uv build --wheel -o .build/ && ls .build/*.whl | xargs basename > .build/requirements.txt && mkdir -p .build/client && cp -r client/dist .build/client/dist
 
 resources:
   apps:
