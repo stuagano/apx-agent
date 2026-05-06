@@ -2,9 +2,9 @@ from unittest.mock import MagicMock, patch, call
 from tools.scaffold_project import _generate_files, scaffold_project, GenieSpace
 
 
-def test_generate_files_returns_three_required_files():
+def test_generate_files_returns_required_files():
     files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
-    assert set(files.keys()) == {"app.py", "pyproject.toml", "app.yml"}
+    assert set(files.keys()) == {"app.py", "pyproject.toml", "requirements.txt", "app.yml"}
 
 
 def test_generate_files_app_py_includes_sql_tool_for_each_table():
@@ -46,14 +46,36 @@ def test_scaffold_project_uploads_all_files():
 
     with patch("tools.scaffold_project._generate_files") as mock_gen, \
          patch("tools.scaffold_project._upload_files") as mock_upload:
-        mock_gen.return_value = {"app.py": "code", "pyproject.toml": "toml", "app.yml": "yaml"}
+        mock_gen.return_value = {"app.py": "code", "pyproject.toml": "toml", "requirements.txt": "reqs", "app.yml": "yaml"}
 
         result = scaffold_project("test", ["a.b.c"], [], "mcp-test", False, ws)
 
     mock_upload.assert_called_once()
     upload_args = mock_upload.call_args[0]
     assert upload_args[0] is ws
-    assert upload_args[1] == {"app.py": "code", "pyproject.toml": "toml", "app.yml": "yaml"}
+    assert upload_args[1] == {"app.py": "code", "pyproject.toml": "toml", "requirements.txt": "reqs", "app.yml": "yaml"}
+    # upload path uses /Users/ (no /Workspace/ prefix)
     assert "mcp-test" in upload_args[2]
     assert "user@example.com" in upload_args[2]
+    assert upload_args[2].startswith("/Users/")
+    # returned deploy path uses /Workspace/Users/ for the Apps deploy API
+    assert result.startswith("/Workspace/Users/")
     assert "mcp-test" in result
+    assert "user@example.com" in result
+
+
+def test_generate_files_no_tools_produces_valid_python():
+    files = _generate_files("answer questions", [], [], "mcp-empty")
+    assert "from apx_agent import Agent, create_app" in files["app.py"]
+    assert "from apx_agent import Agent, create_app," not in files["app.py"]
+
+
+def test_generate_files_requirements_txt_has_correct_git_url():
+    files = _generate_files("test", ["a.b.c"], [], "mcp-test")
+    assert "#subdirectory=python" in files["requirements.txt"]
+    assert "apx-agent" in files["requirements.txt"]
+
+
+def test_generate_files_pyproject_has_correct_git_url():
+    files = _generate_files("test", ["a.b.c"], [], "mcp-test")
+    assert "#subdirectory=python" in files["pyproject.toml"]
