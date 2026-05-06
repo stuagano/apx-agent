@@ -39,8 +39,14 @@ def _generate_files(
     imports_str = ", ".join(tool_imports)
     tools_str = "\n".join(tool_calls)
 
+    import_line = (
+        f"from apx_agent import Agent, create_app, {imports_str}"
+        if imports_str
+        else "from apx_agent import Agent, create_app"
+    )
+
     app_py = f'''\
-from apx_agent import Agent, create_app, {imports_str}
+{import_line}
 
 agent = Agent(
     tools=[
@@ -56,7 +62,7 @@ app = create_app(agent)
 name = "{app_name}"
 requires-python = ">=3.11"
 dependencies = [
-    "apx-agent @ git+https://github.com/stuagano/apx-agent.git",
+    "apx-agent @ git+https://github.com/stuagano/apx-agent.git#subdirectory=python",
 ]
 
 [tool.apx.agent]
@@ -70,6 +76,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 '''
 
+    requirements_txt = '''\
+apx-agent @ git+https://github.com/stuagano/apx-agent.git#subdirectory=python
+fastapi>=0.119.0
+uvicorn>=0.37.0
+databricks-sdk>=0.74.0
+httpx>=0.27.0
+'''
+
     app_yml = '''\
 command:
   - uvicorn
@@ -78,7 +92,12 @@ command:
   - "1"
 '''
 
-    return {"app.py": app_py, "pyproject.toml": pyproject_toml, "app.yml": app_yml}
+    return {
+        "app.py": app_py,
+        "pyproject.toml": pyproject_toml,
+        "requirements.txt": requirements_txt,
+        "app.yml": app_yml,
+    }
 
 
 def _upload_files(ws: WorkspaceClient, files: dict[str, str], workspace_path: str) -> None:
@@ -103,7 +122,8 @@ def scaffold_project(
 ) -> str:
     """Scaffold an apx-agent project in the Databricks Workspace. Returns the workspace path."""
     email = ws.current_user.me().user_name
-    workspace_path = f"/Users/{email}/apx-builder/{app_name}"
+    upload_path = f"/Users/{email}/apx-builder/{app_name}"
+    deploy_path = f"/Workspace/Users/{email}/apx-builder/{app_name}"
     files = _generate_files(use_case, tables, genie_spaces, app_name, include_lineage)
-    _upload_files(ws, files, workspace_path)
-    return workspace_path
+    _upload_files(ws, files, upload_path)
+    return deploy_path
