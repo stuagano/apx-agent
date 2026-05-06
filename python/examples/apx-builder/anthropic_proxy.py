@@ -11,12 +11,29 @@ The user's Databricks token is passed via the x-api-key header by the Anthropic 
 import json
 import logging
 import os
+import threading
 
 import httpx
+from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, HTTPException, Request
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Singleton SDK client — uses DATABRICKS_CLIENT_ID/SECRET (M2M) in Apps,
+# or DATABRICKS_TOKEN (PAT) in local dev. Either has model-serving scope.
+_sdk_lock = threading.Lock()
+_sdk_client: WorkspaceClient | None = None
+
+
+def _get_sdk_auth_header(host: str) -> str:
+    """Return 'Bearer <token>' using the app's own credentials, not the user's token."""
+    global _sdk_client
+    with _sdk_lock:
+        if _sdk_client is None:
+            _sdk_client = WorkspaceClient(host=host)
+    headers = _sdk_client.config.authenticate()
+    return headers.get("Authorization", "")
 
 
 def _to_openai(body: dict) -> dict:
@@ -140,21 +157,27 @@ def _to_anthropic(original: dict, oai: dict) -> dict:
 @router.post("/v1/messages")
 async def anthropic_proxy(request: Request) -> dict:
     """Translate Anthropic API calls to Databricks chat/completions."""
-    token = request.headers.get("x-api-key", "").strip()
-    if not token:
+    if not request.headers.get("x-api-key", "").strip():
         raise HTTPException(status_code=401, detail="x-api-key required")
 
     host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
     if not host:
         raise HTTPException(status_code=500, detail="DATABRICKS_HOST not configured")
+    if not host.startswith(("http://", "https://")):
+        host = f"https://{host}"
 
     body = await request.json()
     openai_body = _to_openai(body)
 
+    import asyncio
+    auth_header = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _get_sdk_auth_header(host)
+    )
+
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(
             f"{host}/serving-endpoints/chat/completions",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
             json=openai_body,
         )
 

@@ -41,11 +41,15 @@ def _convert_schema(json_schema: dict) -> dict:
 
 
 def _make_wrapper(name: str, description: str, schema: dict, fn):
-    """Wrap a FastMCP sync function as a claude-agent-sdk tool.
+    """Wrap a FastMCP tool function as a claude-agent-sdk tool.
 
     Propagates Databricks auth context vars to the inner call via copy_context().
     Handles JSON-string coercion for list/dict params that Claude sometimes sends as strings.
+    Supports both sync and async fn implementations.
     """
+    import asyncio
+    import inspect
+
     @tool(name, description, schema)
     def wrapper(args: dict) -> dict:
         ctx = copy_context()
@@ -60,7 +64,10 @@ def _make_wrapper(name: str, description: str, schema: dict, fn):
                         parsed[k] = v
                 else:
                     parsed[k] = v
-            return fn(**parsed)
+            result = fn(**parsed)
+            if inspect.iscoroutine(result):
+                result = asyncio.run(result)
+            return result
 
         result = ctx.run(run)
         result_str = json.dumps(result, default=str) if isinstance(result, (dict, list)) else str(result)

@@ -84,3 +84,20 @@ def test_convert_schema_handles_anyof_optional():
     result = _convert_schema(schema)
 
     assert result["name"] is str
+
+
+def test_make_wrapper_handles_async_fn():
+    """_make_wrapper must await async tool functions instead of returning the coroutine."""
+    from unittest.mock import MagicMock, patch
+
+    async def async_tool(query: str):
+        return {"rows": [{"result": "ok"}]}
+
+    with patch("mcp_loader.tool", side_effect=lambda name, desc, schema: lambda fn: fn):
+        from mcp_loader import _make_wrapper
+        wrapper = _make_wrapper("test_tool", "desc", {"query": str}, async_tool)
+
+    result = wrapper({"query": "SELECT 1"})
+    text = result["content"][0]["text"]
+    assert "ok" in text
+    assert "coroutine" not in text
