@@ -1,27 +1,41 @@
 # Entity Resolution Agent
 
-Fuzzy-match and resolve customer/account entities built on [apx-agent](https://github.com/stuagano/apx-agent) and Databricks — **in under 300 lines of Python**.
+Fuzzy-match and resolve customer/account entities built on [apx-agent](https://github.com/stuagano/apx-agent) and Databricks — **two specialized agents, under 300 lines of Python**.
 
 ![Chat UI showing match result with trace panel](docs/screenshot-chat.png)
 
-The agent normalizes an intake application, runs Vector Search (or SQL fallback for initials/acronyms), evaluates candidates with rule-based edge case detection, and logs every decision to a Delta table. The trace panel shows every tool call, input, and output in real time.
+Two `LlmAgent`s collaborate via `HandoffAgent`: a **Supervisor** that normalizes records and searches, and an **Evaluator** that scores candidates and logs decisions. The trace panel shows every tool call, input, and output in real time.
 
 ---
 
 ## What makes this simple
 
-The entire orchestration is a single `LlmAgent` with five plain Python functions as tools:
+Two focused agents, each wired in a handful of lines:
 
 ```python
-# agent_router.py — this is the whole agent
-agent = LlmAgent(
-    tools=[normalize_record, vector_search, sql_search, evaluate_candidates, log_decision],
-    instructions=_INSTRUCTIONS,
-    max_iterations=10,
+# core/supervisor.py
+supervisor = LlmAgent(
+    tools=[normalize_record, vector_search, sql_search],
+    instructions=SUPERVISOR_INSTRUCTIONS,
+    max_iterations=6,
+)
+
+# core/evaluator.py
+evaluator = LlmAgent(
+    tools=[evaluate_candidates, log_decision],
+    instructions=EVALUATOR_INSTRUCTIONS,
+    max_iterations=4,
+)
+
+# agent_router.py — HandoffAgent wires them together
+agent = HandoffAgent(
+    agents={"supervisor": supervisor, "evaluator": evaluator},
+    start="supervisor",
+    max_handoffs=4,
 )
 ```
 
-Tools are just regular functions. Databricks auth is handled automatically via `Dependencies.Workspace`:
+Tools are just regular Python functions. Databricks auth is handled automatically via `Dependencies.Workspace`:
 
 ```python
 def vector_search(query: str, k: int = 10, ws: Workspace = None) -> dict:
@@ -35,7 +49,7 @@ def vector_search(query: str, k: int = 10, ws: Workspace = None) -> dict:
     ...
 ```
 
-No boilerplate. No auth wiring. `ws` is injected per-request with the caller's OBO token when running on Databricks Apps, or falls back to CLI credentials locally.
+No boilerplate. No auth wiring. `ws` is injected per-request with the caller's OBO token on Databricks Apps, or falls back to CLI credentials locally.
 
 ![Trace panel showing normalize → vector_search → evaluate pipeline](docs/screenshot-trace.png)
 
@@ -47,17 +61,24 @@ No boilerplate. No auth wiring. `ws` is injected per-request with the caller's O
 "Match Jane Smith at 123 Maple Ave"
            │
            ▼
-   normalize_record        → cleaned name/address, decides strategy (vector | sql)
-           │
+    ┌─── SUPERVISOR ───────────────────────────────┐
+    │  normalize_record  → cleaned name/address,   │
+    │                      strategy (vector | sql) │
+    │  vector_search     → top-k from VS index     │
+    │  sql_search        → ILIKE fallback for      │
+    │                      initials / acronyms     │
+    └──────────────────────────────────────────────┘
+           │  candidate shortlist → hand off
            ▼
-   vector_search           → top-k candidates from Databricks Vector Search
-   sql_search              → ILIKE fallback for initials (J. Smith) or acronyms (LLC)
-           │
+    ┌─── EVALUATOR ────────────────────────────────┐
+    │  evaluate_candidates → confidence score,     │
+    │                        edge case detection   │
+    │  log_decision        → Delta audit table     │
+    └──────────────────────────────────────────────┘
+           │  low confidence? hand back to Supervisor
+           │  with search hints (up to 4 handoffs)
            ▼
-   evaluate_candidates     → confidence score + EXACT/HIGH/LOW/NO_MATCH category
-           │                  edge cases: familial match, nickname, account# boost
-           ▼
-   log_decision            → writes to Delta audit table, returns result to user
+        result to user
 ```
 
 ---
@@ -104,7 +125,7 @@ uv run pytest tests/ -v
 ```
 entity-resolution-agent/
 ├── src/entity_resolution_agent/backend/
-│   ├── agent_router.py        # LlmAgent — 10 lines
+│   ├── agent_router.py        # HandoffAgent wiring — 10 lines
 │   ├── app.py                 # FastAPI app — 8 lines
 │   ├── models.py              # Application, Candidate, MatchDecision
 │   └── core/
