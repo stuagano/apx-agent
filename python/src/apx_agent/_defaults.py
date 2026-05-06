@@ -23,31 +23,22 @@ def _make_workspace_client(**kwargs: Any) -> WorkspaceClient:
     """Create a WorkspaceClient, resolving the Databricks Apps auth conflict.
 
     Databricks Apps injects both OAuth M2M credentials (DATABRICKS_CLIENT_ID /
-    DATABRICKS_CLIENT_SECRET) and a PAT (DATABRICKS_TOKEN) into the environment
-    simultaneously.  ``WorkspaceClient()`` with no arguments fails with
-    ``validate: more than one authorization method configured: oauth and pat``
-    when both are present.  This helper detects that situation and prefers the
-    OAuth M2M credentials so the client initializes cleanly.
+    DATABRICKS_CLIENT_SECRET) and a PAT (DATABRICKS_TOKEN) simultaneously.
+    ``WorkspaceClient()`` fails with ``validate: more than one authorization
+    method configured: oauth and pat`` when both are present.
 
-    Any explicit ``kwargs`` are forwarded unchanged (e.g. ``token=`` for OBO).
+    ``auth_type`` pins exactly one credential method so the SDK ignores the rest:
+
+    - Explicit kwargs (e.g. OBO ``token=``): ``auth_type="pat"``
+    - App-level SP (OAuth M2M env vars present): ``auth_type="oauth-m2m"``
+    - Local dev (neither conflict): no auth_type, SDK auto-detects as usual.
     """
     if kwargs:
-        return WorkspaceClient(**kwargs)
+        return WorkspaceClient(auth_type="pat", **kwargs)
     client_id = os.environ.get("DATABRICKS_CLIENT_ID")
     client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET")
-    token = os.environ.get("DATABRICKS_TOKEN")
-    host = os.environ.get("DATABRICKS_HOST")
-    if client_id and client_secret and token:
-        # Databricks Apps injects both OAuth M2M (DATABRICKS_CLIENT_ID/SECRET) and a PAT
-        # (DATABRICKS_TOKEN) simultaneously. The SDK's Config.validate() rejects both being
-        # present even when explicit OAuth args are passed, because it still reads the env.
-        # Temporarily remove DATABRICKS_TOKEN so the SDK sees only OAuth M2M.
-        # Safe: WorkspaceClient() is synchronous so no async context switch can occur.
-        del os.environ["DATABRICKS_TOKEN"]
-        try:
-            return WorkspaceClient(client_id=client_id, client_secret=client_secret, host=host)
-        finally:
-            os.environ["DATABRICKS_TOKEN"] = token
+    if client_id and client_secret:
+        return WorkspaceClient(auth_type="oauth-m2m")
     return WorkspaceClient()
 
 
