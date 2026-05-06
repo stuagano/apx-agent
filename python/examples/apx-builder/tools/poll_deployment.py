@@ -16,6 +16,8 @@ def poll_deployment(app_name: str, ws: Dependencies.UserClient) -> str:
             if app.active_deployment and app.active_deployment.status
             else ""
         )
+        if deploy_state == "FAILED":
+            raise RuntimeError(f"Deployment of '{app_name}' failed — check app logs in Databricks for details")
         if api_state == "RUNNING" and deploy_state == "SUCCEEDED":
             break
         time.sleep(5)
@@ -23,6 +25,8 @@ def poll_deployment(app_name: str, ws: Dependencies.UserClient) -> str:
         raise TimeoutError(f"App '{app_name}' did not reach RUNNING state within 120s")
 
     app_url = app.url
+    if not app_url:
+        raise RuntimeError(f"App '{app_name}' deployed successfully but has no URL — check the app in Databricks")
 
     # Stage 2: HTTP readiness (up to 60s)
     deadline = time.time() + 60

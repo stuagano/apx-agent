@@ -78,3 +78,20 @@ def test_stage1_timeout_raises():
     with patch("time.sleep"), patch("time.time", side_effect=time_values):
         with pytest.raises(TimeoutError, match="RUNNING"):
             poll_deployment("mcp-test", ws)
+
+
+def test_failed_deployment_raises_immediately():
+    ws = MagicMock()
+    ws.apps.get.return_value = _make_app(api_state="DEPLOYING", deploy_state="FAILED")
+
+    with patch("time.sleep"):
+        with pytest.raises(RuntimeError, match="failed"):
+            poll_deployment("mcp-test", ws)
+
+
+def test_null_url_raises_after_stage1():
+    ws = MagicMock()
+    ws.apps.get.return_value = _make_app(url=None)
+
+    with pytest.raises(RuntimeError, match="no URL"):
+        poll_deployment("mcp-test", ws)
