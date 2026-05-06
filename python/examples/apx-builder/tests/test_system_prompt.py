@@ -20,7 +20,7 @@ def test_build_phase_uses_write_tool():
 
 def test_build_phase_uses_upload_folder():
     prompt = get_system_prompt("user@example.com")
-    assert "manage_workspace_files" in prompt or "mcp__databricks__manage_workspace_files" in prompt
+    assert "manage_workspace_files" in prompt
 
 
 def test_build_phase_uses_create_and_deploy_app():
@@ -28,9 +28,14 @@ def test_build_phase_uses_create_and_deploy_app():
     assert "create_and_deploy_app" in prompt or "mcp__apx__create_and_deploy_app" in prompt
 
 
-def test_discovery_references_execute_sql():
+def test_discovery_has_five_questions():
     prompt = get_system_prompt("user@example.com")
-    assert "execute_sql" in prompt or "mcp__databricks__execute_sql" in prompt
+    # All five discovery questions must be present
+    assert "What should your agent do?" in prompt
+    assert "Which tables or data sources should it use?" in prompt
+    assert "Should it connect to any Genie spaces?" in prompt
+    assert "Should it be able to answer questions about data lineage?" in prompt
+    assert "What should we call this agent?" in prompt
 
 
 def test_discovery_references_genie_step():

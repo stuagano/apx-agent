@@ -1,61 +1,8 @@
 """Tests for the /responses FastAPI endpoint."""
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient, ASGITransport
-
-
-@pytest.mark.asyncio
-async def test_responses_returns_correct_output_format():
-    """/responses returns output with expected shape and session_id."""
-    from app import app
-
-    mock_text = "What should your agent do?"
-    mock_session_id = "sess_abc123"
-
-    with patch("app.get_mcp_servers") as mock_servers, \
-         patch("app.asyncio.to_thread") as mock_to_thread, \
-         patch("app.set_databricks_auth"), \
-         patch("app.clear_databricks_auth"), \
-         patch("app._collect_result") as mock_collect, \
-         patch("app.asyncio.get_running_loop") as mock_loop:
-
-        mock_servers.return_value = ({}, ["mcp__apx__create_and_deploy_app"])
-
-        # Simulate the user email lookup
-        mock_to_thread.return_value = "user@example.com"
-
-        # Simulate the queue result
-        mock_q = MagicMock()
-        mock_q.get.return_value = ("done", (mock_text, mock_session_id))
-
-        import queue as queue_module
-        mock_loop_instance = MagicMock()
-        mock_loop.return_value = mock_loop_instance
-
-        async def fake_run_in_executor(_, fn):
-            return fn()
-
-        mock_loop_instance.run_in_executor = fake_run_in_executor
-
-        with patch("app.queue.Queue", return_value=mock_q), \
-             patch("app.threading.Thread") as mock_thread:
-            mock_thread.return_value.start = MagicMock()
-
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.post(
-                    "/responses",
-                    json={"input": [{"role": "user", "content": "I want to build an agent"}]},
-                    headers={"Authorization": "Bearer fake-token"},
-                )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert "output" in data
-    assert data["output"][0]["type"] == "message"
-    assert data["output"][0]["content"][0]["text"] == mock_text
-    assert data["session_id"] == mock_session_id
 
 
 @pytest.mark.asyncio
@@ -74,45 +21,113 @@ async def test_responses_returns_400_for_empty_input():
 
 
 @pytest.mark.asyncio
-async def test_responses_passes_session_id_for_resumption():
-    """/responses passes session_id to ClaudeAgentOptions.resume when provided."""
-    from app import app
+async def test_discovery_first_turn_returns_question_one():
+    """First message triggers Question 1 without calling the LLM."""
+    from app import app, _sessions
 
-    options_captured = {}
+    # Clear any leftover state
+    _sessions.clear()
 
-    with patch("app.get_mcp_servers", return_value=({}, [])), \
-         patch("app.asyncio.to_thread", return_value="user@example.com"), \
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/responses",
+            json={"input": [{"role": "user", "content": "I want to build an agent"}]},
+            headers={"Authorization": "Bearer fake-token"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["output"][0]["content"][0]["text"] == "What should your agent do?"
+    assert data["session_id"]  # a UUID was assigned
+
+
+@pytest.mark.asyncio
+async def test_discovery_advances_through_five_questions():
+    """All 5 questions are asked in order without LLM involvement."""
+    from app import app, _sessions, QUESTIONS
+
+    _sessions.clear()
+
+    expected_questions = list(QUESTIONS)
+    responses_seen = []
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = None
+        for user_answer in ["I want to build an agent"] + ["answer"] * (len(QUESTIONS) - 1):
+            payload = {"input": [{"role": "user", "content": user_answer}]}
+            if sid:
+                payload["session_id"] = sid
+            r = await client.post(
+                "/responses",
+                json=payload,
+                headers={"Authorization": "Bearer fake-token"},
+            )
+            assert r.status_code == 200
+            data = r.json()
+            sid = data["session_id"]
+            responses_seen.append(data["output"][0]["content"][0]["text"])
+
+    assert responses_seen == expected_questions
+
+
+@pytest.mark.asyncio
+async def test_build_phase_invokes_sdk_after_all_answers():
+    """After all 5 answers, the build phase calls the Claude Code SDK."""
+    import asyncio as _asyncio
+    from app import app, _sessions, QUESTIONS
+
+    _sessions.clear()
+
+    build_text = "Your agent is deploying at https://example.databricksapps.com"
+
+    # Capture the real loop so fake_run_in_executor can create pre-resolved futures.
+    real_loop = _asyncio.get_running_loop()
+
+    def fake_run_in_executor(_executor, fn):
+        fut = real_loop.create_future()
+        fut.set_result(fn())
+        return fut
+
+    mock_loop = MagicMock()
+    mock_loop.run_in_executor = fake_run_in_executor
+
+    async def fake_to_thread(fn, *args, **kwargs):
+        return fn()
+
+    with patch("app.asyncio.to_thread", side_effect=fake_to_thread), \
+         patch("app.asyncio.get_running_loop", return_value=mock_loop), \
+         patch("app.get_mcp_servers", return_value=({}, [])), \
          patch("app.set_databricks_auth"), \
          patch("app.clear_databricks_auth"), \
-         patch("app.get_system_prompt", return_value="system prompt"), \
-         patch("app.ClaudeAgentOptions") as mock_opts_cls, \
-         patch("app.asyncio.get_running_loop") as mock_loop:
+         patch("app.get_build_prompt", return_value="build prompt"), \
+         patch("app.threading.Thread") as mock_thread, \
+         patch("app._get_from_queue", return_value=("done", (build_text, "sdk_session"))):
 
-        mock_opts_cls.side_effect = lambda **kw: (options_captured.update(kw), MagicMock())[1]
+        mock_thread.return_value.start = MagicMock()
 
-        mock_q = MagicMock()
-        mock_q.get.return_value = ("done", ("hello", "sess_new"))
-
-        mock_loop_instance = MagicMock()
-        mock_loop.return_value = mock_loop_instance
-
-        async def fake_run_in_executor(_, fn):
-            return fn()
-
-        mock_loop_instance.run_in_executor = fake_run_in_executor
-
-        with patch("app.queue.Queue", return_value=mock_q), \
-             patch("app.threading.Thread") as mock_thread:
-            mock_thread.return_value.start = MagicMock()
-
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                await client.post(
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            sid = None
+            # Walk through all 5 discovery questions
+            for user_answer in ["I want to build an agent"] + ["answer"] * (len(QUESTIONS) - 1):
+                payload = {"input": [{"role": "user", "content": user_answer}]}
+                if sid:
+                    payload["session_id"] = sid
+                r = await client.post(
                     "/responses",
-                    json={
-                        "input": [{"role": "user", "content": "Hello"}],
-                        "session_id": "sess_existing",
-                    },
+                    json=payload,
                     headers={"Authorization": "Bearer fake-token"},
                 )
+                sid = r.json()["session_id"]
 
-    assert options_captured.get("resume") == "sess_existing"
+            # 6th message triggers the build phase
+            r = await client.post(
+                "/responses",
+                json={
+                    "input": [{"role": "user", "content": "sales-assistant"}],
+                    "session_id": sid,
+                },
+                headers={"Authorization": "Bearer fake-token"},
+            )
+
+    assert r.status_code == 200
+    assert r.json()["output"][0]["content"][0]["text"] == build_text

@@ -42,9 +42,8 @@ _CRITERIA = [
         "One question only. No jargon."
     ),
     (
-        "Confirms which tables were understood and either asks for confirmation or moves to the next question. "
-        "Does not show Python code, SQL statements, or file paths. "
-        "Table names must not be wrapped in backticks or code formatting."
+        "Asks about whether the agent should connect to any Genie spaces. "
+        "One question only. No technical jargon, no code, no file paths."
     ),
     (
         "Asks about data lineage in plain English. One question only."
@@ -69,21 +68,25 @@ def _get_token() -> str:
     pytest.skip("No DATABRICKS_TOKEN and databricks CLI token unavailable")
 
 
-def _chat(messages: list[dict]) -> str:
-    """Send a conversation to the app and return the agent's response text."""
+def _chat(messages: list[dict], session_id: str | None = None) -> tuple[str, str | None]:
+    """Send a conversation to the app and return (response_text, session_id)."""
     token = _get_token()
+    payload: dict = {"input": messages}
+    if session_id:
+        payload["session_id"] = session_id
     r = httpx.post(
         f"{APP_URL}/responses",
-        json={"input": messages},
+        json=payload,
         headers={"Authorization": f"Bearer {token}"},
         timeout=240.0,
     )
     r.raise_for_status()
     data = r.json()
     try:
-        return data["output"][0]["content"][0]["text"]
+        text = data["output"][0]["content"][0]["text"]
     except (KeyError, IndexError):
-        return str(data)
+        text = str(data)
+    return text, data.get("session_id")
 
 
 def _judge(user_msg: str, agent_response: str, criterion: str) -> tuple[bool, str]:
@@ -131,9 +134,10 @@ def conversation():
         pytest.skip("APP_URL not set")
     history: list[dict] = []
     turns: list[tuple[str, str]] = []
+    sid: str | None = None
     for user_msg in _SCRIPT:
         history.append({"role": "user", "content": user_msg})
-        agent_response = _chat(history)
+        agent_response, sid = _chat(history, sid)
         history.append({"role": "assistant", "content": agent_response})
         turns.append((user_msg, agent_response))
     return turns

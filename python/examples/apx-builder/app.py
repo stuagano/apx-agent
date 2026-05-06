@@ -1,10 +1,13 @@
 import asyncio
+import json
 import logging
 import os
 import queue
 import threading
 from contextvars import copy_context
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from claude_agent_sdk import ClaudeAgentOptions, query
 from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
@@ -15,20 +18,61 @@ from fastapi.responses import FileResponse
 
 from anthropic_proxy import router as proxy_router
 from mcp_loader import get_mcp_servers
-from system_prompt import get_system_prompt
+from system_prompt import get_build_prompt
 
 logger = logging.getLogger(__name__)
 app = FastAPI()
 app.include_router(proxy_router)
 
+# ---------------------------------------------------------------------------
+# Discovery state — in-memory, keyed by session_id.
+# The discovery phase never calls the LLM: we return scripted questions
+# directly and collect answers until all 5 are filled.
+# ---------------------------------------------------------------------------
+
+QUESTIONS = [
+    "What should your agent do?",
+    "Which tables or data sources should it use?",
+    "Should it connect to any Genie spaces?",
+    "Should it be able to answer questions about data lineage?",
+    "What should we call this agent? For example, if it handles sales questions, I'd call it sales-assistant.",
+]
+
+ANSWER_KEYS = ["use_case", "tables", "genie", "lineage", "name"]
+
+
+@dataclass
+class DiscoverySession:
+    answers: dict = field(default_factory=dict)
+    question_index: int = 0          # 0-4: which question to ask next
+    build_session_id: Optional[str] = None  # SDK session id once build starts
+
+
+# session_id (str) → DiscoverySession
+_sessions: dict[str, DiscoverySession] = {}
+_sessions_lock = threading.Lock()
+
+
+def _get_session(session_id: str) -> DiscoverySession:
+    with _sessions_lock:
+        if session_id not in _sessions:
+            _sessions[session_id] = DiscoverySession()
+        return _sessions[session_id]
+
+
+def _next_question(ds: DiscoverySession) -> Optional[str]:
+    """Return the next unanswered question, or None if all answered."""
+    if ds.question_index < len(QUESTIONS):
+        return QUESTIONS[ds.question_index]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: build via Claude Code SDK
+# ---------------------------------------------------------------------------
 
 def _collect_result(user_message: str, options: ClaudeAgentOptions, q: queue.Queue, ctx) -> None:
-    """Run query() in a fresh event loop thread and put (text, session_id) on the queue.
-
-    Must run in a thread because claude-agent-sdk's subprocess transport
-    is incompatible with uvicorn's running event loop (issue #462).
-    Uses copy_context() to propagate Databricks auth context vars into the thread.
-    """
+    """Run query() in a fresh event loop thread and put (text, session_id) on the queue."""
     def run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -67,6 +111,10 @@ def _get_from_queue(q: queue.Queue) -> tuple:
         return ("timeout", None)
 
 
+# ---------------------------------------------------------------------------
+# Main endpoint
+# ---------------------------------------------------------------------------
+
 @app.post("/responses")
 async def responses(request: Request):
     body = await request.json()
@@ -80,8 +128,6 @@ async def responses(request: Request):
     if not user_message:
         raise HTTPException(status_code=400, detail="last input message must have non-empty content")
 
-    # Databricks Apps proxy injects user token via X-Forwarded-Access-Token;
-    # Authorization: Bearer is used in local dev and eval contexts.
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     if not token:
         token = request.headers.get("X-Forwarded-Access-Token", "").strip()
@@ -89,26 +135,66 @@ async def responses(request: Request):
         raise HTTPException(status_code=401, detail="Authorization token required")
 
     host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
-
     if not host:
         raise HTTPException(status_code=500, detail="DATABRICKS_HOST not configured")
 
-    # auth_type="pat" bypasses the SDK's multi-auth conflict check when
-    # DATABRICKS_CLIENT_ID/SECRET env vars are present (Databricks Apps platform).
+    # Resolve session_id — create one on first message so we can track state
+    if not session_id:
+        import uuid
+        session_id = str(uuid.uuid4())
+
+    ds = _get_session(session_id)
+
+    # ------------------------------------------------------------------
+    # Phase 1: Discovery — return scripted questions without calling LLM
+    #
+    # State machine:
+    #   question_index=0: no question asked yet → ask Q1, advance to 1
+    #   question_index=1: Q1 asked, waiting for answer → record as use_case, ask Q2, advance to 2
+    #   ...
+    #   question_index=4: Q4 asked, waiting for answer → record as lineage, ask Q5, advance to 5
+    #   question_index=5: Q5 asked, waiting for answer → record as name, fall through to build
+    # ------------------------------------------------------------------
+    if ds.question_index <= len(QUESTIONS):
+        # Record answer to the previous question (if any question was asked)
+        if ds.question_index > 0:
+            key = ANSWER_KEYS[ds.question_index - 1]
+            ds.answers[key] = user_message
+
+        # If we've now collected all 5 answers, fall through to build
+        if ds.question_index == len(QUESTIONS):
+            pass  # all answered, fall through below
+        else:
+            # Ask the next question
+            next_q = QUESTIONS[ds.question_index]
+            ds.question_index += 1
+            return {
+                "output": [{"type": "message", "content": [{"text": next_q}]}],
+                "session_id": session_id,
+            }
+
+    # ------------------------------------------------------------------
+    # Phase 2: Build — delegate to Claude Code SDK
+    # ------------------------------------------------------------------
     ws = WorkspaceClient(host=host, token=token, auth_type="pat")
     user_email = await asyncio.to_thread(lambda: ws.current_user.me().user_name)
 
     set_databricks_auth(host, token, force_token=True)
     try:
-        servers, tool_names = get_mcp_servers()
+        servers, _ = get_mcp_servers()
 
         options = ClaudeAgentOptions(
             cwd="/tmp",
-            allowed_tools=["Write"] + tool_names,
+            allowed_tools=[
+                "Write",
+                "mcp__apx__manage_workspace_files",
+                "mcp__apx__create_and_deploy_app",
+                "mcp__apx__get_app_status",
+            ],
             permission_mode="bypassPermissions",
-            resume=session_id,
+            resume=ds.build_session_id,
             mcp_servers=servers,
-            system_prompt=get_system_prompt(user_email),
+            system_prompt=get_build_prompt(user_email),
             env={
                 "ANTHROPIC_API_KEY": token,
                 "ANTHROPIC_BASE_URL": "http://localhost:8000",
@@ -117,16 +203,32 @@ async def responses(request: Request):
             },
         )
 
+        # On first build call, send a complete task description with all answers
+        if ds.build_session_id is None:
+            build_message = (
+                "Build and deploy the agent with these specifications:\n"
+                f"- Use case: {ds.answers.get('use_case', '')}\n"
+                f"- Tables: {ds.answers.get('tables', 'none')}\n"
+                f"- Genie spaces: {ds.answers.get('genie', 'none')}\n"
+                f"- Lineage: {ds.answers.get('lineage', 'no')}\n"
+                f"- App name: {ds.answers.get('name', 'my-agent')}\n\n"
+                "Follow the build instructions in your system prompt exactly."
+            )
+        else:
+            build_message = user_message
+
         q: queue.Queue = queue.Queue()
         ctx = copy_context()
         thread = threading.Thread(
             target=_collect_result,
-            args=(user_message, options, q, ctx),
+            args=(build_message, options, q, ctx),
             daemon=True,
         )
         thread.start()
 
-        msg_type, payload = await asyncio.get_running_loop().run_in_executor(None, lambda: _get_from_queue(q))
+        msg_type, payload = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: _get_from_queue(q)
+        )
 
         if msg_type == "timeout":
             raise HTTPException(status_code=504, detail="Agent timed out after 5 minutes")
@@ -134,10 +236,13 @@ async def responses(request: Request):
             logger.error("Agent error: %s", payload)
             raise HTTPException(status_code=500, detail=str(payload))
 
-        text, new_session_id = payload
+        text, new_sdk_session_id = payload
+        if new_sdk_session_id:
+            ds.build_session_id = new_sdk_session_id
+
         return {
             "output": [{"type": "message", "content": [{"text": text or ""}]}],
-            "session_id": new_session_id or session_id,
+            "session_id": session_id,
         }
     finally:
         clear_databricks_auth()
