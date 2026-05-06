@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 keywords = ["databricks", "apx-agent", "entity-resolution", "fuzzy-match", "vector-search"]
 dependencies = [
-    "apx-agent>=0.16.0",
+    "apx-agent>=0.18.0",
     "fastapi>=0.119.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.11.0",
