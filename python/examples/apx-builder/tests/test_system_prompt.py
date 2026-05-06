@@ -33,9 +33,9 @@ def test_discovery_references_execute_sql():
     assert "execute_sql" in prompt or "mcp__databricks__execute_sql" in prompt
 
 
-def test_discovery_references_get_genie():
+def test_discovery_references_genie_step():
     prompt = get_system_prompt("user@example.com")
-    assert "manage_genie" in prompt or "mcp__databricks__manage_genie" in prompt
+    assert "Genie" in prompt or "genie" in prompt
 
 
 def test_no_backtick_rule_present():

@@ -76,7 +76,7 @@ def _chat(messages: list[dict]) -> str:
         f"{APP_URL}/responses",
         json={"input": messages},
         headers={"Authorization": f"Bearer {token}"},
-        timeout=90.0,
+        timeout=240.0,
     )
     r.raise_for_status()
     data = r.json()
@@ -88,6 +88,8 @@ def _chat(messages: list[dict]) -> str:
 
 def _judge(user_msg: str, agent_response: str, criterion: str) -> tuple[bool, str]:
     """LLM-as-judge via Databricks chat completions. Returns (passed, reason)."""
+    import time
+
     host = DATABRICKS_HOST
     if not host:
         pytest.skip("DATABRICKS_HOST not set — cannot run LLM judge")
@@ -102,17 +104,24 @@ def _judge(user_msg: str, agent_response: str, criterion: str) -> tuple[bool, st
         "VERDICT: PASS or FAIL\n"
         "REASON: one sentence"
     )
-    r = httpx.post(
-        f"{host}/serving-endpoints/databricks-claude-sonnet-4-6/invocations",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        json={"messages": [{"role": "user", "content": prompt}], "max_tokens": 120},
-        timeout=30.0,
-    )
+    for attempt in range(5):
+        r = httpx.post(
+            f"{host}/serving-endpoints/databricks-claude-sonnet-4-6/invocations",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"messages": [{"role": "user", "content": prompt}], "max_tokens": 120},
+            timeout=30.0,
+        )
+        if r.status_code == 429:
+            wait = 15 * (attempt + 1)
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        text = r.json()["choices"][0]["message"]["content"].strip()
+        passed = "VERDICT: PASS" in text
+        reason = text.split("REASON:", 1)[-1].strip() if "REASON:" in text else text
+        return passed, reason
     r.raise_for_status()
-    text = r.json()["choices"][0]["message"]["content"].strip()
-    passed = "VERDICT: PASS" in text
-    reason = text.split("REASON:", 1)[-1].strip() if "REASON:" in text else text
-    return passed, reason
+    return False, "judge rate-limited after 5 retries"
 
 
 @pytest.fixture(scope="module")

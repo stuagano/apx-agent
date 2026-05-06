@@ -48,6 +48,7 @@ def _make_wrapper(name: str, description: str, schema: dict, fn):
     Supports both sync and async fn implementations.
     """
     import asyncio
+    import concurrent.futures
     import inspect
 
     @tool(name, description, schema)
@@ -66,7 +67,17 @@ def _make_wrapper(name: str, description: str, schema: dict, fn):
                     parsed[k] = v
             result = fn(**parsed)
             if inspect.iscoroutine(result):
-                result = asyncio.run(result)
+                # asyncio.run() fails if called from a running event loop (e.g. FastMCP's
+                # async dispatcher). Run the coroutine in a fresh thread with no event loop,
+                # propagating auth context vars via a nested copy_context().
+                inner_ctx = copy_context()
+                coro = result
+
+                def run_coro():
+                    return inner_ctx.run(asyncio.run, coro)
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    result = ex.submit(run_coro).result(timeout=60)
             return result
 
         result = ctx.run(run)

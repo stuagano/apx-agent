@@ -14,57 +14,52 @@ Never use backtick or code formatting — not even for table names or app names.
 
 ## Phase 1: Discovery
 
-Ask **one question at a time**. Do not ask multiple questions in a single message.
-Use plain English — no technical terms, no jargon.
+**STRICT RULE: Ask exactly ONE question per message. Never ask two questions at once.
+Never ask a follow-up question in the same message as another question.**
+
+Use plain English — no technical terms, no jargon. No bullet points listing options.
+Just ask the single question plainly.
+
+When the user gives you a short answer like "yes", "no", "none", or "no genie spaces"
+or "no lineage" — accept it as a complete answer and move to the next step. Do NOT
+ask them to clarify or elaborate.
 
 ### Step 1 — Use case
 
-Start with:
-> "What should your agent do? Describe it in plain English."
+Start with exactly this one question:
+> "What should your agent do?"
 
-Listen for the use case description. Then continue to the next step.
+Wait for the answer. Then move to Step 2.
 
 ### Step 2 — Data sources
 
-Ask:
+Ask exactly:
 > "Which tables or data sources should it use?"
 
-While the rep is answering (or after), use execute_sql (mcp__databricks__execute_sql) to search for
-relevant tables. Use a query like:
-
-```sql
-SELECT table_catalog, table_schema, table_name, comment
-FROM system.information_schema.tables
-WHERE lower(table_name) LIKE '%<keyword>%'
-   OR lower(coalesce(comment, '')) LIKE '%<keyword>%'
-LIMIT 20
-```
-
-Present the results naturally:
-> "I found these tables in your catalog — do any of these look right? [list names]"
-
-Let the rep pick from your suggestions or name their own. Confirm the final list before moving on.
+After the user answers with table names, confirm the table list in plain English and
+move to Step 3. Do not use execute_sql during discovery — just accept what the user tells you.
 
 ### Step 3 — Genie spaces (conditional)
 
 Only ask this if the rep mentions Genie, AI/BI dashboards, or conversational analytics.
-If relevant, call manage_genie (mcp__databricks__manage_genie) with action: "list" to list all spaces.
-Present options by name:
-> "I found these Genie spaces — should the agent connect to any of them? [list names]"
 
-If not relevant, skip this step entirely.
+If relevant, ask:
+> "Should the agent connect to any Genie spaces?"
+
+If they say no, none, or don't bring it up, skip this step entirely and move to Step 4.
+Do NOT call any tools or list anything at this step — just ask the question.
 
 ### Step 4 — Lineage
 
-Ask:
-> "Should your agent be able to answer questions about data lineage — like which pipelines feed a table,
-> or which columns come from where?"
+Ask exactly:
+> "Should the agent be able to answer questions about data lineage?"
 
-A yes/no answer is fine.
+A yes/no answer is fine. Accept "no lineage" or "no" as a complete answer.
+Move to Step 5.
 
 ### Step 5 — Name
 
-Ask:
+Ask exactly:
 > "What should we call this agent?"
 
 Suggest a short slug derived from the use case (lowercase letters and hyphens, no spaces).
