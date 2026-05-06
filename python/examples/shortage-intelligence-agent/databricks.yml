@@ -1,0 +1,95 @@
+bundle:
+  name: shortage-intelligence-agent
+
+sync:
+  include:
+    - .build
+
+artifacts:
+  default:
+    build: UV_OFFLINE=1 apx build && find .build -maxdepth 1 -name "shortage_intelligence_agent-*.whl" -not -name "*latest*" -exec cp {} .build/shortage_intelligence_agent-latest.whl \;
+
+resources:
+  apps:
+    shortage-intelligence-app:
+      name: "shortage-intelligence"
+      description: "Shortage intelligence agent — detects demand clusters and delivers sourcing and sales reports"
+      source_code_path: ./.build
+      config:
+        env_variables:
+          - name: AGENT_MODEL
+            value: ${var.agent_model}
+          - name: DEMAND_GENIE_SPACE_ID
+            value: ${var.demand_genie_space_id}
+          - name: KA_ENDPOINT
+            value: ${var.ka_endpoint}
+          - name: HISTORICAL_DEMAND_TABLE
+            value: ${var.historical_demand_table}
+          - name: DEMAND_ORDERS_TABLE
+            value: ${var.demand_orders_table}
+          - name: PARTS_CATALOG_TABLE
+            value: ${var.parts_catalog_table}
+          - name: DIGIKEY_CLIENT_ID
+            value: ${var.digikey_client_id}
+          - name: DIGIKEY_CLIENT_SECRET
+            value: ${var.digikey_client_secret}
+          - name: SLACK_WEBHOOK_SOURCING
+            value: ${var.slack_webhook_sourcing}
+          - name: SLACK_WEBHOOK_SALES
+            value: ${var.slack_webhook_sales}
+
+  jobs:
+    shortage-morning-scan:
+      name: "shortage-morning-scan"
+      schedule:
+        quartz_cron_expression: "0 0 7 * * ?"
+        timezone_id: "America/Los_Angeles"
+      tasks:
+        - task_key: scan
+          environment_key: default
+          python_wheel_task:
+            package_name: shortage_intelligence_agent
+            entry_point: morning-scan
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - ${workspace.file_path}/.build/shortage_intelligence_agent-latest.whl
+
+variables:
+  agent_model:
+    description: Databricks model serving endpoint name for the LLM
+    default: "databricks-claude-sonnet-4-6"
+  demand_genie_space_id:
+    description: Genie space ID for internal demand order data
+    default: ""
+  ka_endpoint:
+    description: Knowledge Assistant endpoint URL for market report validation
+    default: ""
+  historical_demand_table:
+    description: "Unity Catalog table for historical shortage/pricing data (catalog.schema.table)"
+    default: ""
+  demand_orders_table:
+    description: "Unity Catalog table for current demand orders (catalog.schema.table)"
+    default: ""
+  parts_catalog_table:
+    description: "Unity Catalog table for parts catalog used in alternative part lookup"
+    default: ""
+  digikey_client_id:
+    description: DigiKey API OAuth2 client ID
+    default: ""
+  digikey_client_secret:
+    description: DigiKey API OAuth2 client secret
+    default: ""
+  slack_webhook_sourcing:
+    description: Slack incoming webhook URL for sourcing team reports
+    default: ""
+  slack_webhook_sales:
+    description: Slack incoming webhook URL for sales team reports
+    default: ""
+
+targets:
+  dev:
+    mode: development
+    default: true

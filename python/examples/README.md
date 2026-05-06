@@ -37,7 +37,9 @@ from .core.agent import Agent
 
 def get_billing_summary(customer_id: str, months: int, ws: Dependencies.Client) -> dict:
     """Get a customer's recent billing history with tier breakdown and payment status."""
-    return _run_sql(ws, f"SELECT * FROM billing_history WHERE customer_id = '{customer_id}' LIMIT {months}")
+    return run_sql(ws, "SELECT * FROM billing_history WHERE customer_id = :customer_id LIMIT :months",
+                   parameters=[{"name": "customer_id", "value": customer_id, "type": "STRING"},
+                                {"name": "months", "value": str(months), "type": "INT"}])
 
 agent = Agent(tools=[get_billing_summary])
 ```
