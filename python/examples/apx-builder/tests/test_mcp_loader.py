@@ -1,11 +1,11 @@
 """Tests for mcp_loader.py — verifies server loading and custom tool structure."""
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def test_get_mcp_servers_returns_both_servers():
     """get_mcp_servers() returns a dict with databricks and apx keys."""
     fake_mcp = MagicMock()
-    fake_mcp._tool_manager._tools = {}
+    fake_mcp.list_tools = AsyncMock(return_value=[])
 
     fake_server = MagicMock()
 
@@ -38,7 +38,7 @@ def test_get_mcp_servers_returns_both_servers():
 def test_apx_tool_names_are_present():
     """The apx MCP server tool names are mcp__apx__ prefixed."""
     fake_mcp = MagicMock()
-    fake_mcp._tool_manager._tools = {}
+    fake_mcp.list_tools = AsyncMock(return_value=[])
     fake_server = MagicMock()
 
     with patch("mcp_loader.create_sdk_mcp_server", return_value=fake_server), \

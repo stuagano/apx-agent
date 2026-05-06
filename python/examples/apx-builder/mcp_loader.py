@@ -146,12 +146,15 @@ def get_mcp_servers() -> tuple[dict, list[str]]:
                 from databricks_mcp_server.server import mcp
                 from databricks_mcp_server.tools import sql, file, genie, compute  # noqa: F401
 
+                import asyncio
+                mcp_tools = asyncio.run(mcp.list_tools())
+
                 sdk_tools = []
                 names = []
-                for name, mcp_tool in mcp._tool_manager._tools.items():
+                for mcp_tool in mcp_tools:
                     schema = _convert_schema(mcp_tool.parameters)
-                    sdk_tools.append(_make_wrapper(name, mcp_tool.description, schema, mcp_tool.fn))
-                    names.append(f"mcp__databricks__{name}")
+                    sdk_tools.append(_make_wrapper(mcp_tool.name, mcp_tool.description, schema, mcp_tool.fn))
+                    names.append(f"mcp__databricks__{mcp_tool.name}")
 
                 _databricks_server = create_sdk_mcp_server(name="databricks", tools=sdk_tools)
                 _databricks_tool_names = names
