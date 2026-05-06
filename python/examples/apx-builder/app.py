@@ -91,10 +91,12 @@ async def responses(request: Request):
     if not host:
         raise HTTPException(status_code=500, detail="DATABRICKS_HOST not configured")
 
-    ws = WorkspaceClient(host=host, token=token)
+    # auth_type="pat" bypasses the SDK's multi-auth conflict check when
+    # DATABRICKS_CLIENT_ID/SECRET env vars are present (Databricks Apps platform).
+    ws = WorkspaceClient(host=host, token=token, auth_type="pat")
     user_email = await asyncio.to_thread(lambda: ws.current_user.me().user_name)
 
-    set_databricks_auth(host, token)
+    set_databricks_auth(host, token, force_token=True)
     try:
         servers, tool_names = get_mcp_servers()
 
