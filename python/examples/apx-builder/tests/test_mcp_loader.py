@@ -22,13 +22,14 @@ def test_get_mcp_servers_returns_both_servers():
         import importlib
         import mcp_loader
         importlib.reload(mcp_loader)
-
-        # Reset singletons so loading happens in this test
-        mcp_loader._databricks_server = None
-        mcp_loader._databricks_tool_names = None
-        mcp_loader._apx_server = None
-
+        # reload() reinitializes singletons to None — no manual reset needed
         servers, tool_names = mcp_loader.get_mcp_servers()
+
+    # Reset singletons after the patch block so state does not leak to other tests
+    import mcp_loader as _mcp_loader_cleanup
+    _mcp_loader_cleanup._databricks_server = None
+    _mcp_loader_cleanup._databricks_tool_names = None
+    _mcp_loader_cleanup._apx_server = None
 
     assert "databricks" in servers
     assert "apx" in servers
@@ -53,11 +54,14 @@ def test_apx_tool_names_are_present():
         import importlib
         import mcp_loader
         importlib.reload(mcp_loader)
-        mcp_loader._databricks_server = None
-        mcp_loader._databricks_tool_names = None
-        mcp_loader._apx_server = None
-
+        # reload() reinitializes singletons to None — no manual reset needed
         _, tool_names = mcp_loader.get_mcp_servers()
+
+    # Reset singletons after the patch block so state does not leak to other tests
+    import mcp_loader as _mcp_loader_cleanup
+    _mcp_loader_cleanup._databricks_server = None
+    _mcp_loader_cleanup._databricks_tool_names = None
+    _mcp_loader_cleanup._apx_server = None
 
     assert "mcp__apx__create_and_deploy_app" in tool_names
     assert "mcp__apx__get_app_status" in tool_names

@@ -1,6 +1,7 @@
 """Load in-process MCP servers for the claude-agent-sdk agent."""
 import json
 import logging
+import threading
 from contextvars import copy_context
 
 from claude_agent_sdk import tool, create_sdk_mcp_server
@@ -14,6 +15,7 @@ _databricks_server = None
 _databricks_tool_names = None
 _apx_server = None
 _apx_tool_names = ["mcp__apx__create_and_deploy_app", "mcp__apx__get_app_status"]
+_init_lock = threading.Lock()
 
 
 def _convert_schema(json_schema: dict) -> dict:
@@ -41,7 +43,7 @@ def _convert_schema(json_schema: dict) -> dict:
 def _make_wrapper(name: str, description: str, schema: dict, fn):
     """Wrap a FastMCP sync function as a claude-agent-sdk tool.
 
-    Propagates Databricks auth context vars to the worker thread via copy_context().
+    Propagates Databricks auth context vars to the inner call via copy_context().
     Handles JSON-string coercion for list/dict params that Claude sometimes sends as strings.
     """
     @tool(name, description, schema)
@@ -80,20 +82,24 @@ def _create_and_deploy_app(args: dict) -> dict:
     ctx = copy_context()
 
     def run():
-        ws = get_workspace_client()
-        app_name = args["app_name"]
-        source_code_path = args["source_code_path"]
         try:
-            ws.apps.get(app_name)
-        except NotFound:
-            ws.apps.create(name=app_name, description="Agent built by apx-builder")
-        ws.apps.deploy(app_name=app_name, source_code_path=source_code_path)
-        app = ws.apps.get(app_name)
-        return {
-            "name": app_name,
-            "url": app.url or "",
-            "status": "deployment triggered",
-        }
+            ws = get_workspace_client()
+            app_name = args["app_name"]
+            source_code_path = args["source_code_path"]
+            try:
+                ws.apps.get(app_name)
+            except NotFound:
+                ws.apps.create(name=app_name, description="Agent built by apx-builder")
+            ws.apps.deploy(app_name=app_name, source_code_path=source_code_path)
+            app = ws.apps.get(app_name)
+            return {
+                "name": app_name,
+                "url": app.url or "",
+                "status": "deployment triggered",
+            }
+        except Exception as exc:
+            logger.error("create_and_deploy_app failed: %s", exc)
+            return {"error": str(exc)}
 
     result = ctx.run(run)
     return {"content": [{"type": "text", "text": json.dumps(result)}]}
@@ -131,25 +137,29 @@ def get_mcp_servers() -> tuple[dict, list[str]]:
     global _databricks_server, _databricks_tool_names, _apx_server
 
     if _databricks_server is None:
-        from databricks_mcp_server.server import mcp
-        from databricks_mcp_server.tools import sql, file, genie, compute  # noqa: F401
+        with _init_lock:
+            if _databricks_server is None:
+                from databricks_mcp_server.server import mcp
+                from databricks_mcp_server.tools import sql, file, genie, compute  # noqa: F401
 
-        sdk_tools = []
-        names = []
-        for name, mcp_tool in mcp._tool_manager._tools.items():
-            schema = _convert_schema(mcp_tool.parameters)
-            sdk_tools.append(_make_wrapper(name, mcp_tool.description, schema, mcp_tool.fn))
-            names.append(f"mcp__databricks__{name}")
+                sdk_tools = []
+                names = []
+                for name, mcp_tool in mcp._tool_manager._tools.items():
+                    schema = _convert_schema(mcp_tool.parameters)
+                    sdk_tools.append(_make_wrapper(name, mcp_tool.description, schema, mcp_tool.fn))
+                    names.append(f"mcp__databricks__{name}")
 
-        _databricks_server = create_sdk_mcp_server(name="databricks", tools=sdk_tools)
-        _databricks_tool_names = names
-        logger.info("Loaded %d databricks MCP tools", len(names))
+                _databricks_server = create_sdk_mcp_server(name="databricks", tools=sdk_tools)
+                _databricks_tool_names = names
+                logger.info("Loaded %d databricks MCP tools", len(names))
 
     if _apx_server is None:
-        _apx_server = create_sdk_mcp_server(
-            name="apx",
-            tools=[_create_and_deploy_app, _get_app_status],
-        )
+        with _init_lock:
+            if _apx_server is None:
+                _apx_server = create_sdk_mcp_server(
+                    name="apx",
+                    tools=[_create_and_deploy_app, _get_app_status],
+                )
 
     return (
         {"databricks": _databricks_server, "apx": _apx_server},
