@@ -25,6 +25,9 @@ packages = ["apx_builder"]
 
 [tool.pytest.ini_options]
 addopts = "-m 'not integration'"
+markers = [
+    "integration: live-app eval (requires APP_URL and DATABRICKS_TOKEN)",
+]
 
 [tool.apx.metadata]
 app-name = "apx-builder"
