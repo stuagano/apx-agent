@@ -38,8 +38,16 @@ def _make_workspace_client(**kwargs: Any) -> WorkspaceClient:
     token = os.environ.get("DATABRICKS_TOKEN")
     host = os.environ.get("DATABRICKS_HOST")
     if client_id and client_secret and token:
-        # Both OAuth M2M and PAT present — prefer OAuth M2M
-        return WorkspaceClient(client_id=client_id, client_secret=client_secret, host=host)
+        # Databricks Apps injects both OAuth M2M (DATABRICKS_CLIENT_ID/SECRET) and a PAT
+        # (DATABRICKS_TOKEN) simultaneously. The SDK's Config.validate() rejects both being
+        # present even when explicit OAuth args are passed, because it still reads the env.
+        # Temporarily remove DATABRICKS_TOKEN so the SDK sees only OAuth M2M.
+        # Safe: WorkspaceClient() is synchronous so no async context switch can occur.
+        del os.environ["DATABRICKS_TOKEN"]
+        try:
+            return WorkspaceClient(client_id=client_id, client_secret=client_secret, host=host)
+        finally:
+            os.environ["DATABRICKS_TOKEN"] = token
     return WorkspaceClient()
 
 
