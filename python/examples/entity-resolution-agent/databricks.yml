@@ -7,22 +7,20 @@ sync:
 
 artifacts:
   default:
-    build: UV_OFFLINE=1 apx build && cp pyproject.toml .build/
+    build: >-
+      uv build --wheel -o .build/ &&
+      ls .build/*.whl | xargs basename > .build/requirements.txt
 
 resources:
   apps:
     entity-resolution-agent-app:
       name: "entity-resolution-agent"
-      description: "entity-resolution-agent created with apx"
+      description: "Fuzzy-match and resolve customer/account entities using Vector Search + SQL fallback"
       source_code_path: ./.build
-
-env:
-  VECTOR_SEARCH_ENDPOINT_NAME: "PLACEHOLDER — set when Uplight provides endpoint name"
-  VECTOR_SEARCH_INDEX_NAME: "PLACEHOLDER — e.g. catalog.schema.account_idx"
-  ACCOUNT_TABLE: "PLACEHOLDER — e.g. catalog.schema.accounts"
-  DECISION_TABLE: "PLACEHOLDER — e.g. catalog.schema.match_decisions"
 
 targets:
   dev:
     mode: development
     default: true
+  prod:
+    mode: production

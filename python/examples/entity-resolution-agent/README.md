@@ -83,12 +83,15 @@ No boilerplate. No auth wiring. `ws` is injected per-request with the caller's O
 
 ---
 
-## Quick Start
+## Run locally
 
 ```bash
+git clone https://github.com/stuagano/apx-agent
+cd python/examples/entity-resolution-agent
+
 uv sync
 
-# Run in demo mode — no VS index or SQL warehouse needed
+# DEMO_MODE uses synthetic accounts — no VS index or SQL warehouse needed
 DEMO_MODE=true uv run uvicorn entity_resolution_agent.backend.app:app --port 8001
 ```
 
@@ -97,13 +100,97 @@ Open `http://localhost:8001` and try:
 | Prompt | What it exercises |
 |--------|-------------------|
 | `Match Jane Smith at 123 Maple Ave` | Vector search → LOW_CONFIDENCE (common name, no account number) |
-| `Match Jane Smith at 123 Maple Ave, account 9876` | Same + account number exact-match boost → HIGH_CONFIDENCE |
+| `Match Jane Smith at 123 Maple Ave, account 9876` | Account number boost → HIGH_CONFIDENCE |
 | `Match J. Smith at 567 Birch Lane` | Initials → SQL fallback path |
 | `Match Liz Rodriguez at 456 Oak Street` | Nickname variant |
 | `Match John Smith at 123 Maple Ave` | Familial match flagged (same address, different first name) |
 
 ```bash
 uv run pytest tests/ -v
+```
+
+---
+
+## Deploy to Databricks Apps
+
+### Prerequisites
+
+- **Databricks CLI** — [install](https://docs.databricks.com/dev-tools/cli/databricks-cli.html)
+- **uv** — `pip install uv`
+- A Databricks workspace with [Apps enabled](https://docs.databricks.com/en/dev-tools/databricks-apps/index.html)
+
+### 1. Authenticate
+
+```bash
+databricks auth login --host https://<your-workspace>.azuredatabricks.net
+```
+
+Verify it works:
+
+```bash
+databricks current-user me
+```
+
+### 2. Get the code
+
+```bash
+git clone https://github.com/stuagano/apx-agent
+cd python/examples/entity-resolution-agent
+```
+
+### 3. Configure `app.yml`
+
+For **DEMO_MODE** (no infrastructure needed — start here):
+
+```yaml
+# app.yml is already set to DEMO_MODE=true — no changes needed
+```
+
+For **production** (real VS index + Delta table):
+
+```yaml
+env:
+  DEMO_MODE: "false"
+  VECTOR_SEARCH_ENDPOINT_NAME: "your-endpoint-name"
+  VECTOR_SEARCH_INDEX_NAME: "catalog.schema.account_idx"
+  ACCOUNT_TABLE: "catalog.schema.accounts"
+  DECISION_TABLE: "catalog.schema.match_decisions"
+```
+
+### 4. Build
+
+```bash
+uv build --wheel -o .build/
+ls .build/*.whl | xargs basename > .build/requirements.txt
+```
+
+### 5. Deploy
+
+```bash
+databricks bundle deploy
+```
+
+This uploads the build artifacts to your workspace and creates the Databricks App. On first run it also provisions the app compute — allow ~60 seconds.
+
+Check deployment status:
+
+```bash
+databricks apps get entity-resolution-agent -o json | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print('URL:   ', d.get('url', 'not yet available'))
+print('State: ', d.get('app_status', {}).get('state', 'unknown'))
+"
+```
+
+When `State: RUNNING`, open the URL.
+
+### Redeploy after changes
+
+```bash
+uv build --wheel -o .build/
+ls .build/*.whl | xargs basename > .build/requirements.txt
+databricks bundle deploy
 ```
 
 ---
@@ -124,14 +211,16 @@ uv run pytest tests/ -v
 
 ```
 entity-resolution-agent/
+├── app.yml                        # Databricks Apps runtime config + env vars
+├── databricks.yml                 # Asset Bundle — build, deploy, app resource
 ├── src/entity_resolution_agent/backend/
-│   ├── agent_router.py        # HandoffAgent wiring — 10 lines
-│   ├── app.py                 # FastAPI app — 8 lines
-│   ├── models.py              # Application, Candidate, MatchDecision
+│   ├── agent_router.py            # HandoffAgent wiring — 10 lines
+│   ├── app.py                     # FastAPI app — 8 lines
+│   ├── models.py                  # Application, Candidate, MatchDecision
 │   └── core/
-│       ├── supervisor.py      # normalize_record, vector_search, sql_search
-│       ├── evaluator.py       # evaluate_candidates, log_decision + edge case logic
-│       └── demo_data.py       # 15 synthetic accounts for DEMO_MODE
+│       ├── supervisor.py          # normalize_record, vector_search, sql_search + LlmAgent
+│       ├── evaluator.py           # evaluate_candidates, log_decision + LlmAgent
+│       └── demo_data.py           # 15 synthetic accounts for DEMO_MODE
 └── tests/
     ├── test_supervisor_tools.py
     ├── test_evaluator_tools.py
