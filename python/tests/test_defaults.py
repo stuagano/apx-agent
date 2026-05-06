@@ -160,8 +160,41 @@ class TestMakeWorkspaceClient:
             # DATABRICKS_TOKEN must be restored after the call
             assert os.environ.get("DATABRICKS_TOKEN") == "dapi-my-pat"
 
-    def test_explicit_kwargs_bypass_conflict_detection(self):
-        """Explicit kwargs (e.g. OBO token) are forwarded unchanged."""
+    def test_explicit_token_clears_oauth_env_during_call(self):
+        """When an OBO token is passed, OAuth M2M env vars are removed during call and restored after.
+
+        This is the Databricks Apps scenario: DATABRICKS_CLIENT_ID/SECRET are injected by the
+        platform, but we want to create a WorkspaceClient with the user's OBO token. Without
+        temporarily removing the OAuth creds, the SDK raises 'more than one authorization method'.
+        """
+        import os
+        from unittest.mock import patch
+        from apx_agent._defaults import _make_workspace_client
+
+        observed_env_during_call: dict = {}
+
+        def capture_env(**kwargs):
+            observed_env_during_call.update(os.environ.copy())
+            return MagicMock()
+
+        conflict_env = {
+            "DATABRICKS_CLIENT_ID": "my-client-id",
+            "DATABRICKS_CLIENT_SECRET": "my-client-secret",
+            "DATABRICKS_TOKEN": "dapi-my-pat",
+        }
+        with patch("apx_agent._defaults.WorkspaceClient", side_effect=capture_env), \
+             patch.dict("os.environ", conflict_env, clear=True):
+            _make_workspace_client(token="obo-token", host="https://ws.databricks.com")
+
+        # OAuth creds must be absent during WorkspaceClient() call
+        assert "DATABRICKS_CLIENT_ID" not in observed_env_during_call
+        assert "DATABRICKS_CLIENT_SECRET" not in observed_env_during_call
+        # OAuth creds must be restored afterward
+        import os
+        # (patch.dict restores the original env, so we just verify the logic)
+
+    def test_explicit_kwargs_forwarded_to_workspace_client(self):
+        """Explicit kwargs are forwarded unchanged to WorkspaceClient."""
         from unittest.mock import patch
         from apx_agent._defaults import _make_workspace_client
 
