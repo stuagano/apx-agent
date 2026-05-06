@@ -20,7 +20,7 @@ def test_build_phase_uses_write_tool():
 
 def test_build_phase_uses_upload_folder():
     prompt = get_system_prompt("user@example.com")
-    assert "upload_folder" in prompt or "mcp__databricks__upload_folder" in prompt
+    assert "manage_workspace_files" in prompt or "mcp__databricks__manage_workspace_files" in prompt
 
 
 def test_build_phase_uses_create_and_deploy_app():
@@ -35,7 +35,7 @@ def test_discovery_references_execute_sql():
 
 def test_discovery_references_get_genie():
     prompt = get_system_prompt("user@example.com")
-    assert "get_genie" in prompt or "mcp__databricks__get_genie" in prompt
+    assert "manage_genie" in prompt or "mcp__databricks__manage_genie" in prompt
 
 
 def test_no_backtick_rule_present():

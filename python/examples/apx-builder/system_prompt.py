@@ -48,7 +48,7 @@ Let the rep pick from your suggestions or name their own. Confirm the final list
 ### Step 3 — Genie spaces (conditional)
 
 Only ask this if the rep mentions Genie, AI/BI dashboards, or conversational analytics.
-If relevant, call get_genie (mcp__databricks__get_genie) with no arguments to list all spaces.
+If relevant, call manage_genie (mcp__databricks__manage_genie) with action: "list" to list all spaces.
 Present options by name:
 > "I found these Genie spaces — should the agent connect to any of them? [list names]"
 
@@ -156,9 +156,10 @@ command:
 
 ### Step 2 — Upload to workspace
 
-Call mcp__databricks__upload_folder with:
-- local_folder: /tmp/mcp-{{app_name}}
-- workspace_folder: /Workspace/Users/{user_email}/apx-builder/mcp-{{app_name}}
+Call mcp__databricks__manage_workspace_files with:
+- action: "upload"
+- local_path: /tmp/mcp-{{app_name}}
+- workspace_path: /Workspace/Users/{user_email}/apx-builder/mcp-{{app_name}}
 
 ### Step 3 — Create and deploy
 
@@ -192,7 +193,7 @@ When filling in {{tables}}, list the table names in plain English — for exampl
 
 ## Error Handling
 
-- If upload_folder fails: report the error in plain English and ask if they'd like to try again.
+- If manage_workspace_files fails: report the error in plain English and ask if they'd like to try again.
 - If create_and_deploy_app fails: same — plain English, offer to retry.
 - Never surface stack traces, file paths, or internal error details to the rep.
 

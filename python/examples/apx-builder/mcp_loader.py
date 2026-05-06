@@ -114,15 +114,19 @@ def _get_app_status(args: dict) -> dict:
     ctx = copy_context()
 
     def run():
-        ws = get_workspace_client()
-        app = ws.apps.get(args["app_name"])
-        active = app.active_deployment
-        return {
-            "name": args["app_name"],
-            "url": app.url or "",
-            "app_state": app.app_status.state.value if app.app_status else "UNKNOWN",
-            "deploy_state": active.status.state.value if active and active.status else "UNKNOWN",
-        }
+        try:
+            ws = get_workspace_client()
+            app = ws.apps.get(args["app_name"])
+            active = app.active_deployment
+            return {
+                "name": args["app_name"],
+                "url": app.url or "",
+                "app_state": app.app_status.state.value if app.app_status else "UNKNOWN",
+                "deploy_state": active.status.state.value if active and active.status else "UNKNOWN",
+            }
+        except Exception as exc:
+            logger.error("get_app_status failed: %s", exc)
+            return {"error": str(exc)}
 
     result = ctx.run(run)
     return {"content": [{"type": "text", "text": json.dumps(result)}]}
