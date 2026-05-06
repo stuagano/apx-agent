@@ -1,0 +1,9 @@
+claude-agent-sdk>=0.1.19
+fastapi>=0.119.0
+uvicorn>=0.37.0
+databricks-sdk>=0.74.0
+databricks-tools-core @ git+https://github.com/databricks-solutions/ai-dev-kit.git#subdirectory=databricks-tools-core
+databricks-mcp-server @ git+https://github.com/databricks-solutions/ai-dev-kit.git#subdirectory=databricks-mcp-server
+httpx>=0.27.0
+mcp>=1.0.0
+fastmcp>=0.1.0
