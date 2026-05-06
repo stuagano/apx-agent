@@ -1,5 +1,5 @@
 from unittest.mock import MagicMock, patch, call
-from tools.scaffold_project import _generate_files, scaffold_project
+from tools.scaffold_project import _generate_files, scaffold_project, GenieSpace
 
 
 def test_generate_files_returns_three_required_files():
@@ -15,7 +15,7 @@ def test_generate_files_app_py_includes_sql_tool_for_each_table():
 
 
 def test_generate_files_app_py_includes_genie_tool_for_space():
-    files = _generate_files("answer sales questions", [], [{"id": "abc123", "name": "Sales"}], "mcp-sales")
+    files = _generate_files("answer sales questions", [], [GenieSpace(id="abc123", name="Sales")], "mcp-sales")
     assert "abc123" in files["app.py"]
     assert "genie_tool" in files["app.py"]
 
