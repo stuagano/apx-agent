@@ -42,7 +42,7 @@ def _collect_result(user_message: str, options: ClaudeAgentOptions, q: queue.Que
                 if isinstance(msg, AssistantMessage):
                     for block in msg.content:
                         if isinstance(block, TextBlock) and block.text:
-                            collected_text = block.text
+                            collected_text += block.text
                 elif isinstance(msg, ResultMessage):
                     new_session_id = msg.session_id
 
@@ -74,7 +74,14 @@ async def responses(request: Request):
     if not messages:
         raise HTTPException(status_code=400, detail="input must not be empty")
 
+    user_message = messages[-1].get("content")
+    if not user_message:
+        raise HTTPException(status_code=400, detail="last input message must have non-empty content")
+
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+
     host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
 
     if not host:
@@ -86,7 +93,6 @@ async def responses(request: Request):
     set_databricks_auth(host, token)
     try:
         servers, tool_names = get_mcp_servers()
-        user_message = messages[-1]["content"]
 
         options = ClaudeAgentOptions(
             cwd="/tmp",
@@ -112,8 +118,7 @@ async def responses(request: Request):
         )
         thread.start()
 
-        loop = asyncio.get_event_loop()
-        msg_type, payload = await loop.run_in_executor(None, lambda: _get_from_queue(q))
+        msg_type, payload = await asyncio.get_running_loop().run_in_executor(None, lambda: _get_from_queue(q))
 
         if msg_type == "timeout":
             raise HTTPException(status_code=504, detail="Agent timed out after 5 minutes")

@@ -19,7 +19,7 @@ async def test_responses_returns_correct_output_format():
          patch("app.set_databricks_auth"), \
          patch("app.clear_databricks_auth"), \
          patch("app._collect_result") as mock_collect, \
-         patch("app.asyncio.get_event_loop") as mock_loop:
+         patch("app.asyncio.get_running_loop") as mock_loop:
 
         mock_servers.return_value = ({}, ["mcp__apx__create_and_deploy_app"])
 
@@ -86,7 +86,7 @@ async def test_responses_passes_session_id_for_resumption():
          patch("app.clear_databricks_auth"), \
          patch("app.get_system_prompt", return_value="system prompt"), \
          patch("app.ClaudeAgentOptions") as mock_opts_cls, \
-         patch("app.asyncio.get_event_loop") as mock_loop:
+         patch("app.asyncio.get_running_loop") as mock_loop:
 
         mock_opts_cls.side_effect = lambda **kw: (options_captured.update(kw), MagicMock())[1]
 
