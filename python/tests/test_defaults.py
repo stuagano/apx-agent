@@ -137,8 +137,9 @@ class TestMakeWorkspaceClient:
                 MockWS.assert_called_once_with()
 
     def test_oauth_and_pat_conflict_prefers_oauth(self):
-        """When both OAuth M2M and PAT are set, use OAuth M2M explicitly."""
+        """When both OAuth M2M and PAT are set, use OAuth M2M and suppress PAT from env."""
         from unittest.mock import patch
+        import os
         from apx_agent._defaults import _make_workspace_client
 
         conflict_env = {
@@ -156,6 +157,8 @@ class TestMakeWorkspaceClient:
                 client_secret="my-client-secret",
                 host="https://workspace.databricks.com",
             )
+            # DATABRICKS_TOKEN must be restored after the call
+            assert os.environ.get("DATABRICKS_TOKEN") == "dapi-my-pat"
 
     def test_explicit_kwargs_bypass_conflict_detection(self):
         """Explicit kwargs (e.g. OBO token) are forwarded unchanged."""
