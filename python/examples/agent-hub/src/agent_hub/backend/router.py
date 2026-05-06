@@ -98,6 +98,7 @@ def _card_from_a2a(
         AgentTool(name=s["name"], description=s.get("description", "")[:200])
         for s in a2a.get("skills", [])
     ]
+    supports_invoke = a2a.get("capabilities", {}).get("streaming", False)
     return AgentCard(
         id=name.replace("_", "-"),
         name=name,
@@ -109,7 +110,7 @@ def _card_from_a2a(
         tags=tags or [],
         mcp_endpoint=a2a.get("mcpEndpoint"),
         last_seen=datetime.now(timezone.utc),
-        supports_invoke=True,
+        supports_invoke=supports_invoke,
     )
 
 

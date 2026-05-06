@@ -19,7 +19,12 @@ async def _auto_register() -> None:
         try:
             a2a = await _crawl_agent(url)
             if a2a:
-                card = _card_from_a2a(a2a, url)
+                existing = _AGENTS.get(a2a.get("name", "").replace("_", "-"))
+                card = _card_from_a2a(
+                    a2a,
+                    url,
+                    tags=existing.tags if existing else [],
+                )
                 _AGENTS[card.id] = card
                 logger.info("Auto-registered '%s' from %s (%d tools)", card.id, url, len(card.tools))
             else:
