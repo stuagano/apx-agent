@@ -78,7 +78,11 @@ async def responses(request: Request):
     if not user_message:
         raise HTTPException(status_code=400, detail="last input message must have non-empty content")
 
+    # Databricks Apps proxy injects user token via X-Forwarded-Access-Token;
+    # Authorization: Bearer is used in local dev and eval contexts.
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not token:
+        token = request.headers.get("X-Forwarded-Access-Token", "").strip()
     if not token:
         raise HTTPException(status_code=401, detail="Authorization token required")
 
