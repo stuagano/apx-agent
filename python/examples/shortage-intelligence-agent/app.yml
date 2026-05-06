@@ -1,0 +1,22 @@
+command: ["uvicorn", "shortage_intelligence_agent.backend.app:app", "--workers", "2"]
+env:
+  - name: AGENT_MODEL
+    value: "databricks-claude-sonnet-4-6"
+  - name: DEMAND_GENIE_SPACE_ID
+    value: ""
+  - name: KA_ENDPOINT
+    value: ""
+  - name: HISTORICAL_DEMAND_TABLE
+    value: ""
+  - name: DEMAND_ORDERS_TABLE
+    value: ""
+  - name: PARTS_CATALOG_TABLE
+    value: ""
+  - name: DIGIKEY_CLIENT_ID
+    value: ""
+  - name: DIGIKEY_CLIENT_SECRET
+    value: ""
+  - name: SLACK_WEBHOOK_SOURCING
+    value: ""
+  - name: SLACK_WEBHOOK_SALES
+    value: ""
