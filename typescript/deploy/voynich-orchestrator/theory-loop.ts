@@ -273,7 +273,7 @@ export interface Theory {
   }>;
 }
 
-export type SeedMode = 'elite' | 'cold';
+export type SeedMode = 'elite' | 'cold' | 'champion';
 
 export interface Strategy {
   language: 'latin' | 'italian';
@@ -1261,6 +1261,26 @@ function mutateMapWild(map: Record<string, string>): Record<string, string> {
   return result;
 }
 
+async function loadChampionMap(
+  language: string,
+  cipherType: string,
+): Promise<Record<string, string> | null> {
+  try {
+    const rows = await executeSql(`
+      SELECT symbol_map FROM serverless_stable_qh44kx_catalog.voynich.theories
+      WHERE source_language = '${language}' AND cipher_type = '${cipherType}'
+        AND symbol_map IS NOT NULL AND symbol_map != '{}'
+      ORDER BY grounding_score + consistency_score DESC
+      LIMIT 1
+    `);
+    if (rows.length === 0) return null;
+    const raw = rows[0].symbol_map;
+    return JSON.parse(raw) as Record<string, string>;
+  } catch {
+    return null;
+  }
+}
+
 export async function proposeTheory(
   targetFolio: FolioInfo,
   allFolios: FolioInfo[],
@@ -1311,9 +1331,25 @@ export async function proposeTheory(
   // Mix of: consensus/elite (exploit), radical new architectures (explore).
   const seeds: Array<{ map: Record<string, string>; decoded: string; score: number; origin: string }> = [];
 
+  // --- CHAMPION SEED (micro-perturbation from all-time best) ---
+  // Loads the highest-scoring theory ever stored for this language+cipherType and
+  // uses its exact symbol map as the sole starting point. SA then runs with a
+  // very low wildRate to refine rather than re-discover.
+  if (seedMode === 'champion') {
+    const championMap = await loadChampionMap(sourceLanguage, cipherType);
+    if (championMap) {
+      // Fill any gaps in the champion map with frequency-based defaults
+      const freqMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
+      const filled = { ...freqMap, ...championMap };
+      const decoded = applyMap(evaText, filled);
+      seeds.push({ map: filled, decoded, score: hillClimbScore(decoded, sourceLanguage), origin: 'champion' });
+      console.log(`[theory-loop]   champion seed loaded, score=${hillClimbScore(decoded, sourceLanguage).toFixed(3)}`);
+    }
+  }
+
   // --- EXPLOITATION SEEDS (build on what works) ---
   // Cold mode skips these entirely — no consensus anchoring, no elite influence.
-  if (seedMode === 'elite') {
+  if (seedMode === 'elite' || seedMode === 'champion') {
     // Seed: pure consensus map
     const consensusMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
     const consensusDecoded = applyMap(evaText, consensusMap);
@@ -1401,7 +1437,8 @@ export async function proposeTheory(
   // Cold mode escapes the consensus basin: full wild mutation.
   // Exploration seeds get more wild mutations; exploitation seeds stay focused.
   const isExplorationSeed = ['reverse-freq', 'vowel-hyp', 'random', 'phonetic'].includes(seedOrigin);
-  const wildRate = seedMode === 'cold' ? 0.6
+  const wildRate = seedMode === 'champion' ? 0.05
+    : seedMode === 'cold' ? 0.6
     : isExplorationSeed ? 0.4
     : 0.15;
 
@@ -2668,7 +2705,9 @@ export async function runTheoryLoop(
           const ELITE_RESTARTS = Math.min(2, N_RESTARTS);
           const candidates = await Promise.all(
             Array.from({ length: N_RESTARTS }, (_, i) => {
-              const restartSeedMode: SeedMode = i < ELITE_RESTARTS ? 'elite' : 'cold';
+              const restartSeedMode: SeedMode = i === 0 ? 'champion'
+                : i < ELITE_RESTARTS ? 'elite'
+                : 'cold';
               return proposeTheory(folio, folios, strategy.language, strategy.cipherType, restartSeedMode);
             }),
           );
