@@ -126,6 +126,27 @@ def inject_create_tool_meta(ctx: AgentContext) -> None:
     logger.info("Dev mode: create_tool meta-tool injected into agent context")
 
 
+def _persist_instructions(ctx: "AgentContext | None", instructions: str) -> None:
+    """Update instructions in memory and write to pyproject.toml."""
+    import re as _re
+    if ctx:
+        addendum = ""
+        if "[DEV MODE]" in (ctx.config.instructions or ""):
+            dev_suffix = ctx.config.instructions.split("[DEV MODE]", 1)[1]
+            addendum = "\n\n[DEV MODE]" + dev_suffix
+        ctx.config.instructions = instructions + addendum
+    root = _find_deploy_root()
+    if root:
+        toml_path = root / "pyproject.toml"
+        if toml_path.exists():
+            src = toml_path.read_text()
+            escaped = instructions.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+            new_block = f'instructions = """\n{escaped}\n"""'
+            updated = _re.sub(r'instructions\s*=\s*"""[\s\S]*?"""', new_block, src, count=1)
+            if updated != src:
+                toml_path.write_text(updated)
+
+
 def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     """Build the /_apx/* dev UI routes."""
     router = APIRouter()
@@ -689,6 +710,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             ctx: AgentContext | None = request.app.state.agent_context
             ws: WorkspaceClient = request.app.state.workspace_client
             instructions = await _generate_agent_instructions(ws, ctx, catalog, schema, wh_id)
+            _persist_instructions(ctx, instructions)
 
         return JSONResponse({"ok": True, "instructions": instructions})
 
@@ -701,12 +723,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         instructions = await _generate_agent_instructions(
             ws, ctx, body.get("catalog", ""), body.get("schema", ""), body.get("warehouse_id", ""),
         )
+        _persist_instructions(ctx, instructions)
         return JSONResponse({"ok": True, "instructions": instructions})
 
     @router.post("/_apx/setup/apply-instructions", include_in_schema=False)
     async def apply_instructions(request: Request) -> Any:
         from fastapi.responses import JSONResponse
-        import re as _re
 
         body = await request.json()
         new_instructions: str = body.get("instructions", "").strip()
@@ -714,24 +736,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"ok": False, "error": "No instructions provided"})
 
         ctx: AgentContext | None = request.app.state.agent_context
-        if ctx:
-            addendum = ""
-            if "[DEV MODE]" in (ctx.config.instructions or ""):
-                addendum = "\n\n" + ctx.config.instructions.split("[DEV MODE]", 1)[1].strip()
-                addendum = "\n\n[DEV MODE]" + addendum
-            ctx.config.instructions = new_instructions + addendum
-
-        root = _find_deploy_root()
-        if root:
-            toml_path = root / "pyproject.toml"
-            if toml_path.exists():
-                src = toml_path.read_text()
-                escaped = new_instructions.replace('\\', '\\\\').replace('"""', '\\"\\"\\"')
-                new_block = f'instructions = """\n{escaped}\n"""'
-                updated = _re.sub(r'instructions\s*=\s*"""[\s\S]*?"""', new_block, src, count=1)
-                if updated != src:
-                    toml_path.write_text(updated)
-
+        _persist_instructions(ctx, new_instructions)
         return JSONResponse({"ok": True})
 
     @router.get("/_apx/eval/data", include_in_schema=False)

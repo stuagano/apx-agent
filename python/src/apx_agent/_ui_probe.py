@@ -536,6 +536,54 @@ async def _run_probe(url: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _build_instructions_from_schema(
+    catalog: str,
+    schema: str,
+    tables: "dict[str, list[str]]",
+) -> str:
+    """Build agent instructions from schema metadata without an LLM call.
+
+    Produces the same 5-part structure (persona, first-tool rule, call chains,
+    recovery rule, grounding rule) that the old LLM prompt required, but
+    deterministically from the table names already in hand.
+    """
+    fqn = f"{catalog}.{schema}" if catalog and schema else schema or catalog or "the data"
+    table_names = list(tables.keys())
+
+    if table_names:
+        table_list = ", ".join(table_names)
+        if len(table_names) == 1:
+            chain = (
+                f"To answer questions about {table_names[0]}: "
+                f"query the table with targeted filters and return the results directly."
+            )
+        else:
+            chain = (
+                f"To answer questions about {table_names[0]}: query it with the relevant filters. "
+                f"For questions spanning multiple tables (e.g. {' and '.join(table_names[:2])}): "
+                f"run separate queries then combine the results."
+            )
+    else:
+        table_list = fqn
+        chain = (
+            "To answer data questions: use the SQL tool with a targeted SELECT statement. "
+            "For aggregations: use GROUP BY with the appropriate metric column."
+        )
+
+    return (
+        f"You are a data assistant for {fqn}. "
+        f"Your data includes: {table_list}.\n\n"
+        f"At the start of every session, call the SQL tool to confirm what tables and columns "
+        f"are available before answering questions.\n\n"
+        f"{chain}\n\n"
+        f"When a query returns empty results or an error, try a broader filter or verify the "
+        f"column name exists in the schema before telling the user you cannot help.\n\n"
+        f"Always base your answers on tool results. "
+        f"Never estimate or fabricate data values. "
+        f"If you cannot retrieve what was asked, say so clearly and describe what you can provide."
+    )
+
+
 async def _generate_agent_instructions(
     ws: Any,
     ctx: "AgentContext | None",
@@ -543,11 +591,9 @@ async def _generate_agent_instructions(
     schema: str,
     warehouse_id: str,
 ) -> str:
-    """Call the LLM to generate domain-specific agent instructions from a UC schema."""
+    """Fetch schema metadata then build instructions via Python template (no LLM)."""
     import asyncio as _asyncio
-    from httpx import AsyncClient
 
-    # Fetch table/column list
     tables: dict[str, list[str]] = {}
     if catalog and schema and warehouse_id:
         def _fetch() -> dict[str, list[str]]:
@@ -577,53 +623,6 @@ async def _generate_agent_instructions(
         except Exception:
             pass
 
-    schema_summary = "\n".join(
-        f"  {t}: {', '.join(cols[:12])}" for t, cols in tables.items()
-    ) if tables else f"(schema: {catalog}.{schema})"
-
-    system_msg = (
-        "You are configuring an AI agent. Write a system prompt (6-10 sentences) "
-        "that serves as the agent's operating charter — not just a description, but "
-        "actionable decision rules the agent follows on every request.\n\n"
-        "The prompt MUST include:\n"
-        "1. A one-sentence persona/role statement naming the domain.\n"
-        "2. The first tool to call on every session (e.g. to establish context or identity).\n"
-        "3. The natural call chain for the 2-3 most common request types given the tables "
-        "   (e.g. 'To explain a bill: call get_customer_profile → get_billing_summary → get_rate_schedule').\n"
-        "4. A recovery rule: when a tool returns empty or an error dict, try an alternative "
-        "   approach before telling the user you can't help — name the alternative.\n"
-        "5. A grounding rule: always use tool results, never guess or hallucinate data values.\n\n"
-        "Output ONLY the system prompt text — no explanation, no quotes, no markdown."
-    )
-    user_msg = f"Schema: {catalog}.{schema}\n\nTables:\n{schema_summary}"
-
-    if ctx is None:
-        return f"You are a helpful data agent for {catalog}.{schema}. Use your tools to answer questions about the data — never guess."
-
-    auth_headers = ws.config.authenticate()
-    endpoint_url = (
-        f"{ws.config.host.rstrip('/')}"
-        f"/serving-endpoints/{ctx.config.model}/invocations"
-    )
-
-    try:
-        async with AsyncClient() as client:
-            r = await client.post(
-                endpoint_url,
-                headers={**auth_headers, "Content-Type": "application/json"},
-                json={
-                    "messages": [
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": user_msg},
-                    ],
-                    "max_tokens": 500,
-                    "temperature": 0.3,
-                },
-                timeout=30.0,
-            )
-            r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        return f"You are a helpful data agent for {catalog}.{schema}. Use your tools to answer questions — never guess. ({e})"
+    return _build_instructions_from_schema(catalog, schema, tables)
 
 
