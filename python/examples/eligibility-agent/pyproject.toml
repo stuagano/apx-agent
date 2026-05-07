@@ -1,0 +1,36 @@
+[project]
+name = "eligibility-agent"
+version = "0.1.0"
+description = "Document-based eligibility assessment agent — verifies income, residency, and criteria from uploaded PDFs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "apx-agent",
+    "databricks-sdk>=0.30",
+    "pdf2image>=1.17",
+    "pillow>=10.0",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.11.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.apx.agent]
+name = "eligibility-agent"
+description = "Assess program eligibility from application documents — income, residency, and criteria verification."
+model = "databricks-claude-sonnet-4-6"
+max_iterations = 8
+
+[tool.uv.sources]
+apx-agent = { path = "../..", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
