@@ -1007,8 +1007,8 @@ export async function loadFolios(): Promise<FolioInfo[]> {
 // Theory generation
 // ---------------------------------------------------------------------------
 
-/** Hill-climbing iterations per theory round (cheap — no LLM calls during climb). */
-const HILL_CLIMB_STEPS = 2000;
+/** SA iterations per substitution theory round (cheap — no LLM calls during SA). */
+const HILL_CLIMB_STEPS = parseInt(process.env.SUBST_SA_STEPS ?? '8000');
 /** Number of initial seed maps to try before hill-climbing the best. */
 const SEED_MAPS = 6;
 
@@ -1433,30 +1433,42 @@ export async function proposeTheory(
 
   console.log(`[theory-loop]   seeds=${seeds.length} best_seed=${bestScore.toFixed(3)} origin=${seedOrigin} dict=${dictionaryScore(bestDecoded, sourceLanguage).toFixed(3)} starting hill-climb...`);
 
-  // Step 3: Hill-climb — balance focused vs wild mutations based on seed origin and mode.
-  // Cold mode escapes the consensus basin: full wild mutation.
-  // Exploration seeds get more wild mutations; exploitation seeds stay focused.
+  // Step 3: Simulated annealing — temperature schedule lets SA escape local optima.
+  // Champion mode starts near-optimal so uses low T (fine-tuning around champion peak).
+  // Elite uses medium T. Cold uses high T to explore broadly.
   const isExplorationSeed = ['reverse-freq', 'vowel-hyp', 'random', 'phonetic'].includes(seedOrigin);
-  const wildRate = seedMode === 'champion' ? 0.05
+  const wildRate = seedMode === 'champion' ? 0.10
     : seedMode === 'cold' ? 0.6
     : isExplorationSeed ? 0.4
     : 0.15;
 
+  // SA temperature: champion starts cold (already near peak), cold starts hot (wide search).
+  const T_INIT = seedMode === 'champion' ? 0.015 : seedMode === 'elite' ? 0.06 : 0.18;
+  const T_FINAL = 0.001;
+
   let bestHillScore = hillClimbScore(bestDecoded, sourceLanguage);
+  let curMap = bestMap;
+  let curScore = bestHillScore;
   let improvements = 0;
 
   for (let step = 0; step < HILL_CLIMB_STEPS; step++) {
+    const t = T_INIT * Math.pow(T_FINAL / T_INIT, step / HILL_CLIMB_STEPS);
     const candidate = Math.random() < (1 - wildRate)
-      ? mutateMapFocused(bestMap, sourceLanguage)
-      : mutateMapWild(bestMap);
+      ? mutateMapFocused(curMap, sourceLanguage)
+      : mutateMapWild(curMap);
     const decoded = applyMap(evaText, candidate);
     const score = hillClimbScore(decoded, sourceLanguage);
+    const delta = score - curScore;
 
-    if (score > bestHillScore) {
-      bestMap = candidate;
-      bestDecoded = decoded;
-      bestHillScore = score;
-      improvements++;
+    if (delta > 0 || Math.random() < Math.exp(delta / t)) {
+      curMap = candidate;
+      curScore = score;
+      if (score > bestHillScore) {
+        bestMap = { ...curMap };
+        bestDecoded = decoded;
+        bestHillScore = score;
+        improvements++;
+      }
     }
   }
 
@@ -1473,7 +1485,7 @@ export async function proposeTheory(
   // Add to elite pool for crossbreeding in future rounds
   addToElitePool(bestMap, bestHillScore, sourceLanguage);
 
-  console.log(`[theory-loop]   hill-climb: ${improvements} improvements in ${HILL_CLIMB_STEPS} steps, dict=${dictScore.toFixed(3)} lm=${bigramFinal.toFixed(3)} combined=${bestHillScore.toFixed(3)} elites=${elitePool.length}`);
+  console.log(`[theory-loop]   subst SA (${seedMode}): ${improvements} improvements in ${HILL_CLIMB_STEPS} steps, dict=${dictScore.toFixed(3)} lm=${bigramFinal.toFixed(3)} combined=${bestHillScore.toFixed(3)} elites=${elitePool.length}`);
 
   // Step 4: Test cross-folio consistency
   const crossFolioResults: Theory['cross_folio_results'] = [];
