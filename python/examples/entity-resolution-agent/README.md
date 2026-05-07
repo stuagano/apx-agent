@@ -55,7 +55,7 @@ Two entry points:
 |-------------|----------------|
 | Python | 3.11+ |
 | [uv](https://docs.astral.sh/uv/) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| apx-agent | This repo — install from `python/` |
+| apx-agent | General Databricks Apps development framework — this repo (`python/`) |
 | Databricks CLI | `pip install databricks-cli` or `brew install databricks/tap/databricks` |
 | Databricks workspace | Unity Catalog, Vector Search, SQL warehouse (see Part 1) |
 
@@ -68,7 +68,7 @@ The agent ships with synthetic utility account data so you can run it locally be
 ```bash
 cd entity-resolution-agent
 uv sync
-DEMO_MODE=true apx dev
+DEMO_MODE=true uv run uvicorn entity_resolution_agent.backend.app:app --reload
 ```
 
 The chat interface opens at `http://localhost:8000`. Try:
@@ -80,7 +80,7 @@ The agent will normalize the input, call the demo search functions backed by `co
 To test the deterministic endpoint in demo mode:
 
 ```bash
-DEMO_MODE=true uvicorn entity_resolution_agent.backend.app:app --reload &
+DEMO_MODE=true uv run uvicorn entity_resolution_agent.backend.app:app --reload &
 
 curl -s -X POST http://localhost:8000/api/enroll \
   -H "Content-Type: application/json" \
@@ -320,7 +320,7 @@ tests/test_supervisor_tools.py::test_sql_search_returns_candidates PASSED
 ### Step 5: Run locally against live data
 
 ```bash
-apx dev
+uv run uvicorn entity_resolution_agent.backend.app:app --reload
 ```
 
 Chat interface opens at `http://localhost:8000`. Test the enrollment endpoint:
@@ -366,7 +366,7 @@ env:
 ### Step 2: Deploy
 
 ```bash
-apx deploy
+uv run apx deploy
 ```
 
 ### Step 3: Verify

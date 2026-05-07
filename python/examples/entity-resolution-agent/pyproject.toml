@@ -1,7 +1,7 @@
 [project]
 name = "entity-resolution-agent"
 dynamic = ["version"]
-description = "Fuzzy-match and resolve customer and account entities across utility data systems — deduplicates records and links accounts to canonical identities"
+description = "Entity resolution agent — fuzzy name+address matching via Databricks Vector Search, with Supervisor/Evaluator HandoffAgent for confidence-scored decisions"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
