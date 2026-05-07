@@ -31,6 +31,24 @@ import { TheoryInvestigator } from './theory-investigator.ts';
 import { StatEvolutionaryAgent } from './stat-evolutionary-agent.ts';
 
 // ---------------------------------------------------------------------------
+// Log ring buffer — intercept console.* so the dashboard can stream live logs
+// ---------------------------------------------------------------------------
+
+const LOG_RING: { ts: number; line: string }[] = [];
+const LOG_RING_MAX = 500;
+const _origLog = console.log.bind(console);
+const _origWarn = console.warn.bind(console);
+const _origError = console.error.bind(console);
+function _capture(...args: unknown[]) {
+  const line = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+  LOG_RING.push({ ts: Date.now(), line });
+  if (LOG_RING.length > LOG_RING_MAX) LOG_RING.shift();
+}
+console.log = (...args: unknown[]) => { _origLog(...args); _capture(...args); };
+console.warn = (...args: unknown[]) => { _origWarn(...args); _capture(...args); };
+console.error = (...args: unknown[]) => { _origError(...args); _capture(...args); };
+
+// ---------------------------------------------------------------------------
 // Population store
 // ---------------------------------------------------------------------------
 
@@ -332,6 +350,13 @@ app.get('/api/strategies', async (_req, res) => {
   }
 });
 
+// Log stream endpoint — returns lines added after `since` timestamp
+app.get('/api/logs', (req, res) => {
+  const since = parseInt(String(req.query.since ?? '0')) || 0;
+  const lines = since ? LOG_RING.filter(l => l.ts > since) : LOG_RING.slice(-100);
+  res.json({ lines, lastTs: lines.length ? lines[lines.length - 1].ts : since });
+});
+
 // ---------------------------------------------------------------------------
 // Results dashboard
 // ---------------------------------------------------------------------------
@@ -341,205 +366,339 @@ app.get('/_apx/results', async (_req, res) => {
   res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Voynich Theory Results</title>
+  <title>Voynich — SA Search</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a1a; color: #e0e0e0; padding: 24px; }
-    h1 { font-size: 24px; margin-bottom: 4px; color: #fff; }
-    .subtitle { color: #888; margin-bottom: 20px; font-size: 14px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
-    .card { background: #1a1a2e; border: 1px solid #333; border-radius: 8px; padding: 14px; }
-    .card .label { font-size: 10px; text-transform: uppercase; color: #888; margin-bottom: 4px; }
-    .card .value { font-size: 26px; font-weight: 600; color: #4dd0e1; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a1a; color: #e0e0e0; padding: 24px; padding-top: 52px; }
+    h1 { font-size: 22px; margin-bottom: 4px; color: #fff; }
+    .subtitle { color: #666; margin-bottom: 20px; font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 20px; }
+    .card { background: #1a1a2e; border: 1px solid #2a2a45; border-radius: 8px; padding: 12px 14px; }
+    .card .label { font-size: 10px; text-transform: uppercase; color: #666; margin-bottom: 4px; letter-spacing: .05em; }
+    .card .value { font-size: 24px; font-weight: 700; color: #4dd0e1; }
     .card .value.green { color: #4caf50; }
     .card .value.amber { color: #ffb74d; }
-    .card .value.red { color: #ef5350; }
-    .card .sub { font-size: 11px; color: #666; margin-top: 2px; }
+    .card .sub { font-size: 11px; color: #555; margin-top: 3px; }
     table { width: 100%; border-collapse: collapse; background: #1a1a2e; border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
-    th { background: #252540; padding: 8px 10px; text-align: left; font-size: 11px; text-transform: uppercase; color: #888; }
-    td { padding: 8px 10px; border-top: 1px solid #252540; font-size: 12px; }
-    tr:hover { background: #252540; }
-    .bar { height: 6px; border-radius: 3px; background: #333; display: inline-block; width: 60px; vertical-align: middle; }
-    .bar-fill { height: 100%; border-radius: 3px; background: #4dd0e1; }
-    .section { margin-bottom: 20px; }
-    .section h2 { font-size: 15px; margin-bottom: 10px; color: #ccc; display: flex; align-items: center; gap: 8px; }
-    .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #4caf50; animation: pulse 1.5s infinite; }
-    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-    .activity-row { font-family: 'SF Mono', Monaco, monospace; font-size: 11px; line-height: 1.6; padding: 2px 0; border-bottom: 1px solid #1a1a2e; }
-    .activity-row:hover { background: #252540; }
-    .activity-row .time { color: #555; }
-    .activity-row .score { color: #4dd0e1; font-weight: 600; }
-    .activity-row .score.high { color: #4caf50; }
-    .activity-row .decoded { color: #aaa; }
-    .activity-row .origin { color: #7c4dff; font-size: 10px; }
-    .status-bar { position: fixed; top: 0; left: 0; right: 0; background: #1a1a2e; border-bottom: 1px solid #333; padding: 8px 24px; display: flex; gap: 24px; align-items: center; font-size: 12px; z-index: 100; }
-    .status-bar .live { color: #4caf50; }
-    body { padding-top: 52px; }
-    .tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; }
+    th { background: #20203a; padding: 7px 10px; text-align: left; font-size: 10px; text-transform: uppercase; color: #666; letter-spacing: .05em; }
+    td { padding: 7px 10px; border-top: 1px solid #20203a; font-size: 12px; }
+    tr:hover td { background: #20203a; }
+    .bar { height: 5px; border-radius: 3px; background: #252540; display: inline-block; width: 50px; vertical-align: middle; margin-right: 4px; }
+    .bar-fill { height: 100%; border-radius: 3px; }
+    .section { margin-bottom: 22px; }
+    .section h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: #888; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #4caf50; animation: pulse 1.5s infinite; flex-shrink: 0; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+    .status-bar { position: fixed; top: 0; left: 0; right: 0; background: #12122a; border-bottom: 1px solid #252540; padding: 7px 24px; display: flex; gap: 20px; align-items: center; font-size: 12px; z-index: 100; }
+    .tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; }
     .tag.latin { background: #1a2e1a; color: #81c784; }
     .tag.italian { background: #1a1a2e; color: #64b5f6; }
+    .mono { font-family: "SF Mono", Monaco, monospace; }
+    /* SA Health */
+    .sa-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+    .sa-panel { background: #1a1a2e; border: 1px solid #2a2a45; border-radius: 8px; padding: 14px; }
+    .sa-panel h3 { font-size: 11px; text-transform: uppercase; color: #666; letter-spacing: .07em; margin-bottom: 10px; }
+    .chip { display: inline-block; padding: 3px 7px; border-radius: 4px; font-size: 11px; font-family: "SF Mono", Monaco, monospace; margin: 2px; font-weight: 600; }
+    .chip.elite { background: #0d2035; color: #64b5f6; border: 1px solid #1a4060; }
+    .chip.cold  { background: #2a1535; color: #ce93d8; border: 1px solid #4a2560; }
+    .chip.best  { border-color: #4caf50; }
+    .avg-row { margin-top: 8px; font-size: 11px; font-family: "SF Mono", Monaco, monospace; }
+    .avg-row .e { color: #64b5f6; } .avg-row .c { color: #ce93d8; }
+    .warn { color: #ffb74d; font-size: 11px; margin-top: 6px; }
+    /* Activity */
+    .act-row { font-family: "SF Mono", Monaco, monospace; font-size: 11px; line-height: 1.7; padding: 1px 4px; border-radius: 3px; }
+    .act-row:hover { background: #1e1e38; }
+    /* Log */
+    #live-log { background: #05050f; border: 1px solid #1a1a30; border-radius: 8px; padding: 10px 12px; height: 260px; overflow-y: auto; font-family: "SF Mono", Monaco, monospace; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; }
   </style>
 </head>
 <body>
   <div class="status-bar">
     <div><span class="live-dot" style="display:inline-block"></span></div>
-    <div>Burst <b id="sb-burst">-</b>/22 · Round <b id="sb-round">-</b>/20</div>
-    <div>🎯 <b id="sb-strategy" style="color:#bb86fc">-</b></div>
-    <div>Best: <b id="sb-best" style="color:#4caf50">-</b></div>
-    <div>Total: <b id="sb-total">-</b></div>
-    <div style="margin-left:auto;color:#555" id="sb-ts">-</div>
+    <div style="color:#888">Round <b id="sb-round" style="color:#ccc">-</b></div>
+    <div style="color:#888">Strategy <b id="sb-strategy" style="color:#bb86fc">-</b></div>
+    <div style="color:#888">Best <b id="sb-best" style="color:#4caf50">-</b></div>
+    <div style="color:#888">Total <b id="sb-total" style="color:#ccc">-</b></div>
+    <div style="margin-left:auto;color:#444;font-size:11px" id="sb-ts">-</div>
   </div>
 
-  <h1>Voynich Manuscript — Decipherment Search</h1>
-  <p class="subtitle">Strategy-rotating hill-climb · 8 strategies × 20-round bursts · cold mode escapes the consensus basin</p>
+  <h1>Voynich — Homophonic Search</h1>
+  <p class="subtitle">8 restarts/round (2 elite + 6 cold) · 4000 SA steps each · CONSENSUS_LOCKED: ch→s y→t c→n</p>
 
+  <div id="db-error"></div>
   <div class="grid" id="summary"></div>
 
   <div class="section">
-    <h2><span class="live-dot"></span> Strategy Rotation</h2>
-    <table id="strategies-table">
-      <thead><tr><th>Strategy</th><th>Lang</th><th>Cipher</th><th>Seed</th><th>Attempts</th><th>Best</th><th>Last Run</th><th>Status</th></tr></thead>
-      <tbody id="strategies"></tbody>
-    </table>
+    <h2><span class="live-dot"></span> SA Health</h2>
+    <div class="sa-grid">
+      <div class="sa-panel">
+        <h3>Last Round — Restart Breakdown</h3>
+        <div id="sa-chips"><span style="color:#444">Waiting for first round...</span></div>
+        <div id="sa-avgs" class="avg-row"></div>
+        <div id="sa-warn"></div>
+      </div>
+      <div class="sa-panel">
+        <h3>Recent SA Runs (last 16)</h3>
+        <div id="sa-runs" style="overflow-y:auto;max-height:140px">
+          <span style="color:#444">Waiting...</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="section">
     <h2><span class="live-dot"></span> Live Activity</h2>
-    <div id="activity" style="background:#0d0d1a;border:1px solid #252540;border-radius:8px;padding:12px;max-height:360px;overflow-y:auto;font-family:'SF Mono',Monaco,monospace"></div>
+    <div id="activity" style="background:#0d0d1a;border:1px solid #20203a;border-radius:8px;padding:10px 12px;max-height:300px;overflow-y:auto"></div>
   </div>
 
   <div class="section">
     <h2>Top Theories (All Time)</h2>
     <table>
-      <thead><tr><th>Folio</th><th>Plant</th><th>Lang</th><th>Grounding</th><th>Consistency</th><th>Combined</th><th>Decoded Text</th></tr></thead>
+      <thead><tr><th>Folio</th><th>Plant</th><th>Lang</th><th>Grounding</th><th>Consistency</th><th>Combined</th><th>Decoded</th></tr></thead>
       <tbody id="theories"></tbody>
     </table>
   </div>
 
   <div class="section">
-    <h2>Recent Best (Last 100)</h2>
+    <h2>Recent Theories</h2>
     <table>
-      <thead><tr><th>Folio</th><th>Plant</th><th>Lang</th><th>Grounding</th><th>Consistency</th><th>Combined</th><th>Decoded Text</th></tr></thead>
+      <thead><tr><th>Folio</th><th>Plant</th><th>Lang</th><th>Grounding</th><th>Consistency</th><th>Combined</th><th>Decoded</th></tr></thead>
       <tbody id="recent"></tbody>
     </table>
+  </div>
+
+  <div class="section">
+    <h2><span class="live-dot"></span> Live Log</h2>
+    <div id="live-log"></div>
   </div>
 
   <script>
     async function query(sql) {
       const res = await fetch('/api/sql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ statement: sql }) });
       const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      if (d.status?.state === 'FAILED') throw new Error(d.status?.error?.message || JSON.stringify(d.status));
       const cols = (d.manifest?.schema?.columns || []).map(c => c.name);
-      return (d.result?.data_array || []).map(row => { const obj = {}; cols.forEach((c, i) => obj[c] = row[i]); return obj; });
+      return (d.result?.data_array || []).map(row => { const o = {}; cols.forEach((c,i) => o[c]=row[i]); return o; });
     }
 
     function barHtml(val) {
-      const pct = Math.min(parseFloat(val) * 100, 100);
+      const pct = Math.min(parseFloat(val||0) * 100, 100);
       const color = pct > 30 ? '#4caf50' : pct > 15 ? '#ffb74d' : '#4dd0e1';
-      return '<div class="bar"><div class="bar-fill" style="width:'+pct+'%;background:'+color+'"></div></div> '+val;
+      return '<div class="bar"><div class="bar-fill" style="width:'+pct+'%;background:'+color+'"></div></div>'+parseFloat(val||0).toFixed(3);
     }
 
+    // ── SA Health state (parsed from log stream) ──────────────────────────
+    const saState = {
+      restarts: [],   // [{mode:'e'|'c', score:number}] from last restart line
+      runs: [],       // [{impr, dict, lm, combined}] last 16 SA summary lines
+    };
+
+    const SA_RUN_RE   = /homophonic SA: (\d+) improvements in \d+ steps, dict=([\d.]+) lm=([\d.]+) combined=([\d.]+)/;
+    const RESTART_RE  = /N=\d+ restarts → best=[\d.]+ \[([e\d.: c]+)\]/;
+
+    function parseLogLine(line) {
+      let m = RESTART_RE.exec(line);
+      if (m) {
+        saState.restarts = m[1].trim().split(/\s+/).map(tok => {
+          const [mode, score] = tok.split(':');
+          return { mode, score: parseFloat(score) };
+        });
+        renderSaChips();
+      }
+      m = SA_RUN_RE.exec(line);
+      if (m) {
+        saState.runs.unshift({ impr: parseInt(m[1]), dict: parseFloat(m[2]), lm: parseFloat(m[3]), combined: parseFloat(m[4]) });
+        if (saState.runs.length > 16) saState.runs.length = 16;
+        renderSaRuns();
+      }
+    }
+
+    function renderSaChips() {
+      const chips = saState.restarts;
+      if (!chips.length) return;
+      const best = Math.max(...chips.map(c => c.score));
+      const eliteScores = chips.filter(c => c.mode === 'e').map(c => c.score);
+      const coldScores  = chips.filter(c => c.mode === 'c').map(c => c.score);
+      const avg = arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0;
+      const eAvg = avg(eliteScores), cAvg = avg(coldScores);
+
+      document.getElementById('sa-chips').innerHTML = chips.map(c =>
+        '<span class="chip '+(c.mode==='e'?'elite':'cold')+(c.score===best?' best':'')+'">'+
+        (c.mode==='e'?'E':'C')+':'+c.score.toFixed(3)+'</span>'
+      ).join('');
+
+      document.getElementById('sa-avgs').innerHTML =
+        '<span class="e">elite avg '+eAvg.toFixed(3)+'</span>  <span class="c">cold avg '+cAvg.toFixed(3)+'</span>' +
+        '  best '+best.toFixed(3);
+
+      const warn = document.getElementById('sa-warn');
+      if (cAvg > eAvg + 0.02)
+        warn.innerHTML = '<div class="warn">⚠ cold avg beating elite — elite pool may be anchoring a local optimum</div>';
+      else if (eAvg > cAvg + 0.02)
+        warn.innerHTML = '';
+      else
+        warn.innerHTML = '';
+    }
+
+    function renderSaRuns() {
+      const runs = saState.runs;
+      if (!runs.length) return;
+      const maxComb = Math.max(...runs.map(r => r.combined));
+      document.getElementById('sa-runs').innerHTML =
+        '<table style="width:100%;border-collapse:collapse"><thead><tr>' +
+        '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">impr</th>' +
+        '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">dict</th>' +
+        '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">lm</th>' +
+        '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">combined</th>' +
+        '</tr></thead><tbody>' +
+        runs.map(r => {
+          const isBest = r.combined === maxComb;
+          const color = r.combined > 0.35 ? '#4caf50' : r.combined > 0.25 ? '#ffb74d' : '#4dd0e1';
+          return '<tr style="'+(isBest?'background:#0d1f0d;':'')+'">' +
+            '<td style="text-align:right;color:#888;padding:1px 6px;font-size:11px;font-family:monospace">'+r.impr+'</td>' +
+            '<td style="text-align:right;color:#666;padding:1px 6px;font-size:11px;font-family:monospace">'+r.dict.toFixed(3)+'</td>' +
+            '<td style="text-align:right;color:#666;padding:1px 6px;font-size:11px;font-family:monospace">'+r.lm.toFixed(3)+'</td>' +
+            '<td style="text-align:right;color:'+color+';padding:1px 6px;font-size:11px;font-family:monospace;font-weight:'+(isBest?700:400)+'">'+(isBest?'★ ':'')+r.combined.toFixed(3)+'</td>' +
+          '</tr>';
+        }).join('') +
+        '</tbody></table>';
+    }
+
+    // ── Activity ────────────────────────────────────────────────────────────
     async function loadActivity() {
       try {
         const res = await fetch('/api/activity');
         const data = await res.json();
-        document.getElementById('sb-burst').textContent = (data.burst ?? 0) + 1;
         document.getElementById('sb-round').textContent = (data.round ?? 0) + 1;
-        document.getElementById('sb-strategy').textContent = data.activeStrategy || 'idle';
+        document.getElementById('sb-strategy').textContent = (data.activeStrategy || 'idle').replace(/\|/g, ' ');
         document.getElementById('sb-best').textContent = (data.allTimeBest || 0).toFixed(3);
         document.getElementById('sb-ts').textContent = new Date().toLocaleTimeString();
 
         const el = document.getElementById('activity');
-        if (!data.entries || data.entries.length === 0) {
-          el.innerHTML = '<div style="color:#555;padding:8px">Waiting for first result...</div>';
+        if (!data.entries?.length) {
+          el.innerHTML = '<div style="color:#444;padding:6px;font-size:12px">Waiting for first result...</div>';
           return;
         }
         el.innerHTML = data.entries.slice().reverse().map(e => {
           const combined = (e.grounding + e.consistency).toFixed(3);
-          const isHigh = parseFloat(combined) > 0.3;
+          const color = parseFloat(combined) > 0.35 ? '#4caf50' : parseFloat(combined) > 0.25 ? '#ffb74d' : '#4dd0e1';
           const t = new Date(e.time).toLocaleTimeString();
-          const seedTag = e.seedOrigin === 'cold'
-            ? '<span style="background:#3a1a2e;color:#ff6ec7;padding:1px 4px;border-radius:3px;font-size:9px;">COLD</span>'
-            : '<span style="background:#1a2e3a;color:#64b5f6;padding:1px 4px;border-radius:3px;font-size:9px;">ELITE</span>';
-          return '<div class="activity-row">' +
-            '<span class="time">'+t+'</span> ' +
-            'B'+(e.batch+1)+'/R'+(e.round+1)+' ' +
+          return '<div class="act-row">' +
+            '<span style="color:#444">'+t+'</span>  ' +
             '<span class="tag '+(e.lang||'')+'">'+e.lang+'</span> ' +
-            '<span style="color:#aaa;font-size:10px">'+(e.cipher||'sub').slice(0,5)+'</span> ' +
-            seedTag+' ' +
-            e.folio+' ('+(e.plant||'').slice(0,18)+') ' +
-            '<span class="score'+(isHigh?' high':'')+'">'+combined+'</span> ' +
-            'grd='+e.grounding.toFixed(3)+' cons='+e.consistency.toFixed(3)+' ' +
-            'dict='+e.dictScore.toFixed(3)+' ' +
-            '<span class="decoded">"'+e.decoded.slice(0,50)+'"</span>' +
+            e.folio+' <span style="color:#555;font-size:10px">('+((e.plant||'').slice(0,16))+')</span>  ' +
+            '<b style="color:'+color+'">'+combined+'</b>  ' +
+            '<span style="color:#555">grd='+e.grounding.toFixed(3)+' cons='+e.consistency.toFixed(3)+'</span>  ' +
+            '<span style="color:#777;font-style:italic">"'+e.decoded.slice(0,60)+'"</span>' +
             '</div>';
         }).join('');
       } catch(e) {}
     }
 
-    async function loadStrategies() {
+    // ── DB tables ───────────────────────────────────────────────────────────
+    async function loadDb() {
       try {
-        const res = await fetch('/api/strategies');
-        const data = await res.json();
-        const active = (document.getElementById('sb-strategy').textContent || '').trim();
-        const tbody = document.getElementById('strategies');
-        if (!data.rows || data.rows.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="8" style="color:#555;text-align:center;padding:12px">No strategies attempted yet — first burst will populate this table.</td></tr>';
-          return;
+        const summary = await query(
+          'SELECT COUNT(*) total,' +
+          ' ROUND(MAX(grounding_score+consistency_score),3) best,' +
+          ' ROUND(MAX(grounding_score),3) best_grd,' +
+          ' ROUND(AVG(grounding_score+consistency_score),3) avg,' +
+          ' COUNT(CASE WHEN proposed_at >= current_timestamp() - INTERVAL 1 HOUR THEN 1 END) last_hour' +
+          ' FROM serverless_stable_qh44kx_catalog.voynich.theories'
+        );
+        if (summary[0]) {
+          const s = summary[0];
+          document.getElementById('sb-total').textContent = s.total;
+          document.getElementById('summary').innerHTML =
+            '<div class="card"><div class="label">Total Theories</div><div class="value">'+s.total+'</div><div class="sub">'+s.last_hour+'/hr</div></div>' +
+            '<div class="card"><div class="label">Best Combined</div><div class="value green">'+s.best+'</div><div class="sub">all time</div></div>' +
+            '<div class="card"><div class="label">Best Grounding</div><div class="value">'+s.best_grd+'</div></div>' +
+            '<div class="card"><div class="label">Avg Combined</div><div class="value amber">'+s.avg+'</div></div>';
+        } else {
+          document.getElementById('db-error').innerHTML =
+            '<div style="background:#2a0a0a;border:1px solid #5a1a1a;border-radius:6px;padding:8px 12px;color:#ef5350;font-size:12px;margin-bottom:14px">SQL returned no rows — check warehouse access</div>';
         }
-        tbody.innerHTML = data.rows.map(r => {
-          const parts = (r.strategy_key||'').split('|');
-          const isActive = r.strategy_key === active;
-          const status = r.exhausted === 'true' || r.exhausted === true
-            ? '<span style="color:#ef5350">⊘ exhausted</span>'
-            : '<span style="color:#4caf50">✓ progressing</span>';
-          const seedColor = parts[2] === 'cold' ? '#ff6ec7' : '#64b5f6';
-          const lastRun = r.last_attempted_at ? new Date(r.last_attempted_at.replace(' ','T')+'Z').toLocaleTimeString() : '-';
-          const rowStyle = isActive ? 'background:#2a1f3d;border-left:3px solid #bb86fc' : '';
-          const activeMark = isActive ? '🎯 ' : '';
-          return '<tr style="'+rowStyle+'">' +
-            '<td><b>'+activeMark+(r.strategy_key||'')+'</b></td>' +
-            '<td><span class="tag '+parts[0]+'">'+parts[0]+'</span></td>' +
-            '<td style="color:#aaa">'+parts[1]+'</td>' +
-            '<td style="color:'+seedColor+';font-weight:600">'+parts[2]+'</td>' +
-            '<td>'+r.attempts+'</td>' +
-            '<td>'+barHtml(r.best_score)+'</td>' +
-            '<td style="color:#888;font-size:10px">'+lastRun+'</td>' +
-            '<td>'+status+'</td>' +
-            '</tr>';
-        }).join('');
+
+        const theories = await query(
+          'SELECT target_folio, target_plant, source_language,' +
+          ' ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons,' +
+          ' ROUND(grounding_score+consistency_score,3) combined,' +
+          ' SUBSTRING(decoded_text,1,90) decoded' +
+          ' FROM serverless_stable_qh44kx_catalog.voynich.theories' +
+          ' ORDER BY (grounding_score+consistency_score) DESC LIMIT 12'
+        );
+        document.getElementById('theories').innerHTML = theories.length
+          ? theories.map(t => '<tr>' +
+              '<td class="mono" style="color:#aaa">'+t.target_folio+'</td>' +
+              '<td style="color:#888;font-size:11px">'+t.target_plant+'</td>' +
+              '<td><span class="tag '+t.source_language+'">'+t.source_language+'</span></td>' +
+              '<td>'+barHtml(t.grd)+'</td><td>'+barHtml(t.cons)+'</td>' +
+              '<td><b style="color:'+(parseFloat(t.combined)>0.35?'#4caf50':parseFloat(t.combined)>0.25?'#ffb74d':'#4dd0e1')+'">'+t.combined+'</b></td>' +
+              '<td class="mono" style="font-size:11px;color:#888">'+t.decoded+'</td>' +
+            '</tr>').join('')
+          : '<tr><td colspan="7" style="color:#444;text-align:center;padding:12px">No theories yet</td></tr>';
+
+        const recent = await query(
+          'SELECT target_folio, target_plant, source_language,' +
+          ' ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons,' +
+          ' ROUND(grounding_score+consistency_score,3) combined,' +
+          ' SUBSTRING(decoded_text,1,90) decoded' +
+          ' FROM serverless_stable_qh44kx_catalog.voynich.theories' +
+          ' ORDER BY proposed_at DESC LIMIT 12'
+        );
+        document.getElementById('recent').innerHTML = recent.length
+          ? recent.map(t => '<tr>' +
+              '<td class="mono" style="color:#aaa">'+t.target_folio+'</td>' +
+              '<td style="color:#888;font-size:11px">'+t.target_plant+'</td>' +
+              '<td><span class="tag '+t.source_language+'">'+t.source_language+'</span></td>' +
+              '<td>'+barHtml(t.grd)+'</td><td>'+barHtml(t.cons)+'</td>' +
+              '<td><b style="color:'+(parseFloat(t.combined)>0.35?'#4caf50':parseFloat(t.combined)>0.25?'#ffb74d':'#4dd0e1')+'">'+t.combined+'</b></td>' +
+              '<td class="mono" style="font-size:11px;color:#888">'+t.decoded+'</td>' +
+            '</tr>').join('')
+          : '<tr><td colspan="7" style="color:#444;text-align:center;padding:12px">No theories yet</td></tr>';
+      } catch(err) {
+        document.getElementById('db-error').innerHTML =
+          '<div style="background:#2a0a0a;border:1px solid #5a1a1a;border-radius:6px;padding:8px 12px;color:#ef5350;font-size:12px;margin-bottom:14px"><b>SQL Error:</b> '+String(err?.message||err)+'</div>';
+      }
+    }
+
+    // ── Log stream ──────────────────────────────────────────────────────────
+    let logLastTs = 0;
+    function logColor(line) {
+      if (/\bsanat\b/i.test(line))              return '#4caf50';
+      if (/restarts →/.test(line))              return '#bb86fc';
+      if (/SA step \d+\/\d+/.test(line))        return '#4dd0e1';
+      if (/homophonic SA:/.test(line))          return '#64b5f6';
+      if (/homophonic seed:/.test(line))        return '#4a90c4';
+      if (/Burst \d|Round \d/i.test(line))      return '#9575cd';
+      if (/rejected|FAIL/i.test(line))          return '#ef5350';
+      if (/warn/i.test(line))                   return '#ffb74d';
+      return '#555';
+    }
+    async function loadLogs() {
+      try {
+        const res = await fetch('/api/logs?since=' + logLastTs);
+        const data = await res.json();
+        if (!data.lines?.length) return;
+        logLastTs = data.lastTs;
+        const el = document.getElementById('live-log');
+        const atBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 40;
+        data.lines.forEach(l => {
+          parseLogLine(l.line);
+          const d = document.createElement('div');
+          d.style.color = logColor(l.line);
+          d.textContent = new Date(l.ts).toLocaleTimeString() + '  ' + l.line;
+          el.appendChild(d);
+        });
+        while (el.childNodes.length > 500) el.removeChild(el.firstChild);
+        if (atBottom) el.scrollTop = el.scrollHeight;
       } catch(e) {}
     }
 
-    async function loadDb() {
-      const summary = await query('SELECT COUNT(*) total, ROUND(MAX(grounding_score+consistency_score),3) best, ROUND(MAX(grounding_score),3) best_grd, ROUND(MAX(consistency_score),3) best_cons, ROUND(AVG(grounding_score+consistency_score),3) avg FROM serverless_stable_qh44kx_catalog.voynich.theories');
-      if (summary[0]) {
-        const s = summary[0];
-        document.getElementById('sb-total').textContent = s.total;
-        document.getElementById('summary').innerHTML =
-          '<div class="card"><div class="label">Total Theories</div><div class="value">'+s.total+'</div></div>' +
-          '<div class="card"><div class="label">Best Combined</div><div class="value green">'+s.best+'</div></div>' +
-          '<div class="card"><div class="label">Best Grounding</div><div class="value">'+s.best_grd+'</div></div>' +
-          '<div class="card"><div class="label">Best Consistency</div><div class="value">'+s.best_cons+'</div></div>' +
-          '<div class="card"><div class="label">Avg Combined</div><div class="value amber">'+s.avg+'</div></div>';
-      }
-
-      const theories = await query('SELECT target_folio, target_plant, source_language, ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons, ROUND(grounding_score+consistency_score,3) combined, SUBSTRING(decoded_text, 1, 80) decoded FROM serverless_stable_qh44kx_catalog.voynich.theories ORDER BY (grounding_score+consistency_score) DESC LIMIT 15');
-      document.getElementById('theories').innerHTML = theories.map(t =>
-        '<tr><td>'+t.target_folio+'</td><td>'+t.target_plant+'</td><td><span class="tag '+t.source_language+'">'+t.source_language+'</span></td><td>'+barHtml(t.grd)+'</td><td>'+barHtml(t.cons)+'</td><td><b>'+t.combined+'</b></td><td style="font-family:monospace;font-size:11px">'+t.decoded+'</td></tr>'
-      ).join('');
-
-      const recent = await query('SELECT target_folio, target_plant, source_language, ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons, ROUND(grounding_score+consistency_score,3) combined, SUBSTRING(decoded_text, 1, 80) decoded FROM serverless_stable_qh44kx_catalog.voynich.theories ORDER BY proposed_at DESC LIMIT 15');
-      document.getElementById('recent').innerHTML = recent.map(t =>
-        '<tr><td>'+t.target_folio+'</td><td>'+t.target_plant+'</td><td><span class="tag '+t.source_language+'">'+t.source_language+'</span></td><td>'+barHtml(t.grd)+'</td><td>'+barHtml(t.cons)+'</td><td><b>'+t.combined+'</b></td><td style="font-family:monospace;font-size:11px">'+t.decoded+'</td></tr>'
-      ).join('');
-    }
-
-    // Poll activity every 3s, strategies every 8s, DB summary every 30s
-    loadActivity();
-    loadStrategies();
-    loadDb();
+    loadLogs(); loadActivity(); loadDb();
+    setInterval(loadLogs, 1000);
     setInterval(loadActivity, 3000);
-    setInterval(loadStrategies, 8000);
     setInterval(loadDb, 30000);
   </script>
 </body>

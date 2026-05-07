@@ -799,57 +799,67 @@ function dictionaryScore(text: string, language: string): number {
 }
 
 /**
- * High-frequency function words per language. The hill-climber loves to map a
- * few common EVA glyphs onto these (because they give cheap dictionary hits),
- * producing decoded text saturated with `est`, `ita`, `ad`, `post`… while the
- * rest stays gibberish. We use this set to penalise such "function-word trap"
- * solutions in `dictionaryQuality`.
+ * Trap words: very short / ambiguous tokens that appear in decoded gibberish by
+ * coincidence. A solution dominated by these is likely a false positive.
+ * Only these trigger the saturation penalty in dictionaryQuality.
  */
-const FUNCTION_WORDS: Record<string, Set<string>> = {
+const TRAP_WORDS: Record<string, Set<string>> = {
   latin: new Set([
-    'est','et','ad','ut','in','de','ex','non','qui','quod','cum','sed','ita','sic',
-    'sunt','enim','aut','ab','ac','at','pro','per','nec','vel','si','nam','quam',
-    'quae','post','ante','sub','super','iam','tamen','etiam','autem','itaque',
-    'vero','dum','tum','tunc','hic','haec','hoc','eo','eam','eos','suum','suam',
-    'a','o','e','is','ea','id','me','te','se','nos','vos','iis','eis',
+    'a','o','e','i','is','ea','id','me','te','se','ab','ac','at',
+    'si','ut','in','de','ad','ex','et','eo','eam','eos','iis',
   ]),
   italian: new Set([
-    'e','il','la','di','che','a','in','un','non','per','con','del','come','ma','se',
-    'lo','gli','le','da','al','dei','delle','degli','nei','nelle','sul','sulla','sui',
-    'è','ha','ho','hai','sia','fu','era','ed','o','ne','ci','vi','si','mi','ti','tu',
-    'io','lui','lei','noi','voi','loro','suo','sua','suoi','sue','quel','quella',
-    'questo','questa','questi','queste','i','una','uno','agli','dal','dalla','nel',
+    'a','e','i','o','u','il','la','di','un','da','al','ci','vi','si','mi','ti',
+    'io','tu','ne','ni',
   ]),
 };
 
 /**
+ * Premium function words: ≥3 chars, unambiguously Latin, high diagnostic value.
+ * These are the hallmarks of the sanat-path solution (est, sed, aut, vel, sit,
+ * sic, sanat, suum, eis…). Rewarded positively — not penalised.
+ */
+const PREMIUM_FUNCTION_WORDS: Record<string, string[]> = {
+  latin: [
+    'est','sed','aut','vel','sit','sic','cum','non','qui','per','pro','nec','nam',
+    'dum','iam','eis','nos','vos','enim','autem','etiam','tamen','vero','sunt',
+    'quod','quam','quae','hic','hoc','post','ante','sub','tunc','tum',
+    'suum','suam','sanat','ita','enim','nunc','modo','ergo',
+  ],
+  italian: [
+    'che','non','per','con','del','come','gli','dal','nel','sul',
+    'sia','era','suo','sua','quel','questa','ogni','molto',
+  ],
+};
+
+/**
  * Quality multiplier (0..1) applied to dictionary score. Penalises decoded
- * text dominated by function words and rewards content-word diversity.
+ * text dominated by TRAP words (very short, accidental hits) and rewards
+ * content-word diversity. Premium function words (est, sed, aut…) are NOT
+ * trap words and do not trigger this penalty.
  *
- * - P1 (saturation): if >50% of words are function-word hits, decay linearly
- *   to 0 at 100% (the trap).
- * - P2 (diversity): unique dictionary-matched word types ÷ total words. Below
- *   0.35 is thin vocabulary; 0.0 returns 0.
+ * - P1 (saturation): if >50% of words are trap-word hits, decay linearly to 0.
+ * - P2 (diversity): unique dictionary-matched word types ÷ total words.
  */
 function dictionaryQuality(text: string, language: string): number {
   const dict = DICT_BY_LANG[language];
-  const funcSet = FUNCTION_WORDS[language];
-  if (!dict || !funcSet) return 1;
+  const trapSet = TRAP_WORDS[language];
+  if (!dict || !trapSet) return 1;
 
   const words = text.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter((w) => w.length >= 2);
   if (words.length < 4) return 1;
 
-  let funcHits = 0;
+  let trapHits = 0;
   const uniqueDictTypes = new Set<string>();
   for (const w of words) {
     if (dict.has(w)) {
       uniqueDictTypes.add(w);
-      if (funcSet.has(w)) funcHits++;
+      if (trapSet.has(w)) trapHits++;
     }
   }
 
-  const funcRatio = funcHits / words.length;
-  const p1 = Math.max(0, Math.min(1, 1 - Math.max(0, funcRatio - 0.5) * 2.0));
+  const trapRatio = trapHits / words.length;
+  const p1 = Math.max(0, Math.min(1, 1 - Math.max(0, trapRatio - 0.5) * 2.0));
 
   const diversity = uniqueDictTypes.size / words.length;
   const p2 = Math.max(0, Math.min(1, diversity / 0.35));
@@ -858,15 +868,36 @@ function dictionaryQuality(text: string, language: string): number {
 }
 
 /**
+ * Bonus for unique premium function words found in decoded text. Rewards the
+ * sanat-path neighbourhood specifically — finding "est", "sed", "aut", "sanat",
+ * "suum" etc. is strong evidence of Latin, not a trap. Normalized so 5 unique
+ * premium types ≈ 1.0.
+ */
+function functionWordBonus(text: string, language: string): number {
+  const premiumList = PREMIUM_FUNCTION_WORDS[language];
+  if (!premiumList) return 0;
+  const premiumSet = new Set(premiumList);
+  const words = text.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter((w) => w.length >= 2);
+  if (words.length === 0) return 0;
+  const seen = new Set<string>();
+  for (const w of words) {
+    if (premiumSet.has(w)) seen.add(w);
+  }
+  return Math.min(1.0, seen.size / 5.0);
+}
+
+/**
  * Combined hill-climbing score: quality-adjusted dictionary match (strong
- * signal) + bigram similarity (weak but continuous signal). The quality
- * multiplier defends against the function-word trap — see `dictionaryQuality`.
+ * signal) + bigram LM (weak continuous signal) + premium function-word bonus
+ * (sanat-path reward). The quality multiplier only fires on trap words now, so
+ * genuine Latin function words are no longer penalised.
  */
 export function hillClimbScore(text: string, language: string): number {
   const dict = dictionaryScore(text, language);
   const quality = dictionaryQuality(text, language);
   const lm = langModelScore(text, language);
-  return (dict * quality) * 0.75 + lm * 0.25;
+  const fwBonus = functionWordBonus(text, language);
+  return (dict * quality) * 0.65 + lm * 0.20 + fwBonus * 0.15;
 }
 
 async function executeSql(statement: string): Promise<Array<Record<string, string>>> {
@@ -1089,6 +1120,52 @@ function addToElitePool(map: Record<string, string>, score: number, language: st
   elitePool.push({ map, score, language });
   elitePool.sort((a, b) => b.score - a.score);
   if (elitePool.length > ELITE_POOL_SIZE) elitePool.length = ELITE_POOL_SIZE;
+}
+
+// ---------------------------------------------------------------------------
+// Homophonic elite pool — separate from substitution elites because
+// homophonic maps have 50+ token keys vs 26 single-char keys.
+// ---------------------------------------------------------------------------
+
+const homophonicElitePool: Array<{ map: Record<string, string>; score: number; language: string }> = [];
+const HOMOPHONIC_ELITE_POOL_SIZE = 10;
+let homophonicElitePoolLoaded = false;
+
+async function loadHomophonicElitePool(): Promise<void> {
+  if (homophonicElitePoolLoaded) return;
+  homophonicElitePoolLoaded = true;
+  try {
+    const rows = await executeSql(`
+      SELECT symbol_map, source_language,
+        ROUND(grounding_score + consistency_score, 4) AS combined
+      FROM serverless_stable_qh44kx_catalog.voynich.theories
+      WHERE cipher_type = 'homophonic'
+        AND grounding_score + consistency_score > 0.25
+        AND get_json_object(symbol_map, '$.ch') = 's'
+        AND get_json_object(symbol_map, '$.y')  = 't'
+        AND get_json_object(symbol_map, '$.c')  = 'n'
+      ORDER BY grounding_score + consistency_score DESC
+      LIMIT ${HOMOPHONIC_ELITE_POOL_SIZE}
+    `);
+    for (const row of rows) {
+      try {
+        const map = JSON.parse(row.symbol_map);
+        const score = parseFloat(row.combined);
+        homophonicElitePool.push({ map, score, language: row.source_language });
+      } catch { /* skip unparseable */ }
+    }
+    if (homophonicElitePool.length > 0) {
+      console.log(`[theory-loop] Loaded ${homophonicElitePool.length} homophonic elite maps from Delta (best=${homophonicElitePool[0].score.toFixed(3)})`);
+    }
+  } catch (err) {
+    console.warn('[theory-loop] Failed to load homophonic elite pool:', err);
+  }
+}
+
+function addToHomophonicElitePool(map: Record<string, string>, score: number, language: string): void {
+  homophonicElitePool.push({ map, score, language });
+  homophonicElitePool.sort((a, b) => b.score - a.score);
+  if (homophonicElitePool.length > HOMOPHONIC_ELITE_POOL_SIZE) homophonicElitePool.length = HOMOPHONIC_ELITE_POOL_SIZE;
 }
 
 /**
@@ -1690,7 +1767,7 @@ async function proposePositionalTheory(
 // the cipher somewhere to hide the structural variety.
 // ---------------------------------------------------------------------------
 
-const HOMOPHONIC_SA_STEPS = 8000;
+const HOMOPHONIC_SA_STEPS = parseInt(process.env.HOMOPHONIC_SA_STEPS ?? '16000');
 
 /**
  * Curated EVA tokens used as homophone alphabet. Mix of single chars and
@@ -1730,11 +1807,12 @@ function generateHomophonicSeed(
   }
   const pickLetter = () => weighted[Math.floor(Math.random() * weighted.length)];
 
+  const locked = CONSENSUS_LOCKED[language] ?? CONSENSUS_LOCKED.latin;
   const seed: Record<string, string> = {};
   for (const tok of HOMOPHONIC_TOKENS) {
-    if (substitutionElite && tok.length === 1 && substitutionElite[tok] && substitutionElite[tok].length === 1) {
-      // Inherit single-char mappings from substitution elite — gives the search
-      // a head start on glyphs that already had a strong baseline.
+    if (locked[tok]) {
+      seed[tok] = locked[tok];
+    } else if (substitutionElite && tok.length === 1 && substitutionElite[tok] && substitutionElite[tok].length === 1) {
       seed[tok] = substitutionElite[tok];
     } else {
       seed[tok] = pickLetter();
@@ -1745,7 +1823,8 @@ function generateHomophonicSeed(
 
 function mutateHomophonicMap(map: Record<string, string>, language: string): Record<string, string> {
   const result = { ...map };
-  const keys = Object.keys(result);
+  const locked = CONSENSUS_LOCKED[language] ?? CONSENSUS_LOCKED.latin;
+  const keys = Object.keys(result).filter((k) => !locked[k]);
   if (keys.length === 0) return result;
   const langLetters = LANG_FREQ[language] ?? LANG_FREQ.latin;
   const r = Math.random();
@@ -1775,18 +1854,45 @@ async function proposeHomophonicTheory(
 ): Promise<Theory> {
   const evaText = targetFolio.eva_sample;
   await loadElitePool();
+  await loadHomophonicElitePool();
 
-  let substitutionElite: Record<string, string> | undefined;
+  let seed: Record<string, string>;
   let seedSource = 'fresh';
+
   if (seedMode === 'elite') {
-    const elites = elitePool.filter((e) => e.language === sourceLanguage).slice(0, 3);
-    if (elites.length > 0) {
-      const pick = elites[Math.floor(Math.random() * elites.length)];
-      substitutionElite = pick.map;
-      seedSource = `elite(score=${pick.score.toFixed(3)})`;
+    // Prefer homophonic elites — they carry full token maps and start much
+    // closer to the optimum than substitution elites.
+    const homoElites = homophonicElitePool.filter((e) => e.language === sourceLanguage);
+    if (homoElites.length > 0) {
+      const pick = homoElites[Math.floor(Math.random() * Math.min(3, homoElites.length))];
+      // Start from the elite map but re-apply locks and randomize a few tokens
+      // to avoid getting stuck in a local optimum every run.
+      const locked = CONSENSUS_LOCKED[sourceLanguage] ?? CONSENSUS_LOCKED.latin;
+      const base = { ...pick.map };
+      for (const tok of Object.keys(base)) {
+        if (locked[tok]) {
+          base[tok] = locked[tok];
+        } else if (Math.random() < 0.15) {
+          // Perturb 15% of unlocked tokens — explore the neighbourhood
+          const langLetters = LANG_FREQ[sourceLanguage] ?? LANG_FREQ.latin;
+          base[tok] = langLetters[Math.floor(Math.random() * langLetters.length)];
+        }
+      }
+      seed = base;
+      seedSource = `homo-elite(score=${pick.score.toFixed(3)})`;
+    } else {
+      // Fall back to substitution elites if no homophonic elites yet
+      const subElites = elitePool.filter((e) => e.language === sourceLanguage).slice(0, 3);
+      const substitutionElite = subElites.length > 0
+        ? subElites[Math.floor(Math.random() * subElites.length)].map
+        : undefined;
+      seed = generateHomophonicSeed(sourceLanguage, substitutionElite);
+      seedSource = substitutionElite ? `sub-elite` : 'fresh';
     }
+  } else {
+    seed = generateHomophonicSeed(sourceLanguage);
   }
-  const seed = generateHomophonicSeed(sourceLanguage, substitutionElite);
+
   const seedDecoded = applyMap(evaText, seed);
   console.log(`[theory-loop]   homophonic seed: ${Object.keys(seed).length} tokens, source=${seedSource}, dict=${dictionaryScore(seedDecoded, sourceLanguage).toFixed(3)} starting SA...`);
 
@@ -1799,6 +1905,8 @@ async function proposeHomophonicTheory(
   const T_START = 0.08;
   const T_END = 0.005;
 
+  const SA_LOG_INTERVAL = 1000;
+  let lastCheckpointScore = curScore;
   for (let step = 0; step < HOMOPHONIC_SA_STEPS; step++) {
     const t = T_START * Math.pow(T_END / T_START, step / HOMOPHONIC_SA_STEPS);
     const cand = mutateHomophonicMap(curMap, sourceLanguage);
@@ -1815,11 +1923,19 @@ async function proposeHomophonicTheory(
         improvements++;
       }
     }
+    if ((step + 1) % SA_LOG_INTERVAL === 0) {
+      const pct = Math.round((step + 1) / HOMOPHONIC_SA_STEPS * 100);
+      console.log(`[theory-loop]     SA step ${step + 1}/${HOMOPHONIC_SA_STEPS} (${pct}%): best=${bestScore.toFixed(3)} cur=${curScore.toFixed(3)} Δ=${(bestScore - lastCheckpointScore).toFixed(3)} impr=${improvements}`);
+      lastCheckpointScore = bestScore;
+    }
   }
 
   const dictFinal = dictionaryScore(bestDecoded, sourceLanguage);
   const lmFinal = langModelScore(bestDecoded, sourceLanguage);
   console.log(`[theory-loop]   homophonic SA: ${improvements} improvements in ${HOMOPHONIC_SA_STEPS} steps, dict=${dictFinal.toFixed(3)} lm=${lmFinal.toFixed(3)} combined=${bestScore.toFixed(3)}`);
+
+  // Feed good maps back into the elite pool so future runs can warm-start from them.
+  if (bestScore > 0.2) addToHomophonicElitePool(bestMap, bestScore, sourceLanguage);
 
   const crossFolioResults: Theory['cross_folio_results'] = [];
   const testFolios = allFolios
@@ -2471,12 +2587,27 @@ async function persistStrategyStat(key: string, stat: StrategyStat): Promise<voi
 }
 
 function pickNextStrategy(): Strategy {
+  // CIPHER_FOCUS narrows to a cipher family; LANGUAGE_FOCUS narrows to a language.
+  // Both are optional and can be combined (e.g. LANGUAGE_FOCUS=italian runs all
+  // Italian strategies; adding CIPHER_FOCUS=substitution restricts further).
+  const cipherFocus = process.env.CIPHER_FOCUS;
+  const langFocus   = process.env.LANGUAGE_FOCUS;
+  const pool = STRATEGIES.filter((s) => {
+    if (cipherFocus && s.cipherType !== cipherFocus) return false;
+    if (langFocus   && s.language   !== langFocus)   return false;
+    return true;
+  });
+  if (pool.length === 0) {
+    console.warn(`[strategy] CIPHER_FOCUS=${cipherFocus} LANGUAGE_FOCUS=${langFocus} matches no strategies — falling back to full pool`);
+    return STRATEGIES[0];
+  }
+
   // 1. Untried strategies first
-  for (const s of STRATEGIES) {
+  for (const s of pool) {
     if (!strategyStats.has(strategyKey(s))) return s;
   }
   // 2. Non-exhausted, oldest last_attempted_at
-  const live = STRATEGIES.filter((s) => !strategyStats.get(strategyKey(s))!.exhausted);
+  const live = pool.filter((s) => !strategyStats.get(strategyKey(s))!.exhausted);
   if (live.length > 0) {
     live.sort((a, b) =>
       strategyStats.get(strategyKey(a))!.last_attempted_at.localeCompare(
@@ -2488,8 +2619,8 @@ function pickNextStrategy(): Strategy {
   // 3. All exhausted — clear flags and pick weakest (give losers another shot
   //    against the now-richer elite pool).
   console.log('[strategy] All strategies exhausted — resetting and trying weakest');
-  for (const s of STRATEGIES) strategyStats.get(strategyKey(s))!.exhausted = false;
-  const sorted = [...STRATEGIES].sort((a, b) =>
+  for (const s of pool) strategyStats.get(strategyKey(s))!.exhausted = false;
+  const sorted = [...pool].sort((a, b) =>
     strategyStats.get(strategyKey(a))!.best_score - strategyStats.get(strategyKey(b))!.best_score
   );
   return sorted[0];
@@ -2531,10 +2662,15 @@ export async function runTheoryLoop(
           // the hill-climber has a 13% per-trial success rate from cold starts —
           // bimodal, not broken. N=5 restarts → ~51% per round.
           const N_RESTARTS = parseInt(process.env.N_RESTARTS ?? '5');
+          // First 2 restarts always exploit the elite pool; the rest are cold
+          // random starts. This ensures every round covers both exploitation and
+          // exploration regardless of which strategy was selected.
+          const ELITE_RESTARTS = Math.min(2, N_RESTARTS);
           const candidates = await Promise.all(
-            Array.from({ length: N_RESTARTS }, () =>
-              proposeTheory(folio, folios, strategy.language, strategy.cipherType, strategy.seedMode),
-            ),
+            Array.from({ length: N_RESTARTS }, (_, i) => {
+              const restartSeedMode: SeedMode = i < ELITE_RESTARTS ? 'elite' : 'cold';
+              return proposeTheory(folio, folios, strategy.language, strategy.cipherType, restartSeedMode);
+            }),
           );
           // Keep the candidate with the highest combined grounding+consistency score.
           // proposeTheory already runs cross-folio testing, so consistency_score
@@ -2546,10 +2682,13 @@ export async function runTheoryLoop(
           });
           const c = theory.grounding_score + theory.consistency_score;
           const allScores = candidates
-            .map((t) => (t.grounding_score + t.consistency_score).toFixed(3))
-            .join(',');
+            .map((t, i) => {
+              const label = i < ELITE_RESTARTS ? 'e' : 'c';
+              return `${label}:${(t.grounding_score + t.consistency_score).toFixed(3)}`;
+            })
+            .join(' ');
 
-          console.log(`[theory-loop]   N=${N_RESTARTS} restarts → best=${c.toFixed(3)} (all: [${allScores}])`);
+          console.log(`[theory-loop]   N=${N_RESTARTS} restarts → best=${c.toFixed(3)} [${allScores}]`);
           console.log(`[theory-loop]   grounding=${theory.grounding_score.toFixed(3)} consistency=${theory.consistency_score.toFixed(3)} decoded="${theory.decoded_text.slice(0, 50)}"`);
 
           if (_onTheoryResult) {
@@ -2564,38 +2703,49 @@ export async function runTheoryLoop(
             });
           }
 
-          // Run skeptic prompt (free-form objection) and structured critic
-          // checks in parallel — they use different signals and we want both.
-          const [challenge, criticVerdict] = await Promise.all([
-            challengeTheory(theory, folios),
-            critiqueWithCritic(theory),
-          ]);
-
+          // Skip LLM critique on low-scoring theories — saves ~10s per round
+          // on the ~80% of rounds that produce obvious garbage.
+          const CRITIQUE_GATE = parseFloat(process.env.CRITIQUE_GATE ?? '0.25');
           let skepticVerdict = 'unknown';
-          try {
-            const cleaned = challenge.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
-            const parsed = JSON.parse(cleaned);
-            skepticVerdict = parsed.verdict || 'unknown';
-            console.log(`[theory-loop]   skeptic: ${skepticVerdict} — ${(parsed.strongest_objection || '').slice(0, 80)}`);
-          } catch {
-            console.log(`[theory-loop]   skeptic: unparseable`);
-          }
+          let criticVerdict: CriticVerdict = { composite_verdict: 'unknown' };
+          let finalVerdict = 'unknown';
 
-          // Critic's structured verdict takes precedence when available
-          // (it's based on deterministic + judge signals, not just an LLM opinion).
-          const finalVerdict =
-            criticVerdict.composite_verdict !== 'unknown'
-              ? criticVerdict.composite_verdict
-              : skepticVerdict;
+          if (c < CRITIQUE_GATE) {
+            console.log(`[theory-loop]   critique: skipped (combined=${c.toFixed(3)} < gate=${CRITIQUE_GATE})`);
+            finalVerdict = 'rejected';
+          } else {
+            // Run skeptic prompt (free-form objection) and structured critic
+            // checks in parallel — they use different signals and we want both.
+            const [challenge, cv] = await Promise.all([
+              challengeTheory(theory, folios),
+              critiqueWithCritic(theory),
+            ]);
+            criticVerdict = cv;
 
-          if (criticVerdict.composite_verdict !== 'unknown') {
-            console.log(
-              `[theory-loop]   critic: ${criticVerdict.composite_verdict}` +
-              ` (lik=${(criticVerdict.likelihood ?? 0).toFixed(2)}` +
-              ` adv=${(criticVerdict.adversarial ?? 0).toFixed(2)}` +
-              ` null=${criticVerdict.null_distinguishable ? 'pass' : 'fail'}` +
-              ` judge=${criticVerdict.judge_verdict})`
-            );
+            try {
+              const cleaned = challenge.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
+              const parsed = JSON.parse(cleaned);
+              skepticVerdict = parsed.verdict || 'unknown';
+              console.log(`[theory-loop]   skeptic: ${skepticVerdict} — ${(parsed.strongest_objection || '').slice(0, 80)}`);
+            } catch {
+              console.log(`[theory-loop]   skeptic: unparseable`);
+            }
+
+            // Critic's structured verdict takes precedence when available.
+            finalVerdict =
+              criticVerdict.composite_verdict !== 'unknown'
+                ? criticVerdict.composite_verdict
+                : skepticVerdict;
+
+            if (criticVerdict.composite_verdict !== 'unknown') {
+              console.log(
+                `[theory-loop]   critic: ${criticVerdict.composite_verdict}` +
+                ` (lik=${(criticVerdict.likelihood ?? 0).toFixed(2)}` +
+                ` adv=${(criticVerdict.adversarial ?? 0).toFixed(2)}` +
+                ` null=${criticVerdict.null_distinguishable ? 'pass' : 'fail'}` +
+                ` judge=${criticVerdict.judge_verdict})`
+              );
+            }
           }
 
           theories.push(theory);
