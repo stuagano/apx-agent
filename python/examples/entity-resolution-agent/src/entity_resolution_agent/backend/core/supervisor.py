@@ -68,6 +68,12 @@ def vector_search(
     email: optional email address (used in first-email query)
     k: candidates to retrieve per index (total before dedup may be up to 3k)
     tenant_id: optional hybrid filter — restricts to a single utility tenant"""
+    if os.environ.get("DEMO_MODE", "").lower() == "true":
+        from .demo_data import vector_search_demo
+        query = f"{applicant_name} {address}".strip()
+        candidates = vector_search_demo(query, k)
+        return {"candidates": candidates, "count": len(candidates), "source": "demo"}
+
     indexes = {
         "full":        os.environ.get("VS_INDEX_FULL", ""),
         "last_addr":   os.environ.get("VS_INDEX_LAST_ADDR", ""),
@@ -129,6 +135,11 @@ def sql_search(
     Use for names with initials (J. Smith), acronyms (ABC LLC), or very short tokens.
     name: applicant name (may include initials or abbreviations)
     address: optional service address for narrowing results"""
+    if os.environ.get("DEMO_MODE", "").lower() == "true":
+        from .demo_data import sql_search_demo
+        candidates = sql_search_demo(name, address)
+        return {"candidates": candidates, "count": len(candidates), "source": "demo"}
+
     table = os.environ.get("UTILITY_ACCOUNT_TABLE", "")
     if not table:
         return {"error": "UTILITY_ACCOUNT_TABLE not configured", "candidates": [], "count": 0}

@@ -101,6 +101,9 @@ def log_decision(
 
     decision: dict with keys: applicant_name, matched, account_id, category,
               rationale, confidence, candidates_reviewed"""
+    if os.environ.get("DEMO_MODE", "").lower() == "true":
+        return {"status": "logged (demo mode — no real write)", "decision": decision}
+
     table = os.environ.get("AFR_DECISION_TABLE", "")
     if not table:
         return {"status": "skipped", "reason": "AFR_DECISION_TABLE not configured"}
