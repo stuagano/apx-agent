@@ -71,8 +71,42 @@ async def test_discovery_advances_through_five_questions():
 
 
 @pytest.mark.asyncio
-async def test_build_phase_invokes_sdk_after_all_answers():
-    """After all 5 answers, the build phase calls the Claude Code SDK."""
+async def test_fifth_answer_returns_payload_confirmation():
+    """After all 5 answers, the server returns a payload summary with build_pending=True."""
+    from app import app, _sessions, QUESTIONS
+
+    _sessions.clear()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = None
+        for user_answer in ["I want to build an agent"] + ["answer"] * (len(QUESTIONS) - 1):
+            payload = {"input": [{"role": "user", "content": user_answer}]}
+            if sid:
+                payload["session_id"] = sid
+            r = await client.post(
+                "/responses",
+                json=payload,
+                headers={"Authorization": "Bearer fake-token"},
+            )
+            sid = r.json()["session_id"]
+
+        # 6th message (5th answer) → payload confirmation, not LLM call
+        r = await client.post(
+            "/responses",
+            json={"input": [{"role": "user", "content": "sales-assistant"}], "session_id": sid},
+            headers={"Authorization": "Bearer fake-token"},
+        )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data.get("build_pending") is True
+    text = data["output"][0]["content"][0]["text"]
+    assert "mcp-sales-assistant" in text
+
+
+@pytest.mark.asyncio
+async def test_build_phase_invokes_sdk_after_confirmation():
+    """The turn after the payload confirmation (build_pending) calls the Claude Code SDK."""
     import asyncio as _asyncio
     from app import app, _sessions, QUESTIONS
 
@@ -80,7 +114,6 @@ async def test_build_phase_invokes_sdk_after_all_answers():
 
     build_text = "Your agent is deploying at https://example.databricksapps.com"
 
-    # Capture the real loop so fake_run_in_executor can create pre-resolved futures.
     real_loop = _asyncio.get_running_loop()
 
     def fake_run_in_executor(_executor, fn):
@@ -107,7 +140,6 @@ async def test_build_phase_invokes_sdk_after_all_answers():
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             sid = None
-            # Walk through all 5 discovery questions
             for user_answer in ["I want to build an agent"] + ["answer"] * (len(QUESTIONS) - 1):
                 payload = {"input": [{"role": "user", "content": user_answer}]}
                 if sid:
@@ -119,7 +151,15 @@ async def test_build_phase_invokes_sdk_after_all_answers():
                 )
                 sid = r.json()["session_id"]
 
-            # 6th message triggers the build phase
+            # 6th message → payload confirmation
+            r = await client.post(
+                "/responses",
+                json={"input": [{"role": "user", "content": "sales-assistant"}], "session_id": sid},
+                headers={"Authorization": "Bearer fake-token"},
+            )
+            assert r.json().get("build_pending") is True
+
+            # 7th message (auto-trigger, user-messages-only) → actual LLM build
             r = await client.post(
                 "/responses",
                 json={

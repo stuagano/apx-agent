@@ -44,8 +44,26 @@ ANSWER_KEYS = ["use_case", "tables", "genie", "lineage", "name"]
 @dataclass
 class DiscoverySession:
     answers: dict = field(default_factory=dict)
-    question_index: int = 0          # 0-4: which question to ask next
+    question_index: int = 0           # 0-4: which question to ask next
+    build_confirmed: bool = False     # True after payload summary has been shown
     build_session_id: Optional[str] = None  # SDK session id once build starts
+
+
+def _format_build_summary(answers: dict) -> str:
+    name = answers.get("name", "my-agent")
+    use_case = answers.get("use_case", "")
+    tables = answers.get("tables", "none")
+    genie = answers.get("genie", "none")
+    lineage_raw = answers.get("lineage", "no").lower()
+    lineage = "yes" if lineage_raw in ("yes", "y") else "no"
+
+    lines = [f"Got it — building **mcp-{name}** now. This takes about 2 minutes.\n"]
+    lines.append(f"**What it does:** {use_case}")
+    lines.append(f"**Tables:** {tables}")
+    if genie.lower() not in ("none", "no", "n/a", "skip", ""):
+        lines.append(f"**Genie spaces:** {genie}")
+    lines.append(f"**Lineage:** {lineage}")
+    return "\n".join(lines)
 
 
 # session_id (str) → DiscoverySession
@@ -161,9 +179,17 @@ async def responses(request: Request):
             key = ANSWER_KEYS[ds.question_index - 1]
             ds.answers[key] = user_message
 
-        # If we've now collected all 5 answers, fall through to build
+        # If we've now collected all 5 answers, show payload confirmation first.
+        # The frontend will auto-trigger the actual LLM build on the next turn.
         if ds.question_index == len(QUESTIONS):
-            pass  # all answered, fall through below
+            if not ds.build_confirmed:
+                ds.build_confirmed = True
+                return {
+                    "output": [{"type": "message", "content": [{"text": _format_build_summary(ds.answers)}]}],
+                    "session_id": session_id,
+                    "build_pending": True,
+                }
+            # build_confirmed == True: fall through to Phase 2 LLM call
         else:
             # Ask the next question
             next_q = QUESTIONS[ds.question_index]
