@@ -1,9 +1,9 @@
-"""Supervisor agent — normalizes applicant records and searches for candidates.
+"""Supervisor agent — normalizes AFR records and searches for candidates.
 
-Default path: Vector Search (Databricks VS index).
-Fallback path: SQL ILIKE search for records with initials or acronyms
-               (single-letter tokens, all-caps abbreviations) that perform
-               poorly under cosine/dot-product distance.
+Default path: Vector Search across three indexes (full name+address, last name+address,
+              first name+email) to cover standard, familial, and maiden-name match cases.
+Fallback path: SQL ILIKE search for records with initials or acronyms (single-letter tokens,
+               all-caps abbreviations) that embed poorly under cosine/dot-product distance.
 """
 
 from __future__ import annotations
@@ -20,18 +20,9 @@ _INITIAL_RE = re.compile(r"\b[A-Z]\.\s*")
 _ACRONYM_RE = re.compile(r"\b[A-Z]{2,5}\b")
 
 
-def _escape(s: str) -> str:
-    """Escape single quotes for SQL string literals."""
-    return s.replace("'", "''")
-
-
 def _is_abnormal(name: str) -> bool:
     """True if name contains initials (J.) or short all-caps abbreviations (LLC, ABC)."""
     return bool(_INITIAL_RE.search(name) or _ACRONYM_RE.search(name))
-
-
-def _title_strip(s: str) -> str:
-    return s.strip().title()
 
 
 def normalize_record(
@@ -40,14 +31,14 @@ def normalize_record(
     account_number: str = "",
     ws: Workspace = None,
 ) -> dict[str, Any]:
-    """Normalize an applicant record and decide the search strategy.
+    """Normalize an AFR applicant record and decide the search strategy.
 
-    Returns a dict with normalized fields and 'strategy': 'vector' | 'sql'.
+    Returns normalized fields plus 'strategy': 'vector' | 'sql'.
     name: applicant full name (raw, may have extra spaces or punctuation)
     address: service address (optional)
     account_number: utility account number (optional)"""
-    normalized_name = _title_strip(name)
-    normalized_address = _title_strip(address)
+    normalized_name = name.strip().title()
+    normalized_address = address.strip().title()
     normalized_account = account_number.strip()
     strategy = "sql" if _is_abnormal(name) else "vector"
     return {
@@ -59,45 +50,78 @@ def normalize_record(
 
 
 def vector_search(
-    query: str,
+    applicant_name: str,
+    address: str = "",
+    email: str = "",
     k: int = 10,
+    tenant_id: str = "",
     ws: Workspace = None,
 ) -> dict[str, Any]:
-    """Search the Vector Search index for candidate utility account matches.
+    """Search all three VS indexes for candidate utility account matches.
 
-    Returns up to k candidates with similarity scores.
-    query: normalized search string (name + address concatenated)
-    k: number of candidates to return (default 10)"""
+    Fans out across embed_full (full name+address), embed_last_addr (familial),
+    and embed_first_email (maiden name) indexes, then deduplicates by account_id
+    keeping the highest score per candidate.
+
+    applicant_name: normalized full name (e.g. "Jane Smith")
+    address: normalized service address (used in full and last-addr queries)
+    email: optional email address (used in first-email query)
+    k: candidates to retrieve per index (total before dedup may be up to 3k)
+    tenant_id: optional hybrid filter — restricts to a single utility tenant"""
     if os.environ.get("DEMO_MODE", "").lower() == "true":
         from .demo_data import vector_search_demo
+        query = f"{applicant_name} {address}".strip()
         candidates = vector_search_demo(query, k)
         return {"candidates": candidates, "count": len(candidates), "source": "demo"}
 
-    index_name = os.environ.get("VECTOR_SEARCH_INDEX_NAME", "")
-    if not index_name:
-        return {"error": "VECTOR_SEARCH_INDEX_NAME not configured", "candidates": [], "count": 0}
+    indexes = {
+        "full":        os.environ.get("VS_INDEX_FULL", ""),
+        "last_addr":   os.environ.get("VS_INDEX_LAST_ADDR", ""),
+        "first_email": os.environ.get("VS_INDEX_FIRST_EMAIL", ""),
+    }
+    missing = [name for name, val in indexes.items() if not val]
+    if missing:
+        return {"error": f"Missing VS index env vars: {missing}", "candidates": [], "count": 0}
 
-    columns = ["account_id", "name", "address", "account_number", "score"]
-    raw = ws.vector_search_indexes.query_index(
-        index_name=index_name,
-        columns=columns,
-        query_text=query,
-        num_results=k,
-    )
+    name_parts = applicant_name.strip().split()
+    last_name = name_parts[-1] if name_parts else applicant_name
+    first_name = name_parts[0] if len(name_parts) > 1 else applicant_name
 
-    col_names = [c.name for c in (raw.manifest.schema.columns or [])]
-    rows = raw.result.data_array or []
-    candidates = []
-    for row in rows:
-        record = dict(zip(col_names, row))
-        candidates.append({
-            "account_id": record.get("account_id", ""),
-            "name": record.get("name", ""),
-            "address": record.get("address", ""),
-            "account_number": record.get("account_number", ""),
-            "score": float(record.get("score", 0.0)),
-        })
+    queries = {
+        "full":        f"{applicant_name} {address}".strip(),
+        "last_addr":   f"{last_name} {address}".strip(),
+        "first_email": f"{first_name} {email}".strip(),
+    }
 
+    filters = {"tenant_id": tenant_id} if tenant_id else {}
+    columns = ["account_id", "first_name", "last_name", "service_address_line1", "account_number", "score"]
+
+    seen: dict[str, dict] = {}
+    for perm, index_name in indexes.items():
+        raw = ws.vector_search_indexes.query_index(
+            index_name=index_name,
+            columns=columns,
+            query_text=queries[perm],
+            num_results=k,
+            filters_json=str(filters) if filters else None,
+        )
+        col_names = [c.name for c in (raw.manifest.schema.columns or [])]
+        for row in (raw.result.data_array or []):
+            record = dict(zip(col_names, row))
+            acct_id = record.get("account_id", "")
+            score = float(record.get("score", 0.0))
+            name = f"{record.get('first_name', '')} {record.get('last_name', '')}".strip()
+            candidate = {
+                "account_id": acct_id,
+                "name": name,
+                "address": record.get("service_address_line1", ""),
+                "account_number": record.get("account_number", ""),
+                "score": score,
+            }
+            if acct_id not in seen or score > seen[acct_id]["score"]:
+                seen[acct_id] = candidate
+
+    candidates = sorted(seen.values(), key=lambda c: c["score"], reverse=True)
     return {"candidates": candidates, "count": len(candidates)}
 
 
@@ -106,9 +130,9 @@ def sql_search(
     address: str = "",
     ws: Workspace = None,
 ) -> dict[str, Any]:
-    """Fallback SQL search for records that perform poorly under vector distance.
+    """Fallback SQL search for records that embed poorly under vector distance.
 
-    Use for names with initials (J. Smith), acronyms (ABC LLC), or very short names.
+    Use for names with initials (J. Smith), acronyms (ABC LLC), or very short tokens.
     name: applicant name (may include initials or abbreviations)
     address: optional service address for narrowing results"""
     if os.environ.get("DEMO_MODE", "").lower() == "true":
@@ -116,14 +140,13 @@ def sql_search(
         candidates = sql_search_demo(name, address)
         return {"candidates": candidates, "count": len(candidates), "source": "demo"}
 
-    table = os.environ.get("ACCOUNT_TABLE", "")
+    table = os.environ.get("UTILITY_ACCOUNT_TABLE", "")
     if not table:
-        return {"error": "ACCOUNT_TABLE not configured", "candidates": [], "count": 0}
+        return {"error": "UTILITY_ACCOUNT_TABLE not configured", "candidates": [], "count": 0}
 
-    tokens = [_escape(t.strip(".,")) for t in name.split() if len(t.strip(".,")) > 1]
+    tokens = [t.strip(".,") for t in name.split() if len(t.strip(".,")) > 1]
     name_conditions = " AND ".join(f"name ILIKE '%{t}%'" for t in tokens)
-    addr_token = _escape(address.split()[0]) if address else ""
-    address_clause = f"AND address ILIKE '%{addr_token}%'" if addr_token else ""
+    address_clause = f"AND address ILIKE '%{address.split()[0]}%'" if address else ""
 
     sql = f"""
         SELECT account_id, name, address
@@ -158,16 +181,18 @@ def sql_search(
 
 
 SUPERVISOR_INSTRUCTIONS = """
-You are the Supervisor in an entity resolution system for utility company intake applications.
+You are the Supervisor in an entity resolution system for utility company AFR (Affordable Rate) applications.
 
 Your job:
 1. Call normalize_record on the applicant's name, address, and account number.
-2. If strategy is "vector": call vector_search with "{name} {address}" as the query.
+2. If strategy is "vector": call vector_search with applicant_name, address, email (if known),
+   and tenant_id (from the application). This fans out across all three indexes (full name+address,
+   last name+address, first name+email) and returns deduplicated candidates.
    If strategy is "sql": call sql_search with the name and address instead.
 3. Review the candidates returned. If the count is 0, try the other search tool before giving up.
 4. When you have a shortlist of candidates (up to 10), hand off to the evaluator.
    Call transfer_to_evaluator with a context summary that includes:
-   - The normalized applicant record (name, address, account_number)
+   - The normalized applicant record (name, address, account_number, email, tenant_id)
    - All candidates with their scores
    - Which search strategy was used and why
 

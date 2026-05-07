@@ -1,241 +1,494 @@
 # Entity Resolution Agent
 
-Fuzzy-match and resolve customer/account entities built on [apx-agent](https://github.com/stuagano/apx-agent) and Databricks — **two specialized agents, under 300 lines of Python**.
+An `apx-agent` example that shows how to build a **fuzzy-match entity resolution system** on top of Databricks Vector Search. The agent resolves incoming name+address records against a Unity Catalog table even when the input has typos, nicknames, abbreviations, familial accounts, or maiden names — cases where exact SQL search fails.
 
-![Chat UI showing match result with trace panel](docs/screenshot-chat.png)
-
-Two `LlmAgent`s collaborate via `HandoffAgent`: a **Supervisor** that normalizes records and searches, and an **Evaluator** that scores candidates and logs decisions. The trace panel shows every tool call, input, and output in real time.
-
----
-
-## What makes this simple
-
-Two focused agents, each wired in a handful of lines:
-
-```python
-# core/supervisor.py
-supervisor = LlmAgent(
-    tools=[normalize_record, vector_search, sql_search],
-    instructions=SUPERVISOR_INSTRUCTIONS,
-    max_iterations=6,
-)
-
-# core/evaluator.py
-evaluator = LlmAgent(
-    tools=[evaluate_candidates, log_decision],
-    instructions=EVALUATOR_INSTRUCTIONS,
-    max_iterations=4,
-)
-
-# agent_router.py — HandoffAgent wires them together
-agent = HandoffAgent(
-    agents={"supervisor": supervisor, "evaluator": evaluator},
-    start="supervisor",
-    max_handoffs=4,
-)
-```
-
-Tools are just regular Python functions. Databricks auth is handled automatically via `Dependencies.Workspace`:
-
-```python
-def vector_search(query: str, k: int = 10, ws: Workspace = None) -> dict:
-    """Search the VS index for candidate accounts matching the query."""
-    index = ws.vector_search_indexes.query_index(
-        index_name=os.environ["VECTOR_SEARCH_INDEX_NAME"],
-        columns=["account_id", "name", "address"],
-        query_text=query,
-        num_results=k,
-    )
-    ...
-```
-
-No boilerplate. No auth wiring. `ws` is injected per-request with the caller's OBO token on Databricks Apps, or falls back to CLI credentials locally.
-
-![Trace panel showing normalize → vector_search → evaluate pipeline](docs/screenshot-trace.png)
-
----
-
-## Pipeline
+**Concrete use case:** A utility company's low-income enrollment pipeline. An applicant submits their name and address; the agent finds their utility account record and returns a confidence-scored match decision.
 
 ```
-"Match Jane Smith at 123 Maple Ave"
-           │
-           ▼
-    ┌─── SUPERVISOR ───────────────────────────────┐
-    │  normalize_record  → cleaned name/address,   │
-    │                      strategy (vector | sql) │
-    │  vector_search     → top-k from VS index     │
-    │  sql_search        → ILIKE fallback for      │
-    │                      initials / acronyms     │
-    └──────────────────────────────────────────────┘
-           │  candidate shortlist → hand off
-           ▼
-    ┌─── EVALUATOR ────────────────────────────────┐
-    │  evaluate_candidates → confidence score,     │
-    │                        edge case detection   │
-    │  log_decision        → Delta audit table     │
-    └──────────────────────────────────────────────┘
-           │  low confidence? hand back to Supervisor
-           │  with search hints (up to 4 handoffs)
-           ▼
-        result to user
+Applicant:  "Jon Smyth, 123 Main St"
+Account:    "John Smith, 123 Main Street"
+
+SQL exact match → 0 results
+Vector Search   → 0.92 similarity → MATCHED ✓
 ```
 
 ---
 
-## Run locally
+## What you'll learn
+
+- How to design a **gold table** with multiple embedding columns so one Delta table feeds multiple Vector Search indexes
+- How to create **Delta Sync VS indexes** via the Databricks SDK, and why you need three permutations for complete coverage
+- How to fan out queries across indexes and deduplicate results by record ID
+- How to wire a **Supervisor → Evaluator HandoffAgent** for multi-step reasoning with retry
+- How to add a deterministic **REST endpoint** alongside the LLM chat interface for batch processing
+
+---
+
+## How it works
+
+The agent uses a **Supervisor → Evaluator** pattern:
+
+1. **Supervisor** normalizes the input, detects whether the name contains initials or acronyms (which embed poorly), then searches for candidates. Standard names go through Vector Search; initials/acronyms fall back to SQL ILIKE.
+
+2. **Vector Search fans out across three indexes simultaneously:**
+   | Index | Source column | Catches |
+   |-------|--------------|---------|
+   | `*_full_idx` | `first_name last_name address` | Standard matches |
+   | `*_last_addr_idx` | `last_name address` | Familial / spouse accounts |
+   | `*_first_email_idx` | `first_name email` | Maiden name changes |
+
+   Results are deduplicated by account ID, keeping the highest similarity score.
+
+3. **Evaluator** receives the candidate shortlist and applies fuzzy reasoning: familial detection, account number exact-match boosting, confidence scoring. If confidence is below threshold it hands back to the Supervisor with a search hint and tries again (up to 4 handoffs).
+
+4. The enrollment decision (`EXACT` / `HIGH_CONFIDENCE` / `LOW_CONFIDENCE` / `NO_MATCH`) is written to the decisions table and returned.
+
+Two entry points:
+- **`POST /api/enroll`** — deterministic, no LLM call, suitable for batch processing
+- **`POST /api/chat`** — LLM-powered reasoning for ambiguous edge cases
+
+---
+
+## Prerequisites
+
+| Requirement | Version / Notes |
+|-------------|----------------|
+| Python | 3.11+ |
+| [uv](https://docs.astral.sh/uv/) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| apx-agent | General Databricks Apps development framework — this repo (`python/`) |
+| Databricks CLI | `pip install databricks-cli` or `brew install databricks/tap/databricks` |
+| Databricks workspace | Unity Catalog, Vector Search, SQL warehouse (see Part 1) |
+
+---
+
+## Quick start — DEMO_MODE (no Databricks required)
+
+The agent ships with synthetic utility account data so you can run it locally before setting up any infrastructure:
 
 ```bash
-git clone https://github.com/stuagano/apx-agent
-cd python/examples/entity-resolution-agent
-
+cd entity-resolution-agent
 uv sync
-
-# DEMO_MODE uses synthetic accounts — no VS index or SQL warehouse needed
-DEMO_MODE=true uv run uvicorn entity_resolution_agent.backend.app:app --port 8001
+DEMO_MODE=true uv run uvicorn entity_resolution_agent.backend.app:app --reload
 ```
 
-Open `http://localhost:8001` and try:
+The chat interface opens at `http://localhost:8000`. Try:
 
-| Prompt | What it exercises |
-|--------|-------------------|
-| `Match Jane Smith at 123 Maple Ave` | Vector search → LOW_CONFIDENCE (common name, no account number) |
-| `Match Jane Smith at 123 Maple Ave, account 9876` | Account number boost → HIGH_CONFIDENCE |
-| `Match J. Smith at 567 Birch Lane` | Initials → SQL fallback path |
-| `Match Liz Rodriguez at 456 Oak Street` | Nickname variant |
-| `Match John Smith at 123 Maple Ave` | Familial match flagged (same address, different first name) |
+> *Match: "Jon Smyth, 123 Maple Ave Denver"*
+
+The agent will normalize the input, call the demo search functions backed by `core/demo_data.py`, and return a confidence-scored decision — no VS index, no SQL warehouse, no Databricks connection needed.
+
+To test the deterministic endpoint in demo mode:
+
+```bash
+DEMO_MODE=true uv run uvicorn entity_resolution_agent.backend.app:app --reload &
+
+curl -s -X POST http://localhost:8000/api/enroll \
+  -H "Content-Type: application/json" \
+  -d '{"applicant_name": "J. Williams", "address": "55 Oak St"}' \
+  | python3 -m json.tool
+```
+
+When you're ready to connect to real data, follow Parts 1–3 below.
+
+---
+
+## Part 1: Workspace setup (one-time)
+
+This section creates the data infrastructure the agent queries. Skip to [Part 2](#part-2-local-development) if your workspace already has the gold table and VS indexes.
+
+### Why a gold table?
+
+Vector Search requires a single source column per embedding. Your source data likely lives across multiple tables (account, party, address) with no single text field suitable for embedding. A gold table solves this by joining the source tables and pre-computing the concatenated text columns you want to embed.
+
+See [`docs/gold-table-design.md`](docs/gold-table-design.md) for the full schema and rationale.
+
+### Step 1: Build the gold table with DLT
+
+The gold table joins two silver tables and creates three composite text columns — one per embedding permutation. Create a DLT pipeline in your workspace using this notebook:
+
+```python
+import dlt
+from pyspark.sql import functions as F
+
+@dlt.table(
+    name="utility_account_entities",
+    comment="Gold table for entity resolution — one row per account, three embed columns",
+    table_properties={"delta.enableChangeDataFeed": "true"},
+)
+def utility_account_entities():
+    acct_loc = dlt.read("prd_silver.account_location")
+    party    = dlt.read("prd_silver.party")
+
+    return (
+        acct_loc
+        .join(party, "account_id", "left")
+        .select(
+            # Identity / filter columns
+            F.col("account_id"),
+            F.col("tenant_id"),
+            F.col("account_location_end"),
+            F.col("zip_code"),
+            # Raw fields (returned in search results)
+            F.col("last_name"),
+            F.col("first_name"),
+            F.col("email"),
+            F.col("service_address_line1"),
+            F.col("account_number"),
+            # Embedding permutations — one column per VS index
+            F.concat_ws(" ", F.col("first_name"), F.col("last_name"), F.col("service_address_line1")).alias("embed_full"),
+            F.concat_ws(" ", F.col("last_name"), F.col("service_address_line1")).alias("embed_last_addr"),
+            F.concat_ws(" ", F.col("first_name"), F.col("email")).alias("embed_first_email"),
+        )
+        .filter(F.col("last_name").isNotNull() | F.col("first_name").isNotNull())
+    )
+```
+
+> **Adapting to your schema:** The column names (`account_id`, `service_address_line1`, etc.) match this example's silver tables. Verify them against your actual tables and update accordingly. The embedding column names (`embed_full`, `embed_last_addr`, `embed_first_email`) must match the VS index specs in Step 3.
+
+Run the pipeline and confirm `<catalog>.<schema>.utility_account_entities` is populated before continuing.
+
+### Step 2: Verify Change Data Feed is enabled
+
+Vector Search uses Delta Change Data Feed to stay in sync as records are added or updated. The DLT `table_properties` above should enable it automatically. If not, run:
+
+```sql
+ALTER TABLE <catalog>.<schema>.utility_account_entities
+SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true');
+```
+
+Verify with:
+
+```sql
+DESCRIBE EXTENDED <catalog>.<schema>.utility_account_entities;
+-- look for delta.enableChangeDataFeed = true in Table Properties
+```
+
+### Step 3: Create a Vector Search endpoint
+
+If your workspace doesn't already have a VS endpoint:
+
+1. In the Databricks UI, go to **Compute → Vector Search**
+2. Click **Create endpoint**
+3. Give it a name (e.g., `entity-resolution`) — this becomes your `VS_ENDPOINT` env var
+4. Wait for **Online** status (typically a few minutes)
+
+You can also create one via the SDK:
+
+```python
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.vectorsearch import EndpointType
+
+ws = WorkspaceClient()
+ws.vector_search_endpoints.create_endpoint(
+    name="entity-resolution",
+    endpoint_type=EndpointType.STANDARD,
+)
+```
+
+### Step 4: Create the three VS indexes
+
+Each index embeds a different column from the gold table. Run this once:
+
+```python
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.vectorsearch import (
+    DeltaSyncVectorIndexSpecRequest,
+    EmbeddingSourceColumn,
+    VectorIndexType,
+)
+
+ws = WorkspaceClient()
+
+ENDPOINT     = "entity-resolution"          # your VS endpoint name from Step 3
+CATALOG      = "<your-catalog>"
+SCHEMA       = "<your-schema>"
+SOURCE_TABLE = f"{CATALOG}.{SCHEMA}.utility_account_entities"
+
+for embed_col, suffix in [
+    ("embed_full",        "full"),        # full name + address → catches standard matches
+    ("embed_last_addr",   "last_addr"),   # last name + address → catches familial accounts
+    ("embed_first_email", "first_email"), # first name + email  → catches maiden name changes
+]:
+    ws.vector_search_indexes.create_index(
+        name=f"{CATALOG}.{SCHEMA}.utility_account_entities_{suffix}_idx",
+        endpoint_name=ENDPOINT,
+        primary_key="account_id",
+        index_type=VectorIndexType.DELTA_SYNC,
+        delta_sync_index_spec=DeltaSyncVectorIndexSpecRequest(
+            source_table=SOURCE_TABLE,
+            pipeline_type="TRIGGERED",
+            embedding_source_columns=[
+                EmbeddingSourceColumn(
+                    name=embed_col,
+                    embedding_model_endpoint_name="databricks-gte-large-en",
+                )
+            ],
+        ),
+    )
+    print(f"Created: {CATALOG}.{SCHEMA}.utility_account_entities_{suffix}_idx")
+```
+
+The initial embedding job runs in the background. Wait until all three indexes show **Online** in the Vector Search UI before proceeding — this typically takes 10–30 minutes for large tables.
+
+> **Embedding model:** `databricks-gte-large-en` is a general-purpose sentence embedding model available in most Databricks workspaces. Swap for another Foundation Model API endpoint if needed.
+>
+> **Pipeline type:** `TRIGGERED` syncs on demand. Switch to `CONTINUOUS` for near-real-time freshness.
+
+**Check index status:**
+
+```python
+for suffix in ["full", "last_addr", "first_email"]:
+    idx = ws.vector_search_indexes.get_index(
+        index_name=f"{CATALOG}.{SCHEMA}.utility_account_entities_{suffix}_idx"
+    )
+    print(f"{suffix}: {idx.status.detailed_state}")
+```
+
+---
+
+## Part 2: Local development
+
+### Step 1: Install
+
+```bash
+cd entity-resolution-agent
+uv sync
+```
+
+### Step 2: Configure your Databricks CLI profile
+
+```bash
+databricks configure --profile my-workspace
+# enter workspace URL and personal access token when prompted
+
+databricks current-user me --profile my-workspace
+# should return your user info
+```
+
+### Step 3: Create a `.env` file
+
+```env
+DATABRICKS_CONFIG_PROFILE=my-workspace
+DEMO_MODE=false
+
+# Vector Search (from Part 1)
+VS_ENDPOINT=entity-resolution
+VS_INDEX_FULL=<catalog>.<schema>.utility_account_entities_full_idx
+VS_INDEX_LAST_ADDR=<catalog>.<schema>.utility_account_entities_last_addr_idx
+VS_INDEX_FIRST_EMAIL=<catalog>.<schema>.utility_account_entities_first_email_idx
+
+# Tables
+UTILITY_ACCOUNT_TABLE=<catalog>.<schema>.utility_account_entities
+AFR_DECISION_TABLE=<catalog>.<schema>.afr_processing
+```
+
+> `.env` is gitignored. Never commit it.
+
+### Step 4: Run the tests
+
+All tests mock Databricks dependencies — no live connection needed:
 
 ```bash
 uv run pytest tests/ -v
 ```
 
+Expected:
+
+```
+tests/test_agent_wiring.py::test_agent_is_handoff_agent PASSED
+tests/test_agent_wiring.py::test_agent_has_supervisor_and_evaluator PASSED
+tests/test_agent_wiring.py::test_agent_starts_with_supervisor PASSED
+tests/test_enroll_endpoint.py::test_enroll_happy_path PASSED
+tests/test_enroll_endpoint.py::test_enroll_no_match PASSED
+tests/test_enroll_endpoint.py::test_enroll_sql_fallback_for_initials PASSED
+tests/test_enroll_endpoint.py::test_enroll_returns_422_for_missing_name PASSED
+tests/test_evaluator_tools.py::test_evaluate_candidates_high_confidence PASSED
+tests/test_evaluator_tools.py::test_evaluate_candidates_no_candidates PASSED
+tests/test_evaluator_tools.py::test_evaluate_candidates_familial_flag PASSED
+tests/test_evaluator_tools.py::test_evaluate_candidates_account_number_boosts_score PASSED
+tests/test_evaluator_tools.py::test_log_decision_writes_sql PASSED
+tests/test_supervisor_tools.py::test_normalize_record_basic PASSED
+tests/test_supervisor_tools.py::test_normalize_record_initials_triggers_sql PASSED
+tests/test_supervisor_tools.py::test_normalize_record_acronym_triggers_sql PASSED
+tests/test_supervisor_tools.py::test_vector_search_fans_out_across_three_indexes PASSED
+tests/test_supervisor_tools.py::test_vector_search_deduplicates_by_account_id PASSED
+tests/test_supervisor_tools.py::test_vector_search_keeps_highest_score_on_dedup PASSED
+tests/test_supervisor_tools.py::test_sql_search_returns_candidates PASSED
+19 passed in 2.6s
+```
+
+### Step 5: Run locally against live data
+
+```bash
+uv run uvicorn entity_resolution_agent.backend.app:app --reload
+```
+
+Chat interface opens at `http://localhost:8000`. Test the enrollment endpoint:
+
+```bash
+curl -s -X POST http://localhost:8000/api/enroll \
+  -H "Content-Type: application/json" \
+  -d '{
+    "applicant_name": "Jane Smith",
+    "address": "123 Main St",
+    "email": "jane@example.com",
+    "account_number": "12345",
+    "tenant_id": "utility_a"
+  }' | python3 -m json.tool
+```
+
 ---
 
-## Deploy to Databricks Apps
+## Part 3: Deploy to Databricks Apps
 
-### Prerequisites
+### Step 1: Set real values in `app.yml`
 
-- **Databricks CLI** — [install](https://docs.databricks.com/dev-tools/cli/databricks-cli.html)
-- **uv** — `pip install uv`
-- A Databricks workspace with [Apps enabled](https://docs.databricks.com/en/dev-tools/databricks-apps/index.html)
-
-### 1. Authenticate
-
-```bash
-databricks auth login --host https://<your-workspace>.azuredatabricks.net
-```
-
-Verify it works:
-
-```bash
-databricks current-user me
-```
-
-### 2. Get the code
-
-```bash
-git clone https://github.com/stuagano/apx-agent
-cd python/examples/entity-resolution-agent
-```
-
-### 3. Configure `app.yml`
-
-For **DEMO_MODE** (no infrastructure needed — start here):
-
-```yaml
-# app.yml is already set to DEMO_MODE=true — no changes needed
-```
-
-For **production** (real VS index + Delta table):
+Replace the `PLACEHOLDER` values with the names from Part 1:
 
 ```yaml
 env:
-  DEMO_MODE: "false"
-  VECTOR_SEARCH_ENDPOINT_NAME: "your-endpoint-name"
-  VECTOR_SEARCH_INDEX_NAME: "catalog.schema.account_idx"
-  ACCOUNT_TABLE: "catalog.schema.accounts"
-  DECISION_TABLE: "catalog.schema.match_decisions"
+  - name: DEMO_MODE
+    value: "false"
+  - name: VS_ENDPOINT
+    value: "entity-resolution"
+  - name: VS_INDEX_FULL
+    value: "catalog.schema.utility_account_entities_full_idx"
+  - name: VS_INDEX_LAST_ADDR
+    value: "catalog.schema.utility_account_entities_last_addr_idx"
+  - name: VS_INDEX_FIRST_EMAIL
+    value: "catalog.schema.utility_account_entities_first_email_idx"
+  - name: UTILITY_ACCOUNT_TABLE
+    value: "catalog.schema.utility_account_entities"
+  - name: AFR_DECISION_TABLE
+    value: "catalog.schema.afr_processing"
 ```
 
-### 4. Build
+### Step 2: Deploy
 
 ```bash
-uv build --wheel -o .build/
-ls .build/*.whl | xargs basename > .build/requirements.txt
+uv run apx deploy
 ```
 
-### 5. Deploy
+### Step 3: Verify
 
 ```bash
-databricks bundle deploy
+databricks apps get entity-resolution-agent --profile my-workspace
+# look for "state": "RUNNING"
 ```
 
-This uploads the build artifacts to your workspace and creates the Databricks App. On first run it also provisions the app compute — allow ~60 seconds.
-
-Check deployment status:
+Test the live endpoint:
 
 ```bash
-databricks apps get entity-resolution-agent -o json | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-print('URL:   ', d.get('url', 'not yet available'))
-print('State: ', d.get('app_status', {}).get('state', 'unknown'))
-"
-```
-
-When `State: RUNNING`, open the URL.
-
-### Redeploy after changes
-
-```bash
-uv build --wheel -o .build/
-ls .build/*.whl | xargs basename > .build/requirements.txt
-databricks bundle deploy
+curl -s -X POST https://<your-app-url>/api/enroll \
+  -H "Authorization: Bearer $(databricks auth token --profile my-workspace)" \
+  -H "Content-Type: application/json" \
+  -d '{"applicant_name": "Jane Smith", "address": "123 Main St"}'
 ```
 
 ---
 
-## Configuration
+## API reference
 
-| Env var | Demo | Production |
-|---------|------|------------|
-| `DEMO_MODE` | `true` | `false` |
-| `VECTOR_SEARCH_ENDPOINT_NAME` | _(ignored)_ | Your VS endpoint |
-| `VECTOR_SEARCH_INDEX_NAME` | _(ignored)_ | `catalog.schema.account_idx` |
-| `ACCOUNT_TABLE` | _(ignored)_ | `catalog.schema.accounts` |
-| `DECISION_TABLE` | _(ignored)_ | `catalog.schema.match_decisions` |
+### POST /api/enroll
+
+Deterministic enrollment decision. No LLM — fast, suitable for batch processing.
+
+**Request:**
+
+```json
+{
+  "applicant_name": "Jane Smith",
+  "address": "123 Main St",
+  "email": "jane@example.com",
+  "account_number": "12345",
+  "tenant_id": "utility_a"
+}
+```
+
+`applicant_name` is required. All other fields are optional but improve match accuracy.
+
+**Response:**
+
+```json
+{
+  "matched": true,
+  "account_id": "acct-001",
+  "category": "HIGH_CONFIDENCE",
+  "rationale": "Best candidate 'Jane Smith' scored 0.92. Account number exact match.",
+  "confidence": 0.92,
+  "candidates_reviewed": 5
+}
+```
+
+**Decision categories:**
+
+| Category | Confidence | Meaning |
+|----------|-----------|---------|
+| `EXACT` | ≥ 0.90 | Near-certain match — auto-approve |
+| `HIGH_CONFIDENCE` | ≥ 0.75 | Strong match — approve |
+| `LOW_CONFIDENCE` | < 0.75, matched=true | Weak match — review recommended |
+| `NO_MATCH` | 0.0, matched=false | No candidate found |
+
+### POST /api/chat
+
+LLM-powered reasoning. Use for ambiguous cases, bulk investigations, or when `/api/enroll` returns `LOW_CONFIDENCE`. The LLM can reason about nicknames (Liz → Elizabeth), maiden names, and multi-account scenarios.
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
 entity-resolution-agent/
-├── app.yml                        # Databricks Apps runtime config + env vars
-├── databricks.yml                 # Asset Bundle — build, deploy, app resource
-├── src/entity_resolution_agent/backend/
-│   ├── agent_router.py            # HandoffAgent wiring — 10 lines
-│   ├── app.py                     # FastAPI app — 8 lines
-│   ├── models.py                  # Application, Candidate, MatchDecision
-│   └── core/
-│       ├── supervisor.py          # normalize_record, vector_search, sql_search + LlmAgent
-│       ├── evaluator.py           # evaluate_candidates, log_decision + LlmAgent
-│       └── demo_data.py           # 15 synthetic accounts for DEMO_MODE
+├── app.yml                           # Runtime command + env vars (set DEMO_MODE here)
+├── pyproject.toml                    # Package config, deps, model endpoint
+├── databricks.yml                    # Databricks Asset Bundle config
+├── docs/
+│   └── gold-table-design.md          # Full schema, DLT pipeline, VS index specs
+├── src/entity_resolution_agent/
+│   └── backend/
+│       ├── app.py                    # FastAPI app entry point
+│       ├── agent_router.py           # HandoffAgent: supervisor → evaluator
+│       ├── router.py                 # HTTP routes: /enroll, /version, /current-user
+│       ├── models.py                 # Pydantic models: AfrApplication, EnrollmentDecision
+│       └── core/
+│           ├── supervisor.py         # normalize_record, vector_search, sql_search
+│           ├── evaluator.py          # evaluate_candidates, log_decision
+│           └── demo_data.py          # Synthetic accounts for DEMO_MODE
 └── tests/
-    ├── test_supervisor_tools.py
-    ├── test_evaluator_tools.py
-    └── test_agent_wiring.py
+    ├── conftest.py                   # Shared fixtures and mock helpers
+    ├── test_agent_wiring.py          # HandoffAgent instantiation smoke tests
+    ├── test_supervisor_tools.py      # normalize, vector_search, sql_search unit tests
+    ├── test_evaluator_tools.py       # evaluate_candidates, log_decision unit tests
+    └── test_enroll_endpoint.py       # POST /api/enroll integration tests
 ```
 
 ---
 
-## Edge Cases
+## Troubleshooting
 
-| Case | Mechanism |
-|------|-----------|
-| Initials (`J. Smith`) | Regex → `strategy="sql"` → `sql_search` ILIKE |
-| Acronyms (`ABC LLC`) | Same |
-| Familial match | Same address + same surname + different first → flagged in rationale |
-| Account number match | +0.05 confidence boost |
-| No candidates | Tries alternate search tool before returning NO_MATCH |
-| LOW_CONFIDENCE | Category returned, manual review recommended |
+**`DEMO_MODE=true` but getting "no such module" errors**
+Run `uv sync` first — the package must be installed into the venv before imports resolve.
+
+**Vector Search index stuck in `PROVISIONING`**
+The initial embedding job is still running. Check the Vector Search UI and wait for all three indexes to show `Online`. Large tables (millions of rows) can take 30+ minutes.
+
+**`Missing VS index env vars` in search results**
+One or more of `VS_INDEX_FULL`, `VS_INDEX_LAST_ADDR`, `VS_INDEX_FIRST_EMAIL` is missing from your `.env` or `app.yml`. The variable names are case-sensitive.
+
+**`SQL failed: ...` from sql_search**
+`UTILITY_ACCOUNT_TABLE` isn't accessible from the SQL warehouse. Confirm the table exists (`DESCRIBE TABLE <table>`) and your service principal has `SELECT` permission.
+
+**Low match rates**
+`databricks-gte-large-en` is optimized for semantic similarity, not character-level fuzzy matching. Common gaps: nicknames (Bob / Robert), single-character-off typos. To extend, add a nickname expansion map to `evaluate_candidates` — see the `EVALUATOR_INSTRUCTIONS` comment in `core/evaluator.py`.
+
+**Index sync lag after bulk imports**
+With `pipeline_type: TRIGGERED`, the index doesn't auto-sync. Trigger manually after large data loads:
+
+```python
+from databricks.sdk import WorkspaceClient
+ws = WorkspaceClient()
+for suffix in ["full", "last_addr", "first_email"]:
+    ws.vector_search_indexes.sync_index(
+        index_name=f"<catalog>.<schema>.utility_account_entities_{suffix}_idx"
+    )
+```

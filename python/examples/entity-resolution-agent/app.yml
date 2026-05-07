@@ -1,8 +1,16 @@
 command: ["uvicorn", "entity_resolution_agent.backend.app:app", "--workers", "2"]
-
 env:
-  DEMO_MODE: "true"
-  VECTOR_SEARCH_ENDPOINT_NAME: "entity-resolution"
-  VECTOR_SEARCH_INDEX_NAME: "catalog.schema.account_idx"
-  ACCOUNT_TABLE: "catalog.schema.accounts"
-  DECISION_TABLE: "catalog.schema.match_decisions"
+  - name: DEMO_MODE
+    value: "false"   # set to "true" to run with synthetic data (no VS index or SQL warehouse needed)
+  - name: VS_ENDPOINT
+    value: "PLACEHOLDER — your Vector Search endpoint name"
+  - name: VS_INDEX_FULL
+    value: "PLACEHOLDER — e.g. catalog.schema.utility_account_entities_full_idx"
+  - name: VS_INDEX_LAST_ADDR
+    value: "PLACEHOLDER — e.g. catalog.schema.utility_account_entities_last_addr_idx"
+  - name: VS_INDEX_FIRST_EMAIL
+    value: "PLACEHOLDER — e.g. catalog.schema.utility_account_entities_first_email_idx"
+  - name: UTILITY_ACCOUNT_TABLE
+    value: "PLACEHOLDER — e.g. catalog.schema.utility_account_entities"
+  - name: AFR_DECISION_TABLE
+    value: "PLACEHOLDER — e.g. catalog.schema.afr_processing"

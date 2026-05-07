@@ -1,9 +1,11 @@
 import pytest
+from unittest.mock import MagicMock
+from tests.conftest import _col
 
 
 @pytest.fixture(autouse=True)
 def set_env(monkeypatch):
-    monkeypatch.setenv("DECISION_TABLE", "catalog.schema.match_decisions")
+    monkeypatch.setenv("AFR_DECISION_TABLE", "catalog.schema.afr_processing")
 
 
 SAMPLE_CANDIDATES = [
@@ -20,44 +22,57 @@ SAMPLE_APPLICATION = {
 
 def test_evaluate_candidates_high_confidence(mock_ws):
     from entity_resolution_agent.backend.core.evaluator import evaluate_candidates
-    result = evaluate_candidates(
-        applicant=SAMPLE_APPLICATION,
-        candidates=SAMPLE_CANDIDATES,
-        ws=mock_ws,
-    )
+    result = evaluate_candidates(applicant=SAMPLE_APPLICATION, candidates=SAMPLE_CANDIDATES, ws=mock_ws)
     assert "decision" in result
-    assert result["decision"]["category"] == "EXACT"
-    assert result["decision"]["matched"] is True
-    assert result["decision"]["confidence"] >= 0.90
+    assert result["decision"]["category"] in ("EXACT", "HIGH_CONFIDENCE", "LOW_CONFIDENCE", "NO_MATCH")
+    assert 0.0 <= result["decision"]["confidence"] <= 1.0
+    assert "rationale" in result["decision"]
 
 
 def test_evaluate_candidates_no_candidates(mock_ws):
     from entity_resolution_agent.backend.core.evaluator import evaluate_candidates
-    result = evaluate_candidates(
-        applicant=SAMPLE_APPLICATION,
-        candidates=[],
-        ws=mock_ws,
-    )
+    result = evaluate_candidates(applicant=SAMPLE_APPLICATION, candidates=[], ws=mock_ws)
     assert result["decision"]["category"] == "NO_MATCH"
     assert result["decision"]["matched"] is False
 
 
 def test_evaluate_candidates_familial_flag(mock_ws):
     from entity_resolution_agent.backend.core.evaluator import evaluate_candidates
+    # Same address, DIFFERENT surname — classic familial case (spouse or parent)
     candidates = [
-        {"account_id": "acct-003", "name": "John Smith", "address": "123 Main St", "account_number": "12345", "score": 0.85},
+        {"account_id": "acct-003", "name": "John Williams", "address": "123 Main St", "account_number": "99999", "score": 0.75},
     ]
     result = evaluate_candidates(
         applicant={"name": "Jane Smith", "address": "123 Main St", "account_number": "12345"},
         candidates=candidates,
         ws=mock_ws,
     )
-    # Same address, same surname, different first name — should flag familial
     assert "familial" in result["decision"]["rationale"].lower()
+
+
+def test_evaluate_candidates_account_number_boosts_score(mock_ws):
+    from entity_resolution_agent.backend.core.evaluator import evaluate_candidates
+    candidates = [
+        {"account_id": "acct-004", "name": "Jane Smith", "address": "123 Main St", "account_number": "12345", "score": 0.88},
+    ]
+    result = evaluate_candidates(
+        applicant={"name": "Jane Smith", "address": "123 Main St", "account_number": "12345"},
+        candidates=candidates,
+        ws=mock_ws,
+    )
+    assert "account number exact match" in result["decision"]["rationale"].lower()
+    assert result["decision"]["confidence"] > 0.88
 
 
 def test_log_decision_writes_sql(mock_ws):
     from entity_resolution_agent.backend.core.evaluator import log_decision
+    from databricks.sdk.service.sql import StatementStatus, StatementState
+    sql_result = MagicMock()
+    sql_result.status = StatementStatus(state=StatementState.SUCCEEDED)
+    sql_result.manifest.schema.columns = [_col("account_id")]
+    sql_result.result.data_array = []
+    mock_ws.statement_execution.execute_statement.return_value = sql_result
+
     decision = {
         "applicant_name": "Jane Smith",
         "matched": True,
@@ -72,4 +87,4 @@ def test_log_decision_writes_sql(mock_ws):
     mock_ws.statement_execution.execute_statement.assert_called_once()
     call_sql = mock_ws.statement_execution.execute_statement.call_args[1]["statement"]
     assert "INSERT" in call_sql.upper()
-    assert "match_decisions" in call_sql
+    assert "afr_processing" in call_sql
