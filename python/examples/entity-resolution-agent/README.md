@@ -20,15 +20,42 @@ Vector Search   → 0.92 similarity → MATCHED ✓
 - How to create **Delta Sync VS indexes** via the Databricks SDK, and why you need three permutations for complete coverage
 - How to fan out queries across indexes and deduplicate results by record ID
 - How to wire a **Supervisor → Evaluator HandoffAgent** for multi-step reasoning with retry
-- How to add a deterministic **REST endpoint** alongside the LLM chat interface for batch processing
+- How to split a feature into **three independently deployable apps** with different scaling characteristics
 
 ---
 
-## How it works
+## Three-app architecture
+
+This example is split across three Databricks Apps. Each has a different scaling profile and can be deployed and updated independently:
+
+```
+┌─────────────────────────┐
+│   account-search-service │  POST /api/search
+│   (VS fan-out + SQL)    │  No LLM — fast, stateless, horizontally scalable
+└───────────┬─────────────┘
+            │ HTTP
+     ┌──────┴──────────────────────────┐
+     │                                 │
+┌────▼────────────────┐   ┌────────────▼──────────────────────┐
+│  afr-enrollment-api  │   │     entity-resolution-agent       │
+│  POST /api/enroll    │   │     POST /api/chat                │
+│  (deterministic,     │   │     (LLM HandoffAgent — Supervisor │
+│   no LLM, batch)    │   │      calls search service via HTTP) │
+└─────────────────────┘   └───────────────────────────────────┘
+```
+
+**This app** (`entity-resolution-agent`) is the LLM agent layer — use it for ambiguous cases where the deterministic pipeline returns `LOW_CONFIDENCE`. See the sibling apps:
+
+- [`../account-search-service/`](../account-search-service/) — VS fan-out search as a standalone REST API
+- [`../afr-enrollment-api/`](../afr-enrollment-api/) — deterministic enrollment pipeline, calls search service via HTTP
+
+---
+
+## How the agent works
 
 The agent uses a **Supervisor → Evaluator** pattern:
 
-1. **Supervisor** normalizes the input, detects whether the name contains initials or acronyms (which embed poorly), then searches for candidates. Standard names go through Vector Search; initials/acronyms fall back to SQL ILIKE.
+1. **Supervisor** normalizes the input and calls `search_accounts`. If `SEARCH_SERVICE_URL` is configured, this is an HTTP call to `account-search-service`; otherwise it runs VS/SQL locally.
 
 2. **Vector Search fans out across three indexes simultaneously:**
    | Index | Source column | Catches |
@@ -43,8 +70,7 @@ The agent uses a **Supervisor → Evaluator** pattern:
 
 4. The enrollment decision (`EXACT` / `HIGH_CONFIDENCE` / `LOW_CONFIDENCE` / `NO_MATCH`) is written to the decisions table and returned.
 
-Two entry points:
-- **`POST /api/enroll`** — deterministic, no LLM call, suitable for batch processing
+Entry point:
 - **`POST /api/chat`** — LLM-powered reasoning for ambiguous edge cases
 
 ---
@@ -298,10 +324,7 @@ Expected:
 tests/test_agent_wiring.py::test_agent_is_handoff_agent PASSED
 tests/test_agent_wiring.py::test_agent_has_supervisor_and_evaluator PASSED
 tests/test_agent_wiring.py::test_agent_starts_with_supervisor PASSED
-tests/test_enroll_endpoint.py::test_enroll_happy_path PASSED
-tests/test_enroll_endpoint.py::test_enroll_no_match PASSED
-tests/test_enroll_endpoint.py::test_enroll_sql_fallback_for_initials PASSED
-tests/test_enroll_endpoint.py::test_enroll_returns_422_for_missing_name PASSED
+tests/test_agent_wiring.py::test_supervisor_has_two_tools PASSED
 tests/test_evaluator_tools.py::test_evaluate_candidates_high_confidence PASSED
 tests/test_evaluator_tools.py::test_evaluate_candidates_no_candidates PASSED
 tests/test_evaluator_tools.py::test_evaluate_candidates_familial_flag PASSED
@@ -310,11 +333,12 @@ tests/test_evaluator_tools.py::test_log_decision_writes_sql PASSED
 tests/test_supervisor_tools.py::test_normalize_record_basic PASSED
 tests/test_supervisor_tools.py::test_normalize_record_initials_triggers_sql PASSED
 tests/test_supervisor_tools.py::test_normalize_record_acronym_triggers_sql PASSED
-tests/test_supervisor_tools.py::test_vector_search_fans_out_across_three_indexes PASSED
-tests/test_supervisor_tools.py::test_vector_search_deduplicates_by_account_id PASSED
-tests/test_supervisor_tools.py::test_vector_search_keeps_highest_score_on_dedup PASSED
-tests/test_supervisor_tools.py::test_sql_search_returns_candidates PASSED
-19 passed in 2.6s
+tests/test_supervisor_tools.py::test_search_accounts_fans_out_across_three_indexes PASSED
+tests/test_supervisor_tools.py::test_search_accounts_deduplicates_by_account_id PASSED
+tests/test_supervisor_tools.py::test_search_accounts_keeps_highest_score_on_dedup PASSED
+tests/test_supervisor_tools.py::test_search_accounts_sql_path_for_initials PASSED
+tests/test_supervisor_tools.py::test_search_accounts_demo_mode PASSED
+17 passed in 0.8s
 ```
 
 ### Step 5: Run locally against live data
@@ -323,19 +347,7 @@ tests/test_supervisor_tools.py::test_sql_search_returns_candidates PASSED
 uv run uvicorn entity_resolution_agent.backend.app:app --reload
 ```
 
-Chat interface opens at `http://localhost:8000`. Test the enrollment endpoint:
-
-```bash
-curl -s -X POST http://localhost:8000/api/enroll \
-  -H "Content-Type: application/json" \
-  -d '{
-    "applicant_name": "Jane Smith",
-    "address": "123 Main St",
-    "email": "jane@example.com",
-    "account_number": "12345",
-    "tenant_id": "utility_a"
-  }' | python3 -m json.tool
-```
+The chat interface opens at `http://localhost:8000`. For batch enrollment, run the sibling `afr-enrollment-api` instead.
 
 ---
 
@@ -376,70 +388,34 @@ databricks apps get entity-resolution-agent --profile my-workspace
 # look for "state": "RUNNING"
 ```
 
-Test the live endpoint:
+Test the live app is running:
 
 ```bash
-curl -s -X POST https://<your-app-url>/api/enroll \
-  -H "Authorization: Bearer $(databricks auth token --profile my-workspace)" \
-  -H "Content-Type: application/json" \
-  -d '{"applicant_name": "Jane Smith", "address": "123 Main St"}'
+curl -s https://<your-app-url>/api/version \
+  -H "Authorization: Bearer $(databricks auth token --profile my-workspace)"
 ```
 
 ---
 
 ## API reference
 
-### POST /api/enroll
-
-Deterministic enrollment decision. No LLM — fast, suitable for batch processing.
-
-**Request:**
-
-```json
-{
-  "applicant_name": "Jane Smith",
-  "address": "123 Main St",
-  "email": "jane@example.com",
-  "account_number": "12345",
-  "tenant_id": "utility_a"
-}
-```
-
-`applicant_name` is required. All other fields are optional but improve match accuracy.
-
-**Response:**
-
-```json
-{
-  "matched": true,
-  "account_id": "acct-001",
-  "category": "HIGH_CONFIDENCE",
-  "rationale": "Best candidate 'Jane Smith' scored 0.92. Account number exact match.",
-  "confidence": 0.92,
-  "candidates_reviewed": 5
-}
-```
-
-**Decision categories:**
-
-| Category | Confidence | Meaning |
-|----------|-----------|---------|
-| `EXACT` | ≥ 0.90 | Near-certain match — auto-approve |
-| `HIGH_CONFIDENCE` | ≥ 0.75 | Strong match — approve |
-| `LOW_CONFIDENCE` | < 0.75, matched=true | Weak match — review recommended |
-| `NO_MATCH` | 0.0, matched=false | No candidate found |
-
 ### POST /api/chat
 
-LLM-powered reasoning. Use for ambiguous cases, bulk investigations, or when `/api/enroll` returns `LOW_CONFIDENCE`. The LLM can reason about nicknames (Liz → Elizabeth), maiden names, and multi-account scenarios.
+LLM-powered reasoning via the Supervisor → Evaluator HandoffAgent. Use for ambiguous edge cases — nicknames (Liz → Elizabeth), maiden names, multi-account households, or when the deterministic `afr-enrollment-api` returns `LOW_CONFIDENCE`.
+
+For deterministic batch enrollment, see [`../afr-enrollment-api/`](../afr-enrollment-api/).
 
 ---
 
 ## Project structure
 
 ```
+entity-resolution-agent/       ← this app: LLM HandoffAgent + chat UI
+account-search-service/         ← sibling: standalone VS/SQL search API
+afr-enrollment-api/             ← sibling: deterministic enrollment pipeline
+
 entity-resolution-agent/
-├── app.yml                           # Runtime command + env vars (set DEMO_MODE here)
+├── app.yml                           # Runtime command + env vars
 ├── pyproject.toml                    # Package config, deps, model endpoint
 ├── databricks.yml                    # Databricks Asset Bundle config
 ├── docs/
@@ -448,18 +424,17 @@ entity-resolution-agent/
 │   └── backend/
 │       ├── app.py                    # FastAPI app entry point
 │       ├── agent_router.py           # HandoffAgent: supervisor → evaluator
-│       ├── router.py                 # HTTP routes: /enroll, /version, /current-user
-│       ├── models.py                 # Pydantic models: AfrApplication, EnrollmentDecision
+│       ├── router.py                 # HTTP routes: /version, /current-user
+│       ├── models.py                 # Pydantic models: VersionOut
 │       └── core/
-│           ├── supervisor.py         # normalize_record, vector_search, sql_search
+│           ├── supervisor.py         # normalize_record, search_accounts
 │           ├── evaluator.py          # evaluate_candidates, log_decision
 │           └── demo_data.py          # Synthetic accounts for DEMO_MODE
 └── tests/
     ├── conftest.py                   # Shared fixtures and mock helpers
     ├── test_agent_wiring.py          # HandoffAgent instantiation smoke tests
-    ├── test_supervisor_tools.py      # normalize, vector_search, sql_search unit tests
-    ├── test_evaluator_tools.py       # evaluate_candidates, log_decision unit tests
-    └── test_enroll_endpoint.py       # POST /api/enroll integration tests
+    ├── test_supervisor_tools.py      # normalize_record, search_accounts unit tests
+    └── test_evaluator_tools.py       # evaluate_candidates, log_decision unit tests
 ```
 
 ---
