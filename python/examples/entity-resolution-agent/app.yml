@@ -2,6 +2,14 @@ command: ["uvicorn", "entity_resolution_agent.backend.app:app", "--workers", "2"
 env:
   - name: DEMO_MODE
     value: "false"   # set to "true" to run with synthetic data (no VS index or SQL warehouse needed)
+
+  # URL of the deployed account-search-service app.
+  # When set, the Supervisor calls the search service via HTTP (recommended for production).
+  # When unset, the agent searches locally using the VS_INDEX_* env vars below.
+  - name: SEARCH_SERVICE_URL
+    value: ""
+
+  # Required when SEARCH_SERVICE_URL is unset (local search fallback)
   - name: VS_ENDPOINT
     value: "PLACEHOLDER — your Vector Search endpoint name"
   - name: VS_INDEX_FULL

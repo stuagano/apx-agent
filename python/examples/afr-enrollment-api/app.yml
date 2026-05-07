@@ -1,0 +1,31 @@
+command:
+  - uvicorn
+  - afr_enrollment_api.backend.app:app
+  - --workers
+  - "2"
+
+env:
+  - name: DEMO_MODE
+    value: "false"   # set to "true" to run without live infrastructure
+
+  # URL of the deployed account-search-service app.
+  # When set, enrollment calls the search service via HTTP (recommended for production).
+  # When unset, the enrollment API runs vector/SQL search locally using the env vars below.
+  - name: SEARCH_SERVICE_URL
+    value: ""
+
+  # Required when SEARCH_SERVICE_URL is unset (local search fallback)
+  - name: VS_ENDPOINT
+    value: "PLACEHOLDER — your Vector Search endpoint name"
+  - name: VS_INDEX_FULL
+    value: "PLACEHOLDER — catalog.schema.utility_account_entities_full_idx"
+  - name: VS_INDEX_LAST_ADDR
+    value: "PLACEHOLDER — catalog.schema.utility_account_entities_last_addr_idx"
+  - name: VS_INDEX_FIRST_EMAIL
+    value: "PLACEHOLDER — catalog.schema.utility_account_entities_first_email_idx"
+  - name: UTILITY_ACCOUNT_TABLE
+    value: "PLACEHOLDER — catalog.schema.utility_account_entities"
+
+  # Always required
+  - name: AFR_DECISION_TABLE
+    value: "PLACEHOLDER — catalog.schema.afr_processing"
