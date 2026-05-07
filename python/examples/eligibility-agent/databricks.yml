@@ -1,0 +1,25 @@
+bundle:
+  name: eligibility-agent
+
+sync:
+  exclude:
+    - .venv
+    - "**/__pycache__"
+    - "**/*.pyc"
+    - "*.egg-info"
+
+artifacts:
+  default:
+    build: uv build --wheel -o .build/ && ls -t .build/*.whl | tail -n +2 | xargs rm -f && ls -t .build/*.whl | head -1 | xargs basename > .build/requirements.txt
+
+resources:
+  apps:
+    eligibility-agent-app:
+      name: "eligibility-agent"
+      description: "Document-based eligibility assessment agent"
+      source_code_path: ./.build
+
+targets:
+  dev:
+    mode: development
+    default: true
