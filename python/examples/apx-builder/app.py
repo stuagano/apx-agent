@@ -186,6 +186,7 @@ async def responses(request: Request):
         options = ClaudeAgentOptions(
             cwd="/tmp",
             allowed_tools=[
+                "Read",
                 "Write",
                 "mcp__apx__manage_workspace_files",
                 "mcp__apx__create_and_deploy_app",
@@ -203,16 +204,18 @@ async def responses(request: Request):
             },
         )
 
-        # On first build call, send a complete task description with all answers
+        # On first build call, send a complete task description with all answers.
+        # The "ALL SPECIFICATIONS COLLECTED" header prevents the LLM from trying
+        # to ask discovery questions — it makes clear these are given inputs, not prompts.
         if ds.build_session_id is None:
             build_message = (
-                "Build and deploy the agent with these specifications:\n"
-                f"- Use case: {ds.answers.get('use_case', '')}\n"
-                f"- Tables: {ds.answers.get('tables', 'none')}\n"
-                f"- Genie spaces: {ds.answers.get('genie', 'none')}\n"
-                f"- Lineage: {ds.answers.get('lineage', 'no')}\n"
-                f"- App name: {ds.answers.get('name', 'my-agent')}\n\n"
-                "Follow the build instructions in your system prompt exactly."
+                "ALL SPECIFICATIONS COLLECTED — proceed directly to build. Do not ask any questions.\n\n"
+                f"Use case: {ds.answers.get('use_case', '')}\n"
+                f"Tables: {ds.answers.get('tables', 'none')}\n"
+                f"Genie spaces: {ds.answers.get('genie', 'none')}\n"
+                f"Lineage: {ds.answers.get('lineage', 'no')}\n"
+                f"App name: {ds.answers.get('name', 'my-agent')}\n\n"
+                "Follow the Phase 2 build instructions in your system prompt."
             )
         else:
             build_message = user_message
