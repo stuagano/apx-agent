@@ -28,19 +28,18 @@ def test_build_phase_uses_create_and_deploy_app():
     assert "create_and_deploy_app" in prompt or "mcp__apx__create_and_deploy_app" in prompt
 
 
-def test_discovery_has_five_questions():
+def test_build_prompt_does_not_ask_discovery_questions():
+    # Discovery is handled by the state machine in app.py — the LLM must not re-ask.
     prompt = get_system_prompt("user@example.com")
-    # All five discovery questions must be present
-    assert "What should your agent do?" in prompt
-    assert "Which tables or data sources should it use?" in prompt
-    assert "Should it connect to any Genie spaces?" in prompt
-    assert "Should it be able to answer questions about data lineage?" in prompt
-    assert "What should we call this agent?" in prompt
+    assert "What should your agent do?" not in prompt
+    assert "Which tables or data sources should it use?" not in prompt
+    assert "Never call any tools until after you have all 5 answers" not in prompt
 
 
-def test_discovery_references_genie_step():
+def test_build_prompt_instructs_no_questions():
     prompt = get_system_prompt("user@example.com")
-    assert "Genie" in prompt or "genie" in prompt
+    lower = prompt.lower()
+    assert "do not ask" in lower or "not ask any questions" in lower or "no questions" in lower
 
 
 def test_no_backtick_rule_present():
