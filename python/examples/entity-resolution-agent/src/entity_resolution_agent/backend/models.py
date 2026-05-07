@@ -1,23 +1,23 @@
-from typing import Any
-
-from pydantic import BaseModel, Field
-from ... import __version__
+from pydantic import BaseModel
+from .. import __version__
 
 
 class VersionOut(BaseModel):
     version: str
 
     @classmethod
-    def from_metadata(cls) -> "VersionOut":
+    def from_metadata(cls):
         return cls(version=__version__)
 
 
-class Application(BaseModel):
-    """Normalized intake application record passed to the agent."""
+class AfrApplication(BaseModel):
+    """Normalized AFR application record passed to the agent."""
     applicant_name: str
     address: str = ""
+    email: str = ""
     account_number: str = ""
-    raw: dict[str, Any] = Field(default_factory=dict)  # original unprocessed fields
+    tenant_id: str = ""
+    raw: dict = {}
 
 
 class Candidate(BaseModel):
@@ -26,14 +26,14 @@ class Candidate(BaseModel):
     name: str
     address: str = ""
     account_number: str = ""
-    score: float  # 0.0–1.0 similarity
+    score: float
 
 
 class EnrollmentDecision(BaseModel):
-    """Final output written to match_decisions."""
+    """Final output written to afr_processing."""
     matched: bool
-    account_id: str | None = None  # canonical match, if any
+    account_id: str | None = None
     category: str  # "EXACT", "HIGH_CONFIDENCE", "LOW_CONFIDENCE", "NO_MATCH"
     rationale: str
-    confidence: float  # 0.0–1.0
+    confidence: float
     candidates_reviewed: int
