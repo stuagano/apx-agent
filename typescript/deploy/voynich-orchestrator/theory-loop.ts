@@ -818,9 +818,6 @@ const TRAP_WORDS: Record<string, Set<string>> = {
  * These are the hallmarks of the sanat-path solution (est, sed, aut, vel, sit,
  * sic, sanat, suum, eis…). Rewarded positively — not penalised.
  */
-// Set to the current folio's expected terms before SA runs; cleared after.
-// Allows hillClimbScore to mirror broadGrounding without touching call sites.
-let _currentFolioTerms: string[] = [];
 
 const PREMIUM_FUNCTION_WORDS: Record<string, string[]> = {
   latin: [
@@ -900,7 +897,7 @@ function functionWordBonus(text: string, language: string): number {
  * Without plantTerms, falls back to dict-only for non-folio contexts.
  */
 export function hillClimbScore(text: string, language: string, plantTerms?: string[]): number {
-  const terms = plantTerms ?? _currentFolioTerms;
+  const terms = plantTerms ?? [];
   const dict = dictionaryScore(text, language);
   const quality = dictionaryQuality(text, language);
   const lm = langModelScore(text, language);
@@ -1369,9 +1366,9 @@ export async function proposeTheory(
   // Load elite pool from Delta on first call (persists across deploys)
   await loadElitePool();
 
-  // Align hillClimbScore with broadGrounding: SA optimizes the same formula
-  // (termScore×0.3 + dictQuality×0.4 + lm×0.3) used to compute grounding_score.
-  _currentFolioTerms = expectedTermsFor(targetFolio, sourceLanguage);
+  // Align hillClimbScore with broadGrounding: capture terms locally so parallel
+  // proposeTheory calls (Promise.all N_RESTARTS) don't race on a shared variable.
+  const localFolioTerms = expectedTermsFor(targetFolio, sourceLanguage);
 
   // Step 1: Count EVA glyph frequencies across ALL folios. For substitution-strip,
   // run the same null preprocessor over the corpus so the seed alphabet matches.
@@ -1393,8 +1390,8 @@ export async function proposeTheory(
       const freqMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
       const filled = { ...freqMap, ...champion.map };
       const decoded = applyMap(evaText, filled);
-      seeds.push({ map: filled, decoded, score: hillClimbScore(decoded, sourceLanguage), origin: 'champion' });
-      console.log(`[theory-loop]   champion seed loaded, score=${hillClimbScore(decoded, sourceLanguage).toFixed(3)}`);
+      seeds.push({ map: filled, decoded, score: hillClimbScore(decoded, sourceLanguage, localFolioTerms), origin: 'champion' });
+      console.log(`[theory-loop]   champion seed loaded, score=${hillClimbScore(decoded, sourceLanguage, localFolioTerms).toFixed(3)}`);
     }
   }
 
@@ -1404,7 +1401,7 @@ export async function proposeTheory(
     // Seed: pure consensus map
     const consensusMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
     const consensusDecoded = applyMap(evaText, consensusMap);
-    seeds.push({ map: consensusMap, decoded: consensusDecoded, score: hillClimbScore(consensusDecoded, sourceLanguage), origin: 'consensus' });
+    seeds.push({ map: consensusMap, decoded: consensusDecoded, score: hillClimbScore(consensusDecoded, sourceLanguage, localFolioTerms), origin: 'consensus' });
 
     // Seeds from crossbreeding elite pool
     const elitesForLang = elitePool.filter((e) => e.language === sourceLanguage);
@@ -1415,7 +1412,7 @@ export async function proposeTheory(
         while (idxB === idxA && elitesForLang.length > 1) idxB = Math.floor(Math.random() * elitesForLang.length);
         const child = crossbreed(elitesForLang[idxA].map, elitesForLang[idxB].map, sourceLanguage);
         const decoded = applyMap(evaText, child);
-        seeds.push({ map: child, decoded, score: hillClimbScore(decoded, sourceLanguage), origin: 'crossbred' });
+        seeds.push({ map: child, decoded, score: hillClimbScore(decoded, sourceLanguage, localFolioTerms), origin: 'crossbred' });
       }
     }
   }
@@ -1429,7 +1426,7 @@ export async function proposeTheory(
     reverseMap[evaFreqs[i][0]] = reverseLetters[Math.min(i, reverseLetters.length - 1)];
   }
   const reverseDecoded = applyMap(evaText, reverseMap);
-  seeds.push({ map: reverseMap, decoded: reverseDecoded, score: hillClimbScore(reverseDecoded, sourceLanguage), origin: 'reverse-freq' });
+  seeds.push({ map: reverseMap, decoded: reverseDecoded, score: hillClimbScore(reverseDecoded, sourceLanguage, localFolioTerms), origin: 'reverse-freq' });
 
   // Seed: vowel hypothesis — map high-freq EVA glyphs to vowels, rest to consonants
   const vowels = sourceLanguage === 'italian' ? ['e','a','i','o','u'] : ['e','i','a','u','o'];
@@ -1445,7 +1442,7 @@ export async function proposeTheory(
     }
   }
   const vowelDecoded = applyMap(evaText, vowelMap);
-  seeds.push({ map: vowelMap, decoded: vowelDecoded, score: hillClimbScore(vowelDecoded, sourceLanguage), origin: 'vowel-hyp' });
+  seeds.push({ map: vowelMap, decoded: vowelDecoded, score: hillClimbScore(vowelDecoded, sourceLanguage, localFolioTerms), origin: 'vowel-hyp' });
 
   // Seed: fully random shuffle — complete restart, no assumptions
   const randomMap: Record<string, string> = {};
@@ -1455,7 +1452,7 @@ export async function proposeTheory(
     randomMap[evaFreqs[i][0]] = shuffled[Math.min(i, shuffled.length - 1)];
   }
   const randomDecoded = applyMap(evaText, randomMap);
-  seeds.push({ map: randomMap, decoded: randomDecoded, score: hillClimbScore(randomDecoded, sourceLanguage), origin: 'random' });
+  seeds.push({ map: randomMap, decoded: randomDecoded, score: hillClimbScore(randomDecoded, sourceLanguage, localFolioTerms), origin: 'random' });
 
   // Seed: historical Newbold-style — EVA 'o'→'a', 'a'→'e', 'i'→'i', 'd'→'d', etc.
   // (phonetic similarity hypothesis — EVA chars look like the Latin letters they encode)
@@ -1466,14 +1463,14 @@ export async function proposeTheory(
     ai: 'ae', ee: 'ii', dy: 'dy', ey: 'ey', ar: 'ar', ck: 'ck',
   };
   const phonDecoded = applyMap(evaText, phonMap);
-  seeds.push({ map: phonMap, decoded: phonDecoded, score: hillClimbScore(phonDecoded, sourceLanguage), origin: 'phonetic' });
+  seeds.push({ map: phonMap, decoded: phonDecoded, score: hillClimbScore(phonDecoded, sourceLanguage, localFolioTerms), origin: 'phonetic' });
 
   // Fill remaining with perturbed consensus
   while (seeds.length < SEED_MAPS) {
     const perturbation = 0.3 + Math.random() * 0.4;  // 0.3-0.7 range — more aggressive
     const map = generateConsensusMap(evaFreqs, sourceLanguage, perturbation);
     const decoded = applyMap(evaText, map);
-    seeds.push({ map, decoded, score: hillClimbScore(decoded, sourceLanguage), origin: 'perturbed' });
+    seeds.push({ map, decoded, score: hillClimbScore(decoded, sourceLanguage, localFolioTerms), origin: 'perturbed' });
   }
 
   seeds.sort((a, b) => b.score - a.score);
@@ -1499,7 +1496,7 @@ export async function proposeTheory(
   const T_INIT = seedMode === 'champion' ? 0.001 : seedMode === 'elite' ? 0.005 : 0.10;
   const T_FINAL = 0.001;
 
-  let bestHillScore = hillClimbScore(bestDecoded, sourceLanguage);
+  let bestHillScore = hillClimbScore(bestDecoded, sourceLanguage, localFolioTerms);
   let curMap = bestMap;
   let curScore = bestHillScore;
   let improvements = 0;
@@ -1510,7 +1507,7 @@ export async function proposeTheory(
       ? mutateMapFocused(curMap, sourceLanguage)
       : mutateMapWild(curMap);
     const decoded = applyMap(evaText, candidate);
-    const score = hillClimbScore(decoded, sourceLanguage);
+    const score = hillClimbScore(decoded, sourceLanguage, localFolioTerms);
     const delta = score - curScore;
 
     if (delta > 0 || Math.random() < Math.exp(delta / t)) {
@@ -1525,7 +1522,6 @@ export async function proposeTheory(
     }
   }
 
-  _currentFolioTerms = [];  // clear after SA — restore stateless default
 
   const dictScore = dictionaryScore(bestDecoded, sourceLanguage);
   const bigramFinal = langModelScore(bestDecoded, sourceLanguage);
