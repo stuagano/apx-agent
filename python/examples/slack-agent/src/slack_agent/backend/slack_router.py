@@ -34,3 +34,25 @@ def _verify_slack_signature(body: bytes, timestamp: str, signature: str, secret:
     basestring = f"v0:{timestamp}:{body.decode('utf-8')}"
     expected = "v0=" + hmac.new(secret.encode(), basestring.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
+
+
+@router.get("/install")
+async def install(
+    user: str = Query(..., description="Slack user ID to associate with the Databricks token"),
+    settings: Settings = Depends(get_settings),
+) -> RedirectResponse:
+    """Redirect to the Databricks OIDC authorization URL.
+
+    Passes the Slack user ID as OAuth 'state' so the callback can store
+    the resulting token against the correct Slack user.
+    """
+    params = urlencode({
+        "response_type": "code",
+        "client_id": settings.databricks_client_id,
+        "redirect_uri": f"{settings.app_url}/slack/oauth/callback",
+        "scope": "all-apis",
+        "state": user,
+    })
+    return RedirectResponse(
+        url=f"https://{settings.databricks_host}/oidc/v1/authorize?{params}"
+    )
