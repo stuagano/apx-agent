@@ -3,3 +3,10 @@
 __pycache__/
 *.pyc
 .git/
+client/node_modules/
+client/src/
+tests/
+evals/
+docs/
+uv.lock
+conftest.py
