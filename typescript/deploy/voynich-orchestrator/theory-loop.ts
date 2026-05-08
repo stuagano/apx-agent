@@ -360,7 +360,6 @@ async function loadEvaCorpus(): Promise<Map<string, string>> {
   return evaCorpusCache;
 }
 
-const FALLBACK_EVA = 'daiin.chedy.qokeedy.shedy.otedy.qokain.chol.chor.shol.shory.cthy.dar.aly';
 
 // ---------------------------------------------------------------------------
 // Target language letter frequencies (by descending frequency)
@@ -1009,11 +1008,11 @@ export async function loadFolios(): Promise<FolioInfo[]> {
       confidence: top.confidence || 0,
       botanical_features: JSON.parse(r.botanical_features || '[]'),
       expected_terms: expected,
-      eva_sample: evaCorpus.get(r.folio_id) || FALLBACK_EVA,
+      eva_sample: evaCorpus.get(r.folio_id) ?? '',
     };
-  });
+  }).filter((f) => f.eva_sample.length > 0);
 
-  console.log(`[theory-loop] Loaded ${folioCache.length} folios, ${evaCorpus.size} with distinct EVA text`);
+  console.log(`[theory-loop] Loaded ${folioCache.length} folios with real EVA text (${evaCorpus.size} in corpus)`);
   return folioCache;
 }
 
