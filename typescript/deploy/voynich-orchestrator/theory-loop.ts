@@ -1437,13 +1437,14 @@ export async function proposeTheory(
   // Champion mode starts near-optimal so uses low T (fine-tuning around champion peak).
   // Elite uses medium T. Cold uses high T to explore broadly.
   const isExplorationSeed = ['reverse-freq', 'vowel-hyp', 'random', 'phonetic'].includes(seedOrigin);
-  const wildRate = seedMode === 'champion' ? 0.10
+  const wildRate = seedMode === 'champion' ? 0.20
     : seedMode === 'cold' ? 0.6
     : isExplorationSeed ? 0.4
     : 0.15;
 
-  // SA temperature: champion starts cold (already near peak), cold starts hot (wide search).
-  const T_INIT = seedMode === 'champion' ? 0.015 : seedMode === 'elite' ? 0.06 : 0.18;
+  // SA temperature: champion is near-greedy (T≈0, no downhill drift), elite/cold use SA.
+  // Champion map is already near a known peak — accepting downhill moves destroys that signal.
+  const T_INIT = seedMode === 'champion' ? 0.002 : seedMode === 'elite' ? 0.06 : 0.18;
   const T_FINAL = 0.001;
 
   let bestHillScore = hillClimbScore(bestDecoded, sourceLanguage);
