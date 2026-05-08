@@ -407,6 +407,86 @@ For deterministic batch enrollment, see [`../afr-enrollment-api/`](../afr-enroll
 
 ---
 
+## Programmatic invocation — the UI is optional
+
+`create_app(agent)` wires three routes that are always present, regardless of whether a UI is deployed:
+
+| Route | Purpose |
+|-------|---------|
+| `POST /responses` | Invoke the agent — streaming SSE or blocking JSON |
+| `GET /.well-known/agent.json` | A2A discovery card — name, description, tool list |
+| `GET /health` | Liveness probe |
+
+Any HTTP client, orchestrator, or agent hub can discover and call this agent without a browser.
+
+### Discover the agent
+
+```bash
+curl https://<your-app-url>/.well-known/agent.json \
+  -H "Authorization: Bearer $(databricks auth token --profile my-workspace)"
+```
+
+```json
+{
+  "name": "entity_resolution_agent",
+  "display_name": "Entity Resolution",
+  "description": "Resolve and deduplicate customer/account entities ...",
+  "url": "https://<your-app-url>",
+  "tools": [
+    {"name": "normalize_record", "description": "..."},
+    {"name": "vector_search",    "description": "..."},
+    ...
+  ]
+}
+```
+
+### Invoke directly (streaming SSE)
+
+```bash
+curl -s -X POST https://<your-app-url>/responses \
+  -H "Authorization: Bearer $(databricks auth token --profile my-workspace)" \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Match: Jon Smyth, 123 Maple Ave Denver", "stream": true}'
+```
+
+### Invoke from Python
+
+```python
+import httpx, subprocess, json
+
+token = subprocess.check_output(
+    ["databricks", "auth", "token", "--profile", "my-workspace"]
+).decode().strip()
+
+with httpx.stream(
+    "POST",
+    "https://<your-app-url>/responses",
+    headers={"Authorization": f"Bearer {token}"},
+    json={"input": "Match: Jon Smyth, 123 Maple Ave Denver", "stream": True},
+    timeout=60,
+) as r:
+    for line in r.iter_lines():
+        if line.startswith("data:"):
+            event = json.loads(line[5:])
+            if event.get("type") == "response.output_text.delta":
+                print(event["delta"], end="", flush=True)
+```
+
+### Register with an agent hub
+
+If you're running the [`../agent-hub/`](../agent-hub/) example, register this agent so it appears in the hub's registry and can be invoked from the hub's chat UI:
+
+```bash
+curl -s -X POST https://<agent-hub-url>/api/agents/register \
+  -H "Authorization: Bearer $(databricks auth token --profile my-workspace)" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://<your-app-url>"}'
+```
+
+The hub crawls `/.well-known/agent.json`, stores the card, and proxies future invocations through its `/api/agents/{id}/invoke` route — no UI or browser required on either end.
+
+---
+
 ## Project structure
 
 ```
