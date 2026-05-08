@@ -56,7 +56,7 @@ app = create_app(agent)
 name = "{app_name}"
 requires-python = ">=3.11"
 dependencies = [
-    "apx-agent @ git+https://github.com/stuagano/apx-agent.git",
+    "apx-agent @ git+https://github.com/stuagano/apx-agent.git#subdirectory=python",
 ]
 
 [tool.apx.agent]
@@ -70,15 +70,31 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 '''
 
+    # requirements.txt alongside pyproject.toml for Databricks Apps pip fallback
+    requirements_txt = '''\
+apx-agent @ git+https://github.com/stuagano/apx-agent.git#subdirectory=python
+fastapi>=0.119.0
+uvicorn>=0.37.0
+databricks-sdk>=0.74.0
+httpx>=0.27.0
+'''
+
     app_yml = '''\
 command:
   - uvicorn
   - app:app
+  - --port
+  - $DATABRICKS_APP_PORT
   - --workers
   - "1"
 '''
 
-    return {"app.py": app_py, "pyproject.toml": pyproject_toml, "app.yml": app_yml}
+    return {
+        "app.py": app_py,
+        "pyproject.toml": pyproject_toml,
+        "requirements.txt": requirements_txt,
+        "app.yml": app_yml,
+    }
 
 
 def _upload_files(ws: WorkspaceClient, files: dict[str, str], workspace_path: str) -> None:
