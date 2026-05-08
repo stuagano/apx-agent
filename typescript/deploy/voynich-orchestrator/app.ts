@@ -406,6 +406,7 @@ app.get('/api/logs', (req, res) => {
 
 app.get('/_apx/results', async (_req, res) => {
   res.setHeader('Content-Type', 'text/html');
+  res.setHeader('Cache-Control', 'no-store');
   res.send(`<!DOCTYPE html>
 <html>
 <head>
