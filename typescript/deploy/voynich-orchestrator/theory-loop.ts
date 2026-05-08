@@ -966,7 +966,7 @@ async function callFMAPI(prompt: string): Promise<string> {
 let folioCache: FolioInfo[] | null = null;
 
 export async function loadFolios(): Promise<FolioInfo[]> {
-  if (folioCache) return folioCache;
+  if (folioCache !== null && folioCache.length > 0) return folioCache;
 
   const [rows, evaCorpus] = await Promise.all([
     executeSql(`
@@ -2684,6 +2684,7 @@ export async function runTheoryLoop(
 ): Promise<Theory[]> {
   const folios = await loadFolios();
   const highConfidence = folios.filter((f) => f.confidence >= 0.5);
+  const folioPool = highConfidence.length > 0 ? highConfidence : folios;
   await loadStrategyStats();
 
   const labelStr = batchLabel ? ` label="${batchLabel}"` : '';
@@ -2702,7 +2703,7 @@ export async function runTheoryLoop(
 
     let burstBest = 0;
     for (let round = 0; round < ROUNDS_PER_BURST; round++) {
-      const folio = highConfidence[Math.floor(Math.random() * highConfidence.length)];
+      const folio = folioPool[Math.floor(Math.random() * folioPool.length)];
       console.log(`[theory-loop] Burst ${burst + 1} Round ${round}: ${folio.folio_id} (${folio.plant_name}) [${strategy.cipherType}/${strategy.seedMode}]`);
 
       const traceLabel = `burst ${burst + 1}/round ${round} ${folio.folio_id} [${strategy.cipherType}/${strategy.language}/${strategy.seedMode}]`;
