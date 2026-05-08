@@ -451,6 +451,30 @@ app.get('/_apx/results', async (_req, res) => {
     <div id="activity" style="background:#0d0d1a;border:1px solid #20203a;border-radius:8px;padding:10px 12px;max-height:300px;overflow-y:auto"></div>
   </div>
 
+  <div class="section" id="champ-section">
+    <h2>Champion Decipherment</h2>
+    <div id="champ-error"></div>
+    <div class="sa-grid">
+      <div class="sa-panel">
+        <h3>Translation Key — EVA → Italian</h3>
+        <div id="champ-key"><span style="color:#444">Loading...</span></div>
+      </div>
+      <div class="sa-panel">
+        <h3>Best Theory</h3>
+        <div id="champ-info"><span style="color:#444">Loading...</span></div>
+      </div>
+    </div>
+    <div class="sa-panel" style="margin-top:12px">
+      <h3>Decoded Text — word by word</h3>
+      <div style="font-size:10px;color:#555;margin-bottom:10px">
+        <span style="background:#1a3a1a;color:#4caf50;padding:1px 5px;border-radius:3px;margin-right:8px">expected botanical term</span>
+        <span style="background:#172030;color:#64b5f6;padding:1px 5px;border-radius:3px;margin-right:8px">Italian dictionary word</span>
+        <span style="color:#444;padding:1px 5px;border-radius:3px;border:1px solid #1a1a2e">unmatched — hover for EVA</span>
+      </div>
+      <div id="champ-decoded" style="line-height:2.2;font-family:monospace;font-size:12px"><span style="color:#444">Loading...</span></div>
+    </div>
+  </div>
+
   <div class="section">
     <h2>Top Theories (All Time)</h2>
     <table>
@@ -696,13 +720,153 @@ app.get('/_apx/results', async (_req, res) => {
       } catch(e) {}
     }
 
-    loadLogs(); loadActivity(); loadDb();
+    // ── Champion Decipherment ────────────────────────────────────────────────
+    // Small Italian dictionary for secondary highlighting (not botanical but real words)
+    const ITALIAN_WORDS = new Set(['il','la','lo','le','gli','un','una','di','del','della','dei','delle','degli','in','per','con','non','che','ha','si','al','nel','sul','tra','fra','da','a','e','o','ma','se','ne','ci','vi','lui','lei','noi','voi','io','tu','ho','ai','agli','alle','sui','fra','era','sono','è','ed','od','né']);
+
+    async function loadChampionDecipherment() {
+      try {
+        const data = await fetch('/api/champion-decipherment').then(r => r.json());
+        if (data.error) {
+          document.getElementById('champ-error').innerHTML =
+            '<div style="background:#2a0a0a;border:1px solid #5a1a1a;border-radius:6px;padding:8px 12px;color:#ef5350;font-size:12px;margin-bottom:14px">'+data.error+'</div>';
+          return;
+        }
+
+        // Info panel
+        const combined = (data.grounding + data.consistency).toFixed(3);
+        document.getElementById('champ-info').innerHTML =
+          '<div style="margin-bottom:10px">' +
+          '<div style="color:#ccc;font-size:14px;font-weight:600">' + data.folio + ' — ' + (data.plant || 'unknown') + '</div>' +
+          '<div style="font-size:11px;color:#666;margin-top:4px;font-family:monospace">' +
+          'grounding=' + data.grounding.toFixed(3) + '  consistency=' + data.consistency.toFixed(3) + '  combined=<b style="color:#4caf50">' + combined + '</b>' +
+          '</div><div style="font-size:10px;color:#444;margin-top:4px">id: ' + data.id + '</div>' +
+          '</div>' +
+          '<div style="font-size:11px;color:#555;margin-top:8px">Expected botanical terms:</div>' +
+          '<div style="margin-top:4px;line-height:1.8">' +
+          (data.expectedTerms || []).map(t =>
+            '<span style="display:inline-block;background:#0d2a0d;border:1px solid #1a4a1a;border-radius:3px;color:#81c784;font-size:11px;padding:1px 6px;margin:2px;font-family:monospace">'+t+'</span>'
+          ).join('') +
+          '</div>';
+
+        // Translation key — sort by EVA symbol length then alphabetically
+        const entries = Object.entries(data.symbolMap || {})
+          .sort((a, b) => a[0].length - b[0].length || a[0].localeCompare(b[0]));
+        document.getElementById('champ-key').innerHTML =
+          '<div style="display:flex;flex-wrap:wrap;gap:5px">' +
+          entries.map(([eva, letter]) =>
+            '<div style="background:#0d0d20;border:1px solid #1e1e38;border-radius:4px;padding:3px 8px;font-family:monospace;font-size:12px;white-space:nowrap">' +
+            '<span style="color:#9575cd">' + eva + '</span>' +
+            '<span style="color:#333"> → </span>' +
+            '<span style="color:#4dd0e1;font-weight:700">' + letter + '</span>' +
+            '</div>'
+          ).join('') +
+          '</div>';
+
+        // Word-by-word decoded text
+        const evaWords = (data.evaText || '').trim().split(/\s+/).filter(Boolean);
+        const decWords = (data.decodedText || '').trim().split(/\s+/).filter(Boolean);
+        const termSet = new Set((data.expectedTerms || []).map(t => t.toLowerCase()));
+
+        document.getElementById('champ-decoded').innerHTML =
+          evaWords.map((eva, i) => {
+            const dec = (decWords[i] || '').toLowerCase();
+            const raw = decWords[i] || '?';
+            const isTerm = termSet.has(dec);
+            const isItalian = !isTerm && ITALIAN_WORDS.has(dec);
+            const bg = isTerm ? '#1a3a1a' : isItalian ? '#172030' : 'transparent';
+            const border = isTerm ? '1px solid #2a5a2a' : isItalian ? '1px solid #1e3048' : '1px solid #1a1a2e';
+            const color = isTerm ? '#66bb6a' : isItalian ? '#64b5f6' : '#555';
+            const weight = isTerm ? '700' : '400';
+            return '<span title="EVA: ' + eva + '" style="display:inline-block;margin:2px 3px;padding:3px 7px;border-radius:4px;background:'+bg+';border:'+border+';cursor:default;vertical-align:middle">' +
+              '<span style="font-size:9px;color:#333;display:block;line-height:1.2;text-align:center">'+eva+'</span>' +
+              '<span style="color:'+color+';font-weight:'+weight+';font-size:12px">'+raw+'</span>' +
+              '</span>';
+          }).join('');
+
+      } catch(e) {
+        document.getElementById('champ-error').innerHTML =
+          '<div style="color:#ef5350;font-size:12px">Failed to load: ' + e.message + '</div>';
+      }
+    }
+
+    loadLogs(); loadActivity(); loadDb(); loadChampionDecipherment();
     setInterval(loadLogs, 1000);
     setInterval(loadActivity, 3000);
     setInterval(loadDb, 30000);
+    setInterval(loadChampionDecipherment, 120000);
   </script>
 </body>
 </html>`);
+});
+
+// Champion decipherment — best theory's symbol map, EVA text, and expected terms
+app.get('/api/champion-decipherment', async (_req, res) => {
+  try {
+    const { resolveToken: rt, resolveHost: rh } = await import('./appkit-agent/index.mjs');
+    const tk = await rt();
+    const h = rh();
+    const wid = process.env.DATABRICKS_WAREHOUSE_ID;
+
+    async function sql(statement: string) {
+      const r = await fetch(h + '/api/2.0/sql/statements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk },
+        body: JSON.stringify({ warehouse_id: wid, statement, wait_timeout: '30s' }),
+      });
+      const d = await r.json() as { manifest?: { schema?: { columns?: { name: string }[] } }; result?: { data_array?: string[][] } };
+      const cols = (d.manifest?.schema?.columns ?? []).map((c) => c.name);
+      return (d.result?.data_array ?? []).map((row) => {
+        const o: Record<string, string> = {};
+        cols.forEach((c, i) => { o[c] = row[i]; });
+        return o;
+      });
+    }
+
+    // Best theory
+    const theories = await sql(
+      `SELECT id, target_folio, target_plant, symbol_map, decoded_text,
+              grounding_score, consistency_score
+       FROM serverless_stable_qh44kx_catalog.voynich.theories
+       WHERE source_language = 'italian' AND cipher_type = 'substitution'
+         AND symbol_map IS NOT NULL AND symbol_map != '{}'
+       ORDER BY grounding_score + consistency_score DESC LIMIT 1`
+    );
+    if (!theories.length) return res.json({ error: 'no theories yet' });
+    const t = theories[0];
+
+    // EVA text for that folio
+    const evaRows = await sql(
+      `SELECT eva_text FROM serverless_stable_qh44kx_catalog.voynich.eva_corpus
+       WHERE folio_id = '${t.target_folio}' AND section = 'herbal' LIMIT 1`
+    );
+    const evaText = evaRows[0]?.eva_text ?? '';
+
+    // Expected terms for that folio
+    const folioRows = await sql(
+      `SELECT expected_terms FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis
+       WHERE folio_id = '${t.target_folio}' LIMIT 1`
+    );
+    let expectedTerms: string[] = [];
+    try {
+      const parsed = JSON.parse(folioRows[0]?.expected_terms ?? '{}') as Record<string, string[]>;
+      expectedTerms = (parsed.italian ?? []).map((s) => s.toLowerCase());
+    } catch { /* leave empty */ }
+
+    res.json({
+      id: t.id,
+      folio: t.target_folio,
+      plant: t.target_plant,
+      symbolMap: JSON.parse(t.symbol_map) as Record<string, string>,
+      decodedText: t.decoded_text,
+      evaText,
+      expectedTerms,
+      grounding: parseFloat(t.grounding_score),
+      consistency: parseFloat(t.consistency_score),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // SQL proxy for the dashboard
