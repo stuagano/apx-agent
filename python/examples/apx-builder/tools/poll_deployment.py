@@ -25,14 +25,16 @@ def poll_deployment(app_name: str, ws: Dependencies.UserClient) -> str:
     app_url = app.url
 
     # Stage 2: HTTP readiness (up to 60s)
+    # Try /health first, fall back to / — apx-agent's create_app serves agent info at root
     deadline = time.time() + 60
     while time.time() < deadline:
-        try:
-            r = httpx.get(f"{app_url}/health", timeout=5.0)
-            if r.status_code == 200:
-                return app_url
-        except Exception:
-            pass
+        for path in ("/health", "/"):
+            try:
+                r = httpx.get(f"{app_url}{path}", timeout=5.0)
+                if r.status_code == 200:
+                    return app_url
+            except Exception:
+                pass
         time.sleep(5)
 
     return f"{app_url} (warning: health check timed out — try in 30 seconds)"

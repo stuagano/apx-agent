@@ -2,9 +2,24 @@ from unittest.mock import MagicMock, patch, call
 from tools.scaffold_project import _generate_files, scaffold_project, GenieSpace
 
 
-def test_generate_files_returns_three_required_files():
+def test_generate_files_returns_required_files():
     files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
-    assert set(files.keys()) == {"app.py", "pyproject.toml", "app.yml"}
+    assert set(files.keys()) == {"app.py", "pyproject.toml", "requirements.txt", "app.yml"}
+
+
+def test_generate_files_app_yml_specifies_port():
+    files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
+    assert "$DATABRICKS_APP_PORT" in files["app.yml"]
+
+
+def test_generate_files_pyproject_subdirectory():
+    files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
+    assert "#subdirectory=python" in files["pyproject.toml"]
+
+
+def test_generate_files_requirements_txt_subdirectory():
+    files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
+    assert "#subdirectory=python" in files["requirements.txt"]
 
 
 def test_generate_files_app_py_includes_sql_tool_for_each_table():
