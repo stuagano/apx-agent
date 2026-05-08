@@ -50,7 +50,35 @@ The OAuth `state` parameter is a server-side nonce (not the raw Slack user ID) t
   → POST result back to Slack via response_url
 ```
 
-## Configuration
+## Setup
+
+### 1. Create a Databricks OAuth app
+
+In your Databricks workspace: **Settings → Developer → App Connections → Create app**
+
+- Name: anything (e.g. `slack-agent`)
+- Redirect URI: `https://{your-app-url}/slack/oauth/callback`
+  - If running locally with ngrok: `https://{ngrok-subdomain}.ngrok.io/slack/oauth/callback`
+- Save the **Client ID** and **Client Secret**
+
+### 2. Create a Slack app
+
+At [api.slack.com/apps](https://api.slack.com/apps) → **Create New App → From Scratch**
+
+**Add a slash command** (under *Slash Commands*):
+- Command: `/connect`
+- Request URL: `https://{your-app-url}/slack/events`
+- Repeat for any other commands you want (e.g. `/whoami`)
+
+**Enable OAuth** (under *OAuth & Permissions*):
+- Add redirect URL: `https://{your-app-url}/slack/oauth/callback`
+- Add bot token scopes: `commands`, `chat:write`
+
+Install the app to your workspace and grab:
+- **Signing Secret** (under *Basic Information → App Credentials*)
+- **Bot Token** (`xoxb-...`) (under *OAuth & Permissions*)
+
+### 3. Configure environment
 
 Copy `.env.example` to `.env` and fill in:
 
@@ -63,12 +91,18 @@ SLACK_SIGNING_SECRET=...
 SLACK_BOT_TOKEN=xoxb-...
 ```
 
-## Running Locally
+`APP_URL` must be the public URL that Slack can reach — either your Databricks Apps URL or an ngrok tunnel for local development.
+
+### 4. Run
 
 ```bash
 uv sync
 uv run uvicorn slack_agent.backend.app:app --reload
 ```
+
+### 5. Connect your Databricks account
+
+In Slack, type `/connect`. Click the link in the ephemeral response, authenticate with Databricks, and you'll be redirected back with "Connected!". Then try `/whoami`.
 
 ## File Structure
 
