@@ -66,9 +66,9 @@ cd apx-agent/python/examples/slack-agent
 uv sync
 ```
 
-## Setup
+## Part 1: Workspace setup (one-time)
 
-### 1. Create a Databricks OAuth app
+### Step 1: Create a Databricks OAuth app
 
 In your Databricks workspace: **Settings → Developer → App Connections → Create app**
 
@@ -77,7 +77,7 @@ In your Databricks workspace: **Settings → Developer → App Connections → C
   - If running locally with ngrok: `https://{ngrok-subdomain}.ngrok.io/slack/oauth/callback`
 - Save the **Client ID** and **Client Secret**
 
-### 2. Create a Slack app
+### Step 2: Create a Slack app
 
 At [api.slack.com/apps](https://api.slack.com/apps) → **Create New App → From Scratch**
 
@@ -94,7 +94,11 @@ Install the app to your workspace and grab:
 - **Signing Secret** (under *Basic Information → App Credentials*)
 - **Bot Token** (`xoxb-...`) (under *OAuth & Permissions*)
 
-### 3. Configure environment
+---
+
+## Part 2: Local development
+
+### Step 1: Configure environment
 
 Copy `.env.example` to `.env` and fill in:
 
@@ -109,16 +113,52 @@ SLACK_BOT_TOKEN=xoxb-...
 
 `APP_URL` must be the public URL that Slack can reach — either your Databricks Apps URL or an ngrok tunnel for local development.
 
-### 4. Run
+### Step 2: Run locally
 
 ```bash
 uv sync
 uv run uvicorn slack_agent.backend.app:app --reload
 ```
 
-### 5. Connect your Databricks account
+### Step 3: Connect your Databricks account
 
 In Slack, type `/connect`. Click the link in the ephemeral response, authenticate with Databricks, and you'll be redirected back with "Connected!". Then try `/whoami`.
+
+### Step 4: Run tests
+
+```bash
+uv run pytest tests/ -v   # 25 passed
+```
+
+---
+
+## Part 3: Deploy to Databricks Apps
+
+### Step 1: Set `APP_URL` in `.env`
+
+Change `APP_URL` from your ngrok tunnel (or `localhost`) to your Databricks Apps public URL:
+
+```
+APP_URL=https://your-app.databricksapps.com
+```
+
+### Step 2: Update redirect URIs
+
+- **Databricks OAuth app** — update the redirect URI to `https://{your-app-url}/slack/oauth/callback`
+- **Slack app** — update the slash command Request URL to `https://{your-app-url}/slack/events` and the OAuth redirect URL to `https://{your-app-url}/slack/oauth/callback`
+
+### Step 3: Deploy
+
+```bash
+uv run apx deploy
+```
+
+### Step 4: Verify
+
+```bash
+databricks apps get slack-agent
+# look for "state": "RUNNING"
+```
 
 ## File Structure
 
