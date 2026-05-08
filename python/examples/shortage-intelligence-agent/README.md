@@ -18,6 +18,16 @@ The agent runs a five-step sequential investigation:
 4. **Vendor Pricing** — checks DigiKey for live price, stock quantity, and lead time; finds spec-matched alternative parts
 5. **Dual Report Generation** — synthesizes findings into separate reports for the sourcing and sales teams
 
+## Prerequisites
+
+| Requirement | Version / Notes |
+|-------------|----------------|
+| Python | 3.11+ |
+| [uv](https://docs.astral.sh/uv/) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| apx-agent | Not yet on PyPI — clone this repo: `git clone https://github.com/stuagano/apx-agent` |
+| Databricks CLI | `pip install databricks-cli` or `brew install databricks/tap/databricks` |
+| Databricks workspace | Unity Catalog, SQL warehouse, Genie space, Knowledge Assistant endpoint |
+
 ## Architecture
 
 ```
@@ -111,6 +121,9 @@ A Databricks Job (`shortage-morning-scan` in `databricks.yml`) runs the pipeline
 ## Development
 
 ```bash
+git clone https://github.com/stuagano/apx-agent
+cd apx-agent/python/examples/shortage-intelligence-agent
+uv sync
 uv run uvicorn shortage_intelligence_agent.backend.app:app --reload --port 8000
 ```
 

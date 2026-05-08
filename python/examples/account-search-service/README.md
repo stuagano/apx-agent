@@ -2,6 +2,15 @@
 
 A standalone Databricks App that exposes utility account search as an HTTP API. Designed to be deployed independently and called by other services — the AFR enrollment pipeline, the entity-resolution LLM agent, or any other service that needs fuzzy account lookup.
 
+## Prerequisites
+
+| Requirement | Version / Notes |
+|-------------|----------------|
+| Python | 3.11+ |
+| [uv](https://docs.astral.sh/uv/) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| apx-agent | Not yet on PyPI — clone this repo: `git clone https://github.com/stuagano/apx-agent` |
+| Databricks workspace | Required for live mode; not needed for `DEMO_MODE=true` |
+
 ## What it does
 
 `POST /api/search` normalizes a name+address, selects the right search strategy, fans out across three Vector Search indexes, and returns deduplicated candidates.
@@ -17,7 +26,8 @@ Names with initials (J. Smith) or acronyms (ABC LLC) bypass Vector Search and us
 ## Quick start (demo mode)
 
 ```bash
-cd account-search-service
+git clone https://github.com/stuagano/apx-agent
+cd apx-agent/python/examples/account-search-service
 uv sync
 DEMO_MODE=true uv run uvicorn account_search_service.backend.app:app --reload
 ```

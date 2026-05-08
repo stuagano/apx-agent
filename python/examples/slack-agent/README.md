@@ -50,28 +50,23 @@ The OAuth `state` parameter is a server-side nonce (not the raw Slack user ID) t
   → POST result back to Slack via response_url
 ```
 
-## Setup
+## Prerequisites
 
-### 0. Clone the repo and install dependencies
-
-This example depends on `apx-agent` as a local editable install (not yet on PyPI).
+| Requirement | Version / Notes |
+|-------------|----------------|
+| Python | 3.11+ |
+| [uv](https://docs.astral.sh/uv/) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| apx-agent | Not yet on PyPI — clone this repo: `git clone https://github.com/stuagano/apx-agent` |
+| Slack workspace | Admin access to create a Slack app at api.slack.com |
+| Databricks workspace | Apps enabled, OAuth app configured (see Setup) |
 
 ```bash
-git clone https://github.com/stuagano/apx-agent.git
+git clone https://github.com/stuagano/apx-agent
 cd apx-agent/python/examples/slack-agent
-```
-
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you don't have it:
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-Then sync dependencies (this picks up `apx-agent` from the local `../..` path automatically):
-
-```bash
 uv sync
 ```
+
+## Setup
 
 ### 1. Create a Databricks OAuth app
 

@@ -36,6 +36,19 @@ The React frontend reads `output_text.delta` SSE events and streams text into th
 
 ---
 
+## Prerequisites
+
+| Requirement | Version / Notes |
+|-------------|----------------|
+| Python | 3.11+ |
+| Node.js | 18+ (for the React frontend) |
+| [uv](https://docs.astral.sh/uv/) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| apx-agent | Not yet on PyPI — clone this repo: `git clone https://github.com/stuagano/apx-agent` |
+| Databricks CLI | `pip install databricks-cli` or `brew install databricks/tap/databricks` |
+| Databricks workspace | Apps enabled; at least one deployed apx-agent app to register |
+
+---
+
 ## Seeding agents
 
 Add agents in `router.py` — hardcode known ones or auto-crawl on startup:
