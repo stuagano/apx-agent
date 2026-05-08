@@ -1,7 +1,7 @@
 """Tests for anthropic_proxy.py — translation functions."""
 import json
 
-from anthropic_proxy import _to_openai, _to_anthropic
+from anthropic_proxy import _to_openai, _to_anthropic, _MAX_TOOL_RESULT_CHARS, _trim_tool_result
 
 
 def test_to_openai_simple_user_message():
@@ -185,6 +185,39 @@ def test_to_anthropic_tool_use():
     assert tu["id"] == "call_1"
     assert tu["name"] == "search"
     assert tu["input"] == {"q": "test"}
+
+
+def test_trim_tool_result_short_passthrough():
+    short = "File written: /tmp/agent/prompt.py"
+    assert _trim_tool_result(short) == short
+
+
+def test_trim_tool_result_long_truncated():
+    long_text = "x" * (_MAX_TOOL_RESULT_CHARS + 500)
+    result = _trim_tool_result(long_text)
+    assert len(result) < len(long_text)
+    assert result.startswith("x" * _MAX_TOOL_RESULT_CHARS)
+    assert "[trimmed" in result
+
+
+def test_to_openai_tool_result_trimmed_when_long():
+    long_content = "a" * (_MAX_TOOL_RESULT_CHARS + 1000)
+    body = {
+        "model": "m",
+        "max_tokens": 100,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tc_789", "content": long_content},
+                ],
+            }
+        ],
+    }
+    result = _to_openai(body)
+    msg = result["messages"][0]
+    assert len(msg["content"]) < len(long_content)
+    assert "[trimmed" in msg["content"]
 
 
 def test_to_anthropic_length_finish_reason():
