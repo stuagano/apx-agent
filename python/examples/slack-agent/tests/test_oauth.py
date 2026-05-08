@@ -51,3 +51,54 @@ def test_install_includes_redirect_uri(client):
     location = resp.headers["location"]
     assert "redirect_uri=" in location
     assert "slack%2Foauth%2Fcallback" in location or "slack/oauth/callback" in location
+
+
+def test_oauth_callback_stores_token(client):
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"access_token": "dapi-real-token"}
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with patch("slack_agent.backend.slack_router.httpx.AsyncClient") as MockAsyncClient:
+        MockAsyncClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockAsyncClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        resp = client.get("/slack/oauth/callback?code=abc123&state=U123")
+
+    assert resp.status_code == 200
+    assert "Connected" in resp.text
+    assert token_store.get_token("U123") == "dapi-real-token"
+
+
+def test_oauth_callback_failed_exchange_returns_502(client):
+    mock_response = MagicMock()
+    mock_response.status_code = 400
+    mock_response.text = "bad_verification_code"
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with patch("slack_agent.backend.slack_router.httpx.AsyncClient") as MockAsyncClient:
+        MockAsyncClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockAsyncClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        resp = client.get("/slack/oauth/callback?code=bad&state=U123")
+
+    assert resp.status_code == 502
+    assert token_store.get_token("U123") is None
+
+
+def test_oauth_callback_missing_access_token_returns_502(client):
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {}  # no access_token key
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with patch("slack_agent.backend.slack_router.httpx.AsyncClient") as MockAsyncClient:
+        MockAsyncClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockAsyncClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        resp = client.get("/slack/oauth/callback?code=abc&state=U123")
+
+    assert resp.status_code == 502
