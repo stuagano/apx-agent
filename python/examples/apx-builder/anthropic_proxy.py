@@ -36,6 +36,18 @@ def _get_sdk_auth_header(host: str) -> str:
     return headers.get("Authorization", "")
 
 
+# Tool results accumulate in history on every subsequent call; trimming keeps input tokens
+# from snowballing as the build progresses through multiple file writes.
+_MAX_TOOL_RESULT_CHARS = 1500
+
+
+def _trim_tool_result(text: str) -> str:
+    if len(text) <= _MAX_TOOL_RESULT_CHARS:
+        return text
+    logger.debug("Trimming tool result from %d to %d chars", len(text), _MAX_TOOL_RESULT_CHARS)
+    return text[:_MAX_TOOL_RESULT_CHARS] + f"\n[trimmed — {len(text)} chars total]"
+
+
 def _to_openai(body: dict) -> dict:
     messages = list(body.get("messages", []))
 
@@ -83,7 +95,7 @@ def _to_openai(body: dict) -> dict:
                 converted.append({
                     "role": "tool",
                     "tool_call_id": tr.get("tool_use_id", ""),
-                    "content": tr_content,
+                    "content": _trim_tool_result(tr_content),
                 })
             if text_parts:
                 converted.append({"role": "user", "content": "\n".join(text_parts)})
