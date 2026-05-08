@@ -102,16 +102,19 @@ def test_command_with_token_returns_200_and_fires_task(client):
     mock_task.assert_called_once()
 
 
-def test_command_with_token_passes_correct_args_to_dispatch(client):
+def test_dispatch_receives_obo_token_and_host(client):
     token_store.set_token("U123", "dapi-real-token")
-    body, headers = _slash(command="/whoami", user_id="U123", text="")
-    captured = {}
+    body, headers = _slash(command="/whoami", user_id="U123", text="hello")
 
-    def capture_task(coro):
-        captured["coro"] = coro
-        coro.close()  # prevent ResourceWarning
+    with patch("slack_agent.backend.slack_router._dispatch_to_agent") as mock_dispatch:
+        mock_dispatch.return_value = None  # _dispatch_to_agent is async but create_task wraps it
+        with patch("slack_agent.backend.slack_router.asyncio.create_task"):
+            client.post("/slack/events", content=body, headers=headers)
 
-    with patch("slack_agent.backend.slack_router.asyncio.create_task", side_effect=capture_task):
-        client.post("/slack/events", content=body, headers=headers)
-
-    assert "coro" in captured
+    mock_dispatch.assert_called_once_with(
+        text="hello",
+        slack_user_id="U123",
+        response_url="https://hooks.slack.com/resp/abc",
+        databricks_token="dapi-real-token",
+        databricks_host="adb-123.azuredatabricks.net",
+    )
