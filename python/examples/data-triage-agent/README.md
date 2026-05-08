@@ -73,31 +73,111 @@ This replaces a single agent with a long checklist. Instead of hoping the LLM fo
 | Databricks CLI | `pip install databricks-cli` or `brew install databricks/tap/databricks` |
 | Databricks workspace | SQL warehouse, Unity Catalog lineage enabled, Genie space (optional) |
 
-> **Also required:** The [data-inspector](../data-inspector/) sub-agent must be deployed before running this agent. Deploy it first and note its URL — you'll set it as `DATA_INSPECTOR_URL`.
+> **Also required:** The [data-inspector](../data-inspector/) sub-agent must be deployed (or running locally) before running this agent. Deploy it first and note its URL — you'll set it as `DATA_INSPECTOR_URL`.
 
 ---
 
-## Run locally
+## Part 1: Workspace setup (one-time)
+
+### Step 1: Deploy data-inspector first
+
+This agent delegates SQL and Delta forensics to data-inspector via A2A. You need data-inspector running before starting data-triage-agent. Follow [../data-inspector/README.md — Part 3](../data-inspector/README.md#part-3-deploy-to-databricks-apps) to deploy it and note the public URL.
+
+For local development only, you can run it locally on port 9000 instead of deploying — see [Part 2](#part-2-local-development) below.
+
+### Step 2: (Optional) Note your Genie space ID
+
+The `genie_agent` step queries a Genie space for domain context. To use it:
+
+1. In the Databricks UI, go to **AI/BI → Genie**
+2. Open the Genie space you want to query
+3. Copy the space ID from the URL: `https://<workspace>/genie/spaces/<SPACE_ID>`
+
+You'll set this as `GENIE_SPACE_ID` in your `.env` (local) or in `databricks.yml` variables (deployed). It's optional — the pipeline skips the Genie step if no space is configured.
+
+### Step 3: (Optional) GitHub personal access token
+
+The `code_agent` step reads source notebooks and Python files from GitHub to look for filter or logic bugs. To use it:
+
+1. Go to **GitHub → Settings → Developer settings → Personal access tokens**
+2. Create a token with `repo:read` scope (read-only access to source code)
+
+You'll set this as `GITHUB_TOKEN` in your `.env`.
+
+---
+
+## Part 2: Local development
+
+### Step 1: Install
 
 ```bash
-git clone https://github.com/stuagano/apx-agent
-cd python/examples/data-triage-agent
-
+cd examples/data-triage-agent
 uv sync
-
-# Point to a running data-inspector (local or deployed)
-DATA_INSPECTOR_URL=http://localhost:9000 \
-uv run uvicorn data_triage_agent.backend.app:app --port 8001
 ```
 
-In a separate terminal, start the data-inspector:
+### Step 2: Configure your Databricks CLI profile
+
+```bash
+databricks configure --profile my-workspace
+# enter workspace URL and personal access token when prompted
+
+databricks current-user me --profile my-workspace
+# should return your user info
+```
+
+### Step 3: Create a `.env` file
+
+```env
+DATABRICKS_CONFIG_PROFILE=my-workspace
+
+# Required: point to a running data-inspector (local or deployed)
+DATA_INSPECTOR_URL=http://localhost:9000
+
+# Optional: Genie space for domain context (Step 2 above)
+# GENIE_SPACE_ID=abc123
+
+# Optional: GitHub access for source code inspection (Step 3 above)
+# GITHUB_TOKEN=ghp_...
+```
+
+> `.env` is gitignored. Never commit it.
+
+### Step 4: Run the tests
+
+All tests mock external dependencies — no live Databricks connection needed:
+
+```bash
+uv run pytest tests/ -v
+```
+
+Expected:
+
+```
+tests/test_config.py::test_settings_loads_from_env PASSED
+tests/test_investigate.py::test_extract_query_all_fields PASSED
+tests/test_jira_client.py::... PASSED
+tests/test_webhook.py::... PASSED
+```
+
+### Step 5: Run locally (two-terminal setup)
+
+Start data-inspector first (terminal 1):
 
 ```bash
 cd ../data-inspector
-uv run uvicorn data_inspector.backend.app:app --port 9000
+DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn data_inspector.backend.app:app --port 9000 --reload
 ```
 
-Try it:
+Then start data-triage-agent (terminal 2):
+
+```bash
+cd ../data-triage-agent
+DATA_INSPECTOR_URL=http://localhost:9000 \
+DATABRICKS_CONFIG_PROFILE=my-workspace \
+uv run uvicorn data_triage_agent.backend.app:app --port 8001 --reload
+```
+
+The chat interface opens at `http://localhost:8001`. Try:
 
 ```
 Why is catalog.schema.daily_summary missing data for 2024-03-15?
@@ -106,55 +186,41 @@ The events table has no rows after midnight — what happened?
 
 ---
 
-## Deploy to Databricks Apps
+## Part 3: Deploy to Databricks Apps
 
-### Prerequisites
+### Step 1: Set `DATA_INSPECTOR_URL` in `app.yml`
 
-- **Databricks CLI** — [install](https://docs.databricks.com/dev-tools/cli/databricks-cli.html)
-- **uv** — `pip install uv`
-- A Databricks workspace with [Apps enabled](https://docs.databricks.com/en/dev-tools/databricks-apps/index.html)
-- **data-inspector deployed** — get its URL first
-
-### 1. Authenticate
-
-```bash
-databricks auth login --host https://<your-workspace>.azuredatabricks.net
-databricks current-user me
-```
-
-### 2. Get the code
-
-```bash
-git clone https://github.com/stuagano/apx-agent
-cd python/examples/data-triage-agent
-```
-
-### 3. Configure `app.yml`
-
-Set the data-inspector URL:
+Replace the empty value with the deployed data-inspector URL from Part 1:
 
 ```yaml
 env:
-  DATA_INSPECTOR_URL: "https://<your-data-inspector-app>.databricksapps.com"
+  - name: DATA_INSPECTOR_URL
+    value: "https://<your-data-inspector-app>.databricksapps.com"
+  - name: AGENT_HUB_URL
+    value: ""
 ```
 
-### 4. Build
+Or set it via `databricks.yml` variables for the `dev` target:
 
-```bash
-uv build --wheel -o .build/
-ls .build/*.whl | xargs basename > .build/requirements.txt
+```yaml
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      data_inspector_url: "https://<your-data-inspector-app>.databricksapps.com"
 ```
 
-### 5. Deploy
+### Step 2: Deploy
 
 ```bash
-databricks bundle deploy
+uv run apx deploy
 ```
 
-Check status:
+### Step 3: Verify
 
 ```bash
-databricks apps get mcp-data-triage -o json | python3 -c "
+databricks apps get mcp-data-triage --profile my-workspace -o json | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 print('URL:   ', d.get('url', 'not yet available'))
@@ -162,12 +228,11 @@ print('State: ', d.get('app_status', {}).get('state', 'unknown'))
 "
 ```
 
-### Redeploy after changes
+When `State: RUNNING`, the agent is live. Test it:
 
 ```bash
-uv build --wheel -o .build/
-ls .build/*.whl | xargs basename > .build/requirements.txt
-databricks bundle deploy
+curl -s https://<your-app-url>/api/version \
+  -H "Authorization: Bearer $(databricks auth token --profile my-workspace)"
 ```
 
 ---
