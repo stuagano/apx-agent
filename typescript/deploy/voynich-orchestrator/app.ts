@@ -408,10 +408,36 @@ app.get('/_apx/results', async (_req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.setHeader('Cache-Control', 'no-store');
 
-  // Pre-fetch data server-side so the page renders with real content immediately.
-  // JS will update it live; this prevents a blank first-load if API calls are slow.
+  // Pre-fetch all data server-side — page is static (no live JS polling).
+  type SsrTheory = { folio: string; plant: string; lang: string; grd: string; cons: string; combined: string; decoded: string };
+  type SsrChampion = { id: string; folio: string; plant: string; symbolMap: Record<string,string>; decodedText: string; evaText: string; expectedTerms: string[]; grounding: number; consistency: number } | null;
+
   let ssrActivity = { burst: 0, round: 0, activeStrategy: 'idle', allTimeBest: 0, entries: [] as typeof activityLog };
   let ssrSummary = { total: '—', best: '—', best_grd: '—', avg: '—', last_hour: '—' };
+  let ssrTopTheories: SsrTheory[] = [];
+  let ssrRecentTheories: SsrTheory[] = [];
+  let ssrChampion: SsrChampion = null;
+  let ssrSaState = { restarts: [] as {mode:string;score:number}[], runs: [] as {impr:number;dict:number;lm:number;combined:number}[] };
+
+  // Parse SA state from in-process log ring — no network call needed.
+  {
+    const SA_RUN_RE = /(?:homophonic|subst|positional) SA [^:]*: (\d+) improvements in \d+ steps, dict=([\d.]+) lm=([\d.]+) combined=([\d.]+)/;
+    const RESTART_RE = /N=\d+ restarts → best=[\d.]+ \[([e\d.: c]+)\]/;
+    for (const { line } of LOG_RING) {
+      let m = RESTART_RE.exec(line);
+      if (m) {
+        ssrSaState.restarts = m[1].trim().split(/\s+/).map(tok => {
+          const [mode, score] = tok.split(':');
+          return { mode, score: parseFloat(score) };
+        });
+      }
+      m = SA_RUN_RE.exec(line);
+      if (m) {
+        ssrSaState.runs.unshift({ impr: parseInt(m[1]), dict: parseFloat(m[2]), lm: parseFloat(m[3]), combined: parseFloat(m[4]) });
+        if (ssrSaState.runs.length > 16) ssrSaState.runs.length = 16;
+      }
+    }
+  }
 
   try {
     if (activityLog.length > 0) {
@@ -423,30 +449,78 @@ app.get('/_apx/results', async (_req, res) => {
     const { resolveToken: rt, resolveHost: rh } = await import('./appkit-agent/index.mjs');
     const tk = await rt();
     const h = rh();
-    const sqlRes = await fetch(h + '/api/2.0/sql/statements', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${tk}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        warehouse_id: process.env.DATABRICKS_WAREHOUSE_ID,
-        statement: `SELECT COUNT(*) total, ROUND(MAX(grounding_score+consistency_score),3) best,
-                           ROUND(MAX(grounding_score),3) best_grd,
-                           ROUND(AVG(grounding_score+consistency_score),3) avg,
-                           COUNT(CASE WHEN proposed_at >= current_timestamp() - INTERVAL 1 HOUR THEN 1 END) last_hour
-                    FROM serverless_stable_qh44kx_catalog.voynich.theories`,
-        wait_timeout: '10s',
-      }),
-    });
-    const sd = await sqlRes.json() as { result?: { data_array?: string[][] }; manifest?: { schema?: { columns?: { name: string }[] } } };
-    const cols = (sd.manifest?.schema?.columns ?? []).map((c) => c.name);
-    const row = sd.result?.data_array?.[0];
-    if (row) {
-      const o: Record<string, string> = {};
-      cols.forEach((c, i) => { o[c] = row[i]; });
-      ssrSummary = { total: o.total ?? '—', best: o.best ?? '—', best_grd: o.best_grd ?? '—', avg: o.avg ?? '—', last_hour: o.last_hour ?? '—' };
+    const wid = process.env.DATABRICKS_WAREHOUSE_ID;
+
+    async function dbSql(statement: string) {
+      const r = await fetch(h + '/api/2.0/sql/statements', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tk}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ warehouse_id: wid, statement, wait_timeout: '15s' }),
+      });
+      const d = await r.json() as { manifest?: { schema?: { columns?: { name: string }[] } }; result?: { data_array?: string[][] } };
+      const cols = (d.manifest?.schema?.columns ?? []).map((c) => c.name);
+      return (d.result?.data_array ?? []).map((row) => {
+        const o: Record<string, string> = {};
+        cols.forEach((c, i) => { o[c] = row[i]; });
+        return o;
+      });
+    }
+
+    const [summaryRows, topRows, recentRows, champRows] = await Promise.all([
+      dbSql(`SELECT COUNT(*) total, ROUND(MAX(grounding_score+consistency_score),3) best,
+                    ROUND(MAX(grounding_score),3) best_grd,
+                    ROUND(AVG(grounding_score+consistency_score),3) avg,
+                    COUNT(CASE WHEN proposed_at >= current_timestamp() - INTERVAL 1 HOUR THEN 1 END) last_hour
+             FROM serverless_stable_qh44kx_catalog.voynich.theories`),
+      dbSql(`SELECT target_folio, target_plant, source_language,
+                    ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons,
+                    ROUND(grounding_score+consistency_score,3) combined,
+                    SUBSTRING(decoded_text,1,90) decoded
+             FROM serverless_stable_qh44kx_catalog.voynich.theories
+             ORDER BY (grounding_score+consistency_score) DESC LIMIT 12`),
+      dbSql(`SELECT target_folio, target_plant, source_language,
+                    ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons,
+                    ROUND(grounding_score+consistency_score,3) combined,
+                    SUBSTRING(decoded_text,1,90) decoded
+             FROM serverless_stable_qh44kx_catalog.voynich.theories
+             ORDER BY proposed_at DESC LIMIT 12`),
+      dbSql(`SELECT id, target_folio, target_plant, symbol_map, decoded_text, grounding_score, consistency_score
+             FROM serverless_stable_qh44kx_catalog.voynich.theories
+             WHERE source_language = 'italian' AND cipher_type = 'substitution'
+               AND symbol_map IS NOT NULL AND symbol_map != '{}'
+             ORDER BY grounding_score + consistency_score DESC LIMIT 1`),
+    ]);
+
+    if (summaryRows[0]) {
+      const s = summaryRows[0];
+      ssrSummary = { total: s.total ?? '—', best: s.best ?? '—', best_grd: s.best_grd ?? '—', avg: s.avg ?? '—', last_hour: s.last_hour ?? '—' };
+    }
+    const mapTheory = (t: Record<string,string>): SsrTheory => ({ folio: t.target_folio, plant: t.target_plant, lang: t.source_language, grd: t.grd, cons: t.cons, combined: t.combined, decoded: t.decoded });
+    ssrTopTheories = topRows.map(mapTheory);
+    ssrRecentTheories = recentRows.map(mapTheory);
+
+    if (champRows[0]) {
+      const t = champRows[0];
+      const [evaRows, folioRows] = await Promise.all([
+        dbSql(`SELECT eva_text FROM serverless_stable_qh44kx_catalog.voynich.eva_corpus WHERE folio_id = '${t.target_folio}' AND section = 'herbal' LIMIT 1`),
+        dbSql(`SELECT expected_terms FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis WHERE folio_id = '${t.target_folio}' LIMIT 1`),
+      ]);
+      let expectedTerms: string[] = [];
+      try {
+        const parsed = JSON.parse(folioRows[0]?.expected_terms ?? '{}') as Record<string, string[]>;
+        expectedTerms = (parsed.italian ?? []).map((s) => s.toLowerCase());
+      } catch { /* leave empty */ }
+      ssrChampion = {
+        id: t.id, folio: t.target_folio, plant: t.target_plant,
+        symbolMap: JSON.parse(t.symbol_map) as Record<string, string>,
+        decodedText: t.decoded_text, evaText: evaRows[0]?.eva_text ?? '',
+        expectedTerms, grounding: parseFloat(t.grounding_score), consistency: parseFloat(t.consistency_score),
+      };
     }
   } catch { /* use defaults */ }
 
-  const ssrData = JSON.stringify({ activity: ssrActivity, summary: ssrSummary });
+  const ssrLogs = LOG_RING.slice(-100);
+  const ssrData = JSON.stringify({ activity: ssrActivity, summary: ssrSummary, topTheories: ssrTopTheories, recentTheories: ssrRecentTheories, champion: ssrChampion, logs: ssrLogs, saState: ssrSaState });
 
   res.send(`<!DOCTYPE html>
 <html>
@@ -499,12 +573,14 @@ app.get('/_apx/results', async (_req, res) => {
 </head>
 <body>
   <div class="status-bar">
-    <div><span class="live-dot" style="display:inline-block"></span></div>
     <div style="color:#888">Round <b id="sb-round" style="color:#ccc">-</b></div>
     <div style="color:#888">Strategy <b id="sb-strategy" style="color:#bb86fc">-</b></div>
     <div style="color:#888">Best <b id="sb-best" style="color:#4caf50">-</b></div>
     <div style="color:#888">Total <b id="sb-total" style="color:#ccc">-</b></div>
-    <div style="margin-left:auto;color:#444;font-size:11px" id="sb-ts">-</div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:16px">
+      <span style="color:#444;font-size:11px" id="sb-ts">-</span>
+      <a href="/_apx/results" style="color:#555;font-size:11px;text-decoration:none;border:1px solid #2a2a45;border-radius:4px;padding:2px 8px">↺ refresh</a>
+    </div>
   </div>
 
   <h1>Voynich — Homophonic Search</h1>
@@ -514,7 +590,7 @@ app.get('/_apx/results', async (_req, res) => {
   <div class="grid" id="summary"></div>
 
   <div class="section">
-    <h2><span class="live-dot"></span> SA Health</h2>
+    <h2>SA Health</h2>
     <div class="sa-grid">
       <div class="sa-panel">
         <h3>Last Round — Restart Breakdown</h3>
@@ -532,7 +608,7 @@ app.get('/_apx/results', async (_req, res) => {
   </div>
 
   <div class="section">
-    <h2><span class="live-dot"></span> Live Activity</h2>
+    <h2>Activity</h2>
     <div id="activity" style="background:#0d0d1a;border:1px solid #20203a;border-radius:8px;padding:10px 12px;max-height:300px;overflow-y:auto"></div>
   </div>
 
@@ -577,119 +653,56 @@ app.get('/_apx/results', async (_req, res) => {
   </div>
 
   <div class="section">
-    <h2><span class="live-dot"></span> Live Log</h2>
+    <h2>Log</h2>
     <div id="live-log"></div>
   </div>
 
   <script>
-    async function query(sql) {
-      const res = await fetch('/api/sql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ statement: sql }) });
-      const d = await res.json();
-      if (d.error) throw new Error(d.error);
-      if (d.status?.state === 'FAILED') throw new Error(d.status?.error?.message || JSON.stringify(d.status));
-      const cols = (d.manifest?.schema?.columns || []).map(c => c.name);
-      return (d.result?.data_array || []).map(row => { const o = {}; cols.forEach((c,i) => o[c]=row[i]); return o; });
-    }
-
     function barHtml(val) {
       const pct = Math.min(parseFloat(val||0) * 100, 100);
       const color = pct > 30 ? '#4caf50' : pct > 15 ? '#ffb74d' : '#4dd0e1';
       return '<div class="bar"><div class="bar-fill" style="width:'+pct+'%;background:'+color+'"></div></div>'+parseFloat(val||0).toFixed(3);
     }
 
-    // ── SA Health state (parsed from log stream) ──────────────────────────
-    const saState = {
-      restarts: [],   // [{mode:'e'|'c', score:number}] from last restart line
-      runs: [],       // [{impr, dict, lm, combined}] last 16 SA summary lines
-    };
+    function logColor(line) {
+      if (line.toLowerCase().includes('sanat'))    return '#4caf50';
+      if (line.includes('restarts →'))        return '#bb86fc';
+      if (line.includes(' SA step '))              return '#4dd0e1';
+      if (/(?:homophonic|subst|positional) SA/.test(line)) return '#64b5f6';
+      if (/ seed/.test(line))                      return '#4a90c4';
+      if (/Burst \d|Round \d/i.test(line))         return '#9575cd';
+      if (/rejected|FAIL/i.test(line))             return '#ef5350';
+      if (/warn/i.test(line))                      return '#ffb74d';
+      return '#555';
+    }
 
-    const SA_RUN_RE   = /(?:homophonic|subst|positional) SA [^:]*: (\d+) improvements in \d+ steps, dict=([\d.]+) lm=([\d.]+) combined=([\d.]+)/;
-    const RESTART_RE  = /N=\d+ restarts → best=[\d.]+ \[([e\d.: c]+)\]/;
+    (function() {
+      const d = ${ssrData};
 
-    function parseLogLine(line) {
-      let m = RESTART_RE.exec(line);
-      if (m) {
-        saState.restarts = m[1].trim().split(/\s+/).map(tok => {
-          const [mode, score] = tok.split(':');
-          return { mode, score: parseFloat(score) };
-        });
-        renderSaChips();
+      document.getElementById('sb-ts').textContent = 'loaded ' + new Date().toLocaleTimeString();
+
+      // Status bar
+      if (d.activity.round > 0 || d.activity.allTimeBest > 0) {
+        document.getElementById('sb-round').textContent = d.activity.round + 1;
+        document.getElementById('sb-strategy').textContent = (d.activity.activeStrategy || 'idle').replace(/\\|/g, ' ');
+        document.getElementById('sb-best').textContent = (d.activity.allTimeBest || 0).toFixed(3);
       }
-      m = SA_RUN_RE.exec(line);
-      if (m) {
-        saState.runs.unshift({ impr: parseInt(m[1]), dict: parseFloat(m[2]), lm: parseFloat(m[3]), combined: parseFloat(m[4]) });
-        if (saState.runs.length > 16) saState.runs.length = 16;
-        renderSaRuns();
+
+      // Summary cards
+      const s = d.summary;
+      if (s.total !== '—') {
+        document.getElementById('sb-total').textContent = s.total;
+        document.getElementById('summary').innerHTML =
+          '<div class="card"><div class="label">Total Theories</div><div class="value">'+s.total+'</div><div class="sub">'+s.last_hour+'/hr</div></div>' +
+          '<div class="card"><div class="label">Best Combined</div><div class="value green">'+s.best+'</div><div class="sub">all time</div></div>' +
+          '<div class="card"><div class="label">Best Grounding</div><div class="value">'+s.best_grd+'</div></div>' +
+          '<div class="card"><div class="label">Avg Combined</div><div class="value amber">'+s.avg+'</div></div>';
       }
-    }
 
-    function renderSaChips() {
-      const chips = saState.restarts;
-      if (!chips.length) return;
-      const best = Math.max(...chips.map(c => c.score));
-      const eliteScores = chips.filter(c => c.mode === 'e').map(c => c.score);
-      const coldScores  = chips.filter(c => c.mode === 'c').map(c => c.score);
-      const avg = arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0;
-      const eAvg = avg(eliteScores), cAvg = avg(coldScores);
-
-      document.getElementById('sa-chips').innerHTML = chips.map(c =>
-        '<span class="chip '+(c.mode==='e'?'elite':'cold')+(c.score===best?' best':'')+'">'+
-        (c.mode==='e'?'E':'C')+':'+c.score.toFixed(3)+'</span>'
-      ).join('');
-
-      document.getElementById('sa-avgs').innerHTML =
-        '<span class="e">elite avg '+eAvg.toFixed(3)+'</span>  <span class="c">cold avg '+cAvg.toFixed(3)+'</span>' +
-        '  best '+best.toFixed(3);
-
-      const warn = document.getElementById('sa-warn');
-      if (cAvg > eAvg + 0.02)
-        warn.innerHTML = '<div class="warn">⚠ cold avg beating elite — elite pool may be anchoring a local optimum</div>';
-      else if (eAvg > cAvg + 0.02)
-        warn.innerHTML = '';
-      else
-        warn.innerHTML = '';
-    }
-
-    function renderSaRuns() {
-      const runs = saState.runs;
-      if (!runs.length) return;
-      const maxComb = Math.max(...runs.map(r => r.combined));
-      document.getElementById('sa-runs').innerHTML =
-        '<table style="width:100%;border-collapse:collapse"><thead><tr>' +
-        '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">impr</th>' +
-        '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">dict</th>' +
-        '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">lm</th>' +
-        '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">combined</th>' +
-        '</tr></thead><tbody>' +
-        runs.map(r => {
-          const isBest = r.combined === maxComb;
-          const color = r.combined > 0.35 ? '#4caf50' : r.combined > 0.25 ? '#ffb74d' : '#4dd0e1';
-          return '<tr style="'+(isBest?'background:#0d1f0d;':'')+'">' +
-            '<td style="text-align:right;color:#888;padding:1px 6px;font-size:11px;font-family:monospace">'+r.impr+'</td>' +
-            '<td style="text-align:right;color:#666;padding:1px 6px;font-size:11px;font-family:monospace">'+r.dict.toFixed(3)+'</td>' +
-            '<td style="text-align:right;color:#666;padding:1px 6px;font-size:11px;font-family:monospace">'+r.lm.toFixed(3)+'</td>' +
-            '<td style="text-align:right;color:'+color+';padding:1px 6px;font-size:11px;font-family:monospace;font-weight:'+(isBest?700:400)+'">'+(isBest?'★ ':'')+r.combined.toFixed(3)+'</td>' +
-          '</tr>';
-        }).join('') +
-        '</tbody></table>';
-    }
-
-    // ── Activity ────────────────────────────────────────────────────────────
-    async function loadActivity() {
-      try {
-        const res = await fetch('/api/activity');
-        const data = await res.json();
-        document.getElementById('sb-round').textContent = (data.round ?? 0) + 1;
-        document.getElementById('sb-strategy').textContent = (data.activeStrategy || 'idle').replace(/\|/g, ' ');
-        document.getElementById('sb-best').textContent = (data.allTimeBest || 0).toFixed(3);
-        document.getElementById('sb-ts').textContent = new Date().toLocaleTimeString();
-
-        const el = document.getElementById('activity');
-        if (!data.entries?.length) {
-          el.innerHTML = '<div style="color:#444;padding:6px;font-size:12px">Waiting for first result...</div>';
-          return;
-        }
-        el.innerHTML = data.entries.slice().reverse().map(e => {
+      // Activity feed
+      const act = d.activity;
+      if (act.entries && act.entries.length > 0) {
+        document.getElementById('activity').innerHTML = act.entries.slice().reverse().map(function(e) {
           const combined = (e.grounding + e.consistency).toFixed(3);
           const color = parseFloat(combined) > 0.35 ? '#4caf50' : parseFloat(combined) > 0.25 ? '#ffb74d' : '#4dd0e1';
           const t = new Date(e.time).toLocaleTimeString();
@@ -702,228 +715,124 @@ app.get('/_apx/results', async (_req, res) => {
             '<span style="color:#777;font-style:italic">"'+e.decoded.slice(0,60)+'"</span>' +
             '</div>';
         }).join('');
-      } catch(e) {}
-    }
-
-    // ── DB tables ───────────────────────────────────────────────────────────
-    async function loadDb() {
-      try {
-        const summary = await query(
-          'SELECT COUNT(*) total,' +
-          ' ROUND(MAX(grounding_score+consistency_score),3) best,' +
-          ' ROUND(MAX(grounding_score),3) best_grd,' +
-          ' ROUND(AVG(grounding_score+consistency_score),3) avg,' +
-          ' COUNT(CASE WHEN proposed_at >= current_timestamp() - INTERVAL 1 HOUR THEN 1 END) last_hour' +
-          ' FROM serverless_stable_qh44kx_catalog.voynich.theories'
-        );
-        if (summary[0]) {
-          const s = summary[0];
-          document.getElementById('sb-total').textContent = s.total;
-          document.getElementById('summary').innerHTML =
-            '<div class="card"><div class="label">Total Theories</div><div class="value">'+s.total+'</div><div class="sub">'+s.last_hour+'/hr</div></div>' +
-            '<div class="card"><div class="label">Best Combined</div><div class="value green">'+s.best+'</div><div class="sub">all time</div></div>' +
-            '<div class="card"><div class="label">Best Grounding</div><div class="value">'+s.best_grd+'</div></div>' +
-            '<div class="card"><div class="label">Avg Combined</div><div class="value amber">'+s.avg+'</div></div>';
-        } else {
-          document.getElementById('db-error').innerHTML =
-            '<div style="background:#2a0a0a;border:1px solid #5a1a1a;border-radius:6px;padding:8px 12px;color:#ef5350;font-size:12px;margin-bottom:14px">SQL returned no rows — check warehouse access</div>';
-        }
-
-        const theories = await query(
-          'SELECT target_folio, target_plant, source_language,' +
-          ' ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons,' +
-          ' ROUND(grounding_score+consistency_score,3) combined,' +
-          ' SUBSTRING(decoded_text,1,90) decoded' +
-          ' FROM serverless_stable_qh44kx_catalog.voynich.theories' +
-          ' ORDER BY (grounding_score+consistency_score) DESC LIMIT 12'
-        );
-        document.getElementById('theories').innerHTML = theories.length
-          ? theories.map(t => '<tr>' +
-              '<td class="mono" style="color:#aaa">'+t.target_folio+'</td>' +
-              '<td style="color:#888;font-size:11px">'+t.target_plant+'</td>' +
-              '<td><span class="tag '+t.source_language+'">'+t.source_language+'</span></td>' +
-              '<td>'+barHtml(t.grd)+'</td><td>'+barHtml(t.cons)+'</td>' +
-              '<td><b style="color:'+(parseFloat(t.combined)>0.35?'#4caf50':parseFloat(t.combined)>0.25?'#ffb74d':'#4dd0e1')+'">'+t.combined+'</b></td>' +
-              '<td class="mono" style="font-size:11px;color:#888">'+t.decoded+'</td>' +
-            '</tr>').join('')
-          : '<tr><td colspan="7" style="color:#444;text-align:center;padding:12px">No theories yet</td></tr>';
-
-        const recent = await query(
-          'SELECT target_folio, target_plant, source_language,' +
-          ' ROUND(grounding_score,3) grd, ROUND(consistency_score,3) cons,' +
-          ' ROUND(grounding_score+consistency_score,3) combined,' +
-          ' SUBSTRING(decoded_text,1,90) decoded' +
-          ' FROM serverless_stable_qh44kx_catalog.voynich.theories' +
-          ' ORDER BY proposed_at DESC LIMIT 12'
-        );
-        document.getElementById('recent').innerHTML = recent.length
-          ? recent.map(t => '<tr>' +
-              '<td class="mono" style="color:#aaa">'+t.target_folio+'</td>' +
-              '<td style="color:#888;font-size:11px">'+t.target_plant+'</td>' +
-              '<td><span class="tag '+t.source_language+'">'+t.source_language+'</span></td>' +
-              '<td>'+barHtml(t.grd)+'</td><td>'+barHtml(t.cons)+'</td>' +
-              '<td><b style="color:'+(parseFloat(t.combined)>0.35?'#4caf50':parseFloat(t.combined)>0.25?'#ffb74d':'#4dd0e1')+'">'+t.combined+'</b></td>' +
-              '<td class="mono" style="font-size:11px;color:#888">'+t.decoded+'</td>' +
-            '</tr>').join('')
-          : '<tr><td colspan="7" style="color:#444;text-align:center;padding:12px">No theories yet</td></tr>';
-      } catch(err) {
-        document.getElementById('db-error').innerHTML =
-          '<div style="background:#2a0a0a;border:1px solid #5a1a1a;border-radius:6px;padding:8px 12px;color:#ef5350;font-size:12px;margin-bottom:14px"><b>SQL Error:</b> '+String(err?.message||err)+'</div>';
+      } else {
+        document.getElementById('activity').innerHTML = '<div style="color:#444;padding:6px;font-size:12px">No activity in memory — hit refresh.</div>';
       }
-    }
 
-    // ── Log stream ──────────────────────────────────────────────────────────
-    let logLastTs = 0;
-    function logColor(line) {
-      if (/\bsanat\b/i.test(line))              return '#4caf50';
-      if (/restarts →/.test(line))              return '#bb86fc';
-      if (/SA step \d+\/\d+/.test(line))        return '#4dd0e1';
-      if (/(?:homophonic|subst|positional) SA/.test(line)) return '#64b5f6';
-      if (/(?:homophonic|champion|crossbred|consensus) seed/.test(line)) return '#4a90c4';
-      if (/Burst \d|Round \d/i.test(line))      return '#9575cd';
-      if (/rejected|FAIL/i.test(line))          return '#ef5350';
-      if (/warn/i.test(line))                   return '#ffb74d';
-      return '#555';
-    }
-    async function loadLogs() {
-      try {
-        const res = await fetch('/api/logs?since=' + logLastTs);
-        const data = await res.json();
-        if (!data.lines?.length) return;
-        logLastTs = data.lastTs;
-        const el = document.getElementById('live-log');
-        const atBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 40;
-        data.lines.forEach(l => {
-          parseLogLine(l.line);
-          const d = document.createElement('div');
-          d.style.color = logColor(l.line);
-          d.textContent = new Date(l.ts).toLocaleTimeString() + '  ' + l.line;
-          el.appendChild(d);
-        });
-        while (el.childNodes.length > 500) el.removeChild(el.firstChild);
-        if (atBottom) el.scrollTop = el.scrollHeight;
-      } catch(e) {}
-    }
+      // SA Health
+      if (d.saState.restarts.length > 0) {
+        const chips = d.saState.restarts;
+        const best = Math.max.apply(null, chips.map(function(c) { return c.score; }));
+        const eliteScores = chips.filter(function(c) { return c.mode === 'e'; }).map(function(c) { return c.score; });
+        const coldScores  = chips.filter(function(c) { return c.mode === 'c'; }).map(function(c) { return c.score; });
+        const avg = function(arr) { return arr.length ? arr.reduce(function(a,b){return a+b;},0)/arr.length : 0; };
+        const eAvg = avg(eliteScores), cAvg = avg(coldScores);
+        document.getElementById('sa-chips').innerHTML = chips.map(function(c) {
+          return '<span class="chip '+(c.mode==='e'?'elite':'cold')+(c.score===best?' best':'')+'">'+
+            (c.mode==='e'?'E':'C')+':'+c.score.toFixed(3)+'</span>';
+        }).join('');
+        document.getElementById('sa-avgs').innerHTML =
+          '<span class="e">elite avg '+eAvg.toFixed(3)+'</span>  <span class="c">cold avg '+cAvg.toFixed(3)+'</span>  best '+best.toFixed(3);
+        if (cAvg > eAvg + 0.02)
+          document.getElementById('sa-warn').innerHTML = '<div class="warn">⚠ cold avg beating elite — elite pool may be anchoring a local optimum</div>';
+      }
+      if (d.saState.runs.length > 0) {
+        const runs = d.saState.runs;
+        const maxComb = Math.max.apply(null, runs.map(function(r) { return r.combined; }));
+        document.getElementById('sa-runs').innerHTML =
+          '<table style="width:100%;border-collapse:collapse"><thead><tr>' +
+          '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">impr</th>' +
+          '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">dict</th>' +
+          '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">lm</th>' +
+          '<th style="color:#555;font-size:10px;text-align:right;padding:2px 6px">combined</th>' +
+          '</tr></thead><tbody>' +
+          runs.map(function(r) {
+            const isBest = r.combined === maxComb;
+            const color = r.combined > 0.35 ? '#4caf50' : r.combined > 0.25 ? '#ffb74d' : '#4dd0e1';
+            return '<tr style="'+(isBest?'background:#0d1f0d;':'')+'">' +
+              '<td style="text-align:right;color:#888;padding:1px 6px;font-size:11px;font-family:monospace">'+r.impr+'</td>' +
+              '<td style="text-align:right;color:#666;padding:1px 6px;font-size:11px;font-family:monospace">'+r.dict.toFixed(3)+'</td>' +
+              '<td style="text-align:right;color:#666;padding:1px 6px;font-size:11px;font-family:monospace">'+r.lm.toFixed(3)+'</td>' +
+              '<td style="text-align:right;color:'+color+';padding:1px 6px;font-size:11px;font-family:monospace;font-weight:'+(isBest?700:400)+'">'+(isBest?'★ ':'')+r.combined.toFixed(3)+'</td>' +
+            '</tr>';
+          }).join('')+
+          '</tbody></table>';
+      }
 
-    // ── Champion Decipherment ────────────────────────────────────────────────
-    // Small Italian dictionary for secondary highlighting (not botanical but real words)
-    const ITALIAN_WORDS = new Set(['il','la','lo','le','gli','un','una','di','del','della','dei','delle','degli','in','per','con','non','che','ha','si','al','nel','sul','tra','fra','da','a','e','o','ma','se','ne','ci','vi','lui','lei','noi','voi','io','tu','ho','ai','agli','alle','sui','fra','era','sono','è','ed','od','né']);
+      // Theory tables
+      const theoryRow = function(t) {
+        return '<tr>' +
+          '<td class="mono" style="color:#aaa">'+t.folio+'</td>' +
+          '<td style="color:#888;font-size:11px">'+t.plant+'</td>' +
+          '<td><span class="tag '+t.lang+'">'+t.lang+'</span></td>' +
+          '<td>'+barHtml(t.grd)+'</td><td>'+barHtml(t.cons)+'</td>' +
+          '<td><b style="color:'+(parseFloat(t.combined)>0.35?'#4caf50':parseFloat(t.combined)>0.25?'#ffb74d':'#4dd0e1')+'">'+t.combined+'</b></td>' +
+          '<td class="mono" style="font-size:11px;color:#888">'+t.decoded+'</td>' +
+        '</tr>';
+      };
+      const noData = '<tr><td colspan="7" style="color:#444;text-align:center;padding:12px">No theories yet</td></tr>';
+      document.getElementById('theories').innerHTML = d.topTheories.length ? d.topTheories.map(theoryRow).join('') : noData;
+      document.getElementById('recent').innerHTML   = d.recentTheories.length ? d.recentTheories.map(theoryRow).join('') : noData;
 
-    async function loadChampionDecipherment() {
-      try {
-        const data = await fetch('/api/champion-decipherment').then(r => r.json());
-        if (data.error) {
-          document.getElementById('champ-error').innerHTML =
-            '<div style="background:#2a0a0a;border:1px solid #5a1a1a;border-radius:6px;padding:8px 12px;color:#ef5350;font-size:12px;margin-bottom:14px">'+data.error+'</div>';
-          return;
-        }
-
-        // Info panel
-        const combined = (data.grounding + data.consistency).toFixed(3);
+      // Champion decipherment
+      const ch = d.champion;
+      if (ch) {
+        const combined = (ch.grounding + ch.consistency).toFixed(3);
         document.getElementById('champ-info').innerHTML =
           '<div style="margin-bottom:10px">' +
-          '<div style="color:#ccc;font-size:14px;font-weight:600">' + data.folio + ' — ' + (data.plant || 'unknown') + '</div>' +
-          '<div style="font-size:11px;color:#666;margin-top:4px;font-family:monospace">' +
-          'grounding=' + data.grounding.toFixed(3) + '  consistency=' + data.consistency.toFixed(3) + '  combined=<b style="color:#4caf50">' + combined + '</b>' +
-          '</div><div style="font-size:10px;color:#444;margin-top:4px">id: ' + data.id + '</div>' +
+          '<div style="color:#ccc;font-size:14px;font-weight:600">'+ch.folio+' — '+(ch.plant||'unknown')+'</div>' +
+          '<div style="font-size:11px;color:#666;margin-top:4px;font-family:monospace">grounding='+ch.grounding.toFixed(3)+'  consistency='+ch.consistency.toFixed(3)+'  combined=<b style="color:#4caf50">'+combined+'</b></div>' +
+          '<div style="font-size:10px;color:#444;margin-top:4px">id: '+ch.id+'</div>' +
           '</div>' +
           '<div style="font-size:11px;color:#555;margin-top:8px">Expected botanical terms:</div>' +
-          '<div style="margin-top:4px;line-height:1.8">' +
-          (data.expectedTerms || []).map(t =>
-            '<span style="display:inline-block;background:#0d2a0d;border:1px solid #1a4a1a;border-radius:3px;color:#81c784;font-size:11px;padding:1px 6px;margin:2px;font-family:monospace">'+t+'</span>'
-          ).join('') +
-          '</div>';
+          '<div style="margin-top:4px;line-height:1.8">'+(ch.expectedTerms||[]).map(function(t) {
+            return '<span style="display:inline-block;background:#0d2a0d;border:1px solid #1a4a1a;border-radius:3px;color:#81c784;font-size:11px;padding:1px 6px;margin:2px;font-family:monospace">'+t+'</span>';
+          }).join('')+'</div>';
 
-        // Translation key — sort by EVA symbol length then alphabetically
-        const entries = Object.entries(data.symbolMap || {})
-          .sort((a, b) => a[0].length - b[0].length || a[0].localeCompare(b[0]));
+        const entries = Object.entries(ch.symbolMap||{}).sort(function(a,b) { return a[0].length-b[0].length||a[0].localeCompare(b[0]); });
         document.getElementById('champ-key').innerHTML =
-          '<div style="display:flex;flex-wrap:wrap;gap:5px">' +
-          entries.map(([eva, letter]) =>
-            '<div style="background:#0d0d20;border:1px solid #1e1e38;border-radius:4px;padding:3px 8px;font-family:monospace;font-size:12px;white-space:nowrap">' +
-            '<span style="color:#9575cd">' + eva + '</span>' +
-            '<span style="color:#333"> → </span>' +
-            '<span style="color:#4dd0e1;font-weight:700">' + letter + '</span>' +
-            '</div>'
-          ).join('') +
-          '</div>';
+          '<div style="display:flex;flex-wrap:wrap;gap:5px">'+
+          entries.map(function(e) {
+            return '<div style="background:#0d0d20;border:1px solid #1e1e38;border-radius:4px;padding:3px 8px;font-family:monospace;font-size:12px;white-space:nowrap">' +
+              '<span style="color:#9575cd">'+e[0]+'</span><span style="color:#333"> → </span><span style="color:#4dd0e1;font-weight:700">'+e[1]+'</span></div>';
+          }).join('')+'</div>';
 
-        // Word-by-word decoded text
-        const evaWords = (data.evaText || '').trim().split(/\s+/).filter(Boolean);
-        const decWords = (data.decodedText || '').trim().split(/\s+/).filter(Boolean);
-        const termSet = new Set((data.expectedTerms || []).map(t => t.toLowerCase()));
-
-        document.getElementById('champ-decoded').innerHTML =
-          evaWords.map((eva, i) => {
-            const dec = (decWords[i] || '').toLowerCase();
-            const raw = decWords[i] || '?';
-            const isTerm = termSet.has(dec);
-            const isItalian = !isTerm && ITALIAN_WORDS.has(dec);
-            const bg = isTerm ? '#1a3a1a' : isItalian ? '#172030' : 'transparent';
-            const border = isTerm ? '1px solid #2a5a2a' : isItalian ? '1px solid #1e3048' : '1px solid #1a1a2e';
-            const color = isTerm ? '#66bb6a' : isItalian ? '#64b5f6' : '#555';
-            const weight = isTerm ? '700' : '400';
-            return '<span title="EVA: ' + eva + '" style="display:inline-block;margin:2px 3px;padding:3px 7px;border-radius:4px;background:'+bg+';border:'+border+';cursor:default;vertical-align:middle">' +
-              '<span style="font-size:9px;color:#333;display:block;line-height:1.2;text-align:center">'+eva+'</span>' +
-              '<span style="color:'+color+';font-weight:'+weight+';font-size:12px">'+raw+'</span>' +
-              '</span>';
-          }).join('');
-
-      } catch(e) {
-        document.getElementById('champ-error').innerHTML =
-          '<div style="color:#ef5350;font-size:12px">Failed to load: ' + e.message + '</div>';
+        const ITALIAN = new Set(['il','la','lo','le','gli','un','una','di','del','della','dei','delle','degli','in','per','con','non','che','ha','si','al','nel','sul','tra','fra','da','a','e','o','ma','se','ne','ci','vi','lui','lei','noi','voi','io','tu','ho','ai','agli','alle','sui','era','sono','\xe8','ed','od','n\xe9']);
+        const evaWords = (ch.evaText||'').trim().split(/\s+/).filter(Boolean);
+        const decWords = (ch.decodedText||'').trim().split(/\s+/).filter(Boolean);
+        const termSet = new Set((ch.expectedTerms||[]).map(function(t) { return t.toLowerCase(); }));
+        document.getElementById('champ-decoded').innerHTML = evaWords.map(function(eva, i) {
+          const dec = (decWords[i]||'').toLowerCase();
+          const raw = decWords[i]||'?';
+          const isTerm = termSet.has(dec);
+          const isItalian = !isTerm && ITALIAN.has(dec);
+          const bg = isTerm ? '#1a3a1a' : isItalian ? '#172030' : 'transparent';
+          const border = isTerm ? '1px solid #2a5a2a' : isItalian ? '1px solid #1e3048' : '1px solid #1a1a2e';
+          const color = isTerm ? '#66bb6a' : isItalian ? '#64b5f6' : '#555';
+          const weight = isTerm ? '700' : '400';
+          return '<span title="EVA: '+eva+'" style="display:inline-block;margin:2px 3px;padding:3px 7px;border-radius:4px;background:'+bg+';border:'+border+';cursor:default;vertical-align:middle">' +
+            '<span style="font-size:9px;color:#333;display:block;line-height:1.2;text-align:center">'+eva+'</span>' +
+            '<span style="color:'+color+';font-weight:'+weight+';font-size:12px">'+raw+'</span></span>';
+        }).join('');
+      } else {
+        document.getElementById('champ-error').innerHTML = '<div style="color:#444;font-size:12px">No champion theory yet</div>';
+        document.getElementById('champ-key').innerHTML = '<span style="color:#444">—</span>';
+        document.getElementById('champ-info').innerHTML = '<span style="color:#444">—</span>';
+        document.getElementById('champ-decoded').innerHTML = '<span style="color:#444">—</span>';
       }
-    }
 
-    // Seed from server-side rendered data so the page shows content immediately.
-    (function() {
-      try {
-        const ssr = ${ssrData};
-        const act = ssr.activity;
-        const s = ssr.summary;
-
-        // Status bar
-        if (act.round > 0 || act.allTimeBest > 0) {
-          document.getElementById('sb-round').textContent = act.round + 1;
-          document.getElementById('sb-strategy').textContent = (act.activeStrategy || 'idle').replace(/\\|/g, ' ');
-          document.getElementById('sb-best').textContent = (act.allTimeBest || 0).toFixed(3);
-        }
-
-        // Summary cards
-        if (s.total !== '—') {
-          document.getElementById('sb-total').textContent = s.total;
-          document.getElementById('summary').innerHTML =
-            '<div class="card"><div class="label">Total Theories</div><div class="value">'+s.total+'</div><div class="sub">'+s.last_hour+'/hr</div></div>' +
-            '<div class="card"><div class="label">Best Combined</div><div class="value green">'+s.best+'</div><div class="sub">all time</div></div>' +
-            '<div class="card"><div class="label">Best Grounding</div><div class="value">'+s.best_grd+'</div></div>' +
-            '<div class="card"><div class="label">Avg Combined</div><div class="value amber">'+s.avg+'</div></div>';
-        }
-
-        // Activity feed
-        if (act.entries && act.entries.length > 0) {
-          const el = document.getElementById('activity');
-          el.innerHTML = act.entries.slice().reverse().map(function(e) {
-            const combined = (e.grounding + e.consistency).toFixed(3);
-            const color = parseFloat(combined) > 0.35 ? '#4caf50' : parseFloat(combined) > 0.25 ? '#ffb74d' : '#4dd0e1';
-            const t = new Date(e.time).toLocaleTimeString();
-            return '<div class="act-row">' +
-              '<span style="color:#444">'+t+'</span>  ' +
-              '<span class="tag '+(e.lang||'')+'">'+e.lang+'</span> ' +
-              e.folio+' <span style="color:#555;font-size:10px">('+((e.plant||'').slice(0,16))+')</span>  ' +
-              '<b style="color:'+color+'">'+combined+'</b>  ' +
-              '<span style="color:#555">grd='+e.grounding.toFixed(3)+' cons='+e.consistency.toFixed(3)+'</span>  ' +
-              '<span style="color:#777;font-style:italic">"'+e.decoded.slice(0,60)+'"</span>' +
-              '</div>';
-          }).join('');
-        }
-      } catch(e) { /* SSR seed failed, JS polling will catch up */ }
+      // Log panel — render static snapshot from server ring buffer
+      const logEl = document.getElementById('live-log');
+      if (d.logs && d.logs.length > 0) {
+        logEl.innerHTML = d.logs.map(function(l) {
+          return '<div style="color:'+logColor(l.line)+'">'+new Date(l.ts).toLocaleTimeString()+'  '+
+            l.line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>';
+        }).join('');
+        logEl.scrollTop = logEl.scrollHeight;
+      } else {
+        logEl.innerHTML = '<div style="color:#444">No log lines yet</div>';
+      }
     })();
-
-    loadLogs(); loadActivity(); loadDb(); loadChampionDecipherment();
-    setInterval(loadLogs, 1000);
-    setInterval(loadActivity, 3000);
-    setInterval(loadDb, 30000);
-    setInterval(loadChampionDecipherment, 120000);
   </script>
 </body>
 </html>`);
