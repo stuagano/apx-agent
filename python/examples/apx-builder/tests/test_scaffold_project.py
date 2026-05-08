@@ -4,7 +4,7 @@ from tools.scaffold_project import _generate_files, scaffold_project, GenieSpace
 
 def test_generate_files_returns_required_files():
     files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
-    assert set(files.keys()) == {"app.py", "pyproject.toml", "requirements.txt", "app.yml"}
+    assert set(files.keys()) == {"app.py", "chainlit_app.py", "pyproject.toml", "requirements.txt", "app.yml"}
 
 
 def test_generate_files_app_yml_specifies_port():
@@ -53,6 +53,28 @@ def test_generate_files_app_name_in_pyproject():
 def test_generate_files_use_case_in_instructions():
     files = _generate_files("handle customer refunds", ["main.billing.transactions"], [], "mcp-refunds")
     assert "handle customer refunds" in files["app.py"]
+
+
+def test_generate_files_app_py_mounts_chainlit():
+    files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
+    assert "mount_chainlit" in files["app.py"]
+    assert "chainlit_app.py" in files["app.py"]
+
+
+def test_generate_files_chainlit_app_calls_responses_endpoint():
+    files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
+    assert "/responses" in files["chainlit_app.py"]
+    assert "session_id" in files["chainlit_app.py"]
+
+
+def test_generate_files_chainlit_app_uses_databricks_port():
+    files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
+    assert "DATABRICKS_APP_PORT" in files["chainlit_app.py"]
+
+
+def test_generate_files_requirements_includes_chainlit():
+    files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
+    assert "chainlit" in files["requirements.txt"]
 
 
 def test_scaffold_project_uploads_all_files():
