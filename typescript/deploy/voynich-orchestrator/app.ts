@@ -407,6 +407,47 @@ app.get('/api/logs', (req, res) => {
 app.get('/_apx/results', async (_req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.setHeader('Cache-Control', 'no-store');
+
+  // Pre-fetch data server-side so the page renders with real content immediately.
+  // JS will update it live; this prevents a blank first-load if API calls are slow.
+  let ssrActivity = { burst: 0, round: 0, activeStrategy: 'idle', allTimeBest: 0, entries: [] as typeof activityLog };
+  let ssrSummary = { total: '—', best: '—', best_grd: '—', avg: '—', last_hour: '—' };
+
+  try {
+    if (activityLog.length > 0) {
+      ssrActivity = { burst: currentBurst, round: currentRound, activeStrategy, allTimeBest: allTimeBestCombined, entries: activityLog.slice(-30) };
+    }
+  } catch { /* use defaults */ }
+
+  try {
+    const { resolveToken: rt, resolveHost: rh } = await import('./appkit-agent/index.mjs');
+    const tk = await rt();
+    const h = rh();
+    const sqlRes = await fetch(h + '/api/2.0/sql/statements', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tk}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        warehouse_id: process.env.DATABRICKS_WAREHOUSE_ID,
+        statement: `SELECT COUNT(*) total, ROUND(MAX(grounding_score+consistency_score),3) best,
+                           ROUND(MAX(grounding_score),3) best_grd,
+                           ROUND(AVG(grounding_score+consistency_score),3) avg,
+                           COUNT(CASE WHEN proposed_at >= current_timestamp() - INTERVAL 1 HOUR THEN 1 END) last_hour
+                    FROM serverless_stable_qh44kx_catalog.voynich.theories`,
+        wait_timeout: '10s',
+      }),
+    });
+    const sd = await sqlRes.json() as { result?: { data_array?: string[][] }; manifest?: { schema?: { columns?: { name: string }[] } } };
+    const cols = (sd.manifest?.schema?.columns ?? []).map((c) => c.name);
+    const row = sd.result?.data_array?.[0];
+    if (row) {
+      const o: Record<string, string> = {};
+      cols.forEach((c, i) => { o[c] = row[i]; });
+      ssrSummary = { total: o.total ?? '—', best: o.best ?? '—', best_grd: o.best_grd ?? '—', avg: o.avg ?? '—', last_hour: o.last_hour ?? '—' };
+    }
+  } catch { /* use defaults */ }
+
+  const ssrData = JSON.stringify({ activity: ssrActivity, summary: ssrSummary });
+
   res.send(`<!DOCTYPE html>
 <html>
 <head>
@@ -833,6 +874,50 @@ app.get('/_apx/results', async (_req, res) => {
           '<div style="color:#ef5350;font-size:12px">Failed to load: ' + e.message + '</div>';
       }
     }
+
+    // Seed from server-side rendered data so the page shows content immediately.
+    (function() {
+      try {
+        const ssr = ${ssrData};
+        const act = ssr.activity;
+        const s = ssr.summary;
+
+        // Status bar
+        if (act.round > 0 || act.allTimeBest > 0) {
+          document.getElementById('sb-round').textContent = act.round + 1;
+          document.getElementById('sb-strategy').textContent = (act.activeStrategy || 'idle').replace(/\\|/g, ' ');
+          document.getElementById('sb-best').textContent = (act.allTimeBest || 0).toFixed(3);
+        }
+
+        // Summary cards
+        if (s.total !== '—') {
+          document.getElementById('sb-total').textContent = s.total;
+          document.getElementById('summary').innerHTML =
+            '<div class="card"><div class="label">Total Theories</div><div class="value">'+s.total+'</div><div class="sub">'+s.last_hour+'/hr</div></div>' +
+            '<div class="card"><div class="label">Best Combined</div><div class="value green">'+s.best+'</div><div class="sub">all time</div></div>' +
+            '<div class="card"><div class="label">Best Grounding</div><div class="value">'+s.best_grd+'</div></div>' +
+            '<div class="card"><div class="label">Avg Combined</div><div class="value amber">'+s.avg+'</div></div>';
+        }
+
+        // Activity feed
+        if (act.entries && act.entries.length > 0) {
+          const el = document.getElementById('activity');
+          el.innerHTML = act.entries.slice().reverse().map(function(e) {
+            const combined = (e.grounding + e.consistency).toFixed(3);
+            const color = parseFloat(combined) > 0.35 ? '#4caf50' : parseFloat(combined) > 0.25 ? '#ffb74d' : '#4dd0e1';
+            const t = new Date(e.time).toLocaleTimeString();
+            return '<div class="act-row">' +
+              '<span style="color:#444">'+t+'</span>  ' +
+              '<span class="tag '+(e.lang||'')+'">'+e.lang+'</span> ' +
+              e.folio+' <span style="color:#555;font-size:10px">('+((e.plant||'').slice(0,16))+')</span>  ' +
+              '<b style="color:'+color+'">'+combined+'</b>  ' +
+              '<span style="color:#555">grd='+e.grounding.toFixed(3)+' cons='+e.consistency.toFixed(3)+'</span>  ' +
+              '<span style="color:#777;font-style:italic">"'+e.decoded.slice(0,60)+'"</span>' +
+              '</div>';
+          }).join('');
+        }
+      } catch(e) { /* SSR seed failed, JS polling will catch up */ }
+    })();
 
     loadLogs(); loadActivity(); loadDb(); loadChampionDecipherment();
     setInterval(loadLogs, 1000);
