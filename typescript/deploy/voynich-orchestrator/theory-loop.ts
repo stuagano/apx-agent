@@ -912,7 +912,7 @@ async function executeSql(statement: string): Promise<Array<Record<string, strin
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ warehouse_id: warehouseId, statement, wait_timeout: '30s' }),
+    body: JSON.stringify({ warehouse_id: warehouseId, statement, wait_timeout: '50s' }),
   });
 
   const data = (await res.json()) as {
@@ -968,15 +968,25 @@ let folioCache: FolioInfo[] | null = null;
 export async function loadFolios(): Promise<FolioInfo[]> {
   if (folioCache !== null && folioCache.length > 0) return folioCache;
 
-  const [rows, evaCorpus] = await Promise.all([
-    executeSql(`
+  // Retry loop — warehouse may be starting up after app restart (takes 60-90s).
+  let rows: Array<Record<string, string>> = [];
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (attempt > 0) {
+      const delay = attempt * 15000;
+      console.log(`[theory-loop] loadFolios: got 0 rows (warehouse warming up?), retrying in ${delay / 1000}s (attempt ${attempt + 1}/6)`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+    rows = await executeSql(`
       SELECT folio_id, subject_candidates, botanical_features, expected_terms
       FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis
       WHERE section = 'herbal'
       ORDER BY folio_id
-    `),
-    loadEvaCorpus(),
-  ]);
+    `);
+    if (rows.length > 0) break;
+  }
+  if (rows.length === 0) throw new Error('loadFolios: warehouse returned no rows after 6 attempts');
+
+  const evaCorpus = await loadEvaCorpus();
 
   folioCache = rows.map((r) => {
     const candidates = JSON.parse(r.subject_candidates || '[]');
