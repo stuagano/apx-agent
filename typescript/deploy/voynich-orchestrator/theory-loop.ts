@@ -2735,14 +2735,23 @@ export async function runTheoryLoop(
   strategyOverride?: Strategy,
 ): Promise<Theory[]> {
   const folios = await loadFolios();
-  const highConfidence = folios.filter((f) => f.confidence >= 0.5);
-  const folioPool = highConfidence.length > 0 ? highConfidence : folios;
+  // Exclude non-botanical folios (zodiac diagrams, text-only pages) — their
+  // expected_terms are non-botanical, wasting SA optimization on zodiac vocabulary.
+  const botanicalFolios = folios.filter((f) => {
+    const name = f.plant_name.toLowerCase();
+    return !name.includes('not herbal') && !name.includes('no plant') &&
+      !name.includes('zodiac') && !name.includes('astronomical') &&
+      !name.includes('cosmological') && !name.includes('text-only');
+  });
+  const pool = botanicalFolios.length > 0 ? botanicalFolios : folios;
+  const highConfidence = pool.filter((f) => f.confidence >= 0.5);
+  const folioPool = highConfidence.length > 0 ? highConfidence : pool;
   // Load elite pools eagerly before any SA runs — lazy loading from proposeTheory
   // races with concurrent SA batches and gets PENDING responses when warehouse is busy.
   await Promise.all([loadElitePool(), loadHomophonicElitePool(), loadStrategyStats()]);
 
   const labelStr = batchLabel ? ` label="${batchLabel}"` : '';
-  console.log(`[theory-loop] Starting ${numBursts} bursts × ${ROUNDS_PER_BURST} rounds with ${highConfidence.length} high-confidence folios${labelStr}`);
+  console.log(`[theory-loop] Starting ${numBursts} bursts × ${ROUNDS_PER_BURST} rounds with ${highConfidence.length} high-conf botanical folios (of ${botanicalFolios.length} botanical)${labelStr}`);
 
   const theories: Theory[] = [];
 
