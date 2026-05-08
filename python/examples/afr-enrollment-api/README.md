@@ -2,6 +2,15 @@
 
 A standalone Databricks App that provides a deterministic enrollment decision for AFR (Affordable Rate) applications. No LLM — pure normalize → search → evaluate → log pipeline. Designed for batch processing at high throughput.
 
+## Prerequisites
+
+| Requirement | Version / Notes |
+|-------------|----------------|
+| Python | 3.11+ |
+| [uv](https://docs.astral.sh/uv/) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| apx-agent | Not yet on PyPI — clone this repo: `git clone https://github.com/stuagano/apx-agent` |
+| Databricks workspace | Required for live mode; not needed for `DEMO_MODE=true` |
+
 ## What it does
 
 `POST /api/enroll` accepts an AFR application (name, address, email, account number) and returns a structured enrollment decision.
@@ -18,7 +27,8 @@ A standalone Databricks App that provides a deterministic enrollment decision fo
 ## Quick start (demo mode)
 
 ```bash
-cd afr-enrollment-api
+git clone https://github.com/stuagano/apx-agent
+cd apx-agent/python/examples/afr-enrollment-api
 uv sync
 DEMO_MODE=true uv run uvicorn afr_enrollment_api.backend.app:app --reload
 ```

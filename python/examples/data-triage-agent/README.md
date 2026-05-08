@@ -65,7 +65,15 @@ This replaces a single agent with a long checklist. Instead of hoping the LLM fo
 
 ## Prerequisites
 
-This agent requires the **data-inspector** sub-agent to be deployed first. Deploy [data-inspector](../data-inspector/) and note its URL — you'll set it as `DATA_INSPECTOR_URL`.
+| Requirement | Version / Notes |
+|-------------|----------------|
+| Python | 3.11+ |
+| [uv](https://docs.astral.sh/uv/) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| apx-agent | Not yet on PyPI — clone this repo: `git clone https://github.com/stuagano/apx-agent` |
+| Databricks CLI | `pip install databricks-cli` or `brew install databricks/tap/databricks` |
+| Databricks workspace | SQL warehouse, Unity Catalog lineage enabled, Genie space (optional) |
+
+> **Also required:** The [data-inspector](../data-inspector/) sub-agent must be deployed before running this agent. Deploy it first and note its URL — you'll set it as `DATA_INSPECTOR_URL`.
 
 ---
 
