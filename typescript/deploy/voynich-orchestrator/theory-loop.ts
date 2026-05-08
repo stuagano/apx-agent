@@ -1309,18 +1309,20 @@ function mutateMapWild(map: Record<string, string>): Record<string, string> {
 async function loadChampionMap(
   language: string,
   cipherType: string,
-): Promise<Record<string, string> | null> {
+): Promise<{ map: Record<string, string>; targetFolioId: string } | null> {
   try {
     const rows = await executeSql(`
-      SELECT symbol_map FROM serverless_stable_qh44kx_catalog.voynich.theories
+      SELECT symbol_map, target_folio FROM serverless_stable_qh44kx_catalog.voynich.theories
       WHERE source_language = '${language}' AND cipher_type = '${cipherType}'
         AND symbol_map IS NOT NULL AND symbol_map != '{}'
       ORDER BY grounding_score + consistency_score DESC
       LIMIT 1
     `);
     if (rows.length === 0) return null;
-    const raw = rows[0].symbol_map;
-    return JSON.parse(raw) as Record<string, string>;
+    return {
+      map: JSON.parse(rows[0].symbol_map) as Record<string, string>,
+      targetFolioId: rows[0].target_folio,
+    };
   } catch {
     return null;
   }
@@ -1385,11 +1387,11 @@ export async function proposeTheory(
   // uses its exact symbol map as the sole starting point. SA then runs with a
   // very low wildRate to refine rather than re-discover.
   if (seedMode === 'champion') {
-    const championMap = await loadChampionMap(sourceLanguage, cipherType);
-    if (championMap) {
+    const champion = await loadChampionMap(sourceLanguage, cipherType);
+    if (champion) {
       // Fill any gaps in the champion map with frequency-based defaults
       const freqMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
-      const filled = { ...freqMap, ...championMap };
+      const filled = { ...freqMap, ...champion.map };
       const decoded = applyMap(evaText, filled);
       seeds.push({ map: filled, decoded, score: hillClimbScore(decoded, sourceLanguage), origin: 'champion' });
       console.log(`[theory-loop]   champion seed loaded, score=${hillClimbScore(decoded, sourceLanguage).toFixed(3)}`);
@@ -2780,12 +2782,22 @@ export async function runTheoryLoop(
           // random starts. This ensures every round covers both exploitation and
           // exploration regardless of which strategy was selected.
           const ELITE_RESTARTS = Math.min(2, N_RESTARTS);
+          // Route champion restart to champion's native folio so SA refines the
+          // all-time best map against the same folio it was optimized for.
+          const championInfo = await loadChampionMap(strategy.language, strategy.cipherType);
+          const championFolio = championInfo
+            ? (folioPool.find((f) => f.folio_id === championInfo.targetFolioId) ?? folio)
+            : folio;
+          if (championInfo && championFolio.folio_id !== folio.folio_id) {
+            console.log(`[theory-loop]   champion restart → ${championFolio.folio_id} (${championFolio.plant_name})`);
+          }
           const candidates = await Promise.all(
             Array.from({ length: N_RESTARTS }, (_, i) => {
               const restartSeedMode: SeedMode = i === 0 ? 'champion'
                 : i < ELITE_RESTARTS ? 'elite'
                 : 'cold';
-              return proposeTheory(folio, folios, strategy.language, strategy.cipherType, restartSeedMode);
+              const restartFolio = i === 0 ? championFolio : folio;
+              return proposeTheory(restartFolio, folios, strategy.language, strategy.cipherType, restartSeedMode);
             }),
           );
           // Keep the candidate with the highest combined grounding+consistency score.
