@@ -308,15 +308,58 @@ export function logActivity(entry: Omit<ActivityEntry, 'time'>) {
   activeStrategy = `${entry.lang}|${entry.cipher}|${entry.seedOrigin}`;
 }
 
-// Expose activity as JSON endpoint
-app.get('/api/activity', (_req, res) => {
-  res.json({
-    burst: currentBurst,
-    round: currentRound,
-    activeStrategy,
-    allTimeBest: allTimeBestCombined,
-    entries: activityLog.slice(-30),
-  });
+// Expose activity as JSON endpoint — falls back to DB query when memory buffer is empty
+app.get('/api/activity', async (_req, res) => {
+  // If in-memory log has entries (normal case), return immediately
+  if (activityLog.length > 0) {
+    return res.json({
+      burst: currentBurst, round: currentRound, activeStrategy,
+      allTimeBest: allTimeBestCombined, entries: activityLog.slice(-30),
+    });
+  }
+  // Fallback: pull recent theories from DB (e.g., after a fresh deploy)
+  try {
+    const { resolveToken: rt, resolveHost: rh } = await import('./appkit-agent/index.mjs');
+    const tk = await rt();
+    const h = rh();
+    const sqlRes = await fetch(h + '/api/2.0/sql/statements', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tk}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        warehouse_id: process.env.DATABRICKS_WAREHOUSE_ID,
+        statement: `SELECT target_folio, target_plant, source_language AS lang,
+                           cipher_type AS cipher, grounding_score, consistency_score,
+                           ROUND(grounding_score+consistency_score,3) combined,
+                           SUBSTRING(decoded_text,1,80) decoded,
+                           proposed_at
+                    FROM serverless_stable_qh44kx_catalog.voynich.theories
+                    ORDER BY proposed_at DESC LIMIT 30`,
+        wait_timeout: '15s',
+      }),
+    });
+    const d = await sqlRes.json() as { manifest?: { schema?: { columns?: { name: string }[] } }; result?: { data_array?: string[][] } };
+    const cols = (d.manifest?.schema?.columns ?? []).map((c) => c.name);
+    const rows = (d.result?.data_array ?? []).map((row) => {
+      const o: Record<string, string> = {};
+      cols.forEach((c, i) => { o[c] = row[i]; });
+      return o;
+    });
+    const entries = rows.reverse().map((r) => ({
+      time: r.proposed_at,
+      round: 0, batch: 0,
+      folio: r.target_folio, plant: r.target_plant,
+      lang: r.lang, cipher: r.cipher,
+      grounding: parseFloat(r.grounding_score),
+      consistency: parseFloat(r.consistency_score),
+      combined: parseFloat(r.combined),
+      dictScore: 0, improvements: 0, seedOrigin: 'db',
+      decoded: r.decoded,
+    }));
+    const best = entries.reduce((m, e) => Math.max(m, e.combined), 0);
+    return res.json({ burst: 0, round: entries.length, activeStrategy: 'db-fallback', allTimeBest: best, entries });
+  } catch {
+    return res.json({ burst: 0, round: 0, activeStrategy: 'idle', allTimeBest: 0, entries: [] });
+  }
 });
 
 // Strategy stats endpoint — reads from Delta
@@ -518,7 +561,7 @@ app.get('/_apx/results', async (_req, res) => {
       runs: [],       // [{impr, dict, lm, combined}] last 16 SA summary lines
     };
 
-    const SA_RUN_RE   = /homophonic SA: (\d+) improvements in \d+ steps, dict=([\d.]+) lm=([\d.]+) combined=([\d.]+)/;
+    const SA_RUN_RE   = /(?:homophonic|subst|positional) SA [^:]*: (\d+) improvements in \d+ steps, dict=([\d.]+) lm=([\d.]+) combined=([\d.]+)/;
     const RESTART_RE  = /N=\d+ restarts → best=[\d.]+ \[([e\d.: c]+)\]/;
 
     function parseLogLine(line) {
@@ -693,8 +736,8 @@ app.get('/_apx/results', async (_req, res) => {
       if (/\bsanat\b/i.test(line))              return '#4caf50';
       if (/restarts →/.test(line))              return '#bb86fc';
       if (/SA step \d+\/\d+/.test(line))        return '#4dd0e1';
-      if (/homophonic SA:/.test(line))          return '#64b5f6';
-      if (/homophonic seed:/.test(line))        return '#4a90c4';
+      if (/(?:homophonic|subst|positional) SA/.test(line)) return '#64b5f6';
+      if (/(?:homophonic|champion|crossbred|consensus) seed/.test(line)) return '#4a90c4';
       if (/Burst \d|Round \d/i.test(line))      return '#9575cd';
       if (/rejected|FAIL/i.test(line))          return '#ef5350';
       if (/warn/i.test(line))                   return '#ffb74d';
