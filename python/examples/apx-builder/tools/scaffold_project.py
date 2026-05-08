@@ -40,7 +40,9 @@ def _generate_files(
     tools_str = "\n".join(tool_calls)
 
     app_py = f'''\
+from pathlib import Path
 from apx_agent import Agent, create_app, {imports_str}
+from chainlit.utils import mount_chainlit
 
 agent = Agent(
     tools=[
@@ -49,6 +51,41 @@ agent = Agent(
     instructions="You are a data assistant for: {use_case}. Answer questions using the available tools.",
 )
 app = create_app(agent)
+mount_chainlit(app=app, target=str(Path(__file__).parent / "chainlit_app.py"), path="/")
+'''
+
+    chainlit_app_py = f'''\
+import os
+import httpx
+import chainlit as cl
+
+_PORT = os.environ.get("DATABRICKS_APP_PORT", "8000")
+_API = f"http://localhost:{{_PORT}}/responses"
+
+
+@cl.on_chat_start
+async def start():
+    cl.user_session.set("session_id", None)
+    cl.user_session.set("history", [])
+    await cl.Message(content="Hi! I\\'m your data assistant for: {use_case}. What would you like to know?").send()
+
+
+@cl.on_message
+async def handle(msg: cl.Message):
+    session_id = cl.user_session.get("session_id")
+    history = cl.user_session.get("history", [])
+    history.append({{"role": "user", "content": msg.content}})
+    payload = {{"input": history}}
+    if session_id:
+        payload["session_id"] = session_id
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.post(_API, json=payload)
+        data = r.json()
+    cl.user_session.set("session_id", data.get("session_id"))
+    output_text = data.get("output_text", "")
+    history.append({{"role": "assistant", "content": output_text}})
+    cl.user_session.set("history", history)
+    await cl.Message(content=output_text).send()
 '''
 
     pyproject_toml = f'''\
@@ -73,6 +110,7 @@ build-backend = "hatchling.build"
     # requirements.txt alongside pyproject.toml for Databricks Apps pip fallback
     requirements_txt = '''\
 apx-agent @ git+https://github.com/stuagano/apx-agent.git#subdirectory=python
+chainlit>=2.0.0
 fastapi>=0.119.0
 uvicorn>=0.37.0
 databricks-sdk>=0.74.0
@@ -91,6 +129,7 @@ command:
 
     return {
         "app.py": app_py,
+        "chainlit_app.py": chainlit_app_py,
         "pyproject.toml": pyproject_toml,
         "requirements.txt": requirements_txt,
         "app.yml": app_yml,
