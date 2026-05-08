@@ -45,17 +45,69 @@ Other agents call this via A2A at `<url>/mcp` by adding it to `sub_agents=["<url
 
 ---
 
-## Run locally
+## Part 1: Workspace setup (one-time)
+
+This agent discovers tables dynamically — there is no infrastructure to pre-create. All you need is CLI access to a workspace with Unity Catalog and at least one SQL warehouse.
+
+### Step 1: Verify CLI profile and warehouse access
 
 ```bash
-git clone https://github.com/stuagano/apx-agent
-cd python/examples/data-inspector
+databricks configure --profile my-workspace
+# enter workspace URL and personal access token when prompted
 
-uv sync
-uv run uvicorn data_inspector.backend.app:app --port 9000
+databricks current-user me --profile my-workspace
+# should return your user info
+
+databricks warehouses list --profile my-workspace
+# confirm at least one warehouse is listed
 ```
 
-Try it:
+That's it. The agent needs no tables created ahead of time — it discovers everything at runtime via the Unity Catalog APIs.
+
+---
+
+## Part 2: Local development
+
+### Step 1: Install
+
+```bash
+cd examples/data-inspector
+uv sync
+```
+
+### Step 2: Configure your Databricks CLI profile
+
+```bash
+databricks configure --profile my-workspace
+# enter workspace URL and personal access token when prompted
+
+databricks current-user me --profile my-workspace
+# should return your user info
+```
+
+### Step 3: Set your profile for local development
+
+No `.env` file is needed — the workspace client is injected automatically by Databricks Apps in production. For local development, set your profile via environment variable:
+
+```bash
+export DATABRICKS_CONFIG_PROFILE=my-workspace
+```
+
+You can also prefix each `uv run` command:
+
+```bash
+DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn data_inspector.backend.app:app --port 9000 --reload
+```
+
+### Step 4: Run the tests
+
+This example doesn't include automated tests. Run the agent locally and try queries:
+
+```bash
+DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn data_inspector.backend.app:app --port 9000 --reload
+```
+
+Then open `http://localhost:9000` and try:
 
 ```
 What tables are in my main catalog?
@@ -64,47 +116,45 @@ When did rows with status='ERROR' first appear in catalog.schema.events?
 Who last modified catalog.schema.accounts and when?
 ```
 
+### Step 5: Run locally
+
+The agent runs on port 9000 — this is the default used when the [data-triage-agent](../data-triage-agent/) calls it as a sub-agent:
+
+```bash
+DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn data_inspector.backend.app:app --port 9000 --reload
+```
+
 ---
 
-## Deploy to Databricks Apps
+## Part 3: Deploy to Databricks Apps
 
-### Prerequisites
+### Step 1: Review `app.yml`
 
-- **Databricks CLI** — [install](https://docs.databricks.com/dev-tools/cli/databricks-cli.html)
-- **uv** — `pip install uv`
-- A Databricks workspace with [Apps enabled](https://docs.databricks.com/en/dev-tools/databricks-apps/index.html)
+No env vars need to be set — the workspace client is injected automatically and there are no required configuration values. The optional `AGENT_HUB_URL` can be added if you want to register on startup:
 
-### 1. Authenticate
-
-```bash
-databricks auth login --host https://<your-workspace>.azuredatabricks.net
-databricks current-user me
+```yaml
+# app.yml — no changes required for a basic deployment
+command: ["uvicorn", "data_inspector.backend.app:app", "--workers", "2"]
 ```
 
-### 2. Get the code
+To register with an agent hub, add:
 
-```bash
-git clone https://github.com/stuagano/apx-agent
-cd python/examples/data-inspector
+```yaml
+env:
+  - name: AGENT_HUB_URL
+    value: "https://<your-agent-hub-url>"
 ```
 
-### 3. Build
+### Step 2: Deploy
 
 ```bash
-uv build --wheel -o .build/
-ls .build/*.whl | xargs basename > .build/requirements.txt
+uv run apx deploy
 ```
 
-### 4. Deploy
+### Step 3: Verify
 
 ```bash
-databricks bundle deploy
-```
-
-Check status:
-
-```bash
-databricks apps get mcp-data-inspector -o json | python3 -c "
+databricks apps get mcp-data-inspector --profile my-workspace -o json | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 print('URL:   ', d.get('url', 'not yet available'))
@@ -112,18 +162,17 @@ print('State: ', d.get('app_status', {}).get('state', 'unknown'))
 "
 ```
 
-When `State: RUNNING`, the MCP endpoint is live at `<url>/mcp`. Pass this URL to other agents as a sub-agent:
+When `State: RUNNING`, copy the URL — you'll pass it to data-triage-agent as `DATA_INSPECTOR_URL`:
+
+```python
+# In data-triage-agent, pass this URL as an environment variable:
+DATA_INSPECTOR_URL=https://<your-app>.databricksapps.com
+```
+
+The MCP endpoint is live at `<url>/mcp`. Any other agent can add this as a sub-agent:
 
 ```python
 agent = Agent(tools=[...], sub_agents=["https://<data-inspector-url>"])
-```
-
-### Redeploy after changes
-
-```bash
-uv build --wheel -o .build/
-ls .build/*.whl | xargs basename > .build/requirements.txt
-databricks bundle deploy
 ```
 
 ---
