@@ -1,0 +1,14 @@
+bundle:
+  name: account-search-service
+
+targets:
+  dev:
+    mode: development
+    workspace:
+      host: ${workspace.host}
+
+resources:
+  apps:
+    account-search-service:
+      name: account-search-service
+      source_code_path: .

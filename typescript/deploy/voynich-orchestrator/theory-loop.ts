@@ -273,7 +273,7 @@ export interface Theory {
   }>;
 }
 
-export type SeedMode = 'elite' | 'cold';
+export type SeedMode = 'elite' | 'cold' | 'champion';
 
 export interface Strategy {
   language: 'latin' | 'italian';
@@ -350,7 +350,7 @@ function strategyKey(s: Strategy): string {
 let evaCorpusCache: Map<string, string> | null = null;
 
 async function loadEvaCorpus(): Promise<Map<string, string>> {
-  if (evaCorpusCache) return evaCorpusCache;
+  if (evaCorpusCache !== null && evaCorpusCache.size > 0) return evaCorpusCache;
   const rows = await executeSql(`
     SELECT folio_id, eva_text
     FROM serverless_stable_qh44kx_catalog.voynich.eva_corpus
@@ -912,7 +912,7 @@ async function executeSql(statement: string): Promise<Array<Record<string, strin
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ warehouse_id: warehouseId, statement, wait_timeout: '30s' }),
+    body: JSON.stringify({ warehouse_id: warehouseId, statement, wait_timeout: '50s' }),
   });
 
   const data = (await res.json()) as {
@@ -966,17 +966,31 @@ async function callFMAPI(prompt: string): Promise<string> {
 let folioCache: FolioInfo[] | null = null;
 
 export async function loadFolios(): Promise<FolioInfo[]> {
-  if (folioCache) return folioCache;
+  if (folioCache !== null && folioCache.length > 0) return folioCache;
 
-  const [rows, evaCorpus] = await Promise.all([
-    executeSql(`
-      SELECT folio_id, subject_candidates, botanical_features, expected_terms
-      FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis
-      WHERE section = 'herbal'
-      ORDER BY folio_id
-    `),
-    loadEvaCorpus(),
-  ]);
+  // Retry loop — warehouse may be starting up after app restart (takes 60-90s).
+  let rows: Array<Record<string, string>> = [];
+  let evaCorpus = new Map<string, string>();
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (attempt > 0) {
+      const delay = attempt * 15000;
+      console.log(`[theory-loop] loadFolios: warehouse not ready, retrying in ${delay / 1000}s (attempt ${attempt + 1}/6)`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+    [rows] = await Promise.all([
+      executeSql(`
+        SELECT folio_id, subject_candidates, botanical_features, expected_terms
+        FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis
+        WHERE section = 'herbal'
+        ORDER BY folio_id
+      `),
+    ]);
+    if (rows.length > 0) {
+      evaCorpus = await loadEvaCorpus();
+      if (evaCorpus.size > 0) break;
+    }
+  }
+  if (rows.length === 0) throw new Error('loadFolios: warehouse returned no rows after 6 attempts');
 
   folioCache = rows.map((r) => {
     const candidates = JSON.parse(r.subject_candidates || '[]');
@@ -1007,8 +1021,8 @@ export async function loadFolios(): Promise<FolioInfo[]> {
 // Theory generation
 // ---------------------------------------------------------------------------
 
-/** Hill-climbing iterations per theory round (cheap — no LLM calls during climb). */
-const HILL_CLIMB_STEPS = 2000;
+/** SA iterations per substitution theory round (cheap — no LLM calls during SA). */
+const HILL_CLIMB_STEPS = parseInt(process.env.SUBST_SA_STEPS ?? '8000');
 /** Number of initial seed maps to try before hill-climbing the best. */
 const SEED_MAPS = 6;
 
@@ -1261,6 +1275,26 @@ function mutateMapWild(map: Record<string, string>): Record<string, string> {
   return result;
 }
 
+async function loadChampionMap(
+  language: string,
+  cipherType: string,
+): Promise<Record<string, string> | null> {
+  try {
+    const rows = await executeSql(`
+      SELECT symbol_map FROM serverless_stable_qh44kx_catalog.voynich.theories
+      WHERE source_language = '${language}' AND cipher_type = '${cipherType}'
+        AND symbol_map IS NOT NULL AND symbol_map != '{}'
+      ORDER BY grounding_score + consistency_score DESC
+      LIMIT 1
+    `);
+    if (rows.length === 0) return null;
+    const raw = rows[0].symbol_map;
+    return JSON.parse(raw) as Record<string, string>;
+  } catch {
+    return null;
+  }
+}
+
 export async function proposeTheory(
   targetFolio: FolioInfo,
   allFolios: FolioInfo[],
@@ -1311,9 +1345,25 @@ export async function proposeTheory(
   // Mix of: consensus/elite (exploit), radical new architectures (explore).
   const seeds: Array<{ map: Record<string, string>; decoded: string; score: number; origin: string }> = [];
 
+  // --- CHAMPION SEED (micro-perturbation from all-time best) ---
+  // Loads the highest-scoring theory ever stored for this language+cipherType and
+  // uses its exact symbol map as the sole starting point. SA then runs with a
+  // very low wildRate to refine rather than re-discover.
+  if (seedMode === 'champion') {
+    const championMap = await loadChampionMap(sourceLanguage, cipherType);
+    if (championMap) {
+      // Fill any gaps in the champion map with frequency-based defaults
+      const freqMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
+      const filled = { ...freqMap, ...championMap };
+      const decoded = applyMap(evaText, filled);
+      seeds.push({ map: filled, decoded, score: hillClimbScore(decoded, sourceLanguage), origin: 'champion' });
+      console.log(`[theory-loop]   champion seed loaded, score=${hillClimbScore(decoded, sourceLanguage).toFixed(3)}`);
+    }
+  }
+
   // --- EXPLOITATION SEEDS (build on what works) ---
   // Cold mode skips these entirely — no consensus anchoring, no elite influence.
-  if (seedMode === 'elite') {
+  if (seedMode === 'elite' || seedMode === 'champion') {
     // Seed: pure consensus map
     const consensusMap = generateConsensusMap(evaFreqs, sourceLanguage, 0);
     const consensusDecoded = applyMap(evaText, consensusMap);
@@ -1397,29 +1447,43 @@ export async function proposeTheory(
 
   console.log(`[theory-loop]   seeds=${seeds.length} best_seed=${bestScore.toFixed(3)} origin=${seedOrigin} dict=${dictionaryScore(bestDecoded, sourceLanguage).toFixed(3)} starting hill-climb...`);
 
-  // Step 3: Hill-climb — balance focused vs wild mutations based on seed origin and mode.
-  // Cold mode escapes the consensus basin: full wild mutation.
-  // Exploration seeds get more wild mutations; exploitation seeds stay focused.
+  // Step 3: Simulated annealing — temperature schedule lets SA escape local optima.
+  // Champion mode starts near-optimal so uses low T (fine-tuning around champion peak).
+  // Elite uses medium T. Cold uses high T to explore broadly.
   const isExplorationSeed = ['reverse-freq', 'vowel-hyp', 'random', 'phonetic'].includes(seedOrigin);
-  const wildRate = seedMode === 'cold' ? 0.6
+  const wildRate = seedMode === 'champion' ? 0.20
+    : seedMode === 'cold' ? 0.6
     : isExplorationSeed ? 0.4
     : 0.15;
 
+  // SA temperature: champion is near-greedy (T≈0, no downhill drift), elite/cold use SA.
+  // Champion map is already near a known peak — accepting downhill moves destroys that signal.
+  const T_INIT = seedMode === 'champion' ? 0.002 : seedMode === 'elite' ? 0.06 : 0.18;
+  const T_FINAL = 0.001;
+
   let bestHillScore = hillClimbScore(bestDecoded, sourceLanguage);
+  let curMap = bestMap;
+  let curScore = bestHillScore;
   let improvements = 0;
 
   for (let step = 0; step < HILL_CLIMB_STEPS; step++) {
+    const t = T_INIT * Math.pow(T_FINAL / T_INIT, step / HILL_CLIMB_STEPS);
     const candidate = Math.random() < (1 - wildRate)
-      ? mutateMapFocused(bestMap, sourceLanguage)
-      : mutateMapWild(bestMap);
+      ? mutateMapFocused(curMap, sourceLanguage)
+      : mutateMapWild(curMap);
     const decoded = applyMap(evaText, candidate);
     const score = hillClimbScore(decoded, sourceLanguage);
+    const delta = score - curScore;
 
-    if (score > bestHillScore) {
-      bestMap = candidate;
-      bestDecoded = decoded;
-      bestHillScore = score;
-      improvements++;
+    if (delta > 0 || Math.random() < Math.exp(delta / t)) {
+      curMap = candidate;
+      curScore = score;
+      if (score > bestHillScore) {
+        bestMap = { ...curMap };
+        bestDecoded = decoded;
+        bestHillScore = score;
+        improvements++;
+      }
     }
   }
 
@@ -1436,7 +1500,7 @@ export async function proposeTheory(
   // Add to elite pool for crossbreeding in future rounds
   addToElitePool(bestMap, bestHillScore, sourceLanguage);
 
-  console.log(`[theory-loop]   hill-climb: ${improvements} improvements in ${HILL_CLIMB_STEPS} steps, dict=${dictScore.toFixed(3)} lm=${bigramFinal.toFixed(3)} combined=${bestHillScore.toFixed(3)} elites=${elitePool.length}`);
+  console.log(`[theory-loop]   subst SA (${seedMode}): ${improvements} improvements in ${HILL_CLIMB_STEPS} steps, dict=${dictScore.toFixed(3)} lm=${bigramFinal.toFixed(3)} combined=${bestHillScore.toFixed(3)} elites=${elitePool.length}`);
 
   // Step 4: Test cross-folio consistency
   const crossFolioResults: Theory['cross_folio_results'] = [];
@@ -2634,6 +2698,7 @@ export async function runTheoryLoop(
 ): Promise<Theory[]> {
   const folios = await loadFolios();
   const highConfidence = folios.filter((f) => f.confidence >= 0.5);
+  const folioPool = highConfidence.length > 0 ? highConfidence : folios;
   await loadStrategyStats();
 
   const labelStr = batchLabel ? ` label="${batchLabel}"` : '';
@@ -2652,7 +2717,7 @@ export async function runTheoryLoop(
 
     let burstBest = 0;
     for (let round = 0; round < ROUNDS_PER_BURST; round++) {
-      const folio = highConfidence[Math.floor(Math.random() * highConfidence.length)];
+      const folio = folioPool[Math.floor(Math.random() * folioPool.length)];
       console.log(`[theory-loop] Burst ${burst + 1} Round ${round}: ${folio.folio_id} (${folio.plant_name}) [${strategy.cipherType}/${strategy.seedMode}]`);
 
       const traceLabel = `burst ${burst + 1}/round ${round} ${folio.folio_id} [${strategy.cipherType}/${strategy.language}/${strategy.seedMode}]`;
@@ -2668,7 +2733,9 @@ export async function runTheoryLoop(
           const ELITE_RESTARTS = Math.min(2, N_RESTARTS);
           const candidates = await Promise.all(
             Array.from({ length: N_RESTARTS }, (_, i) => {
-              const restartSeedMode: SeedMode = i < ELITE_RESTARTS ? 'elite' : 'cold';
+              const restartSeedMode: SeedMode = i === 0 ? 'champion'
+                : i < ELITE_RESTARTS ? 'elite'
+                : 'cold';
               return proposeTheory(folio, folios, strategy.language, strategy.cipherType, restartSeedMode);
             }),
           );
