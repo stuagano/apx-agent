@@ -350,7 +350,7 @@ function strategyKey(s: Strategy): string {
 let evaCorpusCache: Map<string, string> | null = null;
 
 async function loadEvaCorpus(): Promise<Map<string, string>> {
-  if (evaCorpusCache) return evaCorpusCache;
+  if (evaCorpusCache !== null && evaCorpusCache.size > 0) return evaCorpusCache;
   const rows = await executeSql(`
     SELECT folio_id, eva_text
     FROM serverless_stable_qh44kx_catalog.voynich.eva_corpus
@@ -970,23 +970,27 @@ export async function loadFolios(): Promise<FolioInfo[]> {
 
   // Retry loop — warehouse may be starting up after app restart (takes 60-90s).
   let rows: Array<Record<string, string>> = [];
+  let evaCorpus = new Map<string, string>();
   for (let attempt = 0; attempt < 6; attempt++) {
     if (attempt > 0) {
       const delay = attempt * 15000;
-      console.log(`[theory-loop] loadFolios: got 0 rows (warehouse warming up?), retrying in ${delay / 1000}s (attempt ${attempt + 1}/6)`);
+      console.log(`[theory-loop] loadFolios: warehouse not ready, retrying in ${delay / 1000}s (attempt ${attempt + 1}/6)`);
       await new Promise((r) => setTimeout(r, delay));
     }
-    rows = await executeSql(`
-      SELECT folio_id, subject_candidates, botanical_features, expected_terms
-      FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis
-      WHERE section = 'herbal'
-      ORDER BY folio_id
-    `);
-    if (rows.length > 0) break;
+    [rows] = await Promise.all([
+      executeSql(`
+        SELECT folio_id, subject_candidates, botanical_features, expected_terms
+        FROM serverless_stable_qh44kx_catalog.voynich.folio_vision_analysis
+        WHERE section = 'herbal'
+        ORDER BY folio_id
+      `),
+    ]);
+    if (rows.length > 0) {
+      evaCorpus = await loadEvaCorpus();
+      if (evaCorpus.size > 0) break;
+    }
   }
   if (rows.length === 0) throw new Error('loadFolios: warehouse returned no rows after 6 attempts');
-
-  const evaCorpus = await loadEvaCorpus();
 
   folioCache = rows.map((r) => {
     const candidates = JSON.parse(r.subject_candidates || '[]');
