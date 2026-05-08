@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import logging
 import os
+import secrets
 import time
 from urllib.parse import urlencode
 
@@ -17,6 +18,10 @@ from . import token_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/slack")
+
+# Short-lived nonce store: nonce → slack_user_id.
+# In production, add TTL expiry. For this example, in-memory is fine.
+_pending: dict[str, str] = {}
 
 
 def _verify_slack_signature(body: bytes, timestamp: str, signature: str, secret: str) -> bool:
@@ -43,15 +48,17 @@ async def install(
 ) -> RedirectResponse:
     """Redirect to the Databricks OIDC authorization URL.
 
-    Passes the Slack user ID as OAuth 'state' so the callback can store
-    the resulting token against the correct Slack user.
+    Uses a server-side nonce as OAuth 'state' (not the raw Slack user ID)
+    so the callback can verify the request originated from this app's redirect.
     """
+    nonce = secrets.token_urlsafe(16)
+    _pending[nonce] = user
     params = urlencode({
         "response_type": "code",
         "client_id": settings.databricks_client_id,
         "redirect_uri": f"{settings.app_url}/slack/oauth/callback",
         "scope": "all-apis",
-        "state": user,
+        "state": nonce,
     })
     return RedirectResponse(
         url=f"https://{settings.databricks_host}/oidc/v1/authorize?{params}"
@@ -90,7 +97,9 @@ async def oauth_callback(
     if not access_token:
         raise HTTPException(status_code=502, detail="No access_token in Databricks response")
 
-    slack_user_id = state
+    slack_user_id = _pending.pop(state, None)
+    if slack_user_id is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
     token_store.set_token(slack_user_id, access_token)
     logger.info("Stored Databricks token for Slack user %s", slack_user_id)
 
