@@ -632,7 +632,7 @@ app.get('/_apx/results', async (_req, res) => {
         <span style="background:#172030;color:#64b5f6;padding:1px 5px;border-radius:3px;margin-right:8px">Italian dictionary word</span>
         <span style="color:#444;padding:1px 5px;border-radius:3px;border:1px solid #1a1a2e">unmatched — hover for EVA</span>
       </div>
-      <div id="champ-decoded" style="line-height:2.2;font-family:monospace;font-size:12px"><span style="color:#444">Loading...</span></div>
+      <div id="champ-decoded" style="line-height:2;font-family:monospace;font-size:15px;word-spacing:4px"><span style="color:#444">Loading...</span></div>
     </div>
   </div>
 
@@ -806,14 +806,13 @@ app.get('/_apx/results', async (_req, res) => {
           const raw = decWords[i]||'?';
           const isTerm = termSet.has(dec);
           const isItalian = !isTerm && ITALIAN.has(dec);
-          const bg = isTerm ? '#1a3a1a' : isItalian ? '#172030' : 'transparent';
-          const border = isTerm ? '1px solid #2a5a2a' : isItalian ? '1px solid #1e3048' : '1px solid #1a1a2e';
           const color = isTerm ? '#66bb6a' : isItalian ? '#64b5f6' : '#555';
           const weight = isTerm ? '700' : '400';
-          return '<span title="EVA: '+eva+'" style="display:inline-block;margin:2px 3px;padding:3px 7px;border-radius:4px;background:'+bg+';border:'+border+';cursor:default;vertical-align:middle">' +
-            '<span style="font-size:9px;color:#333;display:block;line-height:1.2;text-align:center">'+eva+'</span>' +
-            '<span style="color:'+color+';font-weight:'+weight+';font-size:12px">'+raw+'</span></span>';
-        }).join('');
+          const extra = (isTerm || isItalian)
+            ? 'background:'+(isTerm?'#1a3a1a':'#172030')+';border-radius:3px;padding:1px 4px;'
+            : '';
+          return '<span title="EVA: '+eva+'" style="cursor:default;color:'+color+';font-weight:'+weight+';'+extra+'">'+raw+'</span>';
+        }).join(' ');
       } else {
         document.getElementById('champ-error').innerHTML = '<div style="color:#444;font-size:12px">No champion theory yet</div>';
         document.getElementById('champ-key').innerHTML = '<span style="color:#444">—</span>';
