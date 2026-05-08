@@ -170,16 +170,27 @@ async def anthropic_proxy(request: Request) -> dict:
     openai_body = _to_openai(body)
 
     import asyncio
+    import random
+
     auth_header = await asyncio.get_running_loop().run_in_executor(
         None, lambda: _get_sdk_auth_header(host)
     )
 
+    # Retry on 429 with exponential backoff — rate limit windows reset within ~60s.
+    max_retries = 7
     async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(
-            f"{host}/serving-endpoints/chat/completions",
-            headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            json=openai_body,
-        )
+        for attempt in range(max_retries):
+            resp = await client.post(
+                f"{host}/serving-endpoints/chat/completions",
+                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                json=openai_body,
+            )
+            if resp.status_code != 429:
+                break
+            if attempt < max_retries - 1:
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                logger.warning("429 rate limit hit, retrying in %.1fs (attempt %d/%d)", delay, attempt + 1, max_retries)
+                await asyncio.sleep(delay)
 
     if not resp.is_success:
         logger.error("Databricks proxy error %s: %s", resp.status_code, resp.text[:200])
