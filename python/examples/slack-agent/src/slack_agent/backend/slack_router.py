@@ -101,3 +101,99 @@ async def oauth_callback(
         ),
         status_code=200,
     )
+
+
+@router.post("/events")
+async def slack_events(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Handle Slack slash commands.
+
+    Validates Slack's HMAC-SHA256 signature, then:
+    - /connect: returns an ephemeral message with the OAuth install link.
+    - anything else: looks up the stored Databricks token; if found, returns
+      200 immediately and fires an async task that runs the agent and posts
+      the result back to Slack via response_url (3-second deadline workaround).
+    """
+    body = await request.body()
+    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+    signature = request.headers.get("X-Slack-Signature", "")
+
+    if not _verify_slack_signature(body, timestamp, signature, settings.slack_signing_secret):
+        raise HTTPException(status_code=401, detail="Invalid Slack signature")
+
+    form = await request.form()
+    user_id = str(form.get("user_id", ""))
+    text = str(form.get("text", "")).strip()
+    response_url = str(form.get("response_url", ""))
+    command = str(form.get("command", ""))
+
+    if command == "/connect":
+        install_url = f"{settings.app_url}/slack/install?user={user_id}"
+        return {
+            "response_type": "ephemeral",
+            "text": f"Click to connect your Databricks account: {install_url}",
+        }
+
+    stored_token = token_store.get_token(user_id)
+    if not stored_token:
+        install_url = f"{settings.app_url}/slack/install?user={user_id}"
+        return {
+            "response_type": "ephemeral",
+            "text": f"Connect your Databricks account first: {install_url}",
+        }
+
+    # Slack requires a response within 3 seconds. Return immediately and do
+    # the agent work in the background, posting back via response_url.
+    asyncio.create_task(
+        _dispatch_to_agent(
+            text=text or command,
+            slack_user_id=user_id,
+            response_url=response_url,
+            databricks_token=stored_token,
+            databricks_host=settings.databricks_host,
+        )
+    )
+    return {"response_type": "ephemeral", "text": "Working on it..."}
+
+
+async def _dispatch_to_agent(
+    text: str,
+    slack_user_id: str,
+    response_url: str,
+    databricks_token: str,
+    databricks_host: str,
+) -> None:
+    """Call the agent and post the result back to Slack via response_url.
+
+    Databricks Apps injects X-Forwarded-Access-Token automatically for browser
+    requests. Dependencies.UserClient reads it to create a WorkspaceClient for
+    the real user. Here in Slack, we do the same thing manually — we fetched
+    the token via Databricks OAuth and stored it; now we inject it into the
+    request headers so the agent sees no difference.
+    """
+    port = os.environ.get("PORT", "8000")
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            agent_resp = await client.post(
+                f"http://localhost:{port}/responses",
+                json={"input": [{"role": "user", "content": text}]},
+                headers={
+                    "X-Forwarded-Access-Token": databricks_token,
+                    "X-Forwarded-Host": databricks_host,
+                },
+            )
+            agent_resp.raise_for_status()
+            result_text = agent_resp.json().get("output_text", "(no response)")
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(response_url, json={"text": result_text})
+
+    except Exception:
+        logger.exception("Error dispatching to agent for Slack user %s", slack_user_id)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(response_url, json={"text": "Sorry, something went wrong."})
+        except Exception:
+            logger.exception("Error posting error response to Slack for user %s", slack_user_id)
