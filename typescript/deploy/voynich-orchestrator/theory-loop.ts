@@ -1103,30 +1103,41 @@ let elitePoolLoaded = false;
 async function loadElitePool(): Promise<void> {
   if (elitePoolLoaded) return;
   elitePoolLoaded = true;
-  try {
-    const rows = await executeSql(`
-      SELECT symbol_map, source_language,
-        ROUND(grounding_score + consistency_score, 4) AS combined
-      FROM serverless_stable_qh44kx_catalog.voynich.theories
-      WHERE source_language IN ('latin', 'italian')
-        AND grounding_score + consistency_score > 0.2
-        AND cipher_type IN ('substitution', 'substitution-strip', 'verbose')
-      ORDER BY grounding_score + consistency_score DESC
-      LIMIT 20
-    `);
-    for (const row of rows) {
-      try {
-        const map = JSON.parse(row.symbol_map);
-        const score = parseFloat(row.combined);
-        elitePool.push({ map, score, language: row.source_language });
-      } catch { /* skip unparseable */ }
+  // Retry loop — same warehouse cold-start issue as loadFolios; warehouse may be
+  // starting up and return PENDING→empty. Retry with backoff until we get rows.
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (attempt > 0) {
+      const delay = attempt * 15000;
+      console.log(`[theory-loop] loadElitePool: warehouse not ready, retrying in ${delay / 1000}s (attempt ${attempt + 1}/6)`);
+      await new Promise((r) => setTimeout(r, delay));
     }
-    if (elitePool.length > 0) {
-      console.log(`[theory-loop] Loaded ${elitePool.length} elite maps from Delta (best=${elitePool[0].score.toFixed(3)})`);
+    try {
+      const rows = await executeSql(`
+        SELECT symbol_map, source_language,
+          ROUND(grounding_score + consistency_score, 4) AS combined
+        FROM serverless_stable_qh44kx_catalog.voynich.theories
+        WHERE source_language IN ('latin', 'italian')
+          AND grounding_score + consistency_score > 0.2
+          AND cipher_type IN ('substitution', 'substitution-strip', 'verbose')
+        ORDER BY grounding_score + consistency_score DESC
+        LIMIT 20
+      `);
+      if (rows.length > 0) {
+        for (const row of rows) {
+          try {
+            const map = JSON.parse(row.symbol_map);
+            const score = parseFloat(row.combined);
+            elitePool.push({ map, score, language: row.source_language });
+          } catch { /* skip unparseable */ }
+        }
+        console.log(`[theory-loop] Loaded ${elitePool.length} elite maps from Delta (best=${elitePool[0]?.score.toFixed(3)})`);
+        return;
+      }
+    } catch (err) {
+      console.warn(`[theory-loop] loadElitePool attempt ${attempt + 1} failed:`, err);
     }
-  } catch (err) {
-    console.warn('[theory-loop] Failed to load elite pool from Delta:', err);
   }
+  console.warn('[theory-loop] loadElitePool: no rows after 6 attempts — elite pool empty');
 }
 
 function addToElitePool(map: Record<string, string>, score: number, language: string): void {
@@ -1147,31 +1158,39 @@ let homophonicElitePoolLoaded = false;
 async function loadHomophonicElitePool(): Promise<void> {
   if (homophonicElitePoolLoaded) return;
   homophonicElitePoolLoaded = true;
-  try {
-    const rows = await executeSql(`
-      SELECT symbol_map, source_language,
-        ROUND(grounding_score + consistency_score, 4) AS combined
-      FROM serverless_stable_qh44kx_catalog.voynich.theories
-      WHERE cipher_type = 'homophonic'
-        AND grounding_score + consistency_score > 0.25
-        AND get_json_object(symbol_map, '$.ch') = 's'
-        AND get_json_object(symbol_map, '$.y')  = 't'
-        AND get_json_object(symbol_map, '$.c')  = 'n'
-      ORDER BY grounding_score + consistency_score DESC
-      LIMIT ${HOMOPHONIC_ELITE_POOL_SIZE}
-    `);
-    for (const row of rows) {
-      try {
-        const map = JSON.parse(row.symbol_map);
-        const score = parseFloat(row.combined);
-        homophonicElitePool.push({ map, score, language: row.source_language });
-      } catch { /* skip unparseable */ }
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (attempt > 0) {
+      const delay = attempt * 15000;
+      console.log(`[theory-loop] loadHomophonicElitePool: retrying in ${delay / 1000}s (attempt ${attempt + 1}/6)`);
+      await new Promise((r) => setTimeout(r, delay));
     }
-    if (homophonicElitePool.length > 0) {
-      console.log(`[theory-loop] Loaded ${homophonicElitePool.length} homophonic elite maps from Delta (best=${homophonicElitePool[0].score.toFixed(3)})`);
+    try {
+      const rows = await executeSql(`
+        SELECT symbol_map, source_language,
+          ROUND(grounding_score + consistency_score, 4) AS combined
+        FROM serverless_stable_qh44kx_catalog.voynich.theories
+        WHERE cipher_type = 'homophonic'
+          AND grounding_score + consistency_score > 0.25
+          AND get_json_object(symbol_map, '$.ch') = 's'
+          AND get_json_object(symbol_map, '$.y')  = 't'
+          AND get_json_object(symbol_map, '$.c')  = 'n'
+        ORDER BY grounding_score + consistency_score DESC
+        LIMIT ${HOMOPHONIC_ELITE_POOL_SIZE}
+      `);
+      if (rows.length > 0) {
+        for (const row of rows) {
+          try {
+            const map = JSON.parse(row.symbol_map);
+            const score = parseFloat(row.combined);
+            homophonicElitePool.push({ map, score, language: row.source_language });
+          } catch { /* skip unparseable */ }
+        }
+        console.log(`[theory-loop] Loaded ${homophonicElitePool.length} homophonic elite maps from Delta (best=${homophonicElitePool[0]?.score.toFixed(3)})`);
+        return;
+      }
+    } catch (err) {
+      console.warn(`[theory-loop] loadHomophonicElitePool attempt ${attempt + 1} failed:`, err);
     }
-  } catch (err) {
-    console.warn('[theory-loop] Failed to load homophonic elite pool:', err);
   }
 }
 
@@ -1455,9 +1474,10 @@ export async function proposeTheory(
     : isExplorationSeed ? 0.4
     : 0.15;
 
-  // SA temperature: champion is near-greedy (T≈0, no downhill drift), elite/cold use SA.
-  // Champion map is already near a known peak — accepting downhill moves destroys that signal.
-  const T_INIT = seedMode === 'champion' ? 0.002 : seedMode === 'elite' ? 0.06 : 0.18;
+  // SA temperature: champion and elite are near-greedy (exploit known-good maps).
+  // Cold starts use higher T to explore new basins. Old greedy (T≈0, 2000 steps) found
+  // 0.4929; SA at T=0.06 elite regressed to 0.33 by destroying the elite seed's head start.
+  const T_INIT = seedMode === 'champion' ? 0.001 : seedMode === 'elite' ? 0.005 : 0.10;
   const T_FINAL = 0.001;
 
   let bestHillScore = hillClimbScore(bestDecoded, sourceLanguage);
@@ -2698,7 +2718,9 @@ export async function runTheoryLoop(
   const folios = await loadFolios();
   const highConfidence = folios.filter((f) => f.confidence >= 0.5);
   const folioPool = highConfidence.length > 0 ? highConfidence : folios;
-  await loadStrategyStats();
+  // Load elite pools eagerly before any SA runs — lazy loading from proposeTheory
+  // races with concurrent SA batches and gets PENDING responses when warehouse is busy.
+  await Promise.all([loadElitePool(), loadHomophonicElitePool(), loadStrategyStats()]);
 
   const labelStr = batchLabel ? ` label="${batchLabel}"` : '';
   console.log(`[theory-loop] Starting ${numBursts} bursts × ${ROUNDS_PER_BURST} rounds with ${highConfidence.length} high-confidence folios${labelStr}`);
