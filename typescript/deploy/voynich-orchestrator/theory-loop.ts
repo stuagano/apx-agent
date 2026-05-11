@@ -1959,7 +1959,24 @@ async function proposeHomophonicTheory(
   let seed: Record<string, string>;
   let seedSource = 'fresh';
 
-  if (seedMode === 'elite') {
+  if (seedMode === 'champion') {
+    // Load all-time best homophonic theory for this language and use its
+    // map directly. SA then refines with low T to stay near the peak.
+    const champion = await loadChampionMap(sourceLanguage, 'homophonic');
+    if (champion) {
+      // Re-apply CONSENSUS_LOCKED in case the champion predates a lock add.
+      const locked = CONSENSUS_LOCKED[sourceLanguage] ?? CONSENSUS_LOCKED.latin;
+      const base = { ...champion.map };
+      for (const tok of Object.keys(locked)) base[tok] = locked[tok];
+      seed = base;
+      const seedScore = hillClimbScore(applyMap(evaText, seed), sourceLanguage);
+      seedSource = `champion(score=${seedScore.toFixed(3)})`;
+      console.log(`[theory-loop]   homophonic champion seed loaded, score=${seedScore.toFixed(3)}`);
+    } else {
+      // No champion yet — fall through to fresh.
+      seed = generateHomophonicSeed(sourceLanguage);
+    }
+  } else if (seedMode === 'elite') {
     // Prefer homophonic elites — they carry full token maps and start much
     // closer to the optimum than substitution elites.
     const homoElites = homophonicElitePool.filter((e) => e.language === sourceLanguage);
