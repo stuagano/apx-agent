@@ -2628,6 +2628,41 @@ function expectedTermsFor(folio: FolioInfo, language: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Schema setup — run once per process. Previously called per-INSERT, which
+// generated 4 schema-mutation queries per theory across 3 parallel runners and
+// flooded the warehouse with ~300 idempotent ALTER failures per hour.
+// ---------------------------------------------------------------------------
+
+let schemaInitialized: Promise<void> | null = null;
+async function ensureTheoriesSchema(): Promise<void> {
+  if (schemaInitialized) return schemaInitialized;
+  schemaInitialized = (async () => {
+    await executeSql(`
+      CREATE TABLE IF NOT EXISTS serverless_stable_qh44kx_catalog.voynich.theories (
+        id STRING, proposed_at TIMESTAMP, source_language STRING,
+        cipher_type STRING,
+        target_folio STRING, target_plant STRING,
+        symbol_map STRING, decoded_text STRING,
+        grounding_score DOUBLE, consistency_score DOUBLE,
+        cross_folio_results STRING, verdict STRING
+      )
+    `);
+    // Idempotent column adds — caught individually so a missing column on one
+    // ALTER doesn't block the rest.
+    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (cipher_type STRING)`).catch(() => {});
+    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (
+      skeptic_verdict STRING,
+      critic_likelihood DOUBLE,
+      critic_adversarial DOUBLE,
+      critic_null_distinguishable BOOLEAN,
+      critic_judge_verdict STRING
+    )`).catch(() => {});
+    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (batch_label STRING)`).catch(() => {});
+  })();
+  return schemaInitialized;
+}
+
+// ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 
@@ -2951,28 +2986,7 @@ async function persistTheory(
     const escJudge = (criticVerdict?.judge_verdict ?? '').replace(/'/g, "''");
     const escBatchLabel = (batchLabel ?? '').replace(/'/g, "''");
 
-    await executeSql(`
-      CREATE TABLE IF NOT EXISTS serverless_stable_qh44kx_catalog.voynich.theories (
-        id STRING, proposed_at TIMESTAMP, source_language STRING,
-        cipher_type STRING,
-        target_folio STRING, target_plant STRING,
-        symbol_map STRING, decoded_text STRING,
-        grounding_score DOUBLE, consistency_score DOUBLE,
-        cross_folio_results STRING, verdict STRING
-      )
-    `);
-    // Schema migrations: add columns if the table predates each. Each ALTER
-    // is idempotent against re-runs because we catch + ignore the
-    // "column already exists" error.
-    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (cipher_type STRING)`).catch(() => {});
-    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (
-      skeptic_verdict STRING,
-      critic_likelihood DOUBLE,
-      critic_adversarial DOUBLE,
-      critic_null_distinguishable BOOLEAN,
-      critic_judge_verdict STRING
-    )`).catch(() => {});
-    await executeSql(`ALTER TABLE serverless_stable_qh44kx_catalog.voynich.theories ADD COLUMNS (batch_label STRING)`).catch(() => {});
+    await ensureTheoriesSchema();
 
     // SQL NULL for optional fields when the critic was unreachable / signal missing.
     const lik = criticVerdict?.likelihood;
