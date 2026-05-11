@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = [".", "packages"]
-include = ["server*", "databricks_tools_core*", "databricks_mcp_server*"]
+include = ["server*", "databricks_tools_core*"]
 exclude = ["client*", "tests*", "scripts*"]
 
 [project]
