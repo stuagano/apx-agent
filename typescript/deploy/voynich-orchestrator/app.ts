@@ -605,7 +605,7 @@ app.get('/_apx/results', async (_req, res) => {
   </div>
 
   <h1>Voynich — Parallel SA Search</h1>
-  <p class="subtitle">3 parallel loop-runner apps · dashboard reads UC</p>
+  <p class="subtitle">parallel loop-runner apps · each is a multi-agent orchestrator testing one hypothesis · dashboard reads UC</p>
   <div style="margin-bottom:18px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap">
     <a href="${appsListLink}" target="_blank" style="color:#64b5f6;text-decoration:none;border:1px solid #1e3048;border-radius:4px;padding:3px 9px;background:#0d1726">Databricks Apps ↗</a>
     <a href="${theoriesUcLink}" target="_blank" style="color:#81c784;text-decoration:none;border:1px solid #1a4a1a;border-radius:4px;padding:3px 9px;background:#0d2a0d">voynich.theories ↗</a>
