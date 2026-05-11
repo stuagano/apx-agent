@@ -1,5 +1,14 @@
 # slack-agent
 
+> **Direction: Slack → Databricks**
+>
+> This example solves: *"A Slack user wants to query Databricks."*
+> Auth flows **into** Databricks — the Slack user authenticates via Databricks OIDC and the agent runs with their Databricks identity.
+>
+> This is **not** the pattern for giving Genie read-access to Slack. For that direction
+> (Databricks → Slack, respecting per-user Slack permissions), use a UC External Connection
+> pointing at `https://mcp.slack.com/mcp` with per-user OAuth2 — no custom agent needed.
+
 A Slack bot that runs apx-agent with real end-user Databricks credentials. The purpose of this example is to make the `X-Forwarded-Access-Token` mechanism explicit — the same token-injection that Databricks Apps does automatically for browser requests, done manually for Slack.
 
 ## The Core Idea
