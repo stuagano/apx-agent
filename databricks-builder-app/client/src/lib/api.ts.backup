@@ -1,0 +1,228 @@
+// API client for the Builder App
+
+import type {
+  UserInfo,
+  Project,
+  Conversation,
+  Message,
+  Warehouse,
+  Cluster,
+  Execution,
+  SkillTreeNode,
+  FetchSystemPromptParams,
+} from './types';
+
+const API_BASE = '/api';
+
+// Helper function for API requests
+async function apiRequest<T>(
+  endpoint: string,
+  options?: RequestInit
+): Promise<T> {
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options?.headers,
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail || 'API request failed');
+  }
+
+  return response.json();
+}
+
+// User API
+export async function fetchUserInfo(): Promise<UserInfo> {
+  return apiRequest<UserInfo>('/me');
+}
+
+// Projects API
+export async function fetchProjects(): Promise<Project[]> {
+  return apiRequest<Project[]>('/projects');
+}
+
+export async function fetchProject(projectId: string): Promise<Project> {
+  return apiRequest<Project>(`/projects/${projectId}`);
+}
+
+export async function createProject(name: string): Promise<Project> {
+  return apiRequest<Project>('/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  await apiRequest(`/projects/${projectId}`, {
+    method: 'DELETE',
+  });
+}
+
+// Conversations API
+export async function fetchConversations(projectId: string): Promise<Conversation[]> {
+  return apiRequest<Conversation[]>(`/projects/${projectId}/conversations`);
+}
+
+export async function fetchConversation(projectId: string, conversationId: string): Promise<Conversation & { messages: Message[] }> {
+  return apiRequest(`/projects/${projectId}/conversations/${conversationId}`);
+}
+
+export async function createConversation(
+  projectId: string,
+  title: string = "New Conversation",
+  options?: {
+    cluster_id?: string;
+    warehouse_id?: string;
+    default_catalog?: string;
+    default_schema?: string;
+    workspace_folder?: string;
+  }
+): Promise<Conversation> {
+  return apiRequest<Conversation>('/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ project_id: projectId, title, ...options }),
+  });
+}
+
+// Agent API
+export async function* invokeAgent(params: {
+  projectId: string;
+  conversationId: string;
+  message: string;
+  clusterId?: string;
+  warehouseId?: string;
+  defaultCatalog?: string;
+  defaultSchema?: string;
+  workspaceFolder?: string;
+  signal?: AbortSignal;
+  onEvent?: (event: any) => void;
+}): AsyncGenerator<any> {
+  const response = await fetch(`${API_BASE}/invoke_agent`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      project_id: params.projectId,
+      conversation_id: params.conversationId,
+      message: params.message,
+      cluster_id: params.clusterId,
+      warehouse_id: params.warehouseId,
+      default_catalog: params.defaultCatalog,
+      default_schema: params.defaultSchema,
+      workspace_folder: params.workspaceFolder,
+    }),
+    signal: params.signal,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail || 'Agent invocation failed');
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('No response body');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            return;
+          }
+          try {
+            const event = JSON.parse(data);
+            if (params.onEvent) {
+              params.onEvent(event);
+            }
+            yield event;
+          } catch (e) {
+            console.error('Failed to parse SSE data:', data);
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export async function reconnectToExecution(executionId: string): AsyncGenerator<any> {
+  // Placeholder - implement if backend supports reconnection
+  throw new Error('Reconnection not implemented');
+}
+
+export async function fetchExecutions(projectId: string): Promise<Execution[]> {
+  // Placeholder - implement if backend supports executions endpoint
+  return [];
+}
+
+// Warehouses API
+export async function fetchWarehouses(): Promise<Warehouse[]> {
+  return apiRequest<Warehouse[]>('/warehouses');
+}
+
+// Clusters API
+export async function fetchClusters(): Promise<Cluster[]> {
+  return apiRequest<Cluster[]>('/clusters');
+}
+
+// Skills API
+export async function fetchSkillsTree(projectId: string): Promise<SkillTreeNode[]> {
+  return apiRequest<SkillTreeNode[]>(`/projects/${projectId}/skills/tree`);
+}
+
+export async function fetchSkillFile(projectId: string, skillPath: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/projects/${projectId}/skills/file?path=${encodeURIComponent(skillPath)}`);
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail || 'Failed to fetch skill file');
+  }
+  return response.text();
+}
+
+export async function fetchSystemPrompt(params: FetchSystemPromptParams): Promise<string> {
+  const response = await fetch(`${API_BASE}/projects/${params.project_id}/skills/system-prompt`);
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail || 'Failed to fetch system prompt');
+  }
+  return response.text();
+}
+
+export async function reloadProjectSkills(projectId: string): Promise<void> {
+  await apiRequest(`/projects/${projectId}/skills/reload`, {
+    method: 'POST',
+  });
+}
+
+export async function deleteConversation(projectId: string, conversationId: string): Promise<void> {
+  await apiRequest(`/projects/${projectId}/conversations/${conversationId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function fetchCatalogs(): Promise<Array<{name: string, comment: string | null}>> {
+  return apiRequest<Array<{name: string, comment: string | null}>>('/catalogs');
+}
+
+export async function fetchSchemas(catalog: string): Promise<Array<{name: string, comment: string | null}>> {
+  return apiRequest<Array<{name: string, comment: string | null}>>(`/schemas?catalog=${encodeURIComponent(catalog)}`);
+}
