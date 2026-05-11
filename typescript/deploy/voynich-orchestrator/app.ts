@@ -538,6 +538,10 @@ app.get('/_apx/results', async (_req, res) => {
   } catch { /* use defaults */ }
 
   const ssrData = JSON.stringify({ summary: ssrSummary, topTheories: ssrTopTheories, recentTheories: ssrRecentTheories, champion: ssrChampion, logs: ssrLogs, saState: ssrSaState, strategies: ssrStrategies });
+  const dbxHost = process.env.DATABRICKS_HOST ?? 'https://fevm-serverless-stable-qh44kx.cloud.databricks.com';
+  const theoriesUcLink = `${dbxHost}/explore/data/serverless_stable_qh44kx_catalog/voynich/theories`;
+  const logsUcLink     = `${dbxHost}/explore/data/serverless_stable_qh44kx_catalog/voynich/loop_logs`;
+  const appsListLink   = `${dbxHost}/apps`;
 
   res.send(`<!DOCTYPE html>
 <html>
@@ -601,7 +605,12 @@ app.get('/_apx/results', async (_req, res) => {
   </div>
 
   <h1>Voynich — Parallel SA Search</h1>
-  <p class="subtitle">3 parallel loop-runner apps (homophonic-italian · substitution-italian · homophonic-latin) · dashboard reads UC</p>
+  <p class="subtitle">3 parallel loop-runner apps · dashboard reads UC</p>
+  <div style="margin-bottom:18px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap">
+    <a href="${appsListLink}" target="_blank" style="color:#64b5f6;text-decoration:none;border:1px solid #1e3048;border-radius:4px;padding:3px 9px;background:#0d1726">Databricks Apps ↗</a>
+    <a href="${theoriesUcLink}" target="_blank" style="color:#81c784;text-decoration:none;border:1px solid #1a4a1a;border-radius:4px;padding:3px 9px;background:#0d2a0d">voynich.theories ↗</a>
+    <a href="${logsUcLink}" target="_blank" style="color:#ce93d8;text-decoration:none;border:1px solid #4a2560;border-radius:4px;padding:3px 9px;background:#1a0d2a">voynich.loop_logs ↗</a>
+  </div>
 
   <div id="db-error"></div>
   <div class="grid" id="summary"></div>
@@ -723,7 +732,7 @@ app.get('/_apx/results', async (_req, res) => {
             const stale = ageMin !== null && ageMin > 10;
             const ageStr = ageMin === null ? '—' : ageMin === 0 ? 'just now' : ageMin + 'm ago';
             return '<tr>' +
-              '<td class="mono" style="color:#bb86fc">'+st.app+'</td>' +
+              '<td class="mono"><a href="${dbxHost}/apps/'+st.app+'" target="_blank" style="color:#bb86fc;text-decoration:none">'+st.app+' ↗</a></td>' +
               '<td style="color:#aaa">'+st.cipher+'</td>' +
               '<td><span class="tag '+st.language+'">'+st.language+'</span></td>' +
               '<td style="text-align:right;color:#ccc">'+st.theories+'</td>' +
