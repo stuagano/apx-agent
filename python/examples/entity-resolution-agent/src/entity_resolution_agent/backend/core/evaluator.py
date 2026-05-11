@@ -23,6 +23,15 @@ def _names_share_surname(name_a: str, name_b: str) -> bool:
     return parts_a[-1] == parts_b[-1]
 
 
+def _first_names_differ(name_a: str, name_b: str) -> bool:
+    """True if both names have a first token and they differ."""
+    parts_a = name_a.lower().split()
+    parts_b = name_b.lower().split()
+    if len(parts_a) < 2 or len(parts_b) < 2:
+        return False
+    return parts_a[0] != parts_b[0]
+
+
 def _addresses_match(addr_a: str, addr_b: str) -> bool:
     """True if first token of address (street number) matches."""
     tok_a = addr_a.strip().split()
@@ -62,9 +71,25 @@ def evaluate_candidates(
     notes: list[str] = []
     same_address = _addresses_match(app_address, best.get("address", ""))
     same_surname = _names_share_surname(app_name, best.get("name", ""))
+    first_differs = _first_names_differ(app_name, best.get("name", ""))
     account_match = bool(app_account and app_account == best.get("account_number", ""))
 
-    if same_address and not same_surname:
+    # Exact name match: token overlap penalizes minor address differences (e.g. "Apt 2")
+    # but an identical name at the same street number is unambiguously the right record.
+    exact_name = app_name.strip().lower() == best.get("name", "").strip().lower()
+    if exact_name and same_address:
+        score = max(score, 0.92)
+        notes.append("exact name and address match")
+    elif exact_name:
+        score = max(score, 0.80)
+        notes.append("exact name match")
+    elif same_surname and same_address and not first_differs:
+        score = max(score, 0.78)
+        notes.append("exact surname and address match")
+
+    if same_address and same_surname and first_differs:
+        notes.append("familial match suspected: same address and surname, different first name")
+    elif same_address and not same_surname:
         notes.append("familial match suspected: same address, different surname")
     if account_match:
         notes.append("account number exact match")
@@ -74,8 +99,10 @@ def evaluate_candidates(
         category = "EXACT"
     elif score >= 0.75:
         category = "HIGH_CONFIDENCE"
-    else:
+    elif score >= 0.70:
         category = "LOW_CONFIDENCE"
+    else:
+        category = "NO_MATCH"
 
     rationale_parts = [f"Best candidate '{best['name']}' scored {score:.2f}."]
     if notes:
