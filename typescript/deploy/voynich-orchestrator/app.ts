@@ -408,42 +408,20 @@ app.get('/_apx/results', async (_req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.setHeader('Cache-Control', 'no-store');
 
-  // Pre-fetch all data server-side — page is static (no live JS polling).
+  // Pre-fetch all data server-side from UC — theory loops run in separate apps,
+  // dashboard reads only.
   type SsrTheory = { folio: string; plant: string; lang: string; grd: string; cons: string; combined: string; decoded: string };
   type SsrChampion = { id: string; folio: string; plant: string; symbolMap: Record<string,string>; decodedText: string; evaText: string; expectedTerms: string[]; grounding: number; consistency: number } | null;
+  type SsrLogRow = { ts: number; app: string; line: string };
+  type SsrStrategy = { app: string; cipher: string; language: string; theories: string; best: string; last_hour: string; latest: string };
 
-  let ssrActivity = { burst: 0, round: 0, activeStrategy: 'idle', allTimeBest: 0, entries: [] as typeof activityLog };
   let ssrSummary = { total: '—', best: '—', best_grd: '—', avg: '—', last_hour: '—' };
   let ssrTopTheories: SsrTheory[] = [];
   let ssrRecentTheories: SsrTheory[] = [];
   let ssrChampion: SsrChampion = null;
+  let ssrLogs: SsrLogRow[] = [];
+  let ssrStrategies: SsrStrategy[] = [];
   let ssrSaState = { restarts: [] as {mode:string;score:number}[], runs: [] as {impr:number;dict:number;lm:number;combined:number}[] };
-
-  // Parse SA state from in-process log ring — no network call needed.
-  {
-    const SA_RUN_RE = /(?:homophonic|subst|positional) SA [^:]*: (\d+) improvements in \d+ steps, dict=([\d.]+) lm=([\d.]+) combined=([\d.]+)/;
-    const RESTART_RE = /N=\d+ restarts → best=[\d.]+ \[([e\d.: c]+)\]/;
-    for (const { line } of LOG_RING) {
-      let m = RESTART_RE.exec(line);
-      if (m) {
-        ssrSaState.restarts = m[1].trim().split(/\s+/).map(tok => {
-          const [mode, score] = tok.split(':');
-          return { mode, score: parseFloat(score) };
-        });
-      }
-      m = SA_RUN_RE.exec(line);
-      if (m) {
-        ssrSaState.runs.unshift({ impr: parseInt(m[1]), dict: parseFloat(m[2]), lm: parseFloat(m[3]), combined: parseFloat(m[4]) });
-        if (ssrSaState.runs.length > 16) ssrSaState.runs.length = 16;
-      }
-    }
-  }
-
-  try {
-    if (activityLog.length > 0) {
-      ssrActivity = { burst: currentBurst, round: currentRound, activeStrategy, allTimeBest: allTimeBestCombined, entries: activityLog.slice(-30) };
-    }
-  } catch { /* use defaults */ }
 
   try {
     const { resolveToken: rt, resolveHost: rh } = await import('./appkit-agent/index.mjs');
@@ -466,7 +444,7 @@ app.get('/_apx/results', async (_req, res) => {
       });
     }
 
-    const [summaryRows, topRows, recentRows, champRows] = await Promise.all([
+    const [summaryRows, topRows, recentRows, champRows, logRows, strategyRows] = await Promise.all([
       dbSql(`SELECT COUNT(*) total, ROUND(MAX(grounding_score+consistency_score),3) best,
                     ROUND(MAX(grounding_score),3) best_grd,
                     ROUND(AVG(grounding_score+consistency_score),3) avg,
@@ -489,6 +467,22 @@ app.get('/_apx/results', async (_req, res) => {
              WHERE source_language = 'italian' AND cipher_type = 'substitution'
                AND symbol_map IS NOT NULL AND symbol_map != '{}'
              ORDER BY grounding_score + consistency_score DESC LIMIT 1`),
+      dbSql(`SELECT CAST(ts AS STRING) ts, app_name, line
+             FROM serverless_stable_qh44kx_catalog.voynich.loop_logs
+             ORDER BY ts DESC LIMIT 200`),
+      dbSql(`SELECT app_name app, cipher_type cipher, source_language language,
+                    COUNT(*) theories,
+                    ROUND(MAX(grounding_score+consistency_score),3) best,
+                    COUNT(CASE WHEN proposed_at >= current_timestamp() - INTERVAL 1 HOUR THEN 1 END) last_hour,
+                    CAST(MAX(proposed_at) AS STRING) latest
+             FROM serverless_stable_qh44kx_catalog.voynich.theories t
+             LEFT JOIN (
+               SELECT DISTINCT app_name, cipher_type, source_language
+               FROM serverless_stable_qh44kx_catalog.voynich.loop_logs
+             ) l USING (cipher_type, source_language)
+             WHERE app_name IS NOT NULL
+             GROUP BY app_name, cipher_type, source_language
+             ORDER BY app_name`),
     ]);
 
     if (summaryRows[0]) {
@@ -498,6 +492,30 @@ app.get('/_apx/results', async (_req, res) => {
     const mapTheory = (t: Record<string,string>): SsrTheory => ({ folio: t.target_folio, plant: t.target_plant, lang: t.source_language, grd: t.grd, cons: t.cons, combined: t.combined, decoded: t.decoded });
     ssrTopTheories = topRows.map(mapTheory);
     ssrRecentTheories = recentRows.map(mapTheory);
+    ssrLogs = logRows.reverse().map((r) => ({ ts: new Date(r.ts).getTime(), app: r.app_name, line: r.line }));
+    ssrStrategies = strategyRows.map((r) => ({
+      app: r.app ?? '', cipher: r.cipher ?? '', language: r.language ?? '',
+      theories: r.theories ?? '0', best: r.best ?? '—',
+      last_hour: r.last_hour ?? '0', latest: r.latest ?? '',
+    }));
+
+    // Parse SA state from log lines (top of buffer = most recent).
+    const SA_RUN_RE = /(?:homophonic|subst|positional) SA [^:]*: (\d+) improvements in \d+ steps, dict=([\d.]+) lm=([\d.]+) combined=([\d.]+)/;
+    const RESTART_RE = /N=\d+ restarts → best=[\d.]+ \[([e\d.: c]+)\]/;
+    for (const { line } of ssrLogs) {
+      let m = RESTART_RE.exec(line);
+      if (m) {
+        ssrSaState.restarts = m[1].trim().split(/\s+/).map(tok => {
+          const [mode, score] = tok.split(':');
+          return { mode, score: parseFloat(score) };
+        });
+      }
+      m = SA_RUN_RE.exec(line);
+      if (m) {
+        ssrSaState.runs.unshift({ impr: parseInt(m[1]), dict: parseFloat(m[2]), lm: parseFloat(m[3]), combined: parseFloat(m[4]) });
+        if (ssrSaState.runs.length > 16) ssrSaState.runs.length = 16;
+      }
+    }
 
     if (champRows[0]) {
       const t = champRows[0];
@@ -519,8 +537,7 @@ app.get('/_apx/results', async (_req, res) => {
     }
   } catch { /* use defaults */ }
 
-  const ssrLogs = LOG_RING.slice(-100);
-  const ssrData = JSON.stringify({ activity: ssrActivity, summary: ssrSummary, topTheories: ssrTopTheories, recentTheories: ssrRecentTheories, champion: ssrChampion, logs: ssrLogs, saState: ssrSaState });
+  const ssrData = JSON.stringify({ summary: ssrSummary, topTheories: ssrTopTheories, recentTheories: ssrRecentTheories, champion: ssrChampion, logs: ssrLogs, saState: ssrSaState, strategies: ssrStrategies });
 
   res.send(`<!DOCTYPE html>
 <html>
@@ -573,18 +590,18 @@ app.get('/_apx/results', async (_req, res) => {
 </head>
 <body>
   <div class="status-bar">
-    <div style="color:#888">Round <b id="sb-round" style="color:#ccc">-</b></div>
-    <div style="color:#888">Strategy <b id="sb-strategy" style="color:#bb86fc">-</b></div>
+    <div style="color:#888">Strategies <b id="sb-strat-count" style="color:#bb86fc">-</b></div>
     <div style="color:#888">Best <b id="sb-best" style="color:#4caf50">-</b></div>
     <div style="color:#888">Total <b id="sb-total" style="color:#ccc">-</b></div>
+    <div style="color:#888">Last hr <b id="sb-rate" style="color:#4dd0e1">-</b></div>
     <div style="margin-left:auto;display:flex;align-items:center;gap:16px">
       <span style="color:#444;font-size:11px" id="sb-ts">-</span>
       <a href="/_apx/results" style="color:#555;font-size:11px;text-decoration:none;border:1px solid #2a2a45;border-radius:4px;padding:2px 8px">↺ refresh</a>
     </div>
   </div>
 
-  <h1>Voynich — Homophonic Search</h1>
-  <p class="subtitle">8 restarts/round (2 elite + 6 cold) · 4000 SA steps each · CONSENSUS_LOCKED: ch→s y→t c→n</p>
+  <h1>Voynich — Parallel SA Search</h1>
+  <p class="subtitle">3 parallel loop-runner apps (homophonic-italian · substitution-italian · homophonic-latin) · dashboard reads UC</p>
 
   <div id="db-error"></div>
   <div class="grid" id="summary"></div>
@@ -608,8 +625,8 @@ app.get('/_apx/results', async (_req, res) => {
   </div>
 
   <div class="section">
-    <h2>Activity</h2>
-    <div id="activity" style="background:#0d0d1a;border:1px solid #20203a;border-radius:8px;padding:10px 12px;max-height:300px;overflow-y:auto"></div>
+    <h2>Parallel Strategies</h2>
+    <div id="strategies" style="background:#0d0d1a;border:1px solid #20203a;border-radius:8px;padding:0;overflow:hidden"></div>
   </div>
 
   <div class="section" id="champ-section">
@@ -682,41 +699,43 @@ app.get('/_apx/results', async (_req, res) => {
       document.getElementById('sb-ts').textContent = 'loaded ' + new Date().toLocaleTimeString();
 
       // Status bar
-      if (d.activity.round > 0 || d.activity.allTimeBest > 0) {
-        document.getElementById('sb-round').textContent = d.activity.round + 1;
-        document.getElementById('sb-strategy').textContent = (d.activity.activeStrategy || 'idle').replace(/\\|/g, ' ');
-        document.getElementById('sb-best').textContent = (d.activity.allTimeBest || 0).toFixed(3);
-      }
-
-      // Summary cards
       const s = d.summary;
       if (s.total !== '—') {
+        document.getElementById('sb-best').textContent = s.best;
         document.getElementById('sb-total').textContent = s.total;
+        document.getElementById('sb-rate').textContent = s.last_hour;
         document.getElementById('summary').innerHTML =
           '<div class="card"><div class="label">Total Theories</div><div class="value">'+s.total+'</div><div class="sub">'+s.last_hour+'/hr</div></div>' +
           '<div class="card"><div class="label">Best Combined</div><div class="value green">'+s.best+'</div><div class="sub">all time</div></div>' +
           '<div class="card"><div class="label">Best Grounding</div><div class="value">'+s.best_grd+'</div></div>' +
           '<div class="card"><div class="label">Avg Combined</div><div class="value amber">'+s.avg+'</div></div>';
       }
+      document.getElementById('sb-strat-count').textContent = (d.strategies || []).length || '0';
 
-      // Activity feed
-      const act = d.activity;
-      if (act.entries && act.entries.length > 0) {
-        document.getElementById('activity').innerHTML = act.entries.slice().reverse().map(function(e) {
-          const combined = (e.grounding + e.consistency).toFixed(3);
-          const color = parseFloat(combined) > 0.35 ? '#4caf50' : parseFloat(combined) > 0.25 ? '#ffb74d' : '#4dd0e1';
-          const t = new Date(e.time).toLocaleTimeString();
-          return '<div class="act-row">' +
-            '<span style="color:#444">'+t+'</span>  ' +
-            '<span class="tag '+(e.lang||'')+'">'+e.lang+'</span> ' +
-            e.folio+' <span style="color:#555;font-size:10px">('+((e.plant||'').slice(0,16))+')</span>  ' +
-            '<b style="color:'+color+'">'+combined+'</b>  ' +
-            '<span style="color:#555">grd='+e.grounding.toFixed(3)+' cons='+e.consistency.toFixed(3)+'</span>  ' +
-            '<span style="color:#777;font-style:italic">"'+e.decoded.slice(0,60)+'"</span>' +
-            '</div>';
-        }).join('');
+      // Strategy breakdown table
+      if (d.strategies && d.strategies.length > 0) {
+        const stratHtml = '<table style="margin:0"><thead><tr>' +
+          '<th>App</th><th>Cipher</th><th>Language</th><th style="text-align:right">Theories</th>' +
+          '<th style="text-align:right">Best</th><th style="text-align:right">Last hr</th><th>Latest</th>' +
+          '</tr></thead><tbody>' +
+          d.strategies.map(function(st) {
+            const ageMin = st.latest ? Math.floor((Date.now() - new Date(st.latest).getTime()) / 60000) : null;
+            const stale = ageMin !== null && ageMin > 10;
+            const ageStr = ageMin === null ? '—' : ageMin === 0 ? 'just now' : ageMin + 'm ago';
+            return '<tr>' +
+              '<td class="mono" style="color:#bb86fc">'+st.app+'</td>' +
+              '<td style="color:#aaa">'+st.cipher+'</td>' +
+              '<td><span class="tag '+st.language+'">'+st.language+'</span></td>' +
+              '<td style="text-align:right;color:#ccc">'+st.theories+'</td>' +
+              '<td style="text-align:right"><b style="color:'+(parseFloat(st.best)>0.5?'#4caf50':parseFloat(st.best)>0.35?'#ffb74d':'#4dd0e1')+'">'+st.best+'</b></td>' +
+              '<td style="text-align:right;color:#888">'+st.last_hour+'</td>' +
+              '<td style="color:'+(stale?'#ef5350':'#666')+';font-size:11px">'+ageStr+'</td>' +
+              '</tr>';
+          }).join('') +
+          '</tbody></table>';
+        document.getElementById('strategies').innerHTML = stratHtml;
       } else {
-        document.getElementById('activity').innerHTML = '<div style="color:#444;padding:6px;font-size:12px">No activity in memory — hit refresh.</div>';
+        document.getElementById('strategies').innerHTML = '<div style="color:#444;padding:14px;font-size:12px">No strategy activity yet</div>';
       }
 
       // SA Health
@@ -942,31 +961,6 @@ const server = app.listen(port, () => {
 server.timeout = 300_000;
 server.keepAliveTimeout = 90_000;
 
-// Auto-start based on LOOP_MODE
-const mode = process.env.LOOP_MODE ?? 'theory';
-
-if (mode === 'theory') {
-  console.log('[orchestrator] starting continuous theory-driven investigation');
-  import('./theory-loop.ts').then(async (m) => {
-    // Wire live activity reporting
-    m.setOnTheoryResult((entry) => logActivity(entry));
-
-    let batch = 0;
-    while (true) {
-      batch++;
-      console.log(`[orchestrator] === BATCH ${batch} starting (22 bursts × 20 rounds) ===`);
-      try {
-        const theories = await m.runTheoryLoop(22, batch);
-        const best = theories[0];
-        const bestCombined = best ? (best.grounding_score + best.consistency_score).toFixed(3) : '0';
-        console.log(`[orchestrator] === BATCH ${batch} complete: ${theories.length} theories, best_combined=${bestCombined} ===`);
-      } catch (err) {
-        console.error(`[orchestrator] batch ${batch} crashed:`, err);
-        await new Promise((r) => setTimeout(r, 30_000));
-      }
-    }
-  });
-} else if (process.env.AUTO_START_LOOP !== 'false') {
-  console.log('[orchestrator] auto-starting evolutionary loop');
-  evolutionaryAgent.startLoop();
-}
+// Theory loops run in separate Databricks Apps (voynich-hom-italian,
+// voynich-sub-italian, voynich-hom-latin). This app is dashboard + A2A only.
+console.log('[orchestrator] dashboard-only mode — theory loops run in parallel loop-runner apps');
