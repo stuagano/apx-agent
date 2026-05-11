@@ -70,32 +70,93 @@ console.log = (...a: unknown[]) => { origLog(...a); teeLog('INFO', a); };
 console.warn = (...a: unknown[]) => { origWarn(...a); teeLog('WARN', a); };
 console.error = (...a: unknown[]) => { origErr(...a); teeLog('ERR', a); };
 
+// Convergence: stop the search if the all-time best for this strategy hasn't
+// improved in CONVERGENCE_BURSTS consecutive bursts. The /health endpoint
+// stays up but the inner runTheoryLoop call is skipped after convergence.
+const CONVERGENCE_BURSTS = parseInt(process.env.CONVERGENCE_BURSTS ?? '20');
 let bursted = 0;
+let allTimeBest = 0;
+let staleBursts = 0;
+let converged = false;
+
+async function readAllTimeBest(): Promise<number> {
+  if (!WAREHOUSE_ID) return 0;
+  try {
+    const token = await resolveToken();
+    const host = resolveHost();
+    const r = await fetch(host + '/api/2.0/sql/statements', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        warehouse_id: WAREHOUSE_ID,
+        statement: `SELECT COALESCE(MAX(grounding_score+consistency_score), 0) AS best
+                    FROM serverless_stable_qh44kx_catalog.voynich.theories
+                    WHERE cipher_type='${CIPHER}' AND source_language='${LANG}'`,
+        wait_timeout: '10s',
+      }),
+    });
+    const d = await r.json() as { result?: { data_array?: string[][] } };
+    const val = d.result?.data_array?.[0]?.[0];
+    return val ? parseFloat(val) : 0;
+  } catch {
+    return 0;
+  }
+}
 
 // Health endpoint — Databricks Apps requires a process listening on PORT.
 const app = express();
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, app: APP_NAME, cipher: CIPHER, language: LANG, bursted: bursted });
+  res.json({
+    ok: true, app: APP_NAME, cipher: CIPHER, language: LANG,
+    bursted, allTimeBest, staleBursts, convergenceBursts: CONVERGENCE_BURSTS, converged,
+  });
 });
 app.get('/', (_req, res) => {
-  res.type('text/plain').send(`voynich loop runner — cipher=${CIPHER} language=${LANG} bursted=${bursted}\n`);
+  const statusLine = converged
+    ? `CONVERGED — no improvement in ${staleBursts} bursts, best=${allTimeBest.toFixed(3)}`
+    : `running — bursted=${bursted} best=${allTimeBest.toFixed(3)} stale=${staleBursts}/${CONVERGENCE_BURSTS}`;
+  res.type('text/plain').send(`voynich loop runner — cipher=${CIPHER} language=${LANG}\n${statusLine}\n`);
 });
 const port = parseInt(process.env.PORT ?? '8000');
 app.listen(port, () => {
   console.log(`[loop-runner] listening on :${port} cipher=${CIPHER} language=${LANG}`);
 });
 
-// Outer loop — runTheoryLoop terminates after numBursts; we restart it forever.
+// Outer loop — runTheoryLoop terminates after numBursts; we restart it until
+// the strategy converges (no improvement in CONVERGENCE_BURSTS bursts), then
+// idle while keeping /health responsive.
 async function main(): Promise<void> {
-  console.log(`[loop-runner] starting cipher=${CIPHER} language=${LANG} bursts_per_run=${BURSTS_PER_RUN}`);
-  while (true) {
+  console.log(`[loop-runner] starting cipher=${CIPHER} language=${LANG} bursts_per_run=${BURSTS_PER_RUN} convergence_bursts=${CONVERGENCE_BURSTS}`);
+  allTimeBest = await readAllTimeBest();
+  console.log(`[loop-runner] starting all-time best for this strategy: ${allTimeBest.toFixed(3)}`);
+
+  while (!converged) {
     try {
-      await runTheoryLoop(BURSTS_PER_RUN, bursted);
+      const theories = await runTheoryLoop(BURSTS_PER_RUN, bursted);
       bursted += BURSTS_PER_RUN;
+      const runMax = theories.reduce((m, t) => Math.max(m, t.grounding_score + t.consistency_score), 0);
+      if (runMax > allTimeBest) {
+        console.log(`[loop-runner] new all-time best: ${runMax.toFixed(3)} (was ${allTimeBest.toFixed(3)}) — stale counter reset`);
+        allTimeBest = runMax;
+        staleBursts = 0;
+      } else {
+        staleBursts += BURSTS_PER_RUN;
+        console.log(`[loop-runner] no improvement after burst (best=${allTimeBest.toFixed(3)}, run_max=${runMax.toFixed(3)}) stale=${staleBursts}/${CONVERGENCE_BURSTS}`);
+        if (staleBursts >= CONVERGENCE_BURSTS) {
+          console.log(`[loop-runner] CONVERGED — ${staleBursts} bursts without improvement on cipher=${CIPHER} lang=${LANG}, best=${allTimeBest.toFixed(3)}. Halting theory loop.`);
+          converged = true;
+        }
+      }
     } catch (err) {
       console.error(`[loop-runner] runTheoryLoop crashed:`, err);
       await new Promise((r) => setTimeout(r, 30_000));
     }
+  }
+
+  // Converged — keep /health alive so the App stays RUNNING; the dashboard's
+  // "latest" age column will surface staleness for the operator.
+  while (true) {
+    await new Promise((r) => setTimeout(r, 60_000));
   }
 }
 void main();
