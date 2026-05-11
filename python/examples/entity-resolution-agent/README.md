@@ -14,40 +14,52 @@ Vector Search   → 0.92 similarity → MATCHED ✓
 
 ---
 
+## Agent Pattern — HandoffAgent (multi-agent, single app)
+
+This example uses a **HandoffAgent**: two LlmAgents inside one Databricks App, coordinated by a handoff protocol.
+
+```
+HandoffAgent
+├── Supervisor  (LlmAgent) — normalize_record, search_accounts
+└── Evaluator   (LlmAgent) — evaluate_candidates, log_decision
+```
+
+"Multi-agent" in this codebase means **multiple LlmAgents inside one Databricks App** — not multiple apps. The Supervisor and Evaluator run in the same process, communicate via handoffs, and are deployed as a single unit.
+
+The alternative is a single `LlmAgent` with all five tools — simpler but no separation of concerns between searching and evaluating. The HandoffAgent enables the Evaluator to retry the Supervisor with search hints when confidence is low.
+
+---
+
+## Deployment Topology — Single-app vs Multi-app
+
+The agent supports two deployment topologies, selected by environment variable:
+
+**Single-app (default):** `SEARCH_SERVICE_URL` is unset. The Supervisor runs VS fan-out and SQL locally inside the `entity-resolution-agent` app. One app to deploy and manage.
+
+**Multi-app (optional):** `SEARCH_SERVICE_URL` points to a deployed `account-search-service`. The Supervisor calls the search service via HTTP. Use this when you need to scale the search tier independently from the LLM tier.
+
+```
+Single-app:                    Multi-app:
+┌────────────────────┐         ┌──────────────────────┐   ┌──────────────────────┐
+│ entity-resolution  │         │ entity-resolution     │──▶│ account-search-      │
+│ agent              │         │ agent                 │   │ service              │
+│ (VS + LLM in one) │         │ (LLM only)            │   │ (VS/SQL, no LLM)     │
+└────────────────────┘         └──────────────────────┘   └──────────────────────┘
+```
+
+The `afr-enrollment-api` sibling app is a third option for deterministic batch enrollment (no LLM). It also calls `account-search-service` for the candidate search.
+
+"Multi-app" and "multi-agent" are **independent axes** — the HandoffAgent pattern (multi-agent) works identically in single-app and multi-app deployments.
+
+---
+
 ## What you'll learn
 
 - How to design a **gold table** with multiple embedding columns so one Delta table feeds multiple Vector Search indexes
 - How to create **Delta Sync VS indexes** via the Databricks SDK, and why you need three permutations for complete coverage
 - How to fan out queries across indexes and deduplicate results by record ID
 - How to wire a **Supervisor → Evaluator HandoffAgent** for multi-step reasoning with retry
-- How to split a feature into **three independently deployable apps** with different scaling characteristics
-
----
-
-## Three-app architecture
-
-This example is split across three Databricks Apps. Each has a different scaling profile and can be deployed and updated independently:
-
-```
-┌─────────────────────────┐
-│   account-search-service │  POST /api/search
-│   (VS fan-out + SQL)    │  No LLM — fast, stateless, horizontally scalable
-└───────────┬─────────────┘
-            │ HTTP
-     ┌──────┴──────────────────────────┐
-     │                                 │
-┌────▼────────────────┐   ┌────────────▼──────────────────────┐
-│  afr-enrollment-api  │   │     entity-resolution-agent       │
-│  POST /api/enroll    │   │     POST /api/chat                │
-│  (deterministic,     │   │     (LLM HandoffAgent — Supervisor │
-│   no LLM, batch)    │   │      calls search service via HTTP) │
-└─────────────────────┘   └───────────────────────────────────┘
-```
-
-**This app** (`entity-resolution-agent`) is the LLM agent layer — use it for ambiguous cases where the deterministic pipeline returns `LOW_CONFIDENCE`. See the sibling apps:
-
-- [`../account-search-service/`](../account-search-service/) — VS fan-out search as a standalone REST API
-- [`../afr-enrollment-api/`](../afr-enrollment-api/) — deterministic enrollment pipeline, calls search service via HTTP
+- How to choose between single-app and multi-app deployment topologies
 
 ---
 
