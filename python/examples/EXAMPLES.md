@@ -2,6 +2,12 @@
 
 Quick index — what each example does and which direction data/auth flows.
 
+## Reference Implementation
+
+| Example | What it does |
+|---------|-------------|
+| [databricks-builder-app](./databricks-builder-app/) | **Full-stack reference app** — multi-user chat UI with streaming, session resumption, per-request auth, and MLflow tracing. Shows how to build a production app on `ClaudeSDKClient` + `McpSSEServerConfig`. |
+
 ## Agents & Apps
 
 | Example | What it does |
@@ -16,13 +22,13 @@ Quick index — what each example does and which direction data/auth flows.
 | [account-search-service](./account-search-service/) | Standalone fuzzy account lookup API — callable by other agents |
 | [afr-enrollment-api](./afr-enrollment-api/) | Deterministic AFR enrollment pipeline — no LLM, high throughput |
 
-## MCP Servers
+## MCP Servers & Shared Libraries
 
 | Example | What it does |
 |---------|-------------|
-| [databricks-mcp-server](./databricks-mcp-server/) | Exposes Databricks operations as MCP tools for Claude Code / AI assistants |
-| [databricks-skills](./databricks-skills/) | Claude Code skills for Databricks workflows |
-| [databricks-tools-core](./databricks-tools-core/) | Core Databricks tool primitives shared across examples |
+| [databricks-mcp-server](./databricks-mcp-server/) | Exposes 71 Databricks operations as MCP tools — used by `databricks-builder-app` via SSE |
+| [databricks-skills](./databricks-skills/) | Claude Code skills for Databricks workflows — loaded by `databricks-builder-app` |
+| [databricks-tools-core](./databricks-tools-core/) | Core Databricks auth and tool primitives shared across examples |
 
 ## Slack Integration — Two Opposite Directions
 

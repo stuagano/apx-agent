@@ -209,11 +209,15 @@ async def stop_token_refresh():
 def get_database_url() -> Optional[str]:
     """Get database URL from environment.
 
-    Converts standard PostgreSQL URL to psycopg3 async format if needed.
+    Checks DATABASE_URL first (supports sqlite+aiosqlite:// for local dev),
+    then falls back to LAKEBASE_PG_URL (PostgreSQL via Lakebase).
 
     Returns:
         Database URL string or None if not configured
     """
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        return url
     url = os.environ.get("LAKEBASE_PG_URL")
     if url and url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+psycopg://", 1)
@@ -327,6 +331,13 @@ def init_database(database_url: Optional[str] = None) -> AsyncEngine:
 
     # Check for static URL first (backward compatibility / local dev)
     url = database_url or get_database_url()
+
+    if url and url.startswith("sqlite"):
+        # SQLite mode — for local dev without Lakebase
+        logger.info("Using SQLite database: %s", url)
+        _engine = create_async_engine(url, echo=False)
+        _async_session_maker = async_sessionmaker(_engine, expire_on_commit=False)
+        return _engine
 
     if url:
         # Static URL mode - use as-is

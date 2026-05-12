@@ -2,19 +2,63 @@
 
 > **Security Notice:** This application wraps Claude Code. Projects created within the app by different users are not strongly isolated from each other (this project doesn't implement solutions like Firecracker microVM or Docker to isolate Claude sessions from the app). Only grant access to users you trust.
 
-A web application that provides a Claude Code agent interface with integrated Databricks tools. Users interact with Claude through a chat interface, and the agent can execute SQL queries, manage pipelines, upload files, and more on their Databricks workspace.
+A reference implementation of a production Databricks app built on the [apx-agent SDK](https://github.com/stuagano/apx-agent). It demonstrates how to embed the SDK in a multi-user FastAPI backend with real-time streaming, session resumption, per-request credential injection, and MLflow tracing.
 
-Optionally, the app can also serve as an **MCP server** for [Genie Code](https://docs.databricks.com/en/genie/genie-code.html) and other MCP clients, exposing all 75+ Databricks tools via the MCP protocol at `/mcp`.
+Users interact through a React chat UI. Each message spawns a Claude agent session via `ClaudeSDKClient`, which connects to a running `databricks-mcp-server` process (over SSE) for Databricks tool execution.
 
-> **✅ Event Loop Fix Implemented**
->
-> We've implemented a workaround for `claude-agent-sdk` [issue #462](https://github.com/anthropics/claude-agent-sdk-python/issues/462) that was preventing the agent from executing Databricks tools in FastAPI contexts.
->
-> **Solution:** The agent now runs in a fresh event loop in a separate thread, with `contextvars` properly copied to preserve Databricks authentication. See [EVENT_LOOP_FIX.md](./EVENT_LOOP_FIX.md) for details.
->
-> **Status:** ✅ Fully functional - agent can execute all Databricks tools successfully
+Optionally, the app can also serve as an **MCP server** for [Genie Code](https://docs.databricks.com/en/genie/genie-code.html) and other MCP clients, exposing all 71+ Databricks tools via the MCP protocol at `/mcp`.
+
+## SDK Usage
+
+This app is built on `claude_agent_sdk` from [apx-agent](https://github.com/stuagano/apx-agent). The core pattern in `server/services/agent.py`:
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+from claude_agent_sdk.types import McpSSEServerConfig
+
+# Connect to databricks-mcp-server running as a separate process
+mcp_config = McpSSEServerConfig(type="sse", url="http://localhost:8080/sse")
+
+options = ClaudeAgentOptions(
+    cwd=str(project_dir),
+    allowed_tools=allowed_tools,          # built-in + mcp__databricks__* tools
+    permission_mode='bypassPermissions',
+    resume=session_id,                     # resume previous conversation
+    mcp_servers={'databricks': mcp_config},
+    system_prompt=system_prompt,
+    env=claude_env,                        # auth env vars for Claude subprocess
+    include_partial_messages=True,         # token-by-token streaming
+)
+
+async with ClaudeSDKClient(options=options) as client:
+    await client.query(message)
+    async for msg in client.receive_response():
+        yield msg   # stream to React frontend via SSE
+```
+
+Key SDK features demonstrated:
+- **`ClaudeSDKClient`** — streaming client with MLflow `autolog()` tracing support
+- **`McpSSEServerConfig`** — connect Claude to an external MCP server process over SSE
+- **`include_partial_messages=True`** — token-by-token streaming to the frontend
+- **`resume=session_id`** — conversation continuity across HTTP requests
+- **`can_use_tool` / `HookMatcher`** — per-tool permission callbacks
 
 ## Architecture Overview
+
+```
+Browser (React)
+     │  HTTP + SSE
+     ▼
+FastAPI backend ──► Lakebase (PostgreSQL) or SQLite (local dev)
+     │
+     │  claude_agent_sdk.ClaudeSDKClient
+     │  (runs in fresh thread — see note below)
+     ▼
+Claude subprocess
+     ├── SSE ──► databricks-mcp-server (:8080) ──► Databricks Workspace
+     │              71 Databricks tools
+     └── in-process ──► apx tools (workspace upload, app deploy/status)
+```
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -25,66 +69,53 @@ Optionally, the app can also serve as an **MCP server** for [Genie Code](https:/
 │  │ Chat UI             │◄──────────►│ /api/invoke_agent               │     │
 │  │ Project Selector    │   SSE      │ /api/projects                   │     │
 │  │ Conversation List   │            │ /api/conversations              │     │
-│  └─────────────────────┘            └─────────────────────────────────┘     │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                             │
-                                             ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           Claude Code Session                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  Each user message spawns a Claude Code agent session via claude-agent-sdk  │
-│                                                                              │
-│  Built-in Tools:              MCP Tools (Databricks):         Skills:       │
-│  ┌──────────────────┐         ┌─────────────────────────┐    ┌───────────┐  │
-│  │ Read, Write, Edit│         │ execute_sql             │    │ sdp       │  │
-│  │ Glob, Grep, Skill│         │ create_or_update_pipeline    │ dabs      │  │
-│  └──────────────────┘         │ upload_folder           │    │ sdk       │  │
-│                               │ execute_code            │    │ ...       │  │
-│                               │ ...                     │    └───────────┘  │
-│                               └─────────────────────────┘                   │
-│                                          │                                  │
-│                                          ▼                                  │
-│                               ┌─────────────────────────┐                   │
-│                               │ databricks-mcp-server   │                   │
-│                               │ (in-process SDK tools)  │                   │
-│                               └─────────────────────────┘                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                             │
-                                             ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            Databricks Workspace                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  SQL Warehouses    │    Clusters    │    Unity Catalog    │    Workspace    │
-└─────────────────────────────────────────────────────────────────────────────┘
+│  └─────────────────────┘            └────────────────┬────────────────┘     │
+└───────────────────────────────────────────────────────┼─────────────────────┘
+                                                        │
+                              ┌─────────────────────────▼──────────────────┐
+                              │   apx-agent SDK (claude_agent_sdk)         │
+                              │   ClaudeSDKClient + ClaudeAgentOptions     │
+                              │   (fresh thread per request)               │
+                              └──────────────────┬─────────────────────────┘
+                                   mcp_servers={'databricks': sse_config}
+                          ┌────────────────────────────────────────────────┐
+                          │                          │                     │
+          ┌───────────────▼──────────────┐  ┌───────▼────────────┐        │
+          │ databricks-mcp-server        │  │ apx tools          │        │
+          │ (separate process, SSE)      │  │ (in-process SDK)   │        │
+          │ http://localhost:8080/sse    │  └────────────────────┘        │
+          └───────────────┬──────────────┘                                │
+                          │                                               │
+                          ▼                                               │
+          ┌────────────────────────────────────────┐                      │
+          │           Databricks Workspace          │                     │
+          │  SQL Warehouses  │  Unity Catalog       │                     │
+          │  Clusters        │  Workspace Files     │                     │
+          └────────────────────────────────────────┘
 ```
+
+> **Note on fresh thread:** The SDK client runs in a separate thread with a fresh event loop and `copy_context()` to preserve Databricks auth contextvars. This is a workaround for [issue #462](https://github.com/anthropics/claude-agent-sdk-python/issues/462) in FastAPI/uvicorn contexts.
 
 ## How It Works
 
-### 1. Claude Code Sessions
+### 1. Agent Sessions
 
-When a user sends a message, the backend creates a Claude Code session using the `claude-agent-sdk`:
+When a user sends a message, the backend creates a Claude agent session using `ClaudeSDKClient`:
 
 ```python
-from claude_agent_sdk import ClaudeAgentOptions, query
-
-options = ClaudeAgentOptions(
-    cwd=str(project_dir),           # Project working directory
-    allowed_tools=allowed_tools,     # Built-in + MCP tools
-    permission_mode='bypassPermissions',  # Auto-accept all tools including MCP
-    resume=session_id,               # Resume previous conversation
-    mcp_servers=mcp_servers,         # Databricks MCP server config
-    system_prompt=system_prompt,     # Databricks-focused prompt
-    setting_sources=['user', 'project'],  # Load skills from .claude/skills
-)
-
-async for msg in query(prompt=message, options=options):
-    yield msg  # Stream to frontend
+async with ClaudeSDKClient(options=options) as client:
+    await client.query(message)
+    async for msg in client.receive_response():
+        # msg is one of: AssistantMessage, UserMessage,
+        #                ResultMessage, SystemMessage, StreamEvent
+        yield msg
 ```
 
 Key features:
-- **Session Resumption**: Each conversation stores a `claude_session_id` for context continuity
+- **Session Resumption**: Each conversation stores a `session_id` (from `ResultMessage.session_id`) for context continuity
 - **Streaming**: All events (text, thinking, tool_use, tool_result) stream to the frontend in real-time
 - **Project Isolation**: Each project has its own working directory with sandboxed file access
+- **MLflow Tracing**: `mlflow.anthropic.autolog()` is called before creating the client — traces include prompts, tool calls, and costs
 
 ### 2. Authentication Flow
 
@@ -113,7 +144,7 @@ The app supports multi-user authentication using per-request credentials:
 │               ┌──────────────────────────┐                                  │
 │               │ get_workspace_client()   │  (used by all tools)             │
 │               │ - Returns client with    │                                  │
-│               │   context credentials    │                                  │
+│               │   context credentials   │                                  │
 │               └──────────────────────────┘                                  │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -121,24 +152,23 @@ The app supports multi-user authentication using per-request credentials:
 
 **How it works:**
 
-1. **Request arrives** - The FastAPI backend extracts credentials:
+1. **Request arrives** — The FastAPI backend extracts credentials:
    - **Production**: `X-Forwarded-User` and `X-Forwarded-Access-Token` headers (set by Databricks Apps proxy)
    - **Development**: Falls back to `DATABRICKS_HOST` and `DATABRICKS_TOKEN` env vars
 
-2. **Auth context set** - Before invoking the agent:
+2. **Auth context set** — Before invoking the agent:
    ```python
    from databricks_tools_core.auth import set_databricks_auth, clear_databricks_auth
 
    set_databricks_auth(workspace_url, user_token)
    try:
-       # All tool calls use this user's credentials
        async for event in stream_agent_response(...):
            yield event
    finally:
        clear_databricks_auth()
    ```
 
-3. **Tools use context** - All Databricks tools call `get_workspace_client()` which:
+3. **Tools use context** — All Databricks tools call `get_workspace_client()` which:
    - First checks contextvars for per-request credentials
    - Falls back to environment variables if no context set
 
@@ -146,26 +176,32 @@ This ensures each user's requests use their own Databricks credentials, enabling
 
 ### 3. MCP Integration (Databricks Tools)
 
-Databricks tools are loaded in-process using the Claude Agent SDK's MCP server feature:
+Databricks tools are served by a **separate** `databricks-mcp-server` process. The builder app connects to it over SSE:
 
 ```python
-from claude_agent_sdk import tool, create_sdk_mcp_server
+from claude_agent_sdk.types import McpSSEServerConfig
 
-# Tools are dynamically loaded from databricks-mcp-server
-server = create_sdk_mcp_server(name='databricks', tools=sdk_tools)
+# databricks-mcp-server must be running before the builder app starts
+config = McpSSEServerConfig(
+    type="sse",
+    url=os.environ["DATABRICKS_MCP_SERVER_URL"],  # e.g. http://localhost:8080/sse
+)
 
 options = ClaudeAgentOptions(
-    mcp_servers={'databricks': server},
+    mcp_servers={'databricks': config},
     allowed_tools=['mcp__databricks__execute_sql', ...],
 )
 ```
 
 Tools are exposed as `mcp__databricks__<tool_name>` and include:
 - SQL execution (`execute_sql`, `execute_sql_multi`)
-- Warehouse management (`list_warehouses`, `get_best_warehouse`)
-- Cluster execution (`execute_code`)
+- Warehouse and cluster management (`list_warehouses`, `get_best_cluster`)
 - Pipeline management (`create_or_update_pipeline`, `start_update`, etc.)
-- File operations (`upload_to_workspace`)
+- File operations (`upload_to_volume`, `download_from_volume`)
+- Genie (`create_or_update_genie`, `ask_genie`)
+- Unity Catalog (`manage_uc_objects`, `manage_uc_grants`, etc.)
+
+The MCP server process is started by `scripts/start_local.sh` and runs alongside the backend.
 
 ### 4. Skills System
 
@@ -215,26 +251,34 @@ projects/
   - SQL warehouse (for SQL queries)
   - Cluster (for Python/PySpark execution)
   - Unity Catalog enabled (recommended)
-- PostgreSQL database (Lakebase) for project persistence — autoscale or provisioned
+- PostgreSQL database (Lakebase) for project persistence in production — or SQLite for local dev
 
 ### Quick Start (Local Development)
 
-One command provisions Lakebase, installs all dependencies, and starts the app:
+One command installs all dependencies and starts the full stack (MCP server + backend + frontend):
 
 ```bash
 cd databricks-builder-app
+
+# With Lakebase (full production-equivalent setup)
 ./scripts/start_local.sh --profile <your-profile>
+
+# With SQLite (no Lakebase required — fastest way to start)
+DATABASE_URL=sqlite+aiosqlite:///./builder.db \
+  ./scripts/start_local.sh --profile <your-profile> --skip-lakebase
 ```
 
 This will:
 - Check prerequisites (uv, Node.js, npm, Databricks CLI v0.287.0+)
 - Get credentials from your Databricks CLI profile
-- Provision a Lakebase Autoscale database via DAB (if needed)
+- Provision a Lakebase Autoscale database via DAB (unless `--skip-lakebase`)
 - Generate `.env.local` with your workspace settings
 - Install backend and frontend dependencies
-- Install all Databricks skills (local + external)
-- Test the Lakebase connection
-- Start backend (http://localhost:8000) and frontend (http://localhost:3000)
+- Install Databricks skills (local + external)
+- Run database migrations (`alembic upgrade head`)
+- Start `databricks-mcp-server` (SSE on :8080)
+- Start backend (http://localhost:8000)
+- Start frontend (http://localhost:3000)
 
 #### Options
 
@@ -245,7 +289,7 @@ This will:
 # Subsequent runs — fast (deps cached, Lakebase exists)
 ./scripts/start_local.sh --profile dbx_shared_demo
 
-# Skip Lakebase provisioning
+# Skip Lakebase provisioning (use --skip-lakebase with DATABASE_URL=sqlite://...)
 ./scripts/start_local.sh --profile dbx_shared_demo --skip-lakebase
 
 # Force reinstall all dependencies
@@ -263,8 +307,9 @@ This will:
 - **Frontend**: <http://localhost:3000>
 - **Backend API**: <http://localhost:8000>
 - **API Docs**: <http://localhost:8000/docs>
+- **MCP Server** (SSE): <http://localhost:8080/sse>
 
-Press `Ctrl+C` to stop both servers.
+Press `Ctrl+C` to stop all servers.
 
 #### (Optional) Configure Claude via Databricks Model Serving
 
@@ -305,6 +350,17 @@ The app supports two authentication modes:
 - Each user has their own credentials
 - Proper multi-user isolation
 
+#### Database Configuration
+
+The app supports two database backends:
+
+| Mode | Config | Use when |
+|------|--------|----------|
+| **SQLite** | `DATABASE_URL=sqlite+aiosqlite:///./builder.db` | Local dev without Lakebase |
+| **PostgreSQL (Lakebase)** | `LAKEBASE_ENDPOINT=...` or `LAKEBASE_INSTANCE_NAME=...` | Production or full local setup |
+
+SQLite stores the database at `./builder.db` in the app directory. Migrations run automatically on startup for both backends.
+
 #### Skills Configuration
 
 Skills are loaded from `../databricks-skills/` and filtered by the `ENABLED_SKILLS` environment variable:
@@ -323,14 +379,14 @@ Skills are loaded from `../databricks-skills/` and filtered by the `ENABLED_SKIL
    name: my-skill
    description: "Description of the skill"
    ---
-   
+
    # Skill content here
    ```
 3. Add the skill name to `ENABLED_SKILLS` in `.env.local`
 
 #### Database Setup
 
-The app uses PostgreSQL (Lakebase) for:
+The app uses PostgreSQL (Lakebase) or SQLite for:
 - Project metadata
 - Conversation history
 - Message storage
@@ -339,7 +395,7 @@ The app uses PostgreSQL (Lakebase) for:
 **Migrations:**
 ```bash
 # Run migrations (done automatically on startup)
-alembic upgrade head
+DATABASE_URL=sqlite+aiosqlite:///./builder.db alembic upgrade head
 
 # Create a new migration
 alembic revision --autogenerate -m "description"
@@ -347,15 +403,20 @@ alembic revision --autogenerate -m "description"
 
 ### Troubleshooting
 
-#### "MCP connection unstable" or agent not executing tools
+#### MCP server not connecting
 
-This was a known issue with `claude-agent-sdk` in FastAPI contexts. We've implemented a fix:
+The `databricks-mcp-server` must be running before the builder app starts. Check:
+```bash
+# Is the server running?
+lsof -i:8080
 
-- ✅ Agent runs in a fresh event loop in a separate thread
-- ✅ Context variables (Databricks auth) are properly propagated
-- ✅ All MCP tools work correctly
+# Start it manually
+cd ../databricks-mcp-server
+DATABRICKS_HOST=... DATABRICKS_TOKEN=... \
+  ../.venv/bin/python run_server.py --transport sse --port 8080
+```
 
-See [EVENT_LOOP_FIX.md](./EVENT_LOOP_FIX.md) for technical details.
+The builder app reads `DATABRICKS_MCP_SERVER_URL` (e.g. `http://localhost:8080/sse`) to locate the server. `start_local.sh` sets this automatically.
 
 #### Skills not loading
 
@@ -376,8 +437,9 @@ Check:
 #### Port already in use
 
 ```bash
-# Kill processes on ports 8000 and 3000
+# Kill processes on ports 8000, 8080, and 3000
 lsof -ti:8000 | xargs kill -9
+lsof -ti:8080 | xargs kill -9
 lsof -ti:3000 | xargs kill -9
 ```
 
@@ -387,7 +449,7 @@ lsof -ti:3000 | xargs kill -9
 # Build frontend
 cd client && npm run build && cd ..
 
-# Run with uvicorn
+# Run with uvicorn (MCP server must be started separately)
 uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
 
@@ -399,15 +461,15 @@ databricks-builder-app/
 │   ├── app.py             # Main FastAPI app
 │   ├── db/                # Database models and migrations
 │   │   ├── models.py      # SQLAlchemy models
-│   │   └── database.py    # Session management
+│   │   └── database.py    # Session management (PostgreSQL + SQLite)
 │   ├── routers/           # API endpoints
 │   │   ├── agent.py       # /api/agent/* (invoke, etc.)
 │   │   ├── projects.py    # /api/projects/*
 │   │   └── conversations.py
 │   ├── mcp_gateway.py     # MCP Gateway for Genie Code (optional, via ENABLE_MCP_GATEWAY)
 │   └── services/          # Business logic
-│       ├── agent.py       # Claude Code session management
-│       ├── databricks_tools.py  # MCP tool loading from SDK
+│       ├── agent.py       # ClaudeSDKClient + ClaudeAgentOptions (SDK core)
+│       ├── databricks_tools.py  # McpSSEServerConfig + TOOL_NAMES
 │       ├── user.py        # User auth (headers/env vars)
 │       ├── skills_manager.py
 │       ├── backup_manager.py
@@ -420,7 +482,7 @@ databricks-builder-app/
 ├── alembic/               # Database migrations
 ├── scripts/               # Utility scripts
 │   ├── start_local.sh     # Local development (one command)
-│   └── _legacy/            # Old setup.sh and start_dev.sh
+│   └── _legacy/           # Old setup.sh and start_dev.sh
 ├── skills/                # Cached skills (gitignored)
 ├── projects/              # Project working directories (gitignored)
 ├── pyproject.toml         # Python dependencies
@@ -570,7 +632,7 @@ databricks bundle destroy --profile <profile>
 
 ### MCP Gateway for Genie Code
 
-The Builder App can optionally serve as an **MCP server** at `/mcp`, exposing all 75+ Databricks tools to [Genie Code](https://docs.databricks.com/en/genie/genie-code.html), AI Playground, and other MCP clients. This turns the app into a dual-purpose deployment: **visual builder UI** at `/` and **MCP server** at `/mcp`.
+The Builder App can optionally serve as an **MCP server** at `/mcp`, exposing all 71+ Databricks tools to [Genie Code](https://docs.databricks.com/en/genie/genie-code.html), AI Playground, and other MCP clients. This turns the app into a dual-purpose deployment: **visual builder UI** at `/` and **MCP server** at `/mcp`.
 
 #### How It Works
 
@@ -588,8 +650,6 @@ The Builder App can optionally serve as an **MCP server** at `/mcp`, exposing al
 │  /mcp/info      → Info page (HTML)                  │
 └─────────────────────────────────────────────────────┘
 ```
-
-The MCP gateway reuses the same FastMCP server and tool registrations that the in-process Claude agent uses — no duplicate tool loading, no separate deployment.
 
 #### Deploying with MCP Gateway
 
@@ -636,18 +696,6 @@ MCP URL: https://<app-url>/mcp
 | **Claude Desktop** | `mcpServers` config with HTTP transport |
 | **Cursor / VS Code** | MCP server config with HTTP transport |
 
-#### Local Development
-
-The MCP gateway does **not** activate during local development unless you explicitly set the environment variable:
-
-```bash
-# Normal local dev (no MCP gateway)
-./scripts/start_dev.sh
-
-# Local dev with MCP gateway (for testing)
-ENABLE_MCP_GATEWAY=true uvicorn server.app:app --reload --port 8000 --reload-dir server
-```
-
 ### Destroying Everything
 
 ```bash
@@ -677,18 +725,9 @@ See the [Databricks MLflow Tracing documentation](https://docs.databricks.com/aw
 | `relation does not exist` | Migrations didn't run | Redeploy the app to trigger migrations |
 | App shows blank page | Check logs: `databricks apps logs <app-name>` | Usually a package install error — check requirements.txt |
 
-## Embedding in Other Apps
+## Related
 
-If you want to embed the Databricks agent into your own application, see the integration example at:
-
-```
-scripts/_integration-example/
-```
-
-This provides a minimal working example with setup instructions for integrating the agent services into external frameworks.
-
-## Related Packages
-
-- **databricks-tools-core**: Core MCP functionality and SQL operations
-- **databricks-mcp-server**: MCP server exposing Databricks tools
-- **databricks-skills**: Skill definitions for Databricks development
+- **[databricks-mcp-server](../databricks-mcp-server/)** — The MCP server process this app connects to
+- **[databricks-tools-core](../databricks-tools-core/)** — Core auth and tool primitives
+- **[databricks-skills](../databricks-skills/)** — Skill definitions for Databricks development tasks
+- **[apx-agent SDK](https://github.com/stuagano/apx-agent)** — The `claude_agent_sdk` package used here
