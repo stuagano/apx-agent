@@ -270,6 +270,11 @@ echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 echo -e "${YELLOW}[8/${TOTAL_STEPS}] Testing Lakebase connection...${NC}"
 
+if [ "$SKIP_LAKEBASE" = true ]; then
+  echo -e "  ${GREEN}✓${NC} Skipped (--skip-lakebase)"
+  echo ""
+else
+
 PYTHON_CMD="$PROJECT_DIR/.venv/bin/python3"
 if [ ! -f "$PYTHON_CMD" ]; then PYTHON_CMD="uv run python3"; fi
 
@@ -335,6 +340,8 @@ else
 fi
 echo ""
 
+fi  # end SKIP_LAKEBASE check
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 9: Kill stale processes
 # ─────────────────────────────────────────────────────────────────────────────
@@ -366,12 +373,14 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 cd "$PROJECT_DIR"
+PYTHON="$PROJECT_DIR/.venv/bin/python"
+
 echo -e "  Starting Databricks MCP server on ${GREEN}http://localhost:8080/sse${NC}..."
-uv run python "$REPO_ROOT/databricks-mcp-server/run_server.py" --transport sse --port 8080 &
+"$PYTHON" "$REPO_ROOT/databricks-mcp-server/run_server.py" --transport sse --port 8080 &
 sleep 2
 
 echo -e "  Starting backend on ${GREEN}http://localhost:8000${NC}..."
-uv run uvicorn server.app:app --reload --port 8000 --reload-dir server &
+"$PYTHON" -m uvicorn server.app:app --reload --port 8000 --reload-dir server &
 sleep 2
 
 echo -e "  Starting frontend on ${GREEN}http://localhost:3000${NC}..."

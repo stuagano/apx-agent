@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 """Run the Databricks MCP Server."""
 
-=======
 import argparse
 import logging
 import os

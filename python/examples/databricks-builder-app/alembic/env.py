@@ -45,7 +45,12 @@ def get_url_and_connect_args():
   global _resolved_hostaddr
   connect_args = {}
 
-  url = os.environ.get('LAKEBASE_PG_URL')
+  url = os.environ.get('DATABASE_URL') or os.environ.get('LAKEBASE_PG_URL')
+
+  if url and url.startswith('sqlite'):
+    # Alembic uses a sync engine — strip async driver prefix for migrations
+    sync_url = url.replace('sqlite+aiosqlite://', 'sqlite://', 1)
+    return sync_url, {}
 
   if not url:
     # Try dynamic OAuth mode
@@ -142,8 +147,9 @@ def run_migrations_online():
   if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', schema_name):
     raise ValueError(f'Invalid schema name: {schema_name!r} — must be alphanumeric/underscores only')
 
-  # Add search_path to connect_args so tables are created in the custom schema
-  connect_args.setdefault('options', f'-c search_path={schema_name},public')
+  # Add search_path to connect_args so tables are created in the custom schema (PostgreSQL only)
+  if not url.startswith('sqlite'):
+    connect_args.setdefault('options', f'-c search_path={schema_name},public')
 
   connectable = create_engine(
     url,
@@ -152,10 +158,11 @@ def run_migrations_online():
   )
 
   with connectable.connect() as connection:
-    # Create the schema if it doesn't exist (SP has CREATE on the database)
-    from sqlalchemy import text
-    connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS {schema_name}'))
-    connection.commit()
+    if not url.startswith('sqlite'):
+      # Create the schema if it doesn't exist (PostgreSQL only)
+      from sqlalchemy import text
+      connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS {schema_name}'))
+      connection.commit()
 
     context.configure(
       connection=connection,
