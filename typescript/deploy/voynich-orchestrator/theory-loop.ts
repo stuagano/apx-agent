@@ -1103,6 +1103,48 @@ async function callFMAPI(prompt: string): Promise<string> {
   return data.choices?.[0]?.message?.content ?? '';
 }
 
+/**
+ * LLM-based coherence scorer. Reads decoded text and returns 0-1 rating of
+ * "is this coherent {language} prose?". The structural scorers (dict, lm,
+ * bigram, overfit penalty) can all be fooled by repeating a small vocabulary
+ * of attested words and word pairs across folios; an LLM reading the actual
+ * decoded text cannot be fooled by that pattern. Used as a multiplier on
+ * grounding_score after candidate selection.
+ *
+ * Returns 0.5 on any error so failed calls don't poison scoring either way.
+ */
+async function llmCoherence(text: string, language: string): Promise<number> {
+  if (!text || text.length < 20) return 0;
+  const sample = text.slice(0, 500);
+  const prompt = `You are evaluating whether decoded ciphertext produces coherent ${language} prose.
+Output ONLY a single decimal number 0.00 to 1.00 with no other text.
+
+Scale:
+  0.00 = total gibberish, no recognizable language
+  0.20 = scattered real ${language} words inside otherwise nonsense letter clusters
+  0.40 = real words with broken grammar; cannot form actual sentences
+  0.60 = mostly grammatical phrases with awkward construction
+  0.80 = readable ${language} with minor issues
+  1.00 = fully coherent natural ${language} prose
+
+Decoded text:
+"${sample}"
+
+Score (number only, e.g. 0.30):`;
+
+  try {
+    const raw = await callFMAPI(prompt);
+    const m = raw.trim().match(/([01](?:\.\d+)?|0?\.\d+)/);
+    if (!m) return 0.5;
+    const n = parseFloat(m[1]);
+    if (Number.isNaN(n)) return 0.5;
+    return Math.max(0, Math.min(1, n));
+  } catch (err) {
+    console.warn(`[llmCoherence] failed:`, (err as Error).message);
+    return 0.5;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Load folio data
 // ---------------------------------------------------------------------------
@@ -3166,11 +3208,21 @@ export async function runTheoryLoop(
           // Keep the candidate with the highest combined grounding+consistency score.
           // proposeTheory already runs cross-folio testing, so consistency_score
           // is part of each candidate's evaluation.
-          const theory = candidates.reduce((best, t) => {
+          let theory = candidates.reduce((best, t) => {
             const a = best.grounding_score + best.consistency_score;
             const b = t.grounding_score + t.consistency_score;
             return b > a ? t : best;
           });
+          // LLM coherence multiplier — runs only on the winning candidate to
+          // cap LLM cost at one call per round per runner. Gate by raw score
+          // to skip obvious junk (cheaper).
+          const rawCombined = theory.grounding_score + theory.consistency_score;
+          if (rawCombined > 0.2) {
+            const coherence = await llmCoherence(theory.decoded_text, strategy.language);
+            const coherenceFloor = Math.max(coherence, 0.1);
+            console.log(`[theory-loop]   llm-coherence=${coherence.toFixed(2)} (multiplier=${coherenceFloor.toFixed(2)} on grounding)`);
+            theory = { ...theory, grounding_score: theory.grounding_score * coherenceFloor };
+          }
           const c = theory.grounding_score + theory.consistency_score;
           const allScores = candidates
             .map((t, i) => {
