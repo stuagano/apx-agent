@@ -53,14 +53,7 @@ jobs:
         env:
           DB_HOST: ${{ inputs.workspace_url }}
           DB_TOKEN: ${{ inputs.databricks_token }}
-        run: |
-          python3 - <<'EOF'
-import os, pathlib
-host  = os.environ['DB_HOST'].rstrip('/')
-token = os.environ['DB_TOKEN'].strip()
-cfg   = pathlib.Path.home() / '.databrickscfg'
-cfg.write_text(f'[ci-deploy]\nhost = {host}\ntoken = {token}\n')
-EOF
+        run: printf '[ci-deploy]\nhost = %s\ntoken = %s\n' "${DB_HOST%/}" "${DB_TOKEN}" > ~/.databrickscfg
 
       - name: Preflight check
         run: ./scripts/preflight.sh --profile ci-deploy --app-name "${{ inputs.app_name }}"
