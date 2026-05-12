@@ -576,34 +576,121 @@ The hub crawls `/.well-known/agent.json`, stores the card, and proxies future in
 
 ---
 
+## Configuration files
+
+Three YAML files serve distinct purposes — don't confuse them:
+
+### `app.yml` — Runtime config (the one you edit)
+
+Tells Databricks Apps how to start the app and what environment variables to inject at runtime:
+
+```yaml
+command: ["uvicorn", "entity_resolution_agent.backend.app:app", "--workers", "2"]
+env:
+  - name: VS_ENDPOINT
+    value: "entity-resolution"
+  ...
+```
+
+This is the file you fill in before deploying. Environment variables set here are injected into the app process — they're not secrets and are visible in the Databricks Apps UI. For secrets, use Databricks Secrets and reference them as `{{secrets/scope/key}}`.
+
+### `databricks.yml` — Asset Bundle config (the build pipeline)
+
+Defines the Databricks Asset Bundle: how to build the wheel, what to sync to the workspace, and the App resource definition:
+
+```yaml
+bundle:
+  name: entity-resolution-agent
+
+artifacts:
+  default:
+    build: uv build --wheel -o .build/ && ...  # builds the Python wheel
+
+resources:
+  apps:
+    entity-resolution-agent-app:
+      source_code_path: ./.build               # what to upload to Databricks
+```
+
+`apx deploy` (and `databricks bundle deploy`) reads this file to run the build and deploy the result. You rarely edit this unless you're changing the bundle name or adding new resources (jobs, pipelines, etc.).
+
+### `.build/` — Generated artifact (do not edit)
+
+The `.build/` directory is created by the build step and contains the compiled wheel, a `requirements.txt`, and a copy of `app.yml`. It's gitignored. If you see `.build/app.yml`, it's a stale copy from the last deploy — the source of truth is `app.yml` at the root.
+
+---
+
 ## Project structure
 
 ```
 entity-resolution-agent/       ← this app: LLM HandoffAgent + chat UI
 account-search-service/         ← sibling: standalone VS/SQL search API
 afr-enrollment-api/             ← sibling: deterministic enrollment pipeline
+```
 
-entity-resolution-agent/
-├── app.yml                           # Runtime command + env vars
-├── pyproject.toml                    # Package config, deps, model endpoint
-├── databricks.yml                    # Databricks Asset Bundle config
-├── docs/
-│   └── gold-table-design.md          # Full schema, DLT pipeline, VS index specs
-├── src/entity_resolution_agent/
-│   └── backend/
-│       ├── app.py                    # FastAPI app entry point
-│       ├── agent_router.py           # HandoffAgent: supervisor → evaluator
-│       ├── router.py                 # HTTP routes: /version, /current-user
-│       ├── models.py                 # Pydantic models: VersionOut
-│       └── core/
-│           ├── supervisor.py         # normalize_record, search_accounts
-│           ├── evaluator.py          # evaluate_candidates, log_decision
-│           └── demo_data.py          # Synthetic accounts for DEMO_MODE
-└── tests/
-    ├── conftest.py                   # Shared fixtures and mock helpers
-    ├── test_agent_wiring.py          # HandoffAgent instantiation smoke tests
-    ├── test_supervisor_tools.py      # normalize_record, search_accounts unit tests
-    └── test_evaluator_tools.py       # evaluate_candidates, log_decision unit tests
+### Backend files
+
+**`app.py` — FastAPI entry point**
+
+The top-level wiring. Calls `create_app(agent)` to get the A2A protocol surface (`POST /responses`, `GET /.well-known/agent.json`, `GET /health`), then attaches additional routers:
+
+```python
+app = create_app(agent)          # A2A protocol surface
+app.include_router(router)       # /api/version, /api/current-user
+app.include_router(build_dev_ui_router())  # /_apx/agent dev UI
+```
+
+The optional custom SPA (served at `/`) is mounted at the end — after the protocol routes — so `POST /responses` always takes precedence. If no built client exists, `/` redirects to the APX dev UI.
+
+**`agent_router.py` — HandoffAgent wiring**
+
+Instantiates the two `LlmAgent`s and assembles them into the `HandoffAgent`:
+
+```python
+agent = HandoffAgent(
+    agents={"supervisor": supervisor, "evaluator": evaluator},
+    start="supervisor",
+    max_handoffs=4,
+)
+```
+
+This is the object passed to `create_app`. One file, one responsibility: the agent topology.
+
+**`router.py` — Application-specific routes**
+
+Optional HTTP routes that aren't part of the A2A protocol surface:
+
+- `GET /api/version` — returns the package version (useful for verifying which build is running)
+- `GET /api/current-user` — proxies the Databricks `current-user.me()` API using the caller's OAuth token, so the UI can display who's logged in
+
+These use `Dependencies.UserClient` — a per-request `WorkspaceClient` scoped to the *caller's* identity (not the app's service principal). You can add more routes here or remove these entirely without affecting the agent.
+
+**`models.py` — Pydantic models**
+
+Pydantic response schemas for the routes in `router.py`. Currently just `VersionOut`. Add models here when you add routes that need structured response validation.
+
+**`core/supervisor.py`** — `normalize_record` and `search_accounts` tools. Handles VS fan-out, SQL fallback for initials/acronyms, and DEMO_MODE.
+
+**`core/evaluator.py`** — `evaluate_candidates` and `log_decision` tools. Scores candidates, detects familial accounts, writes the decision to the AFR table.
+
+**`core/demo_data.py`** — Synthetic utility accounts returned in DEMO_MODE. No Databricks connection needed.
+
+```
+src/entity_resolution_agent/
+└── backend/
+    ├── app.py          ← entry point: create_app + route assembly
+    ├── agent_router.py ← HandoffAgent: supervisor → evaluator
+    ├── router.py       ← /api/version, /api/current-user
+    ├── models.py       ← Pydantic schemas for router.py
+    └── core/
+        ├── supervisor.py   ← normalize_record, search_accounts
+        ├── evaluator.py    ← evaluate_candidates, log_decision
+        └── demo_data.py    ← synthetic accounts for DEMO_MODE
+tests/
+├── conftest.py              ← shared fixtures, mock VS client
+├── test_agent_wiring.py     ← HandoffAgent smoke tests
+├── test_supervisor_tools.py ← normalize_record, search_accounts
+└── test_evaluator_tools.py  ← evaluate_candidates, log_decision
 ```
 
 ---
