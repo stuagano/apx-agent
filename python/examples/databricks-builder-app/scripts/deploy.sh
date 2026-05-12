@@ -461,7 +461,7 @@ echo -e "${YELLOW}[8/${TOTAL_STEPS}] Deploying app...${NC}"
 DEPLOY_OUTPUT=$(databricks apps deploy "$APP_NAME" --source-code-path "$WORKSPACE_PATH" $CLI_ARGS 2>&1)
 echo "$DEPLOY_OUTPUT"
 
-if echo "$DEPLOY_OUTPUT" | grep -q '"state":"SUCCEEDED"'; then
+if echo "$DEPLOY_OUTPUT" | grep -qE '"state"[[:space:]]*:[[:space:]]*"SUCCEEDED"'; then
   echo ""
   echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
   echo -e "${GREEN}║                 Deployment Successful!                     ║${NC}"
