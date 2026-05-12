@@ -198,7 +198,7 @@ for line in sys.stdin:
         if m: print(m.group(1)); break
 " 2>/dev/null)
 
-AUTH_OUTPUT=$(databricks current-user me --profile "$PROFILE" 2>&1)
+AUTH_OUTPUT=$(databricks current-user me --profile "$PROFILE" 2>&1) || true
 CURRENT_USER=$(echo "$AUTH_OUTPUT" | python3 -c "
 import json, sys
 try:
