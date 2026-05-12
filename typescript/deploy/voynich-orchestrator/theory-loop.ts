@@ -851,11 +851,16 @@ function dictionaryScore(text: string, language: string): number {
   const words = text.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter((w) => w.length >= 2);
   if (words.length === 0) return 0;
 
-  const typeCounts = new Map<string, number>();
+  // Per-stem cap rather than per-exact-word: this collapses near-duplicates like
+  // (serva, servul, serril) or (hxlb, hxllb, hxlbz) into one stem bucket so the
+  // SA can't saturate output with one real word disguised as many variants. Stem
+  // = first 3 chars of the dict-matched word.
+  const stemCounts = new Map<string, number>();
   let partialHits = 0;
   for (const word of words) {
     if (dict.has(word)) {
-      typeCounts.set(word, (typeCounts.get(word) ?? 0) + 1);
+      const stem = word.slice(0, 3);
+      stemCounts.set(stem, (stemCounts.get(stem) ?? 0) + 1);
     } else {
       // Partial credit: check if any dict word is a prefix/suffix of the decoded word
       // This catches inflected forms (e.g. "herbam" matches "herba")
@@ -869,10 +874,42 @@ function dictionaryScore(text: string, language: string): number {
   }
 
   let hits = partialHits;
-  for (const count of typeCounts.values()) {
+  for (const count of stemCounts.values()) {
     hits += Math.min(count, PER_TYPE_HIT_CAP);
   }
   return hits / words.length;
+}
+
+/**
+ * Coherence bonus: rewards consecutive runs of dictionary-matched words. Real
+ * text has long runs (3+); the f77v "serva ×6 with junk filler" pathology has
+ * a max run of 1-2 because real words are isolated in gibberish. Forces SA to
+ * find maps that produce contiguous sentences, not one-word islands.
+ *
+ * Returns a value in [0, 1]. ~0.0 for fully gibberish-isolated hits, ~0.5+ for
+ * decoded text with multiple 3+ word runs of real vocabulary.
+ */
+function coherenceBonus(text: string, language: string): number {
+  const dict = DICT_BY_LANG[language];
+  if (!dict) return 0;
+  const words = text.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter((w) => w.length >= 2);
+  if (words.length < 3) return 0;
+  let bestRun = 0;
+  let curRun = 0;
+  let totalRunMass = 0;
+  for (const w of words) {
+    if (dict.has(w)) {
+      curRun++;
+      if (curRun > bestRun) bestRun = curRun;
+    } else {
+      // A run only "counts" if it's 2+ words long — penalises isolated hits.
+      if (curRun >= 2) totalRunMass += curRun;
+      curRun = 0;
+    }
+  }
+  if (curRun >= 2) totalRunMass += curRun;
+  // Normalise: 5+ word run or 12 total run-mass = saturated.
+  return Math.min(1, bestRun / 5) * 0.6 + Math.min(1, totalRunMass / 12) * 0.4;
 }
 
 /**
@@ -979,12 +1016,16 @@ export function hillClimbScore(text: string, language: string, plantTerms?: stri
   const dict = dictionaryScore(text, language);
   const quality = dictionaryQuality(text, language);
   const lm = langModelScore(text, language);
+  // Coherence (consecutive real-word runs) directly attacks the f77v "serva ×6
+  // with junk filler" pathology — that map produces isolated dict hits, not
+  // runs, so its coherenceBonus is near zero.
+  const coherence = coherenceBonus(text, language);
   if (terms.length > 0) {
     const termScore = scoreTermOverlap(text, terms);
-    return termScore * 0.3 + (dict * quality) * 0.4 + lm * 0.3;
+    return termScore * 0.25 + (dict * quality) * 0.3 + lm * 0.25 + coherence * 0.2;
   }
   const fwBonus = functionWordBonus(text, language);
-  return (dict * quality) * 0.85 + fwBonus * 0.15;
+  return (dict * quality) * 0.65 + fwBonus * 0.15 + coherence * 0.2;
 }
 
 async function executeSql(statement: string): Promise<Array<Record<string, string>>> {
