@@ -50,10 +50,17 @@ jobs:
         run: curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
 
       - name: Configure Databricks profile
+        env:
+          DB_HOST: ${{ inputs.workspace_url }}
+          DB_TOKEN: ${{ inputs.databricks_token }}
         run: |
-          printf '[ci-deploy]\nhost = %s\ntoken = %s\n' \
-            "${{ inputs.workspace_url }}" \
-            "${{ inputs.databricks_token }}" >> ~/.databrickscfg
+          python3 - <<'EOF'
+import os, pathlib
+host  = os.environ['DB_HOST'].rstrip('/')
+token = os.environ['DB_TOKEN'].strip()
+cfg   = pathlib.Path.home() / '.databrickscfg'
+cfg.write_text(f'[ci-deploy]\nhost = {host}\ntoken = {token}\n')
+EOF
 
       - name: Preflight check
         run: ./scripts/preflight.sh --profile ci-deploy --app-name "${{ inputs.app_name }}"
