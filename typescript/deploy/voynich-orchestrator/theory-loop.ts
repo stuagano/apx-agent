@@ -251,7 +251,7 @@ export interface FolioInfo {
   eva_sample: string;
 }
 
-export type CipherType = 'substitution' | 'polyalphabetic' | 'substitution-strip' | 'verbose' | 'positional' | 'homophonic' | 'transposition';
+export type CipherType = 'substitution' | 'polyalphabetic' | 'substitution-strip' | 'verbose' | 'positional' | 'homophonic' | 'transposition' | 'syllabic';
 
 export interface Theory {
   id: string;
@@ -1483,6 +1483,12 @@ export async function proposeTheory(
   if (cipherType === 'transposition') {
     return await proposeTranspositionTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
   }
+  // Syllabic cipher: each EVA WORD maps to a target-language syllable.
+  // Output is a syllable stream; scoring uses the same letter-level scorers
+  // since the stream is just letter sequences with spaces.
+  if (cipherType === 'syllabic') {
+    return await proposeSyllabicTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
+  }
 
   // Load elite pool from Delta on first call (persists across deploys)
   await loadElitePool();
@@ -2414,6 +2420,150 @@ async function proposeTranspositionTheory(
     target_folio: targetFolio.folio_id,
     target_plant: targetFolio.plant_name,
     symbol_map: symbolMap,
+    decoded_text: bestDecoded,
+    grounding_score: primaryGrounding,
+    consistency_score: consistencyScore,
+    cross_folio_results: crossFolioResults,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Syllabic cipher: each EVA word maps to a target-language syllable.
+// Codebook is `Record<eva_word, syllable>`; output stream is the joined
+// syllables of the folio's EVA word sequence.
+// ---------------------------------------------------------------------------
+
+const SYLLABIC_VOCAB_SIZE = parseInt(process.env.SYLLABIC_VOCAB ?? '150');
+const SYLLABIC_SA_STEPS  = parseInt(process.env.SYLLABIC_SA_STEPS ?? '6000');
+
+/** Extract the top-N most common 2- and 3-char syllables from a corpus. */
+function extractSyllables(corpus: string, n: number): string[] {
+  const clean = corpus.toLowerCase().replace(/[^a-z\s]/g, ' ');
+  const counts = new Map<string, number>();
+  for (const word of clean.split(/\s+/)) {
+    for (let len = 2; len <= 3; len++) {
+      for (let i = 0; i + len <= word.length; i++) {
+        const syl = word.slice(i, i + len);
+        if (/^[a-z]+$/.test(syl)) counts.set(syl, (counts.get(syl) ?? 0) + 1);
+      }
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map((e) => e[0]);
+}
+
+/** Tokenize an EVA sample into WORDS (period and space both delimit) — distinct
+ *  from the glyph-level tokenizeEva above. */
+function tokenizeEvaWords(text: string): string[] {
+  return text.toLowerCase().split(/[.\s]+/).filter((w) => w.length >= 2 && /^[a-z]+$/.test(w));
+}
+
+/** Apply a word-level codebook to an EVA sample, joined by spaces. */
+function applyCodebook(text: string, book: Record<string, string>): string {
+  return tokenizeEvaWords(text).map((w) => book[w] ?? '').filter(Boolean).join(' ');
+}
+
+async function proposeSyllabicTheory(
+  theoryId: string,
+  targetFolio: FolioInfo,
+  allFolios: FolioInfo[],
+  sourceLanguage: string,
+  _seedMode: SeedMode,
+): Promise<Theory> {
+  const evaText = targetFolio.eva_sample;
+
+  // Build EVA vocabulary: top N most common words across the corpus.
+  const evaCounts = new Map<string, number>();
+  for (const f of allFolios) {
+    for (const w of tokenizeEvaWords(f.eva_sample ?? '')) {
+      evaCounts.set(w, (evaCounts.get(w) ?? 0) + 1);
+    }
+  }
+  const topEva = [...evaCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, SYLLABIC_VOCAB_SIZE).map((e) => e[0]);
+  if (topEva.length < 10) {
+    // Not enough EVA vocabulary — fall through with a degenerate theory.
+    return {
+      id: theoryId, proposed_at: new Date().toISOString(), source_language: sourceLanguage,
+      cipher_type: 'syllabic', target_folio: targetFolio.folio_id, target_plant: targetFolio.plant_name,
+      symbol_map: {}, decoded_text: '', grounding_score: 0, consistency_score: 0, cross_folio_results: [],
+    };
+  }
+
+  // Build target-language syllable inventory.
+  const langCorpus = sourceLanguage === 'italian' ? ITALIAN_CORPUS
+                   : sourceLanguage === 'hebrew'  ? HEBREW_CORPUS
+                   : LATIN_CORPUS;
+  const syllables = extractSyllables(langCorpus, SYLLABIC_VOCAB_SIZE);
+
+  // Initial codebook: frequency-aligned (most common EVA → most common syllable).
+  let codebook: Record<string, string> = {};
+  for (let i = 0; i < topEva.length; i++) {
+    codebook[topEva[i]] = syllables[i % syllables.length];
+  }
+
+  let curMap = { ...codebook };
+  let curDecoded = applyCodebook(evaText, curMap);
+  let curScore = hillClimbScore(curDecoded, sourceLanguage);
+  let bestMap = curMap;
+  let bestDecoded = curDecoded;
+  let bestScore = curScore;
+  let improvements = 0;
+
+  const T_START = 0.06;
+  const T_END = 0.003;
+  for (let step = 0; step < SYLLABIC_SA_STEPS; step++) {
+    const t = T_START * Math.pow(T_END / T_START, step / SYLLABIC_SA_STEPS);
+    // Swap two EVA word → syllable assignments.
+    const a = topEva[Math.floor(Math.random() * topEva.length)];
+    const b = topEva[Math.floor(Math.random() * topEva.length)];
+    if (a === b) continue;
+    const newMap = { ...curMap, [a]: curMap[b], [b]: curMap[a] };
+    const newDecoded = applyCodebook(evaText, newMap);
+    const newScore = hillClimbScore(newDecoded, sourceLanguage);
+    const d = newScore - curScore;
+    if (d > 0 || Math.random() < Math.exp(d / Math.max(t, 1e-6))) {
+      curMap = newMap;
+      curDecoded = newDecoded;
+      curScore = newScore;
+      if (newScore > bestScore) {
+        bestMap = newMap;
+        bestDecoded = newDecoded;
+        bestScore = newScore;
+        improvements++;
+      }
+    }
+  }
+
+  console.log(`[theory-loop]   syllabic SA: ${improvements} improvements in ${SYLLABIC_SA_STEPS} steps, vocab=${topEva.length} score=${bestScore.toFixed(3)}`);
+
+  // Cross-folio test for consistency.
+  const crossFolioResults: Theory['cross_folio_results'] = [];
+  const testFolios = allFolios
+    .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
+    .slice(0, 10);
+  for (const testFolio of testFolios) {
+    const decoded = applyCodebook(testFolio.eva_sample, bestMap);
+    const expectedTerms = expectedTermsFor(testFolio, sourceLanguage);
+    crossFolioResults.push({
+      folio_id: testFolio.folio_id,
+      plant_expected: testFolio.plant_name,
+      decoded_text: decoded.slice(0, 50),
+      grounding_score: broadGrounding(decoded, sourceLanguage, expectedTerms),
+    });
+  }
+  const primaryTerms = expectedTermsFor(targetFolio, sourceLanguage);
+  const primaryGrounding = broadGrounding(bestDecoded, sourceLanguage, primaryTerms);
+  const consistencyScore = crossFolioResults.length > 0
+    ? crossFolioResults.reduce((s, r) => s + r.grounding_score, 0) / crossFolioResults.length
+    : 0;
+
+  return {
+    id: theoryId,
+    proposed_at: new Date().toISOString(),
+    source_language: sourceLanguage,
+    cipher_type: 'syllabic',
+    target_folio: targetFolio.folio_id,
+    target_plant: targetFolio.plant_name,
+    symbol_map: bestMap,
     decoded_text: bestDecoded,
     grounding_score: primaryGrounding,
     consistency_score: consistencyScore,
