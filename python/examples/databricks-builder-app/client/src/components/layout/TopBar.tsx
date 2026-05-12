@@ -33,7 +33,7 @@ export function TopBar({ projectName }: TopBarProps) {
               </svg>
             </div>
             <h1 className="text-xl font-semibold tracking-tight text-[var(--color-text-heading)]">
-              Databricks AI Dev Kit
+              Databricks Builder App
             </h1>
           </Link>
 

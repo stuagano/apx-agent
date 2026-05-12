@@ -237,10 +237,11 @@ export default function HomePage() {
             </div>
 
             <h1 className="text-5xl font-bold tracking-tight text-[var(--color-text-heading)] sm:text-6xl">
-              AI Dev Kit
+              Databricks Builder
             </h1>
             <p className="mx-auto mt-4 max-w-2xl text-lg text-[var(--color-text-muted)] leading-relaxed">
               Build, deploy, and manage Databricks resources with an AI-powered coding agent.
+              Powered by <a href="https://github.com/stuagano/apx-agent" target="_blank" rel="noopener noreferrer" className="underline hover:text-[var(--color-text-heading)]">apx-agent</a>.
               Create a project to get started.
             </p>
 

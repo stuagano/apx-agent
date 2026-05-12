@@ -11,7 +11,8 @@ _SKILL_GUIDE_ENTRIES = [
   ('Job, workflow, schedule, automation', 'databricks-jobs'),
   ('SDK, API, Databricks client', 'databricks-python-sdk'),
   ('Unity Catalog, tables, volumes, schemas', 'databricks-unity-catalog'),
-  ('Agent, chatbot, AI assistant', 'databricks-agent-bricks'),
+  ('Agent, chatbot, AI assistant (custom Python, apx-agent SDK)', 'databricks-apx-agent'),
+  ('Agent Bricks, Knowledge Assistant, Genie Space, Supervisor Agent, MAS', 'databricks-agent-bricks'),
   ('App deployment, web app', 'databricks-app-python'),
 ]
 
