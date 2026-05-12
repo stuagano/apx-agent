@@ -275,7 +275,7 @@ If your workspace doesn't already have a VS endpoint:
 
 1. In the Databricks UI, go to **Compute → Vector Search**
 2. Click **Create endpoint**
-3. Give it a name (e.g., `entity-resolution`) — this becomes your `VS_ENDPOINT` env var
+3. Give it a name (e.g., `entity-resolution`) — you'll reference this when creating indexes in Step 4
 4. Wait for **Online** status (typically a few minutes)
 
 You can also create one via the SDK:
@@ -377,8 +377,7 @@ databricks current-user me --profile my-workspace
 DATABRICKS_CONFIG_PROFILE=my-workspace
 DEMO_MODE=false
 
-# Vector Search (from Part 1)
-VS_ENDPOINT=entity-resolution
+# Vector Search indexes (from Part 1 Step 4)
 VS_INDEX_FULL=<catalog>.<schema>.utility_account_entities_full_idx
 VS_INDEX_LAST_ADDR=<catalog>.<schema>.utility_account_entities_last_addr_idx
 VS_INDEX_FIRST_EMAIL=<catalog>.<schema>.utility_account_entities_first_email_idx
@@ -441,8 +440,6 @@ Replace the `PLACEHOLDER` values with the names from Part 1:
 env:
   - name: DEMO_MODE
     value: "false"
-  - name: VS_ENDPOINT
-    value: "entity-resolution"
   - name: VS_INDEX_FULL
     value: "catalog.schema.utility_account_entities_full_idx"
   - name: VS_INDEX_LAST_ADDR
@@ -587,8 +584,8 @@ Tells Databricks Apps how to start the app and what environment variables to inj
 ```yaml
 command: ["uvicorn", "entity_resolution_agent.backend.app:app", "--workers", "2"]
 env:
-  - name: VS_ENDPOINT
-    value: "entity-resolution"
+  - name: VS_INDEX_FULL
+    value: "catalog.schema.utility_account_entities_full_idx"
   ...
 ```
 
