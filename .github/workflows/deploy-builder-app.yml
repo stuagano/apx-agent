@@ -7,6 +7,10 @@ on:
         description: 'Databricks workspace URL (e.g. https://my-workspace.cloud.databricks.com)'
         required: true
         type: string
+      databricks_token:
+        description: 'Databricks personal access token (User Settings → Developer tools → Access tokens)'
+        required: true
+        type: string
       app_name:
         description: 'App name (must be unique in your workspace)'
         required: false
@@ -31,6 +35,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Mask token
+        run: echo "::add-mask::${{ inputs.databricks_token }}"
+
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
@@ -43,10 +50,8 @@ jobs:
         run: curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
 
       - name: Configure Databricks profile
-        env:
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: |
-          echo "$DATABRICKS_TOKEN" | databricks configure \
+          echo "${{ inputs.databricks_token }}" | databricks configure \
             --host "${{ inputs.workspace_url }}" \
             --profile ci-deploy
 

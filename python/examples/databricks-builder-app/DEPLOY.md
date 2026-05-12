@@ -2,18 +2,20 @@
 
 One command deploys the full stack to your workspace: Lakebase database, frontend build, skills, and the app itself.
 
-## No terminal? Use GitHub Actions
+## No terminal? Deploy from your browser
 
-If you don't want to install anything locally, deploy straight from your browser:
+No local tools required. Deploy straight from GitHub Actions:
 
-1. **Fork** [stuagano/apx-agent](https://github.com/stuagano/apx-agent) on GitHub
-2. Go to your fork → **Settings → Secrets and variables → Actions → New repository secret**
-   - Name: `DATABRICKS_TOKEN`
-   - Value: a personal access token from your workspace (**User Settings → Developer tools → Access tokens**)
-3. Go to **Actions → Deploy Builder App → Run workflow**
-4. Fill in your workspace URL and app name → **Run workflow**
+1. Go to **[Actions → Deploy Builder App → Run workflow](https://github.com/stuagano/apx-agent/actions/workflows/deploy-builder-app.yml)**
+2. Fill in:
+   - **Workspace URL** — e.g. `https://my-workspace.cloud.databricks.com`
+   - **Databricks token** — from your workspace: **User Settings → Developer tools → Access tokens → Generate new token**
+   - **App name** — defaults to `databricks-builder`
+3. Click **Run workflow**
 
-That's it — GitHub runs the build and deploy for you (~5 minutes). The app URL appears in the workflow logs.
+GitHub runs the build and deploy (~5 minutes). The app URL appears in the workflow logs at the end.
+
+> **Note:** You need collaborator access to this repo to trigger workflows. Ask Stuart to add you.
 
 ## Prerequisites
 
