@@ -1,0 +1,62 @@
+name: Deploy Builder App
+
+on:
+  workflow_dispatch:
+    inputs:
+      workspace_url:
+        description: 'Databricks workspace URL (e.g. https://my-workspace.cloud.databricks.com)'
+        required: true
+        type: string
+      app_name:
+        description: 'App name (must be unique in your workspace)'
+        required: false
+        default: 'databricks-builder'
+        type: string
+      skip_lakebase:
+        description: 'Skip Lakebase — use SQLite instead (recommended if unsure)'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.workspace_url }}
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: python/examples/databricks-builder-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install Databricks CLI
+        run: curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+
+      - name: Configure Databricks profile
+        env:
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: |
+          echo "$DATABRICKS_TOKEN" | databricks configure \
+            --host "${{ inputs.workspace_url }}" \
+            --profile ci-deploy
+
+      - name: Preflight check
+        run: ./scripts/preflight.sh --profile ci-deploy --app-name "${{ inputs.app_name }}"
+
+      - name: Deploy
+        run: |
+          FLAGS="--profile ci-deploy"
+          if [ "${{ inputs.skip_lakebase }}" = "true" ]; then
+            FLAGS="$FLAGS --skip-lakebase"
+          fi
+          ./scripts/deploy.sh "${{ inputs.app_name }}" $FLAGS
