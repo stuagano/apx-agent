@@ -686,6 +686,27 @@ const NGRAM_MODELS: Record<string, TrigramModel> = {
   hebrew: buildTrigramModel(HEBREW_CORPUS),
 };
 
+// Word-pair (bigram) lexicon built from the corpus. This is the structural
+// signal that defeats the "saturate with one word" and "all-function-words"
+// pathologies — adjacent word pairs in real text follow real grammar, and
+// pathological decodings produce pairs that never appear in attested text
+// (e.g. "lo del" or "serva fiqil" are zero in any real Italian corpus).
+function buildWordBigrams(corpus: string): Set<string> {
+  const text = corpus.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const words = text.split(/\s+/).filter((w) => w.length >= 2);
+  const out = new Set<string>();
+  for (let i = 0; i < words.length - 1; i++) {
+    out.add(words[i] + ' ' + words[i + 1]);
+  }
+  return out;
+}
+
+const WORD_BIGRAMS: Record<string, Set<string>> = {
+  latin: buildWordBigrams(LATIN_CORPUS),
+  italian: buildWordBigrams(ITALIAN_CORPUS),
+  hebrew: buildWordBigrams(HEBREW_CORPUS),
+};
+
 console.log(
   `[theory-loop] n-gram models: latin=${NGRAM_MODELS.latin.total} trigrams (${NGRAM_MODELS.latin.vocabSize} unique), ` +
   `italian=${NGRAM_MODELS.italian.total} trigrams (${NGRAM_MODELS.italian.vocabSize} unique), ` +
@@ -881,35 +902,29 @@ function dictionaryScore(text: string, language: string): number {
 }
 
 /**
- * Coherence bonus: rewards consecutive runs of dictionary-matched words. Real
- * text has long runs (3+); the f77v "serva ×6 with junk filler" pathology has
- * a max run of 1-2 because real words are isolated in gibberish. Forces SA to
- * find maps that produce contiguous sentences, not one-word islands.
+ * Bigram fluency: fraction of adjacent decoded-word pairs that appear in the
+ * corpus bigram set. Structural test that defeats all three known pathologies:
  *
- * Returns a value in [0, 1]. ~0.0 for fully gibberish-isolated hits, ~0.5+ for
- * decoded text with multiple 3+ word runs of real vocabulary.
+ *  - "serva ×6 + junk filler" — "serva fiqil", "fiqil ivul" etc. are zero in
+ *    any real Italian corpus. Fluency near 0.
+ *  - "hxlb ×N variants" — same story, made-up Hebrew word pairs.
+ *  - "9 function words" — "lo del", "del di", "di ma" are mostly absent from
+ *    real Italian. Fluency low even though every individual word is real.
+ *
+ * Real Italian text has fluency around 0.3-0.6 (most adjacent pairs in a
+ * sentence appear somewhere in any reasonably-sized corpus). Random gibberish
+ * has fluency near 0.
  */
-function coherenceBonus(text: string, language: string): number {
-  const dict = DICT_BY_LANG[language];
-  if (!dict) return 0;
+function bigramFluency(text: string, language: string): number {
+  const bigrams = WORD_BIGRAMS[language];
+  if (!bigrams || bigrams.size === 0) return 0;
   const words = text.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter((w) => w.length >= 2);
-  if (words.length < 3) return 0;
-  let bestRun = 0;
-  let curRun = 0;
-  let totalRunMass = 0;
-  for (const w of words) {
-    if (dict.has(w)) {
-      curRun++;
-      if (curRun > bestRun) bestRun = curRun;
-    } else {
-      // A run only "counts" if it's 2+ words long — penalises isolated hits.
-      if (curRun >= 2) totalRunMass += curRun;
-      curRun = 0;
-    }
+  if (words.length < 2) return 0;
+  let hits = 0;
+  for (let i = 0; i < words.length - 1; i++) {
+    if (bigrams.has(words[i] + ' ' + words[i + 1])) hits++;
   }
-  if (curRun >= 2) totalRunMass += curRun;
-  // Normalise: 5+ word run or 12 total run-mass = saturated.
-  return Math.min(1, bestRun / 5) * 0.6 + Math.min(1, totalRunMass / 12) * 0.4;
+  return hits / (words.length - 1);
 }
 
 /**
@@ -1016,16 +1031,17 @@ export function hillClimbScore(text: string, language: string, plantTerms?: stri
   const dict = dictionaryScore(text, language);
   const quality = dictionaryQuality(text, language);
   const lm = langModelScore(text, language);
-  // Coherence (consecutive real-word runs) directly attacks the f77v "serva ×6
-  // with junk filler" pathology — that map produces isolated dict hits, not
-  // runs, so its coherenceBonus is near zero.
-  const coherence = coherenceBonus(text, language);
+  // Bigram fluency replaces the old coherenceBonus — same intent (reward
+  // structural language patterns over isolated dict hits) but uses corpus
+  // bigrams as the validator, which is far stricter and isn't fooled by
+  // "all function words" or "one stem ×6" pathologies.
+  const fluency = bigramFluency(text, language);
   if (terms.length > 0) {
     const termScore = scoreTermOverlap(text, terms);
-    return termScore * 0.25 + (dict * quality) * 0.3 + lm * 0.25 + coherence * 0.2;
+    return termScore * 0.2 + (dict * quality) * 0.25 + lm * 0.2 + fluency * 0.35;
   }
   const fwBonus = functionWordBonus(text, language);
-  return (dict * quality) * 0.65 + fwBonus * 0.15 + coherence * 0.2;
+  return (dict * quality) * 0.45 + fwBonus * 0.1 + fluency * 0.45;
 }
 
 async function executeSql(statement: string): Promise<Array<Record<string, string>>> {
@@ -2873,6 +2889,27 @@ function scoreTermOverlap(text: string, terms: string[]): number {
  * meaning maps that produced real language but not the exact plant name
  * scored zero. Now any real-language output gets partial credit.
  */
+/**
+ * Folio-overfit penalty: real decodings should generalise across folios. If
+ * grounding (single folio) >> consistency (cross-folio average), the map is
+ * cherry-picked for one folio and should be discounted.
+ *
+ * Cap grounding at 2× consistency. So grounding/consistency stays in [0.5, 2]
+ * — anything outside means the map is folio-specific overfit.
+ */
+function applyOverfitPenalty(grounding: number, consistency: number): number {
+  if (grounding <= 0.1) return grounding;
+  if (consistency >= 0.5 * grounding) return grounding;
+  return Math.max(2 * consistency, 0);
+}
+
+/** Apply the overfit penalty to a Theory before it competes for elite/best. */
+function finalizeTheory(t: Theory): Theory {
+  const newGrd = applyOverfitPenalty(t.grounding_score, t.consistency_score);
+  if (newGrd === t.grounding_score) return t;
+  return { ...t, grounding_score: newGrd };
+}
+
 function broadGrounding(text: string, language: string, plantTerms: string[]): number {
   const termScore = scoreTermOverlap(text, plantTerms);
   const dictScore_ = dictionaryScore(text, language);
@@ -3122,7 +3159,8 @@ export async function runTheoryLoop(
                 : i < ELITE_RESTARTS ? 'elite'
                 : 'cold';
               const restartFolio = i === 0 ? championFolio : folio;
-              return proposeTheory(restartFolio, folios, strategy.language, strategy.cipherType, restartSeedMode);
+              return proposeTheory(restartFolio, folios, strategy.language, strategy.cipherType, restartSeedMode)
+                .then(finalizeTheory);
             }),
           );
           // Keep the candidate with the highest combined grounding+consistency score.

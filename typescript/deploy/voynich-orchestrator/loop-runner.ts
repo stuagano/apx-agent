@@ -79,11 +79,21 @@ let allTimeBest = 0;
 let staleBursts = 0;
 let converged = false;
 
+// Baseline reset: when the scoring formula changes meaningfully, set
+// SCORING_BASELINE_AFTER to an ISO timestamp so the runner only considers
+// theories proposed after that point as its all-time best. Prevents stale
+// inflated peaks (from older scoring formulas / known pathological maps)
+// from anchoring the convergence-detector.
+const BASELINE_AFTER = process.env.SCORING_BASELINE_AFTER ?? '';
+
 async function readAllTimeBest(): Promise<number> {
   if (!WAREHOUSE_ID) return 0;
   try {
     const token = await resolveToken();
     const host = resolveHost();
+    const afterClause = BASELINE_AFTER
+      ? ` AND proposed_at >= TIMESTAMP '${BASELINE_AFTER}'`
+      : '';
     const r = await fetch(host + '/api/2.0/sql/statements', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -91,7 +101,7 @@ async function readAllTimeBest(): Promise<number> {
         warehouse_id: WAREHOUSE_ID,
         statement: `SELECT COALESCE(MAX(grounding_score+consistency_score), 0) AS best
                     FROM serverless_stable_qh44kx_catalog.voynich.theories
-                    WHERE cipher_type='${CIPHER}' AND source_language='${LANG}'`,
+                    WHERE cipher_type='${CIPHER}' AND source_language='${LANG}'${afterClause}`,
         wait_timeout: '10s',
       }),
     });
