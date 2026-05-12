@@ -3,7 +3,8 @@
 # Verifies local tools and workspace requirements before you run deploy.sh.
 #
 # Usage:
-#   ./scripts/preflight.sh --profile my-workspace [--app-name my-builder-app]
+#   ./scripts/preflight.sh                              # auto-detects your profile
+#   ./scripts/preflight.sh --profile my-workspace      # or specify one explicitly
 
 set -e
 
@@ -23,18 +24,19 @@ SKIP_LAKEBASE=false
 DEPLOY_FLAGS=""
 
 usage() {
-  echo "Usage: $0 --profile my-workspace [--app-name my-builder-app]"
+  echo "Usage: $0 [--profile my-workspace] [--app-name my-builder-app]"
   echo ""
   echo "Checks that your environment and workspace are ready for deploy.sh."
-  echo "Replace 'my-workspace' with your Databricks CLI profile name."
+  echo "If --profile is omitted, picks from your authenticated profiles automatically."
   echo ""
-  echo "Example:"
-  echo "  $0 --profile my-workspace"
+  echo "Examples:"
+  echo "  $0                                   # auto-detect profile"
+  echo "  $0 --profile my-workspace            # use a specific profile"
   echo "  $0 --profile my-workspace --app-name my-builder-app"
   echo ""
   echo "Options:"
-  echo "  --profile PROFILE    Databricks CLI profile (required)"
-  echo "  --app-name NAME      App name to use in the suggested deploy command (default: databricks-builder)"
+  echo "  --profile PROFILE    Databricks CLI profile (optional — auto-detected if omitted)"
+  echo "  --app-name NAME      App name for the suggested deploy command (default: databricks-builder)"
   echo "  -h, --help           Show this help"
 }
 
@@ -48,13 +50,51 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$PROFILE" ]; then
-  echo -e "${RED}Error: --profile is required${NC}"
-  echo ""
-  echo -e "  Example: $0 --profile my-workspace"
-  echo -e "  (Replace 'my-workspace' with your Databricks CLI profile name)"
-  echo ""
-  usage
-  exit 1
+  # Try to auto-detect from valid configured profiles
+  if ! command -v databricks &>/dev/null; then
+    echo -e "${RED}Error: --profile is required and Databricks CLI is not installed${NC}"
+    echo ""
+    echo -e "  Install: curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh"
+    exit 1
+  fi
+
+  # Parse profiles, collect only Valid=YES ones (skip header line)
+  VALID_PROFILES=()
+  while IFS= read -r line; do
+    name=$(echo "$line" | awk '{print $1}')
+    valid=$(echo "$line" | awk '{print $NF}')
+    if [ "$valid" = "YES" ] && [ -n "$name" ]; then
+      VALID_PROFILES+=("$name")
+    fi
+  done < <(databricks auth profiles 2>/dev/null | tail -n +2)
+
+  if [ "${#VALID_PROFILES[@]}" -eq 0 ]; then
+    echo -e "${RED}No authenticated Databricks profiles found.${NC}"
+    echo ""
+    echo -e "  Run this to authenticate, then re-run preflight:"
+    echo -e "  ${BLUE}databricks auth login --host https://YOUR-WORKSPACE.cloud.databricks.com --profile my-workspace${NC}"
+    exit 1
+  elif [ "${#VALID_PROFILES[@]}" -eq 1 ]; then
+    PROFILE="${VALID_PROFILES[0]}"
+    echo -e "  ${BLUE}→${NC}  Using profile: ${BOLD}${PROFILE}${NC} (only authenticated profile found)"
+    echo ""
+  else
+    echo -e "${BOLD}Select a Databricks profile:${NC}"
+    echo ""
+    for i in "${!VALID_PROFILES[@]}"; do
+      echo -e "  $((i+1))) ${VALID_PROFILES[$i]}"
+    done
+    echo ""
+    while true; do
+      read -rp "  Enter number [1-${#VALID_PROFILES[@]}]: " choice
+      if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#VALID_PROFILES[@]}" ]; then
+        PROFILE="${VALID_PROFILES[$((choice-1))]}"
+        echo ""
+        break
+      fi
+      echo -e "  ${RED}Invalid choice. Enter a number between 1 and ${#VALID_PROFILES[@]}.${NC}"
+    done
+  fi
 fi
 
 MIN_CLI_VERSION="0.287.0"
