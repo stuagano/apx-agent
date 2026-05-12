@@ -2,6 +2,19 @@
 
 One command deploys the full stack to your workspace: Lakebase database, frontend build, skills, and the app itself.
 
+## No terminal? Use GitHub Actions
+
+If you don't want to install anything locally, deploy straight from your browser:
+
+1. **Fork** [stuagano/apx-agent](https://github.com/stuagano/apx-agent) on GitHub
+2. Go to your fork → **Settings → Secrets and variables → Actions → New repository secret**
+   - Name: `DATABRICKS_TOKEN`
+   - Value: a personal access token from your workspace (**User Settings → Developer tools → Access tokens**)
+3. Go to **Actions → Deploy Builder App → Run workflow**
+4. Fill in your workspace URL and app name → **Run workflow**
+
+That's it — GitHub runs the build and deploy for you (~5 minutes). The app URL appears in the workflow logs.
+
 ## Prerequisites
 
 Install these once if you don't have them:
