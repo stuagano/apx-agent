@@ -229,6 +229,35 @@ mkdir -p "$STAGING_DIR/packages/databricks_tools_core"
 cp -r "$REPO_ROOT/databricks-tools-core/databricks_tools_core/"* "$STAGING_DIR/packages/databricks_tools_core/"
 mkdir -p "$STAGING_DIR/packages/databricks_mcp_server"
 cp -r "$REPO_ROOT/databricks-mcp-server/databricks_mcp_server/"* "$STAGING_DIR/packages/databricks_mcp_server/"
+cp "$REPO_ROOT/databricks-mcp-server/run_server.py" "$STAGING_DIR/run_mcp_server.py"
+
+echo "  Writing start.sh (starts MCP server + uvicorn)..."
+cat > "$STAGING_DIR/start.sh" << 'STARTSH'
+#!/bin/bash
+# Start databricks-mcp-server (SSE on :8080) then uvicorn.
+# Both processes share the same Databricks credentials from the App environment.
+set -e
+
+export PYTHONPATH="/app/python/source_code/packages:${PYTHONPATH:-}"
+export DATABRICKS_MCP_SERVER_URL="http://localhost:8080/sse"
+
+echo "[start.sh] Starting databricks-mcp-server on :8080..."
+python run_mcp_server.py --transport sse --host 0.0.0.0 --port 8080 &
+MCP_PID=$!
+
+# Wait up to 15s for the MCP server to accept connections
+for i in $(seq 1 30); do
+  if curl -sf http://localhost:8080/sse > /dev/null 2>&1; then
+    echo "[start.sh] MCP server ready (${i} × 0.5s)"
+    break
+  fi
+  sleep 0.5
+done
+
+echo "[start.sh] Starting uvicorn on port ${DATABRICKS_APP_PORT}..."
+exec uvicorn server.app:app --host 0.0.0.0 --port "${DATABRICKS_APP_PORT}"
+STARTSH
+chmod +x "$STAGING_DIR/start.sh"
 
 if [ "$SKIP_SKILLS" = true ] && [ -d "$SKILLS_CACHE_DIR" ] && [ "$(ls -A "$SKILLS_CACHE_DIR" 2>/dev/null)" ]; then
   mkdir -p "$STAGING_DIR/skills"
@@ -276,12 +305,8 @@ done
 echo "  Generating app.yaml..."
 cat > "$STAGING_DIR/app.yaml" << APPYAML
 command:
-  - "uvicorn"
-  - "server.app:app"
-  - "--host"
-  - "0.0.0.0"
-  - "--port"
-  - "\$DATABRICKS_APP_PORT"
+  - "bash"
+  - "start.sh"
 
 env:
   - name: ENV
@@ -290,6 +315,8 @@ env:
     value: "./projects"
   - name: PYTHONPATH
     value: "/app/python/source_code/packages"
+  - name: DATABRICKS_MCP_SERVER_URL
+    value: "http://localhost:8080/sse"
   - name: LAKEBASE_ENDPOINT
     value: "${LAKEBASE_ENDPOINT}"
   - name: LAKEBASE_DATABASE_NAME
@@ -298,12 +325,6 @@ env:
     value: "${SKILL_NAMES}"
   - name: SKILLS_ONLY_MODE
     value: "false"
-  - name: LLM_PROVIDER
-    value: "DATABRICKS"
-  - name: DATABRICKS_MODEL
-    value: "databricks-meta-llama-3-3-70b-instruct"
-  - name: DATABRICKS_MODEL_MINI
-    value: "databricks-gemini-3-flash"
   - name: CLAUDE_CODE_STREAM_CLOSE_TIMEOUT
     value: "3600000"
   - name: MLFLOW_TRACKING_URI
