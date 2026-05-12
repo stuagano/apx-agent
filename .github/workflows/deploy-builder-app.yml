@@ -51,9 +51,9 @@ jobs:
 
       - name: Configure Databricks profile
         run: |
-          echo "${{ inputs.databricks_token }}" | databricks configure \
-            --host "${{ inputs.workspace_url }}" \
-            --profile ci-deploy
+          printf '[ci-deploy]\nhost = %s\ntoken = %s\n' \
+            "${{ inputs.workspace_url }}" \
+            "${{ inputs.databricks_token }}" >> ~/.databrickscfg
 
       - name: Preflight check
         run: ./scripts/preflight.sh --profile ci-deploy --app-name "${{ inputs.app_name }}"
