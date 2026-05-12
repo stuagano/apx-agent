@@ -23,9 +23,14 @@ SKIP_LAKEBASE=false
 DEPLOY_FLAGS=""
 
 usage() {
-  echo "Usage: $0 --profile <profile> [--app-name <name>]"
+  echo "Usage: $0 --profile my-workspace [--app-name my-builder-app]"
   echo ""
   echo "Checks that your environment and workspace are ready for deploy.sh."
+  echo "Replace 'my-workspace' with your Databricks CLI profile name."
+  echo ""
+  echo "Example:"
+  echo "  $0 --profile my-workspace"
+  echo "  $0 --profile my-workspace --app-name my-builder-app"
   echo ""
   echo "Options:"
   echo "  --profile PROFILE    Databricks CLI profile (required)"
@@ -44,6 +49,9 @@ done
 
 if [ -z "$PROFILE" ]; then
   echo -e "${RED}Error: --profile is required${NC}"
+  echo ""
+  echo -e "  Example: $0 --profile my-workspace"
+  echo -e "  (Replace 'my-workspace' with your Databricks CLI profile name)"
   echo ""
   usage
   exit 1

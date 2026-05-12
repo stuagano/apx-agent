@@ -34,8 +34,14 @@ databricks configure --profile my-workspace
 git clone https://github.com/stuagano/apx-agent.git
 cd apx-agent/python/examples/databricks-builder-app
 
-# Deploy (replace values)
+# 1. Run preflight — checks your tools and workspace are ready
+#    Replace "my-workspace" with your Databricks CLI profile name
+./scripts/preflight.sh --profile my-workspace
+
+# 2. If preflight passes, it prints the exact deploy command to run.
+#    It will look like one of these:
 ./scripts/deploy.sh my-builder-app --profile my-workspace
+./scripts/deploy.sh my-builder-app --profile my-workspace --skip-lakebase
 ```
 
 That's it. The script handles everything in ~5 minutes:
