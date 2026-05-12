@@ -369,6 +369,12 @@ const LANG_FREQ: Record<string, string[]> = {
   latin:   ['e','i','a','u','t','s','n','r','o','l','c','m','d','p','b','q','g','v','f','h','x','y','k','z','j','w'],
   italian: ['e','a','i','o','n','l','r','t','s','c','d','u','p','m','v','g','b','f','h','z','q','x','y','w','k','j'],
   greek:   ['α','ι','ο','ε','ν','σ','τ','η','ρ','κ','π','μ','λ','υ','δ','θ','γ','ω','φ','χ','β','ξ','ζ','ψ'],
+  // Hebrew transliteration alphabet — 22 letters in approximate frequency order
+  // derived from biblical/mishnaic Hebrew corpora. Mapping:
+  // y=yod h=he v=vav l=lamed m=mem r=resh n=nun t=tav b=bet a=aleph
+  // k=kaf e=ayin w=shin d=daleth s=samech c=chet p=pe g=gimel x=tsadi
+  // q=qof z=zayin f=tet
+  hebrew:  ['y','h','v','l','m','r','n','t','b','a','k','e','w','d','s','c','p','g','x','q','z','f'],
 };
 
 // ---------------------------------------------------------------------------
@@ -605,14 +611,85 @@ function buildTrigramModel(corpus: string): TrigramModel {
   return { ngrams, total, vocabSize: ngrams.size };
 }
 
+// Hebrew corpus in single-letter ASCII transliteration (Mishna-style, simplified
+// for ASCII-only scoring). Mapping used throughout:
+//   a=aleph b=bet g=gimel d=daleth h=he v=vav z=zayin c=chet f=tet y=yod
+//   k=kaf l=lamed m=mem n=nun s=samech e=ayin p=pe x=tsadi q=qof r=resh
+//   w=shin t=tav
+// 22 letters → 22 unique ASCII chars. Vowels are implicit (abjad). Corpus
+// drawn from biblical/medieval idiom: short herbal/medical sentences in
+// Hebrew style, transliterated. Hand-written for this experiment — quality
+// is lower than the Latin/Italian medieval corpora but sufficient to bias
+// the trigram model toward Hebrew letter patterns.
+const HEBREW_CORPUS = `
+hareb hzh xmx beyn hxbey vhpryt verph et hgvb whlv
+qc et hewrw hzat vbwl bmym vhwqh et hxlh ldmey hbfn
+heb hzh ydve mxd et hxr et hyad vegv hknfym
+hpry adm vmyrh vhshu kayyn yfsa lhvxya et hdm
+mz hxlb vhwmen velh et hwqdym vlb hadm
+qrn hayyl atev mvw vrqx ylqh et hsmym hyvm
+ytwl hxdq vhrm tlvy hwxr vhqr lvys
+hxmx zarx hahd vhqvph hxnvr atev mvw
+hayyn hzh mvprq vlhqv lhwbye lqshvt
+heb hzayt yhk wbe phmym byvm bxbqr lqynyn
+hyyn et hdbw vrqx hat hwmym vhh hpry
+ldhqryev hwqd nylk lk hrwm vlb vmyhe
+qybv et hadm lhxr abnym sphrym vqmym lhmytvtm
+xrf llb mxd vrxun lyseh ywyne lhxr vlbn yvqh
+heb akelw hyte vhayfs hmxsh zarx mztmh wmys
+hmrqxt vhsylq vhrwd ymlqv lpqhrh adm vlmsg
+hzhq lp vhpry tw lpqh lk hpht vhpsv
+afhwn vqrqxh vyykr eyn hgvb whapys et hpny lvb
+sphr hayyl rxh hzymh hgvb vyn xzmr le pyne
+hwqr hmxny vhsls hapr ldqryev vhmrqxh
+heb mwh vqrn hapwy et hxvyr vyfs hgr
+xrn hqfn yrk et hp hgvb vhmrh vhwklm hwmym
+hyklv yhwt yhys yhwa xyt llbv et hbn vhxr
+zayw hbrk vqyte hwqr neyn whbyn hadm
+brk hlb vqrn hzhq aren ldmey hbpn vlhxr
+xrf hzayt yqryv et hxlt vhyyn hxvyr vhprn vhsls
+heb hxlb hzh ylqh et hbn vhpry vhgvb vnyy hxlt
+hzh hpry hgs vmy hwqr xy hpry lhmlt
+qc tn vbwl my hzheq vhwq hatev nydey et hxr
+hayyn lyate qfrm hmrqxt hqyte yrk et hbn
+`;
+
+const HEBREW_DICT = new Set([
+  // Function words / particles (transliterated)
+  'h', 'et', 'el', 'le', 'be', 'me', 'al', 'mn', 'kl', 'lk', 'lk', 'lb', 'wm',
+  'zh', 'zat', 'hm', 'hn', 'hwa', 'hya', 'anky', 'anhnv', 'atm',
+  'ky', 'aw', 'la', 'lv', 'ks', 'gm', 'rk', 'ad', 'kn', 'aym', 'kmv',
+  // Common verbs / forms
+  'amr', 'nyn', 'hyh', 'hyy', 'yhy', 'ywb', 'qm', 'qx', 'lqh', 'ntn', 'ryt',
+  'ake', 'wt', 'wb', 'bre', 'qbe', 'rxh', 'wlh', 'yfs', 'mvy', 'wlye', 'lk',
+  // Body parts
+  'rww', 'eyn', 'ayyn', 'yd', 'ydym', 'rgl', 'rgly', 'pyh', 'pny',
+  'lb', 'bfn', 'bwr', 'dm', 'ezm', 'eror', 'wn', 'wnym', 'whk',
+  // Botanical
+  'eyx', 'edyn', 'eelh', 'eply', 'prh', 'pry', 'zre', 'wrw', 'wrwym',
+  'edmh', 'gpn', 'eyn', 'wyfh', 'rqxh', 'hxlb', 'hxlt', 'hwqd', 'hwqdym',
+  'xlf', 'wmym', 'wmn', 'dbw', 'hayyn', 'tyrvw', 'hwmym', 'mrr', 'hxlb',
+  // Medical
+  'rph', 'rpva', 'nyye', 'mxlh', 'qdxt', 'hxlh', 'wmym', 'plym', 'mrqxt',
+  'eyn', 'tnv', 'rxun', 'ymsg', 'sm', 'smym', 'mlh', 'wbe',
+  // Numbers
+  'ahd', 'wnym', 'wlw', 'arbe', 'hmw', 'ww', 'wbe', 'wmnh', 'twe', 'ewr',
+  // Substances / elements
+  'mym', 'aw', 'rvh', 'edmh', 'wmw', 'qyte', 'hap', 'mlh', 'wmn', 'dbw',
+  // Spaces / mystical / religious idiom
+  'wlvm', 'brk', 'qdvw', 'arvn', 'rxvn',
+]);
+
 const NGRAM_MODELS: Record<string, TrigramModel> = {
   latin: buildTrigramModel(LATIN_CORPUS),
   italian: buildTrigramModel(ITALIAN_CORPUS),
+  hebrew: buildTrigramModel(HEBREW_CORPUS),
 };
 
 console.log(
   `[theory-loop] n-gram models: latin=${NGRAM_MODELS.latin.total} trigrams (${NGRAM_MODELS.latin.vocabSize} unique), ` +
-  `italian=${NGRAM_MODELS.italian.total} trigrams (${NGRAM_MODELS.italian.vocabSize} unique)`,
+  `italian=${NGRAM_MODELS.italian.total} trigrams (${NGRAM_MODELS.italian.vocabSize} unique), ` +
+  `hebrew=${NGRAM_MODELS.hebrew.total} trigrams (${NGRAM_MODELS.hebrew.vocabSize} unique)`,
 );
 
 /**
@@ -719,6 +796,7 @@ const ITALIAN_DICT = new Set([
 const DICT_BY_LANG: Record<string, Set<string>> = {
   latin: LATIN_DICT,
   italian: ITALIAN_DICT,
+  hebrew: HEBREW_DICT,
 };
 
 /**
@@ -1091,6 +1169,8 @@ const CONSENSUS_LOCKED: Record<string, Record<string, string>> = {
     r: 'k', sh: 'a', ct: 'h', h: 'g', ok: 'q',
     y: 't', ch: 's',
   },
+  // Hebrew has no analysed cribs yet — start with no locks so SA explores freely.
+  hebrew: {},
 };
 
 /** Uncertain glyphs — the hill-climber focuses mutations here. */
@@ -2750,6 +2830,12 @@ function pickNextStrategy(): Strategy {
     return true;
   });
   if (pool.length === 0) {
+    // Synthesize a strategy from env vars rather than fall back to latin —
+    // otherwise a hebrew/substitution runner would silently run latin instead.
+    if (cipherFocus && langFocus) {
+      console.warn(`[strategy] CIPHER_FOCUS=${cipherFocus} LANGUAGE_FOCUS=${langFocus} not in STRATEGIES table — synthesizing strategy`);
+      return { language: langFocus, cipherType: cipherFocus as CipherType, seedMode: 'cold' };
+    }
     console.warn(`[strategy] CIPHER_FOCUS=${cipherFocus} LANGUAGE_FOCUS=${langFocus} matches no strategies — falling back to full pool`);
     return STRATEGIES[0];
   }
