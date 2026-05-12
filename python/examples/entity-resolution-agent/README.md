@@ -53,6 +53,74 @@ The `afr-enrollment-api` sibling app is a third option for deterministic batch e
 
 ---
 
+## The hosting model — Databricks Apps
+
+A **Databricks App** is managed serverless compute that runs inside your Databricks workspace. Unlike a standalone web service, it shares the workspace's identity boundary, network, and Unity Catalog permissions — so the app can query VS indexes, run SQL statements, and read Delta tables with no external credential plumbing.
+
+Key properties:
+- **Identity** — The app runs as a service principal with its own workspace permissions. In production, user requests carry the caller's OAuth token, which `apx-agent` forwards to the Databricks SDK so each API call runs under the caller's identity (not a shared service account).
+- **Network** — The app is colocated with UC, Vector Search, and SQL warehouses. No VPN, no cross-region latency.
+- **Lifecycle** — Databricks handles HTTPS termination, compute scaling, and restarts. You deploy a directory of files; the platform runs them.
+
+The `app.yml` file at the root of this example defines the startup command and environment variables. `databricks apps deploy` (or `uv run apx deploy`) uploads the source tree and starts the app.
+
+---
+
+## The framework — apx-agent
+
+**apx-agent** is the Databricks Apps development framework this repo provides. It does three things:
+
+### 1. Agent abstractions
+
+```python
+from apx_agent import LlmAgent, HandoffAgent, Dependencies
+
+# One agent with a tool list
+supervisor = LlmAgent(
+    tools=[normalize_record, search_accounts],
+    system_prompt=SUPERVISOR_INSTRUCTIONS,
+)
+
+# Coordinator that routes between multiple agents
+agent = HandoffAgent(
+    agents={"supervisor": supervisor, "evaluator": evaluator},
+    start="supervisor",
+    max_handoffs=4,
+)
+```
+
+`LlmAgent` wraps Claude with a tool list and system prompt. `HandoffAgent` coordinates multiple `LlmAgent`s using a handoff protocol — the active agent can transfer control to a named sibling agent.
+
+`Dependencies.Workspace` is a type alias for the Databricks SDK `WorkspaceClient`. Tool functions that declare it as a parameter receive a per-request client automatically — no manual token handling.
+
+### 2. Protocol surface
+
+```python
+from apx_agent import create_app
+
+app = create_app(agent)
+```
+
+`create_app(agent)` wraps any agent in a FastAPI application and registers three routes:
+
+| Route | Purpose |
+|-------|---------|
+| `POST /responses` | Invoke the agent — [Responses API](https://platform.openai.com/docs/api-reference/responses) compatible, streaming SSE or blocking JSON |
+| `GET /.well-known/agent.json` | A2A discovery card — machine-readable metadata for orchestrators |
+| `GET /health` | Liveness probe for load balancers |
+
+These routes are present in every apx-agent app, regardless of whether a custom UI is added on top.
+
+### 3. Local development tooling
+
+```bash
+uv run apx deploy           # package + deploy to Databricks Apps
+```
+
+The `apx` CLI handles packaging the app as a Python wheel, copying static assets, and calling `databricks apps deploy`. During local development, `uv run uvicorn ... --reload` works without any apx-specific tooling.
+
+---
+
 ## What you'll learn
 
 - How to design a **gold table** with multiple embedding columns so one Delta table feeds multiple Vector Search indexes
@@ -431,6 +499,14 @@ For deterministic batch enrollment, see [`../afr-enrollment-api/`](../afr-enroll
 
 Any HTTP client, orchestrator, or agent hub can discover and call this agent without a browser.
 
+### How `.well-known` works
+
+`.well-known` is an [RFC 8615](https://datatracker.ietf.org/doc/html/rfc8615) convention — a reserved URL path for machine-readable metadata. Every apx-agent app exposes `GET /.well-known/agent.json`, a discovery card that describes the agent's capabilities.
+
+apx-agent auto-generates this card from the agent's `name`, `description`, and the union of tools across all `LlmAgent`s in the `HandoffAgent`. An orchestrator or agent hub can fetch this URL to learn what the agent does and how to invoke it — without reading source code or documentation.
+
+**The `POST /responses` route** follows the [Responses API](https://platform.openai.com/docs/api-reference/responses) spec (same as OpenAI's). This means any client that can talk to a standard Responses API endpoint — Claude Desktop, a LangGraph node, a custom orchestrator — can talk to this agent without apx-specific adapters. Responses stream as [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) when `"stream": true`.
+
 ### Discover the agent
 
 ```bash
@@ -445,9 +521,10 @@ curl https://<your-app-url>/.well-known/agent.json \
   "description": "Resolve and deduplicate customer/account entities ...",
   "url": "https://<your-app-url>",
   "tools": [
-    {"name": "normalize_record", "description": "..."},
-    {"name": "vector_search",    "description": "..."},
-    ...
+    {"name": "normalize_record",    "description": "Normalize a raw AFR application record..."},
+    {"name": "search_accounts",     "description": "Search for matching utility accounts..."},
+    {"name": "evaluate_candidates", "description": "Score and rank candidate matches..."},
+    {"name": "log_decision",        "description": "Write the enrollment decision to the AFR table..."}
   ]
 }
 ```
