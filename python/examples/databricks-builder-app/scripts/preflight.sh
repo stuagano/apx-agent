@@ -198,7 +198,8 @@ for line in sys.stdin:
         if m: print(m.group(1)); break
 " 2>/dev/null)
 
-CURRENT_USER=$(databricks current-user me --profile "$PROFILE" 2>/dev/null | python3 -c "
+AUTH_OUTPUT=$(databricks current-user me --profile "$PROFILE" 2>&1)
+CURRENT_USER=$(echo "$AUTH_OUTPUT" | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -208,7 +209,16 @@ except: pass
 
 if [ -z "$CURRENT_USER" ]; then
   fail "Could not authenticate to workspace"
-  info "Run: databricks auth login --profile ${PROFILE}"
+  if echo "$AUTH_OUTPUT" | grep -qi "401\|Unauthorized\|UNAUTHENTICATED\|invalid.*token\|token.*invalid"; then
+    info "Token is invalid or expired — generate a new one from your workspace:"
+    info "  Workspace UI → User Settings → Developer tools → Access tokens"
+  elif echo "$AUTH_OUTPUT" | grep -qi "403\|PERMISSION_DENIED\|Forbidden"; then
+    info "Token is valid but lacks permissions. Ensure it has workspace access."
+  elif echo "$AUTH_OUTPUT" | grep -qi "no such host\|connection refused\|could not connect\|dial tcp"; then
+    info "Could not reach workspace — check the URL is correct: ${WORKSPACE_HOST}"
+  else
+    info "Error: $(echo "$AUTH_OUTPUT" | head -1)"
+  fi
   echo ""
   exit 1
 fi
