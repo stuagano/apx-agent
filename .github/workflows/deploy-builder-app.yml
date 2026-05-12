@@ -36,7 +36,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Mask token
-        run: echo "::add-mask::${{ inputs.databricks_token }}"
+        env:
+          DB_TOKEN: ${{ inputs.databricks_token }}
+        run: echo "::add-mask::${DB_TOKEN}"
 
       - name: Install Node.js
         uses: actions/setup-node@v4
