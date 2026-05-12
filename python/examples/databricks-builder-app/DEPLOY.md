@@ -1,0 +1,100 @@
+# Deploy the Databricks Builder App
+
+One command deploys the full stack to your workspace: Lakebase database, frontend build, skills, and the app itself.
+
+## Prerequisites
+
+Install these once if you don't have them:
+
+```bash
+# 1. Databricks CLI v0.287.0+ (required for Lakebase DAB support)
+curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+databricks --version  # should be ≥ 0.287.0
+
+# 2. uv (Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 3. Node.js 18+ (for frontend build)
+# macOS: brew install node
+# or: https://nodejs.org/en/download
+node --version  # should be ≥ 18
+```
+
+You also need a Databricks CLI profile with admin access to your workspace:
+
+```bash
+databricks configure --profile my-workspace
+# or OAuth: databricks auth login --profile my-workspace
+```
+
+## Deploy
+
+```bash
+# Clone the repo
+git clone https://github.com/stuagano/apx-agent.git
+cd apx-agent/python/examples/databricks-builder-app
+
+# Deploy (replace values)
+./scripts/deploy.sh my-builder-app --profile my-workspace
+```
+
+That's it. The script handles everything in ~5 minutes:
+
+| Step | What happens |
+|------|-------------|
+| 1 | Checks CLI version and auth |
+| 2 | Provisions Lakebase Autoscale database |
+| 3 | Builds the React frontend |
+| 4 | Packages server code, dependencies, and skills |
+| 5 | Creates the Databricks App |
+| 6 | Grants the app's service principal PostgreSQL access |
+| 7 | Uploads everything to your workspace |
+| 8 | Deploys and starts the app |
+
+The app URL is printed at the end. Open it in a browser — you should see the chat UI immediately.
+
+## Requirements on your workspace
+
+| Requirement | Why |
+|-------------|-----|
+| **Lakebase Autoscale enabled** | Project persistence (database backend) |
+| **Claude via FMAPI** | The app routes Claude calls through your workspace's FM endpoint — no Anthropic key needed |
+| **Databricks Apps enabled** | Obviously |
+
+If your workspace doesn't have Lakebase, add `--skip-lakebase` to the deploy command. The app will use SQLite instead — projects won't survive app restarts, but everything else works fine for demos.
+
+```bash
+./scripts/deploy.sh my-builder-app --profile my-workspace --skip-lakebase
+```
+
+## Redeploy after changes
+
+```bash
+# Quick redeploy (skip Lakebase + frontend rebuild)
+./scripts/deploy.sh my-builder-app --profile my-workspace --skip-lakebase --skip-build --skip-skills
+```
+
+## Options
+
+| Flag | What it does |
+|------|-------------|
+| `--skip-lakebase` | Skip Lakebase provisioning (uses SQLite) |
+| `--skip-build` | Skip frontend build (reuse previous build) |
+| `--skip-skills` | Skip skills reinstall (reuse cached skills) |
+| `--enable-mcp` | Expose `/mcp` endpoint for Genie Code (app name must start with `mcp-`) |
+| `--lakebase-id ID` | Custom Lakebase project name (default: `builder-app-db`) |
+| `--profile PROFILE` | Databricks CLI profile |
+
+## Troubleshoot
+
+**`error: resource type 'postgres_projects' is not supported`**
+→ Lakebase Autoscale isn't enabled on this workspace. Use `--skip-lakebase`.
+
+**App starts but shows a blank page or 500 errors**
+→ Check logs: `databricks apps logs my-builder-app --profile my-workspace`
+
+**`DATABRICKS_MCP_SERVER_URL is not set`**
+→ This shouldn't happen with a fresh deploy — the `start.sh` sets it. If you see this in logs, redeploy.
+
+**CLI version error**
+→ Run `curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh` to update.
