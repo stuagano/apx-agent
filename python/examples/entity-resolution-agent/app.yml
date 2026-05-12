@@ -10,8 +10,6 @@ env:
     value: ""
 
   # Required when SEARCH_SERVICE_URL is unset (local search fallback)
-  - name: VS_ENDPOINT
-    value: "PLACEHOLDER — your Vector Search endpoint name"
   - name: VS_INDEX_FULL
     value: "PLACEHOLDER — e.g. catalog.schema.utility_account_entities_full_idx"
   - name: VS_INDEX_LAST_ADDR
