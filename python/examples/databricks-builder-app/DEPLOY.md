@@ -4,18 +4,27 @@ One command deploys the full stack to your workspace: Lakebase database, fronten
 
 ## No terminal? Deploy from your browser
 
-No local tools required. Deploy straight from GitHub Actions:
+Go to **[stuagano.github.io/apx-agent](https://stuagano.github.io/apx-agent)**, fill in your workspace URL and a Databricks access token, and click Deploy. No GitHub account, no terminal, nothing to install.
 
-1. Go to **[Actions → Deploy Builder App → Run workflow](https://github.com/stuagano/apx-agent/actions/workflows/deploy-builder-app.yml)**
-2. Fill in:
-   - **Workspace URL** — e.g. `https://my-workspace.cloud.databricks.com`
-   - **Databricks token** — from your workspace: **User Settings → Developer tools → Access tokens → Generate new token**
-   - **App name** — defaults to `databricks-builder`
-3. Click **Run workflow**
+The page shows live progress and prints the app URL when it's done.
 
-GitHub runs the build and deploy (~5 minutes). The app URL appears in the workflow logs at the end.
+---
 
-> **Note:** You need collaborator access to this repo to trigger workflows. Ask Stuart to add you.
+### One-time setup (Stuart only)
+
+To make the deploy page work, create a fine-grained GitHub PAT and add it as a repo secret:
+
+1. Go to **github.com → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**
+2. Set:
+   - **Repository access:** Only `stuagano/apx-agent`
+   - **Permissions:** `Actions` → Read and write
+3. Copy the token
+4. In this repo → **Settings → Secrets and variables → Actions → New repository secret**
+   - Name: `GH_TRIGGER_TOKEN`
+   - Value: the token you just copied
+5. In this repo → **Settings → Pages**
+   - Source: **GitHub Actions**
+6. Push any change to `docs/deploy.html` (or run the **Publish Deploy Page** workflow manually) to publish the page
 
 ## Prerequisites
 

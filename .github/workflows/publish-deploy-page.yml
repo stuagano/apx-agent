@@ -1,0 +1,46 @@
+name: Publish Deploy Page
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/deploy.html'
+      - '.github/workflows/publish-deploy-page.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Build and publish to GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Inject trigger token
+        env:
+          GH_TRIGGER_TOKEN: ${{ secrets.GH_TRIGGER_TOKEN }}
+        run: |
+          mkdir -p _site
+          sed "s|__GH_TRIGGER_TOKEN__|${GH_TRIGGER_TOKEN}|g" docs/deploy.html > _site/index.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
