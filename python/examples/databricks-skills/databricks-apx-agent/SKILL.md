@@ -1,236 +1,238 @@
 ---
 name: databricks-apx-agent
-description: "Build custom Python agents using the apx-agent SDK (ClaudeAgentOptions, ClaudeSDKClient). Use this skill — NOT MLflow ResponsesAgent or mlflow.pyfunc — when the user asks to build an agent, chatbot, or AI assistant that should run as a Python script or FastAPI service rather than a Databricks Model Serving endpoint."
+description: "Build Genie-backed agents as Databricks Apps using the apx-agent SDK. Use this skill when the user asks to build an agent, chatbot, or AI assistant that wraps one or more Genie Spaces and should run as a deployed Databricks App with a chat UI and embedded developer page."
 ---
 
-# apx-agent SDK
+# apx-agent SDK — Genie App Pattern
 
-Build custom AI agents in Python using the apx-agent SDK. The SDK runs a Claude subprocess with configurable tools, MCP servers, and session state.
+Build Databricks Apps that expose a Genie Space through a conversational AI agent. The `apx_agent` SDK provides:
 
-**Use this skill when:** the user asks to "build an agent", "make me an agent", "create a chatbot", or "write an AI assistant."
+- `create_app()` — FastAPI app factory with agent protocol wired in
+- `/_apx/agent` — embedded developer UI with live tracing
+- `genie_tool()` / async OBO variant — Genie space as an agent tool
+- `Dependencies.Headers` — OBO auth (user's token passed through)
 
-**Do NOT use:** MLflow `ResponsesAgent`, `mlflow.pyfunc`, `mlflow.models.set_model`, or `agents.deploy()`. Those are for deploying to Databricks Model Serving. The apx-agent SDK runs agents locally or inside a FastAPI service.
+## Scaffolding Steps
 
-## Installation
+Run these in order before writing any files:
 
 ```bash
-pip install claude-agent-sdk
+# 1. Copy the apx-agent wheel into your project directory so pip can install it
+cp .claude/skills/databricks-apx-agent/apx_agent-0.18.0-py3-none-any.whl ./
+
+# 2. Create the static directory for the frontend placeholder
+mkdir -p static
 ```
 
-The builder app's `.venv` already has it installed.
+## Required Files
 
-## Core Pattern — One-Shot Query
-
-```python
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-
-options = ClaudeAgentOptions(
-    allowed_tools=["Read", "Write", "Bash"],
-    permission_mode="bypassPermissions",
-)
-
-async def run(prompt: str):
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(prompt)
-        async for msg in client.receive_response():
-            print(msg)
-```
-
-## Core Pattern — Streaming with Session Resumption
+### `app.py`
 
 ```python
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
-
-session_id = None  # persist this across calls to resume the conversation
-
-async def chat(prompt: str):
-    global session_id
-
-    options = ClaudeAgentOptions(
-        allowed_tools=["Read", "Write"],
-        permission_mode="bypassPermissions",
-        resume=session_id,              # resume previous conversation
-        include_partial_messages=True,  # token-by-token streaming
-    )
-
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(prompt)
-        async for msg in client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        print(block.text, end="", flush=True)
-            elif isinstance(msg, ResultMessage):
-                session_id = msg.session_id  # save for next call
-```
-
-## Connecting to an MCP Server (SSE)
-
-When the agent needs Databricks tools, connect it to the running `databricks-mcp-server` via SSE.
-The builder app starts this server at `http://localhost:8080/sse`.
-
-```python
-import os
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-from claude_agent_sdk.types import McpSSEServerConfig
-
-# The databricks-mcp-server must already be running:
-#   python run_server.py --transport sse --port 8080
-mcp_config = McpSSEServerConfig(
-    type="sse",
-    url=os.environ.get("DATABRICKS_MCP_SERVER_URL", "http://localhost:8080/sse"),
-)
-
-options = ClaudeAgentOptions(
-    allowed_tools=[
-        "mcp__databricks__execute_sql",
-        "mcp__databricks__ask_genie",
-        "mcp__databricks__ask_genie_followup",
-        "mcp__databricks__list_warehouses",
-        # add other mcp__databricks__<tool_name> tools as needed
-    ],
-    permission_mode="bypassPermissions",
-    mcp_servers={"databricks": mcp_config},
-)
-```
-
-## Example: Multi-Genie Agent
-
-An agent that routes questions to two Genie Spaces and synthesizes the answers.
-
-```python
-"""multi_genie_agent.py — queries two Genie Spaces, synthesizes answers."""
+"""<App Name> — Genie-backed apx agent."""
 
 import asyncio
 import os
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-from claude_agent_sdk.types import (
-    McpSSEServerConfig, AssistantMessage, ResultMessage, TextBlock
+import logging
+from typing import Optional
+
+import httpx
+from fastapi import HTTPException, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from apx_agent import Agent, AgentConfig, Dependencies, create_app
+
+logger = logging.getLogger(__name__)
+
+GENIE_SPACE_ID = os.environ.get("GENIE_SPACE_ID", "<space_id>")
+
+SYSTEM_PROMPT = """You are an AI assistant that answers questions about <domain>.
+Use the ask_genie tool to retrieve data. Always provide clear, accurate answers."""
+
+
+async def ask_genie(question: str, headers: Dependencies.Headers) -> str:
+    """Query <domain> data via Genie Space."""
+    token = headers.token.get_secret_value() if headers.token else ""
+    host = f"https://{headers.host}" if headers.host else os.environ.get("DATABRICKS_HOST", "")
+    auth = f"Bearer {token}"
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(
+            f"{host}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/start_conversation",
+            headers={"Authorization": auth},
+            json={"content": question},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        conversation_id = data.get("conversation_id", "")
+        message_id = data.get("message_id", "")
+
+        msg_data: dict = {}
+        for _ in range(30):
+            poll = await client.get(
+                f"{host}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{conversation_id}/messages/{message_id}",
+                headers={"Authorization": auth},
+            )
+            msg_data = poll.json()
+            status = msg_data.get("status", "")
+            if status == "COMPLETED":
+                break
+            if status in ("FAILED", "CANCELLED"):
+                return f"Genie query {status.lower()}."
+            await asyncio.sleep(2)
+
+        if msg_data.get("status") not in ("COMPLETED", "FAILED", "CANCELLED"):
+            return "Genie query timed out after 60 seconds. Please try again."
+
+        for att in msg_data.get("attachments", []):
+            text_block = att.get("text", {})
+            if text_block.get("content"):
+                return str(text_block["content"])
+        return ""
+
+
+agent = Agent(tools=[ask_genie], instructions=SYSTEM_PROMPT)
+
+config = AgentConfig(
+    name="<app-name>-agent",
+    description="<One-line description of what the agent does>",
 )
 
-SPACE_1_ID = "YOUR_FIRST_SPACE_ID"   # replace with actual space IDs
-SPACE_2_ID = "YOUR_SECOND_SPACE_ID"
-
-SYSTEM_PROMPT = f"""You have access to two Genie Spaces via the Databricks MCP tools:
-
-- Space 1 (compliance data): space_id = {SPACE_1_ID}
-- Space 2 (activity/cost data): space_id = {SPACE_2_ID}
-
-When answering questions:
-1. Decide which space(s) are relevant.
-2. Call ask_genie for each relevant space.
-3. For follow-up questions, use ask_genie_followup with the conversation_id from the previous answer.
-4. Synthesize the results into a single clear answer.
-"""
-
-mcp_config = McpSSEServerConfig(
-    type="sse",
-    url=os.environ.get("DATABRICKS_MCP_SERVER_URL", "http://localhost:8080/sse"),
-)
-
-session_id = None
-
-async def ask(prompt: str) -> str:
-    global session_id
-
-    options = ClaudeAgentOptions(
-        allowed_tools=[
-            "mcp__databricks__ask_genie",
-            "mcp__databricks__ask_genie_followup",
-        ],
-        permission_mode="bypassPermissions",
-        mcp_servers={"databricks": mcp_config},
-        system_prompt=SYSTEM_PROMPT,
-        resume=session_id,
-    )
-
-    response_parts = []
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(prompt)
-        async for msg in client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        response_parts.append(block.text)
-            elif isinstance(msg, ResultMessage):
-                session_id = msg.session_id
-
-    return "".join(response_parts)
+app = create_app(agent, config=config)
 
 
-async def main():
-    while True:
-        prompt = input("\nYou: ").strip()
-        if not prompt:
-            continue
-        answer = await ask(prompt)
-        print(f"\nAgent: {answer}")
+# --- Static files (serve at /static, not /, so POST /responses is not intercepted) ---
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse("static/index.html")
 ```
 
-**Run it:**
-```bash
-DATABRICKS_MCP_SERVER_URL=http://localhost:8080/sse python multi_genie_agent.py
+**Why `Dependencies.Headers` instead of `genie_tool()`?**
+The built-in `genie_tool()` uses synchronous `ws.api_client.do()` which blocks uvicorn's event loop, stalling the SSE stream back to the browser. The async `httpx` pattern above is non-blocking.
+
+### `requirements.txt`
+
+```
+fastapi>=0.100.0
+uvicorn>=0.23.0
+databricks-sdk>=0.20.0
+pydantic-settings>=2.0
+httpx>=0.27.0
+mcp>=1.0.0
+databricks-openai>=0.1.0
+openai-agents>=0.13.0
+./apx_agent-0.18.0-py3-none-any.whl
 ```
 
-## Key Options Reference
+> **Note:** `apx-agent` is not on PyPI. Build a wheel locally and include it in the source directory:
+> ```bash
+> cd /path/to/apx-agent/python && uv build --wheel --out-dir /tmp/my-agent/
+> ```
+> Upload the `.whl` file alongside `app.py`. The `./` prefix in requirements.txt tells pip to install from the local file.
 
-| Option | Type | Purpose |
-|--------|------|---------|
-| `allowed_tools` | `list[str]` | Built-in tools (`Read`, `Write`, `Bash`) and MCP tools (`mcp__<server>__<tool>`) |
-| `permission_mode` | `str` | `"bypassPermissions"` to auto-approve all tools |
-| `mcp_servers` | `dict` | Map of server name → `McpSSEServerConfig` |
-| `system_prompt` | `str` | Override the default system prompt |
-| `resume` | `str \| None` | Session ID from a previous `ResultMessage` to continue that conversation |
-| `include_partial_messages` | `bool` | `True` for token-by-token streaming |
-| `cwd` | `str` | Working directory for file tools |
-| `env` | `dict` | Extra environment variables for the Claude subprocess |
+### `app.yaml`
 
-## Message Types
+```yaml
+command:
+  - uvicorn
+  - app:app
+  - --host=0.0.0.0
+  - --port=8000
+
+env:
+  - name: GENIE_SPACE_ID
+    value: "<space_id>"
+```
+
+### `static/index.html`
+
+Minimal placeholder — the real UI is at `/_apx/agent`.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title><App Name></title>
+  <meta http-equiv="refresh" content="0; url=/_apx/agent">
+</head>
+<body>Redirecting to <a href="/_apx/agent">agent UI</a>...</body>
+</html>
+```
+
+## Deployment Checklist
+
+1. **Grant Genie Space permissions** — run this BEFORE deploying:
+   ```python
+   from databricks.sdk import WorkspaceClient
+   from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
+
+   ws = WorkspaceClient()
+   ws.permissions.update(
+       request_object_type="genie",
+       request_object_id="<space_id>",
+       access_control_list=[
+           AccessControlRequest(group_name="users", permission_level=PermissionLevel.CAN_RUN)
+       ]
+   )
+   ```
+   Without this, users' OBO tokens will be rejected by the Genie API.
+
+2. **Build and include the `apx-agent` wheel** in the source directory
+
+3. **Upload all files** to the Databricks workspace via `manage_workspace_files`
+
+4. **Deploy** via `create_and_deploy_app`
+
+5. **Verify** the app is at `SUCCEEDED` / `RUNNING` via `get_app_status`
+
+6. **Open `/_apx/agent`** — the embedded developer UI shows live tool traces
+
+## What `/_apx/agent` Provides
+
+- Chat UI connected to the agent's `/responses` SSE endpoint
+- Live trace panel — every `ask_genie` call shows input, output, latency
+- Tool inspector at `/_apx/tools`
+- Health probe at `/_apx/probe`
+- Agent card at `/.well-known/agent.json`
+
+## Multiple Genie Spaces
+
+Add one `ask_genie_*` function per space and register all as tools:
 
 ```python
-from claude_agent_sdk.types import (
-    AssistantMessage,   # Claude's response — contains TextBlock, ToolUseBlock, ThinkingBlock
-    UserMessage,        # Tool results sent back to Claude
-    ResultMessage,      # Final message — has session_id, duration_ms, total_cost_usd
-    SystemMessage,      # System events
-    StreamEvent,        # Token-level events when include_partial_messages=True
-    TextBlock,
-    ToolUseBlock,
-    ToolResultBlock,
-    ThinkingBlock,
-)
+async def ask_genie_sales(question: str, headers: Dependencies.Headers) -> str:
+    """Query sales pipeline and opportunity data."""
+    return await _query_genie(question, headers, SALES_SPACE_ID)
+
+async def ask_genie_support(question: str, headers: Dependencies.Headers) -> str:
+    """Query customer support tickets and case history."""
+    return await _query_genie(question, headers, SUPPORT_SPACE_ID)
+
+agent = Agent(tools=[ask_genie_sales, ask_genie_support], instructions=SYSTEM_PROMPT)
 ```
 
-## Built-in Tools
-
-| Tool | What it does |
-|------|-------------|
-| `Read` | Read a local file |
-| `Write` | Write a local file |
-| `Edit` | Edit a local file |
-| `Bash` | Run shell commands |
-| `Glob` | Find files by pattern |
-| `Grep` | Search file contents |
-| `Skill` | Load a Claude Code skill |
+Extract the shared polling logic into a helper `_query_genie(question, headers, space_id)`.
 
 ## What NOT to Do
 
 ```python
-# ❌ WRONG — this is for Databricks Model Serving deployment
-import mlflow
-from databricks.agents import ResponsesAgent
-mlflow.models.set_model(my_agent)
-mlflow.pyfunc.log_model(...)
+# ❌ WRONG — blocks the event loop, SSE stream hangs
+from apx_agent import genie_tool
+ask_genie = genie_tool(GENIE_SPACE_ID)  # uses sync ws.api_client.do()
 
-# ✅ RIGHT — use ClaudeSDKClient
-from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
-async with ClaudeSDKClient(options=options) as client:
-    await client.query(prompt)
+# ❌ WRONG — this is for scripts/notebooks, not Databricks Apps
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+
+# ❌ WRONG — app.mount("/", StaticFiles(...)) intercepts POST /responses
+app.mount("/", StaticFiles(directory="static"), html=True)
+
+# ✅ RIGHT — async httpx with OBO, mounted at /static not /
+async def ask_genie(question: str, headers: Dependencies.Headers) -> str: ...
+app.mount("/static", StaticFiles(directory="static"), name="static")
 ```
-
-Use MLflow model serving only if the explicit goal is deploying to a `/invocations` REST endpoint. For everything else — scripts, FastAPI services, notebooks, local tools — use `ClaudeSDKClient`.
