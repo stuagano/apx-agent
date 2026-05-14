@@ -1,15 +1,42 @@
 # slack-agent
 
-> **Direction: Slack → Databricks**
->
-> This example solves: *"A Slack user wants to query Databricks."*
-> Auth flows **into** Databricks — the Slack user authenticates via Databricks OIDC and the agent runs with their Databricks identity.
->
-> This is **not** the pattern for giving Genie read-access to Slack. For that direction
-> (Databricks → Slack, respecting per-user Slack permissions), use a UC External Connection
-> pointing at `https://mcp.slack.com/mcp` with per-user OAuth2 — no custom agent needed.
+## Should you use this example?
 
-A Slack bot that runs apx-agent with real end-user Databricks credentials. The purpose of this example is to make the `X-Forwarded-Access-Token` mechanism explicit — the same token-injection that Databricks Apps does automatically for browser requests, done manually for Slack.
+**Probably not.** Most teams integrating Databricks and Slack want the **opposite direction** (Databricks → Slack, respecting per-user Slack permissions). For that, use a UC External Connection — see [slack-uc-mcp](../slack-uc-mcp/). No custom agent. Per-user OAuth, governance, and permissions are handled by Unity Catalog.
+
+| You want… | Use |
+|-----------|-----|
+| A Databricks agent (Genie / Agent Bricks / claude_agent_sdk app) to read Slack as the calling user | **[slack-uc-mcp](../slack-uc-mcp/)** — UC External Connection, no custom code |
+| A Slack user to query Databricks from Slack, with the agent running as their Databricks identity | **This example** — custom FastAPI bot with manual Databricks OIDC + OBO token forwarding |
+
+The UC External Connection path is the default. Reach for **this** example only when you specifically need Slack → Databricks identity passthrough — a Slack-initiated flow where the agent must run as the Slack user's Databricks identity (not the app's service principal).
+
+---
+
+## Migration note — UC u2m connection (Private Preview)
+
+The **UC u2m per-user connection** feature (Private Preview as of 2026 — see [slack-uc-mcp](../slack-uc-mcp/)) subsumes most of the OAuth/token plumbing in this example. Slack-initiated flows can use the same primitive by treating Databricks (or this app's `/responses` endpoint) as the "external service" and the Slack user ID as `user_identity`.
+
+What UC subsumes if you migrate:
+
+- `oauth_callback` exchanging the auth code with Databricks → POST `authorization_code + pkce_verifier` to UC's `/user-credentials` API; UC does the exchange
+- `token_store.py` (the in-memory dict) → UC managed credential store
+- Token refresh (currently out of scope here) → UC handles it automatically
+
+What still belongs in this example regardless:
+
+- `_verify_slack_signature` — UC has no opinion on Slack webhooks
+- `/install` redirect + PKCE generation — webapps always own the OAuth init
+- `_dispatch_to_agent` 3-second deadline + `response_url` async post — Slack-specific
+- Mapping Slack user ID → `user_identity` — trivially the Slack user ID itself
+
+**This example stays as the manual reference**. Don't migrate the code in-place; the value of this example *is* the explicit `X-Forwarded-Access-Token` mechanics and the OAuth dance. When the preview goes GA, the equivalent app would shrink to roughly *(Slack webhook adapter) + (UC user-credentials POST) + (ws.serving_endpoints.http_request consumption)*.
+
+---
+
+## What this example is
+
+A Slack bot that runs apx-agent with real end-user Databricks credentials. The purpose is to make the `X-Forwarded-Access-Token` mechanism explicit — the same token-injection that Databricks Apps does automatically for browser requests, done manually for Slack.
 
 ## The Core Idea
 

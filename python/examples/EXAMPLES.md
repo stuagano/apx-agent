@@ -36,9 +36,9 @@ These two patterns are **not interchangeable**. Pick based on which direction au
 
 | Pattern | Direction | Auth flows to | Use when |
 |---------|-----------|---------------|----------|
-| [slack-agent](./slack-agent/) | Slack → Databricks | Databricks OIDC | Slack user wants to query Databricks — agent runs with their Databricks identity |
-| UC External Connection | Databricks → Slack | Slack OAuth2 | Genie/agent wants to read Slack — respects per-user Slack channel permissions |
+| [slack-uc-mcp](./slack-uc-mcp/) ⚠️ *Private Preview* | Databricks → Slack | Slack OAuth2 (via UC u2m) | Genie / Agent Bricks / custom agent reads Slack as the calling user — UC handles per-user OAuth, exchange, refresh |
+| [slack-agent](./slack-agent/) | Slack → Databricks | Databricks OIDC | Slack-initiated flow — slash command in Slack runs an agent with the Slack user's Databricks identity |
 
-**slack-agent** is an apx-agent app you deploy. The Slack user authenticates to Databricks and the agent runs as them.
+**Default to [slack-uc-mcp](./slack-uc-mcp/)** for most Databricks ↔ Slack integrations. It's a Databricks-native config (UC External Connection pointed at `mcp.slack.com/mcp`) — no custom app, no token storage, no refresh logic. Each Databricks user authorizes Slack OAuth once; UC stores and replays their token. Governance and per-user channel permissions are enforced automatically.
 
-**UC External Connection** (`mcp.slack.com`) is a Databricks-native config — no custom app needed. Each Databricks user authorizes Slack OAuth once; UC stores and replays their token. This is the right pattern for giving Genie read-access to Slack while preserving per-user permissions.
+**[slack-agent](./slack-agent/)** is the right choice only when the flow originates *in Slack* (slash command) and the agent must run as the Slack user's *Databricks* identity. It's a custom apx-agent app you deploy, and you own the OAuth + token-store code.
