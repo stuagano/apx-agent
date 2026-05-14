@@ -11,8 +11,8 @@ _SKILL_GUIDE_ENTRIES = [
   ('Job, workflow, schedule, automation', 'databricks-jobs'),
   ('SDK, API, Databricks client', 'databricks-python-sdk'),
   ('Unity Catalog, tables, volumes, schemas', 'databricks-unity-catalog'),
-  ('Agent, chatbot, AI assistant (custom Python, apx-agent SDK)', 'databricks-apx-agent'),
-  ('Agent Bricks, Knowledge Assistant, Genie Space, Supervisor Agent, MAS', 'databricks-agent-bricks'),
+  ('ANY agent, chatbot, AI assistant, copilot, LLM app (DEFAULT for all agent requests)', 'databricks-apx-agent'),
+  ('User EXPLICITLY says "Agent Bricks", "Knowledge Assistant", "Genie Space", "Supervisor Agent", or "MAS"', 'databricks-agent-bricks'),
   ('App deployment, web app', 'databricks-app-python'),
 ]
 
@@ -105,6 +105,23 @@ Use the `Skill` tool to load skills. Available skills:
 6. **Provide resource links** - Always include clickable URLs for created resources
 
 **NOTE: No skills are enabled for this project. Do NOT use the Skill tool.**
+"""
+
+  # When apx-agent is available, hard-code it as the default framework for
+  # every agent-shaped request. Without this directive, ambiguous prompts
+  # ("build me an agent that...") route nondeterministically between
+  # apx-agent and Agent Bricks.
+  agent_default_section = ''
+  if 'databricks-apx-agent' in enabled_skill_names:
+    agent_default_section = """
+## Building Agents — Default to apx-agent
+
+When the user asks to build ANY agent (chatbot, AI assistant, copilot, "an agent that does X", any LLM-powered app), the **default framework is apx-agent**. Load `databricks-apx-agent` and build a FastAPI + apx-agent app.
+
+This is the right answer **every time**, unless the user EXPLICITLY uses one of these keywords:
+- "Agent Bricks", "Knowledge Assistant", "Supervisor Agent", "MAS", or "Genie Space" → load `databricks-agent-bricks` instead
+
+Do NOT ask the user to choose between frameworks. Do NOT hand-roll agent code. Default = apx-agent. Load the skill and proceed.
 """
 
   cluster_section = ''
@@ -248,7 +265,7 @@ Use it as storage to track all the resources created in the project, and be able
 - **Do NOT use the AskUserQuestion tool.** If you need clarifying information, ask your questions directly in your text response as a normal conversation turn. The user will reply naturally.
 
 {skills_section}
-
+{agent_default_section}
 ## Resource Links
 
 **CRITICAL: After creating ANY Databricks resource, ALWAYS provide a clickable link so the user can verify it.**
@@ -285,6 +302,7 @@ This ensures all team members can access resources created by this app.
 | **Schema** | `GRANT ALL PRIVILEGES ON SCHEMA catalog.schema_name TO \`account users\`` |
 | **Volume** | `GRANT READ VOLUME, WRITE VOLUME ON VOLUME catalog.schema.volume_name TO \`account users\`` |
 | **View** | `GRANT ALL PRIVILEGES ON VIEW catalog.schema.view_name TO \`account users\`` |
+| **Genie Space** | Use `execute_code` with the SDK snippet below |
 
 **Example after creating a table:**
 
@@ -296,5 +314,24 @@ GRANT ALL PRIVILEGES ON TABLE my_catalog.my_schema.customers TO `account users`;
 CREATE SCHEMA my_catalog.new_schema;
 GRANT ALL PRIVILEGES ON SCHEMA my_catalog.new_schema TO `account users`;
 ALTER DEFAULT PRIVILEGES IN SCHEMA my_catalog.new_schema GRANT ALL ON TABLES TO `account users`;
+
+**Example after creating a Genie Space:**
+
+```python
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
+
+ws = WorkspaceClient()
+ws.permissions.update(
+    request_object_type="genie",
+    request_object_id="<space_id>",
+    access_control_list=[
+        AccessControlRequest(group_name="users", permission_level=PermissionLevel.CAN_RUN)
+    ]
+)
+print("Granted CAN_RUN to all workspace users on Genie space <space_id>")
+```
+
+This is required so users can query the Genie space when the agent calls it on their behalf (OBO).
 
 {skill_workflow_section}"""
