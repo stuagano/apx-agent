@@ -251,7 +251,7 @@ export interface FolioInfo {
   eva_sample: string;
 }
 
-export type CipherType = 'substitution' | 'polyalphabetic' | 'substitution-strip' | 'verbose' | 'positional' | 'homophonic' | 'transposition' | 'syllabic';
+export type CipherType = 'substitution' | 'polyalphabetic' | 'substitution-strip' | 'verbose' | 'positional' | 'homophonic' | 'transposition' | 'syllabic' | 'compositional';
 
 export interface Theory {
   id: string;
@@ -1547,6 +1547,12 @@ export async function proposeTheory(
   if (cipherType === 'syllabic') {
     return await proposeSyllabicTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
   }
+  // Compositional cipher: each EVA word is parsed as prefix+middle+suffix,
+  // and each component maps independently to a target-language morpheme.
+  // Tests the "Voynich words encode morphologically" hypothesis (Pelling, Bax).
+  if (cipherType === 'compositional') {
+    return await proposeCompositionalTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
+  }
 
   // Load elite pool from Delta on first call (persists across deploys)
   await loadElitePool();
@@ -2622,6 +2628,205 @@ async function proposeSyllabicTheory(
     target_folio: targetFolio.folio_id,
     target_plant: targetFolio.plant_name,
     symbol_map: bestMap,
+    decoded_text: bestDecoded,
+    grounding_score: primaryGrounding,
+    consistency_score: consistencyScore,
+    cross_folio_results: crossFolioResults,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Compositional cipher: EVA word = prefix + middle + suffix.
+// Three sub-maps are learned independently: prefix → target prefix/article,
+// middle (per-glyph substitution) → target letters, suffix → target ending.
+//
+// Hypothesis (Pelling, Bax-class theories): Voynich words are constructed
+// morphologically. EVA prefixes like "qo-", "ch-", "sh-" encode articles or
+// noun-class markers; EVA suffixes like "-y", "-dy", "-aiin", "-iin" encode
+// grammatical endings (case, conjugation). Tests whether respecting this
+// structure produces output that looks like inflected target-language prose
+// rather than the glyph-bag pathology of substitution.
+// ---------------------------------------------------------------------------
+
+// EVA morphemes — well-attested word-initial and word-final clusters from
+// extensive prior corpus analysis (morpho-axis, prefix-suffix-axis tests).
+// Ordered longest-first so the parser binds greedily.
+const EVA_PREFIXES = [
+  'qoke', 'qoch', 'qosh', 'shed', 'ched', 'cho', 'sho', 'qok', 'qol', 'qot',
+  'che', 'she', 'qo', 'sh', 'ch', 'da', 'ot', 'op', 'ok', 'ol',
+];
+const EVA_SUFFIXES = [
+  'eedy', 'edy', 'eody', 'aiin', 'eeey', 'iiin', 'iin', 'ain',
+  'chy', 'shy', 'eey', 'eer', 'or', 'ar', 'al', 'am', 'ol', 'dy', 'ey', 'oy', 'y',
+];
+
+// Target morphemes — short articles/prepositions for prefix slot, common
+// inflectional endings for suffix slot. Empty string "" is always a valid
+// option (meaning "no morpheme there").
+const TARGET_PREFIXES: Record<string, string[]> = {
+  italian: ['', 'il', 'la', 'lo', 'di', 'un', 'una', 'del', 'della', 'al', 'nel', 'dal', 'in', 'per', 'con'],
+  latin:   ['', 'ad', 'in', 'ex', 'pro', 'de', 'ab', 'sub', 'cum', 'per', 'inter', 'super'],
+  hebrew:  ['', 'h', 'be', 'me', 'le', 'ke', 'wb', 'mn', 'ke', 'la'],
+};
+const TARGET_SUFFIXES: Record<string, string[]> = {
+  italian: ['', 'a', 'o', 'e', 'i', 'ato', 'are', 'ito', 'ire', 'oso', 'osa', 'ano', 'ono', 'ente', 'mente', 'ica', 'ico'],
+  latin:   ['', 'us', 'um', 'is', 'em', 'it', 'ant', 'ibus', 'orum', 'tur', 'mus', 'tis', 'erunt', 'i', 'ae', 'orum'],
+  hebrew:  ['', 't', 'm', 'h', 'v', 'tm', 'ym', 'nv', 'kh', 'ye'],
+};
+
+interface EvaParts { prefix: string; middle: string; suffix: string }
+
+function parseEvaWord(word: string): EvaParts {
+  let prefix = '';
+  for (const p of EVA_PREFIXES) {
+    if (word.startsWith(p) && word.length > p.length) { prefix = p; break; }
+  }
+  const afterPrefix = word.slice(prefix.length);
+  let suffix = '';
+  for (const s of EVA_SUFFIXES) {
+    if (afterPrefix.endsWith(s) && afterPrefix.length > s.length) { suffix = s; break; }
+  }
+  const middle = afterPrefix.slice(0, afterPrefix.length - suffix.length);
+  return { prefix, middle, suffix };
+}
+
+interface CompositionalCodebook {
+  prefixMap: Record<string, string>; // EVA prefix → target prefix
+  glyphMap:  Record<string, string>; // EVA glyph  → target letter
+  suffixMap: Record<string, string>; // EVA suffix → target suffix
+}
+
+function applyCompositional(text: string, book: CompositionalCodebook): string {
+  return tokenizeEvaWords(text).map((word) => {
+    const { prefix, middle, suffix } = parseEvaWord(word);
+    const dprefix = book.prefixMap[prefix] ?? '';
+    const dmiddle = middle.split('').map((c) => book.glyphMap[c] ?? '').join('');
+    const dsuffix = book.suffixMap[suffix] ?? '';
+    return dprefix + dmiddle + dsuffix;
+  }).filter(Boolean).join(' ');
+}
+
+function pickRandom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+const COMPOSITIONAL_SA_STEPS = parseInt(process.env.COMPOSITIONAL_SA_STEPS ?? '6000');
+
+async function proposeCompositionalTheory(
+  theoryId: string,
+  targetFolio: FolioInfo,
+  allFolios: FolioInfo[],
+  sourceLanguage: string,
+  _seedMode: SeedMode,
+): Promise<Theory> {
+  const evaText = targetFolio.eva_sample;
+  const tprefixes = TARGET_PREFIXES[sourceLanguage] ?? TARGET_PREFIXES.italian;
+  const tsuffixes = TARGET_SUFFIXES[sourceLanguage] ?? TARGET_SUFFIXES.italian;
+  const langLetters = LANG_FREQ[sourceLanguage] ?? LANG_FREQ.italian;
+
+  // Initial codebook: random assignments. Include "" (empty prefix/suffix) as
+  // a valid key so words without a parsed prefix/suffix still decode cleanly.
+  const initialCodebook: CompositionalCodebook = {
+    prefixMap: { '': '' },
+    glyphMap:  {},
+    suffixMap: { '': '' },
+  };
+  for (const p of EVA_PREFIXES) initialCodebook.prefixMap[p] = pickRandom(tprefixes);
+  for (const s of EVA_SUFFIXES) initialCodebook.suffixMap[s] = pickRandom(tsuffixes);
+  // Glyph map: each EVA glyph → a random target letter. Include the standard
+  // 22 alphabet plus any glyph that appears in the corpus.
+  const evaGlyphs = new Set<string>();
+  for (const f of allFolios) for (const w of tokenizeEvaWords(f.eva_sample ?? '')) for (const c of w) evaGlyphs.add(c);
+  for (const g of evaGlyphs) initialCodebook.glyphMap[g] = pickRandom(langLetters);
+
+  let curBook: CompositionalCodebook = {
+    prefixMap: { ...initialCodebook.prefixMap },
+    glyphMap:  { ...initialCodebook.glyphMap },
+    suffixMap: { ...initialCodebook.suffixMap },
+  };
+  let curDecoded = applyCompositional(evaText, curBook);
+  let curScore = hillClimbScore(curDecoded, sourceLanguage);
+  let bestBook = curBook;
+  let bestDecoded = curDecoded;
+  let bestScore = curScore;
+  let improvements = 0;
+
+  const T_START = 0.06;
+  const T_END = 0.003;
+  for (let step = 0; step < COMPOSITIONAL_SA_STEPS; step++) {
+    const t = T_START * Math.pow(T_END / T_START, step / COMPOSITIONAL_SA_STEPS);
+    // Pick which sub-map to mutate and randomise one entry.
+    const r = Math.random();
+    const newBook: CompositionalCodebook = {
+      prefixMap: { ...curBook.prefixMap },
+      glyphMap:  { ...curBook.glyphMap },
+      suffixMap: { ...curBook.suffixMap },
+    };
+    if (r < 0.3) {
+      const k = pickRandom(Object.keys(newBook.prefixMap));
+      newBook.prefixMap[k] = pickRandom(tprefixes);
+    } else if (r < 0.6) {
+      const k = pickRandom(Object.keys(newBook.suffixMap));
+      newBook.suffixMap[k] = pickRandom(tsuffixes);
+    } else {
+      const k = pickRandom(Object.keys(newBook.glyphMap));
+      newBook.glyphMap[k] = pickRandom(langLetters);
+    }
+    const newDecoded = applyCompositional(evaText, newBook);
+    const newScore = hillClimbScore(newDecoded, sourceLanguage);
+    const d = newScore - curScore;
+    if (d > 0 || Math.random() < Math.exp(d / Math.max(t, 1e-6))) {
+      curBook = newBook;
+      curDecoded = newDecoded;
+      curScore = newScore;
+      if (newScore > bestScore) {
+        bestBook = newBook;
+        bestDecoded = newDecoded;
+        bestScore = newScore;
+        improvements++;
+      }
+    }
+  }
+
+  console.log(`[theory-loop]   compositional SA: ${improvements} improvements in ${COMPOSITIONAL_SA_STEPS} steps, score=${bestScore.toFixed(3)}`);
+
+  // Cross-folio test for consistency.
+  const crossFolioResults: Theory['cross_folio_results'] = [];
+  const testFolios = allFolios
+    .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
+    .slice(0, 10);
+  for (const testFolio of testFolios) {
+    const decoded = applyCompositional(testFolio.eva_sample, bestBook);
+    const expectedTerms = expectedTermsFor(testFolio, sourceLanguage);
+    crossFolioResults.push({
+      folio_id: testFolio.folio_id,
+      plant_expected: testFolio.plant_name,
+      decoded_text: decoded.slice(0, 50),
+      grounding_score: broadGrounding(decoded, sourceLanguage, expectedTerms),
+    });
+  }
+  const primaryTerms = expectedTermsFor(targetFolio, sourceLanguage);
+  const primaryGrounding = broadGrounding(bestDecoded, sourceLanguage, primaryTerms);
+  const consistencyScore = crossFolioResults.length > 0
+    ? crossFolioResults.reduce((s, r) => s + r.grounding_score, 0) / crossFolioResults.length
+    : 0;
+
+  // Flatten the 3-part codebook into a single symbol_map for persistence,
+  // prefixing each entry with its slot ("p:", "g:", "s:") so it can be
+  // round-tripped later if needed.
+  const flatMap: Record<string, string> = {};
+  for (const [k, v] of Object.entries(bestBook.prefixMap)) flatMap[`p:${k}`] = v;
+  for (const [k, v] of Object.entries(bestBook.glyphMap))  flatMap[`g:${k}`] = v;
+  for (const [k, v] of Object.entries(bestBook.suffixMap)) flatMap[`s:${k}`] = v;
+
+  return {
+    id: theoryId,
+    proposed_at: new Date().toISOString(),
+    source_language: sourceLanguage,
+    cipher_type: 'compositional',
+    target_folio: targetFolio.folio_id,
+    target_plant: targetFolio.plant_name,
+    symbol_map: flatMap,
     decoded_text: bestDecoded,
     grounding_score: primaryGrounding,
     consistency_score: consistencyScore,
