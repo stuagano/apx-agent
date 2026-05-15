@@ -1561,6 +1561,13 @@ export async function proposeTheory(
   if (cipherType === 'compositional-syl') {
     return await proposeCompositionalSylTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
   }
+  // Polyalphabetic (Vigenère-style): a repeating key of length K rotates
+  // among K independent substitution maps. Position i in the text uses
+  // map[i % K]. Single-substitution cannot simulate this — if the cipher
+  // is genuinely polyalphabetic, only this class can find it.
+  if (cipherType === 'polyalphabetic') {
+    return await proposePolyalphabeticTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
+  }
 
   // Load elite pool from Delta on first call (persists across deploys)
   await loadElitePool();
@@ -2994,6 +3001,146 @@ async function proposeCompositionalSylTheory(
     proposed_at: new Date().toISOString(),
     source_language: sourceLanguage,
     cipher_type: 'compositional-syl',
+    target_folio: targetFolio.folio_id,
+    target_plant: targetFolio.plant_name,
+    symbol_map: flatMap,
+    decoded_text: bestDecoded,
+    grounding_score: primaryGrounding,
+    consistency_score: consistencyScore,
+    cross_folio_results: crossFolioResults,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Polyalphabetic (Vigenère-style): K independent substitution maps,
+// position i uses map (i mod K). Position counter advances per glyph and
+// resets at word boundaries (matches the 15th-century convention of keying
+// the cipher to word-internal position). SA jointly tunes K and the maps.
+// ---------------------------------------------------------------------------
+
+const POLY_K_VALUES = [2, 3, 4, 5, 6];
+const POLY_SA_STEPS_PER_K = parseInt(process.env.POLY_SA_STEPS_PER_K ?? '4000');
+
+function applyPolyalphabetic(text: string, maps: Record<string, string>[]): string {
+  const K = maps.length;
+  let out = '';
+  for (const word of tokenizeEvaWords(text)) {
+    for (let i = 0; i < word.length; i++) {
+      out += maps[i % K][word[i]] ?? '';
+    }
+    out += ' ';
+  }
+  return out.trim();
+}
+
+function randomPolyMap(glyphs: string[], langLetters: string[]): Record<string, string> {
+  const m: Record<string, string> = {};
+  for (const g of glyphs) m[g] = langLetters[Math.floor(Math.random() * langLetters.length)];
+  return m;
+}
+
+async function proposePolyalphabeticTheory(
+  theoryId: string,
+  targetFolio: FolioInfo,
+  allFolios: FolioInfo[],
+  sourceLanguage: string,
+  _seedMode: SeedMode,
+): Promise<Theory> {
+  const evaText = targetFolio.eva_sample;
+  const langLetters = LANG_FREQ[sourceLanguage] ?? LANG_FREQ.italian;
+
+  // Collect every EVA glyph that appears in the corpus.
+  const glyphSet = new Set<string>();
+  for (const f of allFolios) for (const w of tokenizeEvaWords(f.eva_sample ?? '')) for (const c of w) glyphSet.add(c);
+  const glyphs = [...glyphSet];
+  if (glyphs.length < 5) {
+    return {
+      id: theoryId, proposed_at: new Date().toISOString(), source_language: sourceLanguage,
+      cipher_type: 'polyalphabetic', target_folio: targetFolio.folio_id, target_plant: targetFolio.plant_name,
+      symbol_map: {}, decoded_text: '', grounding_score: 0, consistency_score: 0, cross_folio_results: [],
+    };
+  }
+
+  // Sweep K values, run SA from a random start at each, keep the best.
+  let bestK = POLY_K_VALUES[0];
+  let bestMaps: Record<string, string>[] = [];
+  let bestDecoded = '';
+  let bestScore = -Infinity;
+
+  for (const K of POLY_K_VALUES) {
+    let curMaps: Record<string, string>[] = Array.from({ length: K }, () => randomPolyMap(glyphs, langLetters));
+    let curDecoded = applyPolyalphabetic(evaText, curMaps);
+    let curScore = hillClimbScore(curDecoded, sourceLanguage);
+    let kBestMaps = curMaps;
+    let kBestDecoded = curDecoded;
+    let kBestScore = curScore;
+
+    const T_START = 0.06;
+    const T_END = 0.003;
+    for (let step = 0; step < POLY_SA_STEPS_PER_K; step++) {
+      const t = T_START * Math.pow(T_END / T_START, step / POLY_SA_STEPS_PER_K);
+      // Mutate one entry in one of the K maps.
+      const k = Math.floor(Math.random() * K);
+      const g = glyphs[Math.floor(Math.random() * glyphs.length)];
+      const newLetter = langLetters[Math.floor(Math.random() * langLetters.length)];
+      const newMaps = curMaps.map((m, i) => i === k ? { ...m, [g]: newLetter } : m);
+      const newDecoded = applyPolyalphabetic(evaText, newMaps);
+      const newScore = hillClimbScore(newDecoded, sourceLanguage);
+      const d = newScore - curScore;
+      if (d > 0 || Math.random() < Math.exp(d / Math.max(t, 1e-6))) {
+        curMaps = newMaps;
+        curDecoded = newDecoded;
+        curScore = newScore;
+        if (newScore > kBestScore) {
+          kBestMaps = newMaps;
+          kBestDecoded = newDecoded;
+          kBestScore = newScore;
+        }
+      }
+    }
+    if (kBestScore > bestScore) {
+      bestK = K;
+      bestMaps = kBestMaps;
+      bestDecoded = kBestDecoded;
+      bestScore = kBestScore;
+    }
+  }
+
+  console.log(`[theory-loop]   polyalphabetic SA: K=${bestK} score=${bestScore.toFixed(3)}`);
+
+  // Cross-folio test.
+  const crossFolioResults: Theory['cross_folio_results'] = [];
+  const testFolios = allFolios
+    .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
+    .slice(0, 10);
+  for (const testFolio of testFolios) {
+    const decoded = applyPolyalphabetic(testFolio.eva_sample, bestMaps);
+    const expectedTerms = expectedTermsFor(testFolio, sourceLanguage);
+    crossFolioResults.push({
+      folio_id: testFolio.folio_id,
+      plant_expected: testFolio.plant_name,
+      decoded_text: decoded.slice(0, 50),
+      grounding_score: broadGrounding(decoded, sourceLanguage, expectedTerms),
+    });
+  }
+  const primaryTerms = expectedTermsFor(targetFolio, sourceLanguage);
+  const primaryGrounding = broadGrounding(bestDecoded, sourceLanguage, primaryTerms);
+  const consistencyScore = crossFolioResults.length > 0
+    ? crossFolioResults.reduce((s, r) => s + r.grounding_score, 0) / crossFolioResults.length
+    : 0;
+
+  // Flatten the K-map structure into a single symbol_map. Key format
+  // "<k>:<glyph>" preserves which map each assignment came from.
+  const flatMap: Record<string, string> = { _K: String(bestK) };
+  for (let i = 0; i < bestMaps.length; i++) {
+    for (const [g, v] of Object.entries(bestMaps[i])) flatMap[`${i}:${g}`] = v;
+  }
+
+  return {
+    id: theoryId,
+    proposed_at: new Date().toISOString(),
+    source_language: sourceLanguage,
+    cipher_type: 'polyalphabetic',
     target_folio: targetFolio.folio_id,
     target_plant: targetFolio.plant_name,
     symbol_map: flatMap,
