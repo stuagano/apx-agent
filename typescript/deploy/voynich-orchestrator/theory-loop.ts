@@ -251,7 +251,7 @@ export interface FolioInfo {
   eva_sample: string;
 }
 
-export type CipherType = 'substitution' | 'polyalphabetic' | 'substitution-strip' | 'verbose' | 'positional' | 'homophonic' | 'transposition' | 'syllabic' | 'compositional';
+export type CipherType = 'substitution' | 'polyalphabetic' | 'substitution-strip' | 'verbose' | 'positional' | 'homophonic' | 'transposition' | 'syllabic' | 'compositional' | 'compositional-syl';
 
 export interface Theory {
   id: string;
@@ -1553,6 +1553,14 @@ export async function proposeTheory(
   if (cipherType === 'compositional') {
     return await proposeCompositionalTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
   }
+  // Compositional with syllabic root: same prefix/suffix structure as
+  // compositional, but the middle/root decodes via a syllable codebook
+  // (each unique EVA middle → a target-language syllable) rather than
+  // per-glyph substitution. Tests whether the bottleneck in compositional
+  // is the root decoding, not the morphological structure.
+  if (cipherType === 'compositional-syl') {
+    return await proposeCompositionalSylTheory(theoryId, targetFolio, allFolios, sourceLanguage, seedMode);
+  }
 
   // Load elite pool from Delta on first call (persists across deploys)
   await loadElitePool();
@@ -2824,6 +2832,168 @@ async function proposeCompositionalTheory(
     proposed_at: new Date().toISOString(),
     source_language: sourceLanguage,
     cipher_type: 'compositional',
+    target_folio: targetFolio.folio_id,
+    target_plant: targetFolio.plant_name,
+    symbol_map: flatMap,
+    decoded_text: bestDecoded,
+    grounding_score: primaryGrounding,
+    consistency_score: consistencyScore,
+    cross_folio_results: crossFolioResults,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Compositional-syllabic: same morphological parse as compositional, but the
+// middle/root decodes via a syllable codebook rather than per-glyph
+// substitution. Each unique parsed-middle string maps to a 2-3 char target
+// syllable. Tests whether the compositional class's bottleneck is the root
+// decoding (yes if this variant scores meaningfully higher).
+// ---------------------------------------------------------------------------
+
+const COMP_SYL_VOCAB = parseInt(process.env.COMP_SYL_VOCAB ?? '200');
+const COMP_SYL_SA_STEPS = parseInt(process.env.COMP_SYL_SA_STEPS ?? '6000');
+
+async function proposeCompositionalSylTheory(
+  theoryId: string,
+  targetFolio: FolioInfo,
+  allFolios: FolioInfo[],
+  sourceLanguage: string,
+  _seedMode: SeedMode,
+): Promise<Theory> {
+  const evaText = targetFolio.eva_sample;
+  const tprefixes = TARGET_PREFIXES[sourceLanguage] ?? TARGET_PREFIXES.italian;
+  const tsuffixes = TARGET_SUFFIXES[sourceLanguage] ?? TARGET_SUFFIXES.italian;
+  const langCorpus = sourceLanguage === 'italian' ? ITALIAN_CORPUS
+                   : sourceLanguage === 'hebrew'  ? HEBREW_CORPUS
+                   : LATIN_CORPUS;
+  const syllables = extractSyllables(langCorpus, COMP_SYL_VOCAB);
+
+  // Build vocabulary of parsed middles across corpus.
+  const middleCounts = new Map<string, number>();
+  for (const f of allFolios) {
+    for (const w of tokenizeEvaWords(f.eva_sample ?? '')) {
+      const { middle } = parseEvaWord(w);
+      if (middle.length >= 1) middleCounts.set(middle, (middleCounts.get(middle) ?? 0) + 1);
+    }
+  }
+  const topMiddles = [...middleCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, COMP_SYL_VOCAB).map((e) => e[0]);
+  if (topMiddles.length < 5) {
+    return {
+      id: theoryId, proposed_at: new Date().toISOString(), source_language: sourceLanguage,
+      cipher_type: 'compositional-syl', target_folio: targetFolio.folio_id, target_plant: targetFolio.plant_name,
+      symbol_map: {}, decoded_text: '', grounding_score: 0, consistency_score: 0, cross_folio_results: [],
+    };
+  }
+
+  // Initial codebook: random/frequency-aligned for the middle map.
+  const initialBook = {
+    prefixMap: { '': '' } as Record<string, string>,
+    middleMap: {} as Record<string, string>,
+    suffixMap: { '': '' } as Record<string, string>,
+  };
+  for (const p of EVA_PREFIXES) initialBook.prefixMap[p] = pickRandom(tprefixes);
+  for (const s of EVA_SUFFIXES) initialBook.suffixMap[s] = pickRandom(tsuffixes);
+  for (let i = 0; i < topMiddles.length; i++) initialBook.middleMap[topMiddles[i]] = syllables[i % syllables.length];
+  // Middles outside top-N or absent from corpus on this folio fall through
+  // to empty (acts as a no-op insertion).
+
+  const decode = (text: string, book: typeof initialBook): string => {
+    return tokenizeEvaWords(text).map((word) => {
+      const { prefix, middle, suffix } = parseEvaWord(word);
+      const dprefix = book.prefixMap[prefix] ?? '';
+      const dmiddle = book.middleMap[middle] ?? '';
+      const dsuffix = book.suffixMap[suffix] ?? '';
+      return dprefix + dmiddle + dsuffix;
+    }).filter((w) => w.length >= 1).join(' ');
+  };
+
+  let curBook = {
+    prefixMap: { ...initialBook.prefixMap },
+    middleMap: { ...initialBook.middleMap },
+    suffixMap: { ...initialBook.suffixMap },
+  };
+  let curDecoded = decode(evaText, curBook);
+  let curScore = hillClimbScore(curDecoded, sourceLanguage);
+  let bestBook = curBook;
+  let bestDecoded = curDecoded;
+  let bestScore = curScore;
+  let improvements = 0;
+
+  const T_START = 0.06;
+  const T_END = 0.003;
+  for (let step = 0; step < COMP_SYL_SA_STEPS; step++) {
+    const t = T_START * Math.pow(T_END / T_START, step / COMP_SYL_SA_STEPS);
+    const r = Math.random();
+    const newBook = {
+      prefixMap: { ...curBook.prefixMap },
+      middleMap: { ...curBook.middleMap },
+      suffixMap: { ...curBook.suffixMap },
+    };
+    if (r < 0.2) {
+      const k = pickRandom(Object.keys(newBook.prefixMap));
+      newBook.prefixMap[k] = pickRandom(tprefixes);
+    } else if (r < 0.4) {
+      const k = pickRandom(Object.keys(newBook.suffixMap));
+      newBook.suffixMap[k] = pickRandom(tsuffixes);
+    } else {
+      // Middle mutation — swap two middles' assignments (preserves syllable
+      // distribution and pushes search to find good pairings).
+      const keys = Object.keys(newBook.middleMap);
+      const a = pickRandom(keys);
+      const b = pickRandom(keys);
+      if (a !== b) {
+        [newBook.middleMap[a], newBook.middleMap[b]] = [newBook.middleMap[b], newBook.middleMap[a]];
+      }
+    }
+    const newDecoded = decode(evaText, newBook);
+    const newScore = hillClimbScore(newDecoded, sourceLanguage);
+    const d = newScore - curScore;
+    if (d > 0 || Math.random() < Math.exp(d / Math.max(t, 1e-6))) {
+      curBook = newBook;
+      curDecoded = newDecoded;
+      curScore = newScore;
+      if (newScore > bestScore) {
+        bestBook = newBook;
+        bestDecoded = newDecoded;
+        bestScore = newScore;
+        improvements++;
+      }
+    }
+  }
+
+  console.log(`[theory-loop]   compositional-syl SA: ${improvements} improvements in ${COMP_SYL_SA_STEPS} steps, vocab=${topMiddles.length} score=${bestScore.toFixed(3)}`);
+
+  // Cross-folio test for consistency.
+  const crossFolioResults: Theory['cross_folio_results'] = [];
+  const testFolios = allFolios
+    .filter((f) => f.folio_id !== targetFolio.folio_id && f.confidence >= 0.4)
+    .slice(0, 10);
+  for (const testFolio of testFolios) {
+    const decoded = decode(testFolio.eva_sample, bestBook);
+    const expectedTerms = expectedTermsFor(testFolio, sourceLanguage);
+    crossFolioResults.push({
+      folio_id: testFolio.folio_id,
+      plant_expected: testFolio.plant_name,
+      decoded_text: decoded.slice(0, 50),
+      grounding_score: broadGrounding(decoded, sourceLanguage, expectedTerms),
+    });
+  }
+  const primaryTerms = expectedTermsFor(targetFolio, sourceLanguage);
+  const primaryGrounding = broadGrounding(bestDecoded, sourceLanguage, primaryTerms);
+  const consistencyScore = crossFolioResults.length > 0
+    ? crossFolioResults.reduce((s, r) => s + r.grounding_score, 0) / crossFolioResults.length
+    : 0;
+
+  const flatMap: Record<string, string> = {};
+  for (const [k, v] of Object.entries(bestBook.prefixMap)) flatMap[`p:${k}`] = v;
+  for (const [k, v] of Object.entries(bestBook.middleMap)) flatMap[`m:${k}`] = v;
+  for (const [k, v] of Object.entries(bestBook.suffixMap)) flatMap[`s:${k}`] = v;
+
+  return {
+    id: theoryId,
+    proposed_at: new Date().toISOString(),
+    source_language: sourceLanguage,
+    cipher_type: 'compositional-syl',
     target_folio: targetFolio.folio_id,
     target_plant: targetFolio.plant_name,
     symbol_map: flatMap,
