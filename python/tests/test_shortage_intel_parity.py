@@ -30,8 +30,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-pytest.importorskip("langgraph")
-pytest.importorskip("langchain_core")
+# These are core framework dependencies, not optional extras. A missing import
+# means the test environment is broken — fail loudly instead of silently skipping.
+import langgraph  # noqa: F401
+import langchain_core  # noqa: F401
 
 # Make the examples/ directory importable.
 _EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"

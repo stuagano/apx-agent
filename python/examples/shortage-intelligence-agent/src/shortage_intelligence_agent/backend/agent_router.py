@@ -12,10 +12,9 @@ import logging
 from typing import Any
 
 import httpx
-from apx_agent import Dependencies, run_sql
+from apx_agent import Dependencies, decode_statement, run_sql
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.dashboards import GenieMessage, MessageStatus
-from databricks.sdk.service.sql import StatementResponse
 
 from .config import get_settings
 from .models import (
@@ -91,14 +90,6 @@ def scan_demand_clusters(
     }
 
 
-def _decode_statement(response: StatementResponse | None) -> list[dict[str, Any]]:
-    if response is None or response.manifest is None or response.manifest.schema is None:
-        return []
-    cols = [c.name or "" for c in (response.manifest.schema.columns or [])]
-    rows = response.result.data_array or [] if response.result else []
-    return [{c: v for c, v in zip(cols, row)} for row in rows]
-
-
 def _genie_rows(ws: WorkspaceClient, space_id: str, msg: GenieMessage) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for att in msg.attachments or []:
@@ -111,7 +102,7 @@ def _genie_rows(ws: WorkspaceClient, space_id: str, msg: GenieMessage) -> list[d
                 message_id=msg.message_id,
                 attachment_id=att.attachment_id,
             )
-            rows.extend(_decode_statement(qr.statement_response))
+            rows.extend(decode_statement(qr.statement_response))
         except Exception as e:
             logger.warning("Failed to fetch Genie query result: %s", e)
     return rows
