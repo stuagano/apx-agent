@@ -175,13 +175,24 @@ def _from_langchain_message(msg: Any, idx: int) -> "ChatAgentMessage":
 # ---------------------------------------------------------------------------
 
 
-def chat_agent_for(agent: BaseAgent, *, model: str) -> Any:
+def chat_agent_for(
+    agent: BaseAgent,
+    *,
+    model: str,
+    session_store: Any | None = None,
+) -> Any:
     """Return an MLflow ``ChatAgent`` wrapping ``agent``.
 
     Args:
         agent: An apx-agent ``BaseAgent`` (currently ``LlmAgent`` or
             ``SequentialAgent`` — see ``compile_to_langgraph`` for the list).
         model: Databricks serving endpoint name passed through to compile.
+        session_store: Optional ``SessionStore`` for multi-turn memory.
+            When provided, the returned ChatAgent reads ``session_id`` from
+            ``custom_inputs`` and uses it to load history before the LLM
+            sees the new turn, then appends new messages and persists.
+            When ``custom_inputs["session_id"]`` is absent, sessions are
+            silently skipped (single-turn behavior preserved).
 
     Returns:
         An instance of an ``mlflow.pyfunc.ChatAgent`` subclass. Usable
@@ -199,12 +210,42 @@ def chat_agent_for(agent: BaseAgent, *, model: str) -> Any:
         ChatContext,
     )
 
+    from ._session import Session, append_turn, load_or_create_session
+
     class _ApxChatAgent(ChatAgent):
         """MLflow ChatAgent backed by an apx-agent declarative tree."""
 
-        def __init__(self, inner: BaseAgent, model_endpoint: str) -> None:
+        def __init__(
+            self,
+            inner: BaseAgent,
+            model_endpoint: str,
+            session_store: Any | None = None,
+        ) -> None:
             self._agent = inner
             self._model = model_endpoint
+            self._session_store = session_store
+
+        def _load_session(self, custom_inputs: dict[str, Any] | None) -> Session | None:
+            if self._session_store is None or not custom_inputs:
+                return None
+            session_id = custom_inputs.get("session_id")
+            if not session_id:
+                return None
+            return load_or_create_session(self._session_store, session_id)
+
+        def _persist_turn(
+            self,
+            session: Session | None,
+            *,
+            input_messages: list[ChatAgentMessage],
+            new_messages: list[ChatAgentMessage],
+        ) -> None:
+            if session is None or self._session_store is None:
+                return
+            input_dicts = [m.model_dump() for m in input_messages]
+            new_dicts = [m.model_dump() for m in new_messages]
+            append_turn(session, input_messages=input_dicts, new_messages=new_dicts)
+            self._session_store.put(session)
 
         def predict(
             self,
@@ -212,18 +253,37 @@ def chat_agent_for(agent: BaseAgent, *, model: str) -> Any:
             context: ChatContext | None = None,
             custom_inputs: dict[str, Any] | None = None,
         ) -> ChatAgentResponse:
+            session = self._load_session(custom_inputs)
+            # If a session exists, prepend its history so the LLM sees prior
+            # turns. The session itself owns the history; the user just sent
+            # ``messages`` for this turn.
+            prepended_messages: list[ChatAgentMessage] = list(messages)
+            if session is not None and session.history:
+                history_msgs = [
+                    ChatAgentMessage(
+                        role=m.get("role", "user"),
+                        content=m.get("content", ""),
+                        id=m.get("id"),
+                        tool_calls=m.get("tool_calls"),
+                        tool_call_id=m.get("tool_call_id"),
+                    )
+                    for m in session.history
+                ]
+                prepended_messages = history_msgs + prepended_messages
+
             span_attrs = {
                 "apx.model": self._model,
-                "apx.message_count": len(messages),
+                "apx.message_count": len(prepended_messages),
                 "apx.user_scoped": bool(
                     custom_inputs and custom_inputs.get("user_token")
                 ),
+                "apx.session_id": (session.session_id if session else ""),
                 "apx.streaming": False,
             }
             with safe_span(
                 "ApxChatAgent.predict",
                 span_type="AGENT",
-                inputs={"messages": [m.model_dump() for m in messages]},
+                inputs={"messages": [m.model_dump() for m in prepended_messages]},
                 attributes=span_attrs,
             ) as span:
                 ws = _resolve_ws_for_request(custom_inputs)
@@ -235,7 +295,7 @@ def chat_agent_for(agent: BaseAgent, *, model: str) -> Any:
                         self._agent, ws=ws, model=self._model
                     )
 
-                lc_input = _to_langchain_messages(messages)
+                lc_input = _to_langchain_messages(prepended_messages)
                 input_count = len(lc_input)
                 with safe_span("graph.invoke", span_type="CHAIN") as inv_span:
                     result = graph.invoke({"messages": lc_input})
@@ -255,6 +315,14 @@ def chat_agent_for(agent: BaseAgent, *, model: str) -> Any:
                 ]
                 response = ChatAgentResponse(messages=new_messages)
                 set_span_outputs(span, response.model_dump())
+
+                # Persist the inbound turn + the new messages.
+                self._persist_turn(
+                    session,
+                    input_messages=messages,
+                    new_messages=new_messages,
+                )
+
                 return response
 
         def predict_stream(
@@ -304,7 +372,7 @@ def chat_agent_for(agent: BaseAgent, *, model: str) -> Any:
                     except Exception:  # pragma: no cover
                         pass
 
-    return _ApxChatAgent(agent, model)
+    return _ApxChatAgent(agent, model, session_store=session_store)
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +380,12 @@ def chat_agent_for(agent: BaseAgent, *, model: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def compile_to_chat_agent(agent: BaseAgent, *, model: str) -> Any:
+def compile_to_chat_agent(
+    agent: BaseAgent,
+    *,
+    model: str,
+    session_store: Any | None = None,
+) -> Any:
     """Canonical name for ``chat_agent_for`` — apx-agent compiles to a ChatAgent.
 
     Returns the same MLflow ChatAgent that ``chat_agent_for`` does. Use this
@@ -321,7 +394,7 @@ def compile_to_chat_agent(agent: BaseAgent, *, model: str) -> Any:
         from apx_agent import Agent, compile_to_chat_agent
         chat = compile_to_chat_agent(my_agent, model="databricks-claude-sonnet-4-6")
     """
-    return chat_agent_for(agent, model=model)
+    return chat_agent_for(agent, model=model, session_store=session_store)
 
 
 # ---------------------------------------------------------------------------

@@ -75,6 +75,16 @@ from ._resources import (
 from ._tool import ToolMetadata, get_tool_metadata, tool
 from ._tool_publish import PublishResult, publish_tools_to_uc
 
+# Session / multi-turn memory
+from ._session import (
+    InMemorySessionStore,
+    Session,
+    SessionStore,
+    append_turn,
+    load_or_create_session,
+)
+from ._session_delta import DeltaSessionStore
+
 # MLflow ChatAgent /invocations route mounter (optional — same extras)
 from ._invocations import mount_invocations_route
 
@@ -145,6 +155,13 @@ __all__ = [
     "get_tool_metadata",
     "publish_tools_to_uc",
     "PublishResult",
+    # Session / multi-turn memory
+    "Session",
+    "SessionStore",
+    "InMemorySessionStore",
+    "DeltaSessionStore",
+    "append_turn",
+    "load_or_create_session",
     # MLflow /invocations route mounter
     "mount_invocations_route",
     # MLflow tracing
