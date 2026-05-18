@@ -46,6 +46,11 @@ from .genie import genie_tool
 # Unity Catalog tool factories
 from .catalog import catalog_tool, lineage_tool, schema_tool, uc_function_tool
 
+# Platform tool factories
+from .vector_search import vector_search_tool
+from .sql_tools import sql_tool
+from .foundation_model import foundation_model_tool
+
 # LangGraph compiler (optional — requires the ``langgraph`` extra)
 from ._compile import CompileContext, compile_to_langgraph
 
@@ -111,6 +116,9 @@ __all__ = [
     "lineage_tool",
     "schema_tool",
     "uc_function_tool",
+    "vector_search_tool",
+    "sql_tool",
+    "foundation_model_tool",
     # LangGraph compiler
     "CompileContext",
     "compile_to_langgraph",
