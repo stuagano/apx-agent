@@ -87,6 +87,13 @@ from ._session import (
 )
 from ._session_delta import DeltaSessionStore
 
+# Databricks Managed MCP integration
+from ._managed_mcp import (
+    ManagedMCPEndpoint,
+    managed_mcp_client_config,
+    managed_mcp_urls,
+)
+
 # MLflow ChatAgent /invocations route mounter (optional — same extras)
 from ._invocations import mount_invocations_route
 
@@ -166,6 +173,10 @@ __all__ = [
     "DeltaSessionStore",
     "append_turn",
     "load_or_create_session",
+    # Managed MCP
+    "ManagedMCPEndpoint",
+    "managed_mcp_urls",
+    "managed_mcp_client_config",
     # MLflow /invocations route mounter
     "mount_invocations_route",
     # MLflow tracing
