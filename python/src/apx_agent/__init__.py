@@ -38,7 +38,7 @@ from ._sql import get_warehouse_id, run_sql
 from ._wiring import create_app, setup_agent
 
 # Eval bridge
-from ._eval import app_predict_fn
+from ._eval import app_predict_fn, evaluate
 
 # Genie tool factory
 from .genie import genie_tool
@@ -110,6 +110,7 @@ __all__ = [
     "setup_agent",
     # Eval
     "app_predict_fn",
+    "evaluate",
     # Tool factories
     "genie_tool",
     "catalog_tool",

@@ -428,6 +428,38 @@ When you need state, custom UI, MCP server endpoint, or long-running workflows. 
 - **Stateful** — in-memory caches, background loops, websockets, custom UI all work
 - **OBO automatic** for browser/SSO traffic via `X-Forwarded-Access-Token`
 
+## Evaluation
+
+`apx_agent.evaluate(agent, model=..., evalset=..., scorers=...)` runs Mosaic AI Agent Evaluation against the agent in-process — no deploy, no HTTP, fast feedback during authoring and CI. The agent compiles to a `ChatAgent` once; each evalset entry runs through the compiled graph; results come back as a standard `mlflow.genai.evaluate` result.
+
+```python
+from apx_agent import Agent, evaluate, lineage_tool
+
+agent = Agent(
+    instructions="Investigate missing data.",
+    tools=[lineage_tool()],
+)
+
+result = evaluate(
+    agent,
+    model="databricks-claude-sonnet-4-6",
+    evalset=[
+        {"request": "what feeds main.sales.orders?", "expected_response": "..."},
+        {"request": "trace lineage for main.finance.revenue", "expected_response": "..."},
+    ],
+    # scorers default to Correctness + RelevanceToQuery from mlflow.genai.scorers;
+    # pass scorers=[...] for custom judges.
+)
+```
+
+The wrapper tolerates the common eval-dataset shapes — bare strings, `{"request": ...}`, `{"input": ...}`, `{"prompt": ...}`, `{"messages": [...]}`. Pass `user_token=...` (and `workspace_host=...`) to evaluate as a specific user via the OBO path — useful for testing UC-grant boundaries during eval.
+
+Requires the `eval` and `langgraph` extras:
+
+```bash
+pip install 'apx-agent[eval,langgraph]'
+```
+
 ## MCP server
 
 Every Apps-hosted agent exposes MCP at `/mcp` (streamable HTTP transport). Connect from Claude Desktop, Cursor, Genie Code, or any MCP-aware agent.
