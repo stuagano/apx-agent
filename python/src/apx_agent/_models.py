@@ -26,9 +26,19 @@ class _ToolFn(Protocol):
 
 # Hook callables — sync or async, both accepted
 BeforeToolHook: TypeAlias = Callable[[str, dict[str, Any]], Any]
-"""Called before each tool dispatch: ``hook(tool_name, arguments)``."""
+"""Called before each tool dispatch: ``hook(tool_name, arguments)``.
+Return value is ignored; raising aborts the tool call and propagates."""
 AfterToolHook: TypeAlias = Callable[[str, dict[str, Any], Any], Any]
-"""Called after each tool dispatch: ``hook(tool_name, arguments, result)``."""
+"""Called after each tool dispatch: ``hook(tool_name, arguments, result)``.
+Return value is ignored; raising propagates after the tool has run."""
+BeforeModelHook: TypeAlias = Callable[[list[Any]], Any]
+"""Called before each LLM invocation: ``hook(prompt_messages)``.
+``prompt_messages`` is the langchain message list passed to the model.
+Return value is ignored; raising aborts the model call."""
+AfterModelHook: TypeAlias = Callable[[Any], Any]
+"""Called after each LLM invocation: ``hook(response)``.
+``response`` is the langchain LLMResult/AIMessage produced by the model.
+Return value is ignored; raising propagates after the response is in hand."""
 
 # Guardrail callables — return None to pass, or a string to short-circuit
 InputGuardrailFn: TypeAlias = Callable[[list["Message"]], "str | None"]

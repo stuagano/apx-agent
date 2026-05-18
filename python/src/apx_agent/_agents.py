@@ -11,9 +11,11 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from ._models import (
+    AfterModelHook,
+    AfterToolHook,
     AgentContext,
     AgentTool,
-    AfterToolHook,
+    BeforeModelHook,
     BeforeToolHook,
     InputGuardrailFn,
     Message,
@@ -97,6 +99,8 @@ class LlmAgent(BaseAgent):
         max_iterations: int | None = None,
         before_tool: BeforeToolHook | None = None,
         after_tool: AfterToolHook | None = None,
+        before_model: BeforeModelHook | None = None,
+        after_model: AfterModelHook | None = None,
         input_guardrails: list[InputGuardrailFn] | None = None,
         output_guardrails: list[OutputGuardrailFn] | None = None,
         context_window_tokens: int | None = None,
@@ -111,6 +115,8 @@ class LlmAgent(BaseAgent):
         self._max_iterations = max_iterations
         self._before_tool = before_tool
         self._after_tool = after_tool
+        self._before_model = before_model
+        self._after_model = after_model
         self._input_guardrails = input_guardrails or []
         self._output_guardrails = output_guardrails or []
         self._context_window_tokens = context_window_tokens

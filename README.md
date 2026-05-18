@@ -444,6 +444,39 @@ When you need state, custom UI, MCP server endpoint, or long-running workflows. 
 - **Stateful** — in-memory caches, background loops, websockets, custom UI all work
 - **OBO automatic** for browser/SSO traffic via `X-Forwarded-Access-Token`
 
+## Callbacks
+
+Four lifecycle hooks per `LlmAgent` — useful for cost tracking, prompt-injection scanning, output filtering, custom tracing, and approval gates.
+
+```python
+from apx_agent import Agent
+
+def log_tool(name: str, args: dict) -> None:
+    print(f"calling {name}({args})")
+
+def reject_if_pii(prompts) -> None:
+    text = str(prompts).lower()
+    if "ssn" in text:
+        raise PermissionError("PII guardrail: SSN detected")
+
+agent = Agent(
+    instructions="...",
+    tools=[...],
+    before_tool=log_tool,
+    before_model=reject_if_pii,
+    # after_tool, after_model also supported
+)
+```
+
+| Hook | Signature | Fires |
+|------|-----------|-------|
+| `before_tool` | `(tool_name, arguments) -> None` | Before each tool dispatch — raise to abort |
+| `after_tool`  | `(tool_name, arguments, output) -> None` | After each tool returns — raise propagates |
+| `before_model` | `(prompts) -> None` | Before each LLM invocation — raise to abort |
+| `after_model` | `(response) -> None` | After each LLM response — raise propagates |
+
+Sync and async hooks are both accepted. The wiring sits on top of LangChain's callback system, so anything the chain runtime can observe (LLM start/end, tool start/end) is reachable.
+
 ## Sessions — multi-turn memory
 
 By default, every `predict()` call is independent — the agent has no memory of prior turns. For conversational agents, pass a `SessionStore` to `compile_to_chat_agent` and include a `session_id` in `custom_inputs`. The framework loads the session before the LLM sees the new turn, prepends prior history, runs the agent, then persists the new messages.
