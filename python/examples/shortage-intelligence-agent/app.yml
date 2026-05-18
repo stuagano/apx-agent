@@ -1,16 +1,20 @@
 command: ["uvicorn", "shortage_intelligence_agent.backend.app:app", "--workers", "2"]
 env:
   - name: AGENT_MODEL
-    value: "databricks-claude-sonnet-4-6"
-  - name: DEMAND_GENIE_SPACE_ID
-    value: ""
-  - name: KA_ENDPOINT
-    value: ""
-  - name: HISTORICAL_DEMAND_TABLE
+    value: "databricks-claude-opus-4-7"
+  - name: DATABRICKS_WAREHOUSE_ID
     value: ""
   - name: DEMAND_ORDERS_TABLE
     value: ""
+  - name: HISTORICAL_DEMAND_TABLE
+    value: ""
   - name: PARTS_CATALOG_TABLE
+    value: ""
+  - name: DEMAND_GENIE_SPACE_ID
+    value: ""
+  - name: VS_ENDPOINT
+    value: ""
+  - name: VS_INDEX
     value: ""
   - name: DIGIKEY_CLIENT_ID
     value: ""
