@@ -222,13 +222,22 @@ def _compile_llm_agent(agent: LlmAgent, ctx: CompileContext) -> Any:
     """Compile an ``LlmAgent`` into a ``create_agent`` runnable."""
     from langchain.agents import create_agent
 
+    from ._callbacks import build_callback_handler
+
     tools = [_make_langchain_tool(fn, ctx) for fn in agent._tool_fns]
     llm = _build_chat_databricks(ctx.model)
-    return create_agent(
+    runnable = create_agent(
         model=llm,
         tools=tools,
         system_prompt=agent._instructions or None,
     )
+    handler = build_callback_handler(agent)
+    if handler is not None:
+        # LangChain's with_config propagates callbacks to every chain hop
+        # inside the agent (LLM calls + tool calls), which is exactly the
+        # surface our hooks want to observe.
+        runnable = runnable.with_config(callbacks=[handler])
+    return runnable
 
 
 def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> Any:

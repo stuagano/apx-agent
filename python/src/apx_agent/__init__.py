@@ -17,11 +17,13 @@ Agent = LlmAgent
 
 # Models
 from ._models import (
+    AfterModelHook,
     AfterToolHook,
     AgentCard,
     AgentConfig,
     AgentContext,
     AgentTool,
+    BeforeModelHook,
     BeforeToolHook,
     InputGuardrailFn,
     Message,
@@ -111,7 +113,9 @@ __all__ = [
     "AgentConfig",
     "AgentContext",
     "AgentTool",
+    "AfterModelHook",
     "AfterToolHook",
+    "BeforeModelHook",
     "BeforeToolHook",
     "InputGuardrailFn",
     "Message",
