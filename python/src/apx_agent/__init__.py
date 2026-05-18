@@ -44,7 +44,13 @@ from ._eval import app_predict_fn, evaluate
 from .genie import genie_tool
 
 # Unity Catalog tool factories
-from .catalog import catalog_tool, lineage_tool, schema_tool, uc_function_tool
+from .catalog import (
+    catalog_tool,
+    lineage_tool,
+    schema_tool,
+    uc_function_tool,
+    uc_function_toolkit,
+)
 
 # Platform tool factories
 from .vector_search import vector_search_tool
@@ -117,6 +123,7 @@ __all__ = [
     "lineage_tool",
     "schema_tool",
     "uc_function_tool",
+    "uc_function_toolkit",
     "vector_search_tool",
     "sql_tool",
     "foundation_model_tool",
