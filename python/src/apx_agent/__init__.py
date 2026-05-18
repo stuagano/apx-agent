@@ -60,6 +60,10 @@ from ._resources import (
     mlflow_resources_for,
 )
 
+# @tool decorator and UC publishing
+from ._tool import ToolMetadata, get_tool_metadata, tool
+from ._tool_publish import PublishResult, publish_tools_to_uc
+
 # MLflow ChatAgent /invocations route mounter (optional — same extras)
 from ._invocations import mount_invocations_route
 
@@ -119,6 +123,12 @@ __all__ = [
     "attach_resources",
     "collect_resource_specs",
     "mlflow_resources_for",
+    # @tool decorator and UC publishing
+    "tool",
+    "ToolMetadata",
+    "get_tool_metadata",
+    "publish_tools_to_uc",
+    "PublishResult",
     # MLflow /invocations route mounter
     "mount_invocations_route",
     # MLflow tracing
