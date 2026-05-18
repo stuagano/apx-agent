@@ -32,7 +32,7 @@ from ._models import (
 from ._defaults import Dependencies
 
 # SQL utilities
-from ._sql import get_warehouse_id, run_sql
+from ._sql import decode_statement, get_warehouse_id, run_sql
 
 # App factory and setup
 from ._wiring import create_app, setup_agent
@@ -94,6 +94,7 @@ __all__ = [
     # Dependencies
     "Dependencies",
     # SQL utilities
+    "decode_statement",
     "get_warehouse_id",
     "run_sql",
     # App factory
