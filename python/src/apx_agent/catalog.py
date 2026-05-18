@@ -194,6 +194,7 @@ def uc_function_tool(
     *,
     name: str | None = None,
     description: str | None = None,
+    ws: Any | None = None,
 ) -> Any:
     """Return a tool that executes a Unity Catalog function via SQL.
 
@@ -209,13 +210,26 @@ def uc_function_tool(
             uc_function_tool("main.tools.classify_intent"),
         ])
 
-    The returned tool accepts ``params: dict[str, Any]`` — a mapping of
-    parameter name to value. Values are safely quoted for SQL.
+    Description policy — in order of precedence:
+      1. ``description`` argument, when set.
+      2. The UC function's ``comment``, fetched at factory time when ``ws``
+         is provided.
+      3. A generic ``"Execute the Unity Catalog function ..."`` fallback.
+
+    Pass ``ws`` to get the data team's documentation (the function's UC
+    ``COMMENT``) surfaced as the LLM-facing tool description without the
+    AI engineer having to copy it. The ``uc_function_toolkit`` helper
+    does this automatically for every function in a schema.
 
     Args:
         function_name: Fully qualified UC function name (``catalog.schema.function``).
         name:          Tool name shown to the LLM. Defaults to the short function name.
-        description:   Tool description. Defaults to the UC function's ``comment``.
+        description:   Tool description override. When omitted and ``ws`` is set,
+                       falls back to the UC function's ``comment``.
+        ws:            Optional workspace client. When provided, the factory
+                       eagerly fetches the function's ``comment`` to use as
+                       the default description. Without ``ws``, the generic
+                       fallback description is used.
     """
     from ._defaults import UserClientDependency
 
@@ -226,7 +240,21 @@ def uc_function_tool(
     # Keys: "parameters" (list ordered by position), "data_type" (str), "desc" (str).
     _cache: dict[str, Any] = {}
 
-    _initial_desc = description or (
+    _comment_desc: str | None = None
+    if ws is not None and description is None:
+        try:
+            func_info = ws.functions.get(full_name=function_name)
+            comment = getattr(func_info, "comment", None)
+            if comment:
+                _comment_desc = comment.strip()
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch comment for UC function %s: %s — "
+                "falling back to generic description.",
+                function_name, e,
+            )
+
+    _initial_desc = description or _comment_desc or (
         f"Execute the Unity Catalog function `{function_name}`. "
         f"Pass parameters as a dict with parameter names as keys, e.g. "
         f'`{{"param1": "value1", "param2": 42}}`.'
@@ -279,3 +307,92 @@ def uc_function_tool(
     attach_resources(_call_uc_function, [ResourceSpec("uc_function", function_name)])
 
     return _call_uc_function
+
+
+def uc_function_toolkit(
+    catalog_schema: str,
+    *,
+    ws: Any | None = None,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> list[Any]:
+    """Discover Unity Catalog functions in a schema and return them as tools.
+
+    Lists every function in ``catalog.schema``, builds a ``uc_function_tool``
+    for each, and returns the list. Each returned tool carries the function's
+    UC ``comment`` as its LLM-facing description and an auto-attached
+    ``DatabricksFunction`` resource declaration.
+
+    Use this to register an entire UC-governed tool surface in one line —
+    the data team curates the schema; the agent picks up everything they
+    publish without per-function wiring::
+
+        from apx_agent import Agent, uc_function_toolkit
+        from databricks.sdk import WorkspaceClient
+
+        agent = Agent(
+            instructions="Triage customer queries.",
+            tools=uc_function_toolkit("main.agent_tools", ws=WorkspaceClient()),
+        )
+
+    Args:
+        catalog_schema: ``"catalog.schema"`` identifying the UC schema to
+            enumerate.
+        ws: Workspace client used to list functions and fetch each
+            function's comment. When omitted, a default ``WorkspaceClient()``
+            is constructed (works in any environment where the
+            ``databricks`` CLI / SDK auth chain is configured).
+        include: Optional whitelist — only functions whose short names
+            are in this list are returned. Use to bound the surface in a
+            larger shared schema.
+        exclude: Optional blacklist — functions whose short names are in
+            this list are skipped.
+
+    Returns:
+        A list of tool callables ready to pass to ``Agent(tools=...)``.
+        Empty list if the schema has no functions (or if listing fails;
+        a warning is logged).
+    """
+    if "." not in catalog_schema or catalog_schema.count(".") != 1:
+        raise ValueError(
+            f"uc_function_toolkit expects a two-part catalog.schema identifier; "
+            f"got {catalog_schema!r}"
+        )
+    catalog, schema = catalog_schema.split(".")
+
+    if ws is None:
+        from databricks.sdk import WorkspaceClient
+        ws = WorkspaceClient()
+
+    try:
+        function_infos = list(ws.functions.list(catalog_name=catalog, schema_name=schema))
+    except Exception as e:
+        logger.warning(
+            "uc_function_toolkit: failed to list functions in %s.%s: %s",
+            catalog, schema, e,
+        )
+        return []
+
+    include_set = set(include) if include else None
+    exclude_set = set(exclude) if exclude else set()
+
+    tools: list[Any] = []
+    for info in function_infos:
+        short_name = getattr(info, "name", None)
+        if not short_name:
+            continue
+        if include_set is not None and short_name not in include_set:
+            continue
+        if short_name in exclude_set:
+            continue
+        full_name = getattr(info, "full_name", None) or f"{catalog}.{schema}.{short_name}"
+        # Use the info we already have to set the description, avoiding a
+        # second ws.functions.get round-trip per function. uc_function_tool
+        # accepts a pre-resolved description.
+        comment = getattr(info, "comment", None)
+        tools.append(uc_function_tool(
+            full_name,
+            description=(comment.strip() if comment else None),
+        ))
+
+    return tools

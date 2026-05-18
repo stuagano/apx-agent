@@ -170,6 +170,22 @@ log_agent(agent, model="databricks-claude-sonnet-4-6",
 
 After `publish_tools_to_uc`, `main.tools.classify_intent` exists as a governed UC asset. Genie reaches it, Managed MCP exposes it, sibling agents wire it in one line via `uc_function_tool("main.tools.classify_intent")` — without redefinition. The Python function still runs in-process when *this* agent calls it; the UC function is the discovery and external-composition surface.
 
+#### Pulling a whole schema of UC functions as tools — `uc_function_toolkit`
+
+When the data team has curated a schema of agent-facing UC functions, register the entire toolkit in one line. Each function's UC `comment` becomes the tool description; parameter types come from UC; the `DatabricksFunction` resource declaration is attached automatically.
+
+```python
+from apx_agent import Agent, uc_function_toolkit
+from databricks.sdk import WorkspaceClient
+
+agent = Agent(
+    instructions="Triage customer queries using the curated tools.",
+    tools=uc_function_toolkit("main.agent_tools", ws=WorkspaceClient()),
+)
+```
+
+`include=[...]` and `exclude=[...]` bound the surface when the schema mixes agent-facing tools with internal helpers. The toolkit returns an empty list (with a warning) if listing fails — typically a UC permissions issue, surfaced loudly so it doesn't slip past in a deploy script.
+
 Three rules locked in:
 
 1. **UC-syncable iff pure.** `@tool(uc=...)` is rejected at definition time if the function has a `Dependencies.*` parameter — UC functions run server-side under the function owner, so user-scoped `WorkspaceClient` is unavailable. Tools that need the calling user's identity (lineage lookups, Genie calls, UC reads) stay Python-only.
