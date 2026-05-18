@@ -184,15 +184,38 @@ pip install 'apx-agent[uc]'
 
 ### Platform tool factories
 
-| Factory | What it does |
-|---------|-------------|
-| `uc_function_tool(name)` | Execute a registered UC function. Schema auto-derived from UC. |
-| `genie_tool(space_id)` | Ask a natural-language question to a Genie space |
-| `lineage_tool()` | Get upstream/downstream lineage for a UC table |
-| `schema_tool()` | Describe columns of a UC table |
-| `catalog_tool(catalog, schema)` | List tables in a UC schema |
+| Factory | What it does | Resource declared |
+|---------|--------------|-------------------|
+| `uc_function_tool(name)` | Execute a registered UC function. Schema auto-derived from UC. | `DatabricksFunction` |
+| `genie_tool(space_id)` | Ask a natural-language question to a Genie space | `DatabricksGenieSpace` |
+| `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
+| `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse. Returns rows + truncation flag | `DatabricksSQLWarehouse` *(if `warehouse_id` set)* |
+| `foundation_model_tool(endpoint)` | Ask a Foundation Model endpoint — agent-to-model routing | `DatabricksServingEndpoint` |
+| `lineage_tool()` | Get upstream/downstream lineage for a UC table | — *(UC REST gated by grants)* |
+| `schema_tool()` | Describe columns of a UC table | — |
+| `catalog_tool(catalog, schema)` | List tables in a UC schema | — |
 
 Each factory attaches its resource declaration to the returned tool. `log_agent` collects them automatically.
+
+```python
+from apx_agent import (
+    Agent, genie_tool, vector_search_tool, sql_tool, foundation_model_tool,
+)
+
+agent = Agent(
+    instructions="Answer questions using docs, data, and a deep-reasoning specialist.",
+    tools=[
+        genie_tool("space-abc"),
+        vector_search_tool("main.search.docs_index",
+                           columns=["doc_id", "title", "content"],
+                           num_results=5),
+        sql_tool(warehouse_id="wh-prod"),
+        foundation_model_tool("databricks-claude-opus-4-7",
+                              name="ask_opus",
+                              description="Ask the specialist for hard reasoning."),
+    ],
+)
+```
 
 ### Declared resources
 
