@@ -16,11 +16,11 @@ if str(_ref_src) not in sys.path:
     sys.path.insert(0, str(_ref_src))
 
 # Patch the reference project's core.agent and core.Dependencies to point at apx_agent.
-# This way agent_router.py's `from .core.agent import Agent` and
+# This way agent_router.py's `from .core.agent import LlmAgent` and
 # `from .core import Dependencies` resolve to our package.
 import types
 
-from apx_agent import Agent, Dependencies
+from apx_agent import LlmAgent, Dependencies
 
 # Create the fake module hierarchy that agent_router.py expects
 _core_mod = types.ModuleType("explain_my_bill_agent.backend.core")
@@ -28,7 +28,7 @@ _core_mod.Dependencies = Dependencies  # type: ignore
 sys.modules["explain_my_bill_agent.backend.core"] = _core_mod
 
 _agent_mod = types.ModuleType("explain_my_bill_agent.backend.core.agent")
-_agent_mod.Agent = Agent  # type: ignore
+_agent_mod.LlmAgent = LlmAgent  # type: ignore
 sys.modules["explain_my_bill_agent.backend.core.agent"] = _agent_mod
 
 # Now import the real agent_router — its tool functions + agent registration will work

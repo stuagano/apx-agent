@@ -87,4 +87,10 @@ def genie_tool(
     _ask_genie.__name__ = name
     _ask_genie.__qualname__ = name
     _ask_genie.__doc__ = _desc
+
+    # Declare the Genie space as a Mosaic AI resource so the compile path can
+    # auto-derive ``resources=[DatabricksGenieSpace(...)]`` at log time.
+    from ._resources import ResourceSpec, attach_resources
+    attach_resources(_ask_genie, [ResourceSpec("genie_space", space_id)])
+
     return _ask_genie

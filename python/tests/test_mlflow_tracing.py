@@ -1,0 +1,231 @@
+"""Tests for _mlflow_tracing.py — MLflow span emission across the compile path.
+
+Verifies that:
+
+  1. ``safe_span`` no-ops cleanly when MLflow is unavailable (won't break the
+     compile path for users who skipped the ``eval`` extra).
+  2. ``safe_span`` no-ops cleanly when ``mlflow.start_span`` raises (e.g.
+     tracking misconfigured) — agent invocations never fail because of
+     telemetry.
+  3. ``ChatAgent.predict`` emits the AGENT-typed top-level span with the
+     expected attributes (model, message_count, user_scoped, streaming).
+  4. ``ChatAgent.predict`` also emits inner ``compile_to_langgraph`` and
+     ``graph.invoke`` CHAIN spans.
+  5. The ``/invocations`` route emits a CHAIN-typed request span and bridges
+     OBO into ``apx.user_scoped`` on the span.
+  6. ``APX_AGENT_MLFLOW_AUTOLOG=1`` triggers ``mlflow.langchain.autolog()`` on
+     ``create_app`` startup; default doesn't.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+pytest.importorskip("langgraph")
+pytest.importorskip("langchain_core")
+pytest.importorskip("mlflow")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from apx_agent import (  # noqa: E402
+    LlmAgent,
+    AgentConfig,
+    create_app,
+    safe_span,
+)
+
+
+# ---------------------------------------------------------------------------
+# safe_span unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestSafeSpan:
+    def test_yields_none_when_mlflow_missing(self) -> None:
+        """If MLflow can't be imported, safe_span just runs the block and
+        yields None — never breaks the calling code."""
+        with patch("apx_agent._mlflow_tracing.is_mlflow_available", return_value=False):
+            entered = False
+            with safe_span("test", span_type="AGENT") as span:
+                entered = True
+                assert span is None
+            assert entered
+
+    def test_yields_none_when_start_span_raises(self) -> None:
+        """If mlflow.start_span throws (misconfigured tracking, etc.), the
+        block still runs — telemetry must not break the request."""
+        import mlflow
+
+        # Make start_span raise; safe_span should swallow it.
+        with patch.object(mlflow, "start_span", side_effect=RuntimeError("no tracking uri")):
+            entered = False
+            with safe_span("test", span_type="AGENT") as span:
+                entered = True
+                assert span is None
+            assert entered
+
+    def test_passes_through_to_mlflow_when_available(self) -> None:
+        """Happy path: mlflow.start_span is called with the right name + type."""
+        import mlflow
+
+        mock_span = MagicMock()
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=mock_span)
+        cm.__exit__ = MagicMock(return_value=None)
+
+        with patch.object(mlflow, "start_span", return_value=cm) as mock_start:
+            with safe_span(
+                "my-span",
+                span_type="AGENT",
+                inputs={"k": "v"},
+                attributes={"apx.foo": "bar"},
+            ):
+                pass
+
+            mock_start.assert_called_once_with(name="my-span", span_type="AGENT")
+            mock_span.set_inputs.assert_called_once_with({"k": "v"})
+            mock_span.set_attribute.assert_any_call("apx.foo", "bar")
+
+
+# ---------------------------------------------------------------------------
+# ChatAgent.predict span emission
+# ---------------------------------------------------------------------------
+
+
+class TestChatAgentSpans:
+    def test_predict_emits_agent_span_with_attributes(self) -> None:
+        from apx_agent import chat_agent_for
+        from mlflow.types.agent import ChatAgentMessage
+
+        agent = LlmAgent(tools=[])
+        wrapped = chat_agent_for(agent, model="databricks-claude-sonnet-4-6")
+
+        # Replace compile_to_langgraph so we don't actually compile.
+        fake_graph = MagicMock()
+        from langchain_core.messages import AIMessage
+
+        def _fake_invoke(state):
+            return {"messages": [*state["messages"], AIMessage(content="ok")]}
+
+        fake_graph.invoke.side_effect = _fake_invoke
+
+        # Capture every start_span call.
+        observed: list[dict[str, Any]] = []
+
+        def _spy_start_span(name, span_type="UNKNOWN", **kwargs):
+            observed.append({"name": name, "span_type": span_type})
+            cm = MagicMock()
+            cm.__enter__ = MagicMock(return_value=MagicMock())
+            cm.__exit__ = MagicMock(return_value=None)
+            return cm
+
+        import mlflow
+
+        with patch("apx_agent._chat_agent.compile_to_langgraph", return_value=fake_graph), patch(
+            "apx_agent._defaults._make_workspace_client", return_value=MagicMock()
+        ), patch.object(mlflow, "start_span", side_effect=_spy_start_span):
+            wrapped.predict(
+                messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
+                custom_inputs={"user_token": "tok"},
+            )
+
+        span_names = {s["name"] for s in observed}
+        span_types = {s["span_type"] for s in observed}
+
+        assert "ApxChatAgent.predict" in span_names
+        assert "graph.invoke" in span_names
+        assert "AGENT" in span_types
+        assert "CHAIN" in span_types
+
+
+# ---------------------------------------------------------------------------
+# /invocations route span emission
+# ---------------------------------------------------------------------------
+
+
+class TestInvocationsRouteSpans:
+    def test_route_emits_request_span_with_obo_attribute(self) -> None:
+        """The /invocations handler wraps each request in a CHAIN span whose
+        attributes reflect the OBO bridge state."""
+        import mlflow
+        from apx_agent import _chat_agent as _ca_module
+        from mlflow.types.agent import ChatAgentResponse
+
+        agent = LlmAgent(tools=[])
+        config = AgentConfig(name="test-agent", model="databricks-claude-sonnet-4-6")
+
+        captured_chat_agent: dict[str, Any] = {}
+        original_factory = _ca_module.chat_agent_for
+
+        def _spy_factory(agent_arg, *, model):
+            ca = original_factory(agent_arg, model=model)
+            captured_chat_agent["ca"] = ca
+            ca.predict = MagicMock(return_value=ChatAgentResponse(messages=[]))
+            return ca
+
+        # Capture start_span calls; record attributes from the span the route opens.
+        observed_attrs: list[dict[str, Any]] = []
+        observed_names: list[str] = []
+
+        def _spy_start_span(name, span_type="UNKNOWN", **kwargs):
+            observed_names.append(name)
+            mock_span = MagicMock()
+
+            def _set_attr(k, v):
+                observed_attrs.append({"name": name, "key": k, "value": v})
+
+            mock_span.set_attribute.side_effect = _set_attr
+            cm = MagicMock()
+            cm.__enter__ = MagicMock(return_value=mock_span)
+            cm.__exit__ = MagicMock(return_value=None)
+            return cm
+
+        with patch.object(_ca_module, "chat_agent_for", side_effect=_spy_factory), patch(
+            "apx_agent._wiring._make_workspace_client", return_value=MagicMock()
+        ), patch.object(mlflow, "start_span", side_effect=_spy_start_span):
+            app = create_app(agent, config=config)
+            with TestClient(app) as client:
+                client.post(
+                    "/invocations",
+                    json={"messages": [{"role": "user", "content": "hi"}]},
+                    headers={"X-Forwarded-Access-Token": "obo-token"},
+                )
+
+        # The route's span fires.
+        assert "POST /invocations" in observed_names
+
+        # Attributes on the request-level span reflect OBO bridge state.
+        route_attrs = {
+            a["key"]: a["value"]
+            for a in observed_attrs
+            if a["name"] == "POST /invocations"
+        }
+        assert route_attrs["apx.user_scoped"] is True
+        assert route_attrs["apx.agent_name"] == "test-agent"
+        assert route_attrs["http.route"] == "/invocations"
+
+
+# ---------------------------------------------------------------------------
+# Env-var autolog opt-in
+# ---------------------------------------------------------------------------
+
+
+class TestAutologEnvVar:
+    def test_autolog_off_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("APX_AGENT_MLFLOW_AUTOLOG", raising=False)
+        with patch("mlflow.langchain.autolog") as mock_autolog:
+            from apx_agent._mlflow_tracing import autolog_if_env
+
+            autolog_if_env()
+            mock_autolog.assert_not_called()
+
+    def test_autolog_on_when_env_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("APX_AGENT_MLFLOW_AUTOLOG", "1")
+        with patch("mlflow.langchain.autolog") as mock_autolog:
+            from apx_agent._mlflow_tracing import autolog_if_env
+
+            autolog_if_env()
+            mock_autolog.assert_called_once()

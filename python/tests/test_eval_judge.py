@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from apx_agent import Agent, AgentConfig, setup_agent
+from apx_agent import LlmAgent, AgentConfig, setup_agent
 from apx_agent._dev import _parse_judge_output, build_dev_ui_router
 
 from .conftest import get_weather
@@ -17,7 +17,7 @@ from .conftest import get_weather
 @pytest.fixture
 async def app_with_model() -> FastAPI:
     app = FastAPI()
-    agent = Agent(tools=[get_weather])
+    agent = LlmAgent(tools=[get_weather])
     config = AgentConfig(name="judge-test", model="claude-fake")
     await setup_agent(app, agent, config)
     app.include_router(build_dev_ui_router())
@@ -139,7 +139,7 @@ class TestEvalJudgeRoute:
     @pytest.mark.asyncio
     async def test_returns_400_when_no_model(self):
         app = FastAPI()
-        agent = Agent(tools=[get_weather])
+        agent = LlmAgent(tools=[get_weather])
         config = AgentConfig(name="no-model", model="")
         await setup_agent(app, agent, config)
         app.include_router(build_dev_ui_router())

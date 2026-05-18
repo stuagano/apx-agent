@@ -86,53 +86,6 @@ class Message(BaseModel):
     tool_call_id: str | None = None
 
 
-class InvocationRequest(BaseModel):
-    """MLflow ResponsesAgent /invocations request format.
-
-    ``input`` accepts either a list of message dicts or a plain string.
-    A plain string is coerced to ``[{"role": "user", "content": <str>}]``.
-
-    ``custom_inputs`` supports the following recognised keys:
-
-    * ``"instructions"`` — per-request system prompt override; takes
-      precedence over the agent's own ``instructions`` setting.
-    """
-
-    input: list[Message] | str
-    custom_inputs: dict[str, Any] = {}
-    stream: bool = False
-
-    def messages(self) -> list[Message]:
-        """Return input normalised to a list of Messages."""
-        if isinstance(self.input, str):
-            return [Message(role="user", content=self.input)]
-        return self.input
-
-    def instructions_override(self) -> str:
-        """Return a per-request instructions override from custom_inputs, or ''."""
-        return str(self.custom_inputs.get("instructions", ""))
-
-
-class OutputTextContent(BaseModel):
-    type: str = "output_text"
-    text: str
-
-
-class OutputItem(BaseModel):
-    type: str = "message"
-    role: str = "assistant"
-    id: str | None = None
-    status: str = "completed"
-    content: list[OutputTextContent]
-
-
-class InvocationResponse(BaseModel):
-    """MLflow ResponsesAgent /invocations response format."""
-
-    output: list[OutputItem]
-    custom_outputs: dict[str, Any] = {}
-
-
 # ---------------------------------------------------------------------------
 # A2A discovery card models
 # ---------------------------------------------------------------------------
@@ -197,19 +150,3 @@ class AgentContext:
         return self._tool_map.get(name)
 
 
-def set_custom_output(request: Request, key: str, value: Any) -> None:
-    """Set a value in ``InvocationResponse.custom_outputs`` for the current invocation.
-
-    Call from within a tool function to surface structured data alongside the
-    agent's text response::
-
-        def search(query: str, request: Request) -> str:
-            results = do_search(query)
-            set_custom_output(request, "sources", [r.url for r in results])
-            return results[0].snippet
-
-    Multiple tools can set different keys; all are merged into ``custom_outputs``.
-    """
-    if not hasattr(request.state, "custom_outputs"):
-        request.state.custom_outputs = {}
-    request.state.custom_outputs[key] = value

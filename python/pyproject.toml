@@ -16,13 +16,18 @@ dependencies = [
     "databricks-sdk>=0.74.0",
     "httpx>=0.27.0",
     "mcp>=1.0.0",
-    "databricks-openai>=0.1.0",
-    "openai-agents>=0.13.0",
+    "databricks-openai>=0.15.0",
 ]
 
 [project.optional-dependencies]
 eval = ["mlflow>=2.0"]
-all = ["apx-agent[eval]"]
+langgraph = [
+    "langgraph>=1.0.0",
+    "langchain>=1.0.0",
+    "langchain-core>=1.0.0",
+    "databricks-langchain>=0.3.0",
+]
+all = ["apx-agent[eval,langgraph]"]
 
 [dependency-groups]
 dev = [

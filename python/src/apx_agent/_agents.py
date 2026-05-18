@@ -100,10 +100,12 @@ class LlmAgent(BaseAgent):
         input_guardrails: list[InputGuardrailFn] | None = None,
         output_guardrails: list[OutputGuardrailFn] | None = None,
         context_window_tokens: int | None = None,
+        name: str | None = None,
     ) -> None:
         self._tool_fns = tools
         self._sub_agent_urls = sub_agents or []
         self._instructions = instructions
+        self._name = name
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._max_iterations = max_iterations
@@ -135,42 +137,27 @@ class LlmAgent(BaseAgent):
         return None
 
     async def run(self, messages: list[Message], request: Request) -> str:
-        from ._runner import run_via_sdk
+        from ._compile_run import run_via_compile
 
         if rejection := await self._apply_input_guardrails(messages):
             return rejection
-        # Pass None for tools when sub_agents are configured so run_via_sdk
-        # uses ctx.tools which includes both local and remote (sub-agent) tools.
-        # When no sub_agents, pass collect_tools() for the local-only list.
-        effective_tools = None if self._sub_agent_urls else self.collect_tools()
-        text = await run_via_sdk(
-            messages, request,
-            tools=effective_tools,
-            instructions=self._instructions,
-            temperature=self._temperature,
-            max_tokens=self._max_tokens,
-            max_iterations=self._max_iterations,
+        text = await run_via_compile(
+            self, messages, request, instructions=self._instructions
         )
         if replacement := await self._apply_output_guardrails(text):
             return replacement
         return text
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
-        from ._runner import stream_via_sdk
+        from ._compile_run import stream_via_compile
 
         if rejection := await self._apply_input_guardrails(messages):
             yield rejection
             return
 
-        effective_tools = None if self._sub_agent_urls else self.collect_tools()
         full_text = ""
-        async for chunk in stream_via_sdk(
-            messages, request,
-            tools=effective_tools,
-            instructions=self._instructions,
-            temperature=self._temperature,
-            max_tokens=self._max_tokens,
-            max_iterations=self._max_iterations,
+        async for chunk in stream_via_compile(
+            self, messages, request, instructions=self._instructions
         ):
             full_text += chunk
             yield chunk
@@ -277,10 +264,6 @@ class LlmAgent(BaseAgent):
         return tools
 
 
-# Backwards-compatible alias
-Agent = LlmAgent
-
-
 class _FinishLoopBody(BaseModel):
     reason: str = "Task complete"
 
@@ -328,30 +311,22 @@ class LoopAgent(BaseAgent):
         return routers
 
     async def run(self, messages: list[Message], request: Request) -> str:
-        from ._runner import run_via_sdk
+        # The LoopAgent compile already encodes finish_loop semantics and
+        # max_iterations as conditional edges in the LangGraph; we just need
+        # to compile + invoke. The outer Python loop is no longer needed.
+        from ._compile_run import run_via_compile
 
-        context = list(messages)
-        result = ""
-        request.state.loop_done = False
-        all_tools = self.collect_tools()
-
-        for _ in range(self._max_iterations):
-            result = await run_via_sdk(
-                context, request,
-                tools=all_tools,
-                instructions=self._inner._instructions,
-                temperature=self._inner._temperature,
-                max_tokens=self._inner._max_tokens,
-                max_iterations=self._inner._max_iterations,
-            )
-            if getattr(request.state, "loop_done", False):
-                break
-            context.append(Message(role="assistant", content=result))
-
-        return result
+        return await run_via_compile(
+            self, messages, request, instructions=self._inner._instructions
+        )
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
-        yield await self.run(messages, request)
+        from ._compile_run import stream_via_compile
+
+        async for chunk in stream_via_compile(
+            self, messages, request, instructions=self._inner._instructions
+        ):
+            yield chunk
 
     async def fetch_remote_tools(self) -> list[AgentTool]:
         return await self._inner.fetch_remote_tools()
@@ -360,11 +335,17 @@ class LoopAgent(BaseAgent):
 class SequentialAgent(BaseAgent):
     """Runs agents in order, each receiving the previous agent's output as context."""
 
-    def __init__(self, agents: list[BaseAgent], instructions: str = "") -> None:
+    def __init__(
+        self,
+        agents: list[BaseAgent],
+        instructions: str = "",
+        name: str | None = None,
+    ) -> None:
         if not agents:
             raise ValueError("SequentialAgent requires at least one agent")
         self._agents = agents
         self._instructions = instructions
+        self._name = name
 
     def _prepend_instructions(self, messages: list[Message]) -> list[Message]:
         if not self._instructions:
@@ -551,16 +532,21 @@ class RouterAgent(BaseAgent):
         return None
 
     async def run(self, messages: list[Message], request: Request) -> str:
-        chosen = await self._select_route(messages, request)
-        agent_map = {name: agent for name, _, agent in self._routes}
-        target = agent_map.get(chosen or "", self._routes[0][2])
-        return await target.run(messages, request)
+        # The compile path encodes the routing decision as a graph node with
+        # conditional edges — no manual HTTP call needed. ``_select_route``
+        # stays around for callers that want the routing decision in isolation.
+        from ._compile_run import run_via_compile
+
+        return await run_via_compile(
+            self, messages, request, instructions=self._instructions
+        )
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
-        chosen = await self._select_route(messages, request)
-        agent_map = {name: agent for name, _, agent in self._routes}
-        target = agent_map.get(chosen or "", self._routes[0][2])
-        async for chunk in target.stream(messages, request):
+        from ._compile_run import stream_via_compile
+
+        async for chunk in stream_via_compile(
+            self, messages, request, instructions=self._instructions
+        ):
             yield chunk
 
     def collect_tools(self) -> list[AgentTool]:
@@ -651,39 +637,19 @@ class HandoffAgent(BaseAgent):
         return tools
 
     async def run(self, messages: list[Message], request: Request) -> str:
-        from ._runner import run_via_sdk
+        # The HandoffAgent compile encodes the transfer-tool routing as
+        # conditional edges from a shared __check__ node, with ``max_handoffs``
+        # enforced via a state counter. The whole outer Python loop is now
+        # the LangGraph itself.
+        from ._compile_run import run_via_compile
 
-        current_name = self._start
-        context = list(messages)
-        result = ""
-
-        for _ in range(self._max_handoffs + 1):
-            agent = self._agents[current_name]
-            request.state.handoff_to = None
-
-            own_tools = agent.collect_tools() + self._transfer_tools_for(current_name)
-
-            result = await run_via_sdk(
-                context, request,
-                tools=own_tools,
-                instructions=agent._instructions,
-                temperature=agent._temperature,
-                max_tokens=agent._max_tokens,
-                max_iterations=agent._max_iterations,
-            )
-
-            handoff_target: str | None = getattr(request.state, "handoff_to", None)
-            if not handoff_target or handoff_target not in self._agents:
-                break
-
-            logger.info(f"HandoffAgent: {current_name} → {handoff_target}")
-            context.append(Message(role="assistant", content=result))
-            current_name = handoff_target
-
-        return result
+        return await run_via_compile(self, messages, request)
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
-        yield await self.run(messages, request)
+        from ._compile_run import stream_via_compile
+
+        async for chunk in stream_via_compile(self, messages, request):
+            yield chunk
 
     async def fetch_remote_tools(self) -> list[AgentTool]:
         tools: list[AgentTool] = []

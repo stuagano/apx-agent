@@ -9,7 +9,7 @@ import pytest
 from fastapi import Depends, Request, params
 from pydantic import BaseModel
 
-from apx_agent import Agent, AgentConfig, AgentContext, AgentTool, Dependencies, Message
+from apx_agent import LlmAgent, AgentConfig, AgentContext, AgentTool, Dependencies, Message
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +68,8 @@ def sample_tools():
 
 @pytest.fixture
 def basic_agent():
-    """Return an Agent with get_weather and query_genie tools."""
-    return Agent(tools=[get_weather, query_genie])
+    """Return an LlmAgent with get_weather and query_genie tools."""
+    return LlmAgent(tools=[get_weather, query_genie])
 
 
 @pytest.fixture
