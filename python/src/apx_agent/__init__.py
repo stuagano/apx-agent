@@ -1,8 +1,7 @@
-"""apx-agent — standalone agent runtime for Databricks Apps."""
+"""apx-agent — declarative agent DSL that compiles to LangGraph + MLflow."""
 
 # Agent types
 from ._agents import (
-    Agent,
     BaseAgent,
     HandoffAgent,
     LlmAgent,
@@ -13,20 +12,20 @@ from ._agents import (
 )
 from ._remote import RemoteDatabricksAgent
 
+# Canonical short name — Agent is the DSL-facing alias for LlmAgent
+Agent = LlmAgent
+
 # Models
 from ._models import (
+    AfterToolHook,
     AgentCard,
     AgentConfig,
     AgentContext,
     AgentTool,
-    AfterToolHook,
     BeforeToolHook,
     InputGuardrailFn,
-    InvocationRequest,
-    InvocationResponse,
     Message,
     OutputGuardrailFn,
-    set_custom_output,
 )
 
 # FastAPI dependency injection
@@ -38,9 +37,6 @@ from ._sql import get_warehouse_id, run_sql
 # App factory and setup
 from ._wiring import create_app, setup_agent
 
-# Runner (OpenAI Agents SDK)
-from ._runner import run_via_sdk, stream_via_sdk
-
 # Eval bridge
 from ._eval import app_predict_fn
 
@@ -49,6 +45,30 @@ from .genie import genie_tool
 
 # Unity Catalog tool factories
 from .catalog import catalog_tool, lineage_tool, schema_tool, uc_function_tool
+
+# LangGraph compiler (optional — requires the ``langgraph`` extra)
+from ._compile import CompileContext, compile_to_langgraph
+
+# MLflow ChatAgent wrapper (optional — requires the ``langgraph`` and ``eval`` extras)
+from ._chat_agent import chat_agent_for, compile_to_chat_agent, log_agent
+
+# Resource declaration — auto-derive MLflow resources from the agent tree
+from ._resources import (
+    ResourceSpec,
+    attach_resources,
+    collect_resource_specs,
+    mlflow_resources_for,
+)
+
+# MLflow ChatAgent /invocations route mounter (optional — same extras)
+from ._invocations import mount_invocations_route
+
+# MLflow tracing helpers (optional — graceful no-op without mlflow)
+from ._mlflow_tracing import (
+    enable_langchain_autolog,
+    is_mlflow_available,
+    safe_span,
+)
 
 __all__ = [
     # Agent types
@@ -69,11 +89,8 @@ __all__ = [
     "AfterToolHook",
     "BeforeToolHook",
     "InputGuardrailFn",
-    "InvocationRequest",
-    "InvocationResponse",
     "Message",
     "OutputGuardrailFn",
-    "set_custom_output",
     # Dependencies
     "Dependencies",
     # SQL utilities
@@ -82,16 +99,30 @@ __all__ = [
     # App factory
     "create_app",
     "setup_agent",
-    # Runner
-    "run_via_sdk",
-    "stream_via_sdk",
     # Eval
     "app_predict_fn",
-    # Genie
+    # Tool factories
     "genie_tool",
-    # Unity Catalog
     "catalog_tool",
     "lineage_tool",
     "schema_tool",
     "uc_function_tool",
+    # LangGraph compiler
+    "CompileContext",
+    "compile_to_langgraph",
+    # MLflow ChatAgent wrapper
+    "chat_agent_for",
+    "compile_to_chat_agent",
+    "log_agent",
+    # Resource declaration
+    "ResourceSpec",
+    "attach_resources",
+    "collect_resource_specs",
+    "mlflow_resources_for",
+    # MLflow /invocations route mounter
+    "mount_invocations_route",
+    # MLflow tracing
+    "enable_langchain_autolog",
+    "is_mlflow_available",
+    "safe_span",
 ]

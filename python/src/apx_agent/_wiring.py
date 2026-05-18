@@ -1,35 +1,44 @@
-"""FastAPI integration — setup_agent() and create_app() for standalone use."""
+"""FastAPI integration — ``setup_agent()`` and ``create_app()``.
+
+Mounts the supported Mosaic AI surface on the agent:
+
+  * ``POST /invocations`` — MLflow ChatAgent protocol (used by Model Serving,
+    AI Playground, Review App, Agent Evaluation). Bridges Databricks Apps'
+    ``X-Forwarded-Access-Token`` header into ``custom_inputs["user_token"]``
+    so user-scoped OBO auth flows through.
+  * ``GET /.well-known/agent.json`` — A2A discovery card.
+  * ``GET /health`` — liveness probe.
+  * ``GET|POST|DELETE /mcp`` — stateless MCP HTTP transport for Genie Code
+    and AI Playground.
+  * ``{api_prefix}/tools/<name>`` — per-tool FastAPI routes for direct invocation.
+
+The legacy ``/responses`` endpoint, the custom apx-agent trace system, and
+the apx-agent-specific request/response types were deleted when the framework
+moved to the supported runtime (LangGraph + MLflow ChatAgent). ``BaseAgent``
+subclasses' ``.run()`` / ``.stream()`` methods now compile to LangGraph; the
+``/invocations`` route is the protocol surface.
+"""
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, FastAPI, HTTPException, Request
-from ._defaults import _make_workspace_client
-from fastapi.responses import StreamingResponse
 from starlette.responses import Response
 
 from ._agents import BaseAgent
+from ._defaults import _make_workspace_client
 from ._inspection import _load_agent_config
 from ._mcp import _build_mcp_components
-from ._trace import add_span, create_trace, end_span, end_trace, truncate
 from ._models import (
     A2ASkill,
     AgentCard,
     AgentConfig,
     AgentContext,
-    AgentTool,
-    InvocationRequest,
-    InvocationResponse,
-    Message,
-    OutputItem,
-    OutputTextContent,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,14 +64,16 @@ async def setup_agent(
 ) -> AgentContext | None:
     """Wire agent protocol routes onto an existing FastAPI app.
 
-    Call this during your FastAPI lifespan. It:
-    1. Loads config from pyproject.toml if not provided
-    2. Collects tools + fetches remote sub-agent tools
-    3. Builds the A2A discovery card
-    4. Mounts protocol routes: /responses, /.well-known/agent.json, /health
-    5. Mounts tool routes under {api_prefix}/tools/<name>
+    Mounts:
+      * tool routes at ``{api_prefix}/tools/<name>``
+      * ``GET /.well-known/agent.json`` (A2A discovery)
+      * ``GET /health``
+      * MCP transports at ``/mcp`` and ``/mcp/sse`` (when ``mcp`` extra installed)
+      * Dev UI at ``/_apx/*`` (when ``_dev`` module loadable)
 
-    Returns the AgentContext, or None if config is missing.
+    The ``POST /invocations`` route is mounted separately by ``create_app``
+    after ``setup_agent`` runs (it depends on the optional ``langgraph`` extra).
+    Returns the ``AgentContext``, or ``None`` if config is missing.
     """
     if config is None:
         config = _load_agent_config(pyproject_path=pyproject_path)
@@ -78,7 +89,9 @@ async def setup_agent(
         for raw_url in config.sub_agents:
             resolved = _resolve_env_var(raw_url)
             if not resolved:
-                logger.warning(f"sub_agents config: {raw_url} resolved to empty — skipping")
+                logger.warning(
+                    f"sub_agents config: {raw_url} resolved to empty — skipping"
+                )
                 continue
             if resolved not in existing:
                 sub_agent_urls.append(resolved)
@@ -105,18 +118,18 @@ async def setup_agent(
 
     logger.info(f"Agent protocol enabled: {config.name} ({len(tools)} tools)")
 
-    # Mount tool routers under api_prefix
+    # Per-tool FastAPI routes (live under {api_prefix}/tools/<name>)
     for router in agent.get_tool_routers():
         app.include_router(router, prefix=config.api_prefix)
 
-    # Mount protocol routes
     _mount_protocol_routes(app)
 
-    # Mount dev UI (/_apx/agent, /_apx/tools, /_apx/probe)
+    # Dev UI (optional). Skipped silently if unavailable or broken.
     try:
         from ._dev import build_dev_ui_router
+
         app.include_router(build_dev_ui_router(config.api_prefix))
-        logger.info("Dev UI mounted at /_apx/agent, /_apx/tools, /_apx/probe")
+        logger.info("Dev UI mounted at /_apx/*")
     except Exception as e:
         logger.info(f"Dev UI not available: {e}")
 
@@ -127,27 +140,26 @@ async def setup_agent(
         if registry_url:
             _schedule_registration(app, registry_url, public_url)
         else:
-            logger.warning("registry env var resolved to empty — skipping registration")
+            logger.warning(
+                "registry env var resolved to empty — skipping registration"
+            )
 
     return ctx
 
 
-def _schedule_registration(app: FastAPI, registry_url: str, public_url: str) -> None:
-    """Schedule a background task to register with an agent registry after startup.
+def _schedule_registration(
+    app: FastAPI, registry_url: str, public_url: str
+) -> None:
+    """Fire-and-forget POST to the agent registry after the server is up.
 
-    ``public_url`` is the agent's externally-reachable URL (e.g. its
-    Databricks App URL). The registry will crawl ``{public_url}/.well-known/agent.json``
-    to populate the agent card.
-
-    Runs after the server is accepting requests. Failures are logged but
-    don't block startup.
+    Registry crawls ``{public_url}/.well-known/agent.json`` to populate the card.
     """
     import asyncio
 
     import httpx
+    from starlette.middleware.base import BaseHTTPMiddleware
 
     async def _register() -> None:
-        # Give the server a moment to start accepting requests
         await asyncio.sleep(2)
 
         url = registry_url.rstrip("/")
@@ -163,23 +175,19 @@ def _schedule_registration(app: FastAPI, registry_url: str, public_url: str) -> 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 r = await client.post(
-                    f"{url}/api/agents/register",
-                    json=payload,
+                    f"{url}/api/agents/register", json=payload
                 )
                 r.raise_for_status()
                 data = r.json()
                 logger.info(
                     "Registered with agent registry at %s as '%s'",
-                    url, data.get("id", "unknown"),
+                    url,
+                    data.get("id", "unknown"),
                 )
         except Exception as e:
-            logger.warning("Failed to register with agent registry at %s: %s", url, e)
-
-    # Fire-and-forget: schedule registration as a background task.
-    # This runs after the first request arrives (ensuring the server is up),
-    # which is the earliest safe point when setup_agent() is called outside
-    # of create_app()'s lifespan.
-    from starlette.middleware.base import BaseHTTPMiddleware
+            logger.warning(
+                "Failed to register with agent registry at %s: %s", url, e
+            )
 
     class _RegisterOnceMiddleware(BaseHTTPMiddleware):
         _registered = False
@@ -193,254 +201,26 @@ def _schedule_registration(app: FastAPI, registry_url: str, public_url: str) -> 
     app.add_middleware(_RegisterOnceMiddleware)
 
 
-async def _handle_invocation(
-    request: Request,
-    body: InvocationRequest,
-) -> InvocationResponse | StreamingResponse:
-    """Handle agent requests — returns JSON or SSE depending on body.stream."""
-    import asyncio as _asyncio
-    import json as _json
-
-    ctx: AgentContext | None = request.app.state.agent_context
-    if ctx is None:
-        raise HTTPException(status_code=503, detail="Agent protocol not configured")
-
-    request.state.custom_inputs = body.custom_inputs
-    request.state.custom_outputs = {}
-    messages = body.messages()
-
-    trace = create_trace(ctx.config.name)
-    request.state.trace = trace
-
-    if body.stream:
-        async def _sse_generator() -> AsyncGenerator[str, None]:
-            item_id = "msg_001"
-            yield f"event: response.output_item.start\ndata: {_json.dumps({'item_id': item_id, 'trace_id': trace.id})}\n\n"
-
-            # Live span event channel — span_start/span_end land here as
-            # add_span/end_span are called anywhere in the request path.
-            queue: _asyncio.Queue[tuple[str, Any]] = _asyncio.Queue()
-            trace._event_queue = queue
-
-            request_span = add_span(
-                trace, type="request", name="POST /responses",
-                input={
-                    "stream": True,
-                    "message_count": len(messages),
-                    "last_message": truncate(messages[-1].content if messages else "", 200),
-                },
-            )
-            end_span(request_span)
-
-            full_text_parts: list[str] = []
-            tool_trace_emitted = 0
-
-            async def _consume_stream() -> None:
-                nonlocal tool_trace_emitted
-                try:
-                    async for chunk in ctx.agent.stream(messages, request):
-                        full_text_parts.append(chunk)
-                        await queue.put(("text", chunk))
-                        # Legacy tool.trace pill format — keep emitting for the
-                        # chat UI's inline pills alongside the new span events.
-                        tool_trace = getattr(request.state, "tool_trace", [])
-                        if len(tool_trace) > tool_trace_emitted:
-                            await queue.put(("tool_trace", tool_trace[tool_trace_emitted:]))
-                            tool_trace_emitted = len(tool_trace)
-                    tool_trace = getattr(request.state, "tool_trace", [])
-                    if len(tool_trace) > tool_trace_emitted:
-                        await queue.put(("tool_trace", tool_trace[tool_trace_emitted:]))
-                        tool_trace_emitted = len(tool_trace)
-                    await queue.put(("eof", None))
-                except Exception as exc:  # noqa: BLE001
-                    await queue.put(("err", exc))
-
-            stream_task = _asyncio.create_task(_consume_stream())
-            err_obj: BaseException | None = None
-            done = False
-
-            try:
-                while not done:
-                    kind, payload = await queue.get()
-                    if kind == "span_start":
-                        yield f"event: span.start\ndata: {_json.dumps(payload)}\n\n"
-                    elif kind == "span_end":
-                        yield f"event: span.end\ndata: {_json.dumps(payload)}\n\n"
-                    elif kind == "text":
-                        yield f"event: output_text.delta\ndata: {_json.dumps({'item_id': item_id, 'text': payload})}\n\n"
-                    elif kind == "tool_trace":
-                        yield f"event: tool.trace\ndata: {_json.dumps(payload)}\n\n"
-                    elif kind == "eof":
-                        done = True
-                    elif kind == "err":
-                        err_obj = payload
-                        done = True
-            finally:
-                if not stream_task.done():
-                    stream_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await stream_task
-
-            full_text = "".join(full_text_parts)
-
-            if err_obj is None:
-                output_item = OutputItem(content=[OutputTextContent(text=full_text)])
-                yield f"event: response.output_item.done\ndata: {_json.dumps({'item_id': item_id, 'output': output_item.model_dump()})}\n\n"
-                custom_out = getattr(request.state, "custom_outputs", {})
-                if custom_out:
-                    yield f"event: custom_outputs\ndata: {_json.dumps(custom_out)}\n\n"
-                response_span = add_span(
-                    trace, type="response", name="streaming response",
-                    output=truncate(full_text, 500),
-                )
-                end_span(response_span)
-                # Drain final span events into the SSE stream.
-                while not queue.empty():
-                    try:
-                        kind, payload = queue.get_nowait()
-                    except _asyncio.QueueEmpty:
-                        break
-                    if kind == "span_start":
-                        yield f"event: span.start\ndata: {_json.dumps(payload)}\n\n"
-                    elif kind == "span_end":
-                        yield f"event: span.end\ndata: {_json.dumps(payload)}\n\n"
-                end_trace(trace, status="completed")
-            else:
-                yield f"event: error\ndata: {_json.dumps({'item_id': item_id, 'error': str(err_obj)})}\n\n"
-                logger.exception("Error during streaming invocation", exc_info=err_obj)
-                error_span = add_span(
-                    trace, type="error", name=type(err_obj).__name__,
-                    output=str(err_obj)[:500],
-                )
-                end_span(error_span)
-                while not queue.empty():
-                    try:
-                        kind, payload = queue.get_nowait()
-                    except _asyncio.QueueEmpty:
-                        break
-                    if kind == "span_start":
-                        yield f"event: span.start\ndata: {_json.dumps(payload)}\n\n"
-                    elif kind == "span_end":
-                        yield f"event: span.end\ndata: {_json.dumps(payload)}\n\n"
-                end_trace(trace, status="error")
-
-        return StreamingResponse(_sse_generator(), media_type="text/event-stream")
-
-    request_span = add_span(
-        trace, type="request", name="POST /responses",
-        input={
-            "stream": False,
-            "message_count": len(messages),
-            "last_message": truncate(messages[-1].content if messages else "", 200),
-        },
-    )
-    end_span(request_span)
-
-    try:
-        text = await ctx.agent.run(messages, request)
-    except Exception as exc:
-        error_span = add_span(
-            trace, type="error", name=type(exc).__name__,
-            output=str(exc)[:500],
-        )
-        end_span(error_span)
-        end_trace(trace, status="error")
-        raise
-
-    response_span = add_span(
-        trace, type="response", name="non-streaming response",
-        output=truncate(text, 500),
-    )
-    end_span(response_span)
-    end_trace(trace, status="completed")
-
-    custom_out = getattr(request.state, "custom_outputs", {})
-    return InvocationResponse(
-        output=[OutputItem(content=[OutputTextContent(text=text)])],
-        custom_outputs=custom_out,
-    )
-
-
 def _mount_protocol_routes(app: FastAPI) -> None:
-    """Mount the agent protocol routes at the app root."""
+    """Mount discovery + health + MCP routes."""
     protocol_router = APIRouter()
 
     @protocol_router.get("/.well-known/agent.json", include_in_schema=False)
     async def agent_card(request: Request) -> AgentCard:
         ctx: AgentContext | None = request.app.state.agent_context
         if ctx is None:
-            raise HTTPException(status_code=404, detail="Agent protocol not configured")
+            raise HTTPException(
+                status_code=404, detail="Agent protocol not configured"
+            )
         base = str(request.base_url).rstrip("/")
-        mcp_available = getattr(request.app.state, "mcp_server", None) is not None
-        return ctx.card.model_copy(update={
-            "url": base,
-            "mcpEndpoint": f"{base}/mcp" if mcp_available else None,
-        })
-
-    # -----------------------------------------------------------------
-    # /responses — primary endpoint (OpenAI Responses API format)
-    # -----------------------------------------------------------------
-
-    @protocol_router.post("/responses", include_in_schema=False)
-    async def responses_api(request: Request) -> Any:
-        """Primary agent endpoint — OpenAI Responses API format.
-
-        This is what ``DatabricksOpenAI.responses.create(model="apps/<name>")``
-        calls. Accepts the Responses API input format and returns the
-        Responses API output format with ``output_text``.
-        """
-        ctx: AgentContext | None = request.app.state.agent_context
-        if ctx is None:
-            raise HTTPException(status_code=404, detail="Agent protocol not configured")
-
-        raw = await request.json()
-        body = _parse_responses_input(raw)
-        result = await _handle_invocation(request, body)
-
-        # StreamingResponse — pass through
-        if isinstance(result, StreamingResponse):
-            return result
-
-        # Wrap in Responses API format
-        response_data = result.model_dump() if hasattr(result, 'output') else {"output": []}
-        output_text = ""
-        for item in response_data.get("output", []):
-            for content in item.get("content", []):
-                if content.get("type") == "output_text":
-                    output_text = content.get("text", "")
-                    break
-
-        return {
-            "id": f"resp_{id(result)}",
-            "object": "response",
-            "status": "completed",
-            "output": response_data.get("output", []),
-            "output_text": output_text,
-        }
-
-    def _parse_responses_input(raw: dict) -> InvocationRequest:
-        """Parse OpenAI Responses API input into InvocationRequest."""
-        raw_input = raw.get("input", [])
-        if isinstance(raw_input, str):
-            messages = [Message(role="user", content=raw_input)]
-        else:
-            messages = []
-            for item in raw_input:
-                if isinstance(item, dict):
-                    role = item.get("role", "user")
-                    content = item.get("content", "")
-                    if isinstance(content, list):
-                        text_parts = [
-                            p.get("text", "") for p in content
-                            if isinstance(p, dict) and p.get("type") in ("input_text", "text")
-                        ]
-                        content = " ".join(text_parts) if text_parts else str(content)
-                    messages.append(Message(role=role, content=content))
-
-        return InvocationRequest(
-            input=messages,
-            stream=raw.get("stream", False),
-            custom_inputs=raw.get("custom_inputs", {}),
+        mcp_available = (
+            getattr(request.app.state, "mcp_server", None) is not None
+        )
+        return ctx.card.model_copy(
+            update={
+                "url": base,
+                "mcpEndpoint": f"{base}/mcp" if mcp_available else None,
+            }
         )
 
     @protocol_router.get("/health", include_in_schema=False)
@@ -455,50 +235,68 @@ def _mount_protocol_routes(app: FastAPI) -> None:
 
     @protocol_router.get("/mcp/sse", include_in_schema=False)
     async def mcp_sse(request: Request) -> Response:
-        """MCP SSE transport — connect MCP clients here (Claude Desktop, Cursor)."""
+        """MCP SSE transport — connect MCP clients here."""
         mcp_server = getattr(request.app.state, "mcp_server", None)
         mcp_transport = getattr(request.app.state, "mcp_transport", None)
         if mcp_server is None or mcp_transport is None:
-            raise HTTPException(status_code=503, detail="MCP server not available")
+            raise HTTPException(
+                status_code=503, detail="MCP server not available"
+            )
         from ._mcp import set_mcp_auth
-        set_mcp_auth(request.headers.get("Authorization", ""), request.headers.get("X-Forwarded-Access-Token", ""))
+
+        set_mcp_auth(
+            request.headers.get("Authorization", ""),
+            request.headers.get("X-Forwarded-Access-Token", ""),
+        )
         async with mcp_transport.connect_sse(
             request.scope, request.receive, request._send
         ) as streams:
             await mcp_server.run(
-                streams[0], streams[1],
+                streams[0],
+                streams[1],
                 mcp_server.create_initialization_options(),
             )
         return _RawResponse()
 
     @protocol_router.post("/mcp/messages/", include_in_schema=False)
     async def mcp_messages(request: Request) -> Response:
-        """MCP SSE transport — message channel."""
         mcp_transport = getattr(request.app.state, "mcp_transport", None)
         if mcp_transport is None:
-            raise HTTPException(status_code=503, detail="MCP server not available")
+            raise HTTPException(
+                status_code=503, detail="MCP server not available"
+            )
         await mcp_transport.handle_post_message(
             request.scope, request.receive, request._send
         )
         return _RawResponse()
 
     async def _mcp_http(request: Request) -> Response:
-        """MCP stateless HTTP transport — for Genie Code and AI Playground."""
+        """Stateless MCP HTTP transport — used by Genie Code and AI Playground."""
         mcp_http_manager = getattr(request.app.state, "mcp_http_manager", None)
         if mcp_http_manager is None:
-            raise HTTPException(status_code=503, detail="MCP server not available")
+            raise HTTPException(
+                status_code=503, detail="MCP server not available"
+            )
         from ._mcp import set_mcp_auth
-        set_mcp_auth(request.headers.get("Authorization", ""), request.headers.get("X-Forwarded-Access-Token", ""))
+
+        set_mcp_auth(
+            request.headers.get("Authorization", ""),
+            request.headers.get("X-Forwarded-Access-Token", ""),
+        )
         scope = dict(request.scope)
         headers = list(scope.get("headers", []))
         accept_vals = [v for k, v in headers if k.lower() == b"accept"]
         if not any(b"text/event-stream" in v for v in accept_vals):
             headers = [(k, v) for k, v in headers if k.lower() != b"accept"]
             existing = b", ".join(accept_vals)
-            new_accept = b"text/event-stream" + (b", " + existing if existing else b"")
+            new_accept = b"text/event-stream" + (
+                b", " + existing if existing else b""
+            )
             headers.append((b"accept", new_accept))
             scope["headers"] = headers
-        await mcp_http_manager.handle_request(scope, request.receive, request._send)
+        await mcp_http_manager.handle_request(
+            scope, request.receive, request._send
+        )
         return _RawResponse()
 
     protocol_router.add_api_route(
@@ -512,24 +310,31 @@ def _mount_protocol_routes(app: FastAPI) -> None:
 
 
 async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
-    """Initialize MCP server and transports. Returns the lifecycle context manager."""
+    """Initialize MCP server + transports. Returns lifecycle context manager."""
     from contextlib import nullcontext
 
     try:
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
-        mcp_server, mcp_transport = _build_mcp_components(ctx, app, ctx.config.api_prefix)
+        mcp_server, mcp_transport = _build_mcp_components(
+            ctx, app, ctx.config.api_prefix
+        )
         app.state.mcp_server = mcp_server
         app.state.mcp_transport = mcp_transport
         mcp_http_manager = StreamableHTTPSessionManager(mcp_server, stateless=True)
         app.state.mcp_http_manager = mcp_http_manager
-        logger.info("MCP server enabled at /mcp/sse (SSE) and /mcp (stateless HTTP)")
+        logger.info(
+            "MCP server enabled at /mcp/sse (SSE) and /mcp (stateless HTTP)"
+        )
         return mcp_http_manager.run()
     except ImportError:
         app.state.mcp_server = None
         app.state.mcp_transport = None
         app.state.mcp_http_manager = None
-        logger.warning("mcp package not installed — /mcp endpoints disabled. pip install apx-agent[mcp]")
+        logger.warning(
+            "mcp package not installed — /mcp endpoints disabled. "
+            "pip install apx-agent[mcp]"
+        )
         return nullcontext()
 
 
@@ -538,38 +343,57 @@ def create_app(
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
 ) -> FastAPI:
-    """Create a complete FastAPI app with agent protocol. No APX needed.
+    """Create a complete FastAPI app: ``/invocations`` + discovery + MCP + dev UI.
 
-    ``pyproject_path`` can be an explicit path to pyproject.toml. When
+    ``pyproject_path`` can be an explicit path to ``pyproject.toml``. When
     omitted, the config is discovered from the entry-point module's location
     or the current working directory.
 
     Example::
 
-        from apx_agent import Agent, Dependencies, create_app
+        from apx_agent import LlmAgent, Dependencies, create_app
 
-        def get_billing(customer_id: str, ws: Dependencies.Client) -> dict:
+        def get_billing(customer_id: str, ws: Dependencies.Workspace) -> dict:
             \"\"\"Get billing history.\"\"\"
             ...
 
-        agent = Agent(tools=[get_billing])
+        agent = LlmAgent(tools=[get_billing])
         app = create_app(agent)
         # uvicorn my_app:app --reload
     """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-        # Initialize workspace client
+        # Opt-in MLflow auto-tracing (off by default — autolog adds ~30s
+        # overhead per run; selective spans in the compile path are always on).
+        try:
+            from ._mlflow_tracing import autolog_if_env
+
+            autolog_if_env()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("MLflow autolog setup skipped: %s", exc)
+
         app.state.workspace_client = _make_workspace_client()
 
-        # Setup agent protocol
-        ctx = await setup_agent(app, agent, config, pyproject_path=pyproject_path)
+        ctx = await setup_agent(
+            app, agent, config, pyproject_path=pyproject_path
+        )
 
-        # Setup MCP if agent is configured
+        # Mount the supported /invocations route (MLflow ChatAgent protocol).
+        # Best-effort — missing optional deps log a warning and skip.
+        if ctx is not None:
+            try:
+                from ._invocations import mount_invocations_route
+
+                mount_invocations_route(app, agent, ctx.config)
+            except Exception as exc:
+                logger.warning("Skipping /invocations mount: %s", exc)
+
         if ctx is not None:
             mcp_lifecycle = await _setup_mcp(app, ctx)
         else:
             from contextlib import nullcontext
+
             mcp_lifecycle = nullcontext()
 
         async with mcp_lifecycle:
@@ -577,7 +401,6 @@ def create_app(
                 yield
             finally:
                 logger.info("Shutting down agent runtime")
-                # Clean up workspace client if it has a close method
                 ws = getattr(app.state, "workspace_client", None)
                 if ws and hasattr(ws, "close"):
                     try:
@@ -585,5 +408,4 @@ def create_app(
                     except Exception:
                         pass
 
-    app = FastAPI(lifespan=lifespan)
-    return app
+    return FastAPI(lifespan=lifespan)

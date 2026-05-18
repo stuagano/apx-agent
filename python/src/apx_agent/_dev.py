@@ -46,8 +46,6 @@ from ._ui_setup import (
 )
 from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
-from ._ui_traces import _render_trace_detail_ui, _render_traces_list_ui
-from ._trace import get_trace, get_traces
 
 logger = logging.getLogger(__name__)
 
@@ -179,14 +177,14 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.get("/_apx/traces", include_in_schema=False)
     async def traces_list_ui() -> HTMLResponse:
-        return HTMLResponse(_render_traces_list_ui(get_traces()))
-
-    @router.get("/_apx/traces/{trace_id}", include_in_schema=False)
-    async def trace_detail_ui(trace_id: str) -> HTMLResponse:
-        trace = get_trace(trace_id)
-        if trace is None:
-            return HTMLResponse("Trace not found", status_code=404)
-        return HTMLResponse(_render_trace_detail_ui(trace))
+        # The custom in-memory trace system was removed when the framework
+        # moved to MLflow tracing. Point users at the MLflow UI for traces.
+        return HTMLResponse(
+            "<h1>Traces moved</h1>"
+            "<p>apx-agent now emits traces via MLflow. View them in the "
+            "MLflow UI (set <code>MLFLOW_TRACKING_URI</code>), AI Playground, "
+            "or Agent Evaluation.</p>"
+        )
 
     @router.post("/_apx/replay/tool", include_in_schema=False)
     async def replay_tool(request: Request) -> Any:

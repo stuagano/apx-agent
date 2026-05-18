@@ -1,0 +1,183 @@
+"""MLflow tracing helpers for the compile / ChatAgent / /invocations path.
+
+Replaces the bucket-3 custom ``_trace.py`` machinery for the supported runtime
+with native MLflow spans. Traces emitted via these helpers flow into:
+
+  * The MLflow UI (any tracking URI — Databricks Managed MLflow, OSS, local)
+  * Databricks Agent Evaluation (trace-based scorers)
+  * Databricks AI Playground / Review App
+  * BigQuery Agent Analytics (when configured)
+
+Design principles:
+
+  1. **No-op when MLflow is missing.** ``safe_span`` returns a null context
+     manager so the compile path works without the ``eval`` extra installed.
+     Users opt into MLflow tracing by installing it.
+
+  2. **No autolog by default.** ``mlflow.langchain.autolog()`` adds ~30s
+     overhead per run (it logs the model itself, not just traces — verified
+     scar tissue from the customer's hand-rolled pipeline). Use selective
+     spans by default; expose ``enable_langchain_autolog()`` for users who
+     want deep auto-instrumentation and can pay the cost.
+
+  3. **No forced tracking URI.** We never call ``mlflow.set_tracking_uri``.
+     The user (or Databricks env) configures the destination; we just emit.
+
+  4. **Errors during tracing must not break requests.** Every helper catches
+     and logs; the agent runs even if span emission fails.
+
+Encoded conventions:
+
+  * Top-level ``ChatAgent.predict`` / ``predict_stream`` → span_type=AGENT
+  * ``/invocations`` route handler → span_type=CHAIN
+  * Compiled graph invocation → span_type=CHAIN
+  * Individual tool dispatch → span_type=TOOL
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+import os
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Availability + setup
+# ---------------------------------------------------------------------------
+
+
+def is_mlflow_available() -> bool:
+    """Return True iff MLflow's tracing API is importable."""
+    try:
+        import mlflow  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def enable_langchain_autolog() -> bool:
+    """Turn on ``mlflow.langchain.autolog()`` for deep auto-tracing.
+
+    This auto-instruments every LangChain / LangGraph call (LLM invocations,
+    tool calls, graph nodes) into MLflow traces. Costs ~30s overhead per run
+    in some configurations (model logging side-effect), so it's opt-in.
+
+    Returns True if autolog was enabled; False if MLflow isn't installed.
+    """
+    try:
+        import mlflow.langchain as _lc
+    except ImportError:
+        logger.warning(
+            "Cannot enable LangChain autolog: mlflow not installed. "
+            "Install apx-agent[eval]."
+        )
+        return False
+    try:
+        _lc.autolog()
+        logger.info("Enabled mlflow.langchain.autolog() — deep LangGraph tracing")
+        return True
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("Failed to enable LangChain autolog: %s", exc)
+        return False
+
+
+def autolog_if_env() -> None:
+    """If ``APX_AGENT_MLFLOW_AUTOLOG=1`` is set in the environment, enable
+    LangChain autolog. Call this once at app startup.
+    """
+    if os.environ.get("APX_AGENT_MLFLOW_AUTOLOG", "").strip().lower() in (
+        "1", "true", "yes",
+    ):
+        enable_langchain_autolog()
+
+
+# ---------------------------------------------------------------------------
+# Span helpers
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def safe_span(
+    name: str,
+    *,
+    span_type: str = "UNKNOWN",
+    inputs: Any = None,
+    attributes: dict[str, Any] | None = None,
+):
+    """Context manager wrapping ``mlflow.start_span`` with belt-and-suspenders
+    safety.
+
+    No-ops if:
+      * MLflow isn't installed
+      * ``mlflow.start_span`` raises (e.g. tracking misconfigured)
+
+    The wrapped block always runs to completion regardless of tracing state —
+    a request must never fail because tracing failed.
+
+    Args:
+        name: Human-readable span name (e.g. ``"ChatAgent.predict"``).
+        span_type: One of MLflow's SpanType strings — ``"AGENT"``, ``"CHAIN"``,
+            ``"TOOL"``, ``"LLM"``, ``"RETRIEVER"``, etc. Defaults to
+            ``"UNKNOWN"`` if a more specific type isn't obvious.
+        inputs: Optional input payload (must be JSON-serializable; MLflow
+            stringifies).
+        attributes: Optional dict of extra attributes for the span.
+
+    Usage::
+
+        with safe_span("ChatAgent.predict", span_type="AGENT",
+                       attributes={"message_count": 3}) as span:
+            result = do_work()
+            if span is not None:
+                span.set_outputs(result)
+    """
+    if not is_mlflow_available():
+        yield None
+        return
+
+    import mlflow
+
+    try:
+        cm = mlflow.start_span(name=name, span_type=span_type)
+    except Exception as exc:
+        logger.debug("mlflow.start_span failed (continuing without trace): %s", exc)
+        yield None
+        return
+
+    try:
+        with cm as span:
+            try:
+                if inputs is not None and span is not None:
+                    span.set_inputs(inputs)
+                if attributes and span is not None:
+                    for k, v in attributes.items():
+                        span.set_attribute(k, v)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug("Failed to set span inputs/attrs: %s", exc)
+            yield span
+    except Exception as exc:
+        logger.debug("Exception during traced block (re-raising): %s", exc)
+        raise
+
+
+def set_span_outputs(span: Any, outputs: Any) -> None:
+    """Safely call ``span.set_outputs(...)`` — no-op if span is None or fails."""
+    if span is None:
+        return
+    try:
+        span.set_outputs(outputs)
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("Failed to set span outputs: %s", exc)
+
+
+def set_span_attribute(span: Any, key: str, value: Any) -> None:
+    """Safely set a single attribute on a span — no-op if span is None."""
+    if span is None:
+        return
+    try:
+        span.set_attribute(key, value)
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("Failed to set span attribute %r: %s", key, exc)

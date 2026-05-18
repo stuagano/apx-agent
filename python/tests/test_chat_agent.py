@@ -1,0 +1,191 @@
+"""Tests for _chat_agent.py — MLflow ChatAgent wrapping.
+
+Verifies that:
+
+  1. ``chat_agent_for`` returns an mlflow.pyfunc.ChatAgent subclass.
+  2. ``predict`` accepts ChatAgentMessage list, routes through the compile path,
+     and returns a ChatAgentResponse with only NEW messages (input is not echoed).
+  3. ``predict_stream`` yields ChatAgentChunk per langchain message produced.
+  4. **User-scope auth is preserved**: when ``custom_inputs["user_token"]`` is
+     present, the compiled graph's tools see the OBO WorkspaceClient — not the
+     default SP client. This is the load-bearing assertion.
+  5. Without ``user_token``, falls back to the default auth chain (SP via
+     oauth-m2m env vars, or CLI in local dev).
+
+Skips if optional extras (``langgraph``, ``eval``) are not installed.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+pytest.importorskip("langgraph")
+pytest.importorskip("langchain_core")
+pytest.importorskip("mlflow")
+
+
+from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
+from mlflow.pyfunc import ChatAgent  # noqa: E402
+from mlflow.types.agent import (  # noqa: E402
+    ChatAgentMessage,
+    ChatAgentResponse,
+    ChatAgentChunk,
+)
+
+from apx_agent import LlmAgent, chat_agent_for  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _trivial_tool(query: str) -> str:
+    """A tool with no dependencies (compile-friendly without mocks)."""
+    return f"got: {query}"
+
+
+def _make_fake_graph(final_text: str = "done") -> MagicMock:
+    """A fake compiled graph whose invoke() appends an AIMessage to messages."""
+    graph = MagicMock(name="fake_compiled_graph")
+
+    def _invoke(state: dict[str, Any]) -> dict[str, Any]:
+        return {"messages": [*state["messages"], AIMessage(content=final_text)]}
+
+    def _stream(state: dict[str, Any], stream_mode: str = "updates"):
+        # Emit one "node update" with one new AI message.
+        yield {"reporter": {"messages": [AIMessage(content=final_text)]}}
+
+    graph.invoke.side_effect = _invoke
+    graph.stream.side_effect = _stream
+    return graph
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+class TestChatAgentFactory:
+    def test_returns_mlflow_chat_agent_subclass(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool])
+        wrapped = chat_agent_for(agent, model="databricks-claude-sonnet-4-6")
+        assert isinstance(wrapped, ChatAgent)
+
+
+class TestPredict:
+    def test_returns_chat_agent_response_with_only_new_messages(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool])
+        wrapped = chat_agent_for(agent, model="any-endpoint")
+
+        fake_graph = _make_fake_graph(final_text="final answer")
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._chat_agent.compile_to_langgraph",
+            return_value=fake_graph,
+        ):
+            resp = wrapped.predict(
+                messages=[ChatAgentMessage(role="user", content="hi", id="u1")]
+            )
+
+        assert isinstance(resp, ChatAgentResponse)
+        # Input ("hi") must NOT be echoed; only the new assistant message.
+        assert len(resp.messages) == 1
+        assert resp.messages[0].role == "assistant"
+        assert resp.messages[0].content == "final answer"
+
+
+class TestPredictStream:
+    def test_yields_chunks_per_message(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool])
+        wrapped = chat_agent_for(agent, model="any")
+
+        fake_graph = _make_fake_graph(final_text="streamed!")
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._chat_agent.compile_to_langgraph",
+            return_value=fake_graph,
+        ):
+            chunks = list(
+                wrapped.predict_stream(
+                    messages=[ChatAgentMessage(role="user", content="go", id="u1")]
+                )
+            )
+
+        assert len(chunks) == 1
+        assert isinstance(chunks[0], ChatAgentChunk)
+        assert chunks[0].delta.content == "streamed!"
+        assert chunks[0].delta.role == "assistant"
+
+
+class TestUserScopeAuth:
+    """The load-bearing test: user_token in custom_inputs MUST flow to compile."""
+
+    def test_user_token_builds_obo_workspace_client(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool])
+        wrapped = chat_agent_for(agent, model="any")
+
+        fake_graph = _make_fake_graph()
+        captured: dict[str, Any] = {}
+
+        def _spy_compile(agent_arg, *, ws, model, headers=None):
+            captured["ws"] = ws
+            captured["model"] = model
+            return fake_graph
+
+        # Patch _make_workspace_client where _chat_agent imports it: inside
+        # _resolve_ws_for_request, which uses ``from ._defaults import ...``.
+        with patch(
+            "apx_agent._defaults._make_workspace_client"
+        ) as mock_factory, patch(
+            "apx_agent._chat_agent.compile_to_langgraph",
+            side_effect=_spy_compile,
+        ):
+            sentinel_ws = MagicMock(name="obo_ws")
+            mock_factory.return_value = sentinel_ws
+
+            wrapped.predict(
+                messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
+                custom_inputs={
+                    "user_token": "tok-abc",
+                    "workspace_host": "https://fake.cloud.databricks.com",
+                },
+            )
+
+        # The factory was called with the OBO token — i.e. the closure-based
+        # user-scope auth made it from custom_inputs all the way to the
+        # WorkspaceClient construction.
+        mock_factory.assert_called_once_with(
+            token="tok-abc",
+            host="https://fake.cloud.databricks.com",
+        )
+        # And the ws handed to compile_to_langgraph IS the OBO one.
+        assert captured["ws"] is sentinel_ws
+
+    def test_no_user_token_falls_back_to_default(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool])
+        wrapped = chat_agent_for(agent, model="any")
+
+        fake_graph = _make_fake_graph()
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client"
+        ) as mock_factory, patch(
+            "apx_agent._chat_agent.compile_to_langgraph",
+            return_value=fake_graph,
+        ):
+            mock_factory.return_value = MagicMock(name="sp_ws")
+            wrapped.predict(
+                messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
+                custom_inputs=None,
+            )
+
+        # No kwargs — default SP/CLI path.
+        mock_factory.assert_called_once_with()

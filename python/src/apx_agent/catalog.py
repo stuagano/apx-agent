@@ -272,4 +272,10 @@ def uc_function_tool(
     _call_uc_function.__name__ = _tool_name
     _call_uc_function.__qualname__ = _tool_name
     _call_uc_function.__doc__ = _initial_desc
+
+    # Declare the UC function as a Mosaic AI resource so the compile path can
+    # auto-derive ``resources=[DatabricksFunction(...)]`` at log time.
+    from ._resources import ResourceSpec, attach_resources
+    attach_resources(_call_uc_function, [ResourceSpec("uc_function", function_name)])
+
     return _call_uc_function

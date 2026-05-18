@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import APIRouter
 
-from apx_agent import Agent, AgentConfig, AgentTool, Message
+from apx_agent import LlmAgent, AgentConfig, AgentTool, Message
 from apx_agent._agents import (
     BaseAgent,
     HandoffAgent,
@@ -61,13 +61,13 @@ class TestBaseAgent:
 
 
 # ---------------------------------------------------------------------------
-# LlmAgent (Agent)
+# LlmAgent (LlmAgent)
 # ---------------------------------------------------------------------------
 
 
 class TestLlmAgent:
     def test_alias(self):
-        assert Agent is LlmAgent
+        assert LlmAgent is LlmAgent
 
     def test_collect_tools(self, basic_agent):
         tools = basic_agent.collect_tools()
@@ -94,7 +94,7 @@ class TestLlmAgent:
         assert "country_code" in props
 
     def test_structured_output_schema(self):
-        agent = Agent(tools=[structured_tool])
+        agent = LlmAgent(tools=[structured_tool])
         tools = agent.collect_tools()
         assert len(tools) == 1
         schema = tools[0].output_schema
@@ -129,7 +129,7 @@ class TestLlmAgent:
         def reject_all(messages):
             return "Blocked by guardrail"
 
-        agent = Agent(tools=[get_weather], input_guardrails=[reject_all])
+        agent = LlmAgent(tools=[get_weather], input_guardrails=[reject_all])
         request = MagicMock()
         result = await agent.run([Message(role="user", content="test")], request)
         assert result == "Blocked by guardrail"
@@ -139,7 +139,7 @@ class TestLlmAgent:
         def allow_all(messages):
             return None
 
-        agent = Agent(tools=[get_weather], input_guardrails=[allow_all])
+        agent = LlmAgent(tools=[get_weather], input_guardrails=[allow_all])
         result = await agent._apply_input_guardrails([Message(role="user", content="test")])
         assert result is None
 
@@ -148,7 +148,7 @@ class TestLlmAgent:
         def replace_output(text):
             return "Sanitized output"
 
-        agent = Agent(tools=[get_weather], output_guardrails=[replace_output])
+        agent = LlmAgent(tools=[get_weather], output_guardrails=[replace_output])
         result = await agent._apply_output_guardrails("some text")
         assert result == "Sanitized output"
 
@@ -157,7 +157,7 @@ class TestLlmAgent:
         def pass_through(text):
             return None
 
-        agent = Agent(tools=[get_weather], output_guardrails=[pass_through])
+        agent = LlmAgent(tools=[get_weather], output_guardrails=[pass_through])
         result = await agent._apply_output_guardrails("some text")
         assert result is None
 
@@ -166,7 +166,7 @@ class TestLlmAgent:
         async def async_reject(messages):
             return "Async blocked"
 
-        agent = Agent(tools=[get_weather], input_guardrails=[async_reject])
+        agent = LlmAgent(tools=[get_weather], input_guardrails=[async_reject])
         result = await agent._apply_input_guardrails([Message(role="user", content="test")])
         assert result == "Async blocked"
 
@@ -182,8 +182,8 @@ class TestSequentialAgent:
             SequentialAgent(agents=[])
 
     def test_collect_tools_merges(self):
-        a1 = Agent(tools=[get_weather])
-        a2 = Agent(tools=[structured_tool])
+        a1 = LlmAgent(tools=[get_weather])
+        a2 = LlmAgent(tools=[structured_tool])
         seq = SequentialAgent(agents=[a1, a2])
         tools = seq.collect_tools()
         names = {t.name for t in tools}
@@ -191,8 +191,8 @@ class TestSequentialAgent:
         assert "structured_tool" in names
 
     def test_get_tool_routers_merges(self):
-        a1 = Agent(tools=[get_weather])
-        a2 = Agent(tools=[structured_tool])
+        a1 = LlmAgent(tools=[get_weather])
+        a2 = LlmAgent(tools=[structured_tool])
         seq = SequentialAgent(agents=[a1, a2])
         routers = seq.get_tool_routers()
         assert len(routers) == 2
@@ -247,8 +247,8 @@ class TestParallelAgent:
         assert "result B" in result
 
     def test_collect_tools_merges(self):
-        a1 = Agent(tools=[get_weather])
-        a2 = Agent(tools=[structured_tool])
+        a1 = LlmAgent(tools=[get_weather])
+        a2 = LlmAgent(tools=[structured_tool])
         par = ParallelAgent(agents=[a1, a2])
         tools = par.collect_tools()
         assert len(tools) == 2
@@ -261,7 +261,7 @@ class TestParallelAgent:
 
 class TestLoopAgent:
     def test_collect_tools_includes_finish_loop(self):
-        inner = Agent(tools=[get_weather])
+        inner = LlmAgent(tools=[get_weather])
         loop = LoopAgent(agent=inner, max_iterations=3)
         tools = loop.collect_tools()
         names = {t.name for t in tools}
@@ -269,7 +269,7 @@ class TestLoopAgent:
         assert "get_weather" in names
 
     def test_get_tool_routers_includes_finish(self):
-        inner = Agent(tools=[get_weather])
+        inner = LlmAgent(tools=[get_weather])
         loop = LoopAgent(agent=inner, max_iterations=3)
         routers = loop.get_tool_routers()
         all_paths = []
@@ -289,8 +289,8 @@ class TestRouterAgent:
             RouterAgent(agents=[])
 
     def test_transfer_tool_schemas(self):
-        a1 = Agent(tools=[get_weather])
-        a2 = Agent(tools=[structured_tool])
+        a1 = LlmAgent(tools=[get_weather])
+        a2 = LlmAgent(tools=[structured_tool])
         router = RouterAgent(agents=[
             ("weather", "Weather agent", a1),
             ("data", "Data agent", a2),
@@ -302,8 +302,8 @@ class TestRouterAgent:
         assert "transfer_to_data" in names
 
     def test_collect_tools_from_sub_agents(self):
-        a1 = Agent(tools=[get_weather])
-        a2 = Agent(tools=[structured_tool])
+        a1 = LlmAgent(tools=[get_weather])
+        a2 = LlmAgent(tools=[structured_tool])
         router = RouterAgent(agents=[
             ("weather", "Weather agent", a1),
             ("data", "Data agent", a2),
@@ -321,13 +321,13 @@ class TestRouterAgent:
 
 class TestHandoffAgent:
     def test_invalid_start(self):
-        a1 = Agent(tools=[get_weather])
+        a1 = LlmAgent(tools=[get_weather])
         with pytest.raises(ValueError, match="not found"):
             HandoffAgent(agents={"a": a1}, start="nonexistent")
 
     def test_transfer_tools_exclude_self(self):
-        a1 = Agent(tools=[get_weather])
-        a2 = Agent(tools=[structured_tool])
+        a1 = LlmAgent(tools=[get_weather])
+        a2 = LlmAgent(tools=[structured_tool])
         handoff = HandoffAgent(agents={"a": a1, "b": a2}, start="a")
         transfer_tools = handoff._transfer_tools_for("a")
         names = {t.name for t in transfer_tools}
@@ -335,8 +335,8 @@ class TestHandoffAgent:
         assert "transfer_to_a" not in names
 
     def test_collect_tools_from_all(self):
-        a1 = Agent(tools=[get_weather])
-        a2 = Agent(tools=[structured_tool])
+        a1 = LlmAgent(tools=[get_weather])
+        a2 = LlmAgent(tools=[structured_tool])
         handoff = HandoffAgent(agents={"a": a1, "b": a2}, start="a")
         tools = handoff.collect_tools()
         names = {t.name for t in tools}
@@ -344,8 +344,8 @@ class TestHandoffAgent:
         assert "structured_tool" in names
 
     def test_get_tool_routers_includes_transfers(self):
-        a1 = Agent(tools=[get_weather])
-        a2 = Agent(tools=[structured_tool])
+        a1 = LlmAgent(tools=[get_weather])
+        a2 = LlmAgent(tools=[structured_tool])
         handoff = HandoffAgent(agents={"a": a1, "b": a2}, start="a")
         routers = handoff.get_tool_routers()
         all_paths = []

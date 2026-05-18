@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from apx_agent import Agent, AgentConfig, AgentContext, create_app, setup_agent
+from apx_agent import LlmAgent, AgentConfig, AgentContext, create_app, setup_agent
 from apx_agent._wiring import _mount_protocol_routes
 
 from .conftest import get_weather, query_genie
@@ -23,7 +23,7 @@ class TestSetupAgent:
     @pytest.mark.asyncio
     async def test_wires_protocol_routes(self):
         app = FastAPI()
-        agent = Agent(tools=[get_weather])
+        agent = LlmAgent(tools=[get_weather])
         config = AgentConfig(name="test-agent", description="Test")
 
         ctx = await setup_agent(app, agent, config)
@@ -35,13 +35,14 @@ class TestSetupAgent:
         # Check protocol routes exist
         route_paths = [r.path for r in app.routes]
         assert "/.well-known/agent.json" in route_paths
-        assert "/responses" in route_paths
         assert "/health" in route_paths
+        # /invocations is mounted by create_app's lifespan, not setup_agent
+        # directly, so it doesn't appear in this list — see test_invocations_route.py.
 
     @pytest.mark.asyncio
     async def test_mounts_tool_routes(self):
         app = FastAPI()
-        agent = Agent(tools=[get_weather])
+        agent = LlmAgent(tools=[get_weather])
         config = AgentConfig(name="test-agent", api_prefix="/api")
 
         await setup_agent(app, agent, config)
@@ -51,7 +52,7 @@ class TestSetupAgent:
     @pytest.mark.asyncio
     async def test_returns_none_when_no_config(self):
         app = FastAPI()
-        agent = Agent(tools=[get_weather])
+        agent = LlmAgent(tools=[get_weather])
 
         with patch("apx_agent._wiring._load_agent_config", return_value=None):
             ctx = await setup_agent(app, agent, config=None)
@@ -61,7 +62,7 @@ class TestSetupAgent:
     @pytest.mark.asyncio
     async def test_collects_tools(self):
         app = FastAPI()
-        agent = Agent(tools=[get_weather, query_genie])
+        agent = LlmAgent(tools=[get_weather, query_genie])
         config = AgentConfig(name="test")
 
         ctx = await setup_agent(app, agent, config)
@@ -70,7 +71,7 @@ class TestSetupAgent:
     @pytest.mark.asyncio
     async def test_sub_agent_env_var_expansion(self):
         app = FastAPI()
-        agent = Agent(tools=[get_weather])
+        agent = LlmAgent(tools=[get_weather])
         config = AgentConfig(name="test", sub_agents=["$MY_AGENT_URL"])
 
         with patch.dict("os.environ", {"MY_AGENT_URL": "http://remote.com"}):
@@ -80,7 +81,7 @@ class TestSetupAgent:
     @pytest.mark.asyncio
     async def test_sub_agent_missing_env_var_skipped(self):
         app = FastAPI()
-        agent = Agent(tools=[get_weather])
+        agent = LlmAgent(tools=[get_weather])
         config = AgentConfig(name="test", sub_agents=["$MISSING_VAR"])
 
         with patch.dict("os.environ", {}, clear=True):
@@ -98,7 +99,7 @@ class TestProtocolRoutes:
     def app_with_agent(self):
         """Build a FastAPI app with agent protocol mounted."""
         app = FastAPI()
-        agent = Agent(tools=[get_weather])
+        agent = LlmAgent(tools=[get_weather])
         config = AgentConfig(name="test-agent", description="A test agent")
         tools = agent.collect_tools()
 
@@ -190,7 +191,7 @@ class TestProtocolRoutes:
 
 class TestCreateApp:
     def test_returns_fastapi_instance(self):
-        agent = Agent(tools=[get_weather])
+        agent = LlmAgent(tools=[get_weather])
         config = AgentConfig(name="test")
         app = create_app(agent, config)
         assert isinstance(app, FastAPI)
