@@ -444,6 +444,49 @@ When you need state, custom UI, MCP server endpoint, or long-running workflows. 
 - **Stateful** — in-memory caches, background loops, websockets, custom UI all work
 - **OBO automatic** for browser/SSO traffic via `X-Forwarded-Access-Token`
 
+## Sessions — multi-turn memory
+
+By default, every `predict()` call is independent — the agent has no memory of prior turns. For conversational agents, pass a `SessionStore` to `compile_to_chat_agent` and include a `session_id` in `custom_inputs`. The framework loads the session before the LLM sees the new turn, prepends prior history, runs the agent, then persists the new messages.
+
+```python
+from apx_agent import (
+    Agent, compile_to_chat_agent, DeltaSessionStore,
+)
+from databricks.sdk import WorkspaceClient
+
+ws = WorkspaceClient()
+
+session_store = DeltaSessionStore(
+    table_path="main.agents.sessions",
+    ws=ws,
+    warehouse_id="wh-prod",   # explicit warehouse for predictable cost
+)
+
+agent = Agent(instructions="You help debug data pipelines.", tools=[...])
+chat = compile_to_chat_agent(agent, model="databricks-claude-sonnet-4-6", session_store=session_store)
+
+# Turn 1
+chat.predict(
+    messages=[ChatAgentMessage(role="user", content="why is finance.gold.revenue empty?")],
+    custom_inputs={"session_id": "user:alice:thread-42"},
+)
+
+# Turn 2 — history from turn 1 is automatically prepended
+chat.predict(
+    messages=[ChatAgentMessage(role="user", content="what about yesterday?")],
+    custom_inputs={"session_id": "user:alice:thread-42"},
+)
+```
+
+| Store | When to use |
+|-------|-------------|
+| `InMemorySessionStore` | Tests, dev, single-process Apps |
+| `DeltaSessionStore` | Production — Model Serving, multi-replica Apps. UC-governed Delta table, auto-created on first put |
+
+Custom stores satisfy the `SessionStore` protocol (`get`/`put`/`delete`) — bring your own Lakebase Postgres backing, Redis, etc.
+
+When `custom_inputs["session_id"]` is absent the framework silently runs single-turn — the same compiled agent works in both modes.
+
 ## Evaluation
 
 `apx_agent.evaluate(agent, model=..., evalset=..., scorers=...)` runs Mosaic AI Agent Evaluation against the agent in-process — no deploy, no HTTP, fast feedback during authoring and CI. The agent compiles to a `ChatAgent` once; each evalset entry runs through the compiled graph; results come back as a standard `mlflow.genai.evaluate` result.
