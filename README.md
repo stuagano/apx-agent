@@ -146,6 +146,42 @@ agent = Agent(tools=[
 
 When the agent runs, the user's grants on `main.tools.classify_intent` apply. If they can't execute it directly, the agent can't either. The function's `COMMENT` becomes the tool description; parameter types become the tool schema. One source of truth.
 
+### Author tools that live in UC — `@tool`
+
+When the agent author *is* the one writing the tool, `@tool` lets you author the Python function once and have it land in UC with one publish step. Type hints become parameter types; docstring becomes the function comment; `grant=[...]` enforces who can execute.
+
+```python
+from apx_agent import Agent, tool, log_agent, publish_tools_to_uc
+
+@tool(uc="main.tools.classify_intent", grant=["agent_consumers"])
+def classify_intent(query: str) -> str:
+    """Classify a customer query as billing/technical/account/other."""
+    return "billing" if "bill" in query.lower() else "other"
+
+agent = Agent(
+    instructions="Triage the user's question.",
+    tools=[classify_intent],
+)
+
+publish_tools_to_uc(agent)   # registers + grants in UC, idempotent
+log_agent(agent, model="databricks-claude-sonnet-4-6",
+          registered_model_name="main.agents.triage")
+```
+
+After `publish_tools_to_uc`, `main.tools.classify_intent` exists as a governed UC asset. Genie reaches it, Managed MCP exposes it, sibling agents wire it in one line via `uc_function_tool("main.tools.classify_intent")` — without redefinition. The Python function still runs in-process when *this* agent calls it; the UC function is the discovery and external-composition surface.
+
+Three rules locked in:
+
+1. **UC-syncable iff pure.** `@tool(uc=...)` is rejected at definition time if the function has a `Dependencies.*` parameter — UC functions run server-side under the function owner, so user-scoped `WorkspaceClient` is unavailable. Tools that need the calling user's identity (lineage lookups, Genie calls, UC reads) stay Python-only.
+2. **Explicit, three-part UC names.** `catalog.schema.function`. No implicit namespacing.
+3. **Declarative grants.** `grant=[...]` is the source of truth; `publish_tools_to_uc` enforces.
+
+Requires the `uc` extra:
+
+```bash
+pip install 'apx-agent[uc]'
+```
+
 ### Platform tool factories
 
 | Factory | What it does |

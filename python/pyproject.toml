@@ -27,7 +27,10 @@ langgraph = [
     "langchain-core>=1.0.0",
     "databricks-langchain>=0.3.0",
 ]
-all = ["apx-agent[eval,langgraph]"]
+uc = [
+    "unitycatalog-ai>=0.1.0",
+]
+all = ["apx-agent[eval,langgraph,uc]"]
 
 [dependency-groups]
 dev = [
