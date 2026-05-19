@@ -1,0 +1,267 @@
+"""Local lightweight guards — zero-latency runtime checks.
+
+apx-agent's hook surface (``input_guardrails``, ``before_tool``,
+``before_model``) wants pre-built callables for the most common
+runtime checks: rate limit a tool by user, reject obvious prompt
+injection, gate a tool to an allowlist. These guards are deliberately
+*not* a competing policy engine — Watchdog handles compliance posture
+(cross-domain policies, violation tracking, ontology). What lives
+here is the in-process zero-latency layer: no network hop, no
+database, just a function call.
+
+Pair with WatchdogGuard for layered governance::
+
+    agent = Agent(
+        ...,
+        input_guardrails=[
+            prompt_injection_heuristic(),     # fast local check
+            WatchdogGuard(watchdog).for_input(),  # slower full posture eval
+        ],
+        before_tool=compose(
+            RateLimit(per_minute=60),
+            ToolAllowlist({"classify_intent", "get_recent_orders"}),
+            WatchdogGuard(watchdog).for_tool(),
+        ),
+    )
+
+Each guard raises (for ``before_*`` callbacks) or returns a reject
+string (for ``*_guardrails`` callbacks). Exceptions propagate so the
+runtime can surface them as 4xx-equivalent rejections.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import threading
+import time
+from collections.abc import Callable
+from typing import Any, Iterable
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Rate limit — token bucket per principal
+# ---------------------------------------------------------------------------
+
+
+class RateLimit:
+    """Token-bucket rate limit for the ``before_tool`` (or ``before_model``) hook.
+
+    Refills at ``per_minute / 60`` tokens per second, up to ``burst``
+    tokens. Per-principal — the key extractor pulls a principal string
+    from the tool arguments (defaults to ``None`` for a single global
+    bucket). When the bucket runs dry, raises ``PermissionError``.
+
+    Thread-safe: a lock guards the per-principal state.
+
+    Example::
+
+        # 60 calls per minute per (agent-wide); burst 10
+        before_tool=RateLimit(per_minute=60, burst=10)
+
+        # 30 calls per minute scoped to the ``user_id`` argument
+        before_tool=RateLimit(per_minute=30,
+                              principal_key=lambda name, args: args.get("user_id"))
+    """
+
+    def __init__(
+        self,
+        *,
+        per_minute: int = 60,
+        burst: int | None = None,
+        principal_key: Callable[[str, dict[str, Any]], Any] | None = None,
+        message: str | None = None,
+    ) -> None:
+        if per_minute <= 0:
+            raise ValueError(f"per_minute must be positive; got {per_minute!r}")
+        self.per_minute = per_minute
+        self.burst = burst if burst is not None else per_minute
+        self.principal_key = principal_key
+        self.message = message or f"Rate limit exceeded: {per_minute}/min."
+        self._tokens: dict[Any, float] = {}
+        self._last_refill: dict[Any, float] = {}
+        self._lock = threading.Lock()
+
+    def _take_token(self, principal: Any) -> bool:
+        """Return True if a token was available; False if rate-limited."""
+        now = time.monotonic()
+        rate = self.per_minute / 60.0
+        with self._lock:
+            last = self._last_refill.get(principal, now)
+            tokens = self._tokens.get(principal, float(self.burst))
+            tokens = min(self.burst, tokens + (now - last) * rate)
+            self._last_refill[principal] = now
+            if tokens >= 1.0:
+                self._tokens[principal] = tokens - 1.0
+                return True
+            self._tokens[principal] = tokens
+            return False
+
+    def __call__(self, name: str, args: dict[str, Any]) -> None:
+        principal = (
+            self.principal_key(name, args) if self.principal_key else None
+        )
+        if not self._take_token(principal):
+            raise PermissionError(self.message)
+
+
+# ---------------------------------------------------------------------------
+# Prompt injection heuristic
+# ---------------------------------------------------------------------------
+
+
+# Common injection patterns. Intentionally small and conservative — this is
+# a fast-path heuristic, not a full classifier. False negatives are expected;
+# downstream (Watchdog, LLM-as-judge) catches what slips through. False
+# positives matter more, so patterns require some specificity.
+_INJECTION_PATTERNS = [
+    re.compile(r"ignore (?:all (?:your )?)?(?:previous|prior|above) (?:instructions|prompts|rules)", re.IGNORECASE),
+    re.compile(r"disregard (?:all (?:of )?)?(?:the )?(?:above|previous|prior)", re.IGNORECASE),
+    re.compile(r"forget (?:everything|all) (?:before|above)", re.IGNORECASE),
+    re.compile(r"you are now (?:a |an )?(?!helpful|kind|polite|professional)", re.IGNORECASE),
+    re.compile(r"system\s*prompt\s*:", re.IGNORECASE),
+    re.compile(r"<\|(?:im_start|im_end|system|user|assistant)\|>", re.IGNORECASE),
+    re.compile(r"\[\[SYSTEM\]\]", re.IGNORECASE),
+    re.compile(r"reveal (?:your |the )(?:system|hidden|secret) prompt", re.IGNORECASE),
+    re.compile(r"print (?:your |the )(?:instructions|system prompt|initial prompt)", re.IGNORECASE),
+]
+
+
+def prompt_injection_heuristic(
+    *,
+    patterns: Iterable[re.Pattern[str]] | None = None,
+    message: str = "Request blocked: suspected prompt injection.",
+) -> Callable[[Any], str | None]:
+    """Return an ``input_guardrails``-compatible callable that flags injection patterns.
+
+    Scans every message's ``content`` for known injection-attempt
+    patterns. Returns ``message`` to short-circuit the request when a
+    pattern matches; returns ``None`` otherwise.
+
+    Pass custom ``patterns`` to extend or replace the default set. The
+    defaults are deliberately small and high-specificity — false
+    positives hurt UX more than false negatives, and the slower-loop
+    layer (Watchdog) is meant to catch the long tail.
+
+    Example::
+
+        agent = Agent(
+            ...,
+            input_guardrails=[prompt_injection_heuristic()],
+        )
+    """
+    active_patterns = list(patterns) if patterns is not None else _INJECTION_PATTERNS
+
+    def _check(messages: Any) -> str | None:
+        texts = _texts_from_messages(messages)
+        for text in texts:
+            for pat in active_patterns:
+                if pat.search(text):
+                    logger.info("prompt_injection_heuristic matched pattern %s", pat.pattern)
+                    return message
+        return None
+
+    return _check
+
+
+def _texts_from_messages(messages: Any) -> list[str]:
+    """Pull text content out of whatever message shape was passed.
+
+    Accepts: a string, a list of dicts with ``content``, a list of
+    objects with a ``.content`` attribute. Defensive — returns an empty
+    list rather than raising on unfamiliar shapes.
+    """
+    if isinstance(messages, str):
+        return [messages]
+    if not isinstance(messages, list):
+        return []
+    out: list[str] = []
+    for m in messages:
+        content = None
+        if isinstance(m, dict):
+            content = m.get("content")
+        else:
+            content = getattr(m, "content", None)
+        if isinstance(content, str):
+            out.append(content)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Tool allowlist / denylist
+# ---------------------------------------------------------------------------
+
+
+class ToolAllowlist:
+    """Reject any tool call whose name isn't in the allowlist.
+
+    Plugs into ``before_tool``. Cheaper than a Watchdog round-trip for
+    a fixed, well-known set of allowed tools.
+    """
+
+    def __init__(self, names: Iterable[str], *, message: str | None = None) -> None:
+        self.allowed = set(names)
+        self.message = message
+
+    def __call__(self, name: str, args: dict[str, Any]) -> None:
+        if name not in self.allowed:
+            raise PermissionError(
+                self.message or f"Tool {name!r} not in allowlist."
+            )
+
+
+class ToolDenylist:
+    """Reject any tool call whose name IS in the denylist."""
+
+    def __init__(self, names: Iterable[str], *, message: str | None = None) -> None:
+        self.denied = set(names)
+        self.message = message
+
+    def __call__(self, name: str, args: dict[str, Any]) -> None:
+        if name in self.denied:
+            raise PermissionError(
+                self.message or f"Tool {name!r} is denied."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Composition
+# ---------------------------------------------------------------------------
+
+
+def compose(*callbacks: Callable[..., Any]) -> Callable[..., Any]:
+    """Chain multiple callbacks into one.
+
+    The returned callable invokes each callback in order with the same
+    arguments. If any callback raises, the chain stops and the
+    exception propagates — useful for short-circuiting on the first
+    rejection.
+
+    Works for any hook signature ``(name, args)``, ``(messages)``,
+    ``(prompts)``, etc. — the inputs flow through verbatim.
+
+    Example::
+
+        before_tool=compose(
+            RateLimit(per_minute=60),
+            ToolAllowlist({"classify_intent"}),
+            WatchdogGuard(watchdog).for_tool(),
+        )
+    """
+    cb_list = list(callbacks)
+
+    def _composed(*args: Any, **kwargs: Any) -> Any:
+        result = None
+        for cb in cb_list:
+            result = cb(*args, **kwargs)
+            # Convention from input_guardrails: a non-None / non-empty return
+            # short-circuits with that value. before_tool / before_model
+            # signal via exceptions instead, so they always return None and
+            # this branch is a no-op for them.
+            if result is not None and result != "":
+                return result
+        return result
+
+    return _composed

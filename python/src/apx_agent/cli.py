@@ -996,5 +996,90 @@ def list_cmd(catalog: str | None, schema: str | None, fmt: str) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# cost — DBU / $ per agent or endpoint over a lookback window
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option("--agent", "agent_name", default=None,
+              help="Agent name. Resolves to the serving endpoint of the same name.")
+@click.option("--endpoint", default=None,
+              help="Serving endpoint name. Use this when the endpoint name differs from the agent name.")
+@click.option("--hours", default=24, type=int,
+              help="Lookback window in hours. Default 24.")
+@click.option("--warehouse-id", default=None,
+              help="SQL warehouse to run the system-tables query on.")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def cost(
+    agent_name: str | None,
+    endpoint: str | None,
+    hours: int,
+    warehouse_id: str | None,
+    fmt: str,
+) -> None:
+    """Report DBU + $ for an agent or serving endpoint over the lookback window.
+
+    Queries ``system.billing.usage`` joined to
+    ``system.billing.list_prices`` (best-effort) scoped to the serving
+    endpoint name. Requires the system billing share to be enabled in
+    the workspace.
+    """
+    if not agent_name and not endpoint:
+        raise click.UsageError("Pass --agent NAME or --endpoint NAME.")
+    if agent_name and endpoint:
+        raise click.UsageError("--agent and --endpoint are mutually exclusive.")
+
+    try:
+        from databricks.sdk import WorkspaceClient
+    except ImportError as e:
+        raise click.ClickException("apx cost requires databricks-sdk.") from e
+
+    from apx_agent import cost_for_agent
+
+    ws = WorkspaceClient()
+    breakdown = cost_for_agent(
+        agent_name=agent_name,
+        endpoint=endpoint,
+        ws=ws,
+        lookback_hours=hours,
+        warehouse_id=warehouse_id,
+    )
+
+    if fmt == "json":
+        click.echo(json.dumps({
+            "endpoint": breakdown.endpoint,
+            "lookback_hours": breakdown.lookback_hours,
+            "total_dbus": breakdown.total_dbus,
+            "total_usd": breakdown.total_usd,
+            "rows": breakdown.rows,
+        }, indent=2, default=str))
+        return
+
+    click.echo(f"# cost for {breakdown.endpoint} (last {breakdown.lookback_hours}h)")
+    if not breakdown.rows:
+        click.echo("No usage rows. Either no traffic in the window or "
+                   "system.billing.usage isn't enabled in this workspace.")
+        return
+    click.echo(f"{'SKU':<42}  {'UNIT':<10}  {'DBUs':>12}  {'USD':>10}")
+    for r in breakdown.rows:
+        usd = r.get("usd")
+        usd_str = f"${usd:,.2f}" if isinstance(usd, (int, float)) else "-"
+        click.echo(
+            f"{(r.get('sku_name') or '-'):<42}  "
+            f"{(r.get('usage_unit') or '-'):<10}  "
+            f"{r.get('dbus') or 0:>12,.2f}  "
+            f"{usd_str:>10}"
+        )
+    click.echo(f"\nTotal DBUs: {breakdown.total_dbus:,.2f}")
+    if breakdown.total_usd is not None:
+        click.echo(f"Total USD:  ${breakdown.total_usd:,.2f}")
+    else:
+        click.echo("Total USD:  - (pricing data not joinable)")
+
+
 if __name__ == "__main__":
     main()

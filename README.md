@@ -78,6 +78,7 @@ apx info                                    # introspect tools, sub-agents, decl
 apx test --prompt "what's the lineage?"     # local smoke test against a sample prompt
 apx trace --agent customer_triage           # recent MLflow traces, filtered by apx.* attrs
 apx list                                    # discover deployed apx-agents via UC tag scan
+apx cost --agent customer_triage --hours 24 # DBU + $ over a lookback window
 ```
 
 All commands that take an agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`).
@@ -628,6 +629,69 @@ with safe_span("custom_step") as span:
 Typos fail loud — `set_audit_attrs` raises `ValueError` for unknown kwargs so the audit schema stays canonical instead of drifting across call sites. Use `hash_for_audit(value)` to fingerprint inputs/outputs without exfiltrating raw content.
 
 Watchdog and any other consumer can query the trace table (e.g. `system.access.audit_logs` or a workspace trace export) by `apx.*` keys to produce compliance reports without parsing agent-specific schemas.
+
+## Local guards — zero-latency runtime checks
+
+`_guards.py` ships a small set of in-process callables that plug into the existing hooks. Pair with `WatchdogGuard` for layered governance — local checks for things that should fail in microseconds, watchdog for cross-domain posture evaluation.
+
+```python
+from apx_agent import (
+    Agent, RateLimit, ToolAllowlist, prompt_injection_heuristic, compose,
+    WatchdogGuard,
+)
+
+agent = Agent(
+    instructions="...",
+    tools=[...],
+    input_guardrails=[
+        prompt_injection_heuristic(),           # fast: regex over the user message
+        WatchdogGuard(watchdog).for_input(),    # slow: full posture eval
+    ],
+    before_tool=compose(
+        RateLimit(per_minute=60),
+        ToolAllowlist({"classify_intent", "get_recent_orders"}),
+        WatchdogGuard(watchdog).for_tool(),
+    ),
+)
+```
+
+| Guard | Purpose |
+|---|---|
+| `RateLimit(per_minute=..., burst=..., principal_key=...)` | In-process token-bucket per principal (default: global bucket). Pass a `principal_key` callable to scope per-user. Thread-safe. |
+| `prompt_injection_heuristic(patterns=..., message=...)` | Regex pass over message content. Default pattern set is small + high-specificity (favors false negatives over false positives — the slower-loop watchdog catches the long tail). |
+| `ToolAllowlist({names})` / `ToolDenylist({names})` | Gate tool calls by name. |
+| `compose(*callbacks)` | Chain N callbacks. Short-circuits on the first non-`None` return (for `input_guardrails`-style hooks) or first exception (for `before_*` hooks). |
+
+These are runtime helpers, not a policy engine. Compliance posture (cross-domain rules, ontology, violation tracking, owner accountability) lives in [databricks-watchdog](https://github.com/stuagano/databricks-watchdog) — wire `WatchdogGuard` next to these for the full layered story.
+
+## Cost tracking
+
+```python
+from apx_agent import cost_for_agent
+from databricks.sdk import WorkspaceClient
+
+breakdown = cost_for_agent(
+    agent_name="customer_triage",
+    ws=WorkspaceClient(),
+    lookback_hours=24,
+    warehouse_id="wh-prod",
+)
+print(f"Total DBUs: {breakdown.total_dbus}")
+print(f"Total USD:  ${breakdown.total_usd}")
+for row in breakdown.rows:
+    print(f"  {row['sku_name']}: {row['dbus']} DBUs → ${row['usd']}")
+```
+
+Queries `system.billing.usage` joined to `system.billing.list_prices` (best-effort) scoped to the agent's serving endpoint. `total_usd` is `None` when pricing isn't joinable for every row — partial coverage would understate the bill, so it's better to surface the gap than print a misleading total.
+
+Same surface from the CLI:
+
+```bash
+apx cost --agent customer_triage --hours 24
+apx cost --endpoint my-endpoint --hours 168 --format json
+```
+
+Requires the `system.billing` share to be enabled in the workspace.
 
 ## Callbacks
 

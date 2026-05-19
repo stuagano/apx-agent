@@ -104,6 +104,18 @@ from ._managed_mcp import (
 # Mosaic AI Supervisor Agent publishing
 from ._publish import create_supervisor_agent, publish_to_supervisor
 
+# Local lightweight guards — zero-latency runtime checks
+from ._guards import (
+    RateLimit,
+    ToolAllowlist,
+    ToolDenylist,
+    compose,
+    prompt_injection_heuristic,
+)
+
+# Cost tracking helpers
+from ._cost import CostBreakdown, cost_for_agent, cost_for_endpoint
+
 # databricks-watchdog integration
 from ._watchdog import (
     WatchdogClient,
@@ -219,6 +231,16 @@ __all__ = [
     # Supervisor publishing
     "create_supervisor_agent",
     "publish_to_supervisor",
+    # Local lightweight guards
+    "RateLimit",
+    "ToolAllowlist",
+    "ToolDenylist",
+    "prompt_injection_heuristic",
+    "compose",
+    # Cost tracking
+    "CostBreakdown",
+    "cost_for_agent",
+    "cost_for_endpoint",
     # Watchdog integration
     "WatchdogClient",
     "WatchdogDecision",

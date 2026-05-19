@@ -403,6 +403,88 @@ def test_deploy_no_experiment_when_absent(
 
 
 # ---------------------------------------------------------------------------
+# `apx cost`
+# ---------------------------------------------------------------------------
+
+
+def test_cost_requires_agent_or_endpoint() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["cost"])
+    assert result.exit_code != 0
+    assert "Pass --agent" in result.output or "Pass --agent" in (result.stderr or "")
+
+
+def test_cost_agent_and_endpoint_mutually_exclusive() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["cost", "--agent", "x", "--endpoint", "y"])
+    assert result.exit_code != 0
+
+
+def test_cost_text_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent._cost import CostBreakdown
+
+    fake_breakdown = CostBreakdown.from_rows(
+        endpoint="customer_triage",
+        lookback_hours=24,
+        rows=[
+            {"sku_name": "MODEL_SERVING", "usage_unit": "DBU", "dbus": 100.0, "usd": 7.5, "unit_price": 0.075},
+            {"sku_name": "WAREHOUSE",     "usage_unit": "DBU", "dbus": 50.0,  "usd": 3.0, "unit_price": 0.06},
+        ],
+    )
+
+    fake_ws_cls = MagicMock()
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+         patch("apx_agent.cost_for_agent", return_value=fake_breakdown):
+        result = runner.invoke(main, ["cost", "--agent", "customer_triage"])
+
+    assert result.exit_code == 0, result.output
+    assert "customer_triage" in result.output
+    assert "MODEL_SERVING" in result.output
+    assert "150.00" in result.output  # total DBUs
+    assert "10.50" in result.output  # total USD
+
+
+def test_cost_json_output() -> None:
+    from apx_agent._cost import CostBreakdown
+
+    fake_breakdown = CostBreakdown.from_rows(
+        endpoint="triage",
+        lookback_hours=12,
+        rows=[{"sku_name": "X", "usage_unit": "DBU", "dbus": 5.0, "usd": 1.0, "unit_price": 0.2}],
+    )
+
+    fake_ws_cls = MagicMock()
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+         patch("apx_agent.cost_for_agent", return_value=fake_breakdown):
+        result = runner.invoke(main, [
+            "cost", "--endpoint", "triage", "--hours", "12", "--format", "json",
+        ])
+
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert parsed["endpoint"] == "triage"
+    assert parsed["lookback_hours"] == 12
+    assert parsed["total_dbus"] == 5.0
+    assert parsed["total_usd"] == 1.0
+
+
+def test_cost_no_usage_rows_prints_helpful_message() -> None:
+    from apx_agent._cost import CostBreakdown
+
+    empty = CostBreakdown(endpoint="triage", lookback_hours=24)
+    fake_ws_cls = MagicMock()
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+         patch("apx_agent.cost_for_agent", return_value=empty):
+        result = runner.invoke(main, ["cost", "--agent", "triage"])
+
+    assert result.exit_code == 0
+    assert "No usage rows" in result.output
+
+
+# ---------------------------------------------------------------------------
 # `apx trace`
 # ---------------------------------------------------------------------------
 
