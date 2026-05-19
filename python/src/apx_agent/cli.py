@@ -1081,5 +1081,160 @@ def cost(
         click.echo("Total USD:  - (pricing data not joinable)")
 
 
+# ---------------------------------------------------------------------------
+# export-traces
+# ---------------------------------------------------------------------------
+
+
+@main.command("export-traces")
+@click.option("--experiment", default=None,
+              help="MLflow experiment. Falls back to [tool.apx.agent].experiment.")
+@click.option("--table", "target_table", required=True,
+              help="Three-part UC name (catalog.schema.table) for the destination Delta table.")
+@click.option("--hours", default=24, type=int, help="Lookback window in hours.")
+@click.option("--warehouse-id", default=None, help="SQL warehouse for the Delta writes.")
+@click.option("--max-traces", default=1000, type=int, help="Max traces per export run.")
+def export_traces_cmd(
+    experiment: str | None,
+    target_table: str,
+    hours: int,
+    warehouse_id: str | None,
+    max_traces: int,
+) -> None:
+    """Export MLflow traces to a Delta table for analytics."""
+    effective_experiment = experiment or _read_apx_agent_config().get("experiment")
+    if not effective_experiment:
+        raise click.UsageError(
+            "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
+        )
+
+    try:
+        from databricks.sdk import WorkspaceClient
+    except ImportError as e:
+        raise click.ClickException("export-traces requires databricks-sdk.") from e
+
+    from apx_agent import export_traces
+
+    ws = WorkspaceClient()
+    result = export_traces(
+        experiment_name=effective_experiment,
+        target_table=target_table,
+        ws=ws,
+        lookback_hours=hours,
+        warehouse_id=warehouse_id,
+        max_traces=max_traces,
+    )
+    click.echo(
+        f"Exported {result.rows_written}/{result.traces_pulled} traces "
+        f"to {result.target_table} (skipped {result.skipped})."
+    )
+
+
+# ---------------------------------------------------------------------------
+# topology
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option("--catalog", default=None, help="Restrict to a UC catalog.")
+@click.option("--schema", default=None, help="Restrict to a UC schema (requires --catalog).")
+@click.option(
+    "--format", "fmt", type=click.Choice(["mermaid", "graphviz"]),
+    default="mermaid", help="Output format. Default: mermaid.",
+)
+@click.option("--output", "output_file", default=None,
+              type=click.Path(dir_okay=False),
+              help="Write the rendered diagram to FILE instead of stdout.")
+def topology(
+    catalog: str | None,
+    schema: str | None,
+    fmt: str,
+    output_file: str | None,
+) -> None:
+    """Render the multi-agent endpoint graph from UC tags."""
+    if schema and not catalog:
+        raise click.UsageError("--schema requires --catalog.")
+
+    try:
+        from databricks.sdk import WorkspaceClient
+    except ImportError as e:
+        raise click.ClickException("apx topology requires databricks-sdk.") from e
+
+    from apx_agent import discover_topology, render_topology
+
+    ws = WorkspaceClient()
+    topo = discover_topology(ws, catalog=catalog, schema=schema)
+    text = render_topology(topo, format=fmt)
+
+    if output_file:
+        with open(output_file, "w") as f:
+            f.write(text + "\n")
+        click.echo(f"Wrote {len(topo.nodes)} nodes, {len(topo.edges)} edges to {output_file}",
+                   err=True)
+    else:
+        click.echo(text)
+
+
+# ---------------------------------------------------------------------------
+# eval-chain
+# ---------------------------------------------------------------------------
+
+
+@main.command("eval-chain")
+@click.argument("evalset", type=click.Path(exists=True, dir_okay=False))
+@click.option("--module", default="agent:agent", help="Agent module spec.")
+@click.option("--model", required=True, help="LLM endpoint for the supervisor.")
+@click.option(
+    "--experiment", required=True,
+    help="MLflow experiment to log into + read traces from for chain correlation.",
+)
+@click.option("--user-token", default=None,
+              help="Optional OBO token for user-scoped eval.")
+def eval_chain_cmd(
+    evalset: str,
+    module: str,
+    model: str,
+    experiment: str,
+    user_token: str | None,
+) -> None:
+    """Eval a multi-agent chain — per-prompt + per-sub-agent coverage."""
+    agent = _load_agent(module)
+
+    # Load the evalset same way apx eval does
+    data: Any
+    path = Path(evalset)
+    if path.suffix.lower() == ".jsonl":
+        data = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    elif path.suffix.lower() == ".json":
+        data = json.loads(path.read_text())
+    else:
+        data = evalset
+
+    from apx_agent import evaluate_chain
+
+    report = evaluate_chain(
+        agent,
+        model=model,
+        evalset=data,
+        experiment=experiment,
+        user_token=user_token,
+    )
+
+    click.echo(f"# chain-eval cases: {len(report.cases)}")
+    for case in report.cases:
+        subs = ", ".join(case.sub_agents_invoked) if case.sub_agents_invoked else "-"
+        tools = ", ".join(case.tool_calls) if case.tool_calls else "-"
+        click.echo(f"\n  request: {case.request!r}")
+        click.echo(f"  duration_ms: {case.duration_ms or '-'}")
+        click.echo(f"  sub_agents: {subs}")
+        click.echo(f"  tools:      {tools}")
+    if report.sub_agent_coverage:
+        click.echo("\n# sub-agent coverage")
+        for sub, count in sorted(
+            report.sub_agent_coverage.items(), key=lambda kv: -kv[1],
+        ):
+            click.echo(f"  {sub}: {count}")
+
+
 if __name__ == "__main__":
     main()

@@ -79,6 +79,9 @@ apx test --prompt "what's the lineage?"     # local smoke test against a sample 
 apx trace --agent customer_triage           # recent MLflow traces, filtered by apx.* attrs
 apx list                                    # discover deployed apx-agents via UC tag scan
 apx cost --agent customer_triage --hours 24 # DBU + $ over a lookback window
+apx export-traces --table main.agents.traces --hours 24    # MLflow traces → Delta
+apx topology --format mermaid > topology.mmd               # multi-agent graph
+apx eval-chain evalset.jsonl --model X --experiment /Users/me/...  # per-prompt sub-agent coverage
 ```
 
 All commands that take an agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`).
