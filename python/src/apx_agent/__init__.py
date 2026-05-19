@@ -120,6 +120,9 @@ from ._cost import CostBreakdown, cost_for_agent, cost_for_endpoint
 # Scheduled-job / batch invocation — non-interactive entry point
 from ._run_once import run_once
 
+# Static lint
+from ._lint import LintFinding, Severity, lint_agent
+
 # Trace exporter
 from ._trace_export import ExportResult, export_traces
 
@@ -263,6 +266,10 @@ __all__ = [
     "cost_for_endpoint",
     # Batch / scheduled-job invocation
     "run_once",
+    # Lint
+    "LintFinding",
+    "Severity",
+    "lint_agent",
     # Trace exporter
     "ExportResult",
     "export_traces",

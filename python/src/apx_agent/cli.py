@@ -893,6 +893,67 @@ def _normalise_trace_rows(traces: Any) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# lint — static checks
+# ---------------------------------------------------------------------------
+
+
+@main.command("lint")
+@click.option("--module", default="agent:agent", help="Agent module spec.")
+@click.option("--model", default=None,
+              help="Model endpoint to lint (in addition to any compiled into the tree).")
+@click.option("--format", "fmt",
+              type=click.Choice(["text", "json"]),
+              default="text",
+              help="Output format.")
+def lint_cmd(module: str, model: str | None, fmt: str) -> None:
+    """Run static checks against an agent — instructions, tool docstrings,
+    sub-agent URL env vars, model name shape.
+
+    Exits non-zero if any ERROR findings are reported. WARNING findings
+    are reported but don't fail. Pair with ``apx test`` (smoke) and
+    ``apx eval`` (behavior) for a full pre-deploy check.
+    """
+    from ._lint import Severity, lint_agent
+
+    agent = _load_agent(module)
+
+    effective_model = model or _read_apx_agent_config().get("model")
+
+    findings = lint_agent(agent, model=effective_model)
+
+    if fmt == "json":
+        click.echo(json.dumps(
+            [
+                {
+                    "code": f.code,
+                    "severity": f.severity.value,
+                    "location": f.location,
+                    "message": f.message,
+                }
+                for f in findings
+            ],
+            indent=2,
+        ))
+    else:
+        if not findings:
+            click.echo("apx lint: clean — no findings.")
+        else:
+            for f in findings:
+                marker = {
+                    Severity.ERROR: "ERROR",
+                    Severity.WARNING: "warn ",
+                    Severity.INFO: "info ",
+                }[f.severity]
+                click.echo(f"  [{marker}] {f.code}  {f.location}")
+                click.echo(f"           {f.message}")
+
+    n_errors = sum(1 for f in findings if f.is_error())
+    if n_errors:
+        click.echo(f"\napx lint: {n_errors} error(s).", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # test — local smoke test
 # ---------------------------------------------------------------------------
 

@@ -75,6 +75,7 @@ apx logs --endpoint my_agent                # runtime logs from Model Serving
 apx logs --endpoint my_agent --build        # build-time logs
 apx logs --app my-app --profile prod        # Databricks Apps logs (via the CLI)
 apx info                                    # introspect tools, sub-agents, declared resources
+apx lint                                    # static checks: instructions, docstrings, env vars, model names
 apx test --prompt "what's the lineage?"     # local smoke test against a sample prompt
 apx trace --agent customer_triage           # recent MLflow traces, filtered by apx.* attrs
 apx list                                    # discover deployed apx-agents via UC tag scan
