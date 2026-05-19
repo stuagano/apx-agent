@@ -1,0 +1,12 @@
+{
+  "name": "memory-demo-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx tsx src/app.ts",
+    "demo": "npx tsx src/app.ts"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  }
+}

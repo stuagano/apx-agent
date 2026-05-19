@@ -2240,5 +2240,334 @@ def examples_list_cmd(
     _emit(payload, fmt, text_fn=_text)
 
 
+# ---------------------------------------------------------------------------
+# examples mine / memory consolidate — wrap mine_examples / consolidate_memories
+# ---------------------------------------------------------------------------
+#
+# Both subcommands wrap library calls that take injectable stores + callables.
+# We resolve each MODULE:VAR via :func:`_load_callable` (parallel to
+# :func:`_load_store` but for arbitrary callables) and pass the resolved
+# objects straight through to the library function.
+#
+# Pyproject fallback keys (under ``[tool.apx.agent]``):
+#
+#   * ``session_store``   — examples mine, --session-store
+#   * ``example_store``   — examples mine, --example-store (shared w/ examples find)
+#   * ``intent_fn``       — examples mine, --intent-fn
+#   * ``score_fn``        — examples mine, --score-fn
+#   * ``filter_fn``       — examples mine, --filter-fn
+#   * ``tags_fn``         — examples mine, --tags-fn
+#   * ``metadata_fn``     — examples mine, --metadata-fn
+#   * ``memory_store``    — memory consolidate, --store (shared w/ memory list/...)
+#   * ``summarize_fn``    — memory consolidate, --summarize-fn
+
+
+def _load_callable(
+    module_spec: str | None,
+    *,
+    pyproject_key: str | None = None,
+    required: bool = False,
+    label: str = "callable",
+) -> Any:
+    """Load an arbitrary callable from MODULE:VAR.
+
+    Mirrors :func:`_load_store` but generalized: there is no single
+    canonical pyproject key for callables — the caller passes one in
+    via ``pyproject_key`` so each ``--*-fn`` flag falls back to its own
+    section key. Returns ``None`` when nothing is configured and
+    ``required=False``.
+    """
+    spec = module_spec
+    if not spec and pyproject_key:
+        spec = _read_apx_agent_config().get(pyproject_key)
+    if not spec:
+        if required:
+            raise click.UsageError(
+                f"Pass the {label} MODULE:VAR flag or set "
+                f"[tool.apx.agent].{pyproject_key} in pyproject.toml."
+            )
+        return None
+
+    module_path, variable = _parse_module_spec(spec)
+    cwd = str(Path.cwd())
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as e:
+        raise click.ClickException(
+            f"Failed to import {label} module {module_path!r}: {e}. "
+            f"Make sure the module is on PYTHONPATH or in the current "
+            f"directory."
+        ) from e
+    if not hasattr(module, variable):
+        raise click.ClickException(
+            f"Module {module_path!r} has no attribute {variable!r}."
+        )
+    return getattr(module, variable)
+
+
+def _load_store_spec(
+    module_spec: str | None,
+    *,
+    pyproject_key: str,
+    label: str,
+) -> Any:
+    """Like :func:`_load_store` but with a caller-chosen pyproject key.
+
+    The legacy ``_load_store`` builds the key from ``store_kind`` —
+    ``memory_store`` / ``example_store``. Mining + consolidation need
+    distinct keys (``session_store``, ``example_store``, ``memory_store``)
+    so we expose the key explicitly here.
+    """
+    spec = module_spec
+    if not spec:
+        spec = _read_apx_agent_config().get(pyproject_key)
+    if not spec:
+        raise click.UsageError(
+            f"Pass the {label} MODULE:VAR flag or set "
+            f"[tool.apx.agent].{pyproject_key} in pyproject.toml."
+        )
+
+    module_path, variable = _parse_module_spec(spec)
+    cwd = str(Path.cwd())
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as e:
+        raise click.ClickException(
+            f"Failed to import {label} module {module_path!r}: {e}. "
+            f"Make sure the module is on PYTHONPATH or in the current "
+            f"directory."
+        ) from e
+    if not hasattr(module, variable):
+        raise click.ClickException(
+            f"Module {module_path!r} has no attribute {variable!r}."
+        )
+    return getattr(module, variable)
+
+
+@examples.command("mine")
+@click.option("--session-store", "session_store_spec", default=None,
+              help="MODULE:VAR pointing at a SessionStore instance. "
+                   "Falls back to [tool.apx.agent].session_store.")
+@click.option("--example-store", "example_store_spec", default=None,
+              help="MODULE:VAR pointing at an ExampleStore instance. "
+                   "Falls back to [tool.apx.agent].example_store.")
+@click.option("--agent-id", required=True,
+              help="Agent id stamped on every mined Example.")
+@click.option("--session-ids", "session_ids_csv", default=None,
+              help="Comma-separated session ids to mine. "
+                   "Default: every session in the store.")
+@click.option("--intent-fn", "intent_fn_spec", default=None,
+              help="MODULE:VAR of a Turn -> str intent classifier.")
+@click.option("--score-fn", "score_fn_spec", default=None,
+              help="MODULE:VAR of a Turn -> float|None scorer.")
+@click.option("--filter-fn", "filter_fn_spec", default=None,
+              help="MODULE:VAR of a Turn -> bool include filter.")
+@click.option("--tags-fn", "tags_fn_spec", default=None,
+              help="MODULE:VAR of a Turn -> Sequence[str] tag extractor.")
+@click.option("--metadata-fn", "metadata_fn_spec", default=None,
+              help="MODULE:VAR of a Turn -> Mapping[str, Any] metadata fn.")
+@click.option("--limit", default=None, type=int,
+              help="Max examples to write. Default: no limit.")
+@click.option("--min-score", default=None, type=float,
+              help="Discard turns whose --score-fn returned <min-score.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Compute Examples client-side without writing.")
+@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
+              default="json", help="Output format. Default: json.")
+def examples_mine_cmd(
+    session_store_spec: str | None,
+    example_store_spec: str | None,
+    agent_id: str,
+    session_ids_csv: str | None,
+    intent_fn_spec: str | None,
+    score_fn_spec: str | None,
+    filter_fn_spec: str | None,
+    tags_fn_spec: str | None,
+    metadata_fn_spec: str | None,
+    limit: int | None,
+    min_score: float | None,
+    dry_run: bool,
+    fmt: str,
+) -> None:
+    """Mine (user, assistant) Examples from a SessionStore's history."""
+    from ._example_mining import mine_examples
+
+    session_store = _load_store_spec(
+        session_store_spec,
+        pyproject_key="session_store",
+        label="--session-store",
+    )
+    example_store = _load_store_spec(
+        example_store_spec,
+        pyproject_key="example_store",
+        label="--example-store",
+    )
+
+    intent_fn = _load_callable(
+        intent_fn_spec, pyproject_key="intent_fn", label="--intent-fn",
+    )
+    score_fn = _load_callable(
+        score_fn_spec, pyproject_key="score_fn", label="--score-fn",
+    )
+    filter_fn = _load_callable(
+        filter_fn_spec, pyproject_key="filter_fn", label="--filter-fn",
+    )
+    tags_fn = _load_callable(
+        tags_fn_spec, pyproject_key="tags_fn", label="--tags-fn",
+    )
+    metadata_fn = _load_callable(
+        metadata_fn_spec, pyproject_key="metadata_fn", label="--metadata-fn",
+    )
+
+    session_ids: list[str] | None = None
+    if session_ids_csv:
+        session_ids = [s.strip() for s in session_ids_csv.split(",") if s.strip()]
+
+    result = mine_examples(
+        session_store=session_store,
+        example_store=example_store,
+        agent_id=agent_id,
+        session_ids=session_ids,
+        intent_fn=intent_fn,
+        score_fn=score_fn,
+        filter_fn=filter_fn,
+        tags_fn=tags_fn,
+        metadata_fn=metadata_fn,
+        limit=limit,
+        min_score=min_score,
+        dry_run=dry_run,
+    )
+
+    if fmt == "text":
+        click.echo(
+            f"Mined {len(result.examples)} examples from "
+            f"{result.sessions_scanned} sessions "
+            f"({result.turns_considered} turns considered)"
+        )
+        return
+
+    payload = {
+        "sessions_scanned": result.sessions_scanned,
+        "turns_considered": result.turns_considered,
+        "examples_added": result.examples_added,
+        "dry_run": dry_run,
+        "examples": [_example_to_dict(e) for e in result.examples],
+    }
+    click.echo(json.dumps(payload, indent=2, default=str))
+
+
+@memory.command("consolidate")
+@click.option("--store", "store_spec", default=None,
+              help="MODULE:VAR pointing at a MemoryStore instance. "
+                   "Falls back to [tool.apx.agent].memory_store.")
+@click.option("--principal-id", required=True,
+              help="Scope consolidation to a single principal.")
+@click.option("--summarize-fn", "summarize_fn_spec", default=None,
+              help="MODULE:VAR of a Sequence[Memory] -> str summarizer. "
+                   "Falls back to [tool.apx.agent].summarize_fn.")
+@click.option("--namespace", default=None,
+              help="Optional namespace filter for the candidate pool.")
+@click.option("--max-age-seconds", default=None, type=float,
+              help="Only consolidate memories older than this many seconds.")
+@click.option("--min-importance", default=None, type=float,
+              help="Importance floor for candidate selection.")
+@click.option("--keep-originals", is_flag=True, default=False,
+              help="Skip deletion of the source memories after write.")
+@click.option("--consolidated-namespace", default="consolidated",
+              help="Namespace for the consolidated row. Default: consolidated.")
+@click.option("--consolidated-tags", "consolidated_tags_csv", default=None,
+              help="Comma-separated tag list. Default: consolidated.")
+@click.option("--consolidated-importance", default=0.7, type=float,
+              help="Importance for the consolidated row. Default 0.7.")
+@click.option("--min-memories-for-consolidation", default=5, type=int,
+              help="Skip when fewer than this many candidates match. "
+                   "Default 5.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Materialize the summary without writing or deleting.")
+@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
+              default="json", help="Output format. Default: json.")
+def memory_consolidate_cmd(
+    store_spec: str | None,
+    principal_id: str,
+    summarize_fn_spec: str | None,
+    namespace: str | None,
+    max_age_seconds: float | None,
+    min_importance: float | None,
+    keep_originals: bool,
+    consolidated_namespace: str,
+    consolidated_tags_csv: str | None,
+    consolidated_importance: float,
+    min_memories_for_consolidation: int,
+    dry_run: bool,
+    fmt: str,
+) -> None:
+    """Summarize older memories into a single consolidated row."""
+    from ._memory_consolidate import consolidate_memories
+
+    store = _load_store_spec(
+        store_spec, pyproject_key="memory_store", label="--store",
+    )
+    summarize_fn = _load_callable(
+        summarize_fn_spec,
+        pyproject_key="summarize_fn",
+        label="--summarize-fn",
+        required=True,
+    )
+
+    consolidated_tags = _parse_tags(consolidated_tags_csv) or ("consolidated",)
+
+    result = consolidate_memories(
+        store=store,
+        principal_id=principal_id,
+        summarize_fn=summarize_fn,
+        namespace=namespace,
+        max_age_seconds=max_age_seconds,
+        min_importance=min_importance,
+        keep_originals=keep_originals,
+        consolidated_namespace=consolidated_namespace,
+        consolidated_tags=consolidated_tags,
+        consolidated_importance=consolidated_importance,
+        min_memories_for_consolidation=min_memories_for_consolidation,
+        dry_run=dry_run,
+    )
+
+    if result.consolidated_memory is None:
+        # Below threshold — surface a clear error + non-zero exit.
+        msg = (
+            f"# only {result.candidates_found} candidate memories "
+            f"(need >= {min_memories_for_consolidation})"
+        )
+        if fmt == "text":
+            click.echo(msg, err=True)
+        else:
+            click.echo(json.dumps({
+                "candidates_found": result.candidates_found,
+                "consolidated_memory": None,
+                "deleted_ids": [],
+                "dry_run": dry_run,
+                "reason": "below min_memories_for_consolidation",
+            }, indent=2), err=True)
+        sys.exit(1)
+
+    if fmt == "text":
+        click.echo(
+            f"Consolidated {result.candidates_found} memories "
+            f"→ {result.consolidated_memory.id}"
+        )
+        return
+
+    payload: dict[str, Any] = {
+        "candidates_found": result.candidates_found,
+        "consolidated_memory": _memory_to_dict(result.consolidated_memory),
+        "deleted_ids": list(result.deleted_ids),
+        "dry_run": dry_run,
+    }
+    click.echo(json.dumps(payload, indent=2, default=str))
+
+
 if __name__ == "__main__":
     main()
