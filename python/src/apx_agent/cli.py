@@ -444,6 +444,8 @@ def deploy(
             click.echo("# continuing with log + deploy", err=True)
 
     # 2. Log + register
+    if effective_experiment:
+        mlflow.set_experiment(effective_experiment)
     with mlflow.start_run():
         info = log_agent(
             agent,
