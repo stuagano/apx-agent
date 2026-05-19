@@ -149,6 +149,7 @@ def evaluate(
     scorers: list[Any] | None = None,
     user_token: str | None = None,
     workspace_host: str | None = None,
+    experiment: str | None = None,
     **mlflow_kwargs: Any,
 ) -> Any:
     """Run Mosaic AI Agent Evaluation against an apx-agent locally.
@@ -175,6 +176,9 @@ def evaluate(
         workspace_host: Optional workspace host for the OBO token. Required
             alongside ``user_token`` if ``DATABRICKS_HOST`` isn't in the
             environment.
+        experiment: Optional MLflow experiment name (path or numeric id).
+            When set, ``mlflow.set_experiment(experiment)`` is called
+            before the eval run so results land in that experiment.
         **mlflow_kwargs: Forwarded verbatim to ``mlflow.genai.evaluate``.
 
     Returns:
@@ -191,6 +195,16 @@ def evaluate(
         raise ImportError(
             "evaluate requires mlflow. Install with: pip install 'apx-agent[eval]'"
         ) from e
+
+    if experiment:
+        try:
+            mlflow.set_experiment(experiment)
+        except Exception as e:
+            raise RuntimeError(
+                f"mlflow.set_experiment({experiment!r}) failed: {e}. "
+                f"For Databricks-hosted MLflow, experiment names are workspace "
+                f"paths (e.g. '/Users/you@company.com/agents/my_agent')."
+            ) from e
 
     if compile_to_chat_agent is None:
         raise ImportError(

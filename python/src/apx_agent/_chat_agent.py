@@ -411,6 +411,7 @@ def log_agent(
     extra_resources: list[Any] | None = None,
     input_example: Any | None = None,
     pip_requirements: list[str] | None = None,
+    experiment: str | None = None,
     **log_model_kwargs: Any,
 ) -> Any:
     """Log the apx-agent as an MLflow ChatAgent with auto-derived resources.
@@ -448,6 +449,11 @@ def log_agent(
             through to ``log_model``.
         pip_requirements: Optional pip requirements list passed through to
             ``log_model``. If omitted, MLflow auto-infers.
+        experiment: Optional MLflow experiment name (path or numeric id).
+            When set, ``mlflow.set_experiment(experiment)`` is called before
+            logging so the run lands in that experiment. When omitted, the
+            currently-active experiment (or MLflow's default) is used. Use
+            this to keep each agent's runs in its own experiment.
         **log_model_kwargs: Anything else accepted by
             ``mlflow.pyfunc.log_model``.
 
@@ -455,12 +461,23 @@ def log_agent(
         The ``ModelInfo`` object returned by ``mlflow.pyfunc.log_model``.
     """
     try:
+        import mlflow
         import mlflow.pyfunc
     except ImportError as e:  # pragma: no cover — exercised only without mlflow
         raise ImportError(
             "mlflow is required to log an agent. "
             "Install with: pip install 'apx-agent[eval]'"
         ) from e
+
+    if experiment:
+        try:
+            mlflow.set_experiment(experiment)
+        except Exception as e:
+            raise RuntimeError(
+                f"mlflow.set_experiment({experiment!r}) failed: {e}. "
+                f"For Databricks-hosted MLflow, experiment names are workspace "
+                f"paths (e.g. '/Users/you@company.com/agents/my_agent')."
+            ) from e
 
     from ._resources import ResourceSpec, mlflow_resources_for
 

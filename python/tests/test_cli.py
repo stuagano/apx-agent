@@ -279,6 +279,130 @@ def test_info_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 
 # ---------------------------------------------------------------------------
+# `apx deploy --experiment` and pyproject fallback
+# ---------------------------------------------------------------------------
+
+
+def test_deploy_forwards_experiment_flag_to_log_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(
+            main,
+            [
+                "deploy",
+                "--module", "tmp_test_agent:agent",
+                "--model", "databricks-claude-sonnet-4-6",
+                "--name", "main.agents.x",
+                "--experiment", "/Users/me/agents/x",
+                "--no-deploy",
+            ],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    assert fake_log_agent.call_args.kwargs["experiment"] == "/Users/me/agents/x"
+
+
+def test_deploy_falls_back_to_pyproject_experiment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_agent_module(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.apx.agent]\n'
+        'name = "x"\n'
+        'experiment = "/Users/me/agents/x"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(
+            main,
+            [
+                "deploy",
+                "--module", "tmp_test_agent:agent",
+                "--model", "databricks-claude-sonnet-4-6",
+                "--name", "main.agents.x",
+                # no --experiment flag
+                "--no-deploy",
+            ],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    assert fake_log_agent.call_args.kwargs["experiment"] == "/Users/me/agents/x"
+
+
+def test_deploy_cli_flag_wins_over_pyproject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_agent_module(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.apx.agent]\n'
+        'experiment = "/Users/me/agents/from-pyproject"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(
+            main,
+            [
+                "deploy",
+                "--module", "tmp_test_agent:agent",
+                "--model", "databricks-claude-sonnet-4-6",
+                "--name", "main.agents.x",
+                "--experiment", "/Users/me/agents/from-cli",
+                "--no-deploy",
+            ],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0
+    assert fake_log_agent.call_args.kwargs["experiment"] == "/Users/me/agents/from-cli"
+
+
+def test_deploy_no_experiment_when_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        runner.invoke(
+            main,
+            [
+                "deploy",
+                "--module", "tmp_test_agent:agent",
+                "--model", "databricks-claude-sonnet-4-6",
+                "--name", "main.agents.x",
+                "--no-deploy",
+            ],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert fake_log_agent.call_args.kwargs["experiment"] is None
+
+
+# ---------------------------------------------------------------------------
 # `apx logs`
 # ---------------------------------------------------------------------------
 

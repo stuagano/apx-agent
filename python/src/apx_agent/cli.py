@@ -58,6 +58,36 @@ def _parse_module_spec(spec: str) -> tuple[str, str]:
     return module_path, variable
 
 
+def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]:
+    """Read ``[tool.apx.agent]`` from ``pyproject.toml`` in cwd.
+
+    Returns an empty dict if the file is missing, malformed, or doesn't
+    have the section. Used by CLI commands to read defaults like
+    ``experiment`` without forcing the user to pass them on every call.
+    """
+    path = pyproject_path or Path.cwd() / "pyproject.toml"
+    if not path.exists():
+        return {}
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover
+        import tomli as tomllib  # type: ignore[no-redef]
+    try:
+        data = tomllib.loads(path.read_text())
+    except Exception:
+        return {}
+    tool = data.get("tool", {})
+    if not isinstance(tool, dict):
+        return {}
+    apx = tool.get("apx", {})
+    if not isinstance(apx, dict):
+        return {}
+    agent_cfg = apx.get("agent", {})
+    if not isinstance(agent_cfg, dict):
+        return {}
+    return agent_cfg
+
+
 def _load_agent(module_spec: str) -> Any:
     """Import ``module:variable`` and return the agent.
 
@@ -282,7 +312,18 @@ def run(module: str, port: int, host: str, reload: bool) -> None:
     "--user-token", default=None,
     help="Optional OBO user token to evaluate under a specific user identity.",
 )
-def eval_cmd(evalset: str, module: str, model: str, user_token: str | None) -> None:
+@click.option(
+    "--experiment", default=None,
+    help="MLflow experiment name/path. Falls back to [tool.apx.agent].experiment "
+         "in pyproject.toml; falls back to MLflow's default when neither is set.",
+)
+def eval_cmd(
+    evalset: str,
+    module: str,
+    model: str,
+    user_token: str | None,
+    experiment: str | None,
+) -> None:
     """Run Mosaic AI Agent Evaluation against EVALSET."""
     from apx_agent import evaluate
 
@@ -302,7 +343,14 @@ def eval_cmd(evalset: str, module: str, model: str, user_token: str | None) -> N
         # Forward path verbatim — mlflow handles CSV / Parquet / etc.
         data = evalset
 
-    result = evaluate(agent, model=model, evalset=data, user_token=user_token)
+    effective_experiment = experiment or _read_apx_agent_config().get("experiment")
+    result = evaluate(
+        agent,
+        model=model,
+        evalset=data,
+        user_token=user_token,
+        experiment=effective_experiment,
+    )
     click.echo(f"Eval complete. Result: {result}")
 
 
@@ -319,18 +367,34 @@ def eval_cmd(evalset: str, module: str, model: str, user_token: str | None) -> N
     help="UC three-part name to register the model under (catalog.schema.model).",
 )
 @click.option("--no-deploy", is_flag=True, help="Log + register only, skip databricks.agents.deploy.")
-def deploy(module: str, model: str, registered_model_name: str, no_deploy: bool) -> None:
+@click.option(
+    "--experiment", default=None,
+    help="MLflow experiment name/path. Falls back to [tool.apx.agent].experiment "
+         "in pyproject.toml; falls back to MLflow's default when neither is set.",
+)
+def deploy(
+    module: str,
+    model: str,
+    registered_model_name: str,
+    no_deploy: bool,
+    experiment: str | None,
+) -> None:
     """Log the agent to MLflow and (optionally) deploy to Model Serving."""
     import mlflow
 
     from apx_agent import log_agent
 
     agent = _load_agent(module)
+    effective_experiment = experiment or _read_apx_agent_config().get("experiment")
+    if effective_experiment:
+        click.echo(f"# experiment: {effective_experiment}", err=True)
+
     with mlflow.start_run():
         info = log_agent(
             agent,
             model=model,
             registered_model_name=registered_model_name,
+            experiment=effective_experiment,
         )
     click.echo(f"Logged {registered_model_name} version {info.registered_model_version}")
 

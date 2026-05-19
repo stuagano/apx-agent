@@ -241,3 +241,54 @@ def test_evaluate_preserves_explicit_empty_scorers_list() -> None:
         evaluate(agent, model="m", evalset=[], scorers=[])
 
     assert fake_eval.call_args.kwargs["scorers"] == []
+
+
+# ---------------------------------------------------------------------------
+# experiment kwarg
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_sets_experiment_when_provided() -> None:
+    agent = Agent(tools=[_trivial_tool])
+    fake_chat = _fake_chat_agent_with_response("ok")
+    fake_eval = MagicMock()
+
+    with patch("apx_agent._eval.compile_to_chat_agent", return_value=fake_chat), \
+         patch("mlflow.set_experiment") as mock_set, \
+         patch("mlflow.genai.evaluate", fake_eval):
+        evaluate(
+            agent,
+            model="m",
+            evalset=[],
+            scorers=[],
+            experiment="/Users/me/agents/triage",
+        )
+
+    mock_set.assert_called_once_with("/Users/me/agents/triage")
+
+
+def test_evaluate_skips_set_experiment_when_omitted() -> None:
+    agent = Agent(tools=[_trivial_tool])
+    fake_chat = _fake_chat_agent_with_response("ok")
+    fake_eval = MagicMock()
+
+    with patch("apx_agent._eval.compile_to_chat_agent", return_value=fake_chat), \
+         patch("mlflow.set_experiment") as mock_set, \
+         patch("mlflow.genai.evaluate", fake_eval):
+        evaluate(agent, model="m", evalset=[], scorers=[])
+
+    mock_set.assert_not_called()
+
+
+def test_evaluate_friendly_error_when_set_experiment_fails() -> None:
+    agent = Agent(tools=[_trivial_tool])
+
+    with patch("mlflow.set_experiment", side_effect=RuntimeError("bad path")):
+        with pytest.raises(RuntimeError, match="mlflow.set_experiment"):
+            evaluate(
+                agent,
+                model="m",
+                evalset=[],
+                scorers=[],
+                experiment="/bad/path",
+            )
