@@ -48,6 +48,7 @@ import os
 from typing import TYPE_CHECKING, Any, Generator
 
 from ._agents import BaseAgent
+from ._audit import AuditAttrs, set_audit_attrs
 from ._compile import compile_to_langgraph
 from ._mlflow_tracing import safe_span, set_span_outputs
 
@@ -271,25 +272,26 @@ def chat_agent_for(
                 ]
                 prepended_messages = history_msgs + prepended_messages
 
-            span_attrs = {
-                "apx.model": self._model,
-                "apx.message_count": len(prepended_messages),
-                "apx.user_scoped": bool(
-                    custom_inputs and custom_inputs.get("user_token")
-                ),
-                "apx.session_id": (session.session_id if session else ""),
-                "apx.streaming": False,
-            }
+            user_token_provided = bool(
+                custom_inputs and custom_inputs.get("user_token")
+            )
             with safe_span(
                 "ApxChatAgent.predict",
                 span_type="AGENT",
                 inputs={"messages": [m.model_dump() for m in prepended_messages]},
-                attributes=span_attrs,
+                attributes={
+                    AuditAttrs.OPERATION: "predict",
+                    AuditAttrs.MODEL_ENDPOINT: self._model,
+                    AuditAttrs.MODEL_INPUT_MESSAGES: len(prepended_messages),
+                    AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
+                    AuditAttrs.SESSION_ID: (session.session_id if session else ""),
+                    AuditAttrs.MODEL_STREAMING: False,
+                },
             ) as span:
                 ws = _resolve_ws_for_request(custom_inputs)
                 with safe_span(
                     "compile_to_langgraph", span_type="CHAIN",
-                    attributes={"apx.model": self._model},
+                    attributes={AuditAttrs.MODEL_ENDPOINT: self._model},
                 ):
                     graph = compile_to_langgraph(
                         self._agent, ws=ws, model=self._model
@@ -299,14 +301,10 @@ def chat_agent_for(
                 input_count = len(lc_input)
                 with safe_span("graph.invoke", span_type="CHAIN") as inv_span:
                     result = graph.invoke({"messages": lc_input})
-                    if inv_span is not None:
-                        try:
-                            inv_span.set_attribute(
-                                "apx.output_message_count",
-                                len(result["messages"]) - input_count,
-                            )
-                        except Exception:  # pragma: no cover
-                            pass
+                    set_audit_attrs(
+                        inv_span,
+                        model_input_messages=input_count,
+                    )
 
                 new_lc_messages = result["messages"][input_count:]
                 new_messages = [
@@ -331,19 +329,20 @@ def chat_agent_for(
             context: ChatContext | None = None,
             custom_inputs: dict[str, Any] | None = None,
         ) -> Generator[ChatAgentChunk, None, None]:
-            span_attrs = {
-                "apx.model": self._model,
-                "apx.message_count": len(messages),
-                "apx.user_scoped": bool(
-                    custom_inputs and custom_inputs.get("user_token")
-                ),
-                "apx.streaming": True,
-            }
+            user_token_provided = bool(
+                custom_inputs and custom_inputs.get("user_token")
+            )
             with safe_span(
                 "ApxChatAgent.predict_stream",
                 span_type="AGENT",
                 inputs={"messages": [m.model_dump() for m in messages]},
-                attributes=span_attrs,
+                attributes={
+                    AuditAttrs.OPERATION: "predict_stream",
+                    AuditAttrs.MODEL_ENDPOINT: self._model,
+                    AuditAttrs.MODEL_INPUT_MESSAGES: len(messages),
+                    AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
+                    AuditAttrs.MODEL_STREAMING: True,
+                },
             ) as span:
                 ws = _resolve_ws_for_request(custom_inputs)
                 graph = compile_to_langgraph(

@@ -121,9 +121,19 @@ from ._invocations import mount_invocations_route
 
 # MLflow tracing helpers (optional — graceful no-op without mlflow)
 from ._mlflow_tracing import (
+    current_active_span,
     enable_langchain_autolog,
     is_mlflow_available,
     safe_span,
+)
+
+# Audit log schema — apx.* span attributes
+from ._audit import (
+    AuditAttrs,
+    hash_for_audit,
+    input_keys_summary,
+    output_summary,
+    set_audit_attrs,
 )
 
 __all__ = [
@@ -221,7 +231,14 @@ __all__ = [
     # MLflow /invocations route mounter
     "mount_invocations_route",
     # MLflow tracing
+    "current_active_span",
     "enable_langchain_autolog",
     "is_mlflow_available",
     "safe_span",
+    # Audit log schema
+    "AuditAttrs",
+    "set_audit_attrs",
+    "hash_for_audit",
+    "input_keys_summary",
+    "output_summary",
 ]

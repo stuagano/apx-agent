@@ -75,12 +75,32 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
+from ._audit import set_audit_attrs
+from ._mlflow_tracing import current_active_span
 from ._sql import run_sql
 
 if TYPE_CHECKING:
     from ._agents import BaseAgent
 
 logger = logging.getLogger(__name__)
+
+
+def _record_decision_on_span(decision: "WatchdogDecision", agent_name: str | None) -> None:
+    """Set apx.watchdog.* audit attributes on the currently active span.
+
+    Only fires when the decision is non-allow — allow is the default and
+    doesn't merit a trace annotation. No-op when no span is active.
+    """
+    if decision.action == "allow":
+        return
+    set_audit_attrs(
+        current_active_span(),
+        watchdog_action=decision.action,
+        watchdog_reason=decision.reason,
+        watchdog_policy_id=decision.policy_id,
+        watchdog_domain=decision.domain,
+        agent_name=agent_name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +315,7 @@ class WatchdogGuard:
                 operation="input_message",
                 context=self._context(messages=_summarise_messages(messages)),
             )
+            _record_decision_on_span(decision, self.agent_name)
             if decision.action == "reject":
                 self.client.report_violation(
                     decision,
@@ -317,6 +338,7 @@ class WatchdogGuard:
                 operation="output_message",
                 context=self._context(text_length=len(text)),
             )
+            _record_decision_on_span(decision, self.agent_name)
             if decision.action == "reject":
                 self.client.report_violation(decision, self._context())
                 return decision.reason or "Response blocked by Watchdog policy."
@@ -336,6 +358,7 @@ class WatchdogGuard:
                 operation="tool_call",
                 context=self._context(tool_name=tool_name, arguments=arguments),
             )
+            _record_decision_on_span(decision, self.agent_name)
             if decision.action == "reject":
                 self.client.report_violation(
                     decision,
@@ -356,6 +379,7 @@ class WatchdogGuard:
                 operation="model_call",
                 context=self._context(prompt_count=_count_prompts(prompts)),
             )
+            _record_decision_on_span(decision, self.agent_name)
             if decision.action == "reject":
                 self.client.report_violation(decision, self._context())
                 raise PermissionError(

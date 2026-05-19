@@ -181,3 +181,20 @@ def set_span_attribute(span: Any, key: str, value: Any) -> None:
         span.set_attribute(key, value)
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("Failed to set span attribute %r: %s", key, exc)
+
+
+def current_active_span() -> Any:
+    """Return the currently active MLflow span, or ``None``.
+
+    Used by callbacks that fire inside an outer span (e.g. LangChain's
+    autolog spans, or apx-agent's own predict span) to attach audit
+    attributes without owning the span lifecycle themselves.
+
+    Returns ``None`` when MLflow isn't installed, no span is active,
+    or the lookup raises — never raises itself.
+    """
+    try:
+        import mlflow
+        return mlflow.get_current_active_span()
+    except Exception:
+        return None

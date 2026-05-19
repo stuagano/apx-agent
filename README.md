@@ -555,6 +555,58 @@ agent = Agent(
 
 The MCP transport calls `tools/call` on watchdog's streamable HTTP MCP endpoint; the UC writer auto-creates the violations table on first use (`auto_create=True`) and `INSERT`s a row per reject/redact decision. Both are pluggable — pass a custom `transport` to `WatchdogClient` for a different wire shape (e.g. plain HTTP, batched async writes).
 
+## Audit log schema
+
+Every framework-emitted MLflow span carries a consistent `apx.*` attribute set so downstream consumers (watchdog, compliance dashboards, ad-hoc SQL over the traces table) can query without knowing anything about specific agents.
+
+```python
+from apx_agent import AuditAttrs
+# AuditAttrs.AGENT_NAME           = "apx.agent.name"
+# AuditAttrs.SESSION_ID           = "apx.session.id"
+# AuditAttrs.OPERATION            = "apx.operation"  # predict | tool_call | model_call | sub_agent_call
+# AuditAttrs.USER_TOKEN_PROVIDED  = "apx.user.token_provided"
+# AuditAttrs.TOOL_NAME            = "apx.tool.name"
+# AuditAttrs.TOOL_UC_FUNCTION     = "apx.tool.uc_function"
+# AuditAttrs.TOOL_INPUT_KEYS      = "apx.tool.input_keys"
+# AuditAttrs.TOOL_INPUT_HASH      = "apx.tool.input_hash"
+# AuditAttrs.TOOL_OUTPUT_TYPE     = "apx.tool.output_type"
+# AuditAttrs.TOOL_OUTPUT_SIZE     = "apx.tool.output_size"
+# AuditAttrs.TOOL_DURATION_MS     = "apx.tool.duration_ms"
+# AuditAttrs.MODEL_ENDPOINT       = "apx.model.endpoint"
+# AuditAttrs.MODEL_INPUT_TOKENS   = "apx.model.input_tokens"
+# AuditAttrs.MODEL_OUTPUT_TOKENS  = "apx.model.output_tokens"
+# AuditAttrs.WATCHDOG_ACTION      = "apx.watchdog.action"
+# AuditAttrs.WATCHDOG_POLICY_ID   = "apx.watchdog.policy_id"
+# ...
+```
+
+Where they're set automatically:
+
+| Site | Attributes recorded |
+|---|---|
+| `predict` / `predict_stream` | `apx.operation`, `apx.model.endpoint`, `apx.session.id`, `apx.user.token_provided`, `apx.model.streaming`, `apx.model.input_messages` |
+| Tool call lifecycle (via `_AgentCallbackHandler`) | `apx.tool.name`, `apx.tool.input_keys`, `apx.tool.input_hash`, `apx.tool.output_type`, `apx.tool.output_size`, `apx.tool.duration_ms` |
+| Model call lifecycle | `apx.model.input_tokens`, `apx.model.output_tokens` (when the LLM returns usage info) |
+| Watchdog reject/redact | `apx.watchdog.action`, `apx.watchdog.policy_id`, `apx.watchdog.reason`, `apx.watchdog.domain`, `apx.agent.name` |
+
+Custom code can add attributes through the same schema:
+
+```python
+from apx_agent import set_audit_attrs, safe_span
+
+with safe_span("custom_step") as span:
+    set_audit_attrs(
+        span,
+        operation="sub_agent_call",
+        subagent_endpoint="endpoints/billing",
+        tool_duration_ms=123,
+    )
+```
+
+Typos fail loud — `set_audit_attrs` raises `ValueError` for unknown kwargs so the audit schema stays canonical instead of drifting across call sites. Use `hash_for_audit(value)` to fingerprint inputs/outputs without exfiltrating raw content.
+
+Watchdog and any other consumer can query the trace table (e.g. `system.access.audit_logs` or a workspace trace export) by `apx.*` keys to produce compliance reports without parsing agent-specific schemas.
+
 ## Callbacks
 
 Four lifecycle hooks per `LlmAgent` — useful for cost tracking, prompt-injection scanning, output filtering, custom tracing, and approval gates.
