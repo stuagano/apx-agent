@@ -1594,3 +1594,461 @@ def test_examples_list_filter_by_intent(
         assert all(r["intent"] == "modify" for r in rows)
     finally:
         _cleanup_store_module()
+
+
+# ---------------------------------------------------------------------------
+# `apx examples mine` and `apx memory consolidate`
+# ---------------------------------------------------------------------------
+#
+# These subcommands wrap mine_examples / consolidate_memories with file-
+# injectable stores and summarizer callables. We write a per-test fixture
+# module to ``tmp_path`` exposing seeded stores + callables; tests point
+# the relevant ``--*-fn`` / ``--*-store`` flags at it.
+
+_MINE_FIXTURE_NAME = "tmp_mine_fixture"
+
+
+def _write_mine_fixture(tmp_path: Path) -> None:
+    """Drop a module exporting seeded SessionStore + ExampleStore + callables.
+
+    The session store carries three sessions:
+        s1: 2 user→assistant turns (one short, one longer)
+        s2: 1 turn, with a leading tool message that should be skipped
+        s3: 1 turn whose assistant content is "skip" — used by filter_fn tests
+    """
+    (tmp_path / f"{_MINE_FIXTURE_NAME}.py").write_text(textwrap.dedent("""
+        from apx_agent import InMemorySessionStore, InMemoryExampleStore
+        from apx_agent._session import Session
+
+        sess_store = InMemorySessionStore()
+        sess_store.put(Session(
+            session_id="s1",
+            history=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi there"},
+                {"role": "user", "content": "how are you?"},
+                {"role": "assistant", "content": "doing well, thanks"},
+            ],
+        ))
+        sess_store.put(Session(
+            session_id="s2",
+            history=[
+                {"role": "user", "content": "compute pi"},
+                {"role": "assistant", "content": ""},  # tool-call only
+                {"role": "tool", "content": "3.14"},
+                {"role": "assistant", "content": "pi is about 3.14"},
+            ],
+        ))
+        sess_store.put(Session(
+            session_id="s3",
+            history=[
+                {"role": "user", "content": "noise"},
+                {"role": "assistant", "content": "skip"},
+            ],
+        ))
+
+        ex_store = InMemoryExampleStore()
+
+        def intent_fn(turn):
+            content = turn.user_message.get("content", "")
+            return "greet" if "hello" in content else "other"
+
+        def score_fn(turn):
+            return 0.9
+
+        def filter_fn(turn):
+            # Drop the "skip" turn from s3.
+            return turn.assistant_message.get("content") != "skip"
+
+        def tags_fn(turn):
+            return ("mined",)
+
+        def metadata_fn(turn):
+            return {"source": "test"}
+    """))
+
+
+def _cleanup_mine_fixture() -> None:
+    sys.modules.pop(_MINE_FIXTURE_NAME, None)
+
+
+# --- examples mine -------------------------------------------------------
+
+
+def test_examples_mine_happy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_mine_fixture(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "examples", "mine",
+            "--session-store", f"{_MINE_FIXTURE_NAME}:sess_store",
+            "--example-store", f"{_MINE_FIXTURE_NAME}:ex_store",
+            "--agent-id", "triage",
+        ])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        # s1 has 2 turns, s2 has 1 real turn (assistant-with-content), s3 has 1
+        # default filter drops s2's empty assistant and the s3 "skip" passes
+        # the default filter (it's a non-empty string).
+        assert payload["sessions_scanned"] == 3
+        assert payload["examples_added"] >= 3
+        assert payload["dry_run"] is False
+        assert all(e["agent_id"] == "triage" for e in payload["examples"])
+    finally:
+        _cleanup_mine_fixture()
+
+
+def test_examples_mine_dry_run_does_not_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_mine_fixture(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "examples", "mine",
+            "--session-store", f"{_MINE_FIXTURE_NAME}:sess_store",
+            "--example-store", f"{_MINE_FIXTURE_NAME}:ex_store",
+            "--agent-id", "triage",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["dry_run"] is True
+        assert payload["examples_added"] == 0
+        assert len(payload["examples"]) >= 1  # materialized client-side
+
+        # Re-list the store: nothing should have been persisted.
+        list_res = runner.invoke(main, [
+            "examples", "list",
+            "--agent-id", "triage",
+            "--store-module", f"{_MINE_FIXTURE_NAME}:ex_store",
+        ])
+        assert list_res.exit_code == 0
+        rows = json.loads(list_res.output)
+        assert rows == []
+    finally:
+        _cleanup_mine_fixture()
+
+
+def test_examples_mine_resolves_callables_from_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_mine_fixture(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "examples", "mine",
+            "--session-store", f"{_MINE_FIXTURE_NAME}:sess_store",
+            "--example-store", f"{_MINE_FIXTURE_NAME}:ex_store",
+            "--agent-id", "triage",
+            "--intent-fn", f"{_MINE_FIXTURE_NAME}:intent_fn",
+            "--score-fn", f"{_MINE_FIXTURE_NAME}:score_fn",
+            "--filter-fn", f"{_MINE_FIXTURE_NAME}:filter_fn",
+            "--tags-fn", f"{_MINE_FIXTURE_NAME}:tags_fn",
+            "--metadata-fn", f"{_MINE_FIXTURE_NAME}:metadata_fn",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        # filter_fn drops s3 "skip"; intent_fn flips "hello" → "greet"
+        intents = {e["intent"] for e in payload["examples"]}
+        assert "greet" in intents
+        assert all(e["score"] == 0.9 for e in payload["examples"])
+        assert all("mined" in e["tags"] for e in payload["examples"])
+        assert all(e["metadata"].get("source") == "test"
+                   for e in payload["examples"])
+        # filter_fn dropped the "skip" turn
+        assert all(e["output"] != "skip" for e in payload["examples"])
+    finally:
+        _cleanup_mine_fixture()
+
+
+def test_examples_mine_resolves_callables_from_pyproject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_mine_fixture(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.apx.agent]\n'
+        f'session_store = "{_MINE_FIXTURE_NAME}:sess_store"\n'
+        f'example_store = "{_MINE_FIXTURE_NAME}:ex_store"\n'
+        f'intent_fn = "{_MINE_FIXTURE_NAME}:intent_fn"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        # No --session-store, --example-store, or --intent-fn — all from pyproject.
+        result = runner.invoke(main, [
+            "examples", "mine",
+            "--agent-id", "triage",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        intents = {e["intent"] for e in payload["examples"]}
+        # intent_fn from pyproject is the same one as the flag test
+        assert "greet" in intents
+    finally:
+        _cleanup_mine_fixture()
+
+
+def test_examples_mine_session_ids_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_mine_fixture(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "examples", "mine",
+            "--session-store", f"{_MINE_FIXTURE_NAME}:sess_store",
+            "--example-store", f"{_MINE_FIXTURE_NAME}:ex_store",
+            "--agent-id", "triage",
+            "--session-ids", "s1",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["sessions_scanned"] == 1
+        # s1 has 2 pairs
+        assert len(payload["examples"]) == 2
+    finally:
+        _cleanup_mine_fixture()
+
+
+def test_examples_mine_text_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_mine_fixture(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "examples", "mine",
+            "--session-store", f"{_MINE_FIXTURE_NAME}:sess_store",
+            "--example-store", f"{_MINE_FIXTURE_NAME}:ex_store",
+            "--agent-id", "triage",
+            "--format", "text",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "Mined" in result.output
+        assert "examples from" in result.output
+        assert "sessions" in result.output
+        assert "turns considered" in result.output
+    finally:
+        _cleanup_mine_fixture()
+
+
+# --- memory consolidate ---------------------------------------------------
+
+
+_CONS_FIXTURE_NAME = "tmp_consolidate_fixture"
+
+
+def _write_consolidate_fixture(tmp_path: Path, n: int = 6) -> None:
+    """Drop a module exporting a seeded MemoryStore + summarize callable."""
+    (tmp_path / f"{_CONS_FIXTURE_NAME}.py").write_text(textwrap.dedent(f"""
+        from apx_agent import InMemoryMemoryStore
+
+        mem_store = InMemoryMemoryStore()
+        for i in range({n}):
+            mem_store.add({{
+                "principal_id": "alice",
+                "content": f"memory-{{i}}",
+                "namespace": "profile",
+            }})
+
+        def summarize_fn(mems):
+            return "alice has " + str(len(mems)) + " memories"
+    """))
+
+
+def _cleanup_consolidate_fixture() -> None:
+    sys.modules.pop(_CONS_FIXTURE_NAME, None)
+
+
+def test_memory_consolidate_happy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_consolidate_fixture(tmp_path, n=6)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "memory", "consolidate",
+            "--store", f"{_CONS_FIXTURE_NAME}:mem_store",
+            "--principal-id", "alice",
+            "--summarize-fn", f"{_CONS_FIXTURE_NAME}:summarize_fn",
+            "--min-memories-for-consolidation", "5",
+        ])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["candidates_found"] == 6
+        assert payload["consolidated_memory"]["content"] == "alice has 6 memories"
+        assert payload["consolidated_memory"]["namespace"] == "consolidated"
+        assert len(payload["deleted_ids"]) == 6
+        assert payload["dry_run"] is False
+    finally:
+        _cleanup_consolidate_fixture()
+
+
+def test_memory_consolidate_dry_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_consolidate_fixture(tmp_path, n=6)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "memory", "consolidate",
+            "--store", f"{_CONS_FIXTURE_NAME}:mem_store",
+            "--principal-id", "alice",
+            "--summarize-fn", f"{_CONS_FIXTURE_NAME}:summarize_fn",
+            "--min-memories-for-consolidation", "5",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["dry_run"] is True
+        assert payload["consolidated_memory"] is not None
+        assert payload["consolidated_memory"]["content"] == "alice has 6 memories"
+        assert payload["deleted_ids"] == []
+
+        # Originals must still be in the store.
+        list_res = runner.invoke(main, [
+            "memory", "list",
+            "--principal-id", "alice",
+            "--store-module", f"{_CONS_FIXTURE_NAME}:mem_store",
+        ])
+        assert list_res.exit_code == 0
+        rows = json.loads(list_res.output)
+        assert len(rows) == 6
+    finally:
+        _cleanup_consolidate_fixture()
+
+
+def test_memory_consolidate_keep_originals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_consolidate_fixture(tmp_path, n=6)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "memory", "consolidate",
+            "--store", f"{_CONS_FIXTURE_NAME}:mem_store",
+            "--principal-id", "alice",
+            "--summarize-fn", f"{_CONS_FIXTURE_NAME}:summarize_fn",
+            "--min-memories-for-consolidation", "5",
+            "--keep-originals",
+        ])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["deleted_ids"] == []
+
+        list_res = runner.invoke(main, [
+            "memory", "list",
+            "--principal-id", "alice",
+            "--store-module", f"{_CONS_FIXTURE_NAME}:mem_store",
+        ])
+        rows = json.loads(list_res.output)
+        # 6 originals + 1 consolidated row
+        assert len(rows) == 7
+    finally:
+        _cleanup_consolidate_fixture()
+
+
+def test_memory_consolidate_below_threshold_exits_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_consolidate_fixture(tmp_path, n=3)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "memory", "consolidate",
+            "--store", f"{_CONS_FIXTURE_NAME}:mem_store",
+            "--principal-id", "alice",
+            "--summarize-fn", f"{_CONS_FIXTURE_NAME}:summarize_fn",
+            "--min-memories-for-consolidation", "5",
+        ])
+        assert result.exit_code != 0
+        # The JSON / text body for below-threshold lands on stderr per
+        # the spec (caller wants a non-zero exit). click.testing combines
+        # stdout/stderr into `result.output` by default.
+        combined = result.output
+        assert "below" in combined or "3" in combined
+    finally:
+        _cleanup_consolidate_fixture()
+
+
+def test_memory_consolidate_text_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_consolidate_fixture(tmp_path, n=6)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "memory", "consolidate",
+            "--store", f"{_CONS_FIXTURE_NAME}:mem_store",
+            "--principal-id", "alice",
+            "--summarize-fn", f"{_CONS_FIXTURE_NAME}:summarize_fn",
+            "--min-memories-for-consolidation", "5",
+            "--format", "text",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "Consolidated 6 memories" in result.output
+        assert "mem_" in result.output
+    finally:
+        _cleanup_consolidate_fixture()
+
+
+def test_memory_consolidate_pyproject_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_consolidate_fixture(tmp_path, n=6)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.apx.agent]\n'
+        f'memory_store = "{_CONS_FIXTURE_NAME}:mem_store"\n'
+        f'summarize_fn = "{_CONS_FIXTURE_NAME}:summarize_fn"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        # No --store, no --summarize-fn — both from pyproject.
+        result = runner.invoke(main, [
+            "memory", "consolidate",
+            "--principal-id", "alice",
+            "--min-memories-for-consolidation", "5",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["consolidated_memory"]["content"] == "alice has 6 memories"
+    finally:
+        _cleanup_consolidate_fixture()
+
+
+def test_memory_consolidate_requires_summarize_fn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_consolidate_fixture(tmp_path, n=6)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "memory", "consolidate",
+            "--store", f"{_CONS_FIXTURE_NAME}:mem_store",
+            "--principal-id", "alice",
+            # No --summarize-fn flag, no pyproject — must error.
+        ])
+        assert result.exit_code != 0
+        assert "summarize-fn" in result.output or "summarize_fn" in result.output
+    finally:
+        _cleanup_consolidate_fixture()

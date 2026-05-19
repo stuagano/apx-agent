@@ -1,3 +1,4 @@
+# Memory wired into account_specialist (per-user prefs persist across handoffs).
 """Customer triage agent — a worked example exercising the full apx-agent surface.
 
 Demonstrates:
@@ -6,6 +7,9 @@ Demonstrates:
   * ``genie_tool`` for natural-language data questions
   * ``vector_search_tool`` for retrieval over a doc index
   * ``HandoffAgent`` for routing to specialists mid-conversation
+  * ``InMemoryMemoryStore`` + ``make_memory_tools`` for principal-keyed memory
+    on the ``account_specialist`` sub-agent — preferences and account history
+    that should outlive any single conversation
   * Declared resources flowing through to ``log_agent``
   * Sessions when paired with ``compile_to_chat_agent(..., session_store=...)``
 
@@ -32,7 +36,9 @@ from apx_agent import (
     Agent,
     Dependencies,
     HandoffAgent,
+    InMemoryMemoryStore,
     genie_tool,
+    make_memory_tools,
     tool,
     vector_search_tool,
 )
@@ -91,6 +97,72 @@ def get_recent_orders(
 
 
 # ---------------------------------------------------------------------------
+# Memory store — wired into account_specialist below.
+#
+# Why account_specialist, not billing or technical?
+#   * Account work is per-user-preference heavy (preferred channel, language,
+#     accessibility prefs, MFA recovery history) — the textbook fit for
+#     principal-keyed memory.
+#   * Billing is transactional (orders are already governed via UC).
+#   * Technical leans on doc retrieval (vector_search_tool) more than on
+#     remembered facts about the user.
+#
+# Memory is keyed by ``principal_id``, NOT ``session_id``. That means
+# preferences captured during one conversation survive a handoff to
+# billing/technical and persist when this user comes back tomorrow under a
+# brand-new session_id.
+#
+# In production: swap ``InMemoryMemoryStore`` for ``LakebaseMemoryStore``
+# (Postgres + pgvector). See docs/lakebase-recipe.md for the wiring pattern.
+# ---------------------------------------------------------------------------
+
+
+account_memory_store = InMemoryMemoryStore()
+
+
+# Pre-seeded memories so the demo has something to recall against. Three per
+# principal — minimal wiring proof, not a fixture suite. Real deployments seed
+# from a profile table or grow the store organically via the `remember` tool.
+_SEED_MEMORIES: dict[str, list[dict[str, object]]] = {
+    "user:alice": [
+        {"content": "Prefers email over SMS for account notifications.",
+         "tags": ("preference", "channel")},
+        {"content": "Primary email is alice@example.com; recovery is alice.r@example.com.",
+         "tags": ("profile", "contact")},
+        {"content": "MFA reset on 2026-04-12 — used SMS to +1-555-0144.",
+         "tags": ("episodic", "security")},
+    ],
+    "user:bob": [
+        {"content": "Prefers Spanish-language support replies.",
+         "tags": ("preference", "language")},
+        {"content": "Primary email is bob@example.com; no recovery email on file.",
+         "tags": ("profile", "contact")},
+        {"content": "Password reset on 2026-05-01 — completed self-serve.",
+         "tags": ("episodic", "security")},
+    ],
+}
+for _principal, _seeds in _SEED_MEMORIES.items():
+    for _seed in _seeds:
+        account_memory_store.add({
+            "principal_id": _principal,
+            "namespace": "profile",
+            "content": _seed["content"],
+            "tags": list(_seed["tags"]),  # type: ignore[arg-type]
+        })
+
+
+# In a real deployment the principal_id flows from the per-request OBO
+# identity (``ws.current_user.me().user_name``) wrapped in a session-aware
+# callback. For the local-dev example we pin a default so ``apx run`` works
+# end-to-end without auth plumbing.
+account_memory_tools = make_memory_tools(
+    store=account_memory_store,
+    default_principal_id="user:alice",
+    namespace_default="profile",
+)
+
+
+# ---------------------------------------------------------------------------
 # Specialist agents — each handles one branch of triage
 # ---------------------------------------------------------------------------
 
@@ -129,10 +201,20 @@ account_agent = Agent(
     name="account_specialist",
     instructions=(
         "You're an account specialist. Help with password resets, email changes, "
-        "and account access. Use ask_account_data to look up the customer's "
-        "account record when relevant."
+        "and account access.\n"
+        "\n"
+        "Memory: call `recall` first with a query that captures what you want "
+        "to know about the user (e.g. 'preferred notification channel', "
+        "'recovery email on file'). Use the returned facts to personalize your "
+        "answer. When the user shares a new preference or fact worth keeping, "
+        "call `remember` with content that future turns will benefit from. "
+        "Memories are keyed by the calling user, not by this conversation — "
+        "they persist across handoffs and across sessions.\n"
+        "\n"
+        "Use ask_account_data for live account-record lookups via the Genie space."
     ),
     tools=[
+        *account_memory_tools,
         genie_tool(
             "$ACCOUNT_GENIE_SPACE_ID",  # resolved from env at startup
             name="ask_account_data",

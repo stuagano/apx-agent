@@ -28,9 +28,25 @@
 
 import { Command } from 'commander';
 
+import {
+  registerConsolidateCommand,
+  type ConsolidateCommandDeps,
+} from './commands/consolidate.js';
+import {
+  registerExamplesCommand,
+  type ExamplesCommandDeps,
+} from './commands/examples.js';
 import { registerInfoCommand, type InfoCommandDeps } from './commands/info.js';
 import { registerLintCommand, type LintCommandDeps } from './commands/lint.js';
 import { registerListCommand, type ListCommandDeps } from './commands/list.js';
+import {
+  registerMemoryCommand,
+  type MemoryCommandDeps,
+} from './commands/memory.js';
+import {
+  registerMineCommand,
+  type MineCommandDeps,
+} from './commands/mine.js';
 import { registerTestCommand, type TestCommandDeps } from './commands/test.js';
 import { registerVersionCommand } from './commands/version.js';
 
@@ -39,6 +55,10 @@ export interface BuildProgramDeps {
   lint?: LintCommandDeps;
   list?: ListCommandDeps;
   test?: TestCommandDeps;
+  memory?: MemoryCommandDeps;
+  examples?: ExamplesCommandDeps;
+  mine?: MineCommandDeps;
+  consolidate?: ConsolidateCommandDeps;
 }
 
 /**
@@ -57,6 +77,14 @@ export function buildProgram(deps: BuildProgramDeps = {}): Command {
   registerLintCommand(program, deps.lint);
   registerListCommand(program, deps.list);
   registerTestCommand(program, deps.test);
+  registerMemoryCommand(program, deps.memory);
+  registerExamplesCommand(program, deps.examples);
+  // Attach mine / consolidate AFTER the parent groups so they extend the
+  // existing 'examples' / 'memory' commands rather than create duplicates.
+  // (The registrars are idempotent — they look up the group, falling back
+  // to create — but explicit ordering keeps the intent obvious.)
+  registerMineCommand(program, deps.mine);
+  registerConsolidateCommand(program, deps.consolidate);
 
   return program;
 }

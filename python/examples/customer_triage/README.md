@@ -25,6 +25,7 @@ The `triage` LlmAgent calls `classify_intent` (a UC function) on the user's quer
 | `Dependencies.Workspace` injection | `get_recent_orders` — user-scoped SQL via OBO |
 | `vector_search_tool` | `technical_specialist` agent — docs retrieval |
 | `genie_tool` | `account_specialist` agent — natural-language account data |
+| `InMemoryMemoryStore` + `make_memory_tools` | `account_specialist` — principal-keyed `recall` / `remember` / `forget` for prefs that outlive the session |
 | `HandoffAgent` | Top-level — routes to specialists mid-conversation |
 | Resource auto-declaration | `apx deploy` walks the tree, declares everything to MLflow |
 | Eval (`evalset.jsonl`) | 8 queries spanning the four intent buckets |
@@ -68,6 +69,89 @@ apx eval evalset.jsonl --module agent:agent --model databricks-claude-sonnet-4-6
 ```
 
 The evalset checks routing accuracy — each query has an `expected_intent` field. With Mosaic AI Agent Evaluation's default scorers, you'll get correctness and relevance metrics; add a custom scorer to gate on the transfer tool that actually got called if you want strict routing-accuracy enforcement.
+
+## Memory
+
+The `account_specialist` sub-agent is the one with memory wired in.
+
+**Why account, not billing or technical?** Account work leans hardest on per-user preferences: preferred notification channel, language, recovery email, security-event history. Billing is transactional (UC governs the order data already). Technical leans on docs retrieval more than on remembered facts about the user. So `account_specialist` gets the memory store; the other two sub-agents stay clean.
+
+**What's wired in:**
+
+```python
+# In agent.py
+account_memory_store = InMemoryMemoryStore()  # see lakebase swap below
+account_memory_tools = make_memory_tools(
+    store=account_memory_store,
+    default_principal_id="user:alice",
+    namespace_default="profile",
+)
+
+account_agent = Agent(
+    name="account_specialist",
+    instructions="... call `recall` first ... call `remember` when the user shares a new preference ...",
+    tools=[*account_memory_tools, genie_tool(...)],
+)
+```
+
+`make_memory_tools` mints three `@tool`-decorated callables — `recall`, `remember`, `forget` — closed over the store. The LLM sees them as ordinary tools and decides when to invoke them per the instructions.
+
+**The recall + remember pattern alongside HandoffAgent:**
+
+Memory is keyed by `principal_id`, not by `session_id`. That's the load-bearing fact for handoff routing:
+
+- A turn routed `triage -> billing` and back to `triage -> account` finds the same memories — they're scoped to *the user*, not to *the conversation*.
+- A new conversation tomorrow under a brand-new `session_id` for the same user still sees yesterday's memories.
+- Memory survives sub-agent restarts, container redeploys, and (with a durable store) full process restarts.
+
+This is why memory and sessions are sibling primitives, not nested. Sessions hold short-lived conversational state. Memory holds long-lived facts about a principal.
+
+**Swap to `LakebaseMemoryStore` for production:**
+
+```python
+from sqlalchemy import create_engine, event
+from databricks.sdk import WorkspaceClient
+from apx_agent import LakebaseMemoryStore
+
+ws = WorkspaceClient()
+engine = create_engine("postgresql+psycopg://app@<host>:5432/agentdb")
+
+@event.listens_for(engine, "do_connect")
+def add_oauth_token(_dialect, _record, _args, kwargs):
+    cred = ws.database.generate_database_credential(
+        instance_names=["my-lakebase-instance"], request_id="customer-triage",
+    )
+    kwargs["password"] = cred.token
+
+def embed(texts):
+    return ws.serving_endpoints.query(
+        name="databricks-gte-large-en", inputs={"input": list(texts)}
+    ).predictions
+
+account_memory_store = LakebaseMemoryStore(
+    engine=engine, embedding_fn=embed, embedding_dim=1024,
+)
+```
+
+See [`docs/lakebase-recipe.md`](../../../docs/lakebase-recipe.md) for the full Lakebase provisioning + pgvector walkthrough, including the `principal_id` index and the ivfflat tuning knob.
+
+**Resolving `principal_id` in production:**
+
+The seeded example pins `default_principal_id="user:alice"` so local dev runs end-to-end without auth wiring. In a real deployment, swap that for the calling user's identity:
+
+```python
+def _resolve_principal() -> str | None:
+    # Pull from the per-request OBO WorkspaceClient — wired in by the harness.
+    ws = WorkspaceClient()
+    me = ws.current_user.me()
+    return f"user:{me.user_name}" if me.user_name else None
+
+account_memory_tools = make_memory_tools(
+    store=account_memory_store,
+    principal_id_resolver=_resolve_principal,
+    namespace_default="profile",
+)
+```
 
 ## Sessions
 
