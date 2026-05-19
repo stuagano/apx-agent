@@ -6,6 +6,8 @@ Covers:
   - prompt_injection_heuristic catches known patterns, lets normal text
     through, accepts both message-list and string inputs.
   - ToolAllowlist / ToolDenylist gate by tool name.
+  - FeatureFlagGuard gates listed tools by external flag provider; allows
+    everything else; raises PermissionError on disabled flags.
   - compose chains callbacks in order and short-circuits on the first
     non-None return (for input_guardrails-style hooks).
 """
@@ -18,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from apx_agent import (
+    FeatureFlagGuard,
     RateLimit,
     ToolAllowlist,
     ToolDenylist,
@@ -188,6 +191,98 @@ def test_tool_allowlist_custom_message() -> None:
     al = ToolAllowlist({"x"}, message="custom denial")
     with pytest.raises(PermissionError, match="custom denial"):
         al("not_in_list", {})
+
+
+# ---------------------------------------------------------------------------
+# FeatureFlagGuard
+# ---------------------------------------------------------------------------
+
+
+def test_feature_flag_guard_allows_ungated_tool() -> None:
+    """Tools not listed in ``gates`` are always allowed."""
+    guard = FeatureFlagGuard(
+        provider=lambda flag: False,  # provider always says off
+        gates={"premium_tool": "premium_v2"},  # gates only the premium tool
+    )
+    guard("basic_tool", {})  # no raise — ungated
+
+
+def test_feature_flag_guard_allows_gated_tool_when_flag_enabled() -> None:
+    calls: list[str] = []
+
+    def flags(name: str) -> bool:
+        calls.append(name)
+        return True
+
+    guard = FeatureFlagGuard(provider=flags, gates={"premium_tool": "premium_v2"})
+    guard("premium_tool", {})
+    assert calls == ["premium_v2"]  # provider asked for the configured flag name
+
+
+def test_feature_flag_guard_rejects_gated_tool_when_flag_disabled() -> None:
+    guard = FeatureFlagGuard(
+        provider=lambda name: False,
+        gates={"premium_tool": "premium_v2"},
+    )
+    with pytest.raises(PermissionError, match="premium_tool.*premium_v2"):
+        guard("premium_tool", {})
+
+
+def test_feature_flag_guard_provider_called_only_for_gated_tools() -> None:
+    """Ungated tool should not trigger a provider call (cost matters at scale)."""
+    calls: list[str] = []
+    guard = FeatureFlagGuard(
+        provider=lambda name: calls.append(name) or False,
+        gates={"premium_tool": "premium_v2"},
+    )
+    guard("basic_tool", {})
+    assert calls == []
+
+
+def test_feature_flag_guard_custom_message() -> None:
+    guard = FeatureFlagGuard(
+        provider=lambda name: False,
+        gates={"x": "f"},
+        message="not yet GA in your tier",
+    )
+    with pytest.raises(PermissionError, match="not yet GA in your tier"):
+        guard("x", {})
+
+
+def test_feature_flag_guard_rejects_non_callable_provider() -> None:
+    with pytest.raises(TypeError, match="callable"):
+        FeatureFlagGuard(provider="not callable", gates={})  # type: ignore[arg-type]
+
+
+def test_feature_flag_guard_composes_with_other_guards() -> None:
+    """FeatureFlagGuard works in compose() alongside other before_tool guards."""
+    chain = compose(
+        ToolAllowlist({"premium_tool", "basic_tool", "experimental_tool"}),
+        FeatureFlagGuard(
+            provider=lambda name: name == "premium_v2",  # premium_v2 is on, others off
+            gates={"premium_tool": "premium_v2", "experimental_tool": "experimental"},
+        ),
+    )
+    chain("basic_tool", {})  # allowlist OK, ungated by flag guard
+    chain("premium_tool", {})  # allowlist OK + flag on
+    with pytest.raises(PermissionError, match="experimental_tool.*experimental"):
+        chain("experimental_tool", {})  # allowlist OK, flag off → flag guard rejects
+
+
+def test_feature_flag_guard_provider_can_see_per_user_context_via_closure() -> None:
+    """Documented pattern: capture user identity in the provider closure."""
+    user_id = "alice@example.com"
+    enabled_for: dict[str, set[str]] = {"premium_v2": {"alice@example.com"}}
+
+    def flags_for_user(flag_name: str) -> bool:
+        return user_id in enabled_for.get(flag_name, set())
+
+    guard = FeatureFlagGuard(provider=flags_for_user, gates={"premium_tool": "premium_v2"})
+    guard("premium_tool", {})  # alice has premium_v2 → allowed
+
+    user_id = "bob@example.com"
+    with pytest.raises(PermissionError):
+        guard("premium_tool", {})  # bob does not → rejected
 
 
 # ---------------------------------------------------------------------------
