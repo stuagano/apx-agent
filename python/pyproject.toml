@@ -30,7 +30,11 @@ langgraph = [
 uc = [
     "unitycatalog-ai>=0.1.0",
 ]
-all = ["apx-agent[eval,langgraph,uc]"]
+lakebase = [
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
+]
+all = ["apx-agent[eval,langgraph,uc,lakebase]"]
 
 [dependency-groups]
 dev = [

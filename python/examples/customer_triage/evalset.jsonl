@@ -1,0 +1,8 @@
+{"request": "I got charged twice for my last order — can I get a refund?", "expected_intent": "billing"}
+{"request": "The dashboard keeps showing a 500 error when I try to export.", "expected_intent": "technical"}
+{"request": "I can't log in — my password reset email never arrived.", "expected_intent": "account"}
+{"request": "How much did I spend last month?", "expected_intent": "billing"}
+{"request": "Your API is returning 429 way more than it used to.", "expected_intent": "technical"}
+{"request": "How do I change the email on my account?", "expected_intent": "account"}
+{"request": "Just wanted to say thanks for the new feature!", "expected_intent": "other"}
+{"request": "Can you tell me what time it is in Tokyo?", "expected_intent": "other"}

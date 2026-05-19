@@ -86,6 +86,7 @@ from ._session import (
     load_or_create_session,
 )
 from ._session_delta import DeltaSessionStore
+from ._session_lakebase import LakebaseSessionStore
 
 # Databricks Managed MCP integration
 from ._managed_mcp import (
@@ -174,6 +175,7 @@ __all__ = [
     "SessionStore",
     "InMemorySessionStore",
     "DeltaSessionStore",
+    "LakebaseSessionStore",
     "append_turn",
     "load_or_create_session",
     # Managed MCP

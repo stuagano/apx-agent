@@ -232,6 +232,51 @@ def test_publish_tools_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert "agent_consumers" in result.output  # the grant is printed
 
 
+# ---------------------------------------------------------------------------
+# `apx info`
+# ---------------------------------------------------------------------------
+
+
+def test_info_text_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["info", "--module", "tmp_test_agent:agent"])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    assert "Agent loaded from tmp_test_agent:agent" in result.output
+    assert "classify_intent" in result.output
+    assert "UC: main.tools.classify_intent" in result.output
+    assert "agent_consumers" in result.output  # grant surfaced
+    assert "Declared resources" in result.output
+    assert "uc_function" in result.output
+    assert "genie_space" in result.output
+
+
+def test_info_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["info", "--module", "tmp_test_agent:agent", "--format", "json"],
+    )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    parsed = json.loads(result.output)
+    assert parsed["module"] == "tmp_test_agent:agent"
+    assert any(t["name"] == "classify_intent" for t in parsed["tools"])
+    classify = next(t for t in parsed["tools"] if t["name"] == "classify_intent")
+    assert classify["uc_name"] == "main.tools.classify_intent"
+    assert classify["grants"] == ["agent_consumers"]
+    kinds = {r["kind"] for r in parsed["resources"]}
+    assert {"uc_function", "genie_space"}.issubset(kinds)
+
+
 def test_publish_tools_no_uc_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "tmp_empty.py").write_text(textwrap.dedent("""
         from apx_agent import Agent
