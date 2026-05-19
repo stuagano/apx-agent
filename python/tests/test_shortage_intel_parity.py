@@ -1,11 +1,14 @@
 """Structural parity test: apx-agent DSL vs. Rand's hand-written LangGraph.
 
-The reference repo at
-``/Users/stuart.gano/Documents/Ahkbar/shortage-intelligence-agent-main`` is
-the customer's hand-rolled Mosaic AI + LangGraph version of the shortage
-intelligence pipeline. We claim the apx-agent DSL version at
+The reference repo is the customer's hand-rolled Mosaic AI + LangGraph version
+of the shortage intelligence pipeline. We claim the apx-agent DSL version at
 ``examples/shortage_intelligence_compile_demo.py`` compiles to a functionally
 equivalent LangGraph runtime.
+
+To run the line-count parity check (``test_dsl_is_smaller_than_reference_boilerplate``),
+set the ``APX_REFERENCE_REPO_DIR`` env var to the absolute path of the customer's
+``shortage-intelligence-agent-main`` checkout. Without it, only that test skips
+(with a clear message); the topology and OBO-closure tests run regardless.
 
 This test proves:
 
@@ -30,10 +33,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# These are core framework dependencies, not optional extras. A missing import
-# means the test environment is broken — fail loudly instead of silently skipping.
-import langgraph  # noqa: F401
-import langchain_core  # noqa: F401
+# langgraph + langchain_core are optional extras (see [project.optional-dependencies]
+# in python/pyproject.toml). Skip the whole module if they aren't installed —
+# the parity test is meaningful only when the compile-to-langgraph path is exercisable.
+pytest.importorskip("langgraph")
+pytest.importorskip("langchain_core")
 
 # Make the examples/ directory importable.
 _EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
@@ -65,7 +69,8 @@ def _stub_chat_databricks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # ---------------------------------------------------------------------------
 # What Rand's reference pipeline produces — the structural target.
-# Pulled from /Users/stuart.gano/Documents/Ahkbar/shortage-intelligence-agent-main/src/shortage_intel/graph.py
+# Sourced from the customer's ``src/shortage_intel/graph.py`` — see
+# ``$APX_REFERENCE_REPO_DIR`` for the local path on contributor machines.
 # ---------------------------------------------------------------------------
 
 REFERENCE_NODE_NAMES = [
@@ -163,28 +168,37 @@ class TestLineOfCodeDelta:
     argument.
     """
 
-    REF_BOILERPLATE = [
-        Path(
-            "/Users/stuart.gano/Documents/Ahkbar/shortage-intelligence-agent-main/"
-            "src/shortage_intel/app.py"
-        ),
-        Path(
-            "/Users/stuart.gano/Documents/Ahkbar/shortage-intelligence-agent-main/"
-            "src/shortage_intel/auth.py"
-        ),
-        Path(
-            "/Users/stuart.gano/Documents/Ahkbar/shortage-intelligence-agent-main/"
-            "src/shortage_intel/graph.py"
-        ),
-    ]
+    _REF_BOILERPLATE_RELATIVE = (
+        "src/shortage_intel/app.py",
+        "src/shortage_intel/auth.py",
+        "src/shortage_intel/graph.py",
+    )
 
     APX_DEMO = Path(__file__).resolve().parent.parent / "examples" / (
         "shortage_intelligence_compile_demo.py"
     )
 
+    @classmethod
+    def _ref_boilerplate(cls) -> list[Path] | None:
+        """Resolve reference boilerplate paths from ``$APX_REFERENCE_REPO_DIR``.
+
+        Returns None when the env var is unset or the resolved paths don't all
+        exist. Caller skips the test with an informative message in that case.
+        """
+        import os
+        base = os.environ.get("APX_REFERENCE_REPO_DIR")
+        if not base:
+            return None
+        paths = [Path(base) / rel for rel in cls._REF_BOILERPLATE_RELATIVE]
+        return paths if all(p.exists() for p in paths) else None
+
     def test_dsl_is_smaller_than_reference_boilerplate(self) -> None:
-        if not all(p.exists() for p in self.REF_BOILERPLATE):
-            pytest.skip("Reference repo not present on this machine — skipping.")
+        REF_BOILERPLATE = self._ref_boilerplate()
+        if REF_BOILERPLATE is None:
+            pytest.skip(
+                "Set APX_REFERENCE_REPO_DIR to the customer's "
+                "shortage-intelligence-agent-main checkout to run this comparison."
+            )
 
         def _loc(p: Path) -> int:
             return sum(
@@ -193,7 +207,7 @@ class TestLineOfCodeDelta:
                 if line.strip() and not line.strip().startswith("#")
             )
 
-        ref_boilerplate = sum(_loc(p) for p in self.REF_BOILERPLATE)
+        ref_boilerplate = sum(_loc(p) for p in REF_BOILERPLATE)
         apx_total = _loc(self.APX_DEMO)
         reduction_pct = round((1 - apx_total / ref_boilerplate) * 100)
 
