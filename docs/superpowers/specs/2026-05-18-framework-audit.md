@@ -121,16 +121,9 @@ This belongs in:
 - The framework's CHANGELOG when a release is cut
 - A migration note in the docs (probably `docs/superpowers/migrations/`)
 
-### D.3 The shortage-intelligence-agent customer fork
+### D.3 The shortage-intelligence-agent customer fork — ✅ resolved (Option 1)
 
-`Ahkbar/shortage-intelligence-agent-main` is the customer's hand-rolled version that the marriage consolidated. It's still on disk, still being edited (we just spent today's earlier turns improving it). Options:
-1. **Delete it** — the canonical version now lives in apx-agent/python/examples/. Loss: the "before" snapshot is only in git history.
-2. **Convert it to a thin import** — `from apx_agent ...` + a tiny project-specific config layer. Customer keeps owning their repo; framework stays the single source of truth.
-3. **Leave both, accept drift** — costs maintenance, breaks the marriage premise.
-
-Option 2 is the structurally right move if Rand (the customer) is going to keep iterating on the deployment specifics. Option 1 is cleaner if the customer is happy to upstream and consume from `python/examples/`.
-
-**Status: still open as of merge.** Customer fork not yet consolidated.
+`Ahkbar/shortage-intelligence-agent-main` no longer exists on disk as of 2026-05-19. Effectively Option 1 was taken: the canonical version now lives at `apx-agent/python/examples/shortage-intelligence-agent/`; the "before" snapshot is preserved in git history. The parity test still references the customer fork as a *line-count yardstick* but now reads its location from `APX_REFERENCE_REPO_DIR` and skips gracefully when the repo isn't present.
 
 ---
 
@@ -139,10 +132,10 @@ Option 2 is the structurally right move if Rand (the customer) is going to keep 
 | Finding | Severity | Action |
 |---|---|---|
 | `_compile.py::_build_chat_databricks` was private but used everywhere implicitly. The provider-quirk defense should be a public, named pattern users can apply to tool-internal LLM calls. | ✅ Resolved | Shipped via `apx_agent.get_llm` (Section A Option 1). `_build_chat_databricks` now delegates. |
-| Framework's `python/pyproject.toml` lists `langgraph` both as core dep AND in optional `[project.optional-dependencies].langgraph`. Confusing. Pick one. | Low | Remove from optional |
+| ~~Framework's `python/pyproject.toml` lists `langgraph` both as core dep AND in optional `[project.optional-dependencies].langgraph`.~~ Retracted — audit was wrong. langgraph has always been only in `[project.optional-dependencies].langgraph`; lazy-imported via `_compile.py` at runtime. The earlier confusion led to a regression in `b6278f7` (changed `importorskip` to hard `import`) which has now been reverted. | n/a | None |
 | Example's `pyproject.toml` had `apx-agent = { path = "../../src", editable = true }` — wrong path (apx-agent's pyproject is at `../../`, not `../../src`). | Low | Fixed in marriage commit |
 | `_metadata.py` is referenced in `[tool.apx.metadata]` but I didn't verify it exists / is generated. Untracked file? Bootstrap artifact? | Low | Audit |
-| Parity test depends on a hardcoded absolute path (`/Users/stuart.gano/Documents/Ahkbar/...`) to the customer repo. Fine for the author, broken for anyone else. | Medium | Make path configurable via env var or skip with explanation |
+| ~~Parity test depends on a hardcoded absolute path~~ ✅ Resolved. Now reads from `APX_REFERENCE_REPO_DIR`; skips with an actionable message when unset or path missing. | n/a | Shipped |
 | Multiple example directories on disk with similar names (`shortage_intelligence/`, `shortage-intelligence-agent/`, `shortage_intelligence_compile_demo.py`). Easy to confuse. | Low | Consolidate or label clearly |
 
 ---
@@ -176,6 +169,8 @@ Items closed since this audit was written:
 | Section D.2 — `core/__init__.py` migration | `1c84b2a` (this branch deletes it; example users can follow) |
 | Section E — `_build_chat_databricks` public-factory promotion | `cf9a94a` (this branch) |
 | Section E — example pyproject editable-path fix | `1c84b2a` (this branch) |
+| Section E — parity test hardcoded customer-repo path | this commit (env var `APX_REFERENCE_REPO_DIR`) |
+| Section D.3 — customer fork consolidation | implicitly resolved (Option 1: fork deleted from disk) |
 
 Items still open:
 
@@ -184,8 +179,7 @@ Items still open:
 - **Section B** — multimodal first-class surface.
 - **Section B (cross-language)** — TS still lacks session/callback/CLI parity with Python.
 - **Section C** — Python-only `Dependencies.*` system; deliberate decision needed.
-- **Section D.3** — customer fork consolidation.
-- **Section E** — pyproject langgraph dep duplication, `_metadata.py` audit, hardcoded parity-test path, example directory naming cleanup.
+- **Section E** — `_metadata.py` audit (low priority), example directory naming cleanup (no longer real after re-check — only `shortage-intelligence-agent/` full example + `shortage_intelligence_compile_demo.py` parity counterpart remain, each with a clear purpose).
 - **New observation (post-merge)**: the `agent_tool` primitive from this branch is genuinely new (not redundant with `@tool` decorator, callbacks, or `publish_to_supervisor` — different concerns each) but is **not yet documented in the gap-plan or README**. Worth folding into the framework's composition story alongside Sequential/Parallel/Loop/Router/Handoff/Remote.
 
 The living source of truth for what's next is `docs/future-work/gap-plan-2026-05-18.md`.
