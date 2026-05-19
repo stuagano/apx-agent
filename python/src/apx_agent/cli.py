@@ -1600,5 +1600,183 @@ def canary_analyze(
         click.echo(f"Best error rate: v{best_errors.version} ({best_errors.error_rate * 100:.2f}%)")
 
 
+# ---------------------------------------------------------------------------
+# watchdog — read-side compliance posture inspection
+# ---------------------------------------------------------------------------
+
+
+_ENV_VIOLATIONS_TABLE = "APX_WATCHDOG_VIOLATIONS_TABLE"
+_ENV_MCP_URL = "APX_WATCHDOG_MCP_URL"
+_ENV_MCP_TOOL = "APX_WATCHDOG_MCP_TOOL_NAME"
+
+
+@main.group()
+def watchdog() -> None:
+    """Inspect databricks-watchdog compliance posture from the CLI.
+
+    Reads the UC violations table and watchdog's MCP tools without
+    needing to load the agent. Configure once via env vars:
+
+      APX_WATCHDOG_VIOLATIONS_TABLE=catalog.schema.violations
+      APX_WATCHDOG_MCP_URL=https://watchdog.example.com/mcp
+      APX_WATCHDOG_MCP_TOOL_NAME=evaluate_operation
+    """
+
+
+@watchdog.command("violations")
+@click.option("--table", "violations_table", default=None,
+              help=f"Three-part UC name of the watchdog violations table. "
+                   f"Falls back to ${_ENV_VIOLATIONS_TABLE}.")
+@click.option("--agent", "agent_name", default=None,
+              help="Filter to violations for this agent_name.")
+@click.option("--hours", default=24, type=int, help="Lookback window. Default 24h.")
+@click.option("--limit", default=50, type=int, help="Max rows. Default 50.")
+@click.option("--warehouse-id", default=None, help="SQL warehouse for the read.")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def watchdog_violations(
+    violations_table: str | None,
+    agent_name: str | None,
+    hours: int,
+    limit: int,
+    warehouse_id: str | None,
+    fmt: str,
+) -> None:
+    """Recent reject / redact decisions reported by WatchdogGuard."""
+    import os
+
+    table = violations_table or os.environ.get(_ENV_VIOLATIONS_TABLE)
+    if not table:
+        raise click.UsageError(
+            f"Pass --table catalog.schema.table or set {_ENV_VIOLATIONS_TABLE}."
+        )
+    if table.count(".") != 2:
+        raise click.UsageError(
+            f"--table must be a three-part UC name; got {table!r}"
+        )
+
+    from databricks.sdk import WorkspaceClient
+
+    from apx_agent import run_sql
+
+    where_parts: list[str] = [
+        f"ts > CURRENT_TIMESTAMP - INTERVAL {hours} HOUR",
+    ]
+    if agent_name:
+        # _sql_str_literal isn't exported; inline the escape rules.
+        escaped = agent_name.replace("'", "''")
+        where_parts.append(f"agent_name = '{escaped}'")
+    sql = (
+        f"SELECT ts, agent_name, operation, action, reason, "
+        f"  policy_id, domain, context, metadata "
+        f"FROM {table} "
+        f"WHERE {' AND '.join(where_parts)} "
+        f"ORDER BY ts DESC "
+        f"LIMIT {limit}"
+    )
+
+    try:
+        rows = run_sql(WorkspaceClient(), sql, warehouse_id=warehouse_id)
+    except Exception as e:
+        raise click.ClickException(f"Failed to read violations: {e}") from e
+
+    if fmt == "json":
+        click.echo(json.dumps(rows, indent=2, default=str))
+        return
+
+    click.echo(f"# violations on {table} (last {hours}h"
+               + (f", agent={agent_name}" if agent_name else "")
+               + f", limit {limit})")
+    if not rows:
+        click.echo("No violations matched.")
+        return
+    click.echo(f"{'TS':<24}  {'AGENT':<20}  {'OP':<14}  "
+               f"{'ACTION':<8}  {'POLICY':<24}  REASON")
+    for r in rows:
+        ts = str(r.get("ts") or "")[:23]
+        click.echo(
+            f"{ts:<24}  "
+            f"{(r.get('agent_name') or '-'):<20}  "
+            f"{(r.get('operation') or '-'):<14}  "
+            f"{(r.get('action') or '-'):<8}  "
+            f"{(r.get('policy_id') or '-'):<24}  "
+            f"{(r.get('reason') or '-')}"
+        )
+
+
+@watchdog.command("status")
+@click.option("--agent", "agent_name", default=None,
+              help="Agent name to query posture for. Optional; some watchdog "
+                   "tools return workspace-wide status when omitted.")
+@click.option("--mcp-url", default=None,
+              help=f"Watchdog MCP endpoint URL. Falls back to ${_ENV_MCP_URL}.")
+@click.option("--mcp-tool", "mcp_tool_name", default=None,
+              help=f"MCP tool name to invoke. Falls back to ${_ENV_MCP_TOOL}.")
+@click.option("--timeout", "timeout_seconds", default=5.0, type=float,
+              help="MCP call timeout. Default 5s.")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def watchdog_status(
+    agent_name: str | None,
+    mcp_url: str | None,
+    mcp_tool_name: str | None,
+    timeout_seconds: float,
+    fmt: str,
+) -> None:
+    """Query a watchdog MCP tool for the agent's compliance posture."""
+    import os
+
+    url = mcp_url or os.environ.get(_ENV_MCP_URL)
+    tool_name = mcp_tool_name or os.environ.get(_ENV_MCP_TOOL)
+    if not url:
+        raise click.UsageError(
+            f"Pass --mcp-url or set {_ENV_MCP_URL}."
+        )
+    if not tool_name:
+        raise click.UsageError(
+            f"Pass --mcp-tool or set {_ENV_MCP_TOOL}."
+        )
+
+    from apx_agent import WatchdogClient, make_mcp_transport
+
+    transport = make_mcp_transport(
+        url, tool_name=tool_name, timeout_seconds=timeout_seconds,
+    )
+    client = WatchdogClient(transport=transport)
+    decision = client.evaluate(
+        operation="status",
+        context={"agent_name": agent_name} if agent_name else {},
+    )
+
+    payload = {
+        "action": decision.action,
+        "reason": decision.reason,
+        "policy_id": decision.policy_id,
+        "domain": decision.domain,
+        "metadata": decision.metadata,
+    }
+
+    if fmt == "json":
+        click.echo(json.dumps(payload, indent=2, default=str))
+        return
+
+    click.echo(f"# watchdog status"
+               + (f" for agent={agent_name}" if agent_name else "")
+               + f" via {tool_name}")
+    click.echo(f"  action:     {decision.action}")
+    if decision.reason:
+        click.echo(f"  reason:     {decision.reason}")
+    if decision.policy_id:
+        click.echo(f"  policy_id:  {decision.policy_id}")
+    if decision.domain:
+        click.echo(f"  domain:     {decision.domain}")
+    if decision.metadata:
+        click.echo(f"  metadata:   {json.dumps(decision.metadata, default=str)}")
+
+
 if __name__ == "__main__":
     main()
