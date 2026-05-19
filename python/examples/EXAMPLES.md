@@ -6,7 +6,7 @@ Quick index — what each example does and which direction data/auth flows.
 
 | Example | What it does |
 |---------|-------------|
-| [databricks-builder-app](./databricks-builder-app/) | **Full-stack reference app** — multi-user chat UI with streaming, session resumption, per-request auth, and MLflow tracing. Shows how to build a production app on `ClaudeSDKClient` + `McpSSEServerConfig`. |
+| [databricks-builder-app](./databricks-builder-app/) | **Full-stack reference app** — multi-user chat UI with streaming, session resumption, per-request auth, and MLflow tracing. Runs the [Claude Code Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) (`ClaudeSDKClient` + `McpSSEServerConfig`) and uses apx-agent's `safe_span` + `set_audit_attrs` so the trace stream lands under the standard `apx.*` schema. Complement to apx-agent for builder/IDE-style flows; apx-agent itself is for Mosaic AI ChatAgent deployments. |
 
 ## Agents & Apps
 
@@ -37,7 +37,7 @@ These two patterns are **not interchangeable**. Pick based on which direction au
 
 | Pattern | Direction | Auth flows to | Use when |
 |---------|-----------|---------------|----------|
-| [slack-uc-mcp](./slack-uc-mcp/) ⚠️ *Private Preview* | Databricks → Slack | Slack OAuth2 (via UC u2m) | Genie / Agent Bricks / custom agent reads Slack as the calling user — UC handles per-user OAuth, exchange, refresh |
+| [slack-uc-mcp](./slack-uc-mcp/) ⚠️ *Private Preview* | Databricks → Slack | Slack OAuth2 (via UC u2m) | Genie / Agent Bricks / custom agent reads Slack as the calling user — UC handles per-user OAuth, exchange, refresh. Ships `slack_history_tool` + `slack_post_tool` apx-agent factories that wrap the pattern with `ResourceSpec` declarations and request-context user-identity resolution. |
 | [slack-agent](./slack-agent/) | Slack → Databricks | Databricks OIDC | Slack-initiated flow — slash command in Slack runs an agent with the Slack user's Databricks identity |
 
 **Default to [slack-uc-mcp](./slack-uc-mcp/)** for most Databricks ↔ Slack integrations. It's a Databricks-native config (UC External Connection pointed at `mcp.slack.com/mcp`) — no custom app, no token storage, no refresh logic. Each Databricks user authorizes Slack OAuth once; UC stores and replays their token. Governance and per-user channel permissions are enforced automatically.

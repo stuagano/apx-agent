@@ -163,12 +163,31 @@ DELETE /ajax-api/2.1/unity-catalog/connections/slack_mcp/user-credentials/${USER
 
 The agent runs **as the SP**. It receives the calling user's identity from its own context (e.g. Databricks Apps' `X-Forwarded-User-Email`, or a query param) and passes it to UC as the `with-user-identity` header.
 
+### Recommended: use the apx-agent tool factories
+
+`slack_tools.py` wraps the raw `serving_endpoints.http_request` pattern into proper apx-agent tools — `slack_history_tool` and `slack_post_tool` — that declare a `ResourceSpec` for the connection (so `log_agent` picks it up), resolve `user_identity` from the calling user's request context, and surface Slack API errors as structured tool output.
+
+```python
+from apx_agent import Agent
+from examples.slack_uc_mcp.slack_tools import slack_history_tool, slack_post_tool
+
+agent = Agent(
+    instructions="You answer questions from Slack channels.",
+    tools=[
+        slack_history_tool(connection="slack_mcp"),
+        slack_post_tool(connection="slack_mcp"),
+    ],
+)
+```
+
+The `user_identity` resolves from the request context's `slack_user_identity` key, set by the calling app's session bootstrap (or by a UC table lookup from the calling Databricks user). Falls back to the `SLACK_USER_IDENTITY` env var for batch / dev use.
+
+### Raw pattern (no framework, for reference)
+
 ```python
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import ExternalFunctionRequestHttpMethod
 
-# SP-authenticated client. This is the ONLY principal with access to the
-# connection — humans cannot authenticate as it.
 ws = WorkspaceClient(
     client_id=os.environ["SP_CLIENT_ID"],
     client_secret=os.environ["SP_CLIENT_SECRET"],
@@ -185,7 +204,7 @@ response = ws.serving_endpoints.http_request(
 
 UC looks up `calling_user_id`'s stored Slack credentials, injects the user's access token onto the outbound call, and Slack enforces per-channel permissions for that user. If the user isn't in the channel, Slack returns `not_in_channel` — the SP's identity is irrelevant.
 
-See [`agent_example.py`](./agent_example.py) for a runnable reference.
+See [`agent_example.py`](./agent_example.py) for the runnable raw reference; [`slack_tools.py`](./slack_tools.py) for the apx-agent factory wrapping the same primitive.
 
 ### Inside Genie / Agent Bricks
 

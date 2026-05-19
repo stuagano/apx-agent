@@ -2,15 +2,27 @@
 
 > **Security Notice:** This application wraps Claude Code. Projects created within the app by different users are not strongly isolated from each other (this project doesn't implement solutions like Firecracker microVM or Docker to isolate Claude sessions from the app). Only grant access to users you trust.
 
-A reference implementation of a production Databricks app built on the [apx-agent SDK](https://github.com/stuagano/apx-agent). It demonstrates how to embed the SDK in a multi-user FastAPI backend with real-time streaming, session resumption, per-request credential injection, and MLflow tracing.
+A reference implementation of a production Databricks app that runs **Claude Code agent sessions** in a multi-user FastAPI backend with real-time streaming, session resumption, per-request credential injection, and MLflow tracing.
+
+The agent runtime is the [Claude Code Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) (`claude_agent_sdk` Python package) — it spawns a Claude subprocess per request, hands it the Databricks workspace as a tool surface via MCP, and streams the response back to the React frontend. This is a **complement to [apx-agent](https://github.com/stuagano/apx-agent)**, not the same thing:
+
+| Concern | apx-agent | databricks-builder-app |
+|---|---|---|
+| Agent runtime | Databricks Mosaic AI (Model Serving + ChatAgent) | Claude Code subprocess (`ClaudeSDKClient`) |
+| Tool discovery | UC functions, Genie spaces, Vector Search, etc. | Databricks MCP server (71 tools over SSE) |
+| Hosting | Model Serving endpoint or Databricks App | Databricks App only |
+| Deploy unit | `log_agent` → MLflow model → `databricks agents.deploy` | `databricks bundle deploy` |
+| Best for | Production agents the platform routes traffic to | Developer-facing builder/IDE-style flows |
+
+**Where apx-agent shows up in this app:** Conversation persistence reuses the `LakebaseSessionStore` pattern, MLflow tracing uses `apx_agent.safe_span` + `set_audit_attrs` so the trace stream carries the same `apx.*` span schema as Mosaic AI deployments, and the Databricks MCP gateway exposes the same primitives that apx-agent's tool factories wrap. The two surfaces share the auth/OBO + tracing/audit conventions — pick the runtime that matches your use case.
 
 Users interact through a React chat UI. Each message spawns a Claude agent session via `ClaudeSDKClient`, which connects to a running `databricks-mcp-server` process (over SSE) for Databricks tool execution.
 
 Optionally, the app can also serve as an **MCP server** for [Genie Code](https://docs.databricks.com/en/genie/genie-code.html) and other MCP clients, exposing all 71+ Databricks tools via the MCP protocol at `/mcp`.
 
-## SDK Usage
+## Claude Code Agent SDK usage
 
-This app is built on `claude_agent_sdk` from [apx-agent](https://github.com/stuagano/apx-agent). The core pattern in `server/services/agent.py`:
+The core agent pattern in `server/services/agent.py`:
 
 ```python
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
@@ -42,6 +54,26 @@ Key SDK features demonstrated:
 - **`include_partial_messages=True`** — token-by-token streaming to the frontend
 - **`resume=session_id`** — conversation continuity across HTTP requests
 - **`can_use_tool` / `HookMatcher`** — per-tool permission callbacks
+
+## apx-agent integration
+
+`server/services/apx_integration.py` wires apx-agent's tracing + audit-attrs helpers around each Claude session so traces emitted by this app land under the same `apx.*` span schema as agents deployed via apx-agent's `log_agent`/Model Serving path:
+
+```python
+from apx_agent import safe_span, set_audit_attrs, hash_for_audit
+
+with safe_span("apx.invoke", span_type="AGENT") as span:
+    set_audit_attrs(
+        span,
+        agent_name=project_id,
+        principal_id_hash=hash_for_audit(user_email),
+        model=options.model or "claude-sonnet-4",
+    )
+    async with ClaudeSDKClient(options=options) as client:
+        ...
+```
+
+Same convention any apx-agent deployment uses — the trace stream is identical in shape whether the agent is a Mosaic AI ChatAgent or a Claude Code subprocess. Cost reports, watchdog dashboards, and `apx export-traces` all work on this app's traces without special-casing.
 
 ## Architecture Overview
 
