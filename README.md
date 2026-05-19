@@ -88,6 +88,8 @@ apx canary deploy --endpoint customer_triage --model main.agents.x --version 42 
 apx canary analyze --endpoint customer_triage --hours 24    # per-version requests / errors / latency
 apx canary promote --endpoint customer_triage --model main.agents.x --version 42
 apx canary rollback --endpoint customer_triage --model main.agents.x --version 41
+apx watchdog violations --hours 24       # recent reject/redact decisions from the UC table
+apx watchdog status --agent customer_triage  # current posture via watchdog's MCP tool
 ```
 
 All commands that take an agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`).

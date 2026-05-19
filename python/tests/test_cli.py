@@ -528,6 +528,186 @@ def test_deploy_no_experiment_when_absent(
 
 
 # ---------------------------------------------------------------------------
+# `apx watchdog violations` / `apx watchdog status`
+# ---------------------------------------------------------------------------
+
+
+def test_watchdog_violations_requires_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APX_WATCHDOG_VIOLATIONS_TABLE", raising=False)
+    runner = CliRunner()
+    result = runner.invoke(main, ["watchdog", "violations"])
+    assert result.exit_code != 0
+    assert "table" in result.output.lower() or "table" in (result.stderr or "").lower()
+
+
+def test_watchdog_violations_table_must_be_three_part() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["watchdog", "violations", "--table", "not_three_parts"],
+    )
+    assert result.exit_code != 0
+    assert "three-part" in result.output
+
+
+def test_watchdog_violations_falls_back_to_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APX_WATCHDOG_VIOLATIONS_TABLE", "main.watchdog.violations")
+    rows = [
+        {
+            "ts": "2026-05-19 08:00:00",
+            "agent_name": "triage",
+            "operation": "tool_call",
+            "action": "reject",
+            "reason": "PII access denied",
+            "policy_id": "pii-001",
+            "domain": "security",
+            "context": "{}",
+            "metadata": "{}",
+        },
+    ]
+
+    runner = CliRunner()
+    fake_ws_cls = MagicMock()
+    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+         patch("apx_agent.run_sql", return_value=rows) as mock_sql:
+        result = runner.invoke(main, ["watchdog", "violations"])
+
+    assert result.exit_code == 0, result.output
+    assert "main.watchdog.violations" in mock_sql.call_args.args[1]
+
+
+def test_watchdog_violations_filters_by_agent_and_hours() -> None:
+    runner = CliRunner()
+    fake_ws_cls = MagicMock()
+    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+         patch("apx_agent.run_sql", return_value=[]) as mock_sql:
+        runner.invoke(main, [
+            "watchdog", "violations",
+            "--table", "main.watchdog.violations",
+            "--agent", "triage",
+            "--hours", "12",
+            "--limit", "5",
+        ])
+
+    sql = mock_sql.call_args.args[1]
+    assert "agent_name = 'triage'" in sql
+    assert "INTERVAL 12 HOUR" in sql
+    assert "LIMIT 5" in sql
+
+
+def test_watchdog_violations_escapes_single_quotes_in_agent_name() -> None:
+    runner = CliRunner()
+    fake_ws_cls = MagicMock()
+    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+         patch("apx_agent.run_sql", return_value=[]) as mock_sql:
+        runner.invoke(main, [
+            "watchdog", "violations",
+            "--table", "main.watchdog.violations",
+            "--agent", "user's-agent",
+        ])
+
+    sql = mock_sql.call_args.args[1]
+    assert "user''s-agent" in sql
+
+
+def test_watchdog_violations_json_output() -> None:
+    rows = [
+        {
+            "ts": "2026-05-19 08:00:00",
+            "agent_name": "triage",
+            "action": "reject",
+            "policy_id": "p-1",
+        },
+    ]
+
+    runner = CliRunner()
+    fake_ws_cls = MagicMock()
+    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+         patch("apx_agent.run_sql", return_value=rows):
+        result = runner.invoke(main, [
+            "watchdog", "violations",
+            "--table", "main.watchdog.violations",
+            "--format", "json",
+        ])
+
+    parsed = json.loads(result.output)
+    assert parsed[0]["agent_name"] == "triage"
+    assert parsed[0]["policy_id"] == "p-1"
+
+
+def test_watchdog_violations_no_rows_prints_helpful_message() -> None:
+    runner = CliRunner()
+    fake_ws_cls = MagicMock()
+    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+         patch("apx_agent.run_sql", return_value=[]):
+        result = runner.invoke(main, [
+            "watchdog", "violations",
+            "--table", "main.watchdog.violations",
+        ])
+
+    assert result.exit_code == 0
+    assert "No violations matched" in result.output
+
+
+def test_watchdog_status_requires_mcp_url_and_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APX_WATCHDOG_MCP_URL", raising=False)
+    monkeypatch.delenv("APX_WATCHDOG_MCP_TOOL_NAME", raising=False)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["watchdog", "status"])
+    assert result.exit_code != 0
+    assert "mcp-url" in result.output.lower() or "APX_WATCHDOG_MCP_URL" in result.output
+
+
+def test_watchdog_status_falls_back_to_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APX_WATCHDOG_MCP_URL", "https://watchdog.example.com/mcp")
+    monkeypatch.setenv("APX_WATCHDOG_MCP_TOOL_NAME", "posture_status")
+
+    fake_transport = MagicMock(return_value={
+        "action": "allow",
+        "reason": "no open violations",
+        "policy_id": None,
+        "domain": "security",
+    })
+
+    runner = CliRunner()
+    with patch("apx_agent.make_mcp_transport", return_value=fake_transport):
+        result = runner.invoke(main, ["watchdog", "status", "--agent", "triage"])
+
+    assert result.exit_code == 0, result.output
+    assert "allow" in result.output
+    assert "no open violations" in result.output
+    # The transport was invoked with our operation + context
+    request = fake_transport.call_args.args[0]
+    assert request["operation"] == "status"
+    assert request["context"]["agent_name"] == "triage"
+
+
+def test_watchdog_status_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_transport = MagicMock(return_value={
+        "action": "reject",
+        "reason": "PII tag missing",
+        "policy_id": "p-7",
+        "domain": "security",
+        "metadata": {"owner": "data-team@x.com"},
+    })
+
+    runner = CliRunner()
+    with patch("apx_agent.make_mcp_transport", return_value=fake_transport):
+        result = runner.invoke(main, [
+            "watchdog", "status",
+            "--mcp-url", "https://watchdog.example.com/mcp",
+            "--mcp-tool", "posture_status",
+            "--agent", "triage",
+            "--format", "json",
+        ])
+
+    parsed = json.loads(result.output)
+    assert parsed["action"] == "reject"
+    assert parsed["policy_id"] == "p-7"
+    assert parsed["metadata"] == {"owner": "data-team@x.com"}
+
+
+# ---------------------------------------------------------------------------
 # `apx cost`
 # ---------------------------------------------------------------------------
 
