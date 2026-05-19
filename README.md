@@ -37,6 +37,24 @@ Composable agent patterns for multi-step orchestration. The LLM doesn't pick the
 | **HandoffAgent** | Peer handoff mid-conversation (triage → billing) |
 | **RemoteAgent** | Cross-endpoint sub-agent call |
 
+When the *LLM* should decide whether to delegate (not the structure), use `agent_tool` instead — wrap any agent as a callable tool on a parent `LlmAgent`. Workflow agents compose along deterministic edges; `agent_tool` composes along LLM-driven edges.
+
+```python
+from apx_agent import Agent, agent_tool
+
+specialist = Agent(name="data_inspector",
+                   tools=[lineage_tool(), schema_tool()],
+                   instructions="You investigate data lineage.")
+
+orchestrator = Agent(tools=[
+    agent_tool(specialist,
+               name="data_inspector",
+               description="Investigate table lineage and schema questions."),
+])
+```
+
+The same wrapper handles remote agents — pass a `RemoteDatabricksAgent` or a URL string, and the parent calls it over HTTP with identity passthrough preserved.
+
 ## CLI
 
 `apx` is the command-line wrapper. Every command maps to a single library primitive — the CLI is ergonomics, not logic.
