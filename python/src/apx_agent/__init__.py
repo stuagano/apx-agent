@@ -115,6 +115,33 @@ from ._example import (
 )
 from ._memory_lakebase import LakebaseMemoryStore
 from ._example_lakebase import LakebaseExampleStore
+from ._memory_delta import DeltaMemoryStore, VectorSearchLike
+from ._example_delta import DeltaExampleStore
+
+# Agent-facing memory / example tools (LLM-callable wrappers around the stores)
+from ._memory_tools import make_memory_tools
+from ._example_tools import make_example_tools
+
+# Prompt-assembly helpers — stitch memory + example recall into a system prompt
+from ._prompt_assembly import (
+    assemble_context,
+    assemble_example_context,
+    assemble_memory_context,
+)
+
+# Example mining — extract few-shot examples from session history
+from ._example_mining import (
+    MineResult,
+    Turn as ExampleMiningTurn,
+    mine_examples,
+    pair_turns,
+)
+
+# Memory consolidation — LLM-summarize older memories into a rollup row
+from ._memory_consolidate import (
+    ConsolidateResult,
+    consolidate_memories,
+)
 
 # Databricks Managed MCP integration
 from ._managed_mcp import (
@@ -305,6 +332,24 @@ __all__ = [
     "InMemoryExampleStore",
     "LakebaseMemoryStore",
     "LakebaseExampleStore",
+    "DeltaMemoryStore",
+    "DeltaExampleStore",
+    "VectorSearchLike",
+    # Agent-facing memory / example tools
+    "make_memory_tools",
+    "make_example_tools",
+    # Prompt-assembly helpers
+    "assemble_context",
+    "assemble_example_context",
+    "assemble_memory_context",
+    # Example mining
+    "ExampleMiningTurn",
+    "MineResult",
+    "mine_examples",
+    "pair_turns",
+    # Memory consolidation
+    "ConsolidateResult",
+    "consolidate_memories",
     # Managed MCP
     "ManagedMCPEndpoint",
     "managed_mcp_urls",
