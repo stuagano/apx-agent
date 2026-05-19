@@ -28,6 +28,8 @@ import importlib
 import importlib.metadata
 import json
 import logging
+import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -112,6 +114,148 @@ def _load_agent(module_spec: str) -> Any:
             f"Module {module_path!r} has no attribute {variable!r}."
         )
     return getattr(module, variable)
+
+
+# ---------------------------------------------------------------------------
+# Deploy env-var / secret-scan helpers
+# ---------------------------------------------------------------------------
+
+# Env var name pattern that looks like a secret: KEY/TOKEN/SECRET/PASSWORD suffix.
+_SECRET_NAME_RE = re.compile(
+    r".*(_TOKEN|_KEY|_SECRET|_PASSWORD|_PASS|_PWD)$",
+    re.IGNORECASE,
+)
+
+# Detect os.environ["X"], os.environ.get("X"), os.getenv("X")
+_ENV_REF_RE = re.compile(
+    r"""os\.(?:environ\s*\[\s*|environ\.get\s*\(\s*|getenv\s*\(\s*)["']([A-Z][A-Z0-9_]*)["']""",
+)
+
+
+def _looks_like_secret(name: str) -> bool:
+    """Return True if ``name`` matches a suspicious env-var naming convention."""
+    return bool(_SECRET_NAME_RE.match(name))
+
+
+def _collect_env_keys_from_dotenv(path: Path) -> set[str]:
+    """Read KEY=value lines from a .env-style file, return the set of keys."""
+    keys: set[str] = set()
+    try:
+        text = path.read_text()
+    except Exception:
+        return keys
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        # Strip a leading 'export ' if present.
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _collect_env_keys_from_pyproject(path: Path) -> set[str]:
+    """Pull env-like keys out of a pyproject.toml.
+
+    Conservatively scans for keys that match the secret pattern anywhere in
+    the file — both in section headers and as raw string occurrences. This
+    is a heuristic; we only use it to drive a warning, never to block.
+    """
+    keys: set[str] = set()
+    try:
+        text = path.read_text()
+    except Exception:
+        return keys
+    for match in re.finditer(r"\b([A-Z][A-Z0-9_]{2,})\b", text):
+        candidate = match.group(1)
+        if _looks_like_secret(candidate):
+            keys.add(candidate)
+    return keys
+
+
+def _scan_python_env_refs(root: Path) -> set[str]:
+    """Scan .py files under ``root`` for os.environ / os.getenv references.
+
+    Returns the union of referenced env-var names. Skips common virtualenv,
+    cache, and build directories.
+    """
+    skip_dirs = {".venv", "venv", "__pycache__", "build", "dist", ".git", "node_modules"}
+    found: set[str] = set()
+    if not root.exists():
+        return found
+    for py in root.rglob("*.py"):
+        # Skip anything inside a directory we don't want to walk.
+        if any(part in skip_dirs for part in py.parts):
+            continue
+        try:
+            text = py.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for m in _ENV_REF_RE.finditer(text):
+            found.add(m.group(1))
+    return found
+
+
+def _run_secret_scan(cwd: Path) -> list[str]:
+    """Return suspicious env vars that look like secrets AND are referenced.
+
+    The scan is intentionally conservative: a name only fires the warning
+    when it both (a) looks like a secret by naming convention and (b) is
+    actually referenced via ``os.environ`` / ``os.getenv`` in the project's
+    Python sources. We additionally fold in any names that show up in
+    ``.env`` / ``.env.local`` / ``pyproject.toml`` so users get warned about
+    credentials they've staged locally.
+    """
+    referenced = _scan_python_env_refs(cwd)
+    declared: set[str] = set()
+    for fname in (".env", ".env.local"):
+        p = cwd / fname
+        if p.exists():
+            declared |= _collect_env_keys_from_dotenv(p)
+    pyproject = cwd / "pyproject.toml"
+    if pyproject.exists():
+        declared |= _collect_env_keys_from_pyproject(pyproject)
+
+    suspicious_referenced = {n for n in referenced if _looks_like_secret(n)}
+    # Names declared locally that also appear in source.
+    declared_in_use = {n for n in declared if n in referenced and _looks_like_secret(n)}
+    return sorted(suspicious_referenced | declared_in_use)
+
+
+class _EnvVarGuard:
+    """Context manager that scopes MLFLOW env-var capture controls.
+
+    On entry, sets ``MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING`` to the desired
+    value (or leaves it alone). On exit, restores whatever was there before —
+    including the absent case. Defensive against polluting the caller shell.
+    """
+
+    _KEY = "MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING"
+
+    def __init__(self, capture: bool) -> None:
+        self._capture = capture
+        self._prev_present = False
+        self._prev_value: str | None = None
+
+    def __enter__(self) -> _EnvVarGuard:
+        self._prev_present = self._KEY in os.environ
+        self._prev_value = os.environ.get(self._KEY)
+        # Only force the kill-switch when capture is disabled.
+        if not self._capture:
+            os.environ[self._KEY] = "false"
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self._prev_present:
+            # mypy: prev_value is the original string when prev_present is True.
+            os.environ[self._KEY] = self._prev_value  # type: ignore[assignment]
+        else:
+            os.environ.pop(self._KEY, None)
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +534,28 @@ def eval_cmd(
     help="Friendly agent name used for the apx.agent.name UC tag. Falls back to "
          "[tool.apx.agent].name in pyproject.toml; falls back to the short part of --name.",
 )
+@click.option(
+    "--capture-env-vars/--no-capture-env-vars", default=False,
+    help="Allow MLflow to record env vars referenced in the agent's dependency "
+         "chain into the logged model artifact. OFF by default to prevent "
+         "developer-shell secrets (ATLASSIAN_API_KEY, GEMINI_API_KEY, etc.) "
+         "from being baked into the deployed image. Sets "
+         "MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING=false for the duration of "
+         "log_agent and restores the caller's environment afterward.",
+)
+@click.option(
+    "--allow-env-var", "allow_env_vars", multiple=True, metavar="NAME",
+    help="Explicitly allow a specific env var to be recorded. Repeatable: "
+         "--allow-env-var DATABRICKS_HOST --allow-env-var DATABRICKS_TOKEN. "
+         "Note: MLflow's MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING is all-or-nothing; "
+         "passing any --allow-env-var flips capture back on for everything and "
+         "prints a warning listing what you asked to allow vs the full capture "
+         "set you'll actually get.",
+)
+@click.option(
+    "--yes", "-y", "assume_yes", is_flag=True,
+    help="Skip the secret-scan confirmation prompt. Use in CI / scripts.",
+)
 def deploy(
     module: str,
     model: str,
@@ -399,6 +565,9 @@ def deploy(
     publish_tools: bool,
     set_uc_tags: bool,
     agent_name: str | None,
+    capture_env_vars: bool,
+    allow_env_vars: tuple[str, ...],
+    assume_yes: bool,
 ) -> None:
     """Log the agent to MLflow + deploy + UC-tag in one command.
 
@@ -415,6 +584,62 @@ def deploy(
     import mlflow
 
     from apx_agent import log_agent
+
+    # Resolve effective env-var-capture policy.
+    #
+    #   --no-capture-env-vars (default) + no --allow-env-var → capture OFF.
+    #   --capture-env-vars                                   → capture ON.
+    #   --allow-env-var X (with --no-capture-env-vars)       → BadParameter.
+    #   --allow-env-var X (with --capture-env-vars)          → capture ON,
+    #     warn that MLflow capture is all-or-nothing.
+    if allow_env_vars and not capture_env_vars:
+        raise click.BadParameter(
+            "--allow-env-var implies env-var capture is enabled, but "
+            "--no-capture-env-vars (the default) is set. Either drop "
+            "--allow-env-var, or pass --capture-env-vars explicitly.",
+            param_hint="--allow-env-var",
+        )
+    effective_capture = capture_env_vars
+    if allow_env_vars:
+        click.echo(
+            "# WARNING: MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING is "
+            "all-or-nothing in MLflow today. You asked to allow only "
+            f"{list(allow_env_vars)}, but capture will record EVERY env var "
+            "MLflow detects in the dependency chain.",
+            err=True,
+        )
+
+    # Pre-flight: tell the user what mode we're running in.
+    click.echo(
+        f"Logging with: env-var-capture="
+        f"{'on' if effective_capture else 'off'}, secrets-scan=on",
+    )
+
+    # Pre-flight: secret scan.
+    suspicious = _run_secret_scan(Path.cwd())
+    if suspicious and effective_capture:
+        click.echo(
+            "# WARNING: env-var capture is ON and the following names "
+            "look like secrets referenced in this project:",
+            err=True,
+        )
+        for name in suspicious:
+            click.echo(f"#   - {name}", err=True)
+        if not assume_yes:
+            click.confirm(
+                "Continue with capture enabled?",
+                default=False, abort=True,
+            )
+    elif suspicious:
+        # Capture is off, but still surface what we noticed so the user
+        # has a record of what would have leaked under the old behavior.
+        click.echo(
+            "# Note: secret-looking env vars detected in project sources "
+            "(capture is OFF so these will NOT be baked into the model):",
+            err=True,
+        )
+        for name in suspicious:
+            click.echo(f"#   - {name}", err=True)
 
     agent = _load_agent(module)
     config = _read_apx_agent_config()
@@ -446,7 +671,7 @@ def deploy(
     # 2. Log + register
     if effective_experiment:
         mlflow.set_experiment(effective_experiment)
-    with mlflow.start_run():
+    with _EnvVarGuard(capture=effective_capture), mlflow.start_run():
         info = log_agent(
             agent,
             model=model,

@@ -1,5 +1,7 @@
 # apx-agent
 
+[![CI](https://github.com/stuagano/apx-agent/actions/workflows/test.yml/badge.svg)](https://github.com/stuagano/apx-agent/actions/workflows/test.yml)
+
 A declarative framework for building governed AI agents on Databricks. Available in **Python** and **TypeScript**.
 
 ## What's here
