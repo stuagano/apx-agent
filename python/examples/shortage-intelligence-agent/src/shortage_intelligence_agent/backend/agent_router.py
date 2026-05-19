@@ -8,16 +8,15 @@ Tools are grouped by pipeline step and imported by pipeline.py.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
 import httpx
-
-from apx_agent import run_sql
+from apx_agent import Dependencies, decode_statement, get_llm, run_sql
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.dashboards import GenieMessage, MessageStatus
 
 from .config import get_settings
-from .core import Dependencies
 from .models import (
     AlternativePart,
     HistoricalPattern,
@@ -26,7 +25,6 @@ from .models import (
     VendorListing,
 )
 
-Workspace = Dependencies.Workspace
 logger = logging.getLogger(__name__)
 
 
@@ -34,10 +32,10 @@ logger = logging.getLogger(__name__)
 # Step 1: Demand Cluster Detection
 # ---------------------------------------------------------------------------
 
-async def scan_demand_clusters(
+def scan_demand_clusters(
     lookback_hours: int,
     min_customer_count: int,
-    ws: Workspace,
+    ws: Dependencies.Workspace,
 ) -> dict[str, Any]:
     """Scan internal demand orders for components requested by multiple customers
     within the lookback window. Returns structured shortage signals ranked by
@@ -46,7 +44,6 @@ async def scan_demand_clusters(
     settings = get_settings()
 
     if settings.demand_orders_table:
-        # Direct SQL path — faster and more structured than Genie
         rows = run_sql(
             ws,
             f"""
@@ -62,7 +59,9 @@ async def scan_demand_clusters(
             GROUP BY component_id, component_name
             HAVING COUNT(DISTINCT customer_id) >= {min_customer_count}
             ORDER BY customer_count DESC
+            LIMIT 15
             """,
+            warehouse_id=settings.databricks_warehouse_id or None,
         )
         signals = [
             ShortageSignal(
@@ -77,8 +76,7 @@ async def scan_demand_clusters(
             for r in rows
         ]
     elif settings.demand_genie_space_id:
-        # Genie fallback — use when orders table is not configured
-        signals = await _scan_via_genie(lookback_hours, min_customer_count, ws)
+        signals = _scan_via_genie(lookback_hours, min_customer_count, ws)
     else:
         return {
             "error": "Neither DEMAND_ORDERS_TABLE nor DEMAND_GENIE_SPACE_ID is configured."
@@ -92,10 +90,28 @@ async def scan_demand_clusters(
     }
 
 
-async def _scan_via_genie(
+def _genie_rows(ws: WorkspaceClient, space_id: str, msg: GenieMessage) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for att in msg.attachments or []:
+        if att.query is None or not att.attachment_id:
+            continue
+        try:
+            qr = ws.genie.get_message_query_result_by_attachment(
+                space_id=space_id,
+                conversation_id=msg.conversation_id,
+                message_id=msg.message_id,
+                attachment_id=att.attachment_id,
+            )
+            rows.extend(decode_statement(qr.statement_response))
+        except Exception as e:
+            logger.warning("Failed to fetch Genie query result: %s", e)
+    return rows
+
+
+def _scan_via_genie(
     lookback_hours: int,
     min_customer_count: int,
-    ws: Any,
+    ws: WorkspaceClient,
 ) -> list[ShortageSignal]:
     settings = get_settings()
     space_id = settings.demand_genie_space_id
@@ -107,52 +123,23 @@ async def _scan_via_genie(
         f"and total units requested. Return as a table."
     )
 
-    conv = ws.api_client.do(
-        "POST",
-        f"/api/2.0/genie/spaces/{space_id}/start_conversation",
-        body={"content": question},
-    )
-    conv_id = conv.get("conversation_id", "")
-    msg_id = conv.get("message_id", "")
+    msg = ws.genie.start_conversation_and_wait(space_id=space_id, content=question)
+    if msg.status != MessageStatus.COMPLETED:
+        logger.warning("Genie demand scan ended with status %s: %s", msg.status, msg.error)
+        return []
 
-    for _ in range(30):
-        msg = ws.api_client.do(
-            "GET",
-            f"/api/2.0/genie/spaces/{space_id}/conversations/{conv_id}/messages/{msg_id}",
-        )
-        status = msg.get("status", "")
-        if status == "COMPLETED":
-            break
-        if status in ("FAILED", "CANCELLED"):
-            logger.warning("Genie demand scan %s", status)
-            return []
-        await asyncio.sleep(2)
-
-    signals = []
-    for att in msg.get("attachments", []):
-        if att.get("query", {}).get("query") and att.get("attachment_id"):
-            try:
-                qr = ws.api_client.do(
-                    "GET",
-                    f"/api/2.0/genie/spaces/{space_id}/conversations/{conv_id}/messages/{msg_id}/attachments/{att['attachment_id']}/query-result",
-                )
-                cols = [c["name"] for c in qr.get("manifest", {}).get("schema", {}).get("columns", [])]
-                rows = qr.get("result", {}).get("data_array", [])
-                for row in rows:
-                    r = dict(zip(cols, row))
-                    count = int(r.get("customer_count", r.get("distinct_customers", 0)))
-                    signals.append(ShortageSignal(
-                        component_id=str(r.get("component_id", "")),
-                        component_name=str(r.get("component_name", "")),
-                        customer_count=count,
-                        earliest_request=str(r.get("earliest_request", "")),
-                        latest_request=str(r.get("latest_request", "")),
-                        total_units_requested=int(r.get("total_units_requested", r.get("units_requested", 0))),
-                        confidence="HIGH" if count >= 4 else "MEDIUM",
-                    ))
-            except Exception as e:
-                logger.warning("Failed to fetch Genie query result: %s", e)
-
+    signals: list[ShortageSignal] = []
+    for r in _genie_rows(ws, space_id, msg):
+        count = int(r.get("customer_count", r.get("distinct_customers", 0)) or 0)
+        signals.append(ShortageSignal(
+            component_id=str(r.get("component_id", "")),
+            component_name=str(r.get("component_name", "")),
+            customer_count=count,
+            earliest_request=str(r.get("earliest_request", "")),
+            latest_request=str(r.get("latest_request", "")),
+            total_units_requested=int(r.get("total_units_requested", r.get("units_requested", 0)) or 0),
+            confidence="HIGH" if count >= 4 else "MEDIUM",
+        ))
     return signals
 
 
@@ -163,7 +150,7 @@ async def _scan_via_genie(
 def find_historical_patterns(
     component_id: str,
     lookback_years: int,
-    ws: Workspace,
+    ws: Dependencies.Workspace,
 ) -> dict[str, Any]:
     """Look up historical shortage events for this component. Returns prior
     shortage occurrences, average and max price delta percentages, and average
@@ -193,6 +180,7 @@ def find_historical_patterns(
         ORDER BY event_date DESC
         LIMIT 10
         """,
+        warehouse_id=settings.databricks_warehouse_id or None,
         parameters=[{"name": "component_id", "value": component_id, "type": "STRING"}],
     )
 
@@ -220,50 +208,88 @@ def find_historical_patterns(
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Market Signal Validation
+# Step 3: Market Signal Validation — Vector Search + LLM synthesis
 # ---------------------------------------------------------------------------
 
 def validate_against_market_news(
     component_id: str,
     manufacturer: str,
+    ws: Dependencies.Workspace,
 ) -> dict[str, Any]:
-    """Ask the Knowledge Assistant whether current market reports or industry
-    news confirm a shortage signal for this component. Returns a structured
+    """Search market intelligence documents for evidence confirming or
+    contradicting a shortage signal for this component. Returns a structured
     verdict with confidence and supporting source references. Use after demand
     cluster detection to separate noise from real market events."""
     settings = get_settings()
 
-    if not settings.ka_endpoint:
+    if not (settings.vs_endpoint and settings.vs_index):
         return MarketSignal(
             component_id=component_id,
             confirmed=False,
             confidence="LOW",
             supporting_sources=[],
-            summary="KA_ENDPOINT not configured — market validation skipped.",
+            summary="Market validation not configured — set VS_ENDPOINT and VS_INDEX.",
         ).model_dump()
 
     try:
-        resp = httpx.post(
-            settings.ka_endpoint,
-            json={
-                "query": (
-                    f"Are there current market reports, analyst notes, or industry news "
-                    f"indicating a shortage or significant price movement for "
-                    f"{manufacturer} {component_id}? "
-                    f"Answer yes or no, state your confidence (HIGH/MEDIUM/LOW), "
-                    f"and cite your sources."
-                ),
-                "max_results": 5,
-            },
-            timeout=30,
+        query_text = f"{manufacturer} {component_id} shortage supply constraint pricing"
+        result = ws.vector_search_indexes.query_index(
+            index_name=settings.vs_index,
+            columns=["chunk_id", "source_file", "content"],
+            query_text=query_text,
+            num_results=5,
         )
-        resp.raise_for_status()
-        data = resp.json()
 
-        answer = data.get("answer", "")
-        sources = [r.get("title", r.get("url", "")) for r in data.get("results", [])]
-        confirmed = any(kw in answer.lower() for kw in ["yes", "confirmed", "shortage", "spike"])
-        confidence = "HIGH" if "high" in answer.lower() else ("MEDIUM" if "medium" in answer.lower() else "LOW")
+        docs: list[str] = []
+        sources: list[str] = []
+        if result.result and result.result.data_array:
+            col_names = (
+                [c.name for c in result.manifest.columns]
+                if result.manifest
+                else ["chunk_id", "source_file", "content", "score"]
+            )
+            for row in result.result.data_array:
+                r = dict(zip(col_names, row))
+                docs.append(r.get("content", ""))
+                src = r.get("source_file", "unknown")
+                if src not in sources:
+                    sources.append(src)
+
+        if not docs:
+            return MarketSignal(
+                component_id=component_id,
+                confirmed=False,
+                confidence="LOW",
+                supporting_sources=[],
+                summary=f"No market intelligence found for {manufacturer} {component_id}.",
+            ).model_dump()
+
+        # Synthesize a verdict using Sonnet — faster + cheaper than Opus for yes/no verdicts.
+        # get_llm() routes by endpoint prefix and applies provider-quirk defenses
+        # (strips temperature/top_p for GPT-5 endpoints). For Claude/Llama/Gemini it
+        # returns plain ChatDatabricks. See apx_agent._llm for the full rationale.
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        context = "\n\n---\n\n".join(docs[:5])
+        llm = get_llm("databricks-claude-sonnet-4-6")
+        verdict = llm.invoke([
+            SystemMessage(content=(
+                "You are a semiconductor market analyst. Based on the market intelligence "
+                "documents provided, determine whether there is evidence of a shortage or "
+                "significant price movement for the specified component. "
+                "Respond with: CONFIRMED or UNCONFIRMED, confidence (HIGH/MEDIUM/LOW), "
+                "and a 2-3 sentence summary citing specific evidence from the documents."
+            )),
+            HumanMessage(content=(
+                f"Component: {manufacturer} {component_id}\n\n"
+                f"Market Intelligence Documents:\n{context}"
+            )),
+        ])
+
+        answer = verdict.content
+        answer_upper = answer.upper()
+        confirmed = "CONFIRMED" in answer_upper and "UNCONFIRMED" not in answer_upper
+        confidence = "HIGH" if "HIGH" in answer_upper else ("MEDIUM" if "MEDIUM" in answer_upper else "LOW")
 
         return MarketSignal(
             component_id=component_id,
@@ -274,13 +300,13 @@ def validate_against_market_news(
         ).model_dump()
 
     except Exception as e:
-        logger.warning("KA validation failed for %s: %s", component_id, e)
+        logger.warning("Vector Search validation failed for %s: %s", component_id, e)
         return MarketSignal(
             component_id=component_id,
             confirmed=False,
             confidence="LOW",
             supporting_sources=[],
-            summary=f"Market validation unavailable: {e}",
+            summary=f"Market validation error: {e}",
         ).model_dump()
 
 
@@ -315,7 +341,7 @@ def check_vendor_availability(part_numbers: list[str]) -> dict[str, Any]:
         }
 
     token = _get_digikey_token(settings.digikey_client_id, settings.digikey_client_secret)
-    listings = []
+    listings: list[dict[str, Any]] = []
 
     for part_number in part_numbers:
         try:
@@ -371,7 +397,7 @@ def _get_digikey_token(client_id: str, client_secret: str) -> str:
 def find_alternative_parts(
     component_id: str,
     max_results: int,
-    ws: Workspace,
+    ws: Dependencies.Workspace,
 ) -> dict[str, Any]:
     """Search the parts catalog for alternative components that meet the same
     electrical specifications as the flagged part but come from different
@@ -414,6 +440,7 @@ def find_alternative_parts(
         ORDER BY spec_match_score DESC
         LIMIT {max_results}
         """,
+        warehouse_id=settings.databricks_warehouse_id or None,
         parameters=[{"name": "component_id", "value": component_id, "type": "STRING"}],
     )
 
@@ -434,6 +461,12 @@ def find_alternative_parts(
         "alternatives_found": len(alternatives),
         "alternatives": alternatives,
     }
+
+
+# ---------------------------------------------------------------------------
+# Ad-hoc Genie exploration — provided by the framework's genie_query_tool
+# factory when the agent is composed. See pipeline.py.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

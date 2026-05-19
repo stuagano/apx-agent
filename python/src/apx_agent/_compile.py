@@ -1,7 +1,7 @@
 """Compile apx-agent declarative agents to a LangGraph runtime.
 
 Translates apx-agent's BaseAgent tree into a LangGraph StateGraph that runs on
-Databricks' supported primitives (LangGraph + langchain-databricks). Tools
+Databricks' supported primitives (LangGraph + databricks-langchain). Tools
 expressed as plain typed Python functions are adapted into langchain
 StructuredTools; FastAPI ``Dependencies.*`` parameters are resolved at compile
 time and captured in closures so the LLM never sees them.
@@ -191,26 +191,15 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
 
 
 def _build_chat_databricks(endpoint: str) -> Any:
-    """Return a ChatDatabricks bound to ``endpoint`` that strips ``temperature``.
+    """Build the ChatDatabricks for an agent's compile path.
 
-    Anthropic models served on Databricks (Claude Opus/Sonnet) reject the
-    ``temperature`` field; ``ChatDatabricks`` always sends it. We subclass to
-    pop it before send. Lazy-imported so apx-agent doesn't hard-require
-    ``databricks-langchain`` unless the compile path is exercised.
-
-    Uses ``databricks_langchain`` (the maintained package) — the older
-    ``langchain-databricks`` is pinned to ``langchain-core<0.4`` and can't
-    co-exist with ``langchain>=1.0`` / ``langgraph>=1.0``.
+    Delegates to the public ``get_llm`` factory, which routes by endpoint
+    prefix and applies provider-specific quirk defenses (e.g., stripping
+    ``temperature``/``top_p`` for GPT-5 family endpoints). See
+    ``apx_agent._llm`` for the full provider-compat rationale.
     """
-    from databricks_langchain import ChatDatabricks
-
-    class _NoTempChatDatabricks(ChatDatabricks):
-        def _prepare_inputs(self, messages, stop=None, **kwargs):  # type: ignore[override]
-            data = super()._prepare_inputs(messages, stop, **kwargs)
-            data.pop("temperature", None)
-            return data
-
-    return _NoTempChatDatabricks(endpoint=endpoint)
+    from ._llm import get_llm
+    return get_llm(endpoint)
 
 
 # ---------------------------------------------------------------------------

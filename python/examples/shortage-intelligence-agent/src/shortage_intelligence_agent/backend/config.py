@@ -5,18 +5,22 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # LLM model serving endpoint
-    agent_model: str = "databricks-claude-sonnet-4-6"
+    agent_model: str = "databricks-claude-opus-4-7"
 
-    # Genie space for internal demand orders (alternative to direct SQL)
-    demand_genie_space_id: str = ""
-
-    # Knowledge Assistant endpoint for market report validation
-    ka_endpoint: str = ""
+    # SQL warehouse ID (run_sql auto-discovers if unset)
+    databricks_warehouse_id: str = ""
 
     # Unity Catalog tables — configure per environment
     historical_demand_table: str = ""   # catalog.schema.shortage_history
     demand_orders_table: str = ""        # catalog.schema.demand_orders
     parts_catalog_table: str = ""        # catalog.schema.parts_catalog
+
+    # Genie space for natural-language SQL exploration
+    demand_genie_space_id: str = ""
+
+    # Vector Search for market intelligence validation
+    vs_endpoint: str = ""
+    vs_index: str = ""
 
     # DigiKey API OAuth2 credentials
     digikey_client_id: str = ""
