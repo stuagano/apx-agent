@@ -295,3 +295,84 @@ export type {
   LintableTool,
   LintAgentOptions,
 } from './lint.js';
+
+// @tool decorator equivalent — defineUcTool factory + UC publish
+export { defineUcTool, getToolMetadata } from './tool.js';
+export type { ToolMetadata, DefineUcToolOptions } from './tool.js';
+export { publishToolsToUc } from './tool-publish.js';
+export type {
+  UcFunctionClient,
+  WsClient,
+  PublishResult,
+  PublishToolsToUcOptions,
+} from './tool-publish.js';
+
+// Mosaic AI Supervisor Agent publishing
+export {
+  _slug as supervisorToolSlug,
+  createSupervisorAgent,
+  publishToSupervisor,
+} from './publish.js';
+export type {
+  SupervisorAgent,
+  SupervisorTool,
+  SupervisorAgentsClient,
+} from './publish.js';
+
+// Watchdog — full compliance posture integration
+export {
+  makeWatchdogDecision,
+  noOpTransport,
+  WatchdogClient,
+  WatchdogGuard,
+  emitAgentMetadata,
+  setUcTagsForAgent,
+  makeUcViolationWriter,
+  makeMcpTransport,
+  makeWatchdogTransport,
+} from './watchdog.js';
+export type {
+  WatchdogDecision,
+  TransportFn,
+  WatchdogClientOptions,
+  EvaluateOpts as WatchdogEvaluateOpts,
+  WatchdogGuardOptions,
+  InputGuard,
+  OutputGuard,
+  BeforeTool,
+  BeforeModel,
+  ToolDescriptor,
+  EmitAgentMetadataOptions,
+  AgentMetadata,
+  MlflowTagClient,
+  SetUcTagsOptions,
+  SqlExecutor as WatchdogSqlExecutor,
+  MakeUcViolationWriterOptions,
+  McpToolCallFn,
+  MakeMcpTransportOptions,
+  MakeWatchdogTransportOptions,
+} from './watchdog.js';
+
+// Durable session stores — Delta + Lakebase (Postgres)
+export { DeltaSessionStore } from './session-delta.js';
+export type {
+  SqlQueryExecutor as DeltaQueryExecutor,
+  SqlExecExecutor as DeltaExecExecutor,
+  DeltaSessionStoreOptions,
+} from './session-delta.js';
+export { LakebaseSessionStore } from './session-lakebase.js';
+export type {
+  PgQueryExecutor,
+  PgExecExecutor,
+  LakebaseSessionStoreOptions,
+} from './session-lakebase.js';
+
+// Mosaic AI Agent Evaluation wrapper
+export { evaluate, extractMessages, extractResponseText } from './evaluate.js';
+export type {
+  EvalMessage,
+  MlflowEvaluateArgs,
+  MlflowEvaluateFn,
+  MlflowSetExperimentFn,
+  EvalOptions,
+} from './evaluate.js';
