@@ -46,8 +46,8 @@ from ._wiring import create_app, setup_agent
 # Eval bridge
 from ._eval import app_predict_fn
 
-# Genie tool factory
-from .genie import genie_tool
+# Genie tool factories
+from .genie import genie_query_tool, genie_tool
 
 # Unity Catalog tool factories
 from .catalog import catalog_tool, lineage_tool, schema_tool, uc_function_tool
@@ -113,6 +113,7 @@ __all__ = [
     # Eval
     "app_predict_fn",
     # Tool factories
+    "genie_query_tool",
     "genie_tool",
     "catalog_tool",
     "lineage_tool",
