@@ -90,6 +90,10 @@ apx canary promote --endpoint customer_triage --model main.agents.x --version 42
 apx canary rollback --endpoint customer_triage --model main.agents.x --version 41
 apx watchdog violations --hours 24       # recent reject/redact decisions from the UC table
 apx watchdog status --agent customer_triage  # current posture via watchdog's MCP tool
+apx memory recall --principal-id user:alice --query "notification preferences"  # semantic recall
+apx memory remember --principal-id user:alice --content "..." --importance 0.8
+apx examples find --agent-id triage --query "why is my bill high?" -k 5
+apx examples save --agent-id triage --input "..." --output "..." --score 0.9
 ```
 
 All commands that take an agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`).
@@ -782,6 +786,86 @@ Custom stores satisfy the `SessionStore` protocol (`get`/`put`/`delete`) — bri
 `LakebaseSessionStore` takes a SQLAlchemy `Engine` and stays narrow on SQL — the caller wires up OAuth token rotation on the engine. Install with `pip install 'apx-agent[lakebase]'`.
 
 When `custom_inputs["session_id"]` is absent the framework silently runs single-turn — the same compiled agent works in both modes.
+
+## Memory bank — long-lived recall across conversations
+
+Sessions hold a single conversation. **MemoryBank** holds durable facts per principal (user, customer, agent) with semantic recall. Same backing stores as sessions (Lakebase pgvector, Delta + Vector Search), different access pattern: `principal_id` + `namespace` scoping, vector retrieval by query.
+
+```python
+from apx_agent import LakebaseMemoryStore, make_memory_tools, assemble_memory_context
+
+# Caller wires the embedding source — no SDK import inside the package.
+def embed(texts):
+    return ws.serving_endpoints.query(
+        name="databricks-bge-large-en", inputs={"input": list(texts)}
+    ).predictions
+
+store = LakebaseMemoryStore(
+    engine=engine,
+    embedding_fn=embed,
+    embedding_dim=1024,
+)
+
+# Write
+store.add(
+    principal_id="user:alice",
+    content="Prefers email summaries on Mondays, not Slack pings.",
+    namespace="profile",
+    tags=["preference", "notification"],
+    importance=0.8,
+)
+
+# Read (semantic)
+hits = store.recall(
+    principal_id="user:alice",
+    query="how should I notify alice?",
+    namespace="profile",
+    k=3,
+)
+```
+
+Use it three ways:
+
+1. **As tools the LLM calls** — `make_memory_tools(store, principal_id_resolver=...)` returns `recall` / `remember` / `forget` callables bound to the store.
+2. **As prompt-assembly** — `assemble_memory_context(store, opts={"principal_id": ..., "query": ...})` returns a markdown block to prepend to `instructions`.
+3. **As raw CRUD** — `store.add` / `recall` / `list` / `update` / `delete` for offline batch flows.
+
+Stores: `InMemoryMemoryStore` (dev/tests), `LakebaseMemoryStore` (pgvector, low-latency chat-style), `DeltaMemoryStore` (Delta with optional `VectorSearchClient` delegation for managed indices, client-side cosine fallback, or recency-only fallback).
+
+**Consolidation**: `consolidate_memories(store, principal_id, summarize_fn=...)` LLM-summarizes older/low-importance memories into a rollup row (with optional deletion of originals). Keeps the bank tractable as it grows.
+
+## Example bank — few-shot retrieval
+
+Same shape as MemoryBank, different scope key: `agent_id` + `intent`. Stores per-agent input/output exemplars used for in-context learning. `findSimilar` ranks by similarity of the *input* field (so "examples whose inputs look like this query" works).
+
+```python
+from apx_agent import LakebaseExampleStore, mine_examples
+
+store = LakebaseExampleStore(engine=engine, embedding_fn=embed, embedding_dim=1024)
+
+# Cold-start from real session history
+result = mine_examples(
+    session_store=session_store,
+    example_store=store,
+    agent_id="triage",
+    score_fn=lambda turn: heuristic_score(turn),  # optional
+    min_score=0.6,
+)
+print(f"Added {result.examples_added} examples from {result.sessions_scanned} sessions")
+```
+
+CLI parity for both:
+
+```bash
+apx memory recall   --principal-id user:alice --query "notification preferences" -k 3
+apx memory remember --principal-id user:alice --content "..." --importance 0.8
+apx examples find   --agent-id triage --query "why is my bill high?" -k 5
+apx examples save   --agent-id triage --input "..." --output "..." --score 0.9
+```
+
+Store loaded via `--store-module MODULE:VAR` or `[tool.apx.agent].memory_store` / `example_store` in `pyproject.toml`.
+
+A worked example lives in `python/examples/memory_demo/` — seeded memories, recall/remember tools wired in, prompt assembly building the system prompt at every turn.
 
 ## Publish — register as a Supervisor sub-agent
 

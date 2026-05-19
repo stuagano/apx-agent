@@ -1,25 +1,20 @@
 """memory_demo — wire memory + examples into one agent end-to-end.
 
 This is the canonical 'how do I bolt memory and few-shot examples onto an
-apx-agent' worked example. Chosen as a new standalone demo (Option B) rather
-than retrofitting customer_triage because:
-
-  * customer_triage is a HandoffAgent over four LlmAgents — injecting a
-    dynamic-instructions recall block per sub-agent is a fair bit of surgery
-    for a demo whose point is the wiring shape, not the routing graph.
-  * A small, single-file example keeps the moving parts visible: one store,
-    one principal, two tools, one agent. New users grok it in one screen.
+apx-agent' worked example.
 
 What this file demonstrates:
 
   1. Wire an :class:`InMemoryMemoryStore` and :class:`InMemoryExampleStore`
-     at module load. (Lakebase variants drop in cleanly when persistence
-     matters.)
+     at module load. (Lakebase / Delta variants drop in cleanly when
+     persistence matters.)
   2. Pre-seed memories + few-shot examples for a fake principal.
-  3. Expose ``recall`` and ``remember`` tools the agent can call mid-turn.
-  4. Show how a system prompt can prepend a memory-recall block — the
-     "assemble_context" pattern — by reading from the store at compile time
-     for the demo prompt.
+  3. Wire ``recall`` / ``remember`` / ``forget`` tools via
+     :func:`make_memory_tools` so the LLM can call them mid-turn.
+  4. Build the system prompt via :func:`assemble_context`, which pulls
+     relevant memories and few-shot examples from the stores and formats
+     them as markdown. In a session-aware deployment this runs per turn
+     from a callback; in this demo it runs once at module load.
   5. Print the round-trip end-to-end (no LLM call required — store recall
      and the remember tool both run pure-Python, so the demo is reproducible
      without a serving endpoint).
@@ -28,25 +23,17 @@ Run::
 
     cd python
     uv run python -m examples.memory_demo.app
-
-Aside on the inline tools: the framework currently doesn't ship a
-``make_memory_tools`` helper, so the ``recall`` and ``remember`` tools below
-are defined inline against the store. Once that helper lands, the inline
-definitions can be replaced with a one-liner — the agent shape is unchanged.
 """
 
 from __future__ import annotations
-
-import json
 
 from apx_agent import (
     Agent,
     InMemoryExampleStore,
     InMemoryMemoryStore,
-    tool,
+    assemble_context,
+    make_memory_tools,
 )
-from apx_agent._example import FindSimilarOptions
-from apx_agent._memory import RecallOptions
 
 # ---------------------------------------------------------------------------
 # 1. Wire stores at module load. In production these are typically Lakebase-
@@ -104,75 +91,52 @@ for ex in [
 
 
 # ---------------------------------------------------------------------------
-# 3. Inline recall / remember tools the agent can call.
-# Real deployments wire these via a yet-to-land make_memory_tools helper;
-# the inline form below is identical in behavior and keeps the demo
-# self-contained.
+# 3. Build the agent's tool set via the framework's make_memory_tools helper.
+# These are @tool-decorated callables bound to the store; the LLM can invoke
+# them mid-turn to recall facts or persist new ones.
 # ---------------------------------------------------------------------------
 
 
-@tool
-def recall(query: str) -> str:
-    """Recall memories about the current user matching QUERY.
-
-    Returns a JSON list of {content, score} dicts, top-3.
-    """
-    results = memory_store.recall(
-        RecallOptions(principal_id=PRINCIPAL_ID, query=query, k=3)
-    )
-    return json.dumps(
-        [{"content": r.memory.content, "score": r.score} for r in results],
-        indent=2,
-    )
-
-
-@tool
-def remember(content: str) -> str:
-    """Save a new long-lived memory about the current user.
-
-    Returns the new memory id.
-    """
-    m = memory_store.add({
-        "principal_id": PRINCIPAL_ID,
-        "namespace": "profile",
-        "content": content,
-    })
-    return m.id
+memory_tools = make_memory_tools(
+    store=memory_store,
+    default_principal_id=PRINCIPAL_ID,
+    namespace_default="profile",
+)
 
 
 # ---------------------------------------------------------------------------
-# 4. Build the agent's system prompt with a recall block + few-shot examples
-# resolved at module load. This is the "assemble_context" pattern: read from
-# the stores, format the relevant bits, and prepend them to the static
-# instructions. In a session-aware deployment this happens per-turn from a
-# callback instead.
+# 4. Build the agent's system prompt via assemble_context — pulls relevant
+# memories + few-shot examples from the stores and renders them as markdown
+# blocks. In a session-aware deployment this runs per turn from a callback;
+# here we resolve once for the demo prompt.
 # ---------------------------------------------------------------------------
-
-
-def _assemble_context(query_hint: str) -> str:
-    """Build a system-prompt prefix with relevant memories + examples."""
-    mems = memory_store.recall(
-        RecallOptions(principal_id=PRINCIPAL_ID, query=query_hint, k=3)
-    )
-    exs = example_store.find_similar(
-        FindSimilarOptions(agent_id=AGENT_ID, query=query_hint, k=2)
-    )
-
-    parts: list[str] = []
-    parts.append("# What we know about the user")
-    for r in mems:
-        parts.append(f"- {r.memory.content}")
-    parts.append("")
-    parts.append("# Example interactions for this agent")
-    for r in exs:
-        parts.append(f"- user: {r.example.input}")
-        parts.append(f"  assistant: {r.example.output}")
-    return "\n".join(parts)
 
 
 DEMO_QUERY = "what seat do I usually pick?"
+CONTEXT_BLOCK = assemble_context(
+    memory={
+        "store": memory_store,
+        "opts": {
+            "principal_id": PRINCIPAL_ID,
+            "query": DEMO_QUERY,
+            "k": 3,
+        },
+        "header": "### What we know about the user",
+    },
+    examples={
+        "store": example_store,
+        "opts": {
+            "agent_id": AGENT_ID,
+            "query": DEMO_QUERY,
+            "k": 2,
+        },
+        "header": "### Example interactions for this agent",
+    },
+)
+
+
 SYSTEM_PROMPT = (
-    _assemble_context(DEMO_QUERY)
+    CONTEXT_BLOCK
     + "\n\n"
     + "You are a helpful travel concierge for the named user. Use the recall "
     + "tool to look up additional facts mid-conversation. Use remember to "
@@ -183,7 +147,7 @@ SYSTEM_PROMPT = (
 agent = Agent(
     name=AGENT_ID,
     instructions=SYSTEM_PROMPT,
-    tools=[recall, remember],
+    tools=memory_tools,
 )
 
 
@@ -194,8 +158,19 @@ agent = Agent(
 # ---------------------------------------------------------------------------
 
 
+def _find_tool(name: str):
+    """Locate a tool by its decorated name in the `memory_tools` list."""
+    for fn in memory_tools:
+        if getattr(fn, "__name__", "") == name:
+            return fn
+    raise LookupError(f"tool {name!r} not in memory_tools")
+
+
 def _demo() -> None:
     """Print the recall block, run the recall tool, and persist a new memory."""
+    recall_fn = _find_tool("recall")
+    remember_fn = _find_tool("remember")
+
     print("=" * 72)
     print("memory_demo — apx-agent memory + examples worked example")
     print("=" * 72)
@@ -212,17 +187,14 @@ def _demo() -> None:
     print("-" * 72)
     print("Mid-turn `recall` tool call (what the agent would invoke)")
     print("-" * 72)
-    # Tools are decorated callables; the @tool wrapper is callable as-is.
-    recall_out = recall("what does alice prefer to eat?")  # type: ignore[operator]
-    print(recall_out)
+    print(recall_fn("what does alice prefer to eat?"))
     print()
     print("-" * 72)
     print("After-response `remember` tool call (new fact from the user)")
     print("-" * 72)
-    new_id = remember(  # type: ignore[operator]
+    print(remember_fn(
         "alice booked a hotel at SFO Marriott Marquis for 2026-06-10",
-    )
-    print(f"persisted memory id: {new_id}")
+    ))
     print()
     print("done.")
 
