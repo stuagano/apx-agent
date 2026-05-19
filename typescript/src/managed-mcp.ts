@@ -30,38 +30,19 @@
  */
 
 import { z } from 'zod';
+import type { ResourceKind, ResourceSpec } from './resources.js';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /**
- * Supported resource kinds. The first three map to a Managed MCP URL;
- * the rest are recognised but reported as `unsupported=true`.
- *
- * Defined as a string union (rather than imported from a resources module)
- * because the TS package doesn't have its own resource walker yet.
+ * Re-export the canonical resource types from `./resources.js`. The strict
+ * `ResourceKind` union and `ResourceSpec` interface live there; this module
+ * re-exports them so existing callers importing from `managed-mcp.js`
+ * continue to work.
  */
-export type ResourceKind =
-  | 'uc_function'
-  | 'genie_space'
-  | 'vector_search_index'
-  | 'serving_endpoint'
-  | 'sql_warehouse'
-  | 'uc_table'
-  | (string & {}); // allow forward-compatible unknown kinds
-
-/**
- * Minimal `ResourceSpec` shape — mirrors `apx_agent._resources.ResourceSpec`.
- *
- * Defined inline here because the TS package doesn't yet have its own
- * resources module. When the resource walker is ported, this interface
- * should move there and be re-exported.
- */
-export interface ResourceSpec {
-  readonly kind: ResourceKind;
-  readonly identifier: string;
-}
+export type { ResourceKind, ResourceSpec } from './resources.js';
 
 /**
  * A single Databricks Managed MCP endpoint.
@@ -188,7 +169,10 @@ export function managedMcpUrls(options: ManagedMcpUrlsOptions): ManagedMCPEndpoi
   const parsed = ManagedMcpUrlsOptionsSchema.parse(options);
   const host = normaliseHost(parsed.workspaceHost);
 
-  const specs: ResourceSpec[] = parsed.model
+  // Use the loose shape internally — buildUrl tolerates unknown kinds and
+  // returns null/null when no Managed MCP path applies, so unsupported
+  // kinds flow through naturally.
+  const specs: { kind: string; identifier: string }[] = parsed.model
     ? [{ kind: 'serving_endpoint', identifier: parsed.model }, ...parsed.resourceSpecs]
     : [...parsed.resourceSpecs];
 
@@ -196,7 +180,7 @@ export function managedMcpUrls(options: ManagedMcpUrlsOptions): ManagedMCPEndpoi
     const { url, oauthScope } = buildUrl(spec.kind, spec.identifier, host);
     if (url === null) {
       return Object.freeze({
-        kind: spec.kind,
+        kind: spec.kind as ResourceKind,
         identifier: spec.identifier,
         url: null,
         oauthScope: null,
@@ -204,7 +188,7 @@ export function managedMcpUrls(options: ManagedMcpUrlsOptions): ManagedMCPEndpoi
       }) as ManagedMCPEndpoint;
     }
     return Object.freeze({
-      kind: spec.kind,
+      kind: spec.kind as ResourceKind,
       identifier: spec.identifier,
       url,
       oauthScope,
