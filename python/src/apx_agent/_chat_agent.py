@@ -226,6 +226,17 @@ def chat_agent_for(
             self._model = model_endpoint
             self._session_store = session_store
 
+        def _resolve_model(self) -> str:
+            """Return the model endpoint to use for this request.
+
+            Honors the ``APX_AGENT_MODEL_OVERRIDE`` env var if set — enables
+            ``hot_swap_model`` to change a deployed agent's LLM without
+            re-logging the artifact. Falls back to the compile-time model
+            otherwise.
+            """
+            import os
+            return os.environ.get("APX_AGENT_MODEL_OVERRIDE") or self._model
+
         def _load_session(self, custom_inputs: dict[str, Any] | None) -> Session | None:
             if self._session_store is None or not custom_inputs:
                 return None
@@ -275,13 +286,14 @@ def chat_agent_for(
             user_token_provided = bool(
                 custom_inputs and custom_inputs.get("user_token")
             )
+            effective_model = self._resolve_model()
             with safe_span(
                 "ApxChatAgent.predict",
                 span_type="AGENT",
                 inputs={"messages": [m.model_dump() for m in prepended_messages]},
                 attributes={
                     AuditAttrs.OPERATION: "predict",
-                    AuditAttrs.MODEL_ENDPOINT: self._model,
+                    AuditAttrs.MODEL_ENDPOINT: effective_model,
                     AuditAttrs.MODEL_INPUT_MESSAGES: len(prepended_messages),
                     AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
                     AuditAttrs.SESSION_ID: (session.session_id if session else ""),
@@ -291,10 +303,10 @@ def chat_agent_for(
                 ws = _resolve_ws_for_request(custom_inputs)
                 with safe_span(
                     "compile_to_langgraph", span_type="CHAIN",
-                    attributes={AuditAttrs.MODEL_ENDPOINT: self._model},
+                    attributes={AuditAttrs.MODEL_ENDPOINT: effective_model},
                 ):
                     graph = compile_to_langgraph(
-                        self._agent, ws=ws, model=self._model
+                        self._agent, ws=ws, model=effective_model
                     )
 
                 lc_input = _to_langchain_messages(prepended_messages)
@@ -332,13 +344,14 @@ def chat_agent_for(
             user_token_provided = bool(
                 custom_inputs and custom_inputs.get("user_token")
             )
+            effective_model = self._resolve_model()
             with safe_span(
                 "ApxChatAgent.predict_stream",
                 span_type="AGENT",
                 inputs={"messages": [m.model_dump() for m in messages]},
                 attributes={
                     AuditAttrs.OPERATION: "predict_stream",
-                    AuditAttrs.MODEL_ENDPOINT: self._model,
+                    AuditAttrs.MODEL_ENDPOINT: effective_model,
                     AuditAttrs.MODEL_INPUT_MESSAGES: len(messages),
                     AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
                     AuditAttrs.MODEL_STREAMING: True,
@@ -346,7 +359,7 @@ def chat_agent_for(
             ) as span:
                 ws = _resolve_ws_for_request(custom_inputs)
                 graph = compile_to_langgraph(
-                    self._agent, ws=ws, model=self._model
+                    self._agent, ws=ws, model=effective_model
                 )
                 lc_input = _to_langchain_messages(messages)
                 emitted = 0

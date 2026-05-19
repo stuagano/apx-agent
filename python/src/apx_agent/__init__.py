@@ -123,6 +123,14 @@ from ._run_once import run_once
 # Static lint
 from ._lint import LintFinding, Severity, lint_agent
 
+# Hot-swap the LLM endpoint on a deployed agent without re-logging
+from ._hot_swap import (
+    APX_MODEL_OVERRIDE_ENV,
+    HotSwapResult,
+    get_active_override,
+    hot_swap_model,
+)
+
 # Trace exporter
 from ._trace_export import ExportResult, export_traces
 
@@ -137,6 +145,18 @@ from ._topology import (
 
 # Cross-agent evaluation
 from ._eval_chain import ChainCaseResult, ChainEvalReport, evaluate_chain
+
+# Canary / A-B deployment helpers
+from ._canary import (
+    CanaryConfig,
+    CanaryReport,
+    VersionMetrics,
+    analyze_canary,
+    deploy_canary,
+    get_canary_config,
+    promote_canary,
+    rollback_canary,
+)
 
 # databricks-watchdog integration
 from ._watchdog import (
@@ -270,6 +290,11 @@ __all__ = [
     "LintFinding",
     "Severity",
     "lint_agent",
+    # Hot-swap
+    "APX_MODEL_OVERRIDE_ENV",
+    "HotSwapResult",
+    "get_active_override",
+    "hot_swap_model",
     # Trace exporter
     "ExportResult",
     "export_traces",
@@ -283,6 +308,15 @@ __all__ = [
     "ChainCaseResult",
     "ChainEvalReport",
     "evaluate_chain",
+    # Canary / A-B helpers
+    "CanaryConfig",
+    "CanaryReport",
+    "VersionMetrics",
+    "analyze_canary",
+    "deploy_canary",
+    "get_canary_config",
+    "promote_canary",
+    "rollback_canary",
     # Watchdog integration
     "WatchdogClient",
     "WatchdogDecision",
