@@ -1,8 +1,13 @@
 # apx-agent Framework Audit — 2026-05-18
 
+> **Status: historical snapshot — superseded by the living gap plan.**
+> This audit captures a point-in-time view as of 2026-05-18, when the shortage-intel marriage branch (`feat/shortage-intel-marriage`) forked from main at `c2773d3`. Between then and the merge (`6eabe8a`), main shipped 15 additional commits — callbacks, `@tool` decorator + UC publish, platform tool factories (vector_search/sql/foundation_model), Managed MCP, full `apx` CLI, sessions (InMemory/Delta/Lakebase), MLflow experiments, `publish_to_supervisor`, watchdog integration. Most ADK coverage gaps this audit flagged are now closed on main.
+>
+> **The living source of truth is `docs/future-work/gap-plan-2026-05-18.md`.** This audit is preserved as the rationale trail for the work merged on `feat/shortage-intel-marriage` and the architectural decisions documented inline. Items below are reconciled against current main state — open items here are open in the gap plan too; resolved items reference the commit that closed them.
+
 ## Context
 
-This audit emerged from porting the shortage-intelligence-agent customer code (`Ahkbar/shortage-intelligence-agent-main`) into the apx-agent example (commit `1c84b2a`) and then surfacing derived framework improvements (commit `b6278f7`). The port-by-doing approach exposed real gaps in the framework's primitives, naming, and cross-language consistency. This doc captures what's left.
+This audit emerged from porting the shortage-intelligence-agent customer code (`Ahkbar/shortage-intelligence-agent-main`) into the apx-agent example (commit `1c84b2a`) and then surfacing derived framework improvements (commit `b6278f7`). The port-by-doing approach exposed real gaps in the framework's primitives, naming, and cross-language consistency. This doc captures what was found — and below, what's already been closed by parallel main work.
 
 **Already shipped on `feat/shortage-intel-marriage`:**
 - ✅ Public `decode_statement` helper for `StatementResponse` → `list[dict]`
@@ -64,18 +69,22 @@ Comparing apx-agent's surface against Google ADK's:
 | `HypothesisAgent` | ❌ | ✅ | Python parity needed |
 | `ParetoAgent` | ❌ | ✅ | Python parity needed |
 | Agent-as-tool (call another agent as a function) | ✅ `agent_tool(agent)` (shipped) | ✅ `agentTool(target)` (shipped) | — |
-| Session/state management | ⚠️ LangGraph state, no UC durability | ⚠️ Express session, no UC durability | Common backing store for session continuity |
-| Pre/post model callbacks | ⚠️ MLflow autolog covers some | ⚠️ trace.ts spans cover some | No explicit `BeforeModelHook`/`AfterModelHook` |
-| Pre/post tool callbacks | ❌ | ❌ | Both sides lack |
-| Eval framework | ✅ `app_predict_fn` → Agent Eval | ✅ eval surface | — |
-| CLI (`adk` equivalent) | ⚠️ `apx` scaffold/dev exists | ⚠️ same | Audit CLI command parity separately |
+| Session/state management | ✅ `_session.py` / `_session_delta.py` / `_session_lakebase.py` (`072a71c`, `99cfdd3`) | ⚠️ Express session, no UC durability | TS still lacks UC-durable session store |
+| Pre/post model callbacks | ✅ `_callbacks.py::before_model` / `after_model` (`e52b69a`) | ⚠️ trace.ts spans cover some | TS still lacks explicit hooks |
+| Pre/post tool callbacks | ✅ `_callbacks.py::before_tool` / `after_tool` (`e52b69a`) | ❌ | TS still lacks |
+| Eval framework | ✅ `apx_agent.evaluate` Mosaic AI wrapper (`2336238`) | ✅ eval surface | — |
+| CLI (`adk` equivalent) | ✅ `apx` full surface (`f73b965`, `d33b3b0`, `dfa7f53`) | ⚠️ none | TS still has no CLI |
 | Multimodal | ❌ | ❌ | Foundation Model API multimodal endpoints supported by ChatDatabricks but no first-class apx-agent surface |
 | Streaming | ✅ SSE in dev UI; `/invocations` streams | ✅ same | — |
 | A2A protocol | ✅ `.well-known/agent.json` mounted by `create_app` | ✅ same | — |
 
-**Two coverage gaps with the highest leverage** (post-agent_tool):
-1. **Python lacks EvolutionaryAgent / HypothesisAgent / ParetoAgent.** TS has them; Python does not. If population-based search is a real apx-agent feature, it should be a peer in both languages.
-2. **No pre/post tool callbacks.** ADK has `before_tool_callback` / `after_tool_callback` for guardrails, logging, redaction. Adding hooks here unlocks security-review patterns without modifying agent code.
+**Reconciliation against current main:** every "Two coverage gaps with the highest leverage" item from the original audit is closed except the EvolutionaryAgent/HypothesisAgent/ParetoAgent Python port. Pre/post tool callbacks shipped in `e52b69a`. The remaining open gaps are: (a) Python EA primitives parity, (b) TS-side coverage for sessions/callbacks/CLI, and (c) multimodal first-class surface.
+
+**Original open items (now closed by main):**
+1. ~~No pre/post tool callbacks.~~ → `e52b69a feat: callbacks — before/after model + fix dead before/after tool surface`. Both sides of the LLM loop now have explicit hooks.
+
+**Remaining:**
+1. **Python lacks `EvolutionaryAgent` / `HypothesisAgent` / `ParetoAgent`.** TS has them; Python does not. Worth noting: the TS implementations have pre-existing test failures (see `evolutionary-durable.test.ts`), so the port is blocked on whichever-side-fixes-the-population-store-bug-first.
 
 **B.2 Agent-as-tool — shipped.** Both `agent_tool(agent)` (Python) and `agentTool(target)` (TypeScript) wrap any agent — local or remote — as a tool callable from another `LlmAgent`. Workflow agents compose along deterministic edges; `agent_tool` composes along LLM-driven edges. The Python wrapper takes any `BaseAgent`; the TS wrapper accepts `AgentConfig | AgentExports | string` (URL). Tests in `python/tests/test_agent_tool.py` and `typescript/tests/agent-tool.test.ts`.
 
@@ -86,7 +95,7 @@ Comparing apx-agent's surface against Google ADK's:
 | Concept | Python | TypeScript | Recommendation |
 |---|---|---|---|
 | Leaf agent class | `LlmAgent` (alias: `Agent`) | `createAgentPlugin` (config-driven) | TS doesn't have a class; the symmetry is `Agent` (Python class) vs `createAgentPlugin` (TS factory). Document the asymmetry; don't force matching shapes. |
-| Tool definition | Typed function signature (no decorator) | `defineTool({...})` | Asymmetric on purpose — Python relies on type hints, TS uses Zod. Both work. Document. |
+| Tool definition | Typed function signature OR `@tool` decorator with optional UC sync (`e85b59c`) | `defineTool({...})` | Python now also supports `@tool(uc=...)` for UC-syncable tools; TS has no UC-sync equivalent. Asymmetry now wider, not narrower. |
 | Sub-agent reference | `sub_agents=["endpoints/x"]` | `subAgents: ["endpoints/x"]` | Consistent ✅ |
 | Dependency injection | `Dependencies.Workspace`, `Dependencies.UserClient`, `Dependencies.Sql` | (no equivalent; `getRequestContext()`) | The most consequential gap. Python tools express deps via type annotations; TS tools use side-channel context. Either lift TS to type-annotation injection or document the asymmetry as deliberate. |
 | Tool factory naming | `genie_tool`, `lineage_tool`, `schema_tool`, `catalog_tool`, `uc_function_tool` | `genieTool`, `lineageTool`, ... | Consistent (snake/camel by convention) ✅ |
@@ -121,6 +130,8 @@ This belongs in:
 
 Option 2 is the structurally right move if Rand (the customer) is going to keep iterating on the deployment specifics. Option 1 is cleaner if the customer is happy to upstream and consume from `python/examples/`.
 
+**Status: still open as of merge.** Customer fork not yet consolidated.
+
 ---
 
 ## E. Smaller observations
@@ -138,11 +149,43 @@ Option 2 is the structurally right move if Rand (the customer) is going to keep 
 
 ## Recommended next moves (if continuing)
 
-1. **Pick the cross-language LLM-client direction** (Section A, Options 1/2/3). Most consequential decision; everything else cascades.
-2. **Promote `_build_chat_databricks` to public `get_llm()`** (Option A.1) regardless of the bigger decision — small unblock, immediate value.
-3. **Decide on the Python ↔ TS Dependencies system** (Section C). Either document the asymmetry as intentional or schedule the TS work.
-4. **Ship `query_genie_tool` factory** (Section D.1). One file, real ergonomic win.
-5. **Customer fork consolidation** (Section D.3). Wait until the customer signals they're happy with the marriage; this is a relationship/handoff question, not a code question.
-6. **CLI parity audit** (Section B) — separate spec, would benefit from its own pass against ADK's `adk` command surface.
+1. ~~**Pick the cross-language LLM-client direction**~~ — Option 1 shipped (`cf9a94a`). Option 3 (shared `LLMClient` abstraction) remains the eventual destination.
+2. ~~**Promote `_build_chat_databricks` to public `get_llm()`**~~ — shipped (`cf9a94a`).
+3. **Decide on the Python ↔ TS Dependencies system** (Section C) — **still open**. Python now has more depending-injection surface (`@tool(uc=...)` rejects Dependencies params, etc.), widening the TS gap.
+4. ~~**Ship `query_genie_tool` factory**~~ — shipped (`19eadf1`).
+5. **Customer fork consolidation** (Section D.3) — **still open**. Relationship/handoff question.
+6. **CLI parity audit** — superseded; full `apx` CLI shipped on main (`f73b965`, `d33b3b0`, `dfa7f53`). TS still has no CLI.
 
-The first two together are probably a half-day. The Dependencies decision is a longer conversation. Customer fork consolidation depends on the customer.
+---
+
+## Status reconciliation summary (2026-05-19)
+
+Items closed since this audit was written:
+
+| Audit item | Closed by |
+|---|---|
+| Section A.1 — public `get_llm()` factory | `cf9a94a` (this branch) |
+| Section B — pre/post tool callbacks | `e52b69a` (parallel main) |
+| Section B — pre/post model callbacks | `e52b69a` (parallel main) |
+| Section B — session/state UC durability | `072a71c` + `99cfdd3` (parallel main) |
+| Section B — Mosaic AI eval wrapper | `2336238` (parallel main) |
+| Section B — CLI (full surface) | `f73b965`, `d33b3b0`, `dfa7f53` (parallel main) |
+| Section B — agent-as-tool primitive | `61d1ea8` (this branch) |
+| Section C — `@tool` decorator surface | `e85b59c` (parallel main) |
+| Section D.1 — ad-hoc Genie tool factory | `19eadf1` (this branch) |
+| Section D.2 — `core/__init__.py` migration | `1c84b2a` (this branch deletes it; example users can follow) |
+| Section E — `_build_chat_databricks` public-factory promotion | `cf9a94a` (this branch) |
+| Section E — example pyproject editable-path fix | `1c84b2a` (this branch) |
+
+Items still open:
+
+- **Section A** — full cross-language `LLMClient` abstraction (Option 3). Long-term direction, not urgent.
+- **Section B** — Python `EvolutionaryAgent` / `HypothesisAgent` / `ParetoAgent` parity with TS (TS implementations have pre-existing test failures, so blocked).
+- **Section B** — multimodal first-class surface.
+- **Section B (cross-language)** — TS still lacks session/callback/CLI parity with Python.
+- **Section C** — Python-only `Dependencies.*` system; deliberate decision needed.
+- **Section D.3** — customer fork consolidation.
+- **Section E** — pyproject langgraph dep duplication, `_metadata.py` audit, hardcoded parity-test path, example directory naming cleanup.
+- **New observation (post-merge)**: the `agent_tool` primitive from this branch is genuinely new (not redundant with `@tool` decorator, callbacks, or `publish_to_supervisor` — different concerns each) but is **not yet documented in the gap-plan or README**. Worth folding into the framework's composition story alongside Sequential/Parallel/Loop/Router/Handoff/Remote.
+
+The living source of truth for what's next is `docs/future-work/gap-plan-2026-05-18.md`.
