@@ -434,5 +434,97 @@ def mcp_config(
     click.echo(json.dumps(config, indent=2))
 
 
+# ---------------------------------------------------------------------------
+# info
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option("--module", default="agent:agent", help='Agent module spec.')
+@click.option(
+    "--format", "fmt",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
+def info(module: str, fmt: str) -> None:
+    """Introspect an agent — tools, resources, sub-agents, instructions.
+
+    Pure local — no Databricks calls. Useful as a sanity check before
+    deploy and as a programmatic source of truth for what an agent
+    declares.
+    """
+    from apx_agent._resources import (
+        _iter_sub_agents,
+        _iter_tool_fns,
+        collect_resource_specs,
+        get_resources,
+    )
+    from apx_agent._tool import get_tool_metadata
+
+    agent = _load_agent(module)
+
+    # Walk the whole tree — HandoffAgent / SequentialAgent / etc. have no
+    # _tool_fns of their own; the tools live on nested LlmAgents.
+    tool_fns = list(_iter_tool_fns(agent))
+    sub_agents = list(_iter_sub_agents(agent))
+    instructions = getattr(agent, "_instructions", None) or ""
+
+    tools_info: list[dict[str, Any]] = []
+    for fn in tool_fns:
+        meta = get_tool_metadata(fn)
+        tools_info.append({
+            "name": fn.__name__,
+            "doc": (fn.__doc__ or "").strip().splitlines()[0] if fn.__doc__ else "",
+            "uc_name": meta.uc_name if meta else None,
+            "grants": list(meta.grants) if meta else [],
+            "resources": [
+                {"kind": s.kind, "identifier": s.identifier}
+                for s in get_resources(fn)
+            ],
+        })
+
+    resource_specs = collect_resource_specs(agent)
+    resources_info = [
+        {"kind": s.kind, "identifier": s.identifier}
+        for s in resource_specs
+    ]
+
+    payload = {
+        "module": module,
+        "instructions": instructions,
+        "tools": tools_info,
+        "sub_agents": sub_agents,
+        "resources": resources_info,
+    }
+
+    if fmt == "json":
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    # text format
+    click.echo(f"Agent loaded from {module}")
+    if instructions:
+        click.echo("\nInstructions:")
+        click.echo(f"  {instructions}")
+    click.echo(f"\nTools ({len(tools_info)}):")
+    for t in tools_info:
+        line = f"  - {t['name']}"
+        if t["uc_name"]:
+            line += f"  →  UC: {t['uc_name']}"
+            if t["grants"]:
+                line += f"  (grants: {', '.join(t['grants'])})"
+        click.echo(line)
+        if t["doc"]:
+            click.echo(f"      {t['doc']}")
+    if sub_agents:
+        click.echo(f"\nSub-agents ({len(sub_agents)}):")
+        for s in sub_agents:
+            click.echo(f"  - {s}")
+    click.echo(f"\nDeclared resources ({len(resources_info)}):")
+    for r in resources_info:
+        click.echo(f"  - {r['kind']:<24} {r['identifier']}")
+
+
 if __name__ == "__main__":
     main()

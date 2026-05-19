@@ -1,0 +1,13 @@
+[project]
+name = "customer-triage"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "apx-agent",
+]
+
+[tool.apx.agent]
+name = "customer_triage"
+description = "Customer support triage — classifies queries and hands off to specialists."
+model = "databricks-claude-sonnet-4-6"
+max_iterations = 8

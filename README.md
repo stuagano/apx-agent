@@ -57,6 +57,8 @@ apx eval evalset.jsonl --model databricks-claude-sonnet-4-6
 
 All commands that take an agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`).
 
+A worked example exercising the full surface — `@tool(uc=...)`, `genie_tool`, `vector_search_tool`, `sql`-style tools, and `HandoffAgent` routing — lives in `python/examples/customer_triage/`. Read its README for the end-to-end flow from scaffold to deploy to publish.
+
 ## Quick start
 
 ### Python
@@ -534,9 +536,12 @@ chat.predict(
 | Store | When to use |
 |-------|-------------|
 | `InMemorySessionStore` | Tests, dev, single-process Apps |
-| `DeltaSessionStore` | Production — Model Serving, multi-replica Apps. UC-governed Delta table, auto-created on first put |
+| `DeltaSessionStore` | UC-governed Delta table. Analytics-style multi-step pipelines, durable across long-idle sessions. |
+| `LakebaseSessionStore` | Lakebase (managed Postgres) via SQLAlchemy. Low-latency chat-style sessions; cheaper at high turn rates than Delta. |
 
-Custom stores satisfy the `SessionStore` protocol (`get`/`put`/`delete`) — bring your own Lakebase Postgres backing, Redis, etc.
+Custom stores satisfy the `SessionStore` protocol (`get`/`put`/`delete`) — bring your own Redis, Memcached, etc.
+
+`LakebaseSessionStore` takes a SQLAlchemy `Engine` and stays narrow on SQL — the caller wires up OAuth token rotation on the engine. Install with `pip install 'apx-agent[lakebase]'`.
 
 When `custom_inputs["session_id"]` is absent the framework silently runs single-turn — the same compiled agent works in both modes.
 
