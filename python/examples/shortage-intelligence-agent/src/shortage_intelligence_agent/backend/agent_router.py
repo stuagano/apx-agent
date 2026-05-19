@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 import httpx
-from apx_agent import Dependencies, decode_statement, run_sql
+from apx_agent import Dependencies, decode_statement, get_llm, run_sql
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.dashboards import GenieMessage, MessageStatus
 
@@ -264,12 +264,14 @@ def validate_against_market_news(
                 summary=f"No market intelligence found for {manufacturer} {component_id}.",
             ).model_dump()
 
-        # Synthesize a verdict using Sonnet — faster + cheaper than Opus for yes/no verdicts
-        from databricks_langchain import ChatDatabricks
+        # Synthesize a verdict using Sonnet — faster + cheaper than Opus for yes/no verdicts.
+        # get_llm() routes by endpoint prefix and applies provider-quirk defenses
+        # (strips temperature/top_p for GPT-5 endpoints). For Claude/Llama/Gemini it
+        # returns plain ChatDatabricks. See apx_agent._llm for the full rationale.
         from langchain_core.messages import HumanMessage, SystemMessage
 
         context = "\n\n---\n\n".join(docs[:5])
-        llm = ChatDatabricks(model="databricks-claude-sonnet-4-6")
+        llm = get_llm("databricks-claude-sonnet-4-6")
         verdict = llm.invoke([
             SystemMessage(content=(
                 "You are a semiconductor market analyst. Based on the market intelligence "

@@ -11,6 +11,7 @@ This audit emerged from porting the shortage-intelligence-agent customer code (`
 - ✅ Parity test no longer silently skips on missing core deps
 - ✅ Stale `langchain-databricks` references in docstrings updated to `databricks-langchain`
 - ✅ `agent_tool` (Python) and `agentTool` (TypeScript) — first-class agent-as-tool composition primitive (Section B.2 below). Handles local in-process AND remote agents transparently. Replaces the deprecated `toSubAgentTool` in TS.
+- ✅ **Public `get_llm()` factory + `ChatDatabricksGptReasoning` named subclass (Section A Option 1).** Provider-quirk handling promoted from private compile-path helper to public API. Tool-internal LLM calls (synthesis, classifiers, judges) now get the same protection as the agent's main LLM. Routing by endpoint prefix means Claude/Llama/Gemini honor `temperature` while GPT-5 endpoints get the defense-in-depth strip. Example's `validate_against_market_news` now goes through `get_llm` instead of bypassing into raw `ChatDatabricks`.
 
 The remaining findings are below, ordered by leverage and reversibility.
 
@@ -33,13 +34,15 @@ The Python and TypeScript frameworks have substantially diverged at the LLM-clie
 
 | Option | What changes | Trade |
 |---|---|---|
-| **1. Promote Python helper** | Expose `apx_agent.get_llm(endpoint, **kwargs)` factory + `ChatDatabricksGptReasoning` subclass. Routing by endpoint prefix. Tool-internal LLM calls get same protection as compile-path. | Smallest change; preserves LangChain integration. Still per-provider defense, not structural. |
+| **1. Promote Python helper** ✅ **shipped** | Expose `apx_agent.get_llm(endpoint, **kwargs)` factory + `ChatDatabricksGptReasoning` subclass. Routing by endpoint prefix. Tool-internal LLM calls get same protection as compile-path. | Smallest change; preserves LangChain integration. Still per-provider defense, not structural. |
 | **2. Align Python to TS — minimal payload** | Stop sending `temperature`/`top_p` at all from `_build_chat_databricks`. Drop subclass. Provider quirks become impossible by construction. | Cleanest. But removes a knob users may expect; agents that want sampling control need a different escape hatch. |
 | **3. Aligned `LLMClient` abstraction in both languages** | Define a shared `LLMClient` interface (input shape, output shape, streaming contract). Python wraps `ChatDatabricks`, TS wraps `fetch`. Both expose the same surface to user code. | Biggest investment. Real cross-language consistency. Pays back across every future LLM-touching feature. |
 
-My read: **Option 1 is the right next step** (small, validated by today's work, ships defense to tool-internal LLM calls), with **Option 3 as the eventual destination** if the framework lives for years. Option 2 is risky — sampling control is a real expectation, and silently dropping it surprises users.
+**Option 1 shipped.** `apx_agent.get_llm(endpoint)` is now public. `_compile.py::_build_chat_databricks` delegates to it. The example's `validate_against_market_news` synthesis step uses `get_llm` instead of bypassing into raw `ChatDatabricks`. Routing by endpoint prefix means Claude/Llama/Gemini honor `temperature` (which the old unconditional-strip silently dropped — a correctness bug), and GPT-5 endpoints get the defense.
 
-**This is a real architectural decision and deserves explicit choice.**
+Notable correctness improvement that fell out: the prior `_build_chat_databricks` stripped `temperature`+`top_p` *unconditionally for every endpoint*. The compile path never actually passed an agent's `temperature` into it, so the strip was moot for the framework's main LLM. But anything that called the helper with temperature (had there been one) would have been silently overridden. The new prefix-routed factory only strips for GPT-5; non-reasoning endpoints honor the caller's setting.
+
+**Option 3 remains the eventual destination** if the framework lives for years. Option 2 stays risky — sampling control is a real expectation.
 
 ---
 
@@ -129,7 +132,7 @@ Option 2 is the structurally right move if Rand (the customer) is going to keep 
 
 | Finding | Severity | Action |
 |---|---|---|
-| `_compile.py:193-213` (`_build_chat_databricks`) is private but used everywhere implicitly. The provider-quirk defense should be a public, named pattern users can apply to tool-internal LLM calls. | Medium | Resolved by Option A.1 above |
+| `_compile.py::_build_chat_databricks` was private but used everywhere implicitly. The provider-quirk defense should be a public, named pattern users can apply to tool-internal LLM calls. | ✅ Resolved | Shipped via `apx_agent.get_llm` (Section A Option 1). `_build_chat_databricks` now delegates. |
 | Framework's `python/pyproject.toml` lists `langgraph` both as core dep AND in optional `[project.optional-dependencies].langgraph`. Confusing. Pick one. | Low | Remove from optional |
 | Example's `pyproject.toml` had `apx-agent = { path = "../../src", editable = true }` — wrong path (apx-agent's pyproject is at `../../`, not `../../src`). | Low | Fixed in marriage commit |
 | `_metadata.py` is referenced in `[tool.apx.metadata]` but I didn't verify it exists / is generated. Untracked file? Bootstrap artifact? | Low | Audit |
