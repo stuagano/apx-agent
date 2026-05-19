@@ -700,5 +700,301 @@ def info(module: str, fmt: str) -> None:
         click.echo(f"  - {r['kind']:<24} {r['identifier']}")
 
 
+# ---------------------------------------------------------------------------
+# trace — inspect MLflow traces
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option("--experiment", default=None,
+              help="MLflow experiment name/id. Falls back to "
+                   "[tool.apx.agent].experiment in pyproject.toml.")
+@click.option("--agent", "agent_name", default=None,
+              help="Filter to traces where apx.agent.name matches.")
+@click.option("--operation", default=None,
+              help="Filter by apx.operation (predict, tool_call, model_call, etc.).")
+@click.option("--limit", default=20, type=int, help="Max traces to return.")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def trace(
+    experiment: str | None,
+    agent_name: str | None,
+    operation: str | None,
+    limit: int,
+    fmt: str,
+) -> None:
+    """Fetch recent MLflow traces for a deployed agent."""
+    try:
+        import mlflow
+    except ImportError as e:
+        raise click.ClickException(
+            "apx trace requires mlflow. Install with: pip install 'apx-agent[eval]'"
+        ) from e
+
+    effective_experiment = experiment or _read_apx_agent_config().get("experiment")
+    if not effective_experiment:
+        raise click.UsageError(
+            "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
+        )
+
+    filter_parts: list[str] = []
+    if agent_name:
+        filter_parts.append(f"attributes.`apx.agent.name` = '{agent_name}'")
+    if operation:
+        filter_parts.append(f"attributes.`apx.operation` = '{operation}'")
+    filter_string = " AND ".join(filter_parts) if filter_parts else None
+
+    try:
+        traces = mlflow.search_traces(  # type: ignore[attr-defined]
+            experiment_names=[effective_experiment],
+            filter_string=filter_string,
+            max_results=limit,
+        )
+    except Exception as e:
+        raise click.ClickException(f"mlflow.search_traces failed: {e}") from e
+
+    rows = _normalise_trace_rows(traces)
+
+    if fmt == "json":
+        click.echo(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not rows:
+        click.echo("No traces matched.")
+        return
+    click.echo(f"{'TRACE_ID':<36}  {'AGENT':<20}  {'OPERATION':<14}  {'STATUS':<8}  {'DURATION_MS':>10}")
+    for r in rows:
+        click.echo(
+            f"{r.get('trace_id', ''):<36}  "
+            f"{(r.get('agent_name') or '-'):<20}  "
+            f"{(r.get('operation') or '-'):<14}  "
+            f"{(r.get('status') or '-'):<8}  "
+            f"{(r.get('duration_ms') or 0):>10}"
+        )
+
+
+def _normalise_trace_rows(traces: Any) -> list[dict[str, Any]]:
+    """Convert mlflow.search_traces output to a uniform list of dicts.
+
+    mlflow returns either a list of Trace objects or a pandas DataFrame
+    depending on the version + return_type kwarg. This helper accepts
+    either and produces a flat list of dicts with the keys the CLI prints.
+    """
+    rows: list[dict[str, Any]] = []
+    # DataFrame case
+    if hasattr(traces, "to_dict"):
+        try:
+            records = traces.to_dict(orient="records")  # type: ignore[union-attr]
+        except Exception:
+            records = []
+        for rec in records:
+            attrs = rec.get("tags") or rec.get("attributes") or {}
+            rows.append({
+                "trace_id": rec.get("trace_id") or rec.get("request_id"),
+                "agent_name": attrs.get("apx.agent.name"),
+                "operation": attrs.get("apx.operation"),
+                "status": rec.get("status"),
+                "duration_ms": rec.get("execution_time_ms"),
+            })
+        return rows
+    # List-of-Trace case
+    for t in traces or []:
+        info = getattr(t, "info", None)
+        data = getattr(t, "data", None)
+        attrs = (getattr(data, "spans", None) or [])
+        # Pull root-span attributes if available; otherwise fall back to
+        # trace-level tags.
+        root_attrs: dict[str, Any] = {}
+        if attrs:
+            root = attrs[0]
+            root_attrs = dict(getattr(root, "attributes", {}) or {})
+        tags = dict(getattr(info, "tags", {}) or {}) if info else {}
+        rows.append({
+            "trace_id": getattr(info, "trace_id", None) or getattr(info, "request_id", None),
+            "agent_name": root_attrs.get("apx.agent.name") or tags.get("apx.agent.name"),
+            "operation": root_attrs.get("apx.operation") or tags.get("apx.operation"),
+            "status": getattr(info, "status", None),
+            "duration_ms": getattr(info, "execution_time_ms", None),
+        })
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# test — local smoke test
+# ---------------------------------------------------------------------------
+
+
+@main.command("test")
+@click.option("--module", default="agent:agent", help="Agent module spec.")
+@click.option("--prompt", "prompts", multiple=True,
+              help='Prompt to send. Repeat for multiple; defaults to one "hi" prompt.')
+@click.option("--prompts-file", "prompts_file", default=None,
+              type=click.Path(exists=True, dir_okay=False),
+              help="Newline-separated file of prompts (one per line).")
+@click.option("--model", default=None,
+              help="LLM endpoint. Defaults to [tool.apx.agent].model in pyproject.toml.")
+def test_cmd(
+    module: str,
+    prompts: tuple[str, ...],
+    prompts_file: str | None,
+    model: str | None,
+) -> None:
+    """Compile the agent locally and send sample prompts through it.
+
+    Smoke test for "did I break the import / can the agent at least
+    accept a message and return something?" — cheaper than apx eval,
+    no MLflow / eval dataset required.
+    """
+    agent = _load_agent(module)
+
+    effective_model = model or _read_apx_agent_config().get("model")
+    if not effective_model:
+        raise click.UsageError(
+            "Pass --model NAME or set [tool.apx.agent].model in pyproject.toml."
+        )
+
+    prompt_list: list[str] = list(prompts)
+    if prompts_file:
+        with open(prompts_file) as f:
+            prompt_list.extend(line.strip() for line in f if line.strip())
+    if not prompt_list:
+        prompt_list = ["hi"]
+
+    try:
+        from apx_agent import compile_to_chat_agent
+        from mlflow.types.agent import ChatAgentMessage
+    except ImportError as e:
+        raise click.ClickException(
+            "apx test requires the eval + langgraph extras. "
+            "Install with: pip install 'apx-agent[eval,langgraph]'"
+        ) from e
+
+    chat_agent = compile_to_chat_agent(agent, model=effective_model)
+
+    import time
+    failures = 0
+    for i, prompt in enumerate(prompt_list, start=1):
+        click.echo(f"\n--- prompt {i}: {prompt!r}")
+        start = time.time()
+        try:
+            response = chat_agent.predict(
+                messages=[ChatAgentMessage(role="user", content=prompt)],
+            )
+            elapsed_ms = int((time.time() - start) * 1000)
+            messages = getattr(response, "messages", []) or []
+            assistant = next(
+                (m for m in reversed(messages)
+                 if getattr(m, "role", None) == "assistant"),
+                None,
+            )
+            text = getattr(assistant, "content", "") if assistant else ""
+            preview = (text or "").strip().splitlines()[0] if text else "(empty)"
+            click.echo(f"    ok  ({elapsed_ms} ms)  {preview[:120]}")
+        except Exception as e:
+            failures += 1
+            elapsed_ms = int((time.time() - start) * 1000)
+            click.echo(f"    FAIL ({elapsed_ms} ms): {type(e).__name__}: {e}", err=True)
+
+    click.echo(
+        f"\n{len(prompt_list) - failures}/{len(prompt_list)} prompts passed.",
+        err=True,
+    )
+    if failures:
+        raise click.exceptions.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# list — discover deployed apx-agents
+# ---------------------------------------------------------------------------
+
+
+@main.command("list")
+@click.option("--catalog", default=None,
+              help="Restrict to a UC catalog. Default: any.")
+@click.option("--schema", default=None,
+              help="Restrict to a UC schema (requires --catalog).")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def list_cmd(catalog: str | None, schema: str | None, fmt: str) -> None:
+    """Discover apx-agents in the workspace by their UC tags.
+
+    Looks for registered models tagged ``apx.agent.name`` — the tag
+    ``set_uc_tags_for_agent`` writes after deploy. Prints (name, model,
+    endpoint hint, resource count). Useful for fleet operators
+    inventorying multi-agent workspaces.
+    """
+    if schema and not catalog:
+        raise click.UsageError("--schema requires --catalog.")
+
+    try:
+        from databricks.sdk import WorkspaceClient
+    except ImportError as e:
+        raise click.ClickException(
+            "apx list requires databricks-sdk."
+        ) from e
+
+    ws = WorkspaceClient()
+
+    filter_parts: list[str] = []
+    if catalog:
+        filter_parts.append(f"catalog_name = '{catalog}'")
+    if schema:
+        filter_parts.append(f"schema_name = '{schema}'")
+    filter_string = " AND ".join(filter_parts) if filter_parts else None
+
+    try:
+        models_iter = ws.registered_models.list(
+            catalog_name=catalog,
+            schema_name=schema,
+            include_browse=False,
+        )
+        models = list(models_iter)
+    except TypeError:
+        # Older SDK signatures took different kwargs; fall back to a no-filter list.
+        models = list(ws.registered_models.list())  # type: ignore[call-arg]
+
+    rows: list[dict[str, Any]] = []
+    for m in models:
+        tags = {t.key: t.value for t in (getattr(m, "tags", None) or [])}
+        if "apx.agent.name" not in tags:
+            continue
+        # Resource count parsed off the metadata blob when present
+        resource_count = 0
+        try:
+            metadata_json = tags.get("apx.agent.metadata") or "{}"
+            parsed = json.loads(metadata_json)
+            resource_count = len(parsed.get("resources") or [])
+        except Exception:
+            pass
+        rows.append({
+            "agent_name": tags.get("apx.agent.name"),
+            "model_endpoint": tags.get("apx.agent.model"),
+            "uc_name": getattr(m, "full_name", None) or f"{getattr(m, 'catalog_name','')}.{getattr(m, 'schema_name','')}.{getattr(m, 'name','')}",
+            "tool_count": tags.get("apx.agent.tool_count"),
+            "resource_count": resource_count,
+        })
+
+    if fmt == "json":
+        click.echo(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not rows:
+        click.echo("No apx-tagged registered models found.")
+        return
+    click.echo(f"{'AGENT':<28}  {'UC NAME':<40}  {'MODEL':<28}  {'TOOLS':>6}  {'RESOURCES':>9}")
+    for r in rows:
+        click.echo(
+            f"{(r['agent_name'] or '-'):<28}  "
+            f"{(r['uc_name'] or '-'):<40}  "
+            f"{(r['model_endpoint'] or '-'):<28}  "
+            f"{(r['tool_count'] or '-'):>6}  "
+            f"{r['resource_count']:>9}"
+        )
+
+
 if __name__ == "__main__":
     main()

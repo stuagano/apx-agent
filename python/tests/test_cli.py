@@ -403,6 +403,313 @@ def test_deploy_no_experiment_when_absent(
 
 
 # ---------------------------------------------------------------------------
+# `apx trace`
+# ---------------------------------------------------------------------------
+
+
+def test_trace_requires_experiment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)  # no pyproject -> no experiment fallback
+    runner = CliRunner()
+    result = runner.invoke(main, ["trace"])
+    assert result.exit_code != 0
+    assert "experiment" in result.output.lower()
+
+
+def test_trace_falls_back_to_pyproject_experiment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.apx.agent]\nexperiment = "/Users/me/agents/triage"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+
+    fake_search = MagicMock(return_value=[])
+    runner = CliRunner()
+    with patch("mlflow.search_traces", fake_search):
+        result = runner.invoke(main, ["trace"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_search.call_args.kwargs["experiment_names"] == [
+        "/Users/me/agents/triage"
+    ]
+
+
+def test_trace_filters_by_agent_and_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    fake_search = MagicMock(return_value=[])
+
+    runner = CliRunner()
+    with patch("mlflow.search_traces", fake_search):
+        runner.invoke(main, [
+            "trace",
+            "--experiment", "/Users/me/agents/triage",
+            "--agent", "triage",
+            "--operation", "tool_call",
+            "--limit", "5",
+        ])
+
+    fs = fake_search.call_args.kwargs["filter_string"]
+    assert "apx.agent.name" in fs
+    assert "triage" in fs
+    assert "apx.operation" in fs
+    assert "tool_call" in fs
+    assert fake_search.call_args.kwargs["max_results"] == 5
+
+
+def test_trace_prints_rows_from_dataframe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    # Simulate the DataFrame return path
+    fake_df = SimpleNamespace(
+        to_dict=lambda orient: [
+            {
+                "trace_id": "trace-1",
+                "tags": {"apx.agent.name": "triage", "apx.operation": "predict"},
+                "status": "OK",
+                "execution_time_ms": 123,
+            },
+            {
+                "trace_id": "trace-2",
+                "tags": {"apx.agent.name": "billing", "apx.operation": "tool_call"},
+                "status": "OK",
+                "execution_time_ms": 45,
+            },
+        ],
+    )
+    runner = CliRunner()
+    with patch("mlflow.search_traces", return_value=fake_df):
+        result = runner.invoke(main, [
+            "trace",
+            "--experiment", "/Users/me/agents/triage",
+        ])
+
+    assert result.exit_code == 0
+    assert "trace-1" in result.output
+    assert "trace-2" in result.output
+    assert "triage" in result.output
+
+
+def test_trace_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    fake_df = SimpleNamespace(
+        to_dict=lambda orient: [
+            {
+                "trace_id": "trace-1",
+                "tags": {"apx.agent.name": "triage"},
+                "status": "OK",
+                "execution_time_ms": 100,
+            },
+        ],
+    )
+    runner = CliRunner()
+    with patch("mlflow.search_traces", return_value=fake_df):
+        result = runner.invoke(main, [
+            "trace",
+            "--experiment", "/Users/me/agents/x",
+            "--format", "json",
+        ])
+
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert parsed[0]["trace_id"] == "trace-1"
+    assert parsed[0]["agent_name"] == "triage"
+
+
+# ---------------------------------------------------------------------------
+# `apx test`
+# ---------------------------------------------------------------------------
+
+
+def test_test_requires_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["test", "--module", "tmp_test_agent:agent"])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code != 0
+    assert "model" in result.output.lower()
+
+
+def test_test_runs_prompts_and_reports_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    # Fake compiled agent that returns a stub response
+    from types import SimpleNamespace as NS
+
+    fake_chat = MagicMock()
+    fake_chat.predict.return_value = NS(messages=[
+        NS(role="assistant", content="ok response"),
+    ])
+
+    runner = CliRunner()
+    with patch("apx_agent.compile_to_chat_agent", return_value=fake_chat):
+        result = runner.invoke(main, [
+            "test",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--prompt", "hello there",
+            "--prompt", "what is the lineage of main.sales.orders?",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    assert "hello there" in result.output
+    assert "ok response" in result.output
+    assert "2/2 prompts passed" in (result.output + result.stderr)
+    assert fake_chat.predict.call_count == 2
+
+
+def test_test_exits_non_zero_on_predict_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_chat = MagicMock()
+    fake_chat.predict.side_effect = RuntimeError("compile blew up")
+
+    runner = CliRunner()
+    with patch("apx_agent.compile_to_chat_agent", return_value=fake_chat):
+        result = runner.invoke(main, [
+            "test",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--prompt", "hi",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code != 0
+    assert "FAIL" in (result.output + result.stderr)
+
+
+def test_test_default_prompt_when_none_supplied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_agent_module(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.apx.agent]\nmodel = "databricks-claude-sonnet-4-6"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+
+    from types import SimpleNamespace as NS
+    fake_chat = MagicMock()
+    fake_chat.predict.return_value = NS(messages=[NS(role="assistant", content="ok")])
+
+    runner = CliRunner()
+    with patch("apx_agent.compile_to_chat_agent", return_value=fake_chat):
+        result = runner.invoke(main, ["test", "--module", "tmp_test_agent:agent"])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0
+    assert fake_chat.predict.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# `apx list`
+# ---------------------------------------------------------------------------
+
+
+def _make_tagged_model(
+    *,
+    name: str,
+    catalog: str = "main",
+    schema: str = "agents",
+    tags: dict[str, str] | None = None,
+) -> Any:
+    tag_objs = [SimpleNamespace(key=k, value=v) for k, v in (tags or {}).items()]
+    return SimpleNamespace(
+        name=name,
+        catalog_name=catalog,
+        schema_name=schema,
+        full_name=f"{catalog}.{schema}.{name}",
+        tags=tag_objs,
+    )
+
+
+def test_list_schema_requires_catalog() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["list", "--schema", "agents"])
+    assert result.exit_code != 0
+    assert "--catalog" in result.output
+
+
+def test_list_prints_apx_tagged_models_only() -> None:
+    fake_ws = MagicMock()
+    fake_ws.registered_models.list.return_value = [
+        _make_tagged_model(
+            name="triage",
+            tags={
+                "apx.agent.name": "customer_triage",
+                "apx.agent.model": "databricks-claude-sonnet-4-6",
+                "apx.agent.tool_count": "5",
+                "apx.agent.metadata": json.dumps({"resources": [{"kind": "uc_function", "identifier": "main.tools.x"}]}),
+            },
+        ),
+        _make_tagged_model(name="not_apx", tags={"other.tag": "value"}),
+        _make_tagged_model(
+            name="billing",
+            tags={"apx.agent.name": "billing", "apx.agent.model": "claude"},
+        ),
+    ]
+
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = runner.invoke(main, ["list"])
+
+    assert result.exit_code == 0, result.output
+    assert "customer_triage" in result.output
+    assert "billing" in result.output
+    assert "not_apx" not in result.output
+
+
+def test_list_json_format() -> None:
+    fake_ws = MagicMock()
+    fake_ws.registered_models.list.return_value = [
+        _make_tagged_model(
+            name="triage",
+            tags={
+                "apx.agent.name": "customer_triage",
+                "apx.agent.model": "databricks-claude-sonnet-4-6",
+                "apx.agent.metadata": json.dumps({"resources": [{"kind": "uc_function", "identifier": "main.tools.x"}, {"kind": "genie_space", "identifier": "abc"}]}),
+            },
+        ),
+    ]
+
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = runner.invoke(main, ["list", "--format", "json"])
+
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert parsed[0]["agent_name"] == "customer_triage"
+    assert parsed[0]["resource_count"] == 2
+
+
+def test_list_no_tagged_models_prints_helpful_message() -> None:
+    fake_ws = MagicMock()
+    fake_ws.registered_models.list.return_value = [
+        _make_tagged_model(name="not_apx", tags={"other": "x"}),
+    ]
+
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = runner.invoke(main, ["list"])
+
+    assert result.exit_code == 0
+    assert "No apx-tagged" in result.output
+
+
+# ---------------------------------------------------------------------------
 # `apx logs`
 # ---------------------------------------------------------------------------
 
