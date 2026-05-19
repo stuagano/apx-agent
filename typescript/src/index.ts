@@ -276,6 +276,7 @@ export { runOnce } from './run-once.js';
 export type {
   RunOnceOptions,
   RunViaSDKFn,
+  StreamViaSDKFn,
   RunViaSDKParams,
 } from './run-once.js';
 
