@@ -106,6 +106,7 @@ from ._publish import create_supervisor_agent, publish_to_supervisor
 
 # Local lightweight guards — zero-latency runtime checks
 from ._guards import (
+    FeatureFlagGuard,
     RateLimit,
     ToolAllowlist,
     ToolDenylist,
@@ -247,6 +248,7 @@ __all__ = [
     "create_supervisor_agent",
     "publish_to_supervisor",
     # Local lightweight guards
+    "FeatureFlagGuard",
     "RateLimit",
     "ToolAllowlist",
     "ToolDenylist",

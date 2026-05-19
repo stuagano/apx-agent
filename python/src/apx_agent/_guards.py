@@ -227,6 +227,82 @@ class ToolDenylist:
 
 
 # ---------------------------------------------------------------------------
+# Feature flag gate
+# ---------------------------------------------------------------------------
+
+
+class FeatureFlagGuard:
+    """Gate tool calls by external feature flags.
+
+    Plugs into ``before_tool``. Tools listed in ``gates`` are checked
+    against ``provider`` before execution; tools not in ``gates`` are
+    always allowed (gates are opt-in, not opt-out).
+
+    The provider is any callable ``(flag_name: str) -> bool``. Wire it to
+    whatever flag system the host environment provides — env vars,
+    LaunchDarkly, Statsig, an internal admin DB — by closing the relevant
+    client/context into a function.
+
+    Per-user / per-tenant gating works the same way: capture the user
+    identity in the provider's closure (e.g. via ``getRequestContext()`` /
+    ``Dependencies.Headers``). This class deliberately keeps the
+    identity concern *out* of its own signature so the gate composes
+    with any context system.
+
+    On a disabled flag the guard raises ``PermissionError``; the framework
+    surfaces this to the LLM as a tool failure with the rejection message,
+    which the LLM can read and react to ("this feature isn't enabled for
+    you yet, try X instead").
+
+    Example::
+
+        import os
+
+        def env_flag(name: str) -> bool:
+            return os.environ.get(f"APX_FLAG_{name.upper()}") == "true"
+
+        agent = Agent(
+            tools=[premium_search, basic_search],
+            before_tool=FeatureFlagGuard(
+                provider=env_flag,
+                gates={"premium_search": "premium_search_v2"},
+            ),
+        )
+
+    Compose with other guards via :func:`compose`::
+
+        before_tool=compose(
+            RateLimit(per_minute=60),
+            FeatureFlagGuard(provider=env_flag,
+                             gates={"premium_search": "premium_search_v2"}),
+        )
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: Callable[[str], bool],
+        gates: dict[str, str],
+        message: str | None = None,
+    ) -> None:
+        if not callable(provider):
+            raise TypeError("provider must be a callable (flag_name: str) -> bool")
+        self.provider = provider
+        self.gates = dict(gates)
+        self.message = message
+
+    def __call__(self, name: str, args: dict[str, Any]) -> None:
+        flag_name = self.gates.get(name)
+        if flag_name is None:
+            return  # ungated tool — always allowed
+        if not self.provider(flag_name):
+            raise PermissionError(
+                self.message
+                or f"Tool {name!r} is disabled (feature flag {flag_name!r} is off)."
+            )
+
+
+# ---------------------------------------------------------------------------
 # Composition
 # ---------------------------------------------------------------------------
 
