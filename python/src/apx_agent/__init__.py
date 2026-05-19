@@ -117,6 +117,9 @@ from ._guards import (
 # Cost tracking helpers
 from ._cost import CostBreakdown, cost_for_agent, cost_for_endpoint
 
+# Scheduled-job / batch invocation — non-interactive entry point
+from ._run_once import run_once
+
 # Trace exporter
 from ._trace_export import ExportResult, export_traces
 
@@ -258,6 +261,8 @@ __all__ = [
     "CostBreakdown",
     "cost_for_agent",
     "cost_for_endpoint",
+    # Batch / scheduled-job invocation
+    "run_once",
     # Trace exporter
     "ExportResult",
     "export_traces",
