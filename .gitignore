@@ -17,5 +17,24 @@ typescript/deploy/*/app.yaml
 # Claude Code skill scratch
 .superpowers/
 
+# Claude / agent IDE state
+.claude/
+
 # Git worktrees
 .worktrees/
+
+# Local MLflow runs
+mlruns/
+
+# Auto-generated backup files (dotfile-safety rule, etc.)
+*.bak.*
+.gitignore.bak.*
+
+# Databricks Apps local state
+**/builder.db
+**/.databricks-resources.json
+**/.env.local
+**/.env.local.bak*
+
+# Generated package version files
+**/_version.py
