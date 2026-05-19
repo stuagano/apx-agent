@@ -21,6 +21,7 @@ Quick index — what each example does and which direction data/auth flows.
 | [agent-hub](./agent-hub/) | Central registry + chat UI for all deployed apx-agent apps |
 | [account-search-service](./account-search-service/) | Standalone fuzzy account lookup API — callable by other agents |
 | [afr-enrollment-api](./afr-enrollment-api/) | Deterministic AFR enrollment pipeline — no LLM, high throughput |
+| [memory_demo](./memory_demo/) | **MemoryBank + ExampleStore** — seeded memories, few-shot examples, recall/remember tools, system prompt assembled per turn. Standalone runnable demo of the durable-context surface. |
 
 ## MCP Servers & Shared Libraries
 
