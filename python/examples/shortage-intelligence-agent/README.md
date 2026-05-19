@@ -357,3 +357,51 @@ curl -X POST -H 'Content-type: application/json' \
 
 **Morning scan job fails immediately**
 The job must be able to reach the deployed app URL. Confirm the app is `RUNNING` before enabling the scheduled job.
+
+---
+
+## Migration to the 2026-05 primitives
+
+See [`MIGRATION.md`](./MIGRATION.md) for the dry-run analysis. Quick summary:
+
+| Move | Status |
+|---|---|
+| `deploy.py` using `log_agent` + `set_uc_tags_for_agent` + `databricks.agents.deploy` | ✅ shipped |
+| `evalset.jsonl` for `apx eval-chain` | ✅ shipped |
+| Extract `classify_shortage_severity` as `@tool(uc=...)` (worked UC-function example) | ✅ shipped |
+| Wire `DeltaSessionStore` (multi-turn) | documented, depends on UX decision |
+| Wire `WatchdogGuard` + local guards | documented, depends on watchdog availability |
+| Move data-fetching tools to `@tool(uc=...)` | ❌ blocked — needs user-scoped OBO |
+
+### Deploy via the canonical flow
+
+```bash
+export REGISTERED_MODEL_NAME=main.agents.shortage_intelligence
+export SERVING_MODEL_ENDPOINT=databricks-claude-sonnet-4-6
+export APX_EXPERIMENT=/Users/me@company.com/agents/shortage_intelligence
+
+python deploy.py             # log → register → deploy → set UC tags
+# add --no-deploy to log + register only
+```
+
+### Operate via the apx CLI
+
+```bash
+apx info  --module shortage_intelligence_agent.backend.agent_router:agent
+apx logs  --endpoint shortage_intelligence
+apx trace --agent shortage_intelligence --limit 20
+apx cost  --agent shortage_intelligence --hours 24
+apx topology --format mermaid > shortage_topology.mmd
+apx list
+```
+
+### Evaluate the chain
+
+```bash
+apx eval-chain evalset.jsonl \
+    --module shortage_intelligence_agent.backend.agent_router:agent \
+    --model "$SERVING_MODEL_ENDPOINT" \
+    --experiment "$APX_EXPERIMENT"
+```
+
+Reports which tools fired per prompt by walking MLflow traces and pairing them to the evalset rows via `apx.tool.name` / `apx.subagent.endpoint` span attributes.

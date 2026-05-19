@@ -27,6 +27,7 @@ def create_shortage_pipeline() -> SequentialAgent:
         check_vendor_availability,
         find_alternative_parts,
     )
+    from .uc_helpers import classify_shortage_severity
 
     settings = get_settings()
     # Ad-hoc Genie exploration is added as an optional tool when a space is
@@ -70,12 +71,18 @@ def create_shortage_pipeline() -> SequentialAgent:
     # Step 2: Historical Pattern Analysis
     # ------------------------------------------------------------------
     historical_agent = Agent(
-        tools=[find_historical_patterns, *ad_hoc_explorer],
+        tools=[find_historical_patterns, classify_shortage_severity, *ad_hoc_explorer],
         instructions=(
             "You are the Historical Pattern Analyst.\n\n"
             "The demand scan above found shortage signals. For each HIGH or MEDIUM "
             "confidence signal, call find_historical_patterns with the component_id "
             "and lookback_years=5.\n\n"
+            "Then for each component, call classify_shortage_severity with the "
+            "historical avg_price_delta_pct, max_price_delta_pct, the current "
+            "customer_count from the demand scan, and similar_events_found from "
+            "the historical lookup. The function returns a severity label "
+            "(CRITICAL / HIGH / MEDIUM / LOW / NOVEL) encoding the sourcing "
+            "team's standing playbook.\n\n"
             "If find_historical_patterns returns no events for a component but the "
             "demand signal is strong, use query_genie to explore related patterns "
             "(by manufacturer, package type, or similar parts).\n\n"
@@ -83,6 +90,7 @@ def create_shortage_pipeline() -> SequentialAgent:
             "- How many similar shortage events occurred historically\n"
             "- Average and max price delta percentage during past shortages\n"
             "- Average shortage duration in days\n"
+            "- The classify_shortage_severity verdict\n"
             "- Whether this component has a pattern of recurring shortages\n\n"
             "Summarize overall severity: are these components historically volatile "
             "or is this a novel pattern?"
