@@ -48,6 +48,7 @@ from databricks_tools_core.auth import set_databricks_auth, clear_databricks_aut
 
 from .backup_manager import ensure_project_directory as _ensure_project_directory
 from .apx_tools import load_apx_tools
+from .apx_integration import is_apx_available, wrap_agent_span
 from .databricks_tools import get_databricks_server_config
 from .system_prompt import get_system_prompt
 
@@ -129,7 +130,7 @@ def _setup_mlflow_autolog(experiment_name: str | None = None):
     logger.warning(f'Could not enable MLflow autolog: {e}')
 
 
-def _run_agent_in_fresh_loop(message, options, result_queue, context, is_cancelled_fn, mlflow_experiment=None):
+def _run_agent_in_fresh_loop(message, options, result_queue, context, is_cancelled_fn, mlflow_experiment=None, apx_span_kwargs=None):
   """Run agent in a fresh event loop (workaround for issue #462).
 
   This function runs in a separate thread with a fresh event loop to avoid
@@ -158,21 +159,30 @@ def _run_agent_in_fresh_loop(message, options, result_queue, context, is_cancell
       _setup_mlflow_autolog(exp_name)
 
     async def run_client():
-      """Run agent using ClaudeSDKClient for streaming + MLflow tracing."""
+      """Run agent using ClaudeSDKClient for streaming + MLflow tracing.
+
+      The Claude session runs inside an apx-shaped tracing span so emitted
+      MLflow traces carry the same `apx.*` attributes as Mosaic AI deployments
+      (`apx.agent_name`, `apx.principal_id_hash`, `apx.model`, `apx.session_id`).
+      Downstream consumers like `apx cost` and `apx export-traces` work on
+      this app's traces without special casing.
+      """
+      span_kwargs = apx_span_kwargs or {}
       try:
         msg_count = 0
-        async with ClaudeSDKClient(options=options) as client:
-          await client.query(message)
-          async for msg in client.receive_response():
-            msg_count += 1
-            msg_type = type(msg).__name__
-            logger.info(f"[AGENT] Message #{msg_count}: {msg_type}")
+        with wrap_agent_span(**span_kwargs):
+          async with ClaudeSDKClient(options=options) as client:
+            await client.query(message)
+            async for msg in client.receive_response():
+              msg_count += 1
+              msg_type = type(msg).__name__
+              logger.info(f"[AGENT] Message #{msg_count}: {msg_type}")
 
-            if is_cancelled_fn():
-              logger.info("Agent cancelled by user request")
-              result_queue.put(('cancelled', None))
-              return
-            result_queue.put(('message', msg))
+              if is_cancelled_fn():
+                logger.info("Agent cancelled by user request")
+                result_queue.put(('cancelled', None))
+                return
+              result_queue.put(('message', msg))
         logger.info(f"[AGENT] Completed after {msg_count} messages")
       except asyncio.CancelledError:
         logger.warning("Agent query was cancelled (asyncio.CancelledError)")
@@ -248,6 +258,7 @@ async def stream_agent_response(
   is_cancelled_fn: callable = None,
   enabled_skills: list[str] | None = None,
   mlflow_experiment_name: str | None = None,
+  user_identity: str | None = None,
 ) -> AsyncIterator[dict]:
   """Stream Claude agent response with all event types.
 
@@ -432,9 +443,20 @@ async def stream_agent_response(
     # Get MLflow experiment name from request param, falling back to environment
     mlflow_experiment = mlflow_experiment_name or os.environ.get('MLFLOW_EXPERIMENT_NAME')
 
+    # Build the apx-shaped span context so MLflow traces land under the
+    # standard apx.* schema. Logged once at startup whether this is wired live.
+    apx_span_kwargs = {
+      'project_id': project_id,
+      'user_identity': user_identity,
+      'model': options.model if hasattr(options, 'model') else None,
+      'session_id': session_id,
+    }
+    if not is_apx_available():
+      logger.debug('apx-agent not installed; tracing spans will run in no-op mode')
+
     agent_thread = threading.Thread(
       target=_run_agent_in_fresh_loop,
-      args=(message, options, result_queue, ctx, cancel_check, mlflow_experiment),
+      args=(message, options, result_queue, ctx, cancel_check, mlflow_experiment, apx_span_kwargs),
       daemon=True
     )
     agent_thread.start()

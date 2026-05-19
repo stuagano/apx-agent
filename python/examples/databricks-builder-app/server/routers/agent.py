@@ -190,6 +190,7 @@ async def invoke_agent(request: Request, body: InvokeAgentRequest):
                 is_cancelled_fn=lambda: stream.is_cancelled,
                 enabled_skills=enabled_skills,
                 mlflow_experiment_name=body.mlflow_experiment_name,
+                user_identity=user_email,
             ):
                 # Check if cancelled (also checked in agent thread, but double-check here)
                 if stream.is_cancelled:
