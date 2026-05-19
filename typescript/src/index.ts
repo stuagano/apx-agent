@@ -176,3 +176,68 @@ export {
   truncate,
 } from './trace.js';
 export type { Trace, TraceSpan, TraceContext } from './trace.js';
+
+// Audit log schema — apx.* span attributes
+export {
+  AuditAttrs,
+  setAuditAttrs,
+  hashForAudit,
+  outputSummary,
+  inputKeysSummary,
+} from './audit.js';
+
+// Local lightweight guards — zero-latency runtime checks
+export {
+  PermissionError,
+  RateLimit,
+  ToolAllowlist,
+  ToolDenylist,
+  promptInjectionHeuristic,
+  compose,
+} from './guards.js';
+
+// Cost tracking — DBU / $ per agent or serving endpoint
+export { costForAgent, costForEndpoint } from './cost.js';
+export type { CostBreakdown, CostRow, SqlExecutor } from './cost.js';
+
+// Canary / A-B deployment helpers
+export {
+  CanaryReport,
+  VersionMetrics,
+  getCanaryConfig,
+  deployCanary,
+  promoteCanary,
+  rollbackCanary,
+  analyzeCanary,
+} from './canary.js';
+export type {
+  CanaryConfig,
+  ServingEndpointsClient,
+  TraceSearch,
+  EndpointInfo,
+  EndpointConfigResponse,
+} from './canary.js';
+
+// Databricks Managed MCP integration
+export {
+  managedMcpUrls,
+  managedMcpClientConfig,
+} from './managed-mcp.js';
+export type {
+  ManagedMCPEndpoint,
+  ResourceSpec,
+  ResourceKind,
+} from './managed-mcp.js';
+
+// Topology visualization
+export {
+  discoverTopology,
+  renderTopology,
+} from './topology.js';
+export type {
+  AgentNode,
+  TopologyEdge,
+  Topology,
+  RegisteredModelsClient,
+  RegisteredModel,
+} from './topology.js';
