@@ -116,6 +116,21 @@ from ._guards import (
 # Cost tracking helpers
 from ._cost import CostBreakdown, cost_for_agent, cost_for_endpoint
 
+# Trace exporter
+from ._trace_export import ExportResult, export_traces
+
+# Topology visualization
+from ._topology import (
+    AgentNode,
+    Topology,
+    TopologyEdge,
+    discover_topology,
+    render_topology,
+)
+
+# Cross-agent evaluation
+from ._eval_chain import ChainCaseResult, ChainEvalReport, evaluate_chain
+
 # databricks-watchdog integration
 from ._watchdog import (
     WatchdogClient,
@@ -241,6 +256,19 @@ __all__ = [
     "CostBreakdown",
     "cost_for_agent",
     "cost_for_endpoint",
+    # Trace exporter
+    "ExportResult",
+    "export_traces",
+    # Topology
+    "AgentNode",
+    "Topology",
+    "TopologyEdge",
+    "discover_topology",
+    "render_topology",
+    # Cross-agent eval
+    "ChainCaseResult",
+    "ChainEvalReport",
+    "evaluate_chain",
     # Watchdog integration
     "WatchdogClient",
     "WatchdogDecision",
