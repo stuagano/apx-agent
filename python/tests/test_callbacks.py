@@ -192,3 +192,85 @@ def test_after_model_exception_propagates() -> None:
     h = _AgentCallbackHandler(after_model=boom)
     with pytest.raises(ValueError, match="post-hoc check failed"):
         h.on_llm_end(MagicMock())
+
+
+# ---------------------------------------------------------------------------
+# Audit attribute wiring
+# ---------------------------------------------------------------------------
+
+
+def test_on_tool_start_records_audit_attrs_on_active_span() -> None:
+    """The handler should annotate the active span with apx.tool.* attrs."""
+    from unittest.mock import patch as _patch
+
+    fake_span = MagicMock()
+    h = _AgentCallbackHandler()
+    with _patch("apx_agent._callbacks.current_active_span", return_value=fake_span):
+        h.on_tool_start({"name": "classify_intent"}, "query=hi", inputs={"query": "hi"}, run_id=uuid4())
+
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.tool.name" in keys_set
+    assert "apx.tool.input_keys" in keys_set
+    assert "apx.tool.input_hash" in keys_set
+    assert "apx.operation" in keys_set
+
+
+def test_on_tool_end_records_output_audit_attrs() -> None:
+    from unittest.mock import patch as _patch
+
+    fake_span = MagicMock()
+    h = _AgentCallbackHandler()
+    run_id = uuid4()
+    with _patch("apx_agent._callbacks.current_active_span", return_value=fake_span):
+        h.on_tool_start({"name": "x"}, "in", inputs={}, run_id=run_id)
+        fake_span.reset_mock()  # focus on the on_tool_end attrs
+        h.on_tool_end({"rows": [{"a": 1}]}, run_id=run_id)
+
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.tool.output_type" in keys_set
+    assert "apx.tool.output_size" in keys_set
+    assert "apx.tool.duration_ms" in keys_set
+
+
+def test_on_chat_model_start_records_audit_attrs() -> None:
+    from unittest.mock import patch as _patch
+
+    fake_span = MagicMock()
+    h = _AgentCallbackHandler()
+    with _patch("apx_agent._callbacks.current_active_span", return_value=fake_span):
+        h.on_chat_model_start({}, [[{"role": "user", "content": "hi"}]])
+
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.operation" in keys_set
+    assert "apx.model.input_messages" in keys_set
+
+
+def test_on_llm_end_records_token_usage_when_present() -> None:
+    from unittest.mock import patch as _patch
+    from types import SimpleNamespace
+
+    fake_span = MagicMock()
+    response = SimpleNamespace(
+        llm_output={"token_usage": {"prompt_tokens": 100, "completion_tokens": 50}},
+    )
+    h = _AgentCallbackHandler()
+    with _patch("apx_agent._callbacks.current_active_span", return_value=fake_span):
+        h.on_llm_end(response)
+
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.model.input_tokens" in keys_set
+    assert "apx.model.output_tokens" in keys_set
+
+
+def test_on_llm_end_without_usage_skips_token_attrs() -> None:
+    from unittest.mock import patch as _patch
+    from types import SimpleNamespace
+
+    fake_span = MagicMock()
+    response = SimpleNamespace(llm_output=None)
+    h = _AgentCallbackHandler()
+    with _patch("apx_agent._callbacks.current_active_span", return_value=fake_span):
+        h.on_llm_end(response)
+
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.model.input_tokens" not in keys_set

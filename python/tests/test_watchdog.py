@@ -571,6 +571,61 @@ def test_watchdog_transport_routes_evaluate_to_mcp() -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Audit attribute wiring — WatchdogGuard records decisions on active span
+# ---------------------------------------------------------------------------
+
+
+def test_for_tool_reject_records_audit_attrs_on_active_span() -> None:
+    transport = _make_transport({
+        "tool_call": {"action": "reject", "reason": "blocked",
+                      "policy_id": "p-1", "domain": "security"},
+    })
+    guard = WatchdogGuard(WatchdogClient(transport=transport), agent_name="triage")
+
+    fake_span = MagicMock()
+    with patch("apx_agent._watchdog.current_active_span", return_value=fake_span), \
+         pytest.raises(PermissionError):
+        guard.for_tool()("classify_intent", {"query": "x"})
+
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.watchdog.action" in keys_set
+    assert "apx.watchdog.reason" in keys_set
+    assert "apx.watchdog.policy_id" in keys_set
+    assert "apx.watchdog.domain" in keys_set
+    assert "apx.agent.name" in keys_set
+
+
+def test_for_tool_allow_does_not_record_watchdog_audit_attrs() -> None:
+    """Allow decisions are the default — no audit annotation needed."""
+    transport = _make_transport()  # default allow
+    guard = WatchdogGuard(WatchdogClient(transport=transport))
+
+    fake_span = MagicMock()
+    with patch("apx_agent._watchdog.current_active_span", return_value=fake_span):
+        guard.for_tool()("classify_intent", {})
+
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.watchdog.action" not in keys_set
+
+
+def test_for_output_redact_records_audit_attrs() -> None:
+    transport = _make_transport({
+        "output_message": {"action": "redact", "reason": "PII",
+                           "redacted_content": "<redacted>", "policy_id": "p-2"},
+    })
+    guard = WatchdogGuard(WatchdogClient(transport=transport), agent_name="triage")
+
+    fake_span = MagicMock()
+    with patch("apx_agent._watchdog.current_active_span", return_value=fake_span):
+        out = guard.for_output()("text with PII")
+
+    assert out == "<redacted>"
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.watchdog.action" in keys_set
+    assert "apx.watchdog.policy_id" in keys_set
+
+
 def test_client_with_combined_transport_reject_decision_writes_violation_row() -> None:
     """Integration-style: client.evaluate via MCP + client.report_violation via UC."""
     ws = MagicMock()
