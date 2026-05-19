@@ -581,6 +581,34 @@ User identity threads from the supervisor down through your sub-agent automatica
 
 The Supervisor SDK (`databricks.sdk.service.supervisoragents`) is preview and may not be in older SDK versions. The helper raises a friendly `ImportError` pointing at the upgrade path when it's missing.
 
+## MLflow experiments
+
+Each agent gets its own experiment so runs, traces, and eval results stay organized. Set the experiment at three layers, in priority order:
+
+1. **CLI flag** — `apx deploy --experiment ...`, `apx eval --experiment ...`
+2. **`[tool.apx.agent]` in pyproject** — `experiment = "/Users/me/agents/my_agent"`
+3. **Direct kwarg** — `log_agent(..., experiment=...)`, `evaluate(..., experiment=...)`
+
+When none is set, MLflow's currently-active experiment (or default) is used.
+
+```toml
+# pyproject.toml
+[tool.apx.agent]
+name = "customer_triage"
+model = "databricks-claude-sonnet-4-6"
+experiment = "/Users/me@company.com/agents/customer_triage"
+```
+
+```python
+log_agent(agent, model="...", registered_model_name="...",
+          experiment="/Users/me@company.com/agents/triage")
+
+evaluate(agent, model="...", evalset=[...],
+         experiment="/Users/me@company.com/agents/triage")
+```
+
+On Databricks-hosted MLflow, experiment names are workspace paths (e.g. `/Users/you@company.com/agents/my_agent` or `/Shared/agents/my_agent`). Local MLflow accepts plain names. Errors from `mlflow.set_experiment` surface with a friendly message pointing at the path convention.
+
 ## Evaluation
 
 `apx_agent.evaluate(agent, model=..., evalset=..., scorers=...)` runs Mosaic AI Agent Evaluation against the agent in-process — no deploy, no HTTP, fast feedback during authoring and CI. The agent compiles to a `ChatAgent` once; each evalset entry runs through the compiled graph; results come back as a standard `mlflow.genai.evaluate` result.
