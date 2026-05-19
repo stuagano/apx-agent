@@ -37,6 +37,26 @@ Composable agent patterns for multi-step orchestration. The LLM doesn't pick the
 | **HandoffAgent** | Peer handoff mid-conversation (triage → billing) |
 | **RemoteAgent** | Cross-endpoint sub-agent call |
 
+## CLI
+
+`apx` is the command-line wrapper. Every command maps to a single library primitive — the CLI is ergonomics, not logic.
+
+```bash
+apx scaffold my_agent              # generate a new agent project
+cd my_agent && uv sync
+apx run                            # uvicorn against app.py:app
+apx publish-tools --dry-run        # preview UC function registrations
+apx publish-tools                  # actually register
+apx deploy --model databricks-claude-sonnet-4-6 \
+           --name main.agents.my_agent
+apx publish --endpoint my_agent --supervisor sa-12345 \
+            --description "Handles X for users asking about Y"
+apx mcp-config --host https://workspace.cloud.databricks.com
+apx eval evalset.jsonl --model databricks-claude-sonnet-4-6
+```
+
+All commands that take an agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`).
+
 ## Quick start
 
 ### Python

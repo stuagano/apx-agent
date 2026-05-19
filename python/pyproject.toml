@@ -41,6 +41,7 @@ dev = [
 ]
 
 [project.scripts]
+apx            = "apx_agent.cli:main"
 voynich_seed   = "apx_agent.workflow.cli:seed_population"
 voynich_run    = "apx_agent.workflow.cli:run_generation_batch"
 voynich_vacuum = "apx_agent.workflow.cli:vacuum_population"
