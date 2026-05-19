@@ -94,6 +94,28 @@ from ._session import (
 from ._session_delta import DeltaSessionStore
 from ._session_lakebase import LakebaseSessionStore
 
+# Durable memory + few-shot examples
+from ._memory import (
+    EmbeddingFn,
+    InMemoryMemoryStore,
+    Memory,
+    MemoryFilter,
+    MemoryStore,
+    RecallOptions,
+    RecallResult,
+    cosine_similarity,
+)
+from ._example import (
+    Example,
+    ExampleFilter,
+    ExampleResult,
+    ExampleStore,
+    FindSimilarOptions,
+    InMemoryExampleStore,
+)
+from ._memory_lakebase import LakebaseMemoryStore
+from ._example_lakebase import LakebaseExampleStore
+
 # Databricks Managed MCP integration
 from ._managed_mcp import (
     ManagedMCPEndpoint,
@@ -266,6 +288,23 @@ __all__ = [
     "LakebaseSessionStore",
     "append_turn",
     "load_or_create_session",
+    # Durable memory + examples
+    "EmbeddingFn",
+    "InMemoryMemoryStore",
+    "Memory",
+    "MemoryFilter",
+    "MemoryStore",
+    "RecallOptions",
+    "RecallResult",
+    "cosine_similarity",
+    "Example",
+    "ExampleFilter",
+    "ExampleResult",
+    "ExampleStore",
+    "FindSimilarOptions",
+    "InMemoryExampleStore",
+    "LakebaseMemoryStore",
+    "LakebaseExampleStore",
     # Managed MCP
     "ManagedMCPEndpoint",
     "managed_mcp_urls",

@@ -436,3 +436,76 @@ export type {
   ChatAgentLike,
   ChatAgentPredictOptions,
 } from './invocations.js';
+
+// MemoryStore + ExampleStore foundations — types, helpers, in-memory baselines
+export {
+  InMemoryMemoryStore,
+  cosineSimilarity,
+  tagsOverlap,
+  materializeMemory,
+  applyPatch as applyMemoryPatch,
+  newMemoryId,
+} from './memory.js';
+export type {
+  Memory,
+  MemoryInput,
+  MemoryFilter,
+  MemoryPatch,
+  MemoryStore,
+  RecallOptions,
+  RecallResult,
+  EmbeddingFn,
+} from './memory.js';
+
+export {
+  InMemoryExampleStore,
+  materializeExample,
+  applyExamplePatch,
+  newExampleId,
+} from './example.js';
+export type {
+  Example,
+  ExampleInput,
+  ExampleFilter,
+  ExamplePatch,
+  ExampleStore,
+  FindSimilarOptions,
+  ExampleResult,
+} from './example.js';
+
+// Lakebase pgvector backends
+export {
+  LakebaseMemoryStore,
+  vectorLiteral,
+  tagsLiteral,
+} from './memory-lakebase.js';
+export type {
+  LakebaseMemoryStoreOptions,
+  PgQueryExecutor as LakebaseMemoryQueryExecutor,
+  PgExecExecutor as LakebaseMemoryExecExecutor,
+} from './memory-lakebase.js';
+export { LakebaseExampleStore } from './example-lakebase.js';
+export type { LakebaseExampleStoreOptions } from './example-lakebase.js';
+
+// Delta backends (with optional Databricks Vector Search delegation)
+export { DeltaMemoryStore } from './memory-delta.js';
+export type {
+  DeltaMemoryStoreOptions,
+  VectorSearchClient,
+  SqlQueryExecutor as DeltaMemoryQueryExecutor,
+  SqlExecExecutor as DeltaMemoryExecExecutor,
+} from './memory-delta.js';
+export { DeltaExampleStore } from './example-delta.js';
+export type { DeltaExampleStoreOptions } from './example-delta.js';
+
+// Agent-side integration: tools + prompt assembly
+export { makeMemoryTools } from './memory-tools.js';
+export type { MakeMemoryToolsOptions, MemoryToolName } from './memory-tools.js';
+export { makeExampleTools } from './example-tools.js';
+export type { MakeExampleToolsOptions, ExampleToolName } from './example-tools.js';
+export {
+  assembleMemoryContext,
+  assembleExampleContext,
+  assembleContext,
+} from './prompt-assembly.js';
+export type { AssembleContextOptions } from './prompt-assembly.js';
