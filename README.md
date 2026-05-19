@@ -503,7 +503,57 @@ metadata = emit_agent_metadata(agent, name="customer_triage",
 
 Watchdog returns `WatchdogDecision(action, reason, policy_id, domain, redacted_content, metadata)`. `reject` short-circuits the call; `redact` rewrites content (for outputs); `allow` is pass-through. On transport failure the guard fails open (logs a warning, allows the request) — the runtime decides its own fail-open vs fail-closed policy on top of this.
 
-The current integration is a **sketch** — the no-op default transport ships so this code is safe to wire today, with the real watchdog HTTP/MCP transport plugging in once the metadata shape and runtime entry point are pinned down. See `docs/future-work/gap-plan-2026-05-18.md` for the open questions.
+### End-to-end wiring
+
+The three wire-protocol contracts are pinned:
+
+| Contract | Mechanism | Helper |
+|---|---|---|
+| Metadata for watchdog's crawler | UC tags on the registered model (`apx.agent.*`) | `set_uc_tags_for_agent(agent, registered_model_name=..., model=...)` |
+| Runtime policy decisions | One of watchdog's 13 MCP tools | `make_mcp_transport(mcp_url, tool_name=...)` |
+| Violation reports | INSERT into a watchdog-owned UC Delta table | `make_uc_violation_writer(violations_table, ws=...)` |
+
+```python
+from apx_agent import (
+    Agent, WatchdogClient, WatchdogGuard,
+    make_watchdog_transport, set_uc_tags_for_agent, log_agent,
+)
+from databricks.sdk import WorkspaceClient
+
+ws = WorkspaceClient()
+
+# One-time at deploy: write metadata as UC tags on the registered model
+log_agent(agent, model="databricks-claude-sonnet-4-6",
+          registered_model_name="main.agents.customer_triage")
+set_uc_tags_for_agent(
+    agent,
+    registered_model_name="main.agents.customer_triage",
+    model="databricks-claude-sonnet-4-6",
+    name="customer_triage",
+)
+
+# Runtime: MCP for evaluate + UC table for violations
+transport = make_watchdog_transport(
+    mcp_url="https://watchdog.example.com/mcp",
+    mcp_tool_name="evaluate_operation",
+    violations_table="main.watchdog.runtime_violations",
+    ws=ws,
+    warehouse_id="wh-prod",
+)
+watchdog = WatchdogClient(transport=transport)
+guard = WatchdogGuard(watchdog, agent_name="customer_triage")
+
+agent = Agent(
+    instructions="...",
+    tools=[...],
+    input_guardrails=[guard.for_input()],
+    output_guardrails=[guard.for_output()],
+    before_tool=guard.for_tool(),
+    before_model=guard.for_model(),
+)
+```
+
+The MCP transport calls `tools/call` on watchdog's streamable HTTP MCP endpoint; the UC writer auto-creates the violations table on first use (`auto_create=True`) and `INSERT`s a row per reject/redact decision. Both are pluggable — pass a custom `transport` to `WatchdogClient` for a different wire shape (e.g. plain HTTP, batched async writes).
 
 ## Callbacks
 

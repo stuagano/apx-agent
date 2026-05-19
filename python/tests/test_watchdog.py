@@ -21,6 +21,8 @@ from typing import Any
 
 import pytest
 
+from unittest.mock import MagicMock, patch
+
 from apx_agent import (
     Agent,
     WatchdogClient,
@@ -28,6 +30,9 @@ from apx_agent import (
     WatchdogGuard,
     emit_agent_metadata,
     genie_tool,
+    make_uc_violation_writer,
+    make_watchdog_transport,
+    set_uc_tags_for_agent,
     tool,
     uc_function_tool,
     vector_search_tool,
@@ -325,3 +330,270 @@ def test_emit_agent_metadata_minimal_no_model() -> None:
     assert meta["model"] is None
     assert meta["tools"] == []
     assert meta["resources"] == []
+
+
+# ---------------------------------------------------------------------------
+# set_uc_tags_for_agent — UC tags emitter
+# ---------------------------------------------------------------------------
+
+
+def _make_full_agent() -> Agent:
+    @tool(uc="main.tools.classify_intent", grant=["agent_consumers"])
+    def classify_intent(query: str) -> str:
+        """Classify."""
+        return query
+
+    return Agent(
+        instructions="...",
+        tools=[
+            classify_intent,
+            uc_function_tool("main.tools.score"),
+            genie_tool("space-abc"),
+            vector_search_tool("main.search.docs"),
+        ],
+        sub_agents=["endpoints/billing"],
+    )
+
+
+def test_set_uc_tags_writes_expected_keys() -> None:
+    agent = _make_full_agent()
+    mlflow_client = MagicMock()
+
+    tags = set_uc_tags_for_agent(
+        agent,
+        registered_model_name="main.agents.triage",
+        model="databricks-claude-sonnet-4-6",
+        name="triage",
+        mlflow_client=mlflow_client,
+    )
+
+    expected_keys = {
+        "apx.agent.name", "apx.agent.model", "apx.agent.tool_count",
+        "apx.agent.tools", "apx.agent.uc_functions",
+        "apx.agent.sub_agents", "apx.agent.resources", "apx.agent.metadata",
+    }
+    assert expected_keys.issubset(set(tags.keys()))
+
+    # One MlflowClient.set_registered_model_tag call per tag
+    assert mlflow_client.set_registered_model_tag.call_count == len(tags)
+    written_keys = {c.kwargs["key"] for c in mlflow_client.set_registered_model_tag.call_args_list}
+    assert written_keys == set(tags.keys())
+
+
+def test_set_uc_tags_model_value_propagates() -> None:
+    agent = _make_full_agent()
+    mlflow_client = MagicMock()
+    tags = set_uc_tags_for_agent(
+        agent,
+        registered_model_name="main.agents.triage",
+        model="databricks-claude-sonnet-4-6",
+        mlflow_client=mlflow_client,
+    )
+    assert tags["apx.agent.model"] == "databricks-claude-sonnet-4-6"
+
+
+def test_set_uc_tags_continues_past_individual_failure() -> None:
+    """One tag write failing shouldn't abort the rest."""
+    agent = _make_full_agent()
+    mlflow_client = MagicMock()
+    # Fail every other call
+    mlflow_client.set_registered_model_tag.side_effect = [
+        None, RuntimeError("fail"), None, None, None, None, None, None,
+    ]
+
+    tags = set_uc_tags_for_agent(
+        agent,
+        registered_model_name="main.agents.triage",
+        model="m",
+        mlflow_client=mlflow_client,
+    )
+    # All tag writes attempted even with a failure in the middle
+    assert mlflow_client.set_registered_model_tag.call_count == len(tags)
+
+
+def test_set_uc_tags_truncates_long_metadata() -> None:
+    @tool
+    def long_doc(query: str) -> str:
+        """Very long description.""" + ("x" * 10_000)
+        return query
+
+    agent = Agent(tools=[long_doc] * 20, instructions="x" * 50_000)
+    mlflow_client = MagicMock()
+
+    tags = set_uc_tags_for_agent(
+        agent,
+        registered_model_name="main.agents.x",
+        mlflow_client=mlflow_client,
+    )
+    # Every written tag value stays under the UC limit
+    for value in tags.values():
+        assert len(value) <= 4000
+
+
+# ---------------------------------------------------------------------------
+# make_uc_violation_writer
+# ---------------------------------------------------------------------------
+
+
+def test_violation_writer_rejects_bad_table_path() -> None:
+    with pytest.raises(ValueError, match="three-part"):
+        make_uc_violation_writer("not.three", ws=MagicMock())
+
+
+def test_violation_writer_inserts_row_with_decision_fields() -> None:
+    ws = MagicMock()
+    writer = make_uc_violation_writer("main.x.violations", ws=ws, auto_create=False)
+    with patch("apx_agent._watchdog.run_sql") as mock_sql:
+        writer({
+            "type": "violation_report",
+            "decision": {
+                "action": "reject",
+                "reason": "policy bad",
+                "policy_id": "p-1",
+                "domain": "security",
+                "metadata": {"owner": "data@x.com"},
+            },
+            "context": {"agent_name": "triage", "tool_name": "leak_pii"},
+        })
+
+    assert mock_sql.call_count == 1
+    sql = mock_sql.call_args.args[1]
+    assert "INSERT INTO main.x.violations" in sql
+    # Decision values inlined
+    assert "reject" in sql
+    assert "policy bad" in sql
+    assert "p-1" in sql
+    assert "security" in sql
+    # Context JSON inlined
+    assert "triage" in sql
+
+
+def test_violation_writer_passes_through_non_violation_requests() -> None:
+    ws = MagicMock()
+    writer = make_uc_violation_writer("main.x.violations", ws=ws, auto_create=False)
+    with patch("apx_agent._watchdog.run_sql") as mock_sql:
+        result = writer({"operation": "tool_call", "context": {}})
+    assert result == {"action": "allow"}
+    mock_sql.assert_not_called()
+
+
+def test_violation_writer_auto_create_runs_once() -> None:
+    ws = MagicMock()
+    writer = make_uc_violation_writer("main.x.violations", ws=ws)
+    with patch("apx_agent._watchdog.run_sql") as mock_sql:
+        writer({"type": "violation_report", "decision": {"action": "reject"}, "context": {}})
+        writer({"type": "violation_report", "decision": {"action": "reject"}, "context": {}})
+
+    create_calls = [c for c in mock_sql.call_args_list if "CREATE TABLE" in c.args[1]]
+    assert len(create_calls) == 1
+
+
+def test_violation_writer_escapes_single_quotes_in_decision_strings() -> None:
+    ws = MagicMock()
+    writer = make_uc_violation_writer("main.x.violations", ws=ws, auto_create=False)
+    with patch("apx_agent._watchdog.run_sql") as mock_sql:
+        writer({
+            "type": "violation_report",
+            "decision": {"action": "reject", "reason": "user's policy violated"},
+            "context": {},
+        })
+
+    sql = mock_sql.call_args.args[1]
+    assert "user''s policy violated" in sql
+
+
+def test_violation_writer_logs_and_continues_on_sql_failure() -> None:
+    ws = MagicMock()
+    writer = make_uc_violation_writer("main.x.violations", ws=ws, auto_create=False)
+    with patch(
+        "apx_agent._watchdog.run_sql", side_effect=RuntimeError("warehouse down"),
+    ):
+        # Should not raise
+        result = writer({
+            "type": "violation_report",
+            "decision": {"action": "reject"},
+            "context": {},
+        })
+    assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# make_watchdog_transport — combined evaluate + violation
+# ---------------------------------------------------------------------------
+
+
+def test_watchdog_transport_routes_violation_to_uc_writer() -> None:
+    ws = MagicMock()
+    transport = make_watchdog_transport(
+        mcp_url="https://watchdog.example.com/mcp",
+        mcp_tool_name="evaluate_operation",
+        violations_table="main.x.violations",
+        ws=ws,
+    )
+    with patch("apx_agent._watchdog.run_sql") as mock_sql, \
+         patch("apx_agent._watchdog.make_mcp_transport") as mock_mcp:
+        # Re-create after patching the MCP factory so we don't hit real MCP
+        transport = make_watchdog_transport(
+            mcp_url="https://watchdog.example.com/mcp",
+            mcp_tool_name="evaluate_operation",
+            violations_table="main.x.violations",
+            ws=ws,
+        )
+        transport({
+            "type": "violation_report",
+            "decision": {"action": "reject", "reason": "x"},
+            "context": {"agent_name": "triage"},
+        })
+
+    insert_calls = [c for c in mock_sql.call_args_list if "INSERT INTO" in c.args[1]]
+    assert len(insert_calls) == 1
+
+
+def test_watchdog_transport_routes_evaluate_to_mcp() -> None:
+    ws = MagicMock()
+
+    fake_mcp = MagicMock(return_value={"action": "reject", "reason": "blocked"})
+    with patch("apx_agent._watchdog.make_mcp_transport", return_value=fake_mcp):
+        transport = make_watchdog_transport(
+            mcp_url="https://watchdog.example.com/mcp",
+            mcp_tool_name="evaluate_operation",
+            violations_table="main.x.violations",
+            ws=ws,
+        )
+        response = transport({"operation": "tool_call", "context": {}})
+
+    assert response == {"action": "reject", "reason": "blocked"}
+    fake_mcp.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# WatchdogClient end-to-end with the real combined transport
+# ---------------------------------------------------------------------------
+
+
+def test_client_with_combined_transport_reject_decision_writes_violation_row() -> None:
+    """Integration-style: client.evaluate via MCP + client.report_violation via UC."""
+    ws = MagicMock()
+
+    fake_mcp = MagicMock(return_value={"action": "reject", "reason": "blocked", "policy_id": "p-1"})
+    with patch("apx_agent._watchdog.make_mcp_transport", return_value=fake_mcp), \
+         patch("apx_agent._watchdog.run_sql") as mock_sql:
+        transport = make_watchdog_transport(
+            mcp_url="https://watchdog.example.com/mcp",
+            mcp_tool_name="evaluate_operation",
+            violations_table="main.x.violations",
+            ws=ws,
+        )
+        client = WatchdogClient(transport=transport)
+
+        decision = client.evaluate(operation="tool_call", context={"tool_name": "x"})
+        assert decision.action == "reject"
+        assert decision.policy_id == "p-1"
+
+        client.report_violation(decision, {"agent_name": "triage", "tool_name": "x"})
+
+    inserts = [c for c in mock_sql.call_args_list if "INSERT INTO main.x.violations" in c.args[1]]
+    assert len(inserts) == 1
+    sql = inserts[0].args[1]
+    assert "p-1" in sql
+    assert "triage" in sql
