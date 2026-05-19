@@ -366,11 +366,27 @@ def eval_cmd(
     "--name", "registered_model_name", required=True,
     help="UC three-part name to register the model under (catalog.schema.model).",
 )
-@click.option("--no-deploy", is_flag=True, help="Log + register only, skip databricks.agents.deploy.")
+@click.option("--no-deploy", is_flag=True,
+              help="Log + register only, skip databricks.agents.deploy.")
 @click.option(
     "--experiment", default=None,
     help="MLflow experiment name/path. Falls back to [tool.apx.agent].experiment "
          "in pyproject.toml; falls back to MLflow's default when neither is set.",
+)
+@click.option(
+    "--publish-tools/--no-publish-tools", default=True,
+    help="Publish @tool(uc=...) decorated tools to Unity Catalog before logging. "
+         "On by default; pass --no-publish-tools to skip.",
+)
+@click.option(
+    "--set-uc-tags/--no-set-uc-tags", default=True,
+    help="Write apx.agent.* UC tags on the registered model after deploy so "
+         "the agent shows up in apx list / topology / watchdog crawls. On by default.",
+)
+@click.option(
+    "--agent-name", default=None,
+    help="Friendly agent name used for the apx.agent.name UC tag. Falls back to "
+         "[tool.apx.agent].name in pyproject.toml; falls back to the short part of --name.",
 )
 def deploy(
     module: str,
@@ -378,17 +394,54 @@ def deploy(
     registered_model_name: str,
     no_deploy: bool,
     experiment: str | None,
+    publish_tools: bool,
+    set_uc_tags: bool,
+    agent_name: str | None,
 ) -> None:
-    """Log the agent to MLflow and (optionally) deploy to Model Serving."""
+    """Log the agent to MLflow + deploy + UC-tag in one command.
+
+    By default runs the full canonical flow:
+
+      1. publish_tools_to_uc(agent)    — register any @tool(uc=...) tools
+      2. log_agent(agent, ...)         — log to MLflow + register in UC
+      3. databricks.agents.deploy(...) — promote to a serving endpoint
+      4. set_uc_tags_for_agent(...)    — write apx.agent.* tags
+
+    Toggle individual stages with --no-publish-tools, --no-deploy, or
+    --no-set-uc-tags.
+    """
     import mlflow
 
     from apx_agent import log_agent
 
     agent = _load_agent(module)
-    effective_experiment = experiment or _read_apx_agent_config().get("experiment")
+    config = _read_apx_agent_config()
+    effective_experiment = experiment or config.get("experiment")
+    effective_agent_name = (
+        agent_name
+        or config.get("name")
+        or registered_model_name.rsplit(".", 1)[-1]
+    )
     if effective_experiment:
         click.echo(f"# experiment: {effective_experiment}", err=True)
 
+    # 1. Publish @tool(uc=...) tools first so they exist in UC by the
+    # time log_agent's resource collector picks them up.
+    if publish_tools:
+        try:
+            from apx_agent import publish_tools_to_uc
+            results = publish_tools_to_uc(agent)
+            if results:
+                for r in results:
+                    grants = ", ".join(r.grants_applied) or "none"
+                    click.echo(f"  published {r.uc_name} (grants: {grants})")
+            else:
+                click.echo("  (no @tool(uc=...) decorated tools to publish)")
+        except Exception as e:
+            click.echo(f"# publish-tools failed: {e}", err=True)
+            click.echo("# continuing with log + deploy", err=True)
+
+    # 2. Log + register
     with mlflow.start_run():
         info = log_agent(
             agent,
@@ -398,19 +451,37 @@ def deploy(
         )
     click.echo(f"Logged {registered_model_name} version {info.registered_model_version}")
 
-    if no_deploy:
+    # 3. Deploy to Model Serving
+    if not no_deploy:
+        try:
+            from databricks import agents  # type: ignore[attr-defined]
+        except ImportError as e:
+            raise click.ClickException(
+                "databricks-agents is required for deployment. "
+                "Install with: pip install databricks-agents"
+            ) from e
+        agents.deploy(registered_model_name, model_version=info.registered_model_version)
+        click.echo(
+            f"Deployed {registered_model_name} version "
+            f"{info.registered_model_version} as a serving endpoint."
+        )
+    else:
         click.echo("Skipping deploy (--no-deploy).")
-        return
 
-    try:
-        from databricks import agents  # type: ignore[attr-defined]
-    except ImportError as e:
-        raise click.ClickException(
-            "databricks-agents is required for deployment. "
-            "Install with: pip install databricks-agents"
-        ) from e
-    agents.deploy(registered_model_name, model_version=info.registered_model_version)
-    click.echo(f"Deployed {registered_model_name} version {info.registered_model_version} as a serving endpoint.")
+    # 4. Set UC tags so the agent shows up in apx list / topology / watchdog
+    if set_uc_tags:
+        try:
+            from apx_agent import set_uc_tags_for_agent
+            set_uc_tags_for_agent(
+                agent,
+                registered_model_name=registered_model_name,
+                model=model,
+                name=effective_agent_name,
+            )
+            click.echo(f"  apx.agent.* tags written on {registered_model_name} "
+                       f"(agent_name={effective_agent_name})")
+        except Exception as e:
+            click.echo(f"# set-uc-tags failed: {e}", err=True)
 
 
 # ---------------------------------------------------------------------------

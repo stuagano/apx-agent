@@ -376,6 +376,131 @@ def test_deploy_cli_flag_wins_over_pyproject(
     assert fake_log_agent.call_args.kwargs["experiment"] == "/Users/me/agents/from-cli"
 
 
+def test_deploy_chains_publish_tools_and_set_uc_tags_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+    fake_publish = MagicMock(return_value=[])
+    fake_set_tags = MagicMock(return_value={})
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("apx_agent.publish_tools_to_uc", fake_publish), \
+         patch("apx_agent.set_uc_tags_for_agent", fake_set_tags), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(
+            main,
+            [
+                "deploy",
+                "--module", "tmp_test_agent:agent",
+                "--model", "databricks-claude-sonnet-4-6",
+                "--name", "main.agents.x",
+                "--no-deploy",
+            ],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    fake_publish.assert_called_once()
+    fake_set_tags.assert_called_once()
+    # agent_name defaults to short part of registered_model_name
+    assert fake_set_tags.call_args.kwargs["name"] == "x"
+
+
+def test_deploy_no_publish_tools_flag_skips_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+    fake_publish = MagicMock(return_value=[])
+    fake_set_tags = MagicMock(return_value={})
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("apx_agent.publish_tools_to_uc", fake_publish), \
+         patch("apx_agent.set_uc_tags_for_agent", fake_set_tags), \
+         patch("mlflow.start_run"):
+        runner.invoke(
+            main,
+            [
+                "deploy",
+                "--module", "tmp_test_agent:agent",
+                "--model", "databricks-claude-sonnet-4-6",
+                "--name", "main.agents.x",
+                "--no-deploy",
+                "--no-publish-tools",
+            ],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    fake_publish.assert_not_called()
+
+
+def test_deploy_no_set_uc_tags_flag_skips_tag_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+    fake_set_tags = MagicMock(return_value={})
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("apx_agent.publish_tools_to_uc", return_value=[]), \
+         patch("apx_agent.set_uc_tags_for_agent", fake_set_tags), \
+         patch("mlflow.start_run"):
+        runner.invoke(
+            main,
+            [
+                "deploy",
+                "--module", "tmp_test_agent:agent",
+                "--model", "databricks-claude-sonnet-4-6",
+                "--name", "main.agents.x",
+                "--no-deploy",
+                "--no-set-uc-tags",
+            ],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    fake_set_tags.assert_not_called()
+
+
+def test_deploy_agent_name_flag_overrides_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_set_tags = MagicMock(return_value={})
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent",
+               return_value=SimpleNamespace(registered_model_version="1")), \
+         patch("apx_agent.publish_tools_to_uc", return_value=[]), \
+         patch("apx_agent.set_uc_tags_for_agent", fake_set_tags), \
+         patch("mlflow.start_run"):
+        runner.invoke(
+            main,
+            [
+                "deploy",
+                "--module", "tmp_test_agent:agent",
+                "--model", "databricks-claude-sonnet-4-6",
+                "--name", "main.agents.x",
+                "--agent-name", "explicit_name",
+                "--no-deploy",
+            ],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert fake_set_tags.call_args.kwargs["name"] == "explicit_name"
+
+
 def test_deploy_no_experiment_when_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
