@@ -83,6 +83,11 @@ apx cost --agent customer_triage --hours 24 # DBU + $ over a lookback window
 apx export-traces --table main.agents.traces --hours 24    # MLflow traces → Delta
 apx topology --format mermaid > topology.mmd               # multi-agent graph
 apx eval-chain evalset.jsonl --model X --experiment /Users/me/...  # per-prompt sub-agent coverage
+apx hot-swap --endpoint customer_triage --model databricks-claude-opus-4-7  # change LLM without re-logging
+apx canary deploy --endpoint customer_triage --model main.agents.x --version 42 --traffic 10
+apx canary analyze --endpoint customer_triage --hours 24    # per-version requests / errors / latency
+apx canary promote --endpoint customer_triage --model main.agents.x --version 42
+apx canary rollback --endpoint customer_triage --model main.agents.x --version 41
 ```
 
 All commands that take an agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`).

@@ -954,6 +954,52 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# hot-swap — change LLM endpoint on a deployed agent without re-logging
+# ---------------------------------------------------------------------------
+
+
+@main.command("hot-swap")
+@click.option("--endpoint", required=True,
+              help="Serving endpoint hosting the agent.")
+@click.option("--model", required=True,
+              help="New model serving endpoint (e.g. databricks-claude-opus-4-7).")
+@click.option("--no-wait", is_flag=True,
+              help="Don't block until the config update completes.")
+def hot_swap_cmd(endpoint: str, model: str, no_wait: bool) -> None:
+    """Hot-swap a deployed agent's LLM endpoint.
+
+    Updates the APX_AGENT_MODEL_OVERRIDE env var on the serving endpoint
+    so the next replica picks up the new model. The agent artifact is
+    NOT re-logged — same model version, different LLM.
+
+    Use cases: try a more capable model in production without redeploy,
+    roll back a problematic model change in seconds, run experiments
+    without versioning the artifact each time.
+
+    For full artifact-version A/B with traffic split, use `apx canary`
+    instead (different concern: that one creates new served entities;
+    this one rewrites env vars on the existing one).
+    """
+    from ._hot_swap import hot_swap_model
+
+    try:
+        result = hot_swap_model(endpoint, model, wait=not no_wait)
+    except Exception as e:
+        click.echo(f"hot-swap failed: {type(e).__name__}: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"apx hot-swap: {result.endpoint_name}")
+    click.echo(f"  new model:      {result.new_model}")
+    if result.previous_model:
+        click.echo(f"  previous override: {result.previous_model}")
+    else:
+        click.echo(f"  previous override: (none — first swap on this endpoint)")
+    click.echo(f"  served entities updated: {result.served_entities_updated}")
+    if no_wait:
+        click.echo("  (update dispatched async; pass --wait or check `databricks serving-endpoints get` to confirm)")
+
+
+# ---------------------------------------------------------------------------
 # test — local smoke test
 # ---------------------------------------------------------------------------
 
@@ -1366,6 +1412,192 @@ def eval_chain_cmd(
             report.sub_agent_coverage.items(), key=lambda kv: -kv[1],
         ):
             click.echo(f"  {sub}: {count}")
+
+
+# ---------------------------------------------------------------------------
+# canary — multi-version traffic split helpers
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def canary() -> None:
+    """Canary / A-B deployment helpers — multi-version traffic split."""
+
+
+@canary.command("status")
+@click.option("--endpoint", required=True, help="Model Serving endpoint name.")
+def canary_status(endpoint: str) -> None:
+    """Print the endpoint's current served entities + traffic split."""
+    from databricks.sdk import WorkspaceClient
+
+    from apx_agent import get_canary_config
+
+    cfg = get_canary_config(endpoint, ws=WorkspaceClient())
+    click.echo(f"# canary status: {cfg.endpoint}")
+    if not cfg.served_entities:
+        click.echo("  (no served entities)")
+        return
+    click.echo(f"{'ENTITY':<40}  {'MODEL':<32}  {'VERSION':<10}  {'TRAFFIC %':>9}")
+    for name, entity, version in cfg.served_entities:
+        pct = cfg.traffic_split.get(name, 0)
+        click.echo(f"{name:<40}  {entity:<32}  {version:<10}  {pct:>9}")
+
+
+@canary.command("deploy")
+@click.option("--endpoint", required=True, help="Model Serving endpoint to add the canary to.")
+@click.option("--model", "registered_model_name", required=True,
+              help="Three-part UC name of the registered model.")
+@click.option("--version", required=True, help="Model version to canary.")
+@click.option("--traffic", "traffic_pct", default=10, type=int,
+              help="Percentage of traffic to route to the new version. Default 10.")
+@click.option("--workload-size", default="Small", help="Workload size for the new served entity.")
+@click.option("--no-scale-to-zero", is_flag=True,
+              help="Disable scale-to-zero on the new served entity.")
+def canary_deploy(
+    endpoint: str,
+    registered_model_name: str,
+    version: str,
+    traffic_pct: int,
+    workload_size: str,
+    no_scale_to_zero: bool,
+) -> None:
+    """Add a new model version as a canary served entity."""
+    from databricks.sdk import WorkspaceClient
+
+    from apx_agent import deploy_canary
+
+    cfg = deploy_canary(
+        endpoint=endpoint,
+        registered_model_name=registered_model_name,
+        new_version=version,
+        canary_traffic_pct=traffic_pct,
+        ws=WorkspaceClient(),
+        scale_to_zero_enabled=not no_scale_to_zero,
+        workload_size=workload_size,
+    )
+    click.echo(f"Deployed {registered_model_name} v{version} at {traffic_pct}% on {endpoint}.")
+    click.echo(f"New split: {cfg.traffic_split}")
+
+
+@canary.command("promote")
+@click.option("--endpoint", required=True)
+@click.option("--model", "registered_model_name", required=True,
+              help="Three-part UC name of the registered model.")
+@click.option("--version", required=True, help="Version to send 100% of traffic to.")
+def canary_promote(
+    endpoint: str, registered_model_name: str, version: str,
+) -> None:
+    """Send 100% of traffic to a version. Other entities stay configured."""
+    from databricks.sdk import WorkspaceClient
+
+    from apx_agent import promote_canary
+
+    cfg = promote_canary(
+        endpoint=endpoint,
+        registered_model_name=registered_model_name,
+        version=version,
+        ws=WorkspaceClient(),
+    )
+    click.echo(f"Promoted {registered_model_name} v{version} to 100% on {endpoint}.")
+    click.echo(f"Split: {cfg.traffic_split}")
+
+
+@canary.command("rollback")
+@click.option("--endpoint", required=True)
+@click.option("--model", "registered_model_name", required=True,
+              help="Three-part UC name of the registered model.")
+@click.option("--version", required=True, help="Version to roll back to (usually the prior production version).")
+def canary_rollback(
+    endpoint: str, registered_model_name: str, version: str,
+) -> None:
+    """Roll back to a prior version. Functionally equivalent to promote."""
+    from databricks.sdk import WorkspaceClient
+
+    from apx_agent import rollback_canary
+
+    cfg = rollback_canary(
+        endpoint=endpoint,
+        registered_model_name=registered_model_name,
+        version=version,
+        ws=WorkspaceClient(),
+    )
+    click.echo(f"Rolled back to {registered_model_name} v{version} on {endpoint}.")
+    click.echo(f"Split: {cfg.traffic_split}")
+
+
+@canary.command("analyze")
+@click.option("--endpoint", required=True)
+@click.option("--experiment", default=None,
+              help="MLflow experiment to read traces from. Falls back to "
+                   "[tool.apx.agent].experiment in pyproject.toml.")
+@click.option("--hours", default=24, type=int, help="Lookback window. Default 24h.")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def canary_analyze(
+    endpoint: str,
+    experiment: str | None,
+    hours: int,
+    fmt: str,
+) -> None:
+    """Per-version requests / errors / latency from MLflow traces."""
+    effective_experiment = experiment or _read_apx_agent_config().get("experiment")
+    if not effective_experiment:
+        raise click.UsageError(
+            "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
+        )
+
+    from databricks.sdk import WorkspaceClient
+
+    from apx_agent import analyze_canary
+
+    report = analyze_canary(
+        endpoint=endpoint,
+        experiment=effective_experiment,
+        ws=WorkspaceClient(),
+        lookback_hours=hours,
+    )
+
+    if fmt == "json":
+        click.echo(json.dumps({
+            "endpoint": report.endpoint,
+            "lookback_hours": report.lookback_hours,
+            "versions": [
+                {
+                    "version": v.version,
+                    "requests": v.requests,
+                    "errors": v.errors,
+                    "error_rate": v.error_rate,
+                    "latency_p50_ms": v.latency_p50_ms,
+                    "latency_p95_ms": v.latency_p95_ms,
+                    "latency_avg_ms": v.latency_avg_ms,
+                }
+                for v in report.versions
+            ],
+        }, indent=2, default=str))
+        return
+
+    click.echo(f"# canary analysis: {report.endpoint} (last {report.lookback_hours}h)")
+    if not report.versions:
+        click.echo("No traces matched. Either no traffic in the window or "
+                   "the served-entity attribute isn't on the traces.")
+        return
+    click.echo(f"{'VERSION':<12}  {'REQUESTS':>9}  {'ERRORS':>7}  "
+               f"{'ERR %':>6}  {'P50 ms':>7}  {'P95 ms':>7}  {'AVG ms':>7}")
+    for v in report.versions:
+        err_pct = f"{v.error_rate * 100:.1f}" if v.requests else "-"
+        avg = f"{v.latency_avg_ms:.0f}" if v.latency_avg_ms is not None else "-"
+        p50 = str(v.latency_p50_ms) if v.latency_p50_ms is not None else "-"
+        p95 = str(v.latency_p95_ms) if v.latency_p95_ms is not None else "-"
+        click.echo(f"{v.version:<12}  {v.requests:>9}  {v.errors:>7}  "
+                   f"{err_pct:>6}  {p50:>7}  {p95:>7}  {avg:>7}")
+    best_latency = report.best_by_latency()
+    best_errors = report.best_by_error_rate()
+    if best_latency is not None:
+        click.echo(f"\nBest P95 latency: v{best_latency.version} ({best_latency.latency_p95_ms} ms)")
+    if best_errors is not None:
+        click.echo(f"Best error rate: v{best_errors.version} ({best_errors.error_rate * 100:.2f}%)")
 
 
 if __name__ == "__main__":
