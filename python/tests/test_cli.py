@@ -2052,3 +2052,314 @@ def test_memory_consolidate_requires_summarize_fn(
         assert "summarize-fn" in result.output or "summarize_fn" in result.output
     finally:
         _cleanup_consolidate_fixture()
+
+
+# ---------------------------------------------------------------------------
+# `apx deploy` — env-var capture + secret-scan
+# ---------------------------------------------------------------------------
+
+
+_ENV_KEY = "MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING"
+
+
+def _make_env_capturing_log_agent(captured: dict) -> MagicMock:
+    """Build a log_agent mock that snapshots os.environ at call time."""
+    def _capture(*args, **kwargs):  # noqa: ANN001 — match log_agent signature loosely
+        captured["mlflow_env"] = os.environ.get(_ENV_KEY)
+        return SimpleNamespace(registered_model_version="1")
+    return MagicMock(side_effect=_capture)
+
+
+def test_deploy_no_capture_env_vars_default_sets_mlflow_kill_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default (no flag) must set MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING=false."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(_ENV_KEY, raising=False)
+
+    captured: dict = {}
+    fake_log_agent = _make_env_capturing_log_agent(captured)
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(main, [
+            "deploy",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--no-deploy",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    # During the log_agent call, the kill switch was on.
+    assert captured["mlflow_env"] == "false"
+    # After the deploy returns, the caller's env is unchanged (var absent).
+    assert _ENV_KEY not in os.environ
+    # And the honest-output status line printed.
+    assert "env-var-capture=off" in result.output
+    assert "secrets-scan=on" in result.output
+
+
+def test_deploy_capture_env_vars_flag_lets_mlflow_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--capture-env-vars must NOT set the kill switch."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(_ENV_KEY, raising=False)
+
+    captured: dict = {}
+    fake_log_agent = _make_env_capturing_log_agent(captured)
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(main, [
+            "deploy",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--capture-env-vars",
+            "--no-deploy",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    # The guard did NOT touch the env, so during the call the var is still absent.
+    assert captured["mlflow_env"] is None
+    assert _ENV_KEY not in os.environ
+    assert "env-var-capture=on" in result.output
+
+
+def test_deploy_env_var_guard_restores_preexisting_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING was already set, restore it."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    # Pre-existing value the user had in their shell.
+    monkeypatch.setenv(_ENV_KEY, "true")
+
+    captured: dict = {}
+    fake_log_agent = _make_env_capturing_log_agent(captured)
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(main, [
+            "deploy",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--no-deploy",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    assert captured["mlflow_env"] == "false"
+    # Caller's "true" must be restored exactly.
+    assert os.environ.get(_ENV_KEY) == "true"
+
+
+def test_deploy_allow_env_var_requires_capture_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--allow-env-var X without --capture-env-vars must error loudly."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(main, [
+            "deploy",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--allow-env-var", "DATABRICKS_HOST",
+            "--no-deploy",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code != 0
+    # Click renders BadParameter via stderr-merged output.
+    assert "allow-env-var" in result.output.lower()
+    fake_log_agent.assert_not_called()
+
+
+def test_deploy_allow_env_var_with_capture_flag_combines_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--capture-env-vars + repeated --allow-env-var prints the all-or-nothing warning."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(_ENV_KEY, raising=False)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(main, [
+            "deploy",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--capture-env-vars",
+            "--allow-env-var", "DATABRICKS_HOST",
+            "--allow-env-var", "DATABRICKS_TOKEN",
+            "--no-deploy",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    # All-or-nothing warning fired and both vars are listed.
+    assert "all-or-nothing" in result.output
+    assert "DATABRICKS_HOST" in result.output
+    assert "DATABRICKS_TOKEN" in result.output
+
+
+def test_deploy_secret_scan_warns_on_secret_referenced_in_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A *_KEY referenced via os.environ in the project must appear in the warning."""
+    _write_agent_module(tmp_path)
+    # Plant a source file that references a clearly-secret-looking env var.
+    (tmp_path / "leaky.py").write_text(
+        'import os\n'
+        'token = os.environ["ATLASSIAN_API_KEY"]\n'
+        'gem = os.getenv("GEMINI_API_KEY")\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(_ENV_KEY, raising=False)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(main, [
+            "deploy",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--no-deploy",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    # Capture is off, so we just surface the note (no prompt).
+    assert "ATLASSIAN_API_KEY" in result.output
+    assert "GEMINI_API_KEY" in result.output
+
+
+def test_deploy_secret_scan_prompts_when_capture_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With capture ON and secret-looking refs, deploy must prompt unless --yes."""
+    _write_agent_module(tmp_path)
+    (tmp_path / "leaky.py").write_text(
+        'import os\n'
+        'tok = os.environ["ATLASSIAN_API_KEY"]\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(_ENV_KEY, raising=False)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        # Respond "n" → abort.
+        result_n = runner.invoke(
+            main,
+            [
+                "deploy",
+                "--module", "tmp_test_agent:agent",
+                "--model", "databricks-claude-sonnet-4-6",
+                "--name", "main.agents.x",
+                "--capture-env-vars",
+                "--no-deploy",
+            ],
+            input="n\n",
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result_n.exit_code != 0  # aborted
+    fake_log_agent.assert_not_called()
+    assert "ATLASSIAN_API_KEY" in result_n.output
+
+
+def test_deploy_yes_flag_skips_secret_scan_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--yes must bypass the secret-scan confirm prompt."""
+    _write_agent_module(tmp_path)
+    (tmp_path / "leaky.py").write_text(
+        'import os\n'
+        'tok = os.environ["ATLASSIAN_API_KEY"]\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(_ENV_KEY, raising=False)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(main, [
+            "deploy",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--capture-env-vars",
+            "--yes",
+            "--no-deploy",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    fake_log_agent.assert_called_once()
+    # Even with --yes, the warning text is still emitted.
+    assert "ATLASSIAN_API_KEY" in result.output
+
+
+def test_deploy_secret_scan_picks_up_dotenv_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A KEY in .env.local that's also referenced in source must surface."""
+    _write_agent_module(tmp_path)
+    (tmp_path / ".env.local").write_text(
+        "ATLASSIAN_API_KEY=sk-xxx\n"
+        "BENIGN_FLAG=true\n"
+    )
+    (tmp_path / "uses_env.py").write_text(
+        'import os\n'
+        'k = os.environ.get("ATLASSIAN_API_KEY")\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(_ENV_KEY, raising=False)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(main, [
+            "deploy",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--no-deploy",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    assert "ATLASSIAN_API_KEY" in result.output
+    # BENIGN_FLAG should not appear — it doesn't match the secret pattern.
+    assert "BENIGN_FLAG" not in result.output
