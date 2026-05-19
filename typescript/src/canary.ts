@@ -72,6 +72,7 @@ export interface ServedEntityInput {
   entityVersion: string | null;
   scaleToZeroEnabled: boolean;
   workloadSize: string;
+  environmentVars?: Record<string, string>;
 }
 
 /** Route entry inside trafficConfig.routes. */

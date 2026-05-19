@@ -241,3 +241,57 @@ export type {
   RegisteredModelsClient,
   RegisteredModel,
 } from './topology.js';
+
+// Resource declaration — auto-derive Mosaic AI resources from an agent tree
+export {
+  makeResourceSpec,
+  attachResources,
+  getResources,
+  subAgentToEndpoint,
+  collectResourceSpecs,
+} from './resources.js';
+export type { CollectResourceSpecsOptions } from './resources.js';
+
+// Trace exporter — MLflow traces → Delta table
+export {
+  _normaliseTrace,
+  escapeSql as escapeSqlForTraceExport,
+  exportTraces,
+} from './trace-export.js';
+export type {
+  TraceAttrs,
+  RawTrace,
+  TraceLike,
+  TraceInfoLike,
+  TraceDataLike,
+  TraceSearch as TraceExportSearch,
+  SqlExecutor as TraceExportSqlExecutor,
+  NormalisedTrace,
+  ExportResult,
+  ExportTracesOptions,
+} from './trace-export.js';
+
+// Batch / scheduled-job invocation
+export { runOnce } from './run-once.js';
+export type {
+  RunOnceOptions,
+  RunViaSDKFn,
+  RunViaSDKParams,
+} from './run-once.js';
+
+// Hot-swap the LLM endpoint on a deployed agent without re-logging
+export {
+  APX_MODEL_OVERRIDE_ENV,
+  hotSwapModel,
+  getActiveOverride,
+} from './hot-swap.js';
+export type { HotSwapResult } from './hot-swap.js';
+
+// Static lint
+export { Severity, lintAgent } from './lint.js';
+export type {
+  LintFinding,
+  LintableAgent,
+  LintableTool,
+  LintAgentOptions,
+} from './lint.js';
