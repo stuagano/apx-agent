@@ -376,3 +376,62 @@ export type {
   MlflowSetExperimentFn,
   EvalOptions,
 } from './evaluate.js';
+
+// Chain evaluation — eval + MLflow trace correlation
+export {
+  evaluateChain,
+  requestTextsFromEvalset,
+  buildCaseFromTrace,
+} from './evaluate-chain.js';
+export type {
+  ChainCaseResult,
+  ChainEvalReport,
+  TraceSearchFn,
+  EvaluateChainOptions,
+} from './evaluate-chain.js';
+
+// ChatAgent compile + log (Mosaic AI deploy path) — injectable mlflowLogModel
+export { compileToChatAgent, logAgent } from './chat-agent.js';
+export type {
+  ChatAgentMessage,
+  ChatAgentResponse,
+  ChatAgentChunk,
+  ChatContext,
+  CompiledChatAgent,
+  CompileToChatAgentOptions,
+  LogAgentResult,
+  LogAgentOptions,
+  MlflowLogModelArgs,
+  MlflowLogModelFn,
+  PredictInput as ChatAgentPredictInput,
+} from './chat-agent.js';
+
+// MLflow tracing helpers — safe no-op when MLflow JS unavailable
+export {
+  safeSpan,
+  withSafeSpan,
+  setSpanOutputs,
+  setSpanAttribute as setMlflowSpanAttribute,
+  currentActiveSpan,
+  setMlflowStartSpan,
+  setActiveSpanResolver,
+  setMlflowAvailabilityCheck,
+  isMlflowAvailable,
+  enableLangchainAutolog,
+  autologIfEnv,
+} from './mlflow-tracing.js';
+export type {
+  SpanLike as MlflowSpanLike,
+  SafeSpanOptions,
+  MlflowStartSpan,
+  ActiveSpanResolver,
+  MlflowAvailabilityCheck,
+} from './mlflow-tracing.js';
+
+// /invocations route handler — Express bridge for Mosaic AI ChatAgent
+export { mountInvocationsRoute } from './invocations.js';
+export type {
+  MountInvocationsOptions,
+  ChatAgentLike,
+  ChatAgentPredictOptions,
+} from './invocations.js';
