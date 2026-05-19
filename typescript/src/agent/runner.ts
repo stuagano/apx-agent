@@ -230,7 +230,7 @@ function subAgentToolDef(name: string, description: string): ToolDef {
   };
 }
 
-async function callSubAgent(
+export async function callSubAgent(
   url: string,
   message: string,
   oboHeaders: Record<string, string>,
@@ -298,16 +298,6 @@ export function initDatabricksClient(): void {
  */
 export function toFunctionTool(agentTool: AgentTool, ..._rest: any[]): any {
   return { name: agentTool.name, handler: agentTool.handler };
-}
-
-/**
- * @deprecated Kept for backward compatibility.
- */
-export function toSubAgentTool(name: string, description: string, url: string, oboHeaders: Record<string, string>): any {
-  return {
-    name,
-    execute: async (args: any) => callSubAgent(url, args.message ?? JSON.stringify(args), oboHeaders),
-  };
 }
 
 // ---------------------------------------------------------------------------

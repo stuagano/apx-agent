@@ -15,6 +15,9 @@ from ._remote import RemoteDatabricksAgent
 # Canonical short name — Agent is the DSL-facing alias for LlmAgent
 Agent = LlmAgent
 
+# Agent-as-tool composition primitive
+from ._agent_tool import agent_tool
+
 # Models
 from ._models import (
     AfterModelHook,
@@ -34,7 +37,10 @@ from ._models import (
 from ._defaults import Dependencies
 
 # SQL utilities
-from ._sql import get_warehouse_id, run_sql
+from ._sql import decode_statement, get_warehouse_id, run_sql
+
+# Provider compatibility layer — get_llm() factory + named subclasses
+from ._llm import ChatDatabricksGptReasoning, get_llm
 
 # App factory and setup
 from ._wiring import create_app, setup_agent
@@ -42,8 +48,8 @@ from ._wiring import create_app, setup_agent
 # Eval bridge
 from ._eval import app_predict_fn, evaluate
 
-# Genie tool factory
-from .genie import genie_tool
+# Genie tool factories
+from .genie import genie_query_tool, genie_tool
 
 # Unity Catalog tool factories
 from .catalog import (
@@ -131,6 +137,7 @@ __all__ = [
     "RouterAgent",
     "SequentialAgent",
     "RemoteDatabricksAgent",
+    "agent_tool",
     # Models
     "AgentCard",
     "AgentConfig",
@@ -146,8 +153,12 @@ __all__ = [
     # Dependencies
     "Dependencies",
     # SQL utilities
+    "decode_statement",
     "get_warehouse_id",
     "run_sql",
+    # Provider compat
+    "ChatDatabricksGptReasoning",
+    "get_llm",
     # App factory
     "create_app",
     "setup_agent",
@@ -155,6 +166,7 @@ __all__ = [
     "app_predict_fn",
     "evaluate",
     # Tool factories
+    "genie_query_tool",
     "genie_tool",
     "catalog_tool",
     "lineage_tool",

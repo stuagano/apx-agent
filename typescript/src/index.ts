@@ -36,7 +36,8 @@
 // Agent plugin — tool registration, agent loop, /responses
 export { createAgentPlugin, defineTool, zodToJsonSchema, toStrictSchema, toolsToFunctionSchemas } from './agent/index.js';
 export type { AgentConfig, AgentExports, AgentTool, FunctionSchema } from './agent/index.js';
-export { runViaSDK, streamViaSDK, initDatabricksClient, toFunctionTool, toSubAgentTool } from './agent/index.js';
+export { runViaSDK, streamViaSDK, initDatabricksClient, toFunctionTool, callSubAgent, agentTool } from './agent/index.js';
+export type { AgentToolOptions } from './agent/index.js';
 export { getRequestContext, runWithContext, withAutonomousTrace } from './agent/request-context.js';
 export type { RequestContext } from './agent/request-context.js';
 
@@ -90,9 +91,9 @@ export type {
   EvalSummary,
 } from './eval/index.js';
 
-// Genie tool factory
-export { genieTool } from './genie.js';
-export type { GenieToolOptions } from './genie.js';
+// Genie tool factories
+export { genieTool, genieQueryTool } from './genie.js';
+export type { GenieToolOptions, GenieQueryToolOptions, GenieQueryResult } from './genie.js';
 
 // Unity Catalog tool factories
 export { catalogTool, lineageTool, schemaTool, ucFunctionTool } from './catalog.js';

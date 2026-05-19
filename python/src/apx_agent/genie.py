@@ -1,16 +1,83 @@
-"""genie_tool — wrap a Genie space as a registered apx-agent tool.
+"""genie_tool / genie_query_tool — wrap a Genie space as a registered apx-agent tool.
+
+Two factories for two use cases:
+
+  * ``genie_tool(space_id)`` — returns the Genie space's *text answer* as a string.
+    Use when the agent needs a narrative response ("what's our top-selling region?").
+
+  * ``genie_query_tool(space_id)`` — returns a structured dict including
+    ``sql_results`` rows, ``generated_sql``, and ``genie_response``. Use when
+    downstream agents need to operate on the data, not just read the answer.
 
 Annotations are intentionally NOT deferred (no ``from __future__ import annotations``)
 so that ``UserClientDependency`` is resolved eagerly at function definition time and
-``get_type_hints()`` in _inspection.py sees the real Annotated[...] type, not a string.
+``get_type_hints()`` in ``_inspection.py`` sees the real Annotated[...] type, not a string.
 """
 
-import asyncio
 import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Shared helpers — both factories use the modern ws.genie SDK
+# ---------------------------------------------------------------------------
+
+def _run_genie_query(ws: Any, space_id: str, question: str) -> Any:
+    """Start a Genie conversation, wait for completion, return the GenieMessage.
+
+    Returns the raw ``GenieMessage`` so callers can extract either the text
+    answer or the underlying query results depending on their use case.
+    """
+    return ws.genie.start_conversation_and_wait(space_id=space_id, content=question)
+
+
+def _extract_text(msg: Any) -> str:
+    """Pull the narrative text answer out of a Genie message's attachments."""
+    for att in (msg.attachments or []):
+        if att.text and att.text.content:
+            return str(att.text.content)
+    return ""
+
+
+def _extract_generated_sql(msg: Any) -> str:
+    """Pull the SQL Genie generated out of a query attachment."""
+    for att in (msg.attachments or []):
+        if att.query and att.query.query:
+            return str(att.query.query)
+    return ""
+
+
+def _extract_rows(ws: Any, space_id: str, msg: Any) -> list[dict[str, Any]]:
+    """Fetch query results for every query attachment on the message."""
+    from ._sql import decode_statement
+    rows: list[dict[str, Any]] = []
+    for att in (msg.attachments or []):
+        if att.query is None or not att.attachment_id:
+            continue
+        try:
+            qr = ws.genie.get_message_query_result_by_attachment(
+                space_id=space_id,
+                conversation_id=msg.conversation_id,
+                message_id=msg.message_id,
+                attachment_id=att.attachment_id,
+            )
+            rows.extend(decode_statement(qr.statement_response))
+        except Exception as exc:
+            logger.warning("Failed to fetch Genie query result: %s", exc)
+    return rows
+
+
+def _is_completed(msg: Any) -> bool:
+    """Check whether a GenieMessage reached the COMPLETED status."""
+    from databricks.sdk.service.dashboards import MessageStatus
+    return msg.status == MessageStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Factory 1: narrative answer
+# ---------------------------------------------------------------------------
 
 def genie_tool(
     space_id: str,
@@ -18,27 +85,20 @@ def genie_tool(
     name: str = "ask_genie",
     description: str | None = None,
 ) -> Any:
-    """Return a tool function that queries a Genie space by natural-language conversation.
+    """Return a tool that queries a Genie space and returns the text answer.
 
     The returned callable is a normal apx-agent tool: register it directly in
-    ``Agent(tools=[...])``.  The LLM sees one parameter — ``question: str`` —
+    ``Agent(tools=[...])``. The LLM sees one parameter — ``question: str`` —
     and the workspace client is injected automatically from the incoming request.
 
-    Usage::
-
-        from apx_agent import Agent, genie_tool
-
-        agent = Agent(
-            tools=[genie_tool("abc123", description="Answer sales data questions")],
-        )
+    Use ``genie_query_tool(space_id)`` instead when you need the structured
+    SQL results, not just the narrative answer.
 
     Args:
         space_id: Genie space ID (the UUID from the Genie space URL).
         name: Tool name shown to the LLM. Defaults to ``"ask_genie"``.
         description: Tool description shown to the LLM.
     """
-    # Import here so that the annotation below is the actual Annotated[...] type
-    # (eagerly evaluated — no deferred string annotation in scope).
     from ._defaults import UserClientDependency
 
     _desc = (
@@ -49,48 +109,95 @@ def genie_tool(
 
     async def _ask_genie(question: str, ws: UserClientDependency) -> str:  # type: ignore[valid-type]
         """Placeholder doc — overwritten below."""
-        conv_resp = ws.api_client.do(
-            "POST",
-            f"/api/2.0/genie/spaces/{space_id}/start_conversation",
-            body={"content": question},
-        )
-        genie_conv_id = conv_resp.get("conversation_id", "")
-        message_id = conv_resp.get("message_id", "")
-
-        msg_resp: dict[str, Any] = {}
-        for _ in range(30):
-            msg_resp = ws.api_client.do(
-                "GET",
-                f"/api/2.0/genie/spaces/{space_id}/conversations/{genie_conv_id}/messages/{message_id}",
-            )
-            status = msg_resp.get("status", "")
-            if status == "COMPLETED":
-                break
-            if status in ("FAILED", "CANCELLED"):
-                logger.warning("Genie query %s for space %s", status.lower(), space_id)
-                return f"Genie query {status.lower()}."
-            await asyncio.sleep(2)
-
-        # Check if the polling loop timed out without reaching a terminal state
-        final_status = msg_resp.get("status", "")
-        if final_status not in ("COMPLETED", "FAILED", "CANCELLED"):
-            logger.warning("Genie query timed out after 60s for space %s", space_id)
-            return "Genie query timed out after 60 seconds. Please try again or simplify the question."
-
-        for att in msg_resp.get("attachments", []):
-            text_block = att.get("text", {})
-            if text_block.get("content"):
-                return str(text_block["content"])
-
-        return ""
+        msg = _run_genie_query(ws, space_id, question)
+        if not _is_completed(msg):
+            logger.warning("Genie query ended with status %s in space %s", msg.status, space_id)
+            return f"Genie query did not complete (status: {msg.status})."
+        return _extract_text(msg)
 
     _ask_genie.__name__ = name
     _ask_genie.__qualname__ = name
     _ask_genie.__doc__ = _desc
 
-    # Declare the Genie space as a Mosaic AI resource so the compile path can
-    # auto-derive ``resources=[DatabricksGenieSpace(...)]`` at log time.
     from ._resources import ResourceSpec, attach_resources
     attach_resources(_ask_genie, [ResourceSpec("genie_space", space_id)])
 
     return _ask_genie
+
+
+# ---------------------------------------------------------------------------
+# Factory 2: structured query results
+# ---------------------------------------------------------------------------
+
+def genie_query_tool(
+    space_id: str,
+    *,
+    name: str = "query_genie",
+    description: str | None = None,
+    max_rows: int = 20,
+) -> Any:
+    """Return a tool that asks Genie a question and returns structured results.
+
+    Unlike ``genie_tool``, the returned dict includes ``sql_results`` (the actual
+    rows), ``generated_sql`` (the SQL Genie produced), and ``genie_response``
+    (the narrative answer). Use this when downstream agents need to reason
+    over the data — for example, a report-generator step that needs row-level
+    detail, not just the summary.
+
+    Args:
+        space_id: Genie space ID (the UUID from the Genie space URL).
+        name: Tool name shown to the LLM. Defaults to ``"query_genie"``.
+        description: Tool description shown to the LLM. If omitted, a sensible
+            ad-hoc-exploration description is generated.
+        max_rows: Truncate ``sql_results`` to this many rows. Defaults to 20.
+
+    Example::
+
+        from apx_agent import Agent, genie_query_tool
+
+        agent = Agent(tools=[
+            genie_query_tool("abc123",
+                             description="Explore demand orders ad-hoc"),
+        ])
+    """
+    from ._defaults import UserClientDependency
+
+    _desc = (
+        description
+        or f"Ask a natural-language question and receive both the answer and the "
+        f"underlying SQL result rows. Use for ad-hoc data exploration when you "
+        f"need the data itself, not just a summary. (space_id={space_id})"
+    )
+
+    async def _query_genie(question: str, ws: UserClientDependency) -> dict[str, Any]:  # type: ignore[valid-type]
+        """Placeholder doc — overwritten below."""
+        try:
+            msg = _run_genie_query(ws, space_id, question)
+        except Exception as exc:
+            logger.warning("Genie query failed for space %s: %s", space_id, exc)
+            return {"error": f"Genie query failed: {exc}", "question": question}
+
+        if not _is_completed(msg):
+            return {
+                "error": f"Genie query ended with status {msg.status}",
+                "details": str(msg.error) if msg.error else None,
+                "question": question,
+            }
+
+        rows = _extract_rows(ws, space_id, msg)
+        return {
+            "question": question,
+            "sql_results": rows[:max_rows],
+            "result_count": len(rows),
+            "genie_response": _extract_text(msg)[:500],
+            "generated_sql": _extract_generated_sql(msg),
+        }
+
+    _query_genie.__name__ = name
+    _query_genie.__qualname__ = name
+    _query_genie.__doc__ = _desc
+
+    from ._resources import ResourceSpec, attach_resources
+    attach_resources(_query_genie, [ResourceSpec("genie_space", space_id)])
+
+    return _query_genie

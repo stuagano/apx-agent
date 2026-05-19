@@ -37,8 +37,26 @@ import logging
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.sql import StatementResponse
 
 logger = logging.getLogger(__name__)
+
+
+def decode_statement(response: StatementResponse | None) -> list[dict[str, Any]]:
+    """Decode a Databricks ``StatementResponse`` into a list of row dicts.
+
+    Shared by ``run_sql`` and any tool that surfaces results as
+    ``StatementResponse`` — notably the Genie attachment query-result API
+    (``ws.genie.get_message_query_result_by_attachment(...).statement_response``),
+    which returns the same type as direct statement execution.
+
+    Returns an empty list for statements with no result set or no rows.
+    """
+    if response is None or response.manifest is None or response.manifest.schema is None:
+        return []
+    cols = [c.name or "" for c in (response.manifest.schema.columns or [])]
+    rows = response.result.data_array or [] if response.result else []
+    return [{c: v for c, v in zip(cols, row)} for row in rows]
 
 
 def get_warehouse_id(ws: WorkspaceClient, *, prefer_serverless: bool = True) -> str:
@@ -98,8 +116,4 @@ def run_sql(
     if status is None or status.state != StatementState.SUCCEEDED:
         error_msg = getattr(status, "error", None) if status else None
         raise RuntimeError(f"Query failed: {error_msg or 'unknown error'}")
-    if not result.manifest or not result.manifest.schema:
-        return []
-    cols = [c.name or "" for c in (result.manifest.schema.columns or [])]
-    rows = result.result.data_array or [] if result.result else []
-    return [{c: v for c, v in zip(cols, row)} for row in rows]
+    return decode_statement(result)
