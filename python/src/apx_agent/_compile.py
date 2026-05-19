@@ -191,40 +191,15 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
 
 
 def _build_chat_databricks(endpoint: str) -> Any:
-    """Return a ChatDatabricks bound to ``endpoint`` with provider-quirk defenses.
+    """Build the ChatDatabricks for an agent's compile path.
 
-    Strips ``temperature`` and ``top_p`` from the outgoing request before it
-    hits Databricks Model Serving. Rationale:
-
-      * Historical: Anthropic Claude on Databricks Model Serving rejected
-        non-default ``temperature``. ``databricks-langchain >= 0.19`` no
-        longer sends ``temperature`` when ``None``, so plain ChatDatabricks
-        now works for Claude — but the strip is preserved as defense.
-      * Current: OpenAI GPT-5 family endpoints (``databricks-gpt-5*``) reject
-        any non-default ``temperature`` and any ``top_p`` value (verified
-        empirically 2026-05-18 against ``databricks-gpt-5-mini``). Without
-        this strip, GPT-5-routed agents return 400 on every call.
-
-    The cross-language equivalent on the TS side is structural: ``runner.ts``
-    never includes these fields in the request body. Python adopts the same
-    "don't send what providers can reject" stance via this subclass.
-
-    NOTE: this helper is private to the compile path. Tools that need their
-    own internal LLM call currently bypass this protection — see audit notes
-    for the public-factory promotion plan.
+    Delegates to the public ``get_llm`` factory, which routes by endpoint
+    prefix and applies provider-specific quirk defenses (e.g., stripping
+    ``temperature``/``top_p`` for GPT-5 family endpoints). See
+    ``apx_agent._llm`` for the full provider-compat rationale.
     """
-    from databricks_langchain import ChatDatabricks
-
-    class _CompatChatDatabricks(ChatDatabricks):
-        def _prepare_inputs(self, messages, stop=None, stream=False, *, custom_inputs=None, **kwargs):  # type: ignore[override]
-            data = super()._prepare_inputs(
-                messages, stop, stream, custom_inputs=custom_inputs, **kwargs
-            )
-            data.pop("temperature", None)
-            data.pop("top_p", None)
-            return data
-
-    return _CompatChatDatabricks(model=endpoint)
+    from ._llm import get_llm
+    return get_llm(endpoint)
 
 
 # ---------------------------------------------------------------------------

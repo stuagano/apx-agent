@@ -37,6 +37,9 @@ from ._defaults import Dependencies
 # SQL utilities
 from ._sql import decode_statement, get_warehouse_id, run_sql
 
+# Provider compatibility layer — get_llm() factory + named subclasses
+from ._llm import ChatDatabricksGptReasoning, get_llm
+
 # App factory and setup
 from ._wiring import create_app, setup_agent
 
@@ -101,6 +104,9 @@ __all__ = [
     "decode_statement",
     "get_warehouse_id",
     "run_sql",
+    # Provider compat
+    "ChatDatabricksGptReasoning",
+    "get_llm",
     # App factory
     "create_app",
     "setup_agent",
