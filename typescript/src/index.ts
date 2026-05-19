@@ -509,3 +509,19 @@ export {
   assembleContext,
 } from './prompt-assembly.js';
 export type { AssembleContextOptions } from './prompt-assembly.js';
+
+// Example mining — extract few-shot examples from session history
+export { mineExamples, pairTurns } from './example-mining.js';
+export type {
+  Turn as ExampleMiningTurn,
+  MineResult,
+  MineExamplesOptions,
+} from './example-mining.js';
+
+// Memory consolidation — LLM-summarize older memories into a single rollup
+export { consolidateMemories } from './memory-consolidate.js';
+export type {
+  ConsolidateResult,
+  ConsolidateMemoriesOptions,
+  SummarizeFn,
+} from './memory-consolidate.js';

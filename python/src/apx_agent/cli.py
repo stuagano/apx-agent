@@ -9,6 +9,8 @@ Subcommands:
   apx publish-tools             Publish @tool(uc=...) decorated tools to UC
   apx publish                   Register the deployed endpoint as a Supervisor sub-agent
   apx mcp-config                Emit the Managed MCP client config snippet
+  apx memory <cmd>              recall / remember / forget / list — MemoryStore CRUD
+  apx examples <cmd>            find / save / remove / list — ExampleStore CRUD
   apx version                   Print the package version
 
 Every command that operates on an agent accepts ``--module MODULE:VAR``
@@ -1776,6 +1778,466 @@ def watchdog_status(
         click.echo(f"  domain:     {decision.domain}")
     if decision.metadata:
         click.echo(f"  metadata:   {json.dumps(decision.metadata, default=str)}")
+
+
+# ---------------------------------------------------------------------------
+# memory / examples — store CRUD + recall from the CLI
+# ---------------------------------------------------------------------------
+#
+# Both subcommand groups (`apx memory ...` and `apx examples ...`) operate
+# against a user-supplied store. The store comes from one of two places:
+#
+#   1. --store-module MODULE:VAR              (explicit flag)
+#   2. [tool.apx.agent].memory_store /         (pyproject fallback)
+#      [tool.apx.agent].example_store
+#
+# The referenced variable must be an importable :class:`MemoryStore` or
+# :class:`ExampleStore` instance. The CLI is store-shape-agnostic — anything
+# that conforms to the protocol works (InMemory, Lakebase, custom).
+#
+# JSON is the default output format; pass --format text for a markdown-style
+# rendering useful at a terminal.
+
+
+def _load_store(
+    module_spec: str,
+    *,
+    store_kind: str,  # "memory" or "example", used for the pyproject key
+) -> Any:
+    """Load a MemoryStore / ExampleStore instance from MODULE:VAR.
+
+    Resolution order:
+      1. ``module_spec`` argument (the --store-module flag value).
+      2. ``[tool.apx.agent].{store_kind}_store`` in pyproject.toml.
+
+    Raises ``click.UsageError`` if no spec is configured anywhere, and
+    ``click.ClickException`` on a load failure.
+    """
+    spec = module_spec
+    if not spec:
+        cfg_key = f"{store_kind}_store"
+        spec = _read_apx_agent_config().get(cfg_key)
+    if not spec:
+        raise click.UsageError(
+            f"Pass --store-module MODULE:VAR or set "
+            f"[tool.apx.agent].{store_kind}_store in pyproject.toml. "
+            f"The variable must be a {store_kind.title()}Store instance."
+        )
+
+    module_path, variable = _parse_module_spec(spec)
+    cwd = str(Path.cwd())
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as e:
+        raise click.ClickException(
+            f"Failed to import store module {module_path!r}: {e}. "
+            f"Make sure the module is on PYTHONPATH or in the current directory."
+        ) from e
+    if not hasattr(module, variable):
+        raise click.ClickException(
+            f"Module {module_path!r} has no attribute {variable!r}."
+        )
+    return getattr(module, variable)
+
+
+def _parse_tags(tags_csv: str | None) -> tuple[str, ...] | None:
+    """Parse a comma-separated tag list. Empty / None -> None.
+
+    Whitespace around individual tags is trimmed; empty segments are
+    dropped. Returns ``None`` (the any-tag wildcard) when nothing parses.
+    """
+    if not tags_csv:
+        return None
+    parts = tuple(t.strip() for t in tags_csv.split(",") if t.strip())
+    return parts or None
+
+
+def _memory_to_dict(m: Any) -> dict[str, Any]:
+    """Render a :class:`Memory` to a JSON-safe dict (drops the embedding)."""
+    return {
+        "id": m.id,
+        "principal_id": m.principal_id,
+        "namespace": m.namespace,
+        "content": m.content,
+        "tags": list(m.tags),
+        "importance": m.importance,
+        "metadata": dict(m.metadata),
+        "created_at": m.created_at,
+        "updated_at": m.updated_at,
+    }
+
+
+def _example_to_dict(e: Any) -> dict[str, Any]:
+    """Render an :class:`Example` to a JSON-safe dict (drops the embedding)."""
+    return {
+        "id": e.id,
+        "agent_id": e.agent_id,
+        "intent": e.intent,
+        "input": e.input,
+        "output": e.output,
+        "score": e.score,
+        "tags": list(e.tags),
+        "metadata": dict(e.metadata),
+        "created_at": e.created_at,
+        "updated_at": e.updated_at,
+    }
+
+
+def _emit(payload: Any, fmt: str, *, text_fn: Any = None) -> None:
+    """Emit ``payload`` as JSON or as text (via the provided ``text_fn``)."""
+    if fmt == "json":
+        click.echo(json.dumps(payload, indent=2, default=str))
+        return
+    if text_fn is None:
+        # No bespoke text renderer; fall through to JSON-ish.
+        click.echo(json.dumps(payload, indent=2, default=str))
+        return
+    text_fn(payload)
+
+
+# --- memory group ----------------------------------------------------------
+
+
+@main.group()
+def memory() -> None:
+    """Operate on a MemoryStore — recall, remember, forget, list.
+
+    Configure the store via ``--store-module MODULE:VAR`` on each command,
+    or set ``[tool.apx.agent].memory_store = "module:variable"`` in
+    ``pyproject.toml`` to share one default across calls.
+
+    The referenced variable must be an instance of
+    :class:`apx_agent.MemoryStore` — typically
+    :class:`apx_agent.InMemoryMemoryStore` for local dev or
+    :class:`apx_agent.LakebaseMemoryStore` for shared deployments.
+    """
+
+
+@memory.command("recall")
+@click.option("--principal-id", required=True, help="Scopes recall to one principal.")
+@click.option("--query", required=True, help="Natural-language query.")
+@click.option("--namespace", default=None, help="Optional namespace filter.")
+@click.option("--tags", "tags_csv", default=None,
+              help="Comma-separated tag list (any-of filter).")
+@click.option("-k", "top_k", default=5, type=int, help="Top-k. Default 5.")
+@click.option("--store-module", "store_module", default=None,
+              help="MODULE:VAR pointing at a MemoryStore instance. "
+                   "Falls back to [tool.apx.agent].memory_store.")
+@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
+              default="json", help="Output format. Default: json.")
+def memory_recall_cmd(
+    principal_id: str,
+    query: str,
+    namespace: str | None,
+    tags_csv: str | None,
+    top_k: int,
+    store_module: str | None,
+    fmt: str,
+) -> None:
+    """Recall top-k memories matching QUERY for PRINCIPAL_ID."""
+    from ._memory import RecallOptions
+
+    store = _load_store(store_module, store_kind="memory")
+    results = store.recall(
+        RecallOptions(
+            principal_id=principal_id,
+            query=query,
+            namespace=namespace,
+            tags=_parse_tags(tags_csv),
+            k=top_k,
+        )
+    )
+    payload = [
+        {"score": r.score, "memory": _memory_to_dict(r.memory)}
+        for r in results
+    ]
+
+    def _text(rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            click.echo(f"# memory recall for principal={principal_id!r}: no hits.")
+            return
+        click.echo(f"# memory recall for principal={principal_id!r} (top {len(rows)})")
+        for r in rows:
+            mem = r["memory"]
+            click.echo(f"- [{r['score']:.3f}] ({mem['id']}) {mem['content']}")
+
+    _emit(payload, fmt, text_fn=_text)
+
+
+@memory.command("remember")
+@click.option("--principal-id", required=True, help="Scopes the memory to a principal.")
+@click.option("--content", required=True, help="The memory text to remember.")
+@click.option("--namespace", default=None, help="Optional namespace (defaults to 'default').")
+@click.option("--tags", "tags_csv", default=None,
+              help="Comma-separated tag list.")
+@click.option("--importance", default=0.5, type=float,
+              help="Importance 0..1. Default 0.5.")
+@click.option("--store-module", "store_module", default=None,
+              help="MODULE:VAR pointing at a MemoryStore instance.")
+@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
+              default="json", help="Output format. Default: json.")
+def memory_remember_cmd(
+    principal_id: str,
+    content: str,
+    namespace: str | None,
+    tags_csv: str | None,
+    importance: float,
+    store_module: str | None,
+    fmt: str,
+) -> None:
+    """Insert a memory into the store."""
+    store = _load_store(store_module, store_kind="memory")
+    payload_in: dict[str, Any] = {
+        "principal_id": principal_id,
+        "content": content,
+        "importance": importance,
+    }
+    if namespace:
+        payload_in["namespace"] = namespace
+    tags = _parse_tags(tags_csv)
+    if tags is not None:
+        payload_in["tags"] = list(tags)
+
+    materialized = store.add(payload_in)
+    payload = _memory_to_dict(materialized)
+
+    def _text(_: dict[str, Any]) -> None:
+        click.echo(f"# remembered  id={materialized.id}")
+
+    _emit(payload, fmt, text_fn=_text)
+
+
+@memory.command("forget")
+@click.option("--id", "memory_id", required=True, help="Memory id to delete.")
+@click.option("--store-module", "store_module", default=None,
+              help="MODULE:VAR pointing at a MemoryStore instance.")
+def memory_forget_cmd(memory_id: str, store_module: str | None) -> None:
+    """Delete a memory by id. Exits non-zero if no row matched."""
+    store = _load_store(store_module, store_kind="memory")
+    ok = store.delete(memory_id)
+    if not ok:
+        click.echo(f"# no memory with id {memory_id!r}", err=True)
+        sys.exit(1)
+    click.echo(json.dumps({"deleted": memory_id}))
+
+
+@memory.command("list")
+@click.option("--principal-id", required=True, help="Scopes the listing to one principal.")
+@click.option("--namespace", default=None, help="Optional namespace filter.")
+@click.option("--tags", "tags_csv", default=None, help="Comma-separated tag list.")
+@click.option("--limit", default=100, type=int, help="Max rows. Default 100.")
+@click.option("--store-module", "store_module", default=None,
+              help="MODULE:VAR pointing at a MemoryStore instance.")
+@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
+              default="json", help="Output format. Default: json.")
+def memory_list_cmd(
+    principal_id: str,
+    namespace: str | None,
+    tags_csv: str | None,
+    limit: int,
+    store_module: str | None,
+    fmt: str,
+) -> None:
+    """List memories for PRINCIPAL_ID."""
+    from ._memory import MemoryFilter
+
+    store = _load_store(store_module, store_kind="memory")
+    rows = store.list(
+        MemoryFilter(
+            principal_id=principal_id,
+            namespace=namespace,
+            tags=_parse_tags(tags_csv),
+            limit=limit,
+        )
+    )
+    payload = [_memory_to_dict(m) for m in rows]
+
+    def _text(rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            click.echo(f"# memory list for principal={principal_id!r}: empty.")
+            return
+        click.echo(f"# memory list for principal={principal_id!r} ({len(rows)} rows)")
+        for m in rows:
+            click.echo(f"- ({m['id']}) ns={m['namespace']} tags={m['tags']} "
+                       f"importance={m['importance']:.2f}  {m['content']}")
+
+    _emit(payload, fmt, text_fn=_text)
+
+
+# --- examples group --------------------------------------------------------
+
+
+@main.group()
+def examples() -> None:
+    """Operate on an ExampleStore — find, save, remove, list.
+
+    Configure the store via ``--store-module MODULE:VAR`` on each command,
+    or set ``[tool.apx.agent].example_store = "module:variable"`` in
+    ``pyproject.toml`` to share one default across calls.
+
+    The referenced variable must be an instance of
+    :class:`apx_agent.ExampleStore` — typically
+    :class:`apx_agent.InMemoryExampleStore` for local dev or
+    :class:`apx_agent.LakebaseExampleStore` for shared deployments.
+    """
+
+
+@examples.command("find")
+@click.option("--agent-id", required=True, help="Scopes the search to one agent.")
+@click.option("--query", required=True, help="Natural-language query.")
+@click.option("--intent", default=None, help="Optional intent filter.")
+@click.option("--tags", "tags_csv", default=None, help="Comma-separated tag list.")
+@click.option("-k", "top_k", default=5, type=int, help="Top-k. Default 5.")
+@click.option("--store-module", "store_module", default=None,
+              help="MODULE:VAR pointing at an ExampleStore instance.")
+@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
+              default="json", help="Output format. Default: json.")
+def examples_find_cmd(
+    agent_id: str,
+    query: str,
+    intent: str | None,
+    tags_csv: str | None,
+    top_k: int,
+    store_module: str | None,
+    fmt: str,
+) -> None:
+    """Find top-k similar examples for QUERY."""
+    from ._example import FindSimilarOptions
+
+    store = _load_store(store_module, store_kind="example")
+    results = store.find_similar(
+        FindSimilarOptions(
+            agent_id=agent_id,
+            query=query,
+            intent=intent,
+            tags=_parse_tags(tags_csv),
+            k=top_k,
+        )
+    )
+    payload = [
+        {"score": r.score, "example": _example_to_dict(r.example)}
+        for r in results
+    ]
+
+    def _text(rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            click.echo(f"# examples find for agent={agent_id!r}: no hits.")
+            return
+        click.echo(f"# examples find for agent={agent_id!r} (top {len(rows)})")
+        for r in rows:
+            ex = r["example"]
+            click.echo(f"- [{r['score']:.3f}] ({ex['id']}) intent={ex['intent']}")
+            click.echo(f"    in:  {ex['input']}")
+            click.echo(f"    out: {ex['output']}")
+
+    _emit(payload, fmt, text_fn=_text)
+
+
+@examples.command("save")
+@click.option("--agent-id", required=True, help="Scopes the example to an agent.")
+@click.option("--input", "ex_input", required=True, help="The example input.")
+@click.option("--output", "ex_output", required=True, help="The example output.")
+@click.option("--intent", default=None, help="Optional intent bucket.")
+@click.option("--score", default=None, type=float, help="Optional 0..1 quality score.")
+@click.option("--tags", "tags_csv", default=None, help="Comma-separated tag list.")
+@click.option("--store-module", "store_module", default=None,
+              help="MODULE:VAR pointing at an ExampleStore instance.")
+@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
+              default="json", help="Output format. Default: json.")
+def examples_save_cmd(
+    agent_id: str,
+    ex_input: str,
+    ex_output: str,
+    intent: str | None,
+    score: float | None,
+    tags_csv: str | None,
+    store_module: str | None,
+    fmt: str,
+) -> None:
+    """Insert an example into the store."""
+    store = _load_store(store_module, store_kind="example")
+    payload_in: dict[str, Any] = {
+        "agent_id": agent_id,
+        "input": ex_input,
+        "output": ex_output,
+    }
+    if intent:
+        payload_in["intent"] = intent
+    if score is not None:
+        payload_in["score"] = score
+    tags = _parse_tags(tags_csv)
+    if tags is not None:
+        payload_in["tags"] = list(tags)
+
+    materialized = store.add(payload_in)
+    payload = _example_to_dict(materialized)
+
+    def _text(_: dict[str, Any]) -> None:
+        click.echo(f"# saved  id={materialized.id}")
+
+    _emit(payload, fmt, text_fn=_text)
+
+
+@examples.command("remove")
+@click.option("--id", "example_id", required=True, help="Example id to delete.")
+@click.option("--store-module", "store_module", default=None,
+              help="MODULE:VAR pointing at an ExampleStore instance.")
+def examples_remove_cmd(example_id: str, store_module: str | None) -> None:
+    """Delete an example by id. Exits non-zero if no row matched."""
+    store = _load_store(store_module, store_kind="example")
+    ok = store.delete(example_id)
+    if not ok:
+        click.echo(f"# no example with id {example_id!r}", err=True)
+        sys.exit(1)
+    click.echo(json.dumps({"deleted": example_id}))
+
+
+@examples.command("list")
+@click.option("--agent-id", required=True, help="Scopes the listing to one agent.")
+@click.option("--intent", default=None, help="Optional intent filter.")
+@click.option("--tags", "tags_csv", default=None, help="Comma-separated tag list.")
+@click.option("--limit", default=100, type=int, help="Max rows. Default 100.")
+@click.option("--store-module", "store_module", default=None,
+              help="MODULE:VAR pointing at an ExampleStore instance.")
+@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
+              default="json", help="Output format. Default: json.")
+def examples_list_cmd(
+    agent_id: str,
+    intent: str | None,
+    tags_csv: str | None,
+    limit: int,
+    store_module: str | None,
+    fmt: str,
+) -> None:
+    """List examples for AGENT_ID."""
+    from ._example import ExampleFilter
+
+    store = _load_store(store_module, store_kind="example")
+    rows = store.list(
+        ExampleFilter(
+            agent_id=agent_id,
+            intent=intent,
+            tags=_parse_tags(tags_csv),
+            limit=limit,
+        )
+    )
+    payload = [_example_to_dict(e) for e in rows]
+
+    def _text(rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            click.echo(f"# examples list for agent={agent_id!r}: empty.")
+            return
+        click.echo(f"# examples list for agent={agent_id!r} ({len(rows)} rows)")
+        for ex in rows:
+            score = f"{ex['score']:.2f}" if ex["score"] is not None else "-"
+            click.echo(f"- ({ex['id']}) intent={ex['intent']} score={score} "
+                       f"tags={ex['tags']}")
+            click.echo(f"    in:  {ex['input']}")
+            click.echo(f"    out: {ex['output']}")
+
+    _emit(payload, fmt, text_fn=_text)
 
 
 if __name__ == "__main__":

@@ -1251,3 +1251,346 @@ def test_publish_tools_no_uc_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     assert result.exit_code == 0
     assert "No @tool(uc=...) decorated tools found." in result.output
+
+
+# ---------------------------------------------------------------------------
+# `apx memory ...` and `apx examples ...`
+# ---------------------------------------------------------------------------
+
+
+_STORE_MODULE_NAME = "tmp_store_fixture"
+
+
+def _write_store_module(tmp_path: Path) -> None:
+    """Drop a module exporting seeded MemoryStore + ExampleStore fixtures.
+
+    The module exposes ``mem_store`` and ``ex_store`` — both InMemory
+    backends pre-seeded with rows scoped to principal/agent
+    ``"alice"``/``"triage"`` respectively. Tests point ``--store-module``
+    at ``tmp_store_fixture:mem_store`` or ``...:ex_store``.
+    """
+    (tmp_path / f"{_STORE_MODULE_NAME}.py").write_text(textwrap.dedent("""
+        from apx_agent import InMemoryMemoryStore, InMemoryExampleStore
+
+        mem_store = InMemoryMemoryStore()
+        for content, tags in [
+            ("alice likes window seats", ("preference",)),
+            ("alice is vegetarian", ("preference", "diet")),
+            ("alice flew BOS->SFO on 2026-01-12", ("episodic",)),
+        ]:
+            mem_store.add({
+                "principal_id": "alice",
+                "content": content,
+                "tags": list(tags),
+                "namespace": "profile",
+            })
+
+        ex_store = InMemoryExampleStore()
+        for query, answer, intent in [
+            ("what's my next flight?", "Checking your itinerary...", "lookup"),
+            ("change my seat to a window", "Updated to 14A.", "modify"),
+            ("cancel my booking", "Booking cancelled, refund issued.", "modify"),
+        ]:
+            ex_store.add({
+                "agent_id": "triage",
+                "input": query,
+                "output": answer,
+                "intent": intent,
+            })
+    """))
+
+
+def _cleanup_store_module() -> None:
+    sys.modules.pop(_STORE_MODULE_NAME, None)
+
+
+# --- memory ---------------------------------------------------------------
+
+
+def test_memory_remember_then_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_store_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "memory", "remember",
+            "--principal-id", "alice",
+            "--content", "alice prefers aisle on red-eyes",
+            "--namespace", "profile",
+            "--tags", "preference,seating",
+            "--importance", "0.8",
+            "--store-module", f"{_STORE_MODULE_NAME}:mem_store",
+        ])
+        assert result.exit_code == 0, result.output
+        new = json.loads(result.output)
+        assert new["principal_id"] == "alice"
+        assert new["importance"] == 0.8
+        assert set(new["tags"]) == {"preference", "seating"}
+        assert new["id"].startswith("mem_")
+        new_id = new["id"]
+
+        # list should include the new row plus the 3 seeded
+        result2 = runner.invoke(main, [
+            "memory", "list",
+            "--principal-id", "alice",
+            "--store-module", f"{_STORE_MODULE_NAME}:mem_store",
+        ])
+        assert result2.exit_code == 0, result2.output
+        rows = json.loads(result2.output)
+        ids = {r["id"] for r in rows}
+        assert new_id in ids
+        assert len(rows) == 4
+    finally:
+        _cleanup_store_module()
+
+
+def test_memory_recall_returns_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_store_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "memory", "recall",
+            "--principal-id", "alice",
+            "--query", "what does alice like to eat?",
+            "-k", "2",
+            "--store-module", f"{_STORE_MODULE_NAME}:mem_store",
+        ])
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.output)
+        assert len(rows) <= 2
+        assert all("memory" in r and "score" in r for r in rows)
+        assert all(r["memory"]["principal_id"] == "alice" for r in rows)
+    finally:
+        _cleanup_store_module()
+
+
+def test_memory_recall_text_format_is_markdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_store_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "memory", "recall",
+            "--principal-id", "alice",
+            "--query", "alice",
+            "--format", "text",
+            "--store-module", f"{_STORE_MODULE_NAME}:mem_store",
+        ])
+        assert result.exit_code == 0, result.output
+        # markdown bullets per task spec
+        assert "# memory recall" in result.output
+        assert "- [" in result.output
+    finally:
+        _cleanup_store_module()
+
+
+def test_memory_forget_existing_then_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_store_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        # First, get an id from the seeded list
+        list_res = runner.invoke(main, [
+            "memory", "list",
+            "--principal-id", "alice",
+            "--store-module", f"{_STORE_MODULE_NAME}:mem_store",
+        ])
+        rows = json.loads(list_res.output)
+        target_id = rows[0]["id"]
+
+        ok_res = runner.invoke(main, [
+            "memory", "forget",
+            "--id", target_id,
+            "--store-module", f"{_STORE_MODULE_NAME}:mem_store",
+        ])
+        assert ok_res.exit_code == 0, ok_res.output
+        assert json.loads(ok_res.output) == {"deleted": target_id}
+
+        # Forgetting again should fail with non-zero exit
+        miss_res = runner.invoke(main, [
+            "memory", "forget",
+            "--id", target_id,
+            "--store-module", f"{_STORE_MODULE_NAME}:mem_store",
+        ])
+        assert miss_res.exit_code != 0
+    finally:
+        _cleanup_store_module()
+
+
+def test_memory_missing_required_flag_is_usage_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_store_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "memory", "recall",
+            # missing --principal-id and --query
+            "--store-module", f"{_STORE_MODULE_NAME}:mem_store",
+        ])
+        assert result.exit_code != 0
+        # click prints "Missing option" for required flags
+        assert "Missing option" in (result.output + (result.stderr or ""))
+    finally:
+        _cleanup_store_module()
+
+
+def test_memory_store_module_load_failure_friendly_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "memory", "list",
+        "--principal-id", "x",
+        "--store-module", "nonexistent_module_xyz:store",
+    ])
+    assert result.exit_code != 0
+    assert "Failed to import" in result.output
+
+
+def test_memory_pyproject_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_store_module(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.apx.agent]\n'
+        f'memory_store = "{_STORE_MODULE_NAME}:mem_store"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        # No --store-module flag — should pick up from pyproject
+        result = runner.invoke(main, [
+            "memory", "list",
+            "--principal-id", "alice",
+        ])
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.output)
+        assert len(rows) == 3
+    finally:
+        _cleanup_store_module()
+
+
+def test_memory_no_store_configured_anywhere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "memory", "list",
+        "--principal-id", "alice",
+    ])
+    assert result.exit_code != 0
+    assert "memory_store" in result.output or "--store-module" in result.output
+
+
+# --- examples -------------------------------------------------------------
+
+
+def test_examples_save_then_find(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_store_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        save_res = runner.invoke(main, [
+            "examples", "save",
+            "--agent-id", "triage",
+            "--input", "how do I rebook a missed flight?",
+            "--output", "I can rebook you onto the next available departure.",
+            "--intent", "lookup",
+            "--score", "0.9",
+            "--tags", "support,vip",
+            "--store-module", f"{_STORE_MODULE_NAME}:ex_store",
+        ])
+        assert save_res.exit_code == 0, save_res.output
+        saved = json.loads(save_res.output)
+        assert saved["agent_id"] == "triage"
+        assert saved["score"] == 0.9
+
+        find_res = runner.invoke(main, [
+            "examples", "find",
+            "--agent-id", "triage",
+            "--query", "modify a booking",
+            "-k", "5",
+            "--store-module", f"{_STORE_MODULE_NAME}:ex_store",
+        ])
+        assert find_res.exit_code == 0, find_res.output
+        rows = json.loads(find_res.output)
+        assert all("example" in r and "score" in r for r in rows)
+        # at least the seeded 3 + the new 1 are accessible
+        assert len(rows) >= 1
+    finally:
+        _cleanup_store_module()
+
+
+def test_examples_list_text_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_store_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "examples", "list",
+            "--agent-id", "triage",
+            "--format", "text",
+            "--store-module", f"{_STORE_MODULE_NAME}:ex_store",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "# examples list" in result.output
+        # markdown-style bullets
+        assert "- (" in result.output
+    finally:
+        _cleanup_store_module()
+
+
+def test_examples_remove_missing_id_exits_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_store_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "examples", "remove",
+            "--id", "ex_does_not_exist",
+            "--store-module", f"{_STORE_MODULE_NAME}:ex_store",
+        ])
+        assert result.exit_code != 0
+    finally:
+        _cleanup_store_module()
+
+
+def test_examples_list_filter_by_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_store_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    try:
+        result = runner.invoke(main, [
+            "examples", "list",
+            "--agent-id", "triage",
+            "--intent", "modify",
+            "--store-module", f"{_STORE_MODULE_NAME}:ex_store",
+        ])
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.output)
+        # seeded: 2 with intent=modify
+        assert len(rows) == 2
+        assert all(r["intent"] == "modify" for r in rows)
+    finally:
+        _cleanup_store_module()
