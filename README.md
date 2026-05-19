@@ -53,6 +53,9 @@ apx publish --endpoint my_agent --supervisor sa-12345 \
             --description "Handles X for users asking about Y"
 apx mcp-config --host https://workspace.cloud.databricks.com
 apx eval evalset.jsonl --model databricks-claude-sonnet-4-6
+apx logs --endpoint my_agent                # runtime logs from Model Serving
+apx logs --endpoint my_agent --build        # build-time logs
+apx logs --app my-app --profile prod        # Databricks Apps logs (via the CLI)
 ```
 
 All commands that take an agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`).

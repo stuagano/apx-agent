@@ -435,6 +435,116 @@ def mcp_config(
 
 
 # ---------------------------------------------------------------------------
+# logs
+# ---------------------------------------------------------------------------
+
+
+def _resolve_served_model_name(ws: Any, endpoint_name: str) -> str:
+    """Find the most recent served-model name on a serving endpoint.
+
+    Walks ``ws.serving_endpoints.get(name).config.served_models`` and
+    returns the first entry's name. Raises ``click.ClickException`` with
+    a friendly message if the endpoint has no served models yet.
+    """
+    endpoint = ws.serving_endpoints.get(endpoint_name)
+    config = getattr(endpoint, "config", None) or getattr(endpoint, "pending_config", None)
+    if config is None:
+        raise click.ClickException(
+            f"Endpoint {endpoint_name!r} has no config — has it finished deploying?"
+        )
+    served_models = (
+        getattr(config, "served_entities", None)
+        or getattr(config, "served_models", None)
+        or []
+    )
+    if not served_models:
+        raise click.ClickException(
+            f"Endpoint {endpoint_name!r} has no served models on its config."
+        )
+    name = getattr(served_models[0], "name", None)
+    if not name:
+        raise click.ClickException(
+            f"Endpoint {endpoint_name!r}: first served model has no name field."
+        )
+    return name
+
+
+@main.command()
+@click.option("--endpoint", default=None, help="Model Serving endpoint name.")
+@click.option("--served-model", default=None,
+              help="Specific served model on the endpoint. Auto-discovered when omitted.")
+@click.option("--build", "build", is_flag=True,
+              help="Fetch build logs instead of runtime/service logs.")
+@click.option("--app", "app_name", default=None,
+              help="Databricks Apps name (alternative to --endpoint). Uses the databricks CLI.")
+@click.option("--profile", default=None,
+              help="Databricks CLI profile (only used with --app).")
+def logs(
+    endpoint: str | None,
+    served_model: str | None,
+    build: bool,
+    app_name: str | None,
+    profile: str | None,
+) -> None:
+    """Fetch logs from a deployed agent.
+
+    Two modes:
+
+    \b
+      apx logs --endpoint NAME              Runtime logs from a Model Serving endpoint
+      apx logs --endpoint NAME --build      Build-time logs from the endpoint's build
+      apx logs --app NAME [--profile P]     Logs from an apx-agent hosted as a Databricks App
+
+    For the --endpoint path, ``served_model`` is auto-discovered from the
+    endpoint's current config when not supplied explicitly.
+    """
+    if not endpoint and not app_name:
+        raise click.UsageError("Pass either --endpoint NAME or --app NAME.")
+    if endpoint and app_name:
+        raise click.UsageError("--endpoint and --app are mutually exclusive.")
+
+    if app_name:
+        # Apps logs aren't on the Python SDK; shell out to the databricks CLI.
+        import subprocess
+        cmd = ["databricks", "apps", "logs", app_name]
+        if profile:
+            cmd.extend(["--profile", profile])
+        try:
+            result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        except FileNotFoundError as e:
+            raise click.ClickException(
+                "The 'databricks' CLI is required for --app logs. "
+                "Install: https://docs.databricks.com/dev-tools/cli/install"
+            ) from e
+        if result.returncode != 0:
+            raise click.ClickException(
+                f"databricks apps logs failed (exit {result.returncode}):\n{result.stderr.strip()}"
+            )
+        click.echo(result.stdout)
+        return
+
+    # Endpoint path.
+    from databricks.sdk import WorkspaceClient
+    ws = WorkspaceClient()
+
+    if served_model is None:
+        assert endpoint is not None
+        served_model = _resolve_served_model_name(ws, endpoint)
+        click.echo(f"# served_model auto-discovered: {served_model}", err=True)
+
+    method = ws.serving_endpoints.build_logs if build else ws.serving_endpoints.logs
+    label = "build" if build else "runtime"
+    try:
+        response = method(name=endpoint, served_model_name=served_model)
+    except Exception as e:
+        raise click.ClickException(
+            f"Failed to fetch {label} logs for {endpoint}/{served_model}: {e}"
+        ) from e
+    body = getattr(response, "logs", None) or str(response)
+    click.echo(body)
+
+
+# ---------------------------------------------------------------------------
 # info
 # ---------------------------------------------------------------------------
 

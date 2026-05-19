@@ -18,7 +18,8 @@ import os
 import sys
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -275,6 +276,140 @@ def test_info_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert classify["grants"] == ["agent_consumers"]
     kinds = {r["kind"] for r in parsed["resources"]}
     assert {"uc_function", "genie_space"}.issubset(kinds)
+
+
+# ---------------------------------------------------------------------------
+# `apx logs`
+# ---------------------------------------------------------------------------
+
+
+def _fake_endpoint_with_served_model(name: str) -> object:
+    return SimpleNamespace(
+        config=SimpleNamespace(
+            served_entities=[SimpleNamespace(name=name)],
+        )
+    )
+
+
+def test_logs_requires_endpoint_or_app() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["logs"])
+    assert result.exit_code != 0
+    assert "either --endpoint" in result.output or "either --endpoint" in (result.stderr or "")
+
+
+def test_logs_endpoint_and_app_mutually_exclusive() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["logs", "--endpoint", "x", "--app", "y"])
+    assert result.exit_code != 0
+
+
+def test_logs_endpoint_auto_discovers_served_model_and_prints_runtime_logs() -> None:
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.get.return_value = _fake_endpoint_with_served_model(
+        "customer_triage-1"
+    )
+    fake_ws.serving_endpoints.logs.return_value = SimpleNamespace(
+        logs="2026-05-18 12:00:00 [INFO] healthy\n"
+    )
+
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = runner.invoke(main, ["logs", "--endpoint", "customer_triage"])
+
+    assert result.exit_code == 0, result.output
+    assert "healthy" in result.output
+    fake_ws.serving_endpoints.get.assert_called_once_with("customer_triage")
+    fake_ws.serving_endpoints.logs.assert_called_once_with(
+        name="customer_triage", served_model_name="customer_triage-1",
+    )
+
+
+def test_logs_build_flag_calls_build_logs() -> None:
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.get.return_value = _fake_endpoint_with_served_model("triage-1")
+    fake_ws.serving_endpoints.build_logs.return_value = SimpleNamespace(
+        logs="Building model...\n"
+    )
+
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = runner.invoke(main, ["logs", "--endpoint", "triage", "--build"])
+
+    assert result.exit_code == 0, result.output
+    assert "Building" in result.output
+    fake_ws.serving_endpoints.build_logs.assert_called_once()
+    fake_ws.serving_endpoints.logs.assert_not_called()
+
+
+def test_logs_explicit_served_model_skips_discovery() -> None:
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.logs.return_value = SimpleNamespace(logs="ok\n")
+
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = runner.invoke(
+            main,
+            ["logs", "--endpoint", "triage", "--served-model", "triage-2"],
+        )
+
+    assert result.exit_code == 0
+    fake_ws.serving_endpoints.get.assert_not_called()
+    fake_ws.serving_endpoints.logs.assert_called_once_with(
+        name="triage", served_model_name="triage-2",
+    )
+
+
+def test_logs_endpoint_without_served_models_errors() -> None:
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.get.return_value = SimpleNamespace(
+        config=SimpleNamespace(served_entities=[])
+    )
+
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = runner.invoke(main, ["logs", "--endpoint", "triage"])
+
+    assert result.exit_code != 0
+    assert "no served models" in result.output
+
+
+def test_logs_app_shells_out_to_databricks_cli() -> None:
+    runner = CliRunner()
+    fake_completed = SimpleNamespace(
+        returncode=0,
+        stdout="app log line 1\napp log line 2\n",
+        stderr="",
+    )
+    with patch("subprocess.run", return_value=fake_completed) as mock_run:
+        result = runner.invoke(main, ["logs", "--app", "my-app", "--profile", "prod"])
+
+    assert result.exit_code == 0, result.output
+    assert "app log line 1" in result.output
+    cmd = mock_run.call_args.args[0]
+    assert cmd[:3] == ["databricks", "apps", "logs"]
+    assert "my-app" in cmd
+    assert "--profile" in cmd
+    assert "prod" in cmd
+
+
+def test_logs_app_surfaces_databricks_cli_failure() -> None:
+    runner = CliRunner()
+    fake_completed = SimpleNamespace(returncode=2, stdout="", stderr="app not found\n")
+    with patch("subprocess.run", return_value=fake_completed):
+        result = runner.invoke(main, ["logs", "--app", "missing-app"])
+
+    assert result.exit_code != 0
+    assert "app not found" in result.output
+
+
+def test_logs_app_friendly_error_when_databricks_cli_missing() -> None:
+    runner = CliRunner()
+    with patch("subprocess.run", side_effect=FileNotFoundError):
+        result = runner.invoke(main, ["logs", "--app", "x"])
+
+    assert result.exit_code != 0
+    assert "databricks" in result.output.lower()
 
 
 def test_publish_tools_no_uc_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
