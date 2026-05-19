@@ -94,6 +94,9 @@ from ._managed_mcp import (
     managed_mcp_urls,
 )
 
+# Mosaic AI Supervisor Agent publishing
+from ._publish import create_supervisor_agent, publish_to_supervisor
+
 # MLflow ChatAgent /invocations route mounter (optional — same extras)
 from ._invocations import mount_invocations_route
 
@@ -177,6 +180,9 @@ __all__ = [
     "ManagedMCPEndpoint",
     "managed_mcp_urls",
     "managed_mcp_client_config",
+    # Supervisor publishing
+    "create_supervisor_agent",
+    "publish_to_supervisor",
     # MLflow /invocations route mounter
     "mount_invocations_route",
     # MLflow tracing
