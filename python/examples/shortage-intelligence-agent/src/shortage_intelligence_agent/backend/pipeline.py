@@ -14,7 +14,9 @@ Step order:
 
 from __future__ import annotations
 
-from apx_agent import Agent, SequentialAgent
+from apx_agent import Agent, SequentialAgent, genie_query_tool
+
+from .config import get_settings
 
 
 def create_shortage_pipeline() -> SequentialAgent:
@@ -24,6 +26,25 @@ def create_shortage_pipeline() -> SequentialAgent:
         validate_against_market_news,
         check_vendor_availability,
         find_alternative_parts,
+    )
+
+    settings = get_settings()
+    # Ad-hoc Genie exploration is added as an optional tool when a space is
+    # configured. The LLM chooses to call it when the canned queries don't
+    # cover what the user actually asked.
+    ad_hoc_explorer = (
+        [
+            genie_query_tool(
+                settings.demand_genie_space_id,
+                description=(
+                    "Explore demand orders, shortage history, or parts catalog data "
+                    "via natural-language SQL. Use when the canned queries don't fit "
+                    "(e.g. cross-customer cohorts, ad-hoc time windows, vendor-specific filters)."
+                ),
+            )
+        ]
+        if settings.demand_genie_space_id
+        else []
     )
 
     # ------------------------------------------------------------------
@@ -49,12 +70,15 @@ def create_shortage_pipeline() -> SequentialAgent:
     # Step 2: Historical Pattern Analysis
     # ------------------------------------------------------------------
     historical_agent = Agent(
-        tools=[find_historical_patterns],
+        tools=[find_historical_patterns, *ad_hoc_explorer],
         instructions=(
             "You are the Historical Pattern Analyst.\n\n"
             "The demand scan above found shortage signals. For each HIGH or MEDIUM "
             "confidence signal, call find_historical_patterns with the component_id "
             "and lookback_years=5.\n\n"
+            "If find_historical_patterns returns no events for a component but the "
+            "demand signal is strong, use query_genie to explore related patterns "
+            "(by manufacturer, package type, or similar parts).\n\n"
             "Report for each component:\n"
             "- How many similar shortage events occurred historically\n"
             "- Average and max price delta percentage during past shortages\n"

@@ -91,9 +91,9 @@ export type {
   EvalSummary,
 } from './eval/index.js';
 
-// Genie tool factory
-export { genieTool } from './genie.js';
-export type { GenieToolOptions } from './genie.js';
+// Genie tool factories
+export { genieTool, genieQueryTool } from './genie.js';
+export type { GenieToolOptions, GenieQueryToolOptions, GenieQueryResult } from './genie.js';
 
 // Unity Catalog tool factories
 export { catalogTool, lineageTool, schemaTool, ucFunctionTool } from './catalog.js';

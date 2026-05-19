@@ -12,6 +12,7 @@ This audit emerged from porting the shortage-intelligence-agent customer code (`
 - ✅ Stale `langchain-databricks` references in docstrings updated to `databricks-langchain`
 - ✅ `agent_tool` (Python) and `agentTool` (TypeScript) — first-class agent-as-tool composition primitive (Section B.2 below). Handles local in-process AND remote agents transparently. Replaces the deprecated `toSubAgentTool` in TS.
 - ✅ **Public `get_llm()` factory + `ChatDatabricksGptReasoning` named subclass (Section A Option 1).** Provider-quirk handling promoted from private compile-path helper to public API. Tool-internal LLM calls (synthesis, classifiers, judges) now get the same protection as the agent's main LLM. Routing by endpoint prefix means Claude/Llama/Gemini honor `temperature` while GPT-5 endpoints get the defense-in-depth strip. Example's `validate_against_market_news` now goes through `get_llm` instead of bypassing into raw `ChatDatabricks`.
+- ✅ **`genie_query_tool` / `genieQueryTool` (Section D.1).** Structured-results sibling to `genie_tool`. Returns `{sql_results, result_count, genie_response, generated_sql}` for downstream agents that need to reason over the data, not just read the summary. Python `genie_tool` also modernized to use `ws.genie.*` SDK instead of raw `api_client.do(...)`. Example wires `genie_query_tool` into `historical_agent` so the LLM can do ad-hoc lookups when the canned query returns nothing.
 
 The remaining findings are below, ordered by leverage and reversibility.
 
@@ -99,15 +100,9 @@ The Python `Dependencies.*` system is the most distinctive bit of the framework.
 
 Three items I noted during the marriage but didn't ship in Phase A:
 
-### D.1 Ad-hoc Genie tool factory
+### D.1 Ad-hoc Genie tool factory — ✅ shipped
 
-The existing `genie_tool(space_id, description=...)` is for a *fixed* Genie space with a pre-set description. The shortage-intel example also wants a free-form `query_genie(question)` for ad-hoc exploration — every agent rebuilds this. A `query_genie_tool(space_id)` factory would let agents do:
-
-```python
-agent = Agent(tools=[query_genie_tool("space-abc"), ...])
-```
-
-…and the LLM picks the question text per call. Small, useful, low risk.
+`genie_query_tool(space_id)` (Python) and `genieQueryTool(spaceId)` (TypeScript) return structured results — `sql_results`, `generated_sql`, `genie_response` — instead of just the narrative text answer. Used by the shortage-intel `historical_agent` so the LLM can fall back to ad-hoc Genie exploration when the canned `find_historical_patterns` query returns nothing. Python `genie_tool` was also modernized in the same pass to use the `ws.genie.*` SDK rather than raw `api_client.do(...)` HTTP calls.
 
 ### D.2 Migration note: the obsolete `core/__init__.py` override
 

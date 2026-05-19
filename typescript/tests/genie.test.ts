@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { genieTool } from '../src/genie.js';
+import { genieTool, genieQueryTool } from '../src/genie.js';
 import { runWithContext } from '../src/agent/request-context.js';
 
 // ---------------------------------------------------------------------------
@@ -161,5 +161,102 @@ describe('genieTool handler', () => {
 
     const firstCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(firstCall[1].headers.Authorization).toBe('Bearer context-token');
+  });
+});
+
+// ===========================================================================
+// genieQueryTool — structured results
+// ===========================================================================
+
+describe('genieQueryTool factory', () => {
+  const opts = { host: 'https://h.databricks.com', oboHeaders: { Authorization: 'Bearer t' } };
+
+  it('returns a tool with default name', () => {
+    expect(genieQueryTool('space-123', opts).name).toBe('query_genie');
+  });
+
+  it('accepts a custom name', () => {
+    expect(genieQueryTool('space-1', { ...opts, name: 'explore' }).name).toBe('explore');
+  });
+
+  it('includes spaceId in default description', () => {
+    expect(genieQueryTool('space-abc', opts).description).toContain('space-abc');
+  });
+
+  it('exposes a single "question" parameter', () => {
+    const tool = genieQueryTool('space-123', opts);
+    expect((tool.parameters as any).parse({ question: 'hi' })).toEqual({ question: 'hi' });
+  });
+});
+
+describe('genieQueryTool execution', () => {
+  const opts = { host: 'https://h.databricks.com', oboHeaders: { Authorization: 'Bearer t' } };
+
+  it('returns structured result with rows, SQL, and answer', async () => {
+    global.fetch = makeMockFetch(
+      { conversation_id: 'conv-1', message_id: 'msg-1' },
+      {
+        status: 'COMPLETED',
+        attachments: [
+          { text: { content: 'Top 3 products' } },
+          { attachment_id: 'att-1', query: { query: 'SELECT * FROM products LIMIT 3' } },
+        ],
+      },
+      {
+        statement_response: {
+          manifest: { schema: { columns: [{ name: 'product_id' }, { name: 'rank' }] } },
+          result: { data_array: [['A', 1], ['B', 2], ['C', 3]] },
+        },
+      },
+    );
+
+    const tool = genieQueryTool('space-123', opts);
+    const result = await tool.handler({ question: 'top products?' }) as any;
+
+    expect(result.question).toBe('top products?');
+    expect(result.result_count).toBe(3);
+    expect(result.sql_results).toEqual([
+      { product_id: 'A', rank: 1 },
+      { product_id: 'B', rank: 2 },
+      { product_id: 'C', rank: 3 },
+    ]);
+    expect(result.generated_sql).toContain('SELECT');
+    expect(result.genie_response).toContain('Top 3 products');
+    expect(result.error).toBeUndefined();
+  });
+
+  it('returns error object on FAILED status', async () => {
+    global.fetch = makeMockFetch(
+      { conversation_id: 'conv-1', message_id: 'msg-1' },
+      { status: 'FAILED', error: { message: 'syntax error' }, attachments: [] },
+    );
+
+    const tool = genieQueryTool('space-123', opts);
+    const result = await tool.handler({ question: 'bad' }) as any;
+    expect(result.error).toContain('failed');
+    expect(result.details).toBe('syntax error');
+    expect(result.sql_results).toEqual([]);
+  });
+
+  it('truncates sql_results to maxRows but keeps true result_count', async () => {
+    const allRows = Array.from({ length: 50 }, (_, i) => [i]);
+    global.fetch = makeMockFetch(
+      { conversation_id: 'conv-1', message_id: 'msg-1' },
+      {
+        status: 'COMPLETED',
+        attachments: [{ attachment_id: 'att-1', query: { query: 'SELECT 1' } }],
+      },
+      {
+        statement_response: {
+          manifest: { schema: { columns: [{ name: 'i' }] } },
+          result: { data_array: allRows },
+        },
+      },
+    );
+
+    const tool = genieQueryTool('space-123', { ...opts, maxRows: 5 });
+    const result = await tool.handler({ question: 'lots' }) as any;
+    expect(result.sql_results).toHaveLength(5);
+    expect(result.result_count).toBe(50);
   });
 });

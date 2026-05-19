@@ -464,54 +464,9 @@ def find_alternative_parts(
 
 
 # ---------------------------------------------------------------------------
-# Ad-hoc Genie exploration tool
+# Ad-hoc Genie exploration — provided by the framework's genie_query_tool
+# factory when the agent is composed. See pipeline.py.
 # ---------------------------------------------------------------------------
-
-def query_genie(question: str, ws: Dependencies.Workspace) -> dict[str, Any]:
-    """Ask a natural language question about demand orders, shortage history,
-    or parts catalog data using Databricks Genie. Use this for ad-hoc
-    exploration when the specific hardcoded queries don't cover what you
-    need — for example, 'show me all orders from Dell for DDR5 parts in
-    the last week' or 'what was the average price delta for NAND shortages
-    in 2025'. Returns the Genie-generated SQL results."""
-    settings = get_settings()
-
-    if not settings.demand_genie_space_id:
-        return {"error": "DEMAND_GENIE_SPACE_ID not configured — Genie exploration unavailable."}
-
-    space_id = settings.demand_genie_space_id
-    try:
-        msg = ws.genie.start_conversation_and_wait(space_id=space_id, content=question)
-        if msg.status != MessageStatus.COMPLETED:
-            return {
-                "error": f"Genie query ended with status {msg.status}",
-                "details": str(msg.error) if msg.error else None,
-                "question": question,
-            }
-
-        results = _genie_rows(ws, space_id, msg)
-        text_content = next(
-            (att.text.content for att in (msg.attachments or [])
-             if att.text and att.text.content),
-            "",
-        )
-        generated_sql = next(
-            (att.query.query for att in (msg.attachments or [])
-             if att.query and att.query.query),
-            "",
-        )
-
-        return {
-            "question": question,
-            "sql_results": results[:20],
-            "result_count": len(results),
-            "genie_response": text_content[:500] if text_content else "",
-            "generated_sql": generated_sql,
-        }
-
-    except Exception as e:
-        logger.warning("Genie query failed: %s", e)
-        return {"error": f"Genie query failed: {e}", "question": question}
 
 
 # ---------------------------------------------------------------------------
