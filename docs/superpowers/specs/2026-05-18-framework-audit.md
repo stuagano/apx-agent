@@ -10,6 +10,7 @@ This audit emerged from porting the shortage-intelligence-agent customer code (`
 - ✅ Updated to new `ChatDatabricks` signature (`stream`, `custom_inputs` kwargs; canonical `model=` over deprecated `endpoint=`)
 - ✅ Parity test no longer silently skips on missing core deps
 - ✅ Stale `langchain-databricks` references in docstrings updated to `databricks-langchain`
+- ✅ `agent_tool` (Python) and `agentTool` (TypeScript) — first-class agent-as-tool composition primitive (Section B.2 below). Handles local in-process AND remote agents transparently. Replaces the deprecated `toSubAgentTool` in TS.
 
 The remaining findings are below, ordered by leverage and reversibility.
 
@@ -58,7 +59,7 @@ Comparing apx-agent's surface against Google ADK's:
 | `EvolutionaryAgent` | ❌ | ✅ | Python parity needed |
 | `HypothesisAgent` | ❌ | ✅ | Python parity needed |
 | `ParetoAgent` | ❌ | ✅ | Python parity needed |
-| Agent-as-tool (call another agent as a function) | ⚠️ Via `RemoteAgent` only | ⚠️ Via `toSubAgentTool` only | First-class primitive missing both sides |
+| Agent-as-tool (call another agent as a function) | ✅ `agent_tool(agent)` (shipped) | ✅ `agentTool(target)` (shipped) | — |
 | Session/state management | ⚠️ LangGraph state, no UC durability | ⚠️ Express session, no UC durability | Common backing store for session continuity |
 | Pre/post model callbacks | ⚠️ MLflow autolog covers some | ⚠️ trace.ts spans cover some | No explicit `BeforeModelHook`/`AfterModelHook` |
 | Pre/post tool callbacks | ❌ | ❌ | Both sides lack |
@@ -68,10 +69,11 @@ Comparing apx-agent's surface against Google ADK's:
 | Streaming | ✅ SSE in dev UI; `/invocations` streams | ✅ same | — |
 | A2A protocol | ✅ `.well-known/agent.json` mounted by `create_app` | ✅ same | — |
 
-**Three coverage gaps with the highest leverage**:
+**Two coverage gaps with the highest leverage** (post-agent_tool):
 1. **Python lacks EvolutionaryAgent / HypothesisAgent / ParetoAgent.** TS has them; Python does not. If population-based search is a real apx-agent feature, it should be a peer in both languages.
-2. **Agent-as-tool is hidden behind RemoteAgent.** Both languages support it indirectly. ADK exposes it as a first-class composition primitive — worth promoting.
-3. **No pre/post tool callbacks.** ADK has `before_tool_callback` / `after_tool_callback` for guardrails, logging, redaction. Adding hooks here unlocks security-review patterns without modifying agent code.
+2. **No pre/post tool callbacks.** ADK has `before_tool_callback` / `after_tool_callback` for guardrails, logging, redaction. Adding hooks here unlocks security-review patterns without modifying agent code.
+
+**B.2 Agent-as-tool — shipped.** Both `agent_tool(agent)` (Python) and `agentTool(target)` (TypeScript) wrap any agent — local or remote — as a tool callable from another `LlmAgent`. Workflow agents compose along deterministic edges; `agent_tool` composes along LLM-driven edges. The Python wrapper takes any `BaseAgent`; the TS wrapper accepts `AgentConfig | AgentExports | string` (URL). Tests in `python/tests/test_agent_tool.py` and `typescript/tests/agent-tool.test.ts`.
 
 ---
 

@@ -15,6 +15,9 @@ from ._remote import RemoteDatabricksAgent
 # Canonical short name — Agent is the DSL-facing alias for LlmAgent
 Agent = LlmAgent
 
+# Agent-as-tool composition primitive
+from ._agent_tool import agent_tool
+
 # Models
 from ._models import (
     AfterToolHook,
@@ -81,6 +84,7 @@ __all__ = [
     "RouterAgent",
     "SequentialAgent",
     "RemoteDatabricksAgent",
+    "agent_tool",
     # Models
     "AgentCard",
     "AgentConfig",
