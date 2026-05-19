@@ -98,6 +98,14 @@ from ._managed_mcp import (
 # Mosaic AI Supervisor Agent publishing
 from ._publish import create_supervisor_agent, publish_to_supervisor
 
+# databricks-watchdog integration (sketch — see docs/future-work/gap-plan-2026-05-18.md)
+from ._watchdog import (
+    WatchdogClient,
+    WatchdogDecision,
+    WatchdogGuard,
+    emit_agent_metadata,
+)
+
 # MLflow ChatAgent /invocations route mounter (optional — same extras)
 from ._invocations import mount_invocations_route
 
@@ -185,6 +193,11 @@ __all__ = [
     # Supervisor publishing
     "create_supervisor_agent",
     "publish_to_supervisor",
+    # Watchdog integration
+    "WatchdogClient",
+    "WatchdogDecision",
+    "WatchdogGuard",
+    "emit_agent_metadata",
     # MLflow /invocations route mounter
     "mount_invocations_route",
     # MLflow tracing

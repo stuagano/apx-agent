@@ -469,6 +469,42 @@ When you need state, custom UI, MCP server endpoint, or long-running workflows. 
 - **Stateful** — in-memory caches, background loops, websockets, custom UI all work
 - **OBO automatic** for browser/SSO traffic via `X-Forwarded-Access-Token`
 
+## Compliance posture — Watchdog integration
+
+For compliance posture (cross-domain policies, violation lifecycle, owner accountability), apx-agent integrates with [databricks-watchdog](https://github.com/stuagano/databricks-watchdog) rather than rolling its own policy engine. Three pieces:
+
+```python
+from apx_agent import Agent, WatchdogClient, WatchdogGuard, emit_agent_metadata
+
+# 1. Adapter for the watchdog policy-decision and violation-report calls.
+#    The transport is pluggable — use the no-op default until the wire API
+#    is pinned down, or pass a callable that hits watchdog's HTTP/MCP surface.
+watchdog = WatchdogClient(transport=my_transport)
+
+# 2. Bridge watchdog decisions into the existing apx-agent hooks.
+guard = WatchdogGuard(watchdog, agent_name="customer_triage")
+
+agent = Agent(
+    instructions="...",
+    tools=[...],
+    input_guardrails=[guard.for_input()],
+    output_guardrails=[guard.for_output()],     # supports redact decisions
+    before_tool=guard.for_tool(),
+    before_model=guard.for_model(),
+)
+
+# 3. Emit the agent's metadata for watchdog's crawler.
+metadata = emit_agent_metadata(agent, name="customer_triage",
+                               model="databricks-claude-sonnet-4-6")
+# → JSON-serializable dict: name, model, instructions, tools (with UC sync metadata),
+#   sub-agents, resources. Drop into a UC manifest table, MLflow tag, or
+#   whatever stable shape watchdog crawls.
+```
+
+Watchdog returns `WatchdogDecision(action, reason, policy_id, domain, redacted_content, metadata)`. `reject` short-circuits the call; `redact` rewrites content (for outputs); `allow` is pass-through. On transport failure the guard fails open (logs a warning, allows the request) — the runtime decides its own fail-open vs fail-closed policy on top of this.
+
+The current integration is a **sketch** — the no-op default transport ships so this code is safe to wire today, with the real watchdog HTTP/MCP transport plugging in once the metadata shape and runtime entry point are pinned down. See `docs/future-work/gap-plan-2026-05-18.md` for the open questions.
+
 ## Callbacks
 
 Four lifecycle hooks per `LlmAgent` — useful for cost tracking, prompt-injection scanning, output filtering, custom tracing, and approval gates.
