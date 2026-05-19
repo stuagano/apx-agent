@@ -24,35 +24,25 @@ The `SequentialAgent` orchestration is the right shape. Each step's output threa
 
 ### Deploy path — `log_agent` + UC tags
 
-Today: no deploy script. The agent runs as a Databricks App via the FastAPI wrapping in `app.py`.
+Today: no deploy automation. The agent runs as a Databricks App via the FastAPI wrapping in `app.py`.
 
-Recommended: add `deploy.py` that uses the canonical primitives:
+Recommended: use `apx deploy`, which chains the full canonical flow in one command:
 
-```python
-import mlflow
-from databricks import agents
-from apx_agent import log_agent, set_uc_tags_for_agent
-from shortage_intelligence_agent.backend.agent_router import agent
-
-REGISTERED_NAME = "main.agents.shortage_intelligence"
-MODEL_ENDPOINT = "databricks-claude-sonnet-4-6"
-
-with mlflow.start_run():
-    info = log_agent(
-        agent,
-        model=MODEL_ENDPOINT,
-        registered_model_name=REGISTERED_NAME,
-        experiment="/Users/me@company.com/agents/shortage_intelligence",
-    )
-
-agents.deploy(REGISTERED_NAME, model_version=info.registered_model_version)
-set_uc_tags_for_agent(
-    agent,
-    registered_model_name=REGISTERED_NAME,
-    model=MODEL_ENDPOINT,
-    name="shortage_intelligence",
-)
+```bash
+apx deploy \
+  --module shortage_intelligence_agent.backend.agent_router:agent \
+  --model databricks-claude-sonnet-4-6 \
+  --name main.agents.shortage_intelligence \
+  --agent-name shortage_intelligence \
+  --experiment /Users/me@company.com/agents/shortage_intelligence
 ```
+
+The command runs (each toggleable via `--no-*` flags):
+
+1. `publish_tools_to_uc(agent)` — register `@tool(uc=...)` tools.
+2. `log_agent(agent, ...)` — log + register the model version.
+3. `databricks.agents.deploy(...)` — promote to a serving endpoint.
+4. `set_uc_tags_for_agent(...)` — write `apx.agent.*` tags.
 
 This unlocks:
 - `apx list` finds the agent via `apx.agent.name` UC tag
@@ -145,7 +135,7 @@ The 5-step `SequentialAgent` means each prompt produces 5 child spans — `evalu
 
 | Move | Effort | Status this round |
 |---|---|---|
-| `deploy.py` script using the canonical primitives | XS — ~40 lines | ✅ shipped |
+| Wire `apx deploy` (chains publish-tools + log_agent + agents.deploy + set_uc_tags) | XS — README + pyproject defaults | ✅ shipped |
 | `evalset.jsonl` covering the 5 steps | XS — ~20 lines | ✅ shipped |
 | Extract `classify_shortage_severity` as `@tool(uc=...)` | XS — ~30 lines | ✅ shipped |
 | Wire `DeltaSessionStore` at deploy time | S — ~20 lines | Documented, not implemented (depends on UX decision) |

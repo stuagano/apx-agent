@@ -366,7 +366,7 @@ See [`MIGRATION.md`](./MIGRATION.md) for the dry-run analysis. Quick summary:
 
 | Move | Status |
 |---|---|
-| `deploy.py` using `log_agent` + `set_uc_tags_for_agent` + `databricks.agents.deploy` | ✅ shipped |
+| Deploy via `apx deploy` (chains publish-tools + log_agent + agents.deploy + set_uc_tags) | ✅ shipped |
 | `evalset.jsonl` for `apx eval-chain` | ✅ shipped |
 | Extract `classify_shortage_severity` as `@tool(uc=...)` (worked UC-function example) | ✅ shipped |
 | Wire `DeltaSessionStore` (multi-turn) | documented, depends on UX decision |
@@ -376,13 +376,22 @@ See [`MIGRATION.md`](./MIGRATION.md) for the dry-run analysis. Quick summary:
 ### Deploy via the canonical flow
 
 ```bash
-export REGISTERED_MODEL_NAME=main.agents.shortage_intelligence
-export SERVING_MODEL_ENDPOINT=databricks-claude-sonnet-4-6
-export APX_EXPERIMENT=/Users/me@company.com/agents/shortage_intelligence
-
-python deploy.py             # log → register → deploy → set UC tags
-# add --no-deploy to log + register only
+apx deploy \
+  --module shortage_intelligence_agent.backend.agent_router:agent \
+  --model databricks-claude-sonnet-4-6 \
+  --name main.agents.shortage_intelligence \
+  --agent-name shortage_intelligence \
+  --experiment /Users/me@company.com/agents/shortage_intelligence
 ```
+
+By default `apx deploy` runs the full canonical flow in one command:
+
+1. `publish_tools_to_uc(agent)` — register any `@tool(uc=...)` decorated tools (currently `classify_shortage_severity`).
+2. `log_agent(agent, ...)` — log the compiled ChatAgent + auto-derived MLflow resources, register a model version in UC.
+3. `databricks.agents.deploy(...)` — promote the registered version to a Model Serving endpoint.
+4. `set_uc_tags_for_agent(...)` — write `apx.agent.*` UC tags so the agent shows up in `apx list`, `apx topology`, and watchdog's crawler.
+
+Toggle individual stages with `--no-publish-tools`, `--no-deploy`, or `--no-set-uc-tags`. Model / experiment / agent-name defaults live in `[tool.apx.agent]` in `pyproject.toml`, so once configured you can just run `apx deploy --name main.agents.shortage_intelligence`.
 
 ### Operate via the apx CLI
 

@@ -39,6 +39,7 @@ metadata-path = "src/shortage_intelligence_agent/_metadata.py"
 name = "shortage_intelligence_agent"
 description = "Detects shortage signals in demand data, validates against market reports, checks live vendor pricing, and delivers actionable reports to sourcing and sales teams"
 model = "databricks-claude-opus-4-7"
+# experiment = "/Users/me@company.com/agents/shortage_intelligence_agent"
 url = ""
 registry = ""
 
