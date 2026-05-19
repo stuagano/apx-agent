@@ -36,7 +36,8 @@
 // Agent plugin — tool registration, agent loop, /responses
 export { createAgentPlugin, defineTool, zodToJsonSchema, toStrictSchema, toolsToFunctionSchemas } from './agent/index.js';
 export type { AgentConfig, AgentExports, AgentTool, FunctionSchema } from './agent/index.js';
-export { runViaSDK, streamViaSDK, initDatabricksClient, toFunctionTool, toSubAgentTool } from './agent/index.js';
+export { runViaSDK, streamViaSDK, initDatabricksClient, toFunctionTool, callSubAgent, agentTool } from './agent/index.js';
+export type { AgentToolOptions } from './agent/index.js';
 export { getRequestContext, runWithContext, withAutonomousTrace } from './agent/request-context.js';
 export type { RequestContext } from './agent/request-context.js';
 

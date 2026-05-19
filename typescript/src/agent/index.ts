@@ -8,7 +8,10 @@ export type { AgentTool, FunctionSchema } from './tools.js';
 export { createAgentPlugin } from './plugin.js';
 export type { AgentConfig, AgentExports } from './plugin.js';
 
-export { runViaSDK, streamViaSDK, initDatabricksClient, toFunctionTool, toSubAgentTool } from './runner.js';
+export { runViaSDK, streamViaSDK, initDatabricksClient, toFunctionTool, callSubAgent } from './runner.js';
+
+export { agentTool } from './agent-tool.js';
+export type { AgentToolOptions } from './agent-tool.js';
 
 export { discoverMcpTools, createMcpToolProvider, genieSpaceMcpUrl, ucFunctionsMcpUrl } from './mcp-client.js';
 export type { McpAuthOptions } from './mcp-client.js';
