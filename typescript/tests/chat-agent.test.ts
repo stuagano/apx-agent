@@ -38,7 +38,7 @@ import {
   Session,
   type SessionStore,
 } from '../src/workflows/session.js';
-import type { RunViaSDKFn } from '../src/run-once.js';
+import type { RunViaSDKFn, StreamViaSDKFn } from '../src/run-once.js';
 import type { AgentConfig } from '../src/agent/plugin.js';
 import { attachResources, makeResourceSpec, type ResourceSpec } from '../src/resources.js';
 
@@ -58,6 +58,12 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
 
 function makeRunner(text = 'final answer'): RunViaSDKFn {
   return vi.fn(async () => text) as unknown as RunViaSDKFn;
+}
+
+function makeStreamer(chunks: string[]): StreamViaSDKFn {
+  return vi.fn((async function* (): AsyncIterable<string> {
+    for (const chunk of chunks) yield chunk;
+  }) as unknown as () => AsyncIterable<string>) as unknown as StreamViaSDKFn;
 }
 
 function makeUserMessage(content: string, id = 'u1'): ChatAgentMessage {
@@ -320,12 +326,13 @@ describe('predict — OBO header translation', () => {
 // predictStream — documented single-chunk fallback
 // ---------------------------------------------------------------------------
 
-describe('predictStream — single-chunk fallback', () => {
-  it('yields one chunk containing the assistant message', async () => {
+describe('predictStream — real streaming via streamViaSDK', () => {
+  it('yields one ChatAgentChunk per text chunk from the streamer', async () => {
     const chat = compileToChatAgent({
       agent: makeConfig(),
       model: 'm',
-      runViaSDK: makeRunner('streamed!'),
+      runViaSDK: makeRunner('unused'),
+      streamViaSDK: makeStreamer(['Hello, ', 'world', '!']),
     });
 
     const chunks: Array<{ delta: ChatAgentMessage }> = [];
@@ -333,9 +340,106 @@ describe('predictStream — single-chunk fallback', () => {
       chunks.push(chunk);
     }
 
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0].delta.role).toBe('assistant');
-    expect(chunks[0].delta.content).toBe('streamed!');
+    expect(chunks).toHaveLength(3);
+    expect(chunks.map((c) => c.delta.content)).toEqual(['Hello, ', 'world', '!']);
+    chunks.forEach((c) => {
+      expect(c.delta.role).toBe('assistant');
+      expect(c.delta.id).toBe('msg-0');
+    });
+  });
+
+  it('skips empty and non-string chunks', async () => {
+    const chat = compileToChatAgent({
+      agent: makeConfig(),
+      model: 'm',
+      streamViaSDK: makeStreamer(['ok', '', 'go']),
+    });
+
+    const chunks: Array<{ delta: ChatAgentMessage }> = [];
+    for await (const chunk of chat.predictStream({ messages: [makeUserMessage('go')] })) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((c) => c.delta.content)).toEqual(['ok', 'go']);
+  });
+
+  it('forwards messages + model + oboHeaders to streamViaSDK', async () => {
+    const streamer = makeStreamer(['x']);
+    const chat = compileToChatAgent({
+      agent: makeConfig({ instructions: 'INSTR' }),
+      model: 'streaming-endpoint',
+      streamViaSDK: streamer,
+    });
+
+    for await (const _ of chat.predictStream({
+      messages: [makeUserMessage('hi')],
+      customInputs: { user_token: 'tok', workspace_host: 'https://h' },
+    })) {
+      // drain
+    }
+
+    const call = (streamer as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.model).toBe('streaming-endpoint');
+    expect(call.instructions).toBe('INSTR');
+    expect(call.messages).toEqual([{ role: 'user', content: 'hi' }]);
+    expect(call.oboHeaders).toEqual({
+      Authorization: 'Bearer tok',
+      'X-Databricks-Host': 'https://h',
+    });
+  });
+
+  it('persists the assembled assistant message after the stream closes', async () => {
+    const store: SessionStore = new InMemorySessionStore();
+    const chat = compileToChatAgent({
+      agent: makeConfig(),
+      model: 'm',
+      sessionStore: store,
+      streamViaSDK: makeStreamer(['part-1 ', 'part-2']),
+    });
+
+    for await (const _ of chat.predictStream({
+      messages: [makeUserMessage('go')],
+      customInputs: { session_id: 's-1' },
+    })) {
+      // drain
+    }
+
+    const session = await Session.load('s-1', store);
+    expect(session).not.toBeNull();
+    const history = session!.getHistory();
+    expect(history).toHaveLength(2);
+    expect(history[0]).toMatchObject({ role: 'user', content: 'go' });
+    expect(history[1]).toMatchObject({ role: 'assistant', content: 'part-1 part-2' });
+  });
+
+  it('prepends session history when sessionStore + session_id are set', async () => {
+    const store: SessionStore = new InMemorySessionStore();
+    const seed = new Session({ id: 's-2', store });
+    seed.addMessage('user', 'prior turn');
+    seed.addMessage('assistant', 'prior reply');
+    await seed.save();
+
+    const streamer = makeStreamer(['ok']);
+    const chat = compileToChatAgent({
+      agent: makeConfig(),
+      model: 'm',
+      sessionStore: store,
+      streamViaSDK: streamer,
+    });
+
+    for await (const _ of chat.predictStream({
+      messages: [makeUserMessage('current')],
+      customInputs: { session_id: 's-2' },
+    })) {
+      // drain
+    }
+
+    const call = (streamer as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.messages).toEqual([
+      { role: 'user', content: 'prior turn' },
+      { role: 'assistant', content: 'prior reply' },
+      { role: 'user', content: 'current' },
+    ]);
   });
 });
 

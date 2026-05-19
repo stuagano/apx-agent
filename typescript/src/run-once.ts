@@ -55,6 +55,8 @@ export interface RunViaSDKParams {
 
 export type RunViaSDKFn = (params: RunViaSDKParams) => Promise<string>;
 
+export type StreamViaSDKFn = (params: RunViaSDKParams) => AsyncIterable<string>;
+
 // ---------------------------------------------------------------------------
 // Options
 // ---------------------------------------------------------------------------

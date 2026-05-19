@@ -40,14 +40,15 @@
  *
  * Known gaps vs. Python:
  *
- *   * **predictStream is a single-chunk fallback.** Python's `predict_stream`
- *     yields one `ChatAgentChunk` per langgraph node update — i.e. per new
- *     message. TS `runViaSDK` only returns the final assistant string (no
- *     incremental message stream is exposed cleanly), so this module yields
- *     one chunk containing the final assistant message and stops. Streaming
- *     consumers see "atomic completion" rather than mid-flight tool calls.
- *     If/when the runner gains a per-message stream primitive, swap the
- *     impl here without changing the public shape.
+ *   * **predictStream streams the final-turn text, not per-message updates.**
+ *     Python's `predict_stream` yields one `ChatAgentChunk` per langgraph
+ *     node update (one chunk per new message — assistant, tool_call,
+ *     tool_response). The TS streaming primitive (`streamViaSDK`) buffers
+ *     tool-calling turns and streams text chunks for the final assistant
+ *     turn only. Each chunk lands as a `ChatAgentChunk` with
+ *     `delta.content` containing the incremental text; the same `id` is
+ *     used across chunks so consumers can concatenate. Mid-flight tool
+ *     calls are not visible to the stream consumer — only via traces.
  *
  *   * **runViaSDK returns a string, not a message list.** Python's predict
  *     returns ALL new messages from the compiled langgraph (assistant +
@@ -64,8 +65,11 @@
  */
 
 import { z } from 'zod';
-import { runViaSDK as defaultRunViaSDK } from './agent/runner.js';
-import type { RunViaSDKFn } from './run-once.js';
+import {
+  runViaSDK as defaultRunViaSDK,
+  streamViaSDK as defaultStreamViaSDK,
+} from './agent/runner.js';
+import type { RunViaSDKFn, StreamViaSDKFn } from './run-once.js';
 import type { AgentConfig, AgentExports } from './agent/plugin.js';
 import type { AgentTool } from './agent/tools.js';
 import { Session, type SessionStore } from './workflows/session.js';
@@ -222,6 +226,13 @@ export interface CompileToChatAgentOptions {
    * `./agent/runner.js`. Tests pass a mock to avoid the real FMAPI call.
    */
   runViaSDK?: RunViaSDKFn;
+  /**
+   * Injectable streaming runner. Defaults to `streamViaSDK` from
+   * `./agent/runner.js`, which yields text chunks for the final assistant
+   * turn (tool-calling turns are buffered, only the final response streams).
+   * Tests pass a mock to avoid the real FMAPI streaming call.
+   */
+  streamViaSDK?: StreamViaSDKFn;
 }
 
 /**
@@ -248,6 +259,7 @@ export function compileToChatAgent(opts: CompileToChatAgentOptions): CompiledCha
   const sessionStore = opts.sessionStore;
   const model = opts.model;
   const runner: RunViaSDKFn = opts.runViaSDK ?? defaultRunViaSDK;
+  const streamer: StreamViaSDKFn = opts.streamViaSDK ?? defaultStreamViaSDK;
 
   // -------------------------------------------------------------------
   // Session helpers — minimal load-or-create that matches Python's
@@ -328,14 +340,42 @@ export function compileToChatAgent(opts: CompileToChatAgentOptions): CompiledCha
   };
 
   // -------------------------------------------------------------------
-  // predictStream — single-chunk fallback. See module-level docs.
+  // predictStream — yields one ChatAgentChunk per text chunk from the
+  // underlying streaming runner. Tool-calling turns are still buffered by
+  // the runner; only the final assistant turn streams. After the stream
+  // closes, the assembled assistant message is persisted to the session
+  // store (if any), matching `predict`'s persistence behavior.
   // -------------------------------------------------------------------
 
   async function* predictStream(input: PredictInput): AsyncIterable<ChatAgentChunk> {
-    const response = await predict(input);
-    for (const msg of response.messages) {
-      yield { delta: msg };
+    const session = await loadSession(input.customInputs);
+    const historyMessages = buildHistoryMessages(session);
+    const prepended: ChatAgentMessage[] = [...historyMessages, ...input.messages];
+
+    const oboHeaders = buildOboHeaders(input.customInputs);
+
+    const id = 'msg-0';
+    let assembled = '';
+    for await (const chunk of streamer({
+      model,
+      instructions,
+      messages: prepended.map(toRunnerMessage),
+      tools,
+      subAgents,
+      maxTurns,
+      oboHeaders,
+    })) {
+      if (typeof chunk !== 'string' || chunk.length === 0) continue;
+      assembled += chunk;
+      yield { delta: { role: 'assistant', content: chunk, id } };
     }
+
+    const finalMessage: ChatAgentMessage = {
+      role: 'assistant',
+      content: assembled,
+      id,
+    };
+    await persistTurn(session, input.messages, [finalMessage]);
   }
 
   return { predict, predictStream };
