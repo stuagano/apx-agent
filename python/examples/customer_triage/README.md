@@ -1,6 +1,6 @@
 # customer_triage — worked example
 
-A customer-support triage agent that exercises the full apx-agent surface end-to-end.
+A customer-support triage agent that exercises the full apx-agent surface end-to-end. Deploys to **either** Model Serving **or** Databricks Apps via `apx deploy --target {model-serving,apps}`.
 
 ```
                        triage (classifier)
@@ -43,6 +43,12 @@ apx run                    # uvicorn against app.py:app
 
 ## Publish + deploy
 
+This example ships two deploy paths — pick by workload. The full tradeoff write-up is in [`docs/apps-vs-model-serving.md`](../../../docs/apps-vs-model-serving.md).
+
+### Option A: Model Serving (`--target model-serving`, default)
+
+For production endpoints recognized by AI Playground, Review App, Supervisor Agent. Container build pipeline.
+
 ```bash
 # 1. Publish UC-syncable tools (classify_intent, format_address)
 apx publish-tools --module agent:agent --dry-run    # preview
@@ -61,6 +67,27 @@ apx publish --endpoint customer_triage --supervisor sa-12345 \
 # 4. Generate Claude Desktop / Cursor MCP config (optional)
 apx mcp-config --module agent:agent --host "$DATABRICKS_HOST" --name triage
 ```
+
+### Option B: Databricks Apps (`--target apps`)
+
+For fast iteration. Code-push deploy via `databricks bundle deploy + bundle run`; no container build. Files in `agent_server/`, `databricks.yml`, `pyproject.toml`.
+
+```bash
+cd python/examples/customer_triage
+uv sync
+uv run quickstart                      # creates MLflow experiment, writes .env
+apx deploy --target apps               # bundle deploy + bundle run
+
+# After deploy, query the live app:
+curl -X POST https://customer-triage-<workspace-id>.<region>.databricksapps.com/invocations \
+  -H "Authorization: Bearer $(databricks auth token --profile <p> | jq -r .access_token)" \
+  -H "Content-Type: application/json" \
+  -d '{"input":[{"role":"user","content":"why is my bill so high?"}]}'
+```
+
+`APX_SMOKE_MODE=1` (set in `databricks.yml`'s `env` block by default) swaps the UC / Genie / Vector Search tool references for inline stubs so the Apps deploy works without pre-provisioning workspace resources. Remove the env var (or set it to anything else) to run against real resources.
+
+Memory recall **works across the HandoffAgent boundary** — principal-keyed memory survives sub-agent transitions because the key is the user, not the session. Verified live: a query routed to `account_specialist` correctly invokes the `recall` tool and returns Alice's seeded preferences.
 
 ## Evaluate
 
