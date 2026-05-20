@@ -154,9 +154,24 @@ export function traceHeadersIn(headers: Record<string, string | string[] | undef
   };
 }
 
-/** Read the callee's trace id from a cross-agent response, if present. */
-export function traceIdFromResponse(response: { headers: { get(name: string): string | null } }): string | undefined {
-  return response.headers.get(TRACE_ID_HEADER) ?? undefined;
+/** Read the callee's trace id from a cross-agent response, if present.
+ *
+ * Defensive: callers pass real fetch Response objects in production but tests
+ * (and library wrappers) sometimes pass minimal shapes that omit the headers
+ * map. Treat anything that can't supply a header value as "no trace id".
+ */
+export function traceIdFromResponse(response: unknown): string | undefined {
+  if (!response || typeof response !== 'object') return undefined;
+  const headers = (response as { headers?: unknown }).headers;
+  if (!headers || typeof headers !== 'object') return undefined;
+  const get = (headers as { get?: unknown }).get;
+  if (typeof get !== 'function') return undefined;
+  try {
+    const value = (get as (name: string) => string | null).call(headers, TRACE_ID_HEADER);
+    return typeof value === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
