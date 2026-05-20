@@ -187,6 +187,14 @@ from ._hot_swap import (
     hot_swap_model,
 )
 
+# Hot-swap analog for the Apps target — re-deploys with a different bundle var
+from ._hot_swap_apps import (
+    DEFAULT_LLM_VAR_NAME,
+    AppsHotSwapResult,
+    hot_swap_apps,
+    read_var_default,
+)
+
 # Trace exporter
 from ._trace_export import ExportResult, export_traces
 
@@ -202,7 +210,7 @@ from ._topology import (
 # Cross-agent evaluation
 from ._eval_chain import ChainCaseResult, ChainEvalReport, evaluate_chain
 
-# Canary / A-B deployment helpers
+# Canary / A-B deployment helpers (Model Serving target)
 from ._canary import (
     CanaryConfig,
     CanaryReport,
@@ -212,6 +220,25 @@ from ._canary import (
     get_canary_config,
     promote_canary,
     rollback_canary,
+)
+
+# Canary helpers for the Databricks Apps target — multi-target bundle flow
+from ._canary_apps import (
+    TRACE_APP_NAME_TAG,
+    AppsCanaryConfig,
+    AppsCanaryReport,
+    AppsPromoteResult,
+    AppsVersionMetrics,
+    add_canary_target_to_yml,
+    analyze_canary_app,
+    canary_app_name,
+    canary_target_name,
+    deploy_canary_app,
+    promote_canary_app,
+    remove_canary_target_from_yml,
+    rollback_canary_app,
+    sanitize_version,
+    write_databricks_yml,
 )
 
 # databricks-watchdog integration
@@ -391,6 +418,11 @@ __all__ = [
     "HotSwapResult",
     "get_active_override",
     "hot_swap_model",
+    # Hot-swap (Apps target)
+    "AppsHotSwapResult",
+    "DEFAULT_LLM_VAR_NAME",
+    "hot_swap_apps",
+    "read_var_default",
     # Trace exporter
     "ExportResult",
     "export_traces",
@@ -404,7 +436,7 @@ __all__ = [
     "ChainCaseResult",
     "ChainEvalReport",
     "evaluate_chain",
-    # Canary / A-B helpers
+    # Canary / A-B helpers (Model Serving)
     "CanaryConfig",
     "CanaryReport",
     "VersionMetrics",
@@ -413,6 +445,22 @@ __all__ = [
     "get_canary_config",
     "promote_canary",
     "rollback_canary",
+    # Canary helpers (Databricks Apps)
+    "AppsCanaryConfig",
+    "AppsCanaryReport",
+    "AppsPromoteResult",
+    "AppsVersionMetrics",
+    "TRACE_APP_NAME_TAG",
+    "add_canary_target_to_yml",
+    "analyze_canary_app",
+    "canary_app_name",
+    "canary_target_name",
+    "deploy_canary_app",
+    "promote_canary_app",
+    "remove_canary_target_from_yml",
+    "rollback_canary_app",
+    "sanitize_version",
+    "write_databricks_yml",
     # Watchdog integration
     "WatchdogClient",
     "WatchdogDecision",
