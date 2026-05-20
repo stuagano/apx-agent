@@ -30,6 +30,7 @@ artifacts:
     build: |
       mkdir -p .build
       cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      cp apx_agent-*.whl .build/ 2>/dev/null || true
 
 resources:
   apps:
@@ -58,7 +59,7 @@ resources:
           - 0.0.0.0
           - --port
           - $DATABRICKS_APP_PORT
-        env_variables:
+        env:
           - name: APX_MODEL
             value: ${var.llm_endpoint_name}
           - name: MLFLOW_TRACKING_URI

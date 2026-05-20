@@ -168,16 +168,16 @@ agent = Agent(
 # ---------------------------------------------------------------------------
 
 
-_compiled = compile_to_responses_agent(agent, model=MODEL)
+_invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL)
 
 
 @invoke()
 def non_streaming(request):
     """Synchronous request handler — Databricks Apps /invocations target."""
-    return _compiled.invoke(request)
+    return _invoke_fn(request)
 
 
 @stream()
 def streaming(request):
     """Streaming request handler — yields ResponsesAgentStreamEvent chunks."""
-    yield from _compiled.stream(request)
+    yield from _stream_fn(request)

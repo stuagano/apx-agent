@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "apx-agent memory_demo — InMemory stores + ResponsesAgent + Databricks Apps."
 requires-python = ">=3.11"
 dependencies = [
-    "apx-agent",
+    "apx-agent[langgraph]",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
@@ -15,7 +15,7 @@ dependencies = [
 quickstart = "scripts.quickstart:main"
 
 [tool.uv.sources]
-apx-agent = { path = "../..", editable = true }
+apx-agent = { path = "./apx_agent-0.18.0-py3-none-any.whl" }
 
 [tool.apx.agent]
 name = "memory_demo"
