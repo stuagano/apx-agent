@@ -391,7 +391,12 @@ name = "<APP_NAME>"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "apx-agent",
+    # The [langgraph] extra is REQUIRED at runtime for any app that calls
+    # ``compile_to_responses_agent``: it transitively pulls in langchain +
+    # langgraph + databricks-langchain, which the responses-agent compiler
+    # imports lazily under the hood. A bare ``apx-agent`` dep would let
+    # ``uv sync`` succeed but fail at first request inside the deployed App.
+    "apx-agent[langgraph]",
     "mlflow[databricks]>=3.0",
     # Add your agent's deps here
 ]
@@ -433,20 +438,23 @@ agent = Agent(
 
 LLM_ENDPOINT = "databricks-claude-sonnet-4-6"
 
-# Compile produces the request-shape converter + dispatcher.
-_compiled = compile_to_responses_agent(agent, model=LLM_ENDPOINT)
+# ``compile_to_responses_agent`` returns a ``(non_streaming_fn, streaming_fn)``
+# tuple — NOT an object with ``.invoke()`` / ``.stream()`` methods. The two
+# callables already accept a ``ResponsesAgentRequest`` and produce a
+# ``ResponsesAgentResponse`` (or an iterator of stream events).
+_invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=LLM_ENDPOINT)
 
 
 @invoke()
 def non_streaming(request: ResponsesAgentRequest) -> ResponsesAgentResponse:
     """Handle a non-streaming ResponsesAgent request."""
-    return _compiled.invoke(request)
+    return _invoke_fn(request)
 
 
 @stream()
 def streaming(request: ResponsesAgentRequest):
     """Handle a streaming ResponsesAgent request."""
-    yield from _compiled.stream(request)
+    yield from _stream_fn(request)
 '''
 
 
@@ -511,15 +519,56 @@ def _resolve_profile() -> str:
 
 
 def _current_user(profile: str) -> str:
-    """Return the userName of the current Databricks user."""
-    result = subprocess.run(
-        ["databricks", "current-user", "me", "--profile", profile, "--output", "json"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    """Return the workspace identity of the current Databricks user.
+
+    The workspace expects the *email* form (e.g. ``alice@example.com``) for
+    things like ``/Users/<user>/...`` experiment paths — the shell short name
+    (``alice``) yields ``NOT_FOUND: Parent directory does not exist``.
+
+    Prefers the ``primary`` entry in the ``emails`` list returned by
+    ``databricks current-user me``. Falls back to ``userName`` (often already
+    the email, but historically not on every workspace). Falls back to the
+    ``USER`` / ``USERNAME`` env vars only when the subprocess itself fails.
+    Raises ``RuntimeError`` if no identity could be resolved — silent
+    fallback to ``"unknown-user"`` just shifts the failure to MLflow.
+    """
     import json
-    return json.loads(result.stdout)["userName"]
+
+    try:
+        result = subprocess.run(
+            ["databricks", "current-user", "me",
+             "--profile", profile, "--output", "json"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        env_user = os.environ.get("USER") or os.environ.get("USERNAME")
+        if env_user:
+            return env_user
+        raise RuntimeError(
+            "Could not resolve Databricks workspace user. "
+            "`databricks current-user me` failed and neither USER nor "
+            "USERNAME is set in the environment."
+        ) from exc
+
+    payload = json.loads(result.stdout)
+    emails = payload.get("emails") or []
+    if isinstance(emails, list):
+        for entry in emails:
+            if isinstance(entry, dict) and entry.get("primary") and entry.get("value"):
+                return str(entry["value"])
+        # No primary flagged — accept the first email with a non-empty value.
+        for entry in emails:
+            if isinstance(entry, dict) and entry.get("value"):
+                return str(entry["value"])
+    username = payload.get("userName")
+    if isinstance(username, str) and username:
+        return username
+    raise RuntimeError(
+        "`databricks current-user me` succeeded but returned no usable "
+        "identity (no emails[].value and no userName)."
+    )
 
 
 def _create_experiment(profile: str, user: str) -> str:
@@ -582,6 +631,27 @@ variables:
   workspace_user:
     description: User who owns the experiment
     default: ${workspace.current_user.userName}
+  llm_endpoint_name:
+    description: Foundation model endpoint the agent calls.
+    default: databricks-claude-sonnet-4-6
+  mlflow_experiment_id:
+    description: |
+      MLflow experiment ID for tracing. Populated by scripts/quickstart.py
+      into a local .env file and surfaced here for the app environment.
+    default: ""
+
+# ``artifacts.default.build`` packages the deploy bundle into ``./.build``.
+# ``apx deploy --target apps`` runs this script BEFORE ``bundle validate`` so
+# the DAB validator sees a populated source dir. Manually copying the
+# apx-agent wheel into the project keeps the App container's ``uv sync``
+# off the public index — apx deploy handles the wheel build for you when
+# ``[tool.uv.sources].apx-agent`` references a local path.
+artifacts:
+  default:
+    build: |
+      mkdir -p .build
+      cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      cp apx_agent-*.whl .build/ 2>/dev/null || true
 
 resources:
   experiments:
@@ -592,7 +662,7 @@ resources:
     <APP_NAME>:
       name: <APP_NAME>
       description: <APP_NAME> apx-agent
-      source_code_path: ./
+      source_code_path: ./.build
       resources:
         - name: experiment
           experiment:
@@ -600,10 +670,30 @@ resources:
             permission: CAN_MANAGE
         # apx deploy --target apps will auto-add resources from the agent's
         # ResourceSpec list. For now, list any extras here manually:
-        - name: claude-endpoint
+        - name: llm-endpoint
+          description: Foundation model endpoint used by the agent.
           serving_endpoint:
-            name: databricks-claude-sonnet-4-6
+            name: ${var.llm_endpoint_name}
             permission: CAN_QUERY
+
+      # NOTE: the DAB schema for ``apps.<name>.config`` uses ``env`` (a list
+      # of {name, value} dicts) — NOT ``env_variables``. ``bundle validate``
+      # warns about unknown keys, so keep this aligned.
+      config:
+        command:
+          - uvicorn
+          - agent_server.start_server:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - $DATABRICKS_APP_PORT
+        env:
+          - name: APX_MODEL
+            value: ${var.llm_endpoint_name}
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
 
 targets:
   dev:

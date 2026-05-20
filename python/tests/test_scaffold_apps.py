@@ -80,7 +80,9 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     apps = parsed["resources"]["apps"]
     assert "my_agent" in apps
     assert apps["my_agent"]["name"] == "my_agent"
-    assert apps["my_agent"]["source_code_path"] == "./"
+    # Build artifacts step copies sources into ./.build before deploy so the
+    # apx-agent wheel can ride along — see commit 6f84ad24 for the rationale.
+    assert apps["my_agent"]["source_code_path"] == "./.build"
 
     experiments = parsed["resources"]["experiments"]
     assert "my_agent_experiment" in experiments
@@ -110,7 +112,10 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
 
     assert parsed["project"]["name"] == "my_agent"
     deps = parsed["project"]["dependencies"]
-    assert "apx-agent" in deps
+    # The [langgraph] extra is REQUIRED at runtime — compile_to_responses_agent
+    # pulls in langchain_core via compile_to_langgraph. Bare 'apx-agent' fails
+    # at first request inside the deployed App. See commit 6f84ad24.
+    assert any(d == "apx-agent[langgraph]" or d.startswith("apx-agent[") for d in deps), deps
     # The mlflow dependency is pinned with the [databricks] extra and a
     # minimum version. Search loosely so the version pin can move.
     assert any("mlflow[databricks]" in d for d in deps), deps
