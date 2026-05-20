@@ -75,7 +75,7 @@ from ._chat_agent import chat_agent_for, compile_to_chat_agent, log_agent
 from ._responses_agent import compile_to_responses_agent
 
 # Unified OBO header extraction (both runtimes use this)
-from ._obo import extract_obo_headers
+from ._obo import extract_obo_headers, make_obo_workspace_client
 
 # Resource declaration — auto-derive MLflow resources from the agent tree
 from ._resources import (
@@ -334,6 +334,7 @@ __all__ = [
     "compile_to_responses_agent",
     # Unified OBO header extraction
     "extract_obo_headers",
+    "make_obo_workspace_client",
     # Resource declaration
     "ResourceSpec",
     "attach_resources",

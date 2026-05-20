@@ -42,7 +42,7 @@ import os
 from typing import Any, Mapping
 
 
-__all__ = ["extract_obo_headers"]
+__all__ = ["extract_obo_headers", "make_obo_workspace_client"]
 
 
 def _coerce_headers(headers: Any) -> Mapping[str, str]:
@@ -202,11 +202,19 @@ def extract_obo_headers(
         out["user_token"] = str(token)
 
     # --- workspace_host ----------------------------------------------------
+    # Precedence: caller-supplied custom_inputs > DATABRICKS_HOST env (Apps
+    # runtime injects the workspace API host here) > X-Forwarded-Host (last
+    # resort — in Apps this is the App's public hostname, NOT the workspace
+    # API URL, so it's only useful for non-Apps proxies that pass the API
+    # host through). Verified on fe-stable 2026-05-20: the App proxy's
+    # X-Forwarded-Host is the user-facing app subdomain and using it as the
+    # workspace_host produces a hostname that does not serve the workspace
+    # REST API.
     host = ci.get("workspace_host")
     if not host:
-        host = _header_lookup(hdrs, "X-Forwarded-Host")
-    if not host:
         host = os.environ.get("DATABRICKS_HOST")
+    if not host:
+        host = _header_lookup(hdrs, "X-Forwarded-Host")
     if host:
         out["workspace_host"] = str(host)
 
@@ -225,3 +233,51 @@ def extract_obo_headers(
         out["user_email"] = str(user_email)
 
     return out
+
+
+def make_obo_workspace_client(obo: Mapping[str, Any]) -> Any:
+    """Build a ``WorkspaceClient`` that authenticates as the calling user.
+
+    Apps containers ship with the App service principal's ``DATABRICKS_CLIENT_ID`` /
+    ``DATABRICKS_CLIENT_SECRET`` in the environment for ambient SP auth. Passing
+    ``token=`` and ``host=`` directly to ``WorkspaceClient`` does NOT suppress
+    those ambient credentials — the SDK's ``Config.validate`` raises
+    ``"more than one authorization method configured: oauth and pat"`` because
+    both PAT (the OBO token) and OAuth M2M (the SP env vars) are present.
+
+    This helper constructs an explicit ``Config`` with ``auth_type="pat"`` so
+    the SDK uses ONLY the OBO token. The resulting WorkspaceClient's API calls
+    run as the calling user (the principal the OBO token was minted for), not
+    the App SP.
+
+    Verified on fe-stable 2026-05-20: with this helper, ``current_user.me()``
+    returns the calling user's email; without it the bare-``token=`` pattern
+    fails with the multi-auth ValueError.
+
+    Args:
+        obo: Dict returned by :func:`extract_obo_headers`. Must contain
+            ``user_token`` and ``workspace_host``.
+
+    Returns:
+        A ``databricks.sdk.WorkspaceClient`` configured for OBO auth.
+
+    Raises:
+        ImportError: If ``databricks-sdk`` is not installed.
+        ValueError: If ``obo`` is missing ``user_token`` or ``workspace_host``.
+    """
+    token = obo.get("user_token")
+    host = obo.get("workspace_host")
+    if not token:
+        raise ValueError("make_obo_workspace_client: obo['user_token'] is required")
+    if not host:
+        raise ValueError("make_obo_workspace_client: obo['workspace_host'] is required")
+    try:
+        from databricks.sdk import WorkspaceClient
+        from databricks.sdk.core import Config
+    except ImportError as exc:  # pragma: no cover — defensive
+        raise ImportError(
+            "make_obo_workspace_client requires databricks-sdk; "
+            "install apx-agent[runtime]."
+        ) from exc
+    cfg = Config(host=str(host), token=str(token), auth_type="pat")
+    return WorkspaceClient(config=cfg)
