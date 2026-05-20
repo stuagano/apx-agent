@@ -627,6 +627,17 @@ _SCAFFOLD_APPS_DATABRICKS_YML = '''\
 bundle:
   name: <APP_NAME>
 
+# The root apx-agent ``.gitignore`` excludes ``**/.build/`` because that
+# directory is built from source by ``databricks bundle deploy`` — checking
+# it in would leak wheels + duplicated source. But DAB sync honors
+# ``.gitignore`` when uploading, which means the staging tree referenced by
+# ``source_code_path: ./.build`` would be empty inside the App container.
+# ``sync.include`` overrides the ignore for this one path so the bundle can
+# upload the staged tree without un-ignoring it everywhere else.
+sync:
+  include:
+    - .build/**
+
 variables:
   workspace_user:
     description: User who owns the experiment

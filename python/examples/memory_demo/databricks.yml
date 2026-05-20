@@ -15,6 +15,14 @@
 bundle:
   name: memory-demo
 
+# Root .gitignore excludes ``**/.build/`` — bundle deploy needs to upload
+# .build/ (the staged source tree referenced by source_code_path). The
+# include here overrides the ignore for this one path. Mirrors the same
+# pattern in customer_triage/databricks.yml and the scaffold template.
+sync:
+  include:
+    - .build/**
+
 variables:
   llm_endpoint_name:
     description: Foundation model endpoint the agent calls.

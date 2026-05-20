@@ -307,6 +307,71 @@ def _last_ai_tool_call_name(messages: list[Any]) -> str | None:
     return None
 
 
+def _build_subagent_input_messages(
+    messages: list[Any], prior_agent_name: str, target_name: str
+) -> list[Any]:
+    """Build a clean message tail for a sub-agent receiving a handoff.
+
+    Databricks-Claude's ``/chat/completions`` rejects conversations whose tail
+    is an ``AIMessage`` ("assistant message prefill" is not supported). The
+    accumulated graph state after a transfer ends with the prior sub-agent's
+    ``AIMessage`` (the one that called ``transfer_to_<target>``), so we must
+    not pass the raw state into the next sub-agent's ``create_agent`` call.
+
+    The boring, definitely-accepted shape: pass the original user query
+    (the first ``HumanMessage`` we ever saw) followed by a synthetic
+    ``HumanMessage`` carrying the handoff context. Using a ``ToolMessage``
+    here would trade one validation error ("prefill") for another
+    ("orphan tool_result" — no matching ``tool_call_id``). Stay with
+    plain user messages.
+
+    Args:
+        messages: The accumulated ``state["messages"]`` from the graph.
+        prior_agent_name: Name of the sub-agent that just emitted the
+            transfer call. Surfaced in the handoff-context message so the
+            downstream agent has provenance.
+        target_name: Name of the sub-agent that is about to run. Used in
+            the handoff-context message for clarity.
+
+    Returns:
+        A short list ``[original_query, handoff_context]`` — no ``AIMessage``
+        on the tail, no orphan tool messages. Falls back to the raw messages
+        list if no ``HumanMessage`` is found (defensive — shouldn't happen
+        in a normal invocation since the user query is always present).
+    """
+    from langchain_core.messages import HumanMessage
+
+    original_query = next(
+        (m for m in messages if isinstance(m, HumanMessage)),
+        None,
+    )
+    if original_query is None:
+        # Defensive: no user query in state — fall back to the raw list.
+        # This shouldn't happen in practice (every graph.invoke starts with
+        # a HumanMessage), but we don't want to silently break callers.
+        return list(messages)
+
+    handoff_context = HumanMessage(
+        content=(
+            f"[Routed from {prior_agent_name} to {target_name}] "
+            f"Please help with the request above."
+        ),
+    )
+    return [original_query, handoff_context]
+
+
+def _infer_prior_agent_name(messages: list[Any], known_names: list[str]) -> str:
+    """Best-effort recovery of the agent that issued the most recent handoff.
+
+    The transfer is encoded in the most recent ``AIMessage`` tool call as
+    ``transfer_to_<target>`` — that gives us the target but not the source.
+    LangGraph state doesn't surface the source-node name to a node body, so
+    we fall back to a generic label. Surfaced only in the synthetic handoff
+    HumanMessage for provenance; not load-bearing for routing.
+    """
+    return "upstream agent"
+
+
 def _compile_loop_agent(agent: LoopAgent, ctx: CompileContext) -> Any:
     """Compile a ``LoopAgent`` — runs the inner LlmAgent until ``finish_loop``
     is called or ``max_iterations`` is hit.
@@ -466,11 +531,45 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
             for other in names
             if other != current_name
         ]
-        return create_agent(
+        react = create_agent(
             model=llm,
             tools=own_tools + transfer_tools,
             system_prompt=inner._instructions or None,
         )
+        # The start agent receives the user's original input directly from
+        # the graph (state["messages"] == [HumanMessage(query)]), so its
+        # conversation tail is already user — no scrub needed.
+        if current_name == start_name:
+            return react
+
+        # Every other sub-agent reaches this node only after a handoff —
+        # i.e. the prior sub-agent's AIMessage with a transfer_to_* tool
+        # call is now the tail of the accumulated state. Databricks-Claude
+        # rejects that ("assistant message prefill"). Wrap the react agent
+        # so its create_agent invocation sees a clean [HumanMessage, ...]
+        # tail. The graph's outer state["messages"] keeps accumulating via
+        # add_messages — we only scrub the input THIS node sends to the LLM,
+        # and we return ONLY the newly produced messages so the synthetic
+        # handoff_context HumanMessage doesn't leak into outer state (which
+        # would surface as a 'user' role in the final ResponsesAgent output
+        # items, failing pydantic validation downstream).
+        def _wrapped(state: dict) -> dict[str, Any]:
+            scrubbed = _build_subagent_input_messages(
+                state["messages"],
+                prior_agent_name=_infer_prior_agent_name(state["messages"], names),
+                target_name=current_name,
+            )
+            inner_result = react.invoke({"messages": scrubbed})
+            # react agents return {"messages": [...input, ...new]} — strip
+            # the input prefix so add_messages only merges the genuinely-new
+            # AIMessages / ToolMessages produced by THIS sub-agent.
+            inner_messages = inner_result.get("messages", []) if isinstance(
+                inner_result, dict
+            ) else []
+            new_only = inner_messages[len(scrubbed) :]
+            return {"messages": new_only}
+
+        return _wrapped
 
     def _check_handoff(state: dict) -> dict[str, Any]:
         return {"handoffs": state.get("handoffs", 0) + 1}

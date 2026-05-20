@@ -202,7 +202,7 @@ dependencies = [
     { name = "pydantic-settings" },
 ]
 wheels = [
-    { filename = "apx_agent-0.18.0-py3-none-any.whl", hash = "sha256:9eba3bc86e417ebe11c4b44fdbc59143c084c58635e4daf59e3a560a0c06862f" },
+    { filename = "apx_agent-0.18.0-py3-none-any.whl", hash = "sha256:c0df5bec36d3e35394c514f1535e9eaf15851e87059427cd4f3fcec3dcb2e480" },
 ]
 
 [package.optional-dependencies]
@@ -225,8 +225,8 @@ requires-dist = [
     { name = "langchain", marker = "extra == 'langgraph'", specifier = ">=1.0.0" },
     { name = "langchain-core", marker = "extra == 'all'", specifier = ">=1.0.0" },
     { name = "langchain-core", marker = "extra == 'langgraph'", specifier = ">=1.0.0" },
-    { name = "langgraph", marker = "extra == 'all'", specifier = ">=1.0.0" },
-    { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=1.0.0" },
+    { name = "langgraph", marker = "extra == 'all'", specifier = ">=1.1.0" },
+    { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=1.1.0" },
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "mlflow", marker = "extra == 'all'", specifier = ">=2.0" },
     { name = "mlflow", marker = "extra == 'eval'", specifier = ">=2.0" },
@@ -863,16 +863,16 @@ wheels = [
 
 [[package]]
 name = "databricks-sdk"
-version = "0.94.0"
+version = "0.110.0"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }
 dependencies = [
     { name = "google-auth" },
     { name = "protobuf" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3e/39/18b3a4a69851f583d7970ae71f19975e06ef892ea17393bcafb773088f96/databricks_sdk-0.94.0.tar.gz", hash = "sha256:1b29a9d63e2dc9808ed79253ba3668cd6d130dabb880a576d647fa3b1b1a7b30", size = 861465, upload-time = "2026-02-26T08:17:12.063Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/07/0f/488d61ece084f70a6d4d0ab8b5e38b0902e0b9029d0b72cde99e3f2c6b4a/databricks_sdk-0.110.0.tar.gz", hash = "sha256:b62d806982b37f8160f700d657c37b3bd586c649eb5c8c4c1216090d888c5820", size = 945261, upload-time = "2026-05-19T09:18:46.23Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/aa/da/072fe4df10aec583eb72327856b4743c7f5fb50a16772d5f86fcc20e2457/databricks_sdk-0.94.0-py3-none-any.whl", hash = "sha256:ae980186ee2d99f3639d14a94457776dca22980a04f65f89497a79889b2b9149", size = 811079, upload-time = "2026-02-26T08:17:10.242Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/23/7c2a827890ab120ac349847ec17ab5a37eb4e3bf8f1d0989fd9eec0c1e6a/databricks_sdk-0.110.0-py3-none-any.whl", hash = "sha256:8a23db05be7a304bea43b4fa78b437051ed0f3755b19594429c649ee4159b546", size = 892096, upload-time = "2026-05-19T09:18:44.313Z" },
 ]
 
 [[package]]
@@ -1358,15 +1358,12 @@ wheels = [
 ]
 
 [[package]]
-name = "griffe"
-version = "1.15.0"
+name = "griffelib"
+version = "2.0.2"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }
-dependencies = [
-    { name = "colorama" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0d/0c/3a471b6e31951dce2360477420d0a8d1e00dea6cf33b70f3e8c3ab6e28e1/griffe-1.15.0.tar.gz", hash = "sha256:7726e3afd6f298fbc3696e67958803e7ac843c1cfe59734b6251a40cdbfb5eea", size = 424112, upload-time = "2025-11-10T15:03:15.52Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/82/74f4a3310cdabfbb10da554c3a672847f1ed33c6f61dd472681ce7f1fe67/griffelib-2.0.2.tar.gz", hash = "sha256:3cf20b3bc470e83763ffbf236e0076b1211bac1bc67de13daf494640f2de707e", size = 166461, upload-time = "2026-03-27T11:34:51.091Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/83/3b1d03d36f224edded98e9affd0467630fc09d766c0e56fb1498cbb04a9b/griffe-1.15.0-py3-none-any.whl", hash = "sha256:6f6762661949411031f5fcda9593f586e6ce8340f0ba88921a0f2ef7a81eb9a3", size = 150705, upload-time = "2025-11-10T15:03:13.549Z" },
+    { url = "https://files.pythonhosted.org/packages/11/8c/c9138d881c79aa0ea9ed83cbd58d5ca75624378b38cee225dcf5c42cc91f/griffelib-2.0.2-py3-none-any.whl", hash = "sha256:925c857658fb1ba40c0772c37acbc2ab650bd794d9c1b9726922e36ea4117ea1", size = 142357, upload-time = "2026-03-27T11:34:46.275Z" },
 ]
 
 [[package]]
@@ -2566,7 +2563,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "2.24.0"
+version = "2.36.0"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2578,27 +2575,28 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/55/13/17e87641b89b74552ed408a92b231283786523edddc95f3545809fab673c/openai-2.24.0.tar.gz", hash = "sha256:1e5769f540dbd01cb33bc4716a23e67b9d695161a734aff9c5f925e2bf99a673", size = 658717, upload-time = "2026-02-24T20:02:07.958Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f4/a1/4d5e84cf51720fc1526cc49e10ac1961abcccb55b0efb3d970db1e9a2728/openai-2.36.0.tar.gz", hash = "sha256:139dea0edd2f1b30c33d46ae1a6929e03906254140318e4608e98fe8c566f2e7", size = 753003, upload-time = "2026-05-07T17:33:17.075Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c9/30/844dc675ee6902579b8eef01ed23917cc9319a1c9c0c14ec6e39340c96d0/openai-2.24.0-py3-none-any.whl", hash = "sha256:fed30480d7d6c884303287bde864980a4b137b60553ffbcf9ab4a233b7a73d94", size = 1120122, upload-time = "2026-02-24T20:02:05.669Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/1c/5d43735b2553baae2a5e899dcbcd0670a86930d993184d72ca909bf11c9b/openai-2.36.0-py3-none-any.whl", hash = "sha256:143f6194b548dbc2c921af1f1b03b9f14c85fed8a75b5b516f5bcc11a2a50c63", size = 1302361, upload-time = "2026-05-07T17:33:15.063Z" },
 ]
 
 [[package]]
 name = "openai-agents"
-version = "0.10.5"
+version = "0.17.2"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }
 dependencies = [
-    { name = "griffe" },
+    { name = "griffelib" },
     { name = "mcp" },
     { name = "openai" },
     { name = "pydantic" },
     { name = "requests" },
     { name = "types-requests" },
     { name = "typing-extensions" },
+    { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/10/38/f47644c5de02f1853483d1a16d1fb7d12cc2c219c5548ec26a3e9aee1c29/openai_agents-0.10.5.tar.gz", hash = "sha256:73cef5263eeb98437b874b29c800694617af7d9626be19514b4ed6f434874c1e", size = 2511640, upload-time = "2026-03-05T20:43:59.308Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/11/cd/14acaf94c6a438cfe72c5ea043bfbc77d7fbb9514ab7796d82f2180d1518/openai_agents-0.17.2.tar.gz", hash = "sha256:5e11414bdd8c20c8e9192d21f78265d30e65992f4537f940309eca9255804449", size = 5403689, upload-time = "2026-05-12T03:14:57.433Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/07/ad27018fb42d6f1e70f471a5ca3f6398a2159575b623edf86e1ddde66ce4/openai_agents-0.10.5-py3-none-any.whl", hash = "sha256:6c92491c61ba85b4790d76562b4af2e6e230c8844f9c12fed8a721400a320c86", size = 413046, upload-time = "2026-03-05T20:43:57.874Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/71/5ba9afa4b6a0d250bfdbdd1cf9a5255ae131a7f82915c634ac50c0633c3a/openai_agents-0.17.2-py3-none-any.whl", hash = "sha256:1b3560c1690bcee635a487f77ebfb8b4fb2dd52a653e045a86e51974ab87faf3", size = 838225, upload-time = "2026-05-12T03:14:55.149Z" },
 ]
 
 [[package]]
@@ -4121,7 +4119,7 @@ wheels = [
 
 [[package]]
 name = "unitycatalog-ai"
-version = "0.4.0"
+version = "0.3.2"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }
 dependencies = [
     { name = "cloudpickle" },
@@ -4130,9 +4128,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "unitycatalog-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a0/34/62647f641af0d516f6bacf8fdeb628028114233ca3172471e09f6a781807/unitycatalog_ai-0.4.0.tar.gz", hash = "sha256:7aaea69858fbe76b11e83f1a37fb8cc3fa5cde4d4cccb89d47178a2942e437eb", size = 63722, upload-time = "2026-04-24T06:32:15.594Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/22/01bfe88e617748421c0871789e14e7fe555dded223f57581c985b75a6e2a/unitycatalog_ai-0.3.2.tar.gz", hash = "sha256:60e431c5dfe86a6c64d7fd44ad716144e67377c10b3d43c95b59b18840c37e8d", size = 62377, upload-time = "2025-08-25T23:38:58.05Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/0e/552f72929836d80d01ecc9f916d0af38739f261eccd272c68bcad7b299cc/unitycatalog_ai-0.4.0-py3-none-any.whl", hash = "sha256:5dc34b7c0beb180cbe17c3be120d9d31dc8168d8f263157cf68c12eec659632a", size = 68318, upload-time = "2026-04-24T06:32:14.268Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/39/df336f3a00af59022c7183aea24195cd8b120f791635c6b0e72c7af36aa8/unitycatalog_ai-0.3.2-py3-none-any.whl", hash = "sha256:42d14a43b6f733eb206c584833a15d2340e3b14d8d3c94b6b96b5dc8a3ed2498", size = 66997, upload-time = "2025-08-25T23:38:56.947Z" },
 ]
 
 [package.optional-dependencies]
@@ -4181,16 +4179,16 @@ databricks = [
 
 [[package]]
 name = "unitycatalog-openai"
-version = "0.4.0"
+version = "0.2.0"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }
 dependencies = [
     { name = "openai" },
     { name = "pydantic" },
     { name = "unitycatalog-ai" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/30/44/1302816577ff0325732499c06c5885781b6b9ec7a4f0f4dbc3de0e290bce/unitycatalog_openai-0.4.0.tar.gz", hash = "sha256:be921701cd2ed7c79eaba53d91a853baa4c17de6115a8d52095fbe089783bb81", size = 5913, upload-time = "2026-04-24T06:54:36.873Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/67/15/77600acd01e8e563eac90cccfb3ad687c8cef0d192a1d422d46984902fe0/unitycatalog_openai-0.2.0.tar.gz", hash = "sha256:c572c3718d8295d32686403cd6ca8ea9e32532eecc0d23a95f30f90e37016549", size = 5727, upload-time = "2025-03-12T01:44:59.178Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/17/ddeab25220efe9deb85000ee4ab3f6d54f717753e55594143c8427dfd47f/unitycatalog_openai-0.4.0-py3-none-any.whl", hash = "sha256:cbede79bacf0ff7d5a8dd122ea2ee1b8304fb900ec11a2206b7e7199058b0f8d", size = 6655, upload-time = "2026-04-24T06:54:35.64Z" },
+    { url = "https://files.pythonhosted.org/packages/15/a1/050b2a12bb4d8e78b86d0e43cdbcdb16a6994ce28b82b2572c8761900ddb/unitycatalog_openai-0.2.0-py3-none-any.whl", hash = "sha256:203eb5b2f1e5fbd2616003424641e9c2742683c3a858fac00329f06bf265c9cf", size = 6620, upload-time = "2025-03-12T01:44:58.05Z" },
 ]
 
 [package.optional-dependencies]
