@@ -51,6 +51,8 @@ _VALID_KINDS = frozenset({
     "sql_warehouse",
     "vector_search_index",
     "uc_table",
+    "uc_connection",
+    "lakebase_instance",
 })
 
 
@@ -366,3 +368,197 @@ def mlflow_resources_for(
 
     specs = collect_resource_specs(agent, model=model, extra=extra)
     return [kind_to_cls[s.kind](s.identifier) for s in specs]
+
+
+# ---------------------------------------------------------------------------
+# Databricks Apps bundle YAML materialisation
+# ---------------------------------------------------------------------------
+
+
+_YML_NAME_SAFE = "abcdefghijklmnopqrstuvwxyz0123456789-_"
+
+# Disambiguator suffix appended to the slug so cross-kind name collisions
+# don't happen (e.g. a uc_function named ``main.tools.bar`` and a warehouse
+# whose only memorable substring is also ``bar``).
+_DAB_KIND_SUFFIX: dict[str, str] = {
+    "serving_endpoint": "endpoint",
+    "sql_warehouse": "warehouse",
+    "genie_space": "genie",
+    "uc_function": "function",
+    "vector_search_index": "vsi",
+    "uc_table": "table",
+    "uc_connection": "connection",
+    "lakebase_instance": "lakebase",
+}
+
+
+def _slugify(identifier: str, kind: str) -> str:
+    """Produce a databricks.yml-safe ``name`` slug for a resource entry.
+
+    The bundle YAML uses the ``name`` field as the local handle for the
+    resource (and as the key for app-scoped OBO grants). It must be unique
+    within a single app's resource block, so we suffix the identifier-slug
+    with a per-kind disambiguator.
+    """
+    ident = identifier or ""
+    # For UC names, drop the catalog/schema prefix so the slug stays compact.
+    short = ident.rsplit(".", 1)[-1] if "." in ident else ident
+    lowered = short.lower()
+    out: list[str] = []
+    for ch in lowered:
+        if ch in _YML_NAME_SAFE:
+            out.append(ch)
+        elif ch in "./: ":
+            out.append("-")
+        # else drop
+    slug = "".join(out).strip("-_") or "resource"
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    suffix = _DAB_KIND_SUFFIX.get(kind, kind)
+    return f"{slug}-{suffix}"
+
+
+def _spec_to_yml_entry(spec: "ResourceSpec") -> dict[str, Any] | None:
+    """Project a single ``ResourceSpec`` onto its databricks.yml resource shape.
+
+    Each entry is a one-key dict whose value carries the typed body — name,
+    identifier field, and the OBO permission the App needs at runtime. The
+    shapes mirror the resource block schema used in the
+    ``databricks/app-templates`` bundles.
+    """
+    name = _slugify(spec.identifier, spec.kind)
+
+    if spec.kind == "serving_endpoint":
+        return {
+            "serving_endpoint": {
+                "name": name,
+                "endpoint_name": spec.identifier,
+                "permission": "CAN_QUERY",
+            }
+        }
+
+    if spec.kind == "uc_function":
+        return {
+            "uc_securable": {
+                "name": name,
+                "securable_full_name": spec.identifier,
+                "securable_type": "FUNCTION",
+                "permission": "EXECUTE",
+            }
+        }
+
+    if spec.kind == "genie_space":
+        return {
+            "genie_space": {
+                "name": name,
+                "space_id": spec.identifier,
+                "permission": "CAN_RUN",
+            }
+        }
+
+    if spec.kind == "vector_search_index":
+        return {
+            "uc_securable": {
+                "name": name,
+                "securable_full_name": spec.identifier,
+                "securable_type": "TABLE",
+                "permission": "SELECT",
+            }
+        }
+
+    if spec.kind == "sql_warehouse":
+        return {
+            "sql_warehouse": {
+                "name": name,
+                "id": spec.identifier,
+                "permission": "CAN_USE",
+            }
+        }
+
+    if spec.kind == "uc_connection":
+        return {
+            "uc_securable": {
+                "name": name,
+                "securable_full_name": spec.identifier,
+                "securable_type": "CONNECTION",
+                "permission": "USE_CONNECTION",
+            }
+        }
+
+    if spec.kind == "lakebase_instance":
+        return {
+            "database": {
+                "name": name,
+                "database_name": "databricks_postgres",
+                "instance_name": spec.identifier,
+                "permission": "CAN_CONNECT_AND_CREATE",
+            }
+        }
+
+    if spec.kind == "uc_table":
+        return {
+            "uc_securable": {
+                "name": name,
+                "securable_full_name": spec.identifier,
+                "securable_type": "TABLE",
+                "permission": "SELECT",
+            }
+        }
+
+    return None  # pragma: no cover — guarded by _VALID_KINDS above
+
+
+def resources_to_databricks_yml(
+    resources: Iterable["ResourceSpec"],
+) -> list[dict[str, Any]]:
+    """Project ``ResourceSpec`` list to the Databricks Apps bundle YAML shape.
+
+    Apps deployments declare their grants in ``databricks.yml`` rather than in
+    a logged pyfunc's ``resources=`` list — at deploy time, the bundle's
+    ``resources`` block is what determines which Databricks objects the
+    App's runtime token can access. This function is the Apps-side counterpart
+    to :func:`mlflow_resources_for` (Model Serving / ChatAgent path).
+
+    Output shape per spec kind:
+
+      +----------------------+------------------------------------------------+
+      | ``ResourceSpec.kind``| databricks.yml resource entry                  |
+      +======================+================================================+
+      | serving_endpoint     | ``{serving_endpoint: {name, endpoint_name,     |
+      |                      | permission: CAN_QUERY}}``                      |
+      | uc_function          | ``{uc_securable: {name, securable_full_name,   |
+      |                      | securable_type: FUNCTION, permission: EXECUTE}}``|
+      | genie_space          | ``{genie_space: {name, space_id,               |
+      |                      | permission: CAN_RUN}}``                        |
+      | vector_search_index  | ``{uc_securable: {..., securable_type: TABLE,  |
+      |                      | permission: SELECT}}``                         |
+      | sql_warehouse        | ``{sql_warehouse: {name, id,                   |
+      |                      | permission: CAN_USE}}``                        |
+      | uc_connection        | ``{uc_securable: {..., securable_type:         |
+      |                      | CONNECTION, permission: USE_CONNECTION}}``     |
+      | lakebase_instance    | ``{database: {name, database_name:             |
+      |                      | databricks_postgres, instance_name,            |
+      |                      | permission: CAN_CONNECT_AND_CREATE}}``         |
+      | uc_table             | ``{uc_securable: {..., securable_type: TABLE,  |
+      |                      | permission: SELECT}}``                         |
+      +----------------------+------------------------------------------------+
+
+    Each entry's ``name`` field is auto-derived from the resource identifier
+    via a slug-plus-kind-suffix scheme that's stable and unique within a
+    single app's resource list. Callers that need a stable name across edits
+    can post-process the returned list before merging it into the bundle.
+
+    Args:
+        resources: Specs to project. Typically the output of
+            :func:`collect_resource_specs`.
+
+    Returns:
+        List of dicts, each shaped as ``{"<resource_type>": {name, ...}}``,
+        ready to embed under ``resources:`` in a Databricks Apps bundle.
+    """
+    out: list[dict[str, Any]] = []
+    for spec in resources:
+        entry = _spec_to_yml_entry(spec)
+        if entry is not None:
+            out.append(entry)
+    return out

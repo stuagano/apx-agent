@@ -38,3 +38,6 @@ mlruns/
 
 # Generated package version files
 **/_version.py
+
+# Local reference clones (not part of the project)
+reference/

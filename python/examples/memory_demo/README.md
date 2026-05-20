@@ -3,12 +3,92 @@
 A self-contained worked example showing how to wire **MemoryBank** + **ExampleStore**
 into an `apx-agent` end-to-end.
 
+`memory_demo` ships in two run modes:
+
+| Mode | Entry point | Infra required | Use case |
+|---|---|---|---|
+| **Local-only** | `app.py` | none — pure Python | Confirm the memory wiring round-trips in a single process. No LLM endpoint, no workspace. |
+| **Databricks Apps** | `agent_server/` + `databricks.yml` | Databricks workspace + serving endpoint | Real deploy. Bundle pushes the agent to a Databricks App; `bundle run` restarts it. No container build queue. |
+
+Both modes share the same `Agent`, the same memory + example stores, the
+same `make_memory_tools` callables, and the same `assemble_context`
+system-prompt assembly. The only difference is whether you import the
+module locally or behind a FastAPI route inside an App.
+
+`memory_demo` previously deployed via Model Serving (`databricks.agents.deploy`).
+We moved the deploy story to Apps because Model Serving container builds queue —
+iteration suffers. The full tradeoff write-up is in
+[`docs/apps-vs-model-serving.md`](../../../docs/apps-vs-model-serving.md).
+
 ## What's in here
 
-- `app.py` — full demo: stores, seeded data, `make_memory_tools` for the
-  `recall` / `remember` / `forget` callables, an assembled system prompt
-  built via `assemble_context`, and a reproducible round-trip path that
-  runs without an LLM endpoint.
+- `app.py` — the canonical in-process demo. Seeds the stores, builds the
+  system prompt, runs the `recall` / `remember` tools synchronously, and
+  prints the round-trip to stdout. No LLM, no infra.
+- `agent_server/agent.py` — the same wiring, plus `compile_to_responses_agent`
+  and `@invoke()`/`@stream()` registrations for the Databricks Apps target.
+- `agent_server/start_server.py` — FastAPI entry point. Databricks Apps
+  runs this file via uvicorn.
+- `databricks.yml` — Asset Bundle config. Declares the App + the
+  serving-endpoint resource the App connects to.
+- `pyproject.toml` — apps-shape dependencies (apx-agent, mlflow, fastapi, uvicorn).
+- `scripts/quickstart.py` — one-shot setup. Creates an MLflow experiment and
+  writes `.env`. Run via `uv run quickstart`.
+- `.env.example` — environment template.
+
+## Run locally (no infra)
+
+```bash
+cd python
+uv run python -m examples.memory_demo.app
+```
+
+The demo runs entirely in-process — no Databricks workspace, model endpoint,
+or Lakebase instance required. Useful for confirming the memory store +
+context assembly path before you point real traffic at the agent.
+
+Output (truncated):
+
+```
+========================================================================
+memory_demo — apx-agent memory + examples worked example
+========================================================================
+PRINCIPAL  : alice
+AGENT      : travel_concierge
+DEMO QUERY : what seat do I usually pick?
+
+[assembled system prompt with seeded memories + few-shot examples]
+[mid-turn recall tool call output]
+[after-response remember tool call output]
+done.
+final stored memory count for alice: 6
+```
+
+## Deploy to Databricks Apps
+
+```bash
+cd python/examples/memory_demo
+uv sync
+uv run quickstart                # creates MLflow experiment, writes .env
+apx deploy --target apps         # bundle deploy + bundle run, no container build
+```
+
+`apx deploy --target apps` delegates to:
+
+```bash
+databricks bundle deploy --target dev --profile <profile>
+databricks bundle run memory-demo --target dev --profile <profile>
+```
+
+The App will read `X-Forwarded-Access-Token` from each request and thread
+it into the compiled `ResponsesAgent` so all tool calls run as the user,
+not the App's service principal.
+
+To validate the bundle config before deploying:
+
+```bash
+databricks bundle validate --target dev --profile <profile>
+```
 
 ## What was added vs. a plain agent
 
@@ -20,19 +100,23 @@ into an `apx-agent` end-to-end.
 3. The system prompt is built by `assemble_context(memory=..., examples=...)` —
    the helper pulls relevant memories + few-shot examples at compile time and
    formats them as markdown blocks before the static instructions.
-4. A `_demo()` entry point prints (a) the assembled system prompt, (b) a
-   mid-turn `recall` tool call, and (c) an after-response `remember` tool
-   call that persists a new fact.
+4. A `_demo()` entry point in `app.py` prints (a) the assembled system prompt,
+   (b) a mid-turn `recall` tool call, and (c) an after-response `remember`
+   tool call that persists a new fact.
+5. The Apps target adds `compile_to_responses_agent(agent, model=...)` plus
+   `@invoke()` / `@stream()` functions registered with
+   `mlflow.genai.agent_server`.
 
-## Run
+## Swapping in durable stores
 
-```bash
-cd python
-uv run python -m examples.memory_demo.app
-```
+The in-memory stores keep the demo runnable without infra. Production
+replaces them:
 
-The demo runs entirely in-process — no Databricks workspace, model endpoint,
-or Lakebase instance required. Swap `InMemoryMemoryStore` →
-`LakebaseMemoryStore` (and same for examples) for shared persistence across
-replicas, or `DeltaMemoryStore` / `DeltaExampleStore` for Delta + Vector
-Search delegation.
+| Want | Swap to | See |
+|---|---|---|
+| Shared state across App replicas | `LakebaseMemoryStore`, `LakebaseExampleStore` | [`docs/lakebase-recipe.md`](../../../docs/lakebase-recipe.md) |
+| Delta + Vector Search backing | `DeltaMemoryStore`, `DeltaExampleStore` | `apx_agent._memory_delta` / `_example_delta` source |
+
+When you move to Lakebase, also add a `database` resource to `databricks.yml`
+under the `memory-demo` app so the App SP gets DB credentials. The
+`databricks-builder-app` example shows the shape.

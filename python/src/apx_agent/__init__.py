@@ -71,12 +71,19 @@ from ._compile import CompileContext, compile_to_langgraph
 # MLflow ChatAgent wrapper (optional — requires the ``langgraph`` and ``eval`` extras)
 from ._chat_agent import chat_agent_for, compile_to_chat_agent, log_agent
 
+# Databricks Apps ResponsesAgent compile target (optional — same extras)
+from ._responses_agent import compile_to_responses_agent
+
+# Unified OBO header extraction (both runtimes use this)
+from ._obo import extract_obo_headers
+
 # Resource declaration — auto-derive MLflow resources from the agent tree
 from ._resources import (
     ResourceSpec,
     attach_resources,
     collect_resource_specs,
     mlflow_resources_for,
+    resources_to_databricks_yml,
 )
 
 # @tool decorator and UC publishing
@@ -296,11 +303,16 @@ __all__ = [
     "chat_agent_for",
     "compile_to_chat_agent",
     "log_agent",
+    # Databricks Apps ResponsesAgent compile target
+    "compile_to_responses_agent",
+    # Unified OBO header extraction
+    "extract_obo_headers",
     # Resource declaration
     "ResourceSpec",
     "attach_resources",
     "collect_resource_specs",
     "mlflow_resources_for",
+    "resources_to_databricks_yml",
     # @tool decorator and UC publishing
     "tool",
     "ToolMetadata",

@@ -69,25 +69,42 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _resolve_ws_for_request(custom_inputs: dict[str, Any] | None) -> "WorkspaceClient":
+def _resolve_ws_for_request(
+    custom_inputs: dict[str, Any] | None,
+    *,
+    headers: Any = None,
+) -> "WorkspaceClient":
     """Build the per-request WorkspaceClient.
 
-    Order:
-      1. If ``custom_inputs["user_token"]`` is present → OBO (user-scope).
-         Caller must also pass ``workspace_host`` or have ``DATABRICKS_HOST``
-         set, since the token alone doesn't identify a workspace.
-      2. Else fall back to ``_make_workspace_client`` (app SP via oauth-m2m if
-         the env vars are set, else CLI auto-detect for local dev).
+    Delegates to :func:`apx_agent._obo.extract_obo_headers` for the
+    normalization so the Model Serving and Apps runtimes share a single source
+    of truth for OBO resolution.
+
+    Args:
+        custom_inputs: ``custom_inputs`` from the request payload. The
+            authoritative source: a caller-supplied ``user_token`` here wins
+            over a header-injected one.
+        headers: Optional per-request HTTP headers (a mapping or starlette
+            ``Headers``). Used as the fallback source for OBO context when
+            the SDK is invoked from a FastAPI route directly (e.g. the Apps
+            runtime). Default: ``None``.
+
+    Resolution order:
+      1. If a ``user_token`` is found (custom_inputs first, headers second) →
+         OBO (user-scope) ``WorkspaceClient(token=..., host=...)``.
+      2. Else fall back to ``_make_workspace_client()`` (app SP via
+         oauth-m2m if the env vars are set, else CLI auto-detect for local
+         dev).
     """
     from ._defaults import _make_workspace_client
+    from ._obo import extract_obo_headers
 
-    if custom_inputs and custom_inputs.get("user_token"):
-        token = custom_inputs["user_token"]
-        host = (
-            custom_inputs.get("workspace_host")
-            or os.environ.get("DATABRICKS_HOST")
+    obo = extract_obo_headers(custom_inputs=custom_inputs, headers=headers)
+    if obo.get("user_token"):
+        return _make_workspace_client(
+            token=obo["user_token"],
+            host=obo.get("workspace_host"),
         )
-        return _make_workspace_client(token=token, host=host)
 
     return _make_workspace_client()
 
