@@ -25,7 +25,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-apx-agent = { path = "../../src", editable = true }
+apx-agent = { path = "../..", editable = true }
 
 [tool.pytest.ini_options]
 markers = [

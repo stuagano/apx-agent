@@ -22,7 +22,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-apx-agent = { path = "../../src", editable = true }
+apx-agent = { path = "../..", editable = true }
 
 [project.scripts]
 investigate = "data_triage_agent.jobs.investigate:main"
