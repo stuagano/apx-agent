@@ -68,10 +68,24 @@ final stored memory count for alice: 6
 
 ```bash
 cd python/examples/memory_demo
-uv sync
-uv run quickstart                # creates MLflow experiment, writes .env
-apx deploy --target apps         # bundle deploy + bundle run, no container build
+apx deploy --target apps         # builds wheel, populates .build, bundle deploy + bundle run
 ```
+
+That single command is the complete pipeline. It auto-builds the
+apx-agent wheel, stages `.build/`, validates the bundle, deploys, runs,
+and polls until the app is `RUNNING`/`ACTIVE`.
+
+If you want MLflow tracing wired up, also run the quickstart once to
+create an experiment + write `.env`:
+
+```bash
+apx deploy --target apps --no-run     # builds wheel + stages .build without starting
+uv sync                                # now works — the wheel exists
+uv run quickstart                      # creates experiment, writes .env
+apx deploy --target apps               # deploy with the experiment_id picked up from .env
+```
+
+Or pass `--var mlflow_experiment_id=<id>` directly to subsequent deploys.
 
 `apx deploy --target apps` delegates to:
 

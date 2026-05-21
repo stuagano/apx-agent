@@ -105,8 +105,8 @@ See [`docs/apps-vs-model-serving.md`](docs/apps-vs-model-serving.md) for the ful
 
 ```bash
 apx scaffold my_agent                       # generate a Model Serving project (default)
-apx scaffold my_agent --target apps         # generate a Databricks Apps project
-cd my_agent && uv sync
+apx scaffold my_agent --target apps         # generate a Databricks Apps project (skip `uv sync` — apx deploy --target apps builds + stages everything)
+cd my_agent && uv sync                      # Model Serving target only — Apps target relies on `apx deploy --target apps` to build the wheel first
 apx run                            # uvicorn against app.py:app
 apx publish-tools --dry-run        # preview UC function registrations
 apx publish-tools                  # actually register
@@ -562,9 +562,18 @@ The MLflow GenAI Agent Server path. `compile_to_responses_agent` produces a `Res
 ```bash
 apx scaffold my_agent --target apps   # scaffolds agent_server/ + databricks.yml + pyproject.toml + quickstart
 cd my_agent
-uv sync
-uv run quickstart                     # creates MLflow experiment, writes .env
-apx deploy --target apps              # databricks bundle deploy + bundle run
+apx deploy --target apps              # builds apx-agent wheel + stages .build + bundle deploy + bundle run
+```
+
+`apx deploy --target apps` is the complete pipeline — it auto-builds the apx-agent wheel (needed because the scaffold's `pyproject.toml` references a local wheel path), stages `.build/`, runs `databricks bundle deploy + bundle run`, and polls until the app is `RUNNING/ACTIVE`.
+
+If you want MLflow tracing wired up, also run the quickstart once after the first deploy:
+
+```bash
+apx deploy --target apps --no-run     # builds wheel + stages .build without starting
+uv sync                                # works now — wheel exists
+uv run quickstart                      # creates MLflow experiment, writes .env
+apx deploy --target apps               # deploy with experiment_id from .env
 ```
 
 - **Code-push deploy** — seconds to minutes from edit to running app

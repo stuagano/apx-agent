@@ -112,6 +112,8 @@ You'll set this as `GITHUB_TOKEN` in your `.env`.
 
 ```bash
 cd examples/data-triage-agent
+# The pyproject references a local apx-agent wheel; build it once then sync:
+apx deploy --target apps --no-run     # builds wheel + stages .build, no deploy
 uv sync
 ```
 
@@ -196,16 +198,25 @@ Code-push deploy via `databricks bundle deploy + bundle run`. No container build
 
 ```bash
 cd python/examples/data-triage-agent
-uv sync
-uv run quickstart                              # create MLflow experiment, write .env
 
 # Set the data-inspector sub-agent URL the pipeline delegates to
 export DATA_INSPECTOR_URL=https://<your-data-inspector-app>.databricksapps.com
 
 apx deploy --target apps
-# OR equivalently:
+# That one command auto-builds the apx-agent wheel, stages .build,
+# runs databricks bundle deploy + bundle run, polls until ACTIVE.
+# Equivalent low-level commands if you want them explicitly:
 #   databricks bundle deploy --target dev --profile <p> --var "data_inspector_url=$DATA_INSPECTOR_URL"
 #   databricks bundle run mcp-data-triage-agent --target dev --profile <p>
+```
+
+For MLflow tracing wire-up, also run the quickstart once:
+
+```bash
+apx deploy --target apps --no-run    # build wheel + stage .build, no deploy
+uv sync                                # works now — wheel is present
+uv run quickstart                      # creates MLflow experiment, writes .env
+apx deploy --target apps               # deploy with experiment_id picked up from .env
 ```
 
 Verify:

@@ -74,15 +74,23 @@ For fast iteration. Code-push deploy via `databricks bundle deploy + bundle run`
 
 ```bash
 cd python/examples/customer_triage
-uv sync
-uv run quickstart                      # creates MLflow experiment, writes .env
-apx deploy --target apps               # bundle deploy + bundle run
+apx deploy --target apps               # builds wheel + stages .build + bundle deploy + bundle run
 
 # After deploy, query the live app:
 curl -X POST https://customer-triage-<workspace-id>.<region>.databricksapps.com/invocations \
   -H "Authorization: Bearer $(databricks auth token --profile <p> | jq -r .access_token)" \
   -H "Content-Type: application/json" \
   -d '{"input":[{"role":"user","content":"why is my bill so high?"}]}'
+```
+
+For MLflow tracing wire-up, also run the quickstart (it needs the wheel
+to exist locally, so split it across two deploys):
+
+```bash
+apx deploy --target apps --no-run      # builds the wheel + stages .build
+uv sync                                 # works now — wheel is present
+uv run quickstart                       # creates MLflow experiment, writes .env
+apx deploy --target apps                # deploy with experiment_id from .env
 ```
 
 `APX_SMOKE_MODE=1` (set in `databricks.yml`'s `env` block by default) swaps the UC / Genie / Vector Search tool references for inline stubs so the Apps deploy works without pre-provisioning workspace resources. Remove the env var (or set it to anything else) to run against real resources.
