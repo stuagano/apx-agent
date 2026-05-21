@@ -27,8 +27,7 @@ from typing import Any
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem, StatementState
 
-from .core import Dependencies
-from .core.agent import Agent
+from apx_agent import Dependencies
 
 Client = Dependencies.Client
 Headers = Dependencies.Headers
@@ -298,17 +297,3 @@ def compare_months(customer_id: str, month1: str, month2: str, ws: Client) -> di
         }
 
     return result
-
-
-# ---------------------------------------------------------------------------
-# Register
-# ---------------------------------------------------------------------------
-
-agent = Agent(tools=[
-    get_session_context,
-    get_customer_profile,
-    query_ami_readings,
-    get_billing_summary,
-    get_rate_schedule,
-    compare_months,
-])
