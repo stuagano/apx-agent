@@ -20,11 +20,19 @@ dev = [
 [tool.uv.sources]
 apx-agent = { path = "../..", editable = true }
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [tool.hatch.build.targets.wheel]
-packages = ["apx_builder"]
+# Flat shape: top-level modules + tools/ subpackage shipped via forced-includes.
+packages = ["tools"]
+force-include = { "app.py" = "app.py", "anthropic_proxy.py" = "anthropic_proxy.py", "mcp_loader.py" = "mcp_loader.py", "system_prompt.py" = "system_prompt.py" }
 
 [tool.pytest.ini_options]
 addopts = "-m 'not integration'"
+testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.apx.metadata]
 app-name = "apx-builder"
@@ -34,8 +42,5 @@ app-entrypoint = "app:app"
 name = "apx_builder"
 description = "Natural language agent builder — describe your agent and I'll build and deploy it"
 model = "databricks-claude-sonnet-4-6"
+module = "app:agent"
 url = ""
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
