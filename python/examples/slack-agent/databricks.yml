@@ -1,11 +1,16 @@
-# Databricks Asset Bundle config for data-inspector (Apps target).
+# Databricks Asset Bundle config for slack-agent (Apps target).
 #
-# Exposes Delta forensics + UC discovery as a Databricks App that
-# data-triage-agent (and other consumers) delegate to via A2A and Genie
-# can consume via /mcp.
+# Deploys the Slack bot as a Databricks App that exposes THREE surfaces:
+#   /invocations  — Mosaic AI Apps shape (apps that call this as a sub-agent)
+#   /slack/*      — Slack webhook surface (events, OAuth install + callback)
+#   /mcp          — Genie / Genie Code MCP consumption
+#
+# Slack itself hits /slack/events with a slash-command payload; the router
+# validates the Slack signature, exchanges the Slack user identity for the
+# user's Databricks token, then invokes the agent over /invocations.
 
 bundle:
-  name: mcp-data-inspector
+  name: mcp-slack-agent
 
 sync:
   include:
@@ -50,12 +55,13 @@ artifacts:
 
 resources:
   apps:
-    mcp-data-inspector:
-      name: mcp-data-inspector
+    mcp-slack-agent:
+      name: mcp-slack-agent
       description: |
-        Delta table forensics + UC discovery — list catalogs/schemas/tables,
-        sample/count/describe, version diffs, audit history. A2A sub-agent for
-        data-triage-agent; /mcp surface for Genie / Genie Code.
+        Slack bot connected to Databricks via OAuth. Validates Slack
+        signatures, exchanges Slack user identity for Databricks token,
+        runs tools as the calling Databricks user. Also exposes /mcp
+        for Genie / Genie Code.
       source_code_path: ./.build
 
       resources:
@@ -80,6 +86,14 @@ resources:
             value: databricks
           - name: MLFLOW_EXPERIMENT_ID
             value: ${var.mlflow_experiment_id}
+          # Slack secrets (set via --var on deploy OR provision separately
+          # via `databricks apps update mcp-slack-agent --config ...`):
+          # - name: SLACK_SIGNING_SECRET
+          #   value: ${var.slack_signing_secret}
+          # - name: SLACK_CLIENT_ID
+          #   value: ${var.slack_client_id}
+          # - name: SLACK_CLIENT_SECRET
+          #   value: ${var.slack_client_secret}
 
 targets:
   dev:

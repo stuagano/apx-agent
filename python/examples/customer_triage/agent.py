@@ -1,7 +1,7 @@
-# Memory wired into account_specialist (per-user prefs persist across handoffs).
-"""Customer triage agent — a worked example exercising the full apx-agent surface.
+"""customer_triage — root agent (ADK-style top-level definition).
 
-Demonstrates:
+Demonstrates the full apx-agent surface:
+
   * ``@tool(uc=...)`` decorator for pure-Python tools that should live in UC
   * ``Dependencies.Workspace`` for tools that need user-scoped OBO auth
   * ``genie_tool`` for natural-language data questions
@@ -10,90 +10,203 @@ Demonstrates:
   * ``InMemoryMemoryStore`` + ``make_memory_tools`` for principal-keyed memory
     on the ``account_specialist`` sub-agent — preferences and account history
     that should outlive any single conversation
-  * Declared resources flowing through to ``log_agent``
-  * Sessions when paired with ``compile_to_chat_agent(..., session_store=...)``
 
-This file is the agent definition. ``app.py`` wraps it as a FastAPI app for
-local dev. ``evalset.jsonl`` exercises the routing decisions.
+``agent`` is the canonical top-level symbol. It is consumed by:
+
+  * ``agent_server/start_server.py`` — framework boilerplate that compiles
+    + serves the agent under Databricks Apps (ResponsesAgent contract +
+    MCP surface). Read by ``apx deploy --target apps``.
+  * ``app.py`` — local-only FastAPI runner used by ``apx run`` for
+    in-process dev.
+  * ``apx deploy --target model-serving`` — when the agent is published to
+    a Mosaic AI serving endpoint instead of an App.
+
+``APX_SMOKE_MODE=1`` (set in ``databricks.yml``) swaps every tool that
+depends on a workspace resource (UC function, Genie space, Vector Search
+index) for an in-process stub. That lets the Apps deploy succeed on a
+clean workspace without any prerequisite resources. The agent topology —
+HandoffAgent + four specialist sub-agents + memory wiring on
+``account_specialist`` — is identical in both modes; only the tool list
+on each specialist changes.
+
+Memory is keyed by ``principal_id``, NOT ``session_id``. Preferences
+captured during one conversation survive a handoff to billing/technical
+and persist when this user comes back tomorrow under a brand-new
+session_id. In production, swap ``InMemoryMemoryStore`` for
+``LakebaseMemoryStore`` — see ``docs/lakebase-recipe.md``.
 
 Run locally::
 
     cd python/examples/customer_triage
-    uv pip install -e ../..
+    uv sync
     apx run
 
-Publish + deploy::
+Deploy to Databricks Apps::
 
-    apx publish-tools --module agent:triage_agent
-    apx deploy --module agent:triage_agent \
-               --model databricks-claude-sonnet-4-6 \
-               --name main.agents.customer_triage
+    apx deploy --target apps
 """
 
 from __future__ import annotations
 
+import os
+
 from apx_agent import (
     Agent,
-    Dependencies,
     HandoffAgent,
     InMemoryMemoryStore,
-    genie_tool,
     make_memory_tools,
     tool,
-    vector_search_tool,
 )
 
-
 # ---------------------------------------------------------------------------
-# Pure-Python tools — live in UC, callable from anything UC-aware
-# ---------------------------------------------------------------------------
-
-
-@tool(uc="main.agent_tools.classify_intent", grant=["agent_consumers"])
-def classify_intent(query: str) -> str:
-    """Classify a customer query as billing, technical, account, or other.
-
-    Returns one of: "billing", "technical", "account", "other".
-    """
-    q = query.lower()
-    if any(word in q for word in ("bill", "invoice", "charge", "payment", "refund")):
-        return "billing"
-    if any(word in q for word in ("error", "bug", "broken", "crash", "not working")):
-        return "technical"
-    if any(word in q for word in ("password", "login", "account", "email", "username")):
-        return "account"
-    return "other"
-
-
-@tool(uc="main.agent_tools.format_address", grant=["agent_consumers"])
-def format_address(street: str, city: str, region: str, postal_code: str) -> str:
-    """Format a postal address into a canonical multi-line string."""
-    return f"{street}\n{city}, {region} {postal_code}"
-
-
-# ---------------------------------------------------------------------------
-# Tools that need user-scoped Databricks auth — Python-only, not UC-syncable
+# Mode resolution. ``APX_SMOKE_MODE=1`` is set by ``databricks.yml`` so the
+# bundle deploys cleanly on a workspace where the production UC functions /
+# Genie space / Vector Search index don't yet exist. Flip to "0" once those
+# resources are provisioned.
 # ---------------------------------------------------------------------------
 
 
-@tool
-def get_recent_orders(
-    customer_id: str,
-    ws: Dependencies.Workspace,
-) -> list[dict]:
-    """Return the customer's last 5 orders from the orders table.
+SMOKE_MODE = os.environ.get("APX_SMOKE_MODE", "0") == "1"
 
-    Runs as the calling user; UC grants on main.sales.orders apply.
-    """
-    from apx_agent import run_sql
 
-    rows = run_sql(
-        ws,
-        "SELECT order_id, total, status, ordered_at FROM main.sales.orders "
-        "WHERE customer_id = :cid ORDER BY ordered_at DESC LIMIT 5",
-        parameters=[{"name": "cid", "value": customer_id, "type": "STRING"}],
-    )
-    return rows
+# ---------------------------------------------------------------------------
+# Tool definitions — branched on SMOKE_MODE at the tool-list level.
+#
+# In smoke mode every tool is a plain @tool callable with no external
+# dependency. In production mode tools are wired against UC / Genie / Vector
+# Search. The HandoffAgent topology below is identical regardless of mode.
+# ---------------------------------------------------------------------------
+
+
+if SMOKE_MODE:
+
+    @tool
+    def classify_intent(query: str) -> str:
+        """Classify a customer query as billing, technical, account, or other.
+
+        Returns one of: ``"billing"``, ``"technical"``, ``"account"``,
+        ``"other"``.
+        """
+        q = query.lower()
+        if any(w in q for w in ("bill", "invoice", "charge", "payment", "refund")):
+            return "billing"
+        if any(w in q for w in ("error", "bug", "broken", "crash", "not working")):
+            return "technical"
+        if any(w in q for w in ("password", "login", "account", "email", "username",
+                                "preference", "notification", "channel")):
+            return "account"
+        return "other"
+
+    @tool
+    def get_recent_orders(customer_id: str) -> list[dict]:
+        """Return a canned list of the customer's last 5 orders (smoke stub).
+
+        Real deployments wire this against ``main.sales.orders`` via
+        ``Dependencies.Workspace`` + ``run_sql``.
+        """
+        return [
+            {"order_id": f"ord-{customer_id}-001", "total": 42.50,
+             "status": "shipped", "ordered_at": "2026-05-12"},
+            {"order_id": f"ord-{customer_id}-002", "total": 199.00,
+             "status": "delivered", "ordered_at": "2026-05-05"},
+            {"order_id": f"ord-{customer_id}-003", "total": 17.99,
+             "status": "delivered", "ordered_at": "2026-04-28"},
+        ]
+
+    @tool
+    def format_address(street: str, city: str, region: str, postal_code: str) -> str:
+        """Format a postal address into a canonical multi-line string."""
+        return f"{street}\n{city}, {region} {postal_code}"
+
+    @tool
+    def docs_search(query: str) -> list[dict]:
+        """Search the support docs index (smoke stub).
+
+        Real deployments use ``vector_search_tool`` against
+        ``main.support.docs_index``.
+        """
+        return [
+            {"doc_id": "kb-001", "title": "Troubleshooting common errors",
+             "url": "https://example.com/kb/001",
+             "snippet": "If the app fails to start, check your connection settings."},
+            {"doc_id": "kb-014", "title": "Resetting your password",
+             "url": "https://example.com/kb/014",
+             "snippet": "Use the 'Forgot password' link on the login page."},
+        ]
+
+    @tool
+    def ask_account_data(question: str) -> str:
+        """Answer a natural-language question about a customer's account (smoke stub).
+
+        Real deployments use ``genie_tool($ACCOUNT_GENIE_SPACE_ID)``.
+        """
+        return (
+            "Account record (smoke stub): plan=standard, opened 2024-08-14, "
+            "primary contact on file. For exact data, query the production "
+            "Genie space."
+        )
+
+    billing_tools = [get_recent_orders, format_address]
+    technical_tools = [docs_search]
+    account_extra_tools = [ask_account_data]
+
+else:
+    # Production-path imports kept lazy so SMOKE_MODE deploys don't import
+    # langchain machinery that isn't used in the stub path.
+    from apx_agent import Dependencies, genie_tool, vector_search_tool
+
+    @tool(uc="main.agent_tools.classify_intent", grant=["agent_consumers"])
+    def classify_intent(query: str) -> str:
+        """Classify a customer query as billing, technical, account, or other."""
+        q = query.lower()
+        if any(w in q for w in ("bill", "invoice", "charge", "payment", "refund")):
+            return "billing"
+        if any(w in q for w in ("error", "bug", "broken", "crash", "not working")):
+            return "technical"
+        if any(w in q for w in ("password", "login", "account", "email", "username")):
+            return "account"
+        return "other"
+
+    @tool(uc="main.agent_tools.format_address", grant=["agent_consumers"])
+    def format_address(street: str, city: str, region: str, postal_code: str) -> str:
+        """Format a postal address into a canonical multi-line string."""
+        return f"{street}\n{city}, {region} {postal_code}"
+
+    @tool
+    def get_recent_orders(
+        customer_id: str,
+        ws: Dependencies.Workspace,
+    ) -> list[dict]:
+        """Return the customer's last 5 orders from the orders table.
+
+        Runs as the calling user; UC grants on ``main.sales.orders`` apply.
+        """
+        from apx_agent import run_sql
+
+        return run_sql(
+            ws,
+            "SELECT order_id, total, status, ordered_at FROM main.sales.orders "
+            "WHERE customer_id = :cid ORDER BY ordered_at DESC LIMIT 5",
+            parameters=[{"name": "cid", "value": customer_id, "type": "STRING"}],
+        )
+
+    billing_tools = [get_recent_orders, format_address]
+    technical_tools = [
+        vector_search_tool(
+            "main.support.docs_index",
+            columns=["doc_id", "title", "content", "url"],
+            num_results=5,
+            name="docs_search",
+            description="Search the support documentation index.",
+        ),
+    ]
+    account_extra_tools = [
+        genie_tool(
+            os.environ.get("ACCOUNT_GENIE_SPACE_ID", "$ACCOUNT_GENIE_SPACE_ID"),
+            name="ask_account_data",
+            description="Ask a natural-language question about a customer's account.",
+        ),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -106,23 +219,12 @@ def get_recent_orders(
 #   * Billing is transactional (orders are already governed via UC).
 #   * Technical leans on doc retrieval (vector_search_tool) more than on
 #     remembered facts about the user.
-#
-# Memory is keyed by ``principal_id``, NOT ``session_id``. That means
-# preferences captured during one conversation survive a handoff to
-# billing/technical and persist when this user comes back tomorrow under a
-# brand-new session_id.
-#
-# In production: swap ``InMemoryMemoryStore`` for ``LakebaseMemoryStore``
-# (Postgres + pgvector). See docs/lakebase-recipe.md for the wiring pattern.
 # ---------------------------------------------------------------------------
 
 
 account_memory_store = InMemoryMemoryStore()
 
 
-# Pre-seeded memories so the demo has something to recall against. Three per
-# principal — minimal wiring proof, not a fixture suite. Real deployments seed
-# from a profile table or grow the store organically via the `remember` tool.
 _SEED_MEMORIES: dict[str, list[dict[str, object]]] = {
     "user:alice": [
         {"content": "Prefers email over SMS for account notifications.",
@@ -151,10 +253,10 @@ for _principal, _seeds in _SEED_MEMORIES.items():
         })
 
 
-# In a real deployment the principal_id flows from the per-request OBO
-# identity (``ws.current_user.me().user_name``) wrapped in a session-aware
-# callback. For the local-dev example we pin a default so ``apx run`` works
-# end-to-end without auth plumbing.
+# default_principal_id is load-bearing for the smoke test — no per-request
+# principal resolution is wired here, so every caller sees alice's memories.
+# That deterministic seed is what makes the across-handoff memory check
+# reproducible.
 account_memory_tools = make_memory_tools(
     store=account_memory_store,
     default_principal_id="user:alice",
@@ -163,7 +265,7 @@ account_memory_tools = make_memory_tools(
 
 
 # ---------------------------------------------------------------------------
-# Specialist agents — each handles one branch of triage
+# Specialist agents — each handles one branch of triage.
 # ---------------------------------------------------------------------------
 
 
@@ -174,7 +276,7 @@ billing_agent = Agent(
         "refunds, and payment methods. Use get_recent_orders to look up the "
         "customer's order history when relevant."
     ),
-    tools=[get_recent_orders, format_address],
+    tools=billing_tools,
 )
 
 
@@ -185,15 +287,7 @@ technical_agent = Agent(
         "outages, and integration issues. Use the docs_search tool to find "
         "relevant troubleshooting articles before answering."
     ),
-    tools=[
-        vector_search_tool(
-            "main.support.docs_index",
-            columns=["doc_id", "title", "content", "url"],
-            num_results=5,
-            name="docs_search",
-            description="Search the support documentation index.",
-        ),
-    ],
+    tools=technical_tools,
 )
 
 
@@ -213,19 +307,12 @@ account_agent = Agent(
         "\n"
         "Use ask_account_data for live account-record lookups via the Genie space."
     ),
-    tools=[
-        *account_memory_tools,
-        genie_tool(
-            "$ACCOUNT_GENIE_SPACE_ID",  # resolved from env at startup
-            name="ask_account_data",
-            description="Ask a natural-language question about a customer's account.",
-        ),
-    ],
+    tools=[*account_memory_tools, *account_extra_tools],
 )
 
 
 # ---------------------------------------------------------------------------
-# Top-level triage agent — routes via HandoffAgent
+# Top-level triage agent — routes via HandoffAgent.
 # ---------------------------------------------------------------------------
 
 
@@ -245,8 +332,8 @@ triage_classifier = Agent(
 )
 
 
-# The variable name 'agent' is what `apx run` / `apx info` look for by default,
-# so the HandoffAgent gets that name.
+# The variable name ``agent`` is what ``apx run`` / ``apx deploy`` look for
+# by default, and what ``agent_server/start_server.py`` imports.
 agent = HandoffAgent(
     agents={
         "triage": triage_classifier,

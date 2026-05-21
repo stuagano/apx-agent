@@ -38,6 +38,9 @@ artifacts:
   default:
     build: |
       mkdir -p .build
+      # User-authored: top-level agent.py re-exports the router from src/.
+      cp agent.py .build/ 2>/dev/null || true
+      # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts src pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
 

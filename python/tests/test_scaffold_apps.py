@@ -1,15 +1,21 @@
 """Tests for ``apx scaffold --target apps`` — the Databricks Apps scaffold.
 
 Covers:
-  1. ``--target apps`` writes the expected file tree.
-  2. Generated ``databricks.yml`` is valid YAML and contains the app +
-     experiment resources.
+  1. ``--target apps`` writes the expected file tree (ADK-style: top-level
+     ``agent.py`` + framework-only ``agent_server/start_server.py``).
+  2. Generated ``databricks.yml`` is valid YAML, contains the app +
+     experiment resources, AND its ``artifacts.default.build`` step copies
+     the top-level ``agent.py`` into ``.build/``.
   3. Generated ``pyproject.toml`` is valid TOML and lists apx-agent +
      mlflow[databricks].
-  4. Generated ``agent_server/agent.py`` parses as valid Python.
+  4. Generated top-level ``agent.py`` parses as valid Python and the
+     framework boilerplate at ``agent_server/start_server.py`` imports
+     ``from agent import agent``.
   5. ``apx scaffold`` with no ``--target`` still produces the Model Serving
      layout (backwards compatibility).
   6. ``--target apps --force`` overwrites an existing directory.
+  7. The ADK-style layout: ``agent_server/agent.py`` MUST NOT exist
+     (legacy split-file shape is removed).
 
 Uses ``click.testing.CliRunner`` + ``tmp_path``.
 """
@@ -33,8 +39,9 @@ APPS_EXPECTED_FILES: tuple[str, ...] = (
     ".env.example",
     ".gitignore",
     "README.md",
+    # ADK-style: user content at top level, framework boilerplate under agent_server/.
+    "agent.py",
     "agent_server/__init__.py",
-    "agent_server/agent.py",
     "agent_server/start_server.py",
     "scripts/__init__.py",
     "scripts/quickstart.py",
@@ -57,6 +64,10 @@ def test_scaffold_apps_creates_expected_file_tree(tmp_path: Path) -> None:
     base = tmp_path / "my_agent"
     for rel in APPS_EXPECTED_FILES:
         assert (base / rel).exists(), f"missing {rel}"
+
+    # ADK-style layout: the legacy ``agent_server/agent.py`` shape is gone.
+    # All user content lives at top-level ``agent.py``.
+    assert not (base / "agent_server" / "agent.py").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +94,13 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     # Build artifacts step copies sources into ./.build before deploy so the
     # apx-agent wheel can ride along — see commit 6f84ad24 for the rationale.
     assert apps["my_agent"]["source_code_path"] == "./.build"
+
+    # ADK-style layout: the artifacts script must copy the top-level
+    # ``agent.py`` into ``.build/``. Without this line the deployed App
+    # container can't import ``from agent import agent`` and falls over at
+    # startup. Regression guard for the layout migration.
+    build_script = parsed["artifacts"]["default"]["build"]
+    assert "cp agent.py" in build_script, build_script
 
     experiments = parsed["resources"]["experiments"]
     assert "my_agent_experiment" in experiments
@@ -120,10 +138,12 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
     # minimum version. Search loosely so the version pin can move.
     assert any("mlflow[databricks]" in d for d in deps), deps
 
-    # The console scripts wire up `uv run start-server` and `uv run quickstart`.
+    # ``uv run quickstart`` is still the canonical bootstrap entry point.
+    # ``start-server`` is gone — the deploy now uses uvicorn against
+    # ``agent_server.start_server:app`` directly (see databricks.yml).
     scripts = parsed["project"]["scripts"]
-    assert scripts["start-server"] == "agent_server.start_server:main"
     assert scripts["quickstart"] == "scripts.quickstart:main"
+    assert "start-server" not in scripts
 
 
 # ---------------------------------------------------------------------------
@@ -132,12 +152,15 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
 
 
 def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
-    """``agent_server/agent.py`` parses cleanly (without resolving imports).
+    """Top-level ``agent.py`` parses cleanly (without resolving imports).
 
     We use ``ast.parse`` instead of ``importlib`` because the generated file
-    imports ``compile_to_responses_agent`` and ``mlflow.genai.agent_server``,
-    which may not be available in the test environment. Parse-only is enough
-    to catch syntax bugs in the template.
+    imports apx-agent / mlflow.genai pieces that may not be installed in the
+    test environment. Parse-only catches syntax bugs in the template.
+
+    Also asserts ``agent_server/start_server.py`` wires the ADK-style
+    ``from agent import agent`` import — the load-bearing line that ties
+    framework boilerplate to the user-authored top-level agent.
     """
     runner = CliRunner()
     result = runner.invoke(
@@ -146,14 +169,20 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
 
-    agent_src = (tmp_path / "my_agent" / "agent_server" / "agent.py").read_text()
+    agent_src = (tmp_path / "my_agent" / "agent.py").read_text()
     # Will raise SyntaxError if the template is malformed.
     ast.parse(agent_src)
+    # The user's agent module must expose an ``agent`` symbol that
+    # start_server.py imports.
+    assert "agent =" in agent_src or "\nagent=" in agent_src
 
-    # Sanity-check the start_server + quickstart modules too — they're
-    # generated from the same scaffold pipeline.
     start_src = (tmp_path / "my_agent" / "agent_server" / "start_server.py").read_text()
     ast.parse(start_src)
+    # Framework boilerplate consumes the top-level agent via ``from agent import agent``.
+    assert "from agent import agent" in start_src
+    # And wires the standard compile + register + MCP-mount stack.
+    assert "compile_to_responses_agent" in start_src
+    assert "mount_mcp_endpoints" in start_src
 
     quickstart_src = (tmp_path / "my_agent" / "scripts" / "quickstart.py").read_text()
     ast.parse(quickstart_src)
@@ -193,8 +222,8 @@ def test_scaffold_apps_force_overwrites_existing_dir(tmp_path: Path) -> None:
     """``--target apps --force`` replaces stale files in an existing tree."""
     runner = CliRunner()
     base = tmp_path / "my_agent"
-    (base / "agent_server").mkdir(parents=True)
-    sentinel = base / "agent_server" / "agent.py"
+    base.mkdir(parents=True)
+    sentinel = base / "agent.py"
     sentinel.write_text("# OLD STALE CONTENT")
 
     result = runner.invoke(
@@ -205,4 +234,5 @@ def test_scaffold_apps_force_overwrites_existing_dir(tmp_path: Path) -> None:
 
     fresh = sentinel.read_text()
     assert "# OLD STALE CONTENT" not in fresh
-    assert "compile_to_responses_agent" in fresh
+    # The top-level scaffold template defines an ``agent = Agent(...)`` block.
+    assert "agent = Agent(" in fresh

@@ -20,7 +20,7 @@ dependencies = [
 quickstart = "scripts.quickstart:main"
 
 [tool.uv.sources]
-apx-agent = { path = "./apx_agent-0.18.0-py3-none-any.whl" }
+apx-agent = { path = "../..", editable = true }
 
 [tool.apx.agent]
 name = "customer_triage"
@@ -28,7 +28,8 @@ description = "Customer support triage — classifies queries and hands off to s
 model = "databricks-claude-sonnet-4-6"
 max_iterations = 8
 # Module path to the apx-agent Agent — used by `apx deploy` and friends.
-module = "agent_server.agent:agent"
+# ADK-style layout: ``agent`` is exported by top-level ``agent.py``.
+module = "agent:agent"
 
 [tool.apx.deploy]
 # Apps-target metadata. `apx deploy --target apps` reads this block.

@@ -68,27 +68,24 @@ final stored memory count for alice: 6
 
 ```bash
 cd python/examples/memory_demo
-uv sync
-uv run quickstart                # creates MLflow experiment, writes .env
-apx deploy --target apps         # bundle deploy + bundle run, no container build
+apx deploy --target apps
 ```
 
-`apx deploy --target apps` delegates to:
+One command. `apx deploy --target apps` does it all:
 
-```bash
-databricks bundle deploy --target dev --profile <profile>
-databricks bundle run memory-demo --target dev --profile <profile>
-```
+1. Builds the apx-agent wheel from the parent source tree
+2. Stages `.build/` (source + wheel), rewrites the staged `pyproject.toml`
+   to use the wheel path
+3. Regenerates `.build/uv.lock` against the rewritten pyproject
+4. Auto-resolves an MLflow experiment id (creates `/Users/<you>/memory-demo-dev`
+   if missing, reuses if present)
+5. `databricks bundle validate + deploy + run`
+6. Polls `databricks apps get memory-demo` until `app_status=RUNNING`
+   and `compute_status=ACTIVE`
 
-The App will read `X-Forwarded-Access-Token` from each request and thread
-it into the compiled `ResponsesAgent` so all tool calls run as the user,
+The App reads `X-Forwarded-Access-Token` from each request and threads it
+into the compiled `ResponsesAgent` so tool calls run as the calling user,
 not the App's service principal.
-
-To validate the bundle config before deploying:
-
-```bash
-databricks bundle validate --target dev --profile <profile>
-```
 
 ## What was added vs. a plain agent
 
