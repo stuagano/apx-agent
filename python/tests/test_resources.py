@@ -324,3 +324,121 @@ def test_mlflow_resources_for_passes_extra_specs() -> None:
     )
     warehouses = [r for r in resources if isinstance(r, DatabricksSQLWarehouse)]
     assert len(warehouses) == 1
+
+
+# ---------------------------------------------------------------------------
+# Databricks Apps bundle YAML projection — resources_to_databricks_yml
+# ---------------------------------------------------------------------------
+
+
+from apx_agent import resources_to_databricks_yml  # noqa: E402
+
+
+def _block_key(entry: dict) -> str:
+    """Top-level (and only) key of an entry — e.g. ``serving_endpoint``."""
+    keys = [k for k in entry.keys()]
+    assert len(keys) == 1, f"expected single typed block, got {keys}"
+    return keys[0]
+
+
+def _block(entry: dict) -> dict:
+    return entry[_block_key(entry)]
+
+
+def test_yml_serving_endpoint_shape() -> None:
+    specs = [ResourceSpec("serving_endpoint", "databricks-claude-sonnet-4-6")]
+    [entry] = resources_to_databricks_yml(specs)
+    assert _block_key(entry) == "serving_endpoint"
+    body = _block(entry)
+    assert body["endpoint_name"] == "databricks-claude-sonnet-4-6"
+    assert body["permission"] == "CAN_QUERY"
+    assert body["name"]  # auto-derived slug
+
+
+def test_yml_uc_function_shape() -> None:
+    specs = [ResourceSpec("uc_function", "main.tools.classify_intent")]
+    [entry] = resources_to_databricks_yml(specs)
+    assert _block_key(entry) == "uc_securable"
+    body = _block(entry)
+    assert body["securable_full_name"] == "main.tools.classify_intent"
+    assert body["securable_type"] == "FUNCTION"
+    assert body["permission"] == "EXECUTE"
+
+
+def test_yml_genie_space_shape() -> None:
+    specs = [ResourceSpec("genie_space", "space-abc-123")]
+    [entry] = resources_to_databricks_yml(specs)
+    assert _block_key(entry) == "genie_space"
+    body = _block(entry)
+    assert body["space_id"] == "space-abc-123"
+    assert body["permission"] == "CAN_RUN"
+
+
+def test_yml_vector_search_index_shape() -> None:
+    specs = [ResourceSpec("vector_search_index", "main.vs.products_index")]
+    [entry] = resources_to_databricks_yml(specs)
+    assert _block_key(entry) == "uc_securable"
+    body = _block(entry)
+    assert body["securable_full_name"] == "main.vs.products_index"
+    assert body["securable_type"] == "TABLE"
+    assert body["permission"] == "SELECT"
+
+
+def test_yml_sql_warehouse_shape() -> None:
+    specs = [ResourceSpec("sql_warehouse", "wh-prod-123")]
+    [entry] = resources_to_databricks_yml(specs)
+    assert _block_key(entry) == "sql_warehouse"
+    body = _block(entry)
+    assert body["id"] == "wh-prod-123"
+    assert body["permission"] == "CAN_USE"
+
+
+def test_yml_uc_connection_shape() -> None:
+    specs = [ResourceSpec("uc_connection", "main.connections.snowflake_prod")]
+    [entry] = resources_to_databricks_yml(specs)
+    assert _block_key(entry) == "uc_securable"
+    body = _block(entry)
+    assert body["securable_full_name"] == "main.connections.snowflake_prod"
+    assert body["securable_type"] == "CONNECTION"
+    assert body["permission"] == "USE_CONNECTION"
+
+
+def test_yml_lakebase_instance_shape() -> None:
+    specs = [ResourceSpec("lakebase_instance", "prod-lakebase")]
+    [entry] = resources_to_databricks_yml(specs)
+    assert _block_key(entry) == "database"
+    body = _block(entry)
+    assert body["instance_name"] == "prod-lakebase"
+    assert body["database_name"] == "databricks_postgres"
+    assert body["permission"] == "CAN_CONNECT_AND_CREATE"
+
+
+def test_yml_each_entry_has_name() -> None:
+    specs = [
+        ResourceSpec("serving_endpoint", "claude-3-5"),
+        ResourceSpec("uc_function", "main.tools.foo"),
+        ResourceSpec("genie_space", "space-xyz"),
+    ]
+    yml = resources_to_databricks_yml(specs)
+    for entry in yml:
+        body = _block(entry)
+        assert isinstance(body.get("name"), str)
+        assert body["name"]  # non-empty
+
+
+def test_yml_full_agent_round_trip() -> None:
+    """End-to-end: collect_resource_specs → resources_to_databricks_yml."""
+    agent = Agent(
+        tools=[
+            genie_tool("space-abc"),
+            uc_function_tool("main.tools.classify"),
+        ],
+        sub_agents=["endpoints/billing"],
+    )
+    specs = collect_resource_specs(agent, model="claude-3-5")
+    yml = resources_to_databricks_yml(specs)
+    # Find the entries by block key
+    block_keys = [_block_key(e) for e in yml]
+    assert "serving_endpoint" in block_keys
+    assert "uc_securable" in block_keys
+    assert "genie_space" in block_keys

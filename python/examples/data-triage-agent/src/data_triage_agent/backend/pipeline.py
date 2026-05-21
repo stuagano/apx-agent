@@ -334,9 +334,18 @@ class _DeterministicRouter(BaseAgent):
 
     Investigation keywords → full pipeline.
     Everything else → general agent.
+
+    Exposes ``.investigation`` and ``.general`` as public attributes so the
+    Apps target (``agent_server/agent.py``) can compile each branch
+    separately via ``compile_to_responses_agent`` (which doesn't recognize
+    the router subclass directly) and do the keyword routing at the
+    request layer.
     """
 
     def __init__(self, investigation: BaseAgent, general: BaseAgent) -> None:
+        self.investigation = investigation
+        self.general = general
+        # Aliases for backwards compatibility with prior private names.
         self._investigation = investigation
         self._general = general
 
@@ -351,6 +360,18 @@ class _DeterministicRouter(BaseAgent):
             return self._investigation
         logger.info("Router → general agent")
         return self._general
+
+    @staticmethod
+    def matches_investigation(text: str) -> bool:
+        """Public hook for the Apps-target keyword routing.
+
+        Returns True when the lowercased text contains any investigation
+        keyword. Identical logic to ``_select`` but operates on a plain
+        string so callers (e.g. ``agent_server/agent.py``) don't need to
+        construct apx-agent ``Message`` objects.
+        """
+        lower = text.lower()
+        return any(kw in lower for kw in _INVESTIGATION_KEYWORDS)
 
     async def run(self, messages: list[Message], request: Request) -> str:
         return await self._select(messages).run(messages, request)
@@ -378,3 +399,12 @@ class _DeterministicRouter(BaseAgent):
             await self._investigation.fetch_remote_tools()
             + await self._general.fetch_remote_tools()
         )
+
+
+# Module-level agent. Lives here (not in agent_router.py) because pipeline.py
+# already imports from agent_router; placing the construction there created a
+# circular import. App.py and other consumers import `agent` from .pipeline.
+import os as _os
+
+DATA_INSPECTOR_URL = _os.environ.get("DATA_INSPECTOR_URL", "http://localhost:9000")
+agent = create_investigation_pipeline(DATA_INSPECTOR_URL)

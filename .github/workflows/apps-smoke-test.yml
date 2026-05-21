@@ -1,0 +1,381 @@
+name: apps-smoke-test
+
+# End-to-end smoke test that deploys the memory_demo example as a per-PR
+# Databricks App, hits the /invocations endpoint, asserts the response,
+# and tears the bundle down — regardless of pass/fail.
+#
+# Required GitHub secrets (configure under Settings → Secrets → Actions):
+#   DATABRICKS_CLI_CI_HOST           — workspace URL, e.g.
+#                                      https://fevm-serverless-stable-qh44kx.cloud.databricks.com
+#   DATABRICKS_CLI_CI_CLIENT_ID      — service-principal OAuth client ID
+#   DATABRICKS_CLI_CI_CLIENT_SECRET  — service-principal OAuth secret
+#   DATABRICKS_CLI_CI_USER_EMAIL     — SP's email; used as the MLflow
+#                                      experiment owner (/Users/<email>/...)
+#
+# The service principal needs CAN_QUERY on the LLM serving endpoint
+# (default: databricks-claude-sonnet-4-6) and CAN_MANAGE on the bundle
+# workspace path. See docs/ci-smoke-test.md.
+
+# Manual trigger only until the DATABRICKS_CLI_CI_* secrets are configured
+# on the repo. Once secrets are in place, swap `workflow_dispatch:` for the
+# `pull_request:` block below to auto-run on every PR touching the watched
+# paths.
+#
+#   pull_request:
+#     branches: [main]
+#     paths:
+#       - 'python/src/apx_agent/**'
+#       - 'python/examples/memory_demo/**'
+#       - '.github/workflows/apps-smoke-test.yml'
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: apps-smoke-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  apps-smoke-test:
+    name: Deploy memory_demo + smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      DATABRICKS_CONFIG_PROFILE: ci
+      BUNDLE_TARGET: dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache uv environment
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/uv
+            python/.venv
+          key: uv-${{ runner.os }}-py3.11-${{ hashFiles('python/uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-py3.11-
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install Databricks CLI
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+          databricks --version
+
+      - name: Compute unique app name
+        id: name
+        run: |
+          set -euo pipefail
+          # App names: must be <= 30 chars, lowercase, hyphenated.
+          # Prefix is 'md-pr-' (6 chars) leaving 24 for the identifier.
+          # PR number (or run_id for workflow_dispatch) gets truncated to fit.
+          RAW="${{ github.event.number || github.run_id }}"
+          # Take the last 22 chars max so the total stays <= 30.
+          SUFFIX=$(printf '%s' "$RAW" | tail -c 22)
+          APP_NAME="md-pr-${SUFFIX}"
+          # Lowercase + hyphenate just in case.
+          APP_NAME=$(printf '%s' "$APP_NAME" | tr '[:upper:]_' '[:lower:]-')
+          echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Unique app name: ${APP_NAME}"
+
+      - name: Configure Databricks CLI
+        env:
+          HOST: ${{ secrets.DATABRICKS_CLI_CI_HOST }}
+          CLIENT_ID: ${{ secrets.DATABRICKS_CLI_CI_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.DATABRICKS_CLI_CI_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.databricks
+          umask 077
+          cat > ~/.databrickscfg <<EOF
+          [ci]
+          host = ${HOST}
+          client_id = ${CLIENT_ID}
+          client_secret = ${CLIENT_SECRET}
+          EOF
+          databricks current-user me --profile ci > /dev/null
+
+      - name: Build apx-agent wheel
+        run: |
+          set -euo pipefail
+          cd python
+          uv build --wheel
+          ls -la dist/
+
+      - name: Stage memory_demo example
+        run: |
+          set -euo pipefail
+          cd python
+          # Replace any pre-staged wheel inside the example so the deployed
+          # bundle picks up the freshly built one.
+          rm -f examples/memory_demo/apx_agent-*.whl
+          cp dist/apx_agent-*.whl examples/memory_demo/
+          cd examples/memory_demo
+          uv lock
+          mkdir -p .build
+          cp -r agent_server scripts pyproject.toml uv.lock README.md .build/
+          cp apx_agent-*.whl .build/
+          ls -la .build/
+
+      - name: Rewrite bundle + app name for PR isolation
+        env:
+          APP_NAME: ${{ steps.name.outputs.app_name }}
+        run: |
+          set -euo pipefail
+          cd python/examples/memory_demo
+          # Use python (not sed) so we don't accidentally touch other
+          # occurrences of 'memory-demo' inside the YAML (description, etc.).
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          app = os.environ["APP_NAME"]
+          path = Path("databricks.yml")
+          text = path.read_text()
+          # 1) bundle.name: memory-demo  → bundle.name: <app>
+          text = text.replace("bundle:\n  name: memory-demo", f"bundle:\n  name: {app}")
+          # 2) resources.apps.memory-demo: → resources.apps.<app>:
+          text = text.replace("  apps:\n    memory-demo:", f"  apps:\n    {app}:")
+          # 3) name: memory-demo (the App resource's own name field)
+          text = text.replace("      name: memory-demo", f"      name: {app}")
+          path.write_text(text)
+          print(path.read_text())
+          PY
+
+      - name: Run quickstart (provision MLflow experiment)
+        env:
+          DATABRICKS_USER: ${{ secrets.DATABRICKS_CLI_CI_USER_EMAIL }}
+        run: |
+          set -euo pipefail
+          cd python/examples/memory_demo
+          uv run quickstart
+          cat .env
+
+      - name: Read MLFLOW_EXPERIMENT_ID
+        id: mlflow
+        run: |
+          set -euo pipefail
+          cd python/examples/memory_demo
+          # shellcheck disable=SC1091
+          set -a; source .env; set +a
+          if [ -z "${MLFLOW_EXPERIMENT_ID:-}" ]; then
+            echo "::error::quickstart did not populate MLFLOW_EXPERIMENT_ID"
+            exit 1
+          fi
+          echo "experiment_id=${MLFLOW_EXPERIMENT_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy bundle
+        id: deploy
+        env:
+          EXPERIMENT_ID: ${{ steps.mlflow.outputs.experiment_id }}
+        run: |
+          set -euo pipefail
+          cd python/examples/memory_demo
+          START=$(date +%s)
+          databricks bundle deploy \
+            --target dev \
+            --profile ci \
+            --var "mlflow_experiment_id=${EXPERIMENT_ID}"
+          END=$(date +%s)
+          echo "deploy_seconds=$((END - START))" >> "$GITHUB_OUTPUT"
+
+      - name: Run app (create/update + start)
+        env:
+          APP_NAME: ${{ steps.name.outputs.app_name }}
+          EXPERIMENT_ID: ${{ steps.mlflow.outputs.experiment_id }}
+        run: |
+          set -euo pipefail
+          cd python/examples/memory_demo
+          databricks bundle run "${APP_NAME}" \
+            --target dev \
+            --profile ci \
+            --var "mlflow_experiment_id=${EXPERIMENT_ID}"
+
+      - name: Poll until app is RUNNING + ACTIVE
+        id: poll
+        env:
+          APP_NAME: ${{ steps.name.outputs.app_name }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import time
+
+          app = os.environ["APP_NAME"]
+          deadline = time.time() + 300  # 5 minutes
+          last = {}
+          attempt = 0
+          while time.time() < deadline:
+              attempt += 1
+              try:
+                  out = subprocess.check_output(
+                      ["databricks", "apps", "get", app, "--profile", "ci", "-o", "json"],
+                      stderr=subprocess.STDOUT,
+                      text=True,
+                  )
+                  last = json.loads(out)
+              except subprocess.CalledProcessError as e:
+                  print(f"[{attempt}] apps get failed: {e.output}", flush=True)
+                  time.sleep(15)
+                  continue
+
+              app_state = (last.get("app_status") or {}).get("state", "?")
+              compute_state = (last.get("compute_status") or {}).get("state", "?")
+              url = last.get("url", "")
+              print(f"[{attempt}] app_status={app_state} compute_status={compute_state}", flush=True)
+
+              if app_state == "RUNNING" and compute_state == "ACTIVE":
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                      f.write(f"app_url={url}\n")
+                  print(f"App ready at {url}")
+                  sys.exit(0)
+              time.sleep(15)
+
+          print("::error::Timed out waiting for app to reach RUNNING + ACTIVE")
+          print(json.dumps(last, indent=2))
+          sys.exit(1)
+          PY
+
+      - name: Invoke /invocations + assert response
+        id: invoke
+        env:
+          APP_URL: ${{ steps.poll.outputs.app_url }}
+        run: |
+          set -euo pipefail
+          # Use the Databricks CLI to mint an OAuth token for the SP, then
+          # post a Responses-API-shaped payload to /invocations.
+          TOKEN=$(databricks auth token --profile ci -o json | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+          APP_URL="$APP_URL" TOKEN="$TOKEN" python3 <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+          import urllib.error
+
+          url = os.environ["APP_URL"].rstrip("/") + "/invocations"
+          token = os.environ["TOKEN"]
+          payload = {
+              "input": [
+                  {"role": "user", "content": "Say hello in five words."}
+              ]
+          }
+          req = urllib.request.Request(
+              url,
+              data=json.dumps(payload).encode(),
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  status = resp.status
+                  body = resp.read().decode()
+          except urllib.error.HTTPError as e:
+              print(f"::error::HTTP {e.code} from /invocations")
+              print(e.read().decode())
+              sys.exit(1)
+
+          print(f"HTTP {status}")
+          print(body[:2000])
+
+          if status != 200:
+              print(f"::error::Expected HTTP 200, got {status}")
+              sys.exit(1)
+
+          try:
+              data = json.loads(body)
+          except json.JSONDecodeError as e:
+              print(f"::error::Response is not valid JSON: {e}")
+              sys.exit(1)
+
+          output = data.get("output")
+          if not isinstance(output, list) or len(output) == 0:
+              print("::error::Response has no 'output' list with items")
+              print(json.dumps(data, indent=2)[:2000])
+              sys.exit(1)
+
+          n = len(output)
+          print(f"output items: {n}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"output_items={n}\n")
+          PY
+
+      - name: Comment success on PR
+        if: success() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_NAME: ${{ steps.name.outputs.app_name }}
+          APP_URL: ${{ steps.poll.outputs.app_url }}
+          DEPLOY_SECONDS: ${{ steps.deploy.outputs.deploy_seconds }}
+          OUTPUT_ITEMS: ${{ steps.invoke.outputs.output_items }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: |
+          set -euo pipefail
+          BODY=$(cat <<EOF
+          ## Apps Smoke Test — \`${APP_NAME}\`
+
+          **App URL:** ${APP_URL}
+          **Status:** Deployed + invoked successfully
+          **Deploy time:** ${DEPLOY_SECONDS}s
+          **First response output items:** ${OUTPUT_ITEMS}
+
+          App will be torn down when this workflow finishes.
+          EOF
+          )
+          gh pr comment "${PR_NUMBER}" --body "${BODY}"
+
+      - name: Comment failure on PR
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_NAME: ${{ steps.name.outputs.app_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: |
+          set -euo pipefail
+          BODY=$(cat <<EOF
+          ## Apps Smoke Test FAILED — \`${APP_NAME}\`
+
+          **Run:** ${RUN_URL}
+
+          See the run logs for the failing stage and stderr.
+          App resources are being torn down.
+          EOF
+          )
+          gh pr comment "${PR_NUMBER}" --body "${BODY}" || true
+
+      - name: Tear down bundle
+        if: always()
+        env:
+          EXPERIMENT_ID: ${{ steps.mlflow.outputs.experiment_id }}
+        run: |
+          set -euo pipefail
+          cd python/examples/memory_demo
+          # Pass the same vars used at deploy time; bundle destroy validates
+          # them even though it's a tear-down.
+          databricks bundle destroy \
+            --target dev \
+            --auto-approve \
+            --profile ci \
+            --var "mlflow_experiment_id=${EXPERIMENT_ID:-}" || {
+            echo "::warning::bundle destroy returned non-zero — check for orphaned resources"
+            exit 0
+          }

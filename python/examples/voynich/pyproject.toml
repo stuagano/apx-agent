@@ -46,3 +46,6 @@ include              = ["loop_agent"]
 pythonVersion        = "3.11"
 typeCheckingMode     = "basic"
 reportMissingImports = "warning"
+
+[tool.uv.sources]
+apx-agent = { path = "../..", editable = true }

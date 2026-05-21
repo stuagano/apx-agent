@@ -1,67 +1,86 @@
-bundle:
-  name: data-triage-agent
+# Databricks Asset Bundle config for data-triage-agent (Apps target).
+#
+# Deploys the 6-step SequentialAgent investigation pipeline as a Databricks
+# App. Requires a deployed data-inspector sub-agent at $DATA_INSPECTOR_URL
+# (see ../data-inspector/).
+#
+# Deploy:
+#   uv sync
+#   uv run quickstart
+#   apx deploy --target apps          # or: databricks bundle deploy + bundle run
 
+bundle:
+  name: mcp-data-triage-agent
+
+# Root .gitignore excludes ``**/.build/`` — bundle deploy needs to upload
+# .build/ (the staged source tree referenced by source_code_path).
 sync:
   include:
-    - .build
+    - .build/**
+
+variables:
+  llm_endpoint_name:
+    description: Foundation model endpoint the agent calls.
+    default: databricks-claude-sonnet-4-6
+  mlflow_experiment_id:
+    description: |
+      MLflow experiment ID for tracing. Populated by scripts/quickstart.py
+      into a local .env file and surfaced here for the app environment.
+    default: ""
+  data_inspector_url:
+    description: |
+      Base URL of the deployed data-inspector sub-agent (A2A). The
+      investigation pipeline delegates SQL + Delta forensics to it. Set
+      to the data-inspector's Apps URL or Model Serving endpoint URL.
+    default: ""
 
 artifacts:
   default:
-    build: uv build --wheel -o .build/ && ls .build/*.whl | xargs basename > .build/requirements.txt
+    build: |
+      mkdir -p .build
+      cp -r agent_server scripts src pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      cp apx_agent-*.whl .build/ 2>/dev/null || true
 
 resources:
   apps:
-    mcp-data-triage-app:
-      name: "mcp-data-triage"
-      description: "Data triage agent — investigates missing data (MCP-enabled for Genie Code)"
+    mcp-data-triage-agent:
+      name: mcp-data-triage-agent
+      description: |
+        apx-agent data-triage-agent — 6-step SequentialAgent investigation
+        pipeline (presence -> lineage -> pipeline -> genie -> code -> synthesis).
+        Delegates SQL + Delta forensics to a data-inspector sub-agent via A2A.
       source_code_path: ./.build
+
+      resources:
+        - name: llm-endpoint
+          description: Foundation model endpoint used by the agent.
+          serving_endpoint:
+            name: ${var.llm_endpoint_name}
+            permission: CAN_QUERY
+
       config:
-        env_variables:
+        command:
+          - uvicorn
+          - agent_server.start_server:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - $DATABRICKS_APP_PORT
+        env:
+          - name: APX_MODEL
+            value: ${var.llm_endpoint_name}
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
           - name: DATA_INSPECTOR_URL
             value: ${var.data_inspector_url}
-          - name: JIRA_WEBHOOK_SECRET
-            value: ${var.jira_webhook_secret}
-          - name: DATA_TRIAGE_JOB_ID
-            value: ${var.data_triage_job_id}
-
-  jobs:
-    data-triage-investigation:
-      name: "data-triage-investigation"
-      tasks:
-        - task_key: investigate
-          environment_key: default
-          python_wheel_task:
-            package_name: data_triage_agent
-            entry_point: investigate
-      environments:
-        - environment_key: default
-          spec:
-            client: "1"
-            dependencies:
-              - ${workspace.file_path}/.build/data_triage_agent-latest.whl
-
-variables:
-  data_inspector_url:
-    description: URL of the companion data-inspector MCP app
-  jira_base_url:
-    description: "Jira workspace URL, e.g. https://your-org.atlassian.net"
-    default: ""
-  jira_service_account_email:
-    description: Service account email for Jira API auth
-    default: ""
-  jira_api_token:
-    description: Jira API token for the service account
-    default: ""
-  jira_webhook_secret:
-    description: HMAC-SHA256 secret shared with Jira webhook (generate with openssl rand -hex 32)
-    default: ""
-  data_triage_job_id:
-    description: "Databricks Job ID for the investigation job (set after first bundle deploy)"
-    default: "0"
 
 targets:
   dev:
     mode: development
     default: true
-    variables:
-      data_inspector_url: ""
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

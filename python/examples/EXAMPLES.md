@@ -12,7 +12,7 @@ Quick index — what each example does and which direction data/auth flows.
 
 | Example | What it does |
 |---------|-------------|
-| [data-triage-agent](./data-triage-agent/) | Investigates missing Databricks data — 6-step SequentialAgent pipeline |
+| [data-triage-agent](./data-triage-agent/) | Investigates missing Databricks data — 6-step SequentialAgent pipeline (presence → lineage → pipeline → genie → code → synthesis). Delegates SQL + Delta forensics to the data-inspector sub-agent via A2A. Deploys to either Apps (`--target apps`) or Model Serving (`--target model-serving`). |
 | [data-inspector](./data-inspector/) | SQL + Delta forensics — standalone or sub-agent via MCP/A2A |
 | [contract-parsing-agent](./contract-parsing-agent/) | Extracts structured terms from contract PDFs into Unity Catalog |
 | [entity-resolution-agent](./entity-resolution-agent/) | Fuzzy-match account resolution via Vector Search |
@@ -21,7 +21,8 @@ Quick index — what each example does and which direction data/auth flows.
 | [agent-hub](./agent-hub/) | Central registry + chat UI for all deployed apx-agent apps |
 | [account-search-service](./account-search-service/) | Standalone fuzzy account lookup API — callable by other agents |
 | [afr-enrollment-api](./afr-enrollment-api/) | Deterministic AFR enrollment pipeline — no LLM, high throughput |
-| [memory_demo](./memory_demo/) | **MemoryBank + ExampleStore** — seeded memories, few-shot examples, recall/remember tools, system prompt assembled per turn. Standalone runnable demo of the durable-context surface. |
+| [memory_demo](./memory_demo/) | **MemoryBank + ExampleStore** — seeded memories, few-shot examples, recall/remember tools, system prompt assembled per turn. Two run modes: local in-process (`app.py`) + Databricks Apps deploy (`agent_server/` + `databricks.yml`). Verified live on fe-stable. |
+| [customer_triage](./customer_triage/) | **HandoffAgent** over four LlmAgents (triage / billing / account / technical) with memory wired into the account specialist. Demonstrates the full apx-agent surface: `@tool(uc=...)` decorator, `Dependencies.Workspace` for OBO, `genie_tool` / `vector_search_tool`, peer handoffs, principal-keyed memory recall across handoffs. Apps-target deploy verified live on fe-stable. |
 
 ## MCP Servers & Shared Libraries
 

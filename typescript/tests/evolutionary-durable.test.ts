@@ -109,11 +109,19 @@ describe('EvolutionaryAgent — durable execution', () => {
 
     // Stub fetch: mutation returns a new hypothesis; fitness agents return scores.
     let fetchCount = 0;
+    // Minimal headers shape: callers expect a `.get(name)` returning the
+    // header value or null. Production code reads 'content-type' to detect
+    // auth-redirect HTML and the trace id header to link parent->child spans.
+    const jsonHeaders = {
+      get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+    };
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       fetchCount++;
       if (url.includes('mutation-agent')) {
         return {
           ok: true,
+          status: 200,
+          headers: jsonHeaders,
           json: async () => [
             createHypothesis({ generation: 1, fitness: { score: 0.7 } }),
             createHypothesis({ generation: 1, fitness: { score: 0.8 } }),
@@ -122,6 +130,8 @@ describe('EvolutionaryAgent — durable execution', () => {
       }
       return {
         ok: true,
+        status: 200,
+        headers: jsonHeaders,
         json: async () => ({ score: 0.75 + (fetchCount % 5) * 0.01 }),
       };
     }));

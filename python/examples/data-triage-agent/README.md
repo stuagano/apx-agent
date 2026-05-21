@@ -1,6 +1,6 @@
 # Data Triage Agent
 
-Investigates why data is missing from Databricks tables — **six-step `SequentialAgent` pipeline, each step structurally guaranteed to run**.
+Investigates why data is missing from Databricks tables — **six-step `SequentialAgent` pipeline, each step structurally guaranteed to run**. Deploys to **either** Databricks Apps **or** Mosaic AI Model Serving via `apx deploy --target {apps,model-serving}`.
 
 A `SequentialAgent` composes six focused `Agent`s that each handle one phase of the investigation. Conversation history accumulates automatically — every agent's output is visible to the next. Delegates SQL and Delta forensics to the [data-inspector](../data-inspector/) sub-agent via A2A.
 
@@ -186,53 +186,54 @@ The events table has no rows after midnight — what happened?
 
 ---
 
-## Part 3: Deploy to Databricks Apps
+## Part 3: Deploy
 
-### Step 1: Set `DATA_INSPECTOR_URL` in `app.yml`
+The agent ships with two deploy paths. Pick by workload; the full tradeoff write-up is in [`docs/apps-vs-model-serving.md`](../../../docs/apps-vs-model-serving.md).
 
-Replace the empty value with the deployed data-inspector URL from Part 1:
+### Option A: Databricks Apps (`--target apps`, recommended for fast iteration)
 
-```yaml
-env:
-  - name: DATA_INSPECTOR_URL
-    value: "https://<your-data-inspector-app>.databricksapps.com"
-  - name: AGENT_HUB_URL
-    value: ""
-```
-
-Or set it via `databricks.yml` variables for the `dev` target:
-
-```yaml
-targets:
-  dev:
-    mode: development
-    default: true
-    variables:
-      data_inspector_url: "https://<your-data-inspector-app>.databricksapps.com"
-```
-
-### Step 2: Deploy
+Code-push deploy via `databricks bundle deploy + bundle run`. No container build. The `agent_server/` package wraps the existing `pipeline:agent` with `compile_to_responses_agent` and registers `@invoke()` / `@stream()` handlers.
 
 ```bash
-uv run apx deploy
+cd python/examples/data-triage-agent
+uv sync
+uv run quickstart                              # create MLflow experiment, write .env
+
+# Set the data-inspector sub-agent URL the pipeline delegates to
+export DATA_INSPECTOR_URL=https://<your-data-inspector-app>.databricksapps.com
+
+apx deploy --target apps
+# OR equivalently:
+#   databricks bundle deploy --target dev --profile <p> --var "data_inspector_url=$DATA_INSPECTOR_URL"
+#   databricks bundle run mcp-data-triage-agent --target dev --profile <p>
 ```
 
-### Step 3: Verify
+Verify:
 
 ```bash
-databricks apps get mcp-data-triage --profile my-workspace -o json | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-print('URL:   ', d.get('url', 'not yet available'))
-print('State: ', d.get('app_status', {}).get('state', 'unknown'))
-"
+databricks apps get mcp-data-triage-agent --profile <p> -o json \
+  | jq '{url, app_status: .app_status.state, compute_status: .compute_status.state}'
 ```
 
-When `State: RUNNING`, the agent is live. Test it:
+When both states are `RUNNING` / `ACTIVE`, invoke it:
 
 ```bash
-curl -s https://<your-app-url>/api/version \
-  -H "Authorization: Bearer $(databricks auth token --profile my-workspace)"
+APP_URL=$(databricks apps get mcp-data-triage-agent --profile <p> -o json | jq -r .url)
+TOKEN=$(databricks auth token --profile <p> | jq -r .access_token)
+curl -X POST "$APP_URL/invocations" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"input":[{"role":"user","content":"why is main.gold.orders empty?"}]}'
+```
+
+### Option B: Model Serving (`--target model-serving`, default)
+
+For production endpoints recognized by AI Playground, Review App, Supervisor Agent. Container build path.
+
+```bash
+apx deploy --module data_triage_agent.backend.pipeline:agent \
+           --model databricks-claude-sonnet-4-6 \
+           --name main.agents.data_triage_agent
 ```
 
 ---

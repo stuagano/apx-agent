@@ -7,7 +7,7 @@ from apx_agent._models import AgentConfig
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from .agent_router import agent
+from .pipeline import agent
 from .router import router
 from .webhook import router as webhook_router
 

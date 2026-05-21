@@ -87,7 +87,7 @@ TARGETS: list[AuditTarget] = [
     AuditTarget("data-inspector", "data-inspector",
                 "data_inspector.backend.agent_router:agent", False),
     AuditTarget("data-triage-agent", "data-triage-agent",
-                "data_triage_agent.backend.agent_router:agent", False),
+                "data_triage_agent.backend.pipeline:agent", False),
     AuditTarget("eligibility-agent", "eligibility-agent",
                 "eligibility_agent.app:agent", False),
     AuditTarget("entity-resolution-agent", "entity-resolution-agent",

@@ -19,7 +19,11 @@ dev = [
 ]
 
 [tool.uv.sources]
-apx-agent = { path = "../python/src", editable = true }
+# apx-agent's pyproject.toml is at ../python/, not ../python/src/. The
+# src/ path used to work with an earlier hatchling layout but breaks
+# uv-install when the package metadata can't be found. Audit-examples
+# script flagged this as pyproject_stale_path_dep.
+apx-agent = { path = "../python", editable = true }
 
 [tool.apx.metadata]
 app-name = "agent-hub"

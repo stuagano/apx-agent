@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -112,15 +111,17 @@ def mount_invocations_route(
         stream = bool(body.get("stream", False))
 
         # --- OBO header bridge ---------------------------------------------
-        # Databricks Apps injects X-Forwarded-Access-Token. Forward it as
-        # custom_inputs["user_token"] so the per-request compile builds a
-        # user-scoped WorkspaceClient. Caller-provided user_token wins.
-        forwarded_token = request.headers.get("X-Forwarded-Access-Token")
-        if forwarded_token and "user_token" not in custom_inputs:
-            custom_inputs["user_token"] = forwarded_token
-            host = os.environ.get("DATABRICKS_HOST")
-            if host and "workspace_host" not in custom_inputs:
-                custom_inputs["workspace_host"] = host
+        # Unified extractor handles both runtime conventions:
+        #   - custom_inputs.user_token (caller-supplied; wins)
+        #   - X-Forwarded-Access-Token header (Apps runtime injection)
+        # See ``apx_agent._obo.extract_obo_headers`` for the precedence rule.
+        from ._obo import extract_obo_headers
+
+        obo = extract_obo_headers(
+            custom_inputs=custom_inputs, headers=request.headers
+        )
+        for key, val in obo.items():
+            custom_inputs.setdefault(key, val)
 
         try:
             messages = [ChatAgentMessage(**m) for m in messages_raw]
