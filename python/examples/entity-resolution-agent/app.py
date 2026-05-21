@@ -1,9 +1,8 @@
-"""Dev-mode FastAPI app — ``apx dev`` mounts this at ``/``.
+"""entity-resolution-agent: FastAPI app for local dev.
 
-The Apps-target deployment uses ``agent_server/start_server.py`` instead (which
-wires MLflow GenAI Server's ``/invocations`` + ``/responses`` + ``/mcp``). This
-file is the local-dev surface: it adds the React SPA, the apx dev UI, and the
-auxiliary ``/api/*`` routes that the SPA calls.
+The Apps-target deployment uses ``agent_server/start_server.py``. This file
+is what ``apx dev`` (or ``uvicorn app:app``) runs locally — adds the React
+SPA, the apx dev UI, and the auxiliary ``/api/*`` routes that the SPA calls.
 """
 from __future__ import annotations
 

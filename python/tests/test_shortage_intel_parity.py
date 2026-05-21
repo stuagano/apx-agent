@@ -2,7 +2,7 @@
 
 The reference repo is the customer's hand-rolled Mosaic AI + LangGraph version
 of the shortage intelligence pipeline. We claim the apx-agent DSL version at
-``examples/shortage_intelligence_compile_demo.py`` compiles to a functionally
+``examples/shortage-intelligence-agent/scripts/compile_demo.py`` compiles to a functionally
 equivalent LangGraph runtime.
 
 To run the line-count parity check (``test_dsl_is_smaller_than_reference_boilerplate``),
@@ -39,10 +39,17 @@ import pytest
 pytest.importorskip("langgraph")
 pytest.importorskip("langchain_core")
 
-# Make the examples/ directory importable.
-_EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
-if str(_EXAMPLES_DIR) not in sys.path:
-    sys.path.insert(0, str(_EXAMPLES_DIR))
+# Make the compile-demo importable. It lives under
+# ``examples/shortage-intelligence-agent/scripts/compile_demo.py`` so we add
+# both the example root and its ``scripts/`` subdir to sys.path.
+_DEMO_DIR = (
+    Path(__file__).resolve().parent.parent
+    / "examples"
+    / "shortage-intelligence-agent"
+    / "scripts"
+)
+if str(_DEMO_DIR) not in sys.path:
+    sys.path.insert(0, str(_DEMO_DIR))
 
 from apx_agent import compile_to_langgraph  # noqa: E402
 
@@ -88,7 +95,7 @@ class TestTopologyParity:
     ) -> None:
         """The apx-agent pipeline compiles to a graph with the same five named
         nodes as Rand's hand-written ``build_pipeline``."""
-        from shortage_intelligence_compile_demo import pipeline
+        from compile_demo import pipeline
 
         compiled = compile_to_langgraph(
             pipeline, ws=fake_user_ws, model="databricks-claude-sonnet-4-6"
@@ -103,7 +110,7 @@ class TestTopologyParity:
 
     def test_compiled_graph_is_linear(self, fake_user_ws: MagicMock) -> None:
         """Edges go START → demand_scanner → ... → report_generator → END."""
-        from shortage_intelligence_compile_demo import pipeline
+        from compile_demo import pipeline
 
         compiled = compile_to_langgraph(
             pipeline, ws=fake_user_ws, model="databricks-claude-sonnet-4-6"
@@ -129,7 +136,7 @@ class TestObOClosurePreserved:
         the tools, so we exercise the lower-level helper that those nodes
         ultimately invoke.
         """
-        from shortage_intelligence_compile_demo import (
+        from compile_demo import (
             find_alternative_parts,
             find_historical_patterns,
             scan_demand_clusters,
@@ -174,8 +181,12 @@ class TestLineOfCodeDelta:
         "src/shortage_intel/graph.py",
     )
 
-    APX_DEMO = Path(__file__).resolve().parent.parent / "examples" / (
-        "shortage_intelligence_compile_demo.py"
+    APX_DEMO = (
+        Path(__file__).resolve().parent.parent
+        / "examples"
+        / "shortage-intelligence-agent"
+        / "scripts"
+        / "compile_demo.py"
     )
 
     @classmethod

@@ -1,17 +1,10 @@
-"""memory_demo — the agent.
+"""memory_demo: travel concierge with persistent memory and few-shot examples.
 
-Edit this file to define your agent. ``agent`` is the canonical
-top-level symbol that the platform-side ``agent_server/start_server.py``
-imports + wraps for the Databricks Apps runtime.
-
-This module mirrors ``app.py`` (the in-process demo) byte-for-byte
-through line ~5 (the ``Agent(...)`` definition). The Apps runtime
-boilerplate — ``compile_to_responses_agent``, ``@invoke()`` /
-``@stream()`` registration, MCP mounting — lives in
-``agent_server/start_server.py`` so this file stays focused on your
-agent's behavior.
+A single Agent that uses memory tools (recall/remember/forget) bound to an
+InMemoryMemoryStore, with relevant memories and few-shot examples assembled
+into the system prompt at construction time. Stores, seeds, and prompt
+assembly live inline in this module.
 """
-
 from __future__ import annotations
 
 from apx_agent import (
@@ -22,10 +15,8 @@ from apx_agent import (
     make_memory_tools,
 )
 
-# ---------------------------------------------------------------------------
-# 1. Stores — InMemory for the demo; swap to LakebaseMemoryStore /
+# Stores — InMemory for the demo; swap to LakebaseMemoryStore /
 # DeltaMemoryStore for shared persistence across App replicas.
-# ---------------------------------------------------------------------------
 
 PRINCIPAL_ID = "alice"
 AGENT_ID = "travel_concierge"
@@ -33,7 +24,7 @@ AGENT_ID = "travel_concierge"
 memory_store = InMemoryMemoryStore()
 example_store = InMemoryExampleStore()
 
-# 2. Pre-seed memories + few-shot examples for the demo principal.
+# Pre-seed memories + few-shot examples for the demo principal.
 _seed_memories = [
     {"content": "alice prefers window seats on flights longer than 4 hours",
      "tags": ("preference", "seating")},
@@ -73,10 +64,7 @@ for ex in [
     })
 
 
-# ---------------------------------------------------------------------------
-# 3. Memory tools — `recall` / `remember` / `forget` bound to the store.
-# ---------------------------------------------------------------------------
-
+# Memory tools — `recall` / `remember` / `forget` bound to the store.
 memory_tools = make_memory_tools(
     store=memory_store,
     default_principal_id=PRINCIPAL_ID,
@@ -84,10 +72,7 @@ memory_tools = make_memory_tools(
 )
 
 
-# ---------------------------------------------------------------------------
-# 4. System prompt — assembled with relevant memories + few-shot examples.
-# ---------------------------------------------------------------------------
-
+# System prompt — assembled with relevant memories + few-shot examples.
 DEMO_QUERY = "what seat do I usually pick?"
 CONTEXT_BLOCK = assemble_context(
     memory={
@@ -110,10 +95,6 @@ SYSTEM_PROMPT = (
     + "persist new facts the user shares."
 )
 
-
-# ---------------------------------------------------------------------------
-# 5. Agent — the symbol the framework imports.
-# ---------------------------------------------------------------------------
 
 agent = Agent(
     name=AGENT_ID,
