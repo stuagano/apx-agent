@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from contract_parsing_agent.backend.tools.summarize_contract import summarize_contract
+from tools.summarize_contract import summarize_contract
 
 
 def test_summarize_contract_returns_record_when_found():
@@ -15,7 +15,7 @@ def test_summarize_contract_returns_record_when_found():
         "pricing_summary": "Flat $0.072/kWh.",
     }
     with patch(
-        "contract_parsing_agent.backend.tools.summarize_contract.run_sql",
+        "tools.summarize_contract.run_sql",
         return_value=[fake_row],
     ):
         out = summarize_contract("CT-0001", ws=ws)
@@ -26,7 +26,7 @@ def test_summarize_contract_returns_record_when_found():
 def test_summarize_contract_empty_when_not_found():
     ws = MagicMock()
     with patch(
-        "contract_parsing_agent.backend.tools.summarize_contract.run_sql",
+        "tools.summarize_contract.run_sql",
         return_value=[],
     ):
         out = summarize_contract("CT-9999", ws=ws)

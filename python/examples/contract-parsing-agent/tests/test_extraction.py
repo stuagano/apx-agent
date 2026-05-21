@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from reportlab.pdfgen import canvas
 
-from contract_parsing_agent.backend.extraction import read_pdf_text
+from extraction import read_pdf_text
 
 
 def _make_pdf(path: Path, text: str) -> None:

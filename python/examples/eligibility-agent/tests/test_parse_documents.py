@@ -1,10 +1,10 @@
 from unittest.mock import patch
 
-from eligibility_agent.tools.parse_documents import parse_documents
+from tools.parse_documents import parse_documents
 
 
-@patch("eligibility_agent.tools.parse_documents._extract_via_vision")
-@patch("eligibility_agent.tools.parse_documents._list_documents")
+@patch("tools.parse_documents._extract_via_vision")
+@patch("tools.parse_documents._list_documents")
 def test_routes_each_doc_through_vision(mock_list, mock_extract):
     mock_list.return_value = [
         {"document_id": "d1", "document_type": "paystub", "volume_path": "/Volumes/x/p1.pdf", "ocr_quality_hint": "good"},
@@ -19,8 +19,8 @@ def test_routes_each_doc_through_vision(mock_list, mock_extract):
     assert result["documents"][0]["extracted"]["gross_pay"] == 1842.30
 
 
-@patch("eligibility_agent.tools.parse_documents._extract_via_vision")
-@patch("eligibility_agent.tools.parse_documents._list_documents")
+@patch("tools.parse_documents._extract_via_vision")
+@patch("tools.parse_documents._list_documents")
 def test_low_ocr_quality_flagged(mock_list, mock_extract):
     mock_list.return_value = [
         {"document_id": "d1", "document_type": "paystub", "volume_path": "/Volumes/x/p1.pdf", "ocr_quality_hint": "poor"},

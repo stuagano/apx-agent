@@ -5,17 +5,7 @@ Pure logic — no Databricks dependencies required to run.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
-
-
-@pytest.fixture(autouse=True)
-def _add_src_to_path() -> None:
-    src = Path(__file__).parent.parent / "src"
-    if str(src) not in sys.path:
-        sys.path.insert(0, str(src))
 
 
 @pytest.mark.parametrize(
@@ -40,7 +30,7 @@ def _add_src_to_path() -> None:
 def test_severity_thresholds(
     avg: float, maxp: float, customers: int, events: int, expected: str,
 ) -> None:
-    from shortage_intelligence_agent.backend.uc_helpers import classify_shortage_severity
+    from uc_helpers import classify_shortage_severity
 
     assert classify_shortage_severity(
         avg_price_delta_pct=avg,
@@ -54,7 +44,7 @@ def test_uc_metadata_attached() -> None:
     """The @tool(uc=...) decorator should attach metadata so publish_tools_to_uc finds it."""
     from apx_agent import get_tool_metadata
 
-    from shortage_intelligence_agent.backend.uc_helpers import classify_shortage_severity
+    from uc_helpers import classify_shortage_severity
 
     meta = get_tool_metadata(classify_shortage_severity)
     assert meta is not None

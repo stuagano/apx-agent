@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 from databricks.sdk import WorkspaceClient
 
-from contract_parsing_agent.backend.config import load_settings
-from contract_parsing_agent.backend.extraction import extract
+from config import load_settings
+from extraction import extract
 from scripts.generate_synthetic_contracts import generate
 
 

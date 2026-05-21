@@ -1,4 +1,4 @@
-from eligibility_agent.tools.compute_income import compute_income
+from tools.compute_income import compute_income
 
 
 def test_prefers_w2_over_paystub_annualization():
