@@ -297,17 +297,26 @@ databricks bundle deploy
 
 ```
 contract-parsing-agent/
-├── app.yml                              # Databricks Apps runtime config
+├── agent.py                             # Root agent — wires tools + system prompt
 ├── agent.config.yaml                    # System prompt, extraction schema, demo questions
+├── app.py                               # FastAPI app (dev mode) + dev UI + SPA
+├── app.yml                              # Databricks Apps runtime config
+├── api.py                               # /api/* routes (version, current-user, upload, etc.)
+├── config.py                            # Settings (catalog, schema, volume paths)
+├── extraction.py                        # Shared PDF -> structured extraction logic
+├── models.py                            # Pydantic models for API responses
 ├── databricks.yml                       # Asset Bundle — build, deploy, app resource + variables
-├── notebooks/                           # UC provisioning notebook
-└── src/contract_parsing_agent/backend/
-    ├── agent_router.py                  # Agent wiring
-    ├── app.py                           # FastAPI app + /upload endpoint
-    ├── config.py                        # Settings (catalog, schema, volume paths)
-    └── tools/
-        ├── query_portfolio.py
-        ├── summarize_contract.py
-        ├── find_contracts_expiring.py
-        └── extract_new_contract.py
+├── tools/                               # Agent tool implementations
+│   ├── query_portfolio.py
+│   ├── summarize_contract.py
+│   ├── find_contracts_expiring.py
+│   ├── extract_new_contract.py
+│   └── _sql.py                          # Shared SQL helpers
+├── scripts/                             # Demo + setup scripts
+│   ├── generate_synthetic_contracts.py  # Make synthetic PDFs for the demo
+│   ├── provision_uc.py                  # Provision UC catalog/schema/volumes
+│   ├── setup_portfolio.py               # Batch-extract contracts into the portfolio table
+│   └── smoke_demo.py                    # End-to-end smoke test
+├── client/                              # React + Vite SPA
+└── tests/                               # pytest suite
 ```
