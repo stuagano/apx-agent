@@ -189,7 +189,7 @@ wheels = [
 
 [[package]]
 name = "apx-agent"
-version = "0.16.0"
+version = "0.18.0"
 source = { editable = "../../" }
 dependencies = [
     { name = "databricks-openai" },
@@ -197,25 +197,30 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "mcp" },
-    { name = "openai-agents" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "apx-agent", extras = ["eval"], marker = "extra == 'all'" },
-    { name = "databricks-openai", specifier = ">=0.1.0" },
+    { name = "apx-agent", extras = ["eval", "langgraph", "uc", "lakebase"], marker = "extra == 'all'" },
+    { name = "databricks-langchain", marker = "extra == 'langgraph'", specifier = ">=0.3.0" },
+    { name = "databricks-openai", specifier = ">=0.15.0" },
     { name = "databricks-sdk", specifier = ">=0.74.0" },
     { name = "fastapi", specifier = ">=0.119.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "langchain", marker = "extra == 'langgraph'", specifier = ">=1.0.0" },
+    { name = "langchain-core", marker = "extra == 'langgraph'", specifier = ">=1.0.0" },
+    { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=1.1.0" },
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "mlflow", marker = "extra == 'eval'", specifier = ">=2.0" },
-    { name = "openai-agents", specifier = ">=0.13.0" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'lakebase'", specifier = ">=3.1" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "sqlalchemy", marker = "extra == 'lakebase'", specifier = ">=2.0" },
+    { name = "unitycatalog-ai", marker = "extra == 'uc'", specifier = ">=0.1.0" },
 ]
-provides-extras = ["eval", "all"]
+provides-extras = ["eval", "langgraph", "uc", "lakebase", "all"]
 
 [package.metadata.requires-dev]
 dev = [
