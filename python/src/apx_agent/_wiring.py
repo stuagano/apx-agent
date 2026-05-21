@@ -409,3 +409,88 @@ def create_app(
                         pass
 
     return FastAPI(lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Mounting helpers — for embedding apx-agent's protocol surface (MCP + A2A
+# discovery + health) onto an existing FastAPI app (e.g. one produced by
+# ``mlflow.genai.agent_server.AgentServer`` in the Databricks Apps target).
+# ---------------------------------------------------------------------------
+
+
+def mount_mcp_endpoints(
+    app: FastAPI,
+    agent: BaseAgent,
+    config: AgentConfig | None = None,
+    pyproject_path: str | None = None,
+) -> None:
+    """Mount apx-agent's ``/mcp`` + ``/.well-known/agent.json`` + ``/health``
+    on an existing FastAPI app.
+
+    Designed for the Databricks Apps target: pair the
+    ``mlflow.genai.agent_server.AgentServer`` (which provides ``/invocations``
+    + ``/responses``) with apx-agent's MCP surface so Genie / Genie Code can
+    consume the same agent as an MCP source.
+
+    Mounted routes are inert until the FastAPI lifespan completes startup
+    (they ``503`` if ``app.state.mcp_server`` isn't populated yet). The
+    lifespan registers an ``async def startup_event_handler`` that runs
+    ``setup_agent`` + ``_setup_mcp`` and stores the resulting state on
+    ``app.state``. Shutdown closes the MCP HTTP manager cleanly.
+
+    Usage::
+
+        from mlflow.genai.agent_server import AgentServer
+        from apx_agent import mount_mcp_endpoints
+
+        server = AgentServer(agent_type="ResponsesAgent")
+        from agent_server import agent  # your apx-agent BaseAgent
+
+        mount_mcp_endpoints(server.app, agent.agent)
+        app = server.app
+
+    The mount is best-effort: when the ``mcp`` extra is missing, the routes
+    are still registered but return 503 — same behavior as ``create_app``.
+
+    Requires installing ``apx-agent[mcp]`` for full functionality.
+    """
+    # Mount the route shells immediately. They read from app.state — which
+    # gets populated in the lifespan startup event below.
+    _mount_protocol_routes(app)
+
+    # Track the in-flight MCP lifecycle so shutdown can close it cleanly.
+    _state_key = "_apx_mount_state"
+
+    @app.on_event("startup")
+    async def _apx_mount_startup() -> None:  # type: ignore[misc]
+        ctx = await setup_agent(app, agent, config, pyproject_path=pyproject_path)
+        if ctx is None:
+            logger.info("mount_mcp_endpoints: no agent config — /mcp will 503")
+            return
+        try:
+            mcp_lifecycle = await _setup_mcp(app, ctx)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "mount_mcp_endpoints: MCP setup failed (%s) — /mcp will 503",
+                exc,
+            )
+            return
+        cm = mcp_lifecycle.__aenter__()
+        try:
+            await cm
+        except Exception as exc:  # pragma: no cover
+            logger.warning("mount_mcp_endpoints: failed to enter MCP lifecycle: %s", exc)
+            setattr(app.state, _state_key, None)
+            return
+        setattr(app.state, _state_key, mcp_lifecycle)
+        logger.info("mount_mcp_endpoints: /mcp ready (HTTP + SSE)")
+
+    @app.on_event("shutdown")
+    async def _apx_mount_shutdown() -> None:  # type: ignore[misc]
+        lifecycle = getattr(app.state, _state_key, None)
+        if lifecycle is None:
+            return
+        try:
+            await lifecycle.__aexit__(None, None, None)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("mount_mcp_endpoints: clean shutdown failed: %s", exc)

@@ -43,7 +43,7 @@ from ._sql import decode_statement, get_warehouse_id, run_sql
 from ._llm import ChatDatabricksGptReasoning, get_llm
 
 # App factory and setup
-from ._wiring import create_app, setup_agent
+from ._wiring import create_app, mount_mcp_endpoints, setup_agent
 
 # Eval bridge
 from ._eval import app_predict_fn, evaluate
@@ -71,12 +71,19 @@ from ._compile import CompileContext, compile_to_langgraph
 # MLflow ChatAgent wrapper (optional — requires the ``langgraph`` and ``eval`` extras)
 from ._chat_agent import chat_agent_for, compile_to_chat_agent, log_agent
 
+# Databricks Apps ResponsesAgent compile target (optional — same extras)
+from ._responses_agent import compile_to_responses_agent
+
+# Unified OBO header extraction (both runtimes use this)
+from ._obo import extract_obo_headers, make_obo_workspace_client
+
 # Resource declaration — auto-derive MLflow resources from the agent tree
 from ._resources import (
     ResourceSpec,
     attach_resources,
     collect_resource_specs,
     mlflow_resources_for,
+    resources_to_databricks_yml,
 )
 
 # @tool decorator and UC publishing
@@ -180,6 +187,14 @@ from ._hot_swap import (
     hot_swap_model,
 )
 
+# Hot-swap analog for the Apps target — re-deploys with a different bundle var
+from ._hot_swap_apps import (
+    DEFAULT_LLM_VAR_NAME,
+    AppsHotSwapResult,
+    hot_swap_apps,
+    read_var_default,
+)
+
 # Trace exporter
 from ._trace_export import ExportResult, export_traces
 
@@ -195,7 +210,7 @@ from ._topology import (
 # Cross-agent evaluation
 from ._eval_chain import ChainCaseResult, ChainEvalReport, evaluate_chain
 
-# Canary / A-B deployment helpers
+# Canary / A-B deployment helpers (Model Serving target)
 from ._canary import (
     CanaryConfig,
     CanaryReport,
@@ -205,6 +220,25 @@ from ._canary import (
     get_canary_config,
     promote_canary,
     rollback_canary,
+)
+
+# Canary helpers for the Databricks Apps target — multi-target bundle flow
+from ._canary_apps import (
+    TRACE_APP_NAME_TAG,
+    AppsCanaryConfig,
+    AppsCanaryReport,
+    AppsPromoteResult,
+    AppsVersionMetrics,
+    add_canary_target_to_yml,
+    analyze_canary_app,
+    canary_app_name,
+    canary_target_name,
+    deploy_canary_app,
+    promote_canary_app,
+    remove_canary_target_from_yml,
+    rollback_canary_app,
+    sanitize_version,
+    write_databricks_yml,
 )
 
 # databricks-watchdog integration
@@ -274,6 +308,7 @@ __all__ = [
     "get_llm",
     # App factory
     "create_app",
+    "mount_mcp_endpoints",
     "setup_agent",
     # Eval
     "app_predict_fn",
@@ -296,11 +331,17 @@ __all__ = [
     "chat_agent_for",
     "compile_to_chat_agent",
     "log_agent",
+    # Databricks Apps ResponsesAgent compile target
+    "compile_to_responses_agent",
+    # Unified OBO header extraction
+    "extract_obo_headers",
+    "make_obo_workspace_client",
     # Resource declaration
     "ResourceSpec",
     "attach_resources",
     "collect_resource_specs",
     "mlflow_resources_for",
+    "resources_to_databricks_yml",
     # @tool decorator and UC publishing
     "tool",
     "ToolMetadata",
@@ -379,6 +420,11 @@ __all__ = [
     "HotSwapResult",
     "get_active_override",
     "hot_swap_model",
+    # Hot-swap (Apps target)
+    "AppsHotSwapResult",
+    "DEFAULT_LLM_VAR_NAME",
+    "hot_swap_apps",
+    "read_var_default",
     # Trace exporter
     "ExportResult",
     "export_traces",
@@ -392,7 +438,7 @@ __all__ = [
     "ChainCaseResult",
     "ChainEvalReport",
     "evaluate_chain",
-    # Canary / A-B helpers
+    # Canary / A-B helpers (Model Serving)
     "CanaryConfig",
     "CanaryReport",
     "VersionMetrics",
@@ -401,6 +447,22 @@ __all__ = [
     "get_canary_config",
     "promote_canary",
     "rollback_canary",
+    # Canary helpers (Databricks Apps)
+    "AppsCanaryConfig",
+    "AppsCanaryReport",
+    "AppsPromoteResult",
+    "AppsVersionMetrics",
+    "TRACE_APP_NAME_TAG",
+    "add_canary_target_to_yml",
+    "analyze_canary_app",
+    "canary_app_name",
+    "canary_target_name",
+    "deploy_canary_app",
+    "promote_canary_app",
+    "remove_canary_target_from_yml",
+    "rollback_canary_app",
+    "sanitize_version",
+    "write_databricks_yml",
     # Watchdog integration
     "WatchdogClient",
     "WatchdogDecision",

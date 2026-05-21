@@ -407,6 +407,30 @@ export type {
   PredictInput as ChatAgentPredictInput,
 } from './chat-agent.js';
 
+// ResponsesAgent compile (Databricks Apps deploy path)
+export {
+  compileToResponsesAgent,
+  mountResponsesAgent,
+} from './responses-agent.js';
+export type {
+  CompileToResponsesAgentOptions,
+  CompiledResponsesAgent,
+  ResponsesAgentRequest,
+  ResponsesAgentResponse,
+  ResponsesAgentStreamEvent,
+  ResponsesAgentInputItem,
+  ResponsesAgentOutputItem,
+  MountResponsesAgentOptions,
+} from './responses-agent.js';
+
+// Unified OBO header extraction — single source of truth across both runtimes
+export { extractOboHeaders } from './obo.js';
+export type {
+  NormalizedObo,
+  ExtractOboHeadersOptions,
+  HeadersInput,
+} from './obo.js';
+
 // MLflow tracing helpers — safe no-op when MLflow JS unavailable
 export {
   safeSpan,

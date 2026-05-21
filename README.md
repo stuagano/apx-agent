@@ -2,11 +2,31 @@
 
 [![CI](https://github.com/stuagano/apx-agent/actions/workflows/test.yml/badge.svg)](https://github.com/stuagano/apx-agent/actions/workflows/test.yml)
 
-A declarative framework for building governed AI agents on Databricks. Available in **Python** and **TypeScript**.
+A declarative framework for building governed AI agents on Databricks. Write one agent definition, deploy to **either** Mosaic AI Model Serving **or** Databricks Apps — picked by `--target` at deploy time. Available in **Python** and **TypeScript**.
+
+```python
+# Write once...
+from apx_agent import Agent, uc_function_tool
+
+agent = Agent(
+    instructions="You investigate customer accounts.",
+    tools=[uc_function_tool("main.tools.lookup_account")],
+)
+```
+
+```bash
+# ...deploy either way.
+apx deploy --target model-serving --name main.agents.account_lookup --model databricks-claude-sonnet-4-6
+apx deploy --target apps                # databricks bundle deploy + bundle run
+```
+
+Same agent code. Same tools. Same identity passthrough. Same `apx.*` MLflow trace schema. The compile target picks the runtime contract (`ChatAgent` vs `ResponsesAgent`), the deploy command picks the upload mechanism, and the OBO chain normalizes whichever auth shape the runtime injects. The [migration guide Databricks ships between the two runtimes](https://github.com/databricks/app-templates/blob/main/agent-openai-agents-sdk/.claude/skills/migrate-from-model-serving/SKILL.md) is a docs artifact, not a workflow.
+
+See [`docs/apps-vs-model-serving.md`](docs/apps-vs-model-serving.md) for when to pick which.
 
 ## What's here
 
-Three building blocks. Everything else is built on top.
+Four building blocks. Everything else is built on top.
 
 ### 1. Governed primitives
 
@@ -57,18 +77,42 @@ orchestrator = Agent(tools=[
 
 The same wrapper handles remote agents — pass a `RemoteDatabricksAgent` or a URL string, and the parent calls it over HTTP with identity passthrough preserved.
 
+### 4. Two runtimes, one agent
+
+apx-agent compiles the same agent definition to **either** the Mosaic AI Agent Framework (Model Serving) **or** the MLflow GenAI Agent Server (Databricks Apps), picked at deploy time:
+
+| | Model Serving (`--target model-serving`) | Databricks Apps (`--target apps`) |
+|---|---|---|
+| Contract | `ChatAgent` | `ResponsesAgent` |
+| Deploy | `databricks.agents.deploy()` | `databricks bundle deploy + run` |
+| Build pipeline | Container build (5–30 min) | Code push + restart (seconds) |
+| OBO source | `customInputs.user_token` | `X-Forwarded-Access-Token` header |
+| Resource declaration | MLflow `resources=[...]` | `databricks.yml.resources` |
+| Best for | Production endpoints with canary/traffic-split, Supervisor sub-agents | Dev loop, custom UI co-hosted with agent, durable workflows |
+
+Both runtimes share apx-agent's `extract_obo_headers` (so the calling user's identity threads through identically), the `apx.*` MLflow trace schema (so cost reports + watchdog + `apx export-traces` work the same), and every tool factory (`uc_function_tool`, `genie_tool`, etc.). Pick by workload, swap with one CLI flag.
+
+Compile primitives:
+- `compile_to_chat_agent(agent, model)` — Model Serving path
+- `compile_to_responses_agent(agent, model)` — Apps path
+- `extract_obo_headers(custom_inputs=..., headers=...)` — unified OBO across both
+
+See [`docs/apps-vs-model-serving.md`](docs/apps-vs-model-serving.md) for the full decision table.
+
 ## CLI
 
 `apx` is the command-line wrapper. Every command maps to a single library primitive — the CLI is ergonomics, not logic.
 
 ```bash
-apx scaffold my_agent              # generate a new agent project
+apx scaffold my_agent                       # generate a Model Serving project (default)
+apx scaffold my_agent --target apps         # generate a Databricks Apps project
 cd my_agent && uv sync
 apx run                            # uvicorn against app.py:app
 apx publish-tools --dry-run        # preview UC function registrations
 apx publish-tools                  # actually register
 apx deploy --model databricks-claude-sonnet-4-6 \
-           --name main.agents.my_agent
+           --name main.agents.my_agent              # default: --target model-serving
+apx deploy --target apps                            # bundle deploy + bundle run, no container build
 apx publish --endpoint my_agent --supervisor sa-12345 \
             --description "Handles X for users asking about Y"
 apx mcp-config --host https://workspace.cloud.databricks.com
@@ -493,21 +537,52 @@ attach_resources(query_orders, [ResourceSpec("uc_table", "main.sales.orders")])
 
 ## Deployment
 
-### Model Serving (Mosaic AI)
+apx-agent compiles the same agent to either runtime. Pick by workload; swap with one CLI flag. The full decision table is in [`docs/apps-vs-model-serving.md`](docs/apps-vs-model-serving.md).
 
-The default path for stateless, multi-surface agents. `log_agent` produces an MLflow `ChatAgent` with declared resources; `databricks.agents.deploy` creates the serving endpoint. The deployed agent is recognized natively by AI Playground, Review App, Agent Evaluation, MLflow tracing, and the Supervisor Agent as a sub-agent.
+### Model Serving (Mosaic AI) — `--target model-serving`
+
+The default. `compile_to_chat_agent` produces an MLflow `ChatAgent` with declared resources; `log_agent` registers it in Unity Catalog; `databricks.agents.deploy` promotes it to a serving endpoint. Recognized natively by AI Playground, Review App, Agent Evaluation, MLflow tracing, and Supervisor Agent as a sub-agent.
+
+```bash
+apx deploy --model databricks-claude-sonnet-4-6 \
+           --name main.agents.my_agent
+```
 
 - **Pay-per-request** — scale-to-zero, no idle cost
-- **Identity passthrough** automatic from Playground / Genie / Supervisor
+- **Identity passthrough** automatic from Playground / Genie / Supervisor (via `customInputs.user_token`)
 - **Stateless** — request/response only; no persistent state between calls
+- **Production patterns** — canary deploys (`apx canary deploy/promote/rollback`), traffic-split, hot-swap LLM (`apx hot-swap`)
+- **Container build** — 5–30 min on first deploy; subsequent deploys reuse cached layers
+- **Best for** — production agents the platform routes traffic to (Supervisor sub-agents, AI Playground, Knowledge Assistants)
 
-### Databricks Apps
+### Databricks Apps — `--target apps`
 
-When you need state, custom UI, MCP server endpoint, or long-running workflows. `create_app(agent)` wraps the same agent as a FastAPI service with the full apx-agent host: OBO middleware, `/responses` endpoint, `/mcp` MCP server, `/.well-known/agent.json` discovery card, hub auto-registration, dev UI at `/_apx/*`.
+The MLflow GenAI Agent Server path. `compile_to_responses_agent` produces a `ResponsesAgent` with `@invoke` / `@stream` decorated functions; `databricks bundle deploy + bundle run` pushes code and restarts the app. No container build. The deploy is a code push.
 
-- **Flat-rate compute** — cheaper at sustained traffic, more expensive idle
+```bash
+apx scaffold my_agent --target apps   # scaffolds agent_server/ + databricks.yml + pyproject.toml + quickstart
+cd my_agent
+uv sync
+uv run quickstart                     # creates MLflow experiment, writes .env
+apx deploy --target apps              # databricks bundle deploy + bundle run
+```
+
+- **Code-push deploy** — seconds to minutes from edit to running app
+- **Identity passthrough** automatic via `X-Forwarded-Access-Token` injected by the Apps runtime
 - **Stateful** — in-memory caches, background loops, websockets, custom UI all work
-- **OBO automatic** for browser/SSO traffic via `X-Forwarded-Access-Token`
+- **Async-native** — `@invoke()` and `@stream()` decorators support `async def`
+- **Best for** — dev loop, agents with co-located UI, durable workflows, anything that benefits from fast iteration
+
+The legacy `create_app(agent)` FastAPI wrapper still works for Apps hosting that doesn't go through MLflow GenAI Server — useful when you want apx-agent's full host (OBO middleware, `/mcp` MCP server, `/.well-known/agent.json` discovery card, hub auto-registration, dev UI at `/_apx/*`) without the bundle deploy flow.
+
+### Verified live deploys
+
+Both worked examples are deployed to a real workspace as Databricks Apps:
+
+- `python/examples/memory_demo/` — single agent with in-memory memory store
+- `python/examples/customer_triage/` — `HandoffAgent` over 4 sub-agents with memory wired into the account specialist
+
+Memory recall verified working across the HandoffAgent boundary — principal-keyed memory survives sub-agent transitions because the key is the user, not the session.
 
 ## Compliance posture — Watchdog integration
 

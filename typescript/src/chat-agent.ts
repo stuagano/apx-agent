@@ -74,6 +74,7 @@ import type { AgentConfig, AgentExports } from './agent/plugin.js';
 import type { AgentTool } from './agent/tools.js';
 import { Session, type SessionStore } from './workflows/session.js';
 import { collectResourceSpecs, type ResourceSpec } from './resources.js';
+import { extractOboHeaders } from './obo.js';
 
 // ---------------------------------------------------------------------------
 // MLflow ChatAgent message shapes (mirror mlflow.types.agent)
@@ -167,15 +168,18 @@ function resolveTools(agent: unknown, config: AgentConfig | null): AgentTool[] {
 function buildOboHeaders(
   customInputs: Record<string, unknown> | undefined,
 ): Record<string, string> {
-  if (!customInputs) return {};
-  const token = customInputs['user_token'];
-  if (typeof token !== 'string' || token.length === 0) return {};
+  // Single source of truth — same path as the Apps target (responses-agent).
+  // Headers are intentionally NOT passed here; the ChatAgent / Model Serving
+  // contract carries OBO through `customInputs`, not HTTP headers (the route
+  // mounting layer is the one that bridges X-Forwarded-Access-Token into
+  // customInputs.user_token — see invocations.ts).
+  const obo = extractOboHeaders({ customInputs: customInputs ?? undefined });
+  if (!obo.userToken) return {};
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${obo.userToken}`,
   };
-  const host = customInputs['workspace_host'];
-  if (typeof host === 'string' && host.length > 0) {
-    headers['X-Databricks-Host'] = host;
+  if (obo.workspaceHost) {
+    headers['X-Databricks-Host'] = obo.workspaceHost;
   }
   return headers;
 }

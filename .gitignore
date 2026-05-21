@@ -38,3 +38,11 @@ mlruns/
 
 # Generated package version files
 **/_version.py
+
+# Local reference clones (not part of the project)
+reference/
+
+# Apps deploy artifacts — built from source by `databricks bundle deploy`
+**/.build/
+**/apx_agent-*.whl
+**/.env

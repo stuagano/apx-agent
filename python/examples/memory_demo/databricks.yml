@@ -1,0 +1,85 @@
+# Databricks Asset Bundle config for memory_demo (Apps target).
+#
+# Deploys the agent as a Databricks App, not a Model Serving endpoint.
+# Tradeoffs and rationale are in docs/apps-vs-model-serving.md.
+#
+# Deploy:
+#   uv sync
+#   uv run quickstart
+#   databricks bundle deploy --target dev --profile <profile>
+#   databricks bundle run memory-demo --target dev --profile <profile>
+#
+# Or, via the apx-agent CLI (delegates to bundle deploy + bundle run):
+#   apx deploy --target apps
+
+bundle:
+  name: memory-demo
+
+# Root .gitignore excludes ``**/.build/`` — bundle deploy needs to upload
+# .build/ (the staged source tree referenced by source_code_path). The
+# include here overrides the ignore for this one path. Mirrors the same
+# pattern in customer_triage/databricks.yml and the scaffold template.
+sync:
+  include:
+    - .build/**
+
+variables:
+  llm_endpoint_name:
+    description: Foundation model endpoint the agent calls.
+    default: databricks-claude-sonnet-4-6
+  mlflow_experiment_id:
+    description: |
+      MLflow experiment ID for tracing. Populated by scripts/quickstart.py
+      into a local .env file and surfaced here for the app environment.
+    default: ""
+
+artifacts:
+  default:
+    build: |
+      mkdir -p .build
+      cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      cp apx_agent-*.whl .build/ 2>/dev/null || true
+
+resources:
+  apps:
+    memory-demo:
+      name: memory-demo
+      description: |
+        apx-agent memory_demo — InMemoryMemoryStore + few-shot examples,
+        compiled to ResponsesAgent and served via Databricks Apps.
+      source_code_path: ./.build
+
+      # App-level resources: the App's service principal gets ambient
+      # credentials for each resource, and the resources surface as
+      # env vars inside the running container.
+      resources:
+        - name: llm-endpoint
+          description: Foundation model endpoint used by the agent.
+          serving_endpoint:
+            name: ${var.llm_endpoint_name}
+            permission: CAN_QUERY
+
+      config:
+        command:
+          - uvicorn
+          - agent_server.start_server:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - $DATABRICKS_APP_PORT
+        env:
+          - name: APX_MODEL
+            value: ${var.llm_endpoint_name}
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

@@ -185,7 +185,9 @@ import { WatchdogClient, WatchdogGuard, makeWatchdogDecision } from 'appkit-agen
 
 | Helper | Purpose |
 |---|---|
-| `compileToChatAgent`, `logAgent` | MLflow ChatAgent + `log_model` (TypeScript port; injectable `mlflowLogModel`). |
+| `compileToChatAgent`, `logAgent` | MLflow ChatAgent + `log_model` (Model Serving target; injectable `mlflowLogModel`). |
+| `compileToResponsesAgent`, `mountResponsesAgent` | ResponsesAgent for the Databricks Apps target (Node.js process serving `POST /invocations`). |
+| `extractOboHeaders` | Single source of truth for OBO header resolution across both runtimes. |
 | `mountInvocationsRoute` | Express bridge serving `/invocations` for Mosaic AI ChatAgent. |
 | `hotSwapModel`, `getActiveOverride` | Swap the LLM endpoint on a deployed agent without re-logging. |
 | `costForAgent`, `costForEndpoint` | DBU / $ cost reporting. |
@@ -193,6 +195,23 @@ import { WatchdogClient, WatchdogGuard, makeWatchdogDecision } from 'appkit-agen
 | `discoverTopology`, `renderTopology` | Map the agent graph across registered models. |
 | `exportTraces` | MLflow traces → Delta. |
 | `safeSpan`, `withSafeSpan`, `enableLangchainAutolog` | MLflow tracing helpers. |
+
+### Two runtimes, one agent
+
+The same `createAgentPlugin({...})` definition can be deployed to **either** Databricks Model Serving (via `compileToChatAgent` + `logAgent`) **or** Databricks Apps (via `compileToResponsesAgent` + `mountResponsesAgent`). Pick the runtime at deploy time:
+
+| Runtime | Wire shape | Build | Deploy | OBO source |
+|---|---|---|---|---|
+| **Model Serving** | `ChatAgentRequest` (`messages`-style) | `mlflow.pyfunc.log_model` → UC → container image | `databricks.agents.deploy` | `customInputs.user_token` (bridged into the model from the route's `X-Forwarded-Access-Token`) |
+| **Databricks Apps** | `ResponsesAgentRequest` (`input` + `customInputs`) | `tsc` build into a Node.js bundle | `databricks bundle deploy && databricks bundle run` | `X-Forwarded-Access-Token` read directly from the inbound HTTP request |
+
+Both routes ultimately resolve OBO context through `extractOboHeaders`, so a tool sees the caller's identity regardless of which runtime served the request. Scaffold an Apps-target project with:
+
+```bash
+apx scaffold my_app --target apps
+cd my_app && npm install && npm run dev      # serves /invocations on :8000
+apx deploy --target apps                      # validates, deploys, polls until RUNNING
+```
 
 ## CLI
 
@@ -204,6 +223,8 @@ apx info --module ./agent.ts                         # introspect tools, sub-age
 apx lint --module ./agent.ts                         # static checks: instructions, tool docs, model names
 apx test --module ./agent.ts --prompt "..."          # local smoke test against a sample prompt
 apx list                                             # discover apx-tagged registered models
+apx scaffold <name> [--target model-serving|apps]    # generate a new agent project layout
+apx deploy --target apps [--profile P] [--no-run]    # databricks bundle validate → deploy → run → poll
 
 apx memory recall --principal-id user:alice --query "preferred channel"
 apx memory remember --principal-id user:alice --content "prefers email"

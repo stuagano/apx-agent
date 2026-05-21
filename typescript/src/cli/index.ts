@@ -33,6 +33,10 @@ import {
   type ConsolidateCommandDeps,
 } from './commands/consolidate.js';
 import {
+  registerDeployCommand,
+  type DeployCommandDeps,
+} from './commands/deploy.js';
+import {
   registerExamplesCommand,
   type ExamplesCommandDeps,
 } from './commands/examples.js';
@@ -47,6 +51,10 @@ import {
   registerMineCommand,
   type MineCommandDeps,
 } from './commands/mine.js';
+import {
+  registerScaffoldCommand,
+  type ScaffoldCommandDeps,
+} from './commands/scaffold.js';
 import { registerTestCommand, type TestCommandDeps } from './commands/test.js';
 import { registerVersionCommand } from './commands/version.js';
 
@@ -59,6 +67,8 @@ export interface BuildProgramDeps {
   examples?: ExamplesCommandDeps;
   mine?: MineCommandDeps;
   consolidate?: ConsolidateCommandDeps;
+  scaffold?: ScaffoldCommandDeps;
+  deploy?: DeployCommandDeps;
 }
 
 /**
@@ -85,6 +95,8 @@ export function buildProgram(deps: BuildProgramDeps = {}): Command {
   // to create — but explicit ordering keeps the intent obvious.)
   registerMineCommand(program, deps.mine);
   registerConsolidateCommand(program, deps.consolidate);
+  registerScaffoldCommand(program, deps.scaffold);
+  registerDeployCommand(program, deps.deploy);
 
   return program;
 }

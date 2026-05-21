@@ -1,0 +1,88 @@
+# Databricks Asset Bundle config for customer_triage (Apps target).
+#
+# Deploys the HandoffAgent + 4 specialist sub-agents as a Databricks App.
+# Tradeoffs and rationale: see docs/apps-vs-model-serving.md.
+#
+# Deploy:
+#   uv sync
+#   uv run quickstart
+#   databricks bundle deploy --target dev --profile <profile> \
+#       --var "mlflow_experiment_id=<id>"
+#   databricks bundle run customer-triage --target dev --profile <profile> \
+#       --var "mlflow_experiment_id=<id>"
+#
+# Smoke mode: APX_SMOKE_MODE=1 swaps UC / Genie / Vector Search tools for
+# in-process stubs so deploys don't depend on workspace resources. Flip to
+# "0" once the production UC functions / Genie space / Vector Search index
+# are provisioned.
+
+bundle:
+  name: customer-triage
+
+# Override root .gitignore which excludes **/.build/ — bundle deploy needs to
+# upload .build/ (the staged source tree referenced by source_code_path).
+sync:
+  include:
+    - .build/**
+
+variables:
+  llm_endpoint_name:
+    description: Foundation model endpoint the agent calls.
+    default: databricks-claude-sonnet-4-6
+  mlflow_experiment_id:
+    description: |
+      MLflow experiment ID for tracing. Populated by scripts/quickstart.py
+      into a local .env file and surfaced here for the app environment.
+    default: ""
+
+artifacts:
+  default:
+    build: |
+      mkdir -p .build
+      cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      cp apx_agent-*.whl .build/ 2>/dev/null || true
+
+resources:
+  apps:
+    customer-triage:
+      name: customer-triage
+      description: |
+        apx-agent customer_triage — HandoffAgent over billing / technical /
+        account specialists, with InMemoryMemoryStore wired into the account
+        specialist. Compiled to ResponsesAgent and served via Databricks
+        Apps. APX_SMOKE_MODE=1 by default.
+      source_code_path: ./.build
+
+      resources:
+        - name: llm-endpoint
+          description: Foundation model endpoint used by the agent.
+          serving_endpoint:
+            name: ${var.llm_endpoint_name}
+            permission: CAN_QUERY
+
+      config:
+        command:
+          - uvicorn
+          - agent_server.start_server:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - $DATABRICKS_APP_PORT
+        env:
+          - name: APX_MODEL
+            value: ${var.llm_endpoint_name}
+          - name: APX_SMOKE_MODE
+            value: "1"
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

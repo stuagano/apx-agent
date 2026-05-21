@@ -247,10 +247,6 @@ def query_genie_space(space_id: str, question: str, ws: Workspace) -> dict[str, 
     return result
 
 
-# ---------------------------------------------------------------------------
-# Compose into deterministic pipeline
-# ---------------------------------------------------------------------------
-
-from .pipeline import create_investigation_pipeline  # noqa: E402
-
-agent = create_investigation_pipeline(DATA_INSPECTOR_URL)
+# Pipeline composition lives in pipeline.py — importing it from here used to
+# cause a circular import (pipeline.py imports the tools defined above). The
+# `agent` module-level object is now exported from .pipeline directly.
