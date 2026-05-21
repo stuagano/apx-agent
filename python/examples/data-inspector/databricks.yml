@@ -1,22 +1,87 @@
+# Databricks Asset Bundle config for data-inspector (Apps target).
+#
+# Exposes Delta forensics + UC discovery as a Databricks App that
+# data-triage-agent (and other consumers) delegate to via A2A and Genie
+# can consume via /mcp.
+
 bundle:
-  name: data-inspector
+  name: mcp-data-inspector
 
 sync:
   include:
-    - .build
+    - .build/**
+
+variables:
+  llm_endpoint_name:
+    description: Foundation model endpoint the agent calls.
+    default: databricks-claude-sonnet-4-6
+  mlflow_experiment_id:
+    description: MLflow experiment ID for tracing.
+    default: ""
 
 artifacts:
   default:
-    build: uv build --wheel -o .build/ && ls .build/*.whl | xargs basename > .build/requirements.txt
+    build: |
+      set -e
+      mkdir -p .build
+      # Copy source tree into .build/. pyproject.toml and uv.lock get
+      # rewritten in-place below if the apx-agent wheel is present.
+      cp -r agent_server scripts src pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      # Stage the apx-agent wheel (built by `apx deploy --target apps`
+      # before this script runs). When the wheel is missing, .build still
+      # contains the editable source pyproject — Databricks Apps will
+      # fail to install, surfacing the missing-wheel issue cleanly.
+      WHEEL=$(ls apx_agent-*.whl 2>/dev/null | head -1) || true
+      if [ -n "$WHEEL" ]; then
+        cp "$WHEEL" .build/
+        # Rewrite .build/pyproject.toml: editable parent -> wheel path.
+        # No-op when the source pyproject already uses the wheel shape.
+        sed -i.bak -E 's|apx-agent = \{ path = "\.\./\.\." *, editable = true *\}|apx-agent = { path = "./'"$WHEEL"'" }|g' .build/pyproject.toml
+        rm -f .build/pyproject.toml.bak
+        # Regenerate the lockfile against the rewritten pyproject so the
+        # deployed App container's `uv sync` resolves cleanly.
+        (cd .build && uv lock --quiet)
+      fi
+
 
 resources:
   apps:
-    mcp-data-inspector-app:
-      name: "mcp-data-inspector"
-      description: "MCP-enabled — Delta forensics, table discovery, schema inspection"
+    mcp-data-inspector:
+      name: mcp-data-inspector
+      description: |
+        Delta table forensics + UC discovery — list catalogs/schemas/tables,
+        sample/count/describe, version diffs, audit history. A2A sub-agent for
+        data-triage-agent; /mcp surface for Genie / Genie Code.
       source_code_path: ./.build
+
+      resources:
+        - name: llm-endpoint
+          description: Foundation model endpoint used by the agent.
+          serving_endpoint:
+            name: ${var.llm_endpoint_name}
+            permission: CAN_QUERY
+
+      config:
+        command:
+          - uvicorn
+          - agent_server.start_server:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - $DATABRICKS_APP_PORT
+        env:
+          - name: APX_MODEL
+            value: ${var.llm_endpoint_name}
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
 
 targets:
   dev:
     mode: development
     default: true
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

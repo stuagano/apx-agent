@@ -2075,13 +2075,10 @@ def _deploy_apps_impl(
             log(f"  built apx-agent wheel: {wheel_path}")
         _run_bundle_artifacts(cwd)
         log("  populated .build/")
-        # If the source pyproject used the editable shape, rewrite the
-        # staged copy in .build/ to use the wheel path instead. Idempotent
-        # when pyproject is already wheel-pinned.
-        if wheel_path:
-            build_dir = cwd / ".build"
-            if build_dir.is_dir():
-                _rewrite_build_pyproject_for_deploy(build_dir, wheel_path)
+        # Note: the artifacts script itself handles the editable->wheel
+        # pyproject rewrite + lockfile regen now. `databricks bundle deploy`
+        # re-runs the artifacts script during upload, so a Python-side
+        # rewrite would be overwritten. Keep the logic IN the script.
     else:
         log("# --no-auto-build-wheel: skipping wheel build + artifacts step")
 

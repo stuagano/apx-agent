@@ -1,19 +1,17 @@
-# Databricks Asset Bundle config for data-triage-agent (Apps target).
+# Databricks Asset Bundle config for slack-agent (Apps target).
 #
-# Deploys the 6-step SequentialAgent investigation pipeline as a Databricks
-# App. Requires a deployed data-inspector sub-agent at $DATA_INSPECTOR_URL
-# (see ../data-inspector/).
+# Deploys the Slack bot as a Databricks App that exposes THREE surfaces:
+#   /invocations  — Mosaic AI Apps shape (apps that call this as a sub-agent)
+#   /slack/*      — Slack webhook surface (events, OAuth install + callback)
+#   /mcp          — Genie / Genie Code MCP consumption
 #
-# Deploy:
-#   uv sync
-#   uv run quickstart
-#   apx deploy --target apps          # or: databricks bundle deploy + bundle run
+# Slack itself hits /slack/events with a slash-command payload; the router
+# validates the Slack signature, exchanges the Slack user identity for the
+# user's Databricks token, then invokes the agent over /invocations.
 
 bundle:
-  name: mcp-data-triage-agent
+  name: mcp-slack-agent
 
-# Root .gitignore excludes ``**/.build/`` — bundle deploy needs to upload
-# .build/ (the staged source tree referenced by source_code_path).
 sync:
   include:
     - .build/**
@@ -23,15 +21,7 @@ variables:
     description: Foundation model endpoint the agent calls.
     default: databricks-claude-sonnet-4-6
   mlflow_experiment_id:
-    description: |
-      MLflow experiment ID for tracing. Populated by scripts/quickstart.py
-      into a local .env file and surfaced here for the app environment.
-    default: ""
-  data_inspector_url:
-    description: |
-      Base URL of the deployed data-inspector sub-agent (A2A). The
-      investigation pipeline delegates SQL + Delta forensics to it. Set
-      to the data-inspector's Apps URL or Model Serving endpoint URL.
+    description: MLflow experiment ID for tracing.
     default: ""
 
 artifacts:
@@ -61,12 +51,13 @@ artifacts:
 
 resources:
   apps:
-    mcp-data-triage-agent:
-      name: mcp-data-triage-agent
+    mcp-slack-agent:
+      name: mcp-slack-agent
       description: |
-        apx-agent data-triage-agent — 6-step SequentialAgent investigation
-        pipeline (presence -> lineage -> pipeline -> genie -> code -> synthesis).
-        Delegates SQL + Delta forensics to a data-inspector sub-agent via A2A.
+        Slack bot connected to Databricks via OAuth. Validates Slack
+        signatures, exchanges Slack user identity for Databricks token,
+        runs tools as the calling Databricks user. Also exposes /mcp
+        for Genie / Genie Code.
       source_code_path: ./.build
 
       resources:
@@ -91,8 +82,14 @@ resources:
             value: databricks
           - name: MLFLOW_EXPERIMENT_ID
             value: ${var.mlflow_experiment_id}
-          - name: DATA_INSPECTOR_URL
-            value: ${var.data_inspector_url}
+          # Slack secrets (set via --var on deploy OR provision separately
+          # via `databricks apps update mcp-slack-agent --config ...`):
+          # - name: SLACK_SIGNING_SECRET
+          #   value: ${var.slack_signing_secret}
+          # - name: SLACK_CLIENT_ID
+          #   value: ${var.slack_client_id}
+          # - name: SLACK_CLIENT_SECRET
+          #   value: ${var.slack_client_secret}
 
 targets:
   dev:

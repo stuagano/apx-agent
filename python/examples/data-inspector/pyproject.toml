@@ -5,7 +5,11 @@ description = "Delta table forensics — binary search versions, diff changes, a
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "apx-agent",
+    # The [langgraph] extra is required at runtime for both deploy targets:
+    # compile_to_chat_agent (Model Serving) and compile_to_responses_agent
+    # (Apps) both import langchain_core via the langgraph compiler.
+    "apx-agent[langgraph]",
+    "mlflow[databricks]>=3.0.0",
     "fastapi>=0.119.0",
     "pydantic-settings>=2.11.0",
     "uvicorn>=0.37.0",
@@ -32,8 +36,18 @@ metadata-path = "src/data_inspector/_metadata.py"
 name = "data_inspector"
 description = "Inspect and forensically analyze Delta tables — check data presence, binary search version history, diff versions, and audit who changed what"
 model = "databricks-claude-sonnet-4-6"
+module = "data_inspector.backend.agent_router:agent"
 url = ""
 registry = ""
+
+[tool.apx.deploy]
+# App name MUST start with 'mcp-' for Databricks External MCP discovery.
+target = "apps"
+bundle_name = "mcp-data-inspector"
+app_name = "mcp-data-inspector"
+
+[project.scripts]
+quickstart = "scripts.quickstart:main"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -43,4 +57,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/data_inspector"]
+packages = ["src/data_inspector", "agent_server", "scripts"]

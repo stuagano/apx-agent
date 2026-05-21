@@ -36,9 +36,27 @@ variables:
 artifacts:
   default:
     build: |
+      set -e
       mkdir -p .build
-      cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
-      cp apx_agent-*.whl .build/ 2>/dev/null || true
+      # Copy source tree into .build/. pyproject.toml and uv.lock get
+      # rewritten in-place below if the apx-agent wheel is present.
+      cp -r agent_server scripts src pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      # Stage the apx-agent wheel (built by `apx deploy --target apps`
+      # before this script runs). When the wheel is missing, .build still
+      # contains the editable source pyproject — Databricks Apps will
+      # fail to install, surfacing the missing-wheel issue cleanly.
+      WHEEL=$(ls apx_agent-*.whl 2>/dev/null | head -1) || true
+      if [ -n "$WHEEL" ]; then
+        cp "$WHEEL" .build/
+        # Rewrite .build/pyproject.toml: editable parent -> wheel path.
+        # No-op when the source pyproject already uses the wheel shape.
+        sed -i.bak -E 's|apx-agent = \{ path = "\.\./\.\." *, editable = true *\}|apx-agent = { path = "./'"$WHEEL"'" }|g' .build/pyproject.toml
+        rm -f .build/pyproject.toml.bak
+        # Regenerate the lockfile against the rewritten pyproject so the
+        # deployed App container's `uv sync` resolves cleanly.
+        (cd .build && uv lock --quiet)
+      fi
+
 
 resources:
   apps:
