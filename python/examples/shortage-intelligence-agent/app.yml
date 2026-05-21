@@ -1,4 +1,4 @@
-command: ["uvicorn", "shortage_intelligence_agent.backend.app:app", "--workers", "2"]
+command: ["uvicorn", "app:app", "--workers", "2"]
 env:
   - name: AGENT_MODEL
     value: "databricks-claude-opus-4-7"

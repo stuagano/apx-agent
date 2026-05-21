@@ -1,12 +1,12 @@
 from unittest.mock import MagicMock, patch
 
-from contract_parsing_agent.backend.tools.query_portfolio import query_portfolio
+from tools.query_portfolio import query_portfolio
 
 
 def test_query_portfolio_builds_safe_filtered_sql():
     ws = MagicMock()
     with patch(
-        "contract_parsing_agent.backend.tools.query_portfolio.run_sql",
+        "tools.query_portfolio.run_sql",
         return_value=[{"contract_id": "CT-0001", "counterparty": "Acme Energy Co"}],
     ) as mock_sql:
         out = query_portfolio(
@@ -27,7 +27,7 @@ def test_query_portfolio_builds_safe_filtered_sql():
 def test_query_portfolio_empty_filters():
     ws = MagicMock()
     with patch(
-        "contract_parsing_agent.backend.tools.query_portfolio.run_sql",
+        "tools.query_portfolio.run_sql",
         return_value=[],
     ):
         out = query_portfolio(ws=ws)
@@ -37,7 +37,7 @@ def test_query_portfolio_empty_filters():
 def test_query_portfolio_rejects_sql_injection_in_counterparty():
     ws = MagicMock()
     with patch(
-        "contract_parsing_agent.backend.tools.query_portfolio.run_sql",
+        "tools.query_portfolio.run_sql",
         return_value=[],
     ) as mock_sql:
         query_portfolio(counterparty="Acme Energy Co'; DROP TABLE x; --", ws=ws)

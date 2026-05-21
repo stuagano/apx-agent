@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from contract_parsing_agent.backend.tools.find_contracts_expiring import (
+from tools.find_contracts_expiring import (
     find_contracts_expiring,
 )
 
@@ -8,7 +8,7 @@ from contract_parsing_agent.backend.tools.find_contracts_expiring import (
 def test_find_contracts_expiring_default_window():
     ws = MagicMock()
     with patch(
-        "contract_parsing_agent.backend.tools.find_contracts_expiring.run_sql",
+        "tools.find_contracts_expiring.run_sql",
         return_value=[{"contract_id": "CT-0001"}],
     ) as mock_sql:
         out = find_contracts_expiring(ws=ws)
@@ -21,7 +21,7 @@ def test_find_contracts_expiring_default_window():
 def test_find_contracts_expiring_custom_window():
     ws = MagicMock()
     with patch(
-        "contract_parsing_agent.backend.tools.find_contracts_expiring.run_sql",
+        "tools.find_contracts_expiring.run_sql",
         return_value=[],
     ) as mock_sql:
         find_contracts_expiring(within_days=30, ws=ws)

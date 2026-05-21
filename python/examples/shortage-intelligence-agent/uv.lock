@@ -204,7 +204,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "apx-agent", extras = ["eval", "langgraph"], marker = "extra == 'all'" },
+    { name = "apx-agent", extras = ["eval", "langgraph", "uc", "lakebase"], marker = "extra == 'all'" },
     { name = "databricks-langchain", marker = "extra == 'langgraph'", specifier = ">=0.3.0" },
     { name = "databricks-openai", specifier = ">=0.15.0" },
     { name = "databricks-sdk", specifier = ">=0.74.0" },
@@ -212,13 +212,16 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "langchain", marker = "extra == 'langgraph'", specifier = ">=1.0.0" },
     { name = "langchain-core", marker = "extra == 'langgraph'", specifier = ">=1.0.0" },
-    { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=1.0.0" },
+    { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=1.1.0" },
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "mlflow", marker = "extra == 'eval'", specifier = ">=2.0" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'lakebase'", specifier = ">=3.1" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "sqlalchemy", marker = "extra == 'lakebase'", specifier = ">=2.0" },
+    { name = "unitycatalog-ai", marker = "extra == 'uc'", specifier = ">=0.1.0" },
 ]
-provides-extras = ["eval", "langgraph", "all"]
+provides-extras = ["eval", "langgraph", "uc", "lakebase", "all"]
 
 [package.metadata.requires-dev]
 dev = [

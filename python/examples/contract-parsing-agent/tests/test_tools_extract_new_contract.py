@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from contract_parsing_agent.backend.tools.extract_new_contract import (
+from tools.extract_new_contract import (
     extract_new_contract,
 )
 
@@ -17,10 +17,10 @@ def test_extract_new_contract_appends_and_returns_fields():
         "auto_renewal": False,
     }
     with patch(
-        "contract_parsing_agent.backend.tools.extract_new_contract.extract",
+        "tools.extract_new_contract.extract",
         return_value=fake_extract,
     ), patch(
-        "contract_parsing_agent.backend.tools.extract_new_contract.run_sql",
+        "tools.extract_new_contract.run_sql",
         return_value=[],
     ) as mock_sql:
         out = extract_new_contract(
@@ -37,7 +37,7 @@ def test_extract_new_contract_appends_and_returns_fields():
 def test_extract_new_contract_surfaces_extraction_error():
     ws = MagicMock()
     with patch(
-        "contract_parsing_agent.backend.tools.extract_new_contract.extract",
+        "tools.extract_new_contract.extract",
         side_effect=RuntimeError("extraction_unavailable: timeout"),
     ):
         out = extract_new_contract(
@@ -59,10 +59,10 @@ def test_extract_new_contract_surfaces_insert_error():
         "auto_renewal": False,
     }
     with patch(
-        "contract_parsing_agent.backend.tools.extract_new_contract.extract",
+        "tools.extract_new_contract.extract",
         return_value=fake_extract,
     ), patch(
-        "contract_parsing_agent.backend.tools.extract_new_contract.run_sql",
+        "tools.extract_new_contract.run_sql",
         side_effect=RuntimeError("warehouse timeout"),
     ):
         out = extract_new_contract(

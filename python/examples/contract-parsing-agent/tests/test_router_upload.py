@@ -4,13 +4,13 @@ import pytest
 from fastapi.testclient import TestClient
 from reportlab.pdfgen import canvas
 
-from contract_parsing_agent.backend.app import app
+from app import app
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     # Override volume path so the test doesn't write to UC.
-    from contract_parsing_agent.backend import config as cfg_mod
+    import config as cfg_mod
     cfg_mod.get_settings.cache_clear()  # clear lru_cache on the real function
     fake_settings = cfg_mod.load_settings(
         cfg_mod._DEFAULT_PATH
@@ -21,7 +21,7 @@ def client(tmp_path, monkeypatch):
     # the endpoint (which did `from .config import get_settings`) sees the fake.
     monkeypatch.setattr(cfg_mod, "get_settings", lambda: fake_settings)
     monkeypatch.setattr(
-        "contract_parsing_agent.backend.router.get_settings",
+        "api.get_settings",
         lambda: fake_settings,
     )
     yield TestClient(app)

@@ -2,10 +2,10 @@ from unittest.mock import patch
 
 import pytest
 
-from eligibility_agent.tools.get_household import get_household
+from tools.get_household import get_household
 
 
-@patch("eligibility_agent.tools.get_household._fetch_row")
+@patch("tools.get_household._fetch_row")
 def test_returns_household_dict(mock_fetch):
     mock_fetch.return_value = {
         "household_id": "h-1",
@@ -22,7 +22,7 @@ def test_returns_household_dict(mock_fetch):
     assert result["household_size"] == 3
 
 
-@patch("eligibility_agent.tools.get_household._fetch_row")
+@patch("tools.get_household._fetch_row")
 def test_raises_when_not_found(mock_fetch):
     mock_fetch.return_value = None
     with pytest.raises(ValueError, match="no household found"):
