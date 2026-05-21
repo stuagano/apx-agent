@@ -75,7 +75,7 @@ orchestrator = Agent(tools=[
 ])
 ```
 
-The same wrapper handles remote agents — pass a `RemoteDatabricksAgent` or a URL string, and the parent calls it over HTTP with identity passthrough preserved.
+The same wrapper handles remote agents — pass a `RemoteDatabricksAgent` (constructed via `RemoteDatabricksAgent.from_app_name(...)` or `.from_card_url(...)`) and the parent calls it over HTTP with identity passthrough preserved. The `Agent(sub_agents=[url, ...])` constructor provides a URL shorthand that auto-wraps each URL via `agent_tool` at startup. See [`agent_tool` — LLM-driven delegation](#agent_tool--llm-driven-delegation) for the full surface.
 
 ### 4. Two runtimes, one agent
 
@@ -455,6 +455,153 @@ triage = HandoffAgent(
     },
 )
 ```
+
+### `agent_tool` — LLM-driven delegation
+
+When the parent agent's LLM should decide whether — and how many times — to
+delegate to a sub-agent, wrap the sub-agent as a tool. The parent calls it
+like any other tool, but the "tool" runs a full sub-agent loop and returns
+its final response. (This mirrors Google ADK's `AgentTool` pattern as a
+first-class composition primitive.)
+
+```python
+from apx_agent import Agent, agent_tool, lineage_tool, schema_tool
+
+specialist = Agent(
+    name="lineage_specialist",
+    tools=[lineage_tool(), schema_tool()],
+    instructions="You investigate Unity Catalog lineage and schemas.",
+)
+
+orchestrator = Agent(
+    instructions=(
+        "Answer the user's question. Delegate lineage and schema "
+        "questions to the lineage specialist."
+    ),
+    tools=[
+        agent_tool(
+            specialist,
+            name="ask_lineage_specialist",
+            description=(
+                "Investigate UC table lineage, upstream sources, and "
+                "schemas. Call this when the user asks where data "
+                "comes from or what columns exist."
+            ),
+        ),
+    ],
+)
+```
+
+**`name` and `description` are the routing contract.** They are what the
+parent LLM sees in the tool list — write them like tool docs: when to call,
+what it does, what it returns. Vague descriptions ("delegate to the
+specialist") leave the LLM guessing. `agent_tool` falls back to a generic
+delegate message if you omit `description`, but you should always set it
+explicitly for any real agent.
+
+#### Local or remote — same wrapper
+
+`agent_tool` accepts any `BaseAgent`. For a remote sub-agent, construct a
+`RemoteDatabricksAgent` first; the wrapper doesn't change:
+
+```python
+from apx_agent import RemoteDatabricksAgent
+
+# By Databricks App name (uses $DATABRICKS_HOST)
+remote_billing = await RemoteDatabricksAgent.from_app_name("billing-agent")
+
+# Or by full agent-card URL
+remote_billing = await RemoteDatabricksAgent.from_card_url(
+    "https://billing-agent.workspace.databricksapps.com/.well-known/agent.json"
+)
+
+orchestrator = Agent(tools=[
+    agent_tool(
+        remote_billing,
+        name="billing",
+        description="Answer billing and invoice questions for the calling user.",
+    ),
+])
+```
+
+`BaseAgent.run` is the only contract — the wrapper doesn't care whether the
+agent runs in-process or over HTTP. Identity passthrough flows through every
+form: in-process delegation, Model Serving sub-agent calls, and A2A
+app-to-app calls all preserve the calling user's OAuth token.
+
+#### `sub_agents=[url]` shorthand
+
+When the remote agent's own `/.well-known/agent.json` discovery card already
+has good `name` and `description`, the `Agent` constructor accepts a
+`sub_agents=[...]` list of URLs. Each entry is auto-resolved to a
+`RemoteDatabricksAgent` and wrapped via `agent_tool` at startup:
+
+```python
+agent = Agent(
+    tools=[run_sql_query, get_table_info],
+    sub_agents=["https://data-inspector.workspace.databricksapps.com"],
+)
+```
+
+Use explicit `agent_tool(...)` whenever the parent's calling context wants a
+different name or description than the remote agent self-describes — for
+example, when the parent's `instructions` reference the tool by a calling-
+context name, or when the remote's description is too generic to help the
+parent LLM pick it.
+
+#### When to pick `agent_tool` vs `RouterAgent` vs `HandoffAgent`
+
+All three are LLM-driven — the LLM picks the target. The differences are
+how often the LLM decides and who's in charge afterward:
+
+| | Decision shape | Control after |
+|---|---|---|
+| `RouterAgent` | One — pick a branch from a closed set | Branch returns; routing is done |
+| `HandoffAgent` | One — pick a peer from a closed set, transfer | Conversation moves to the peer; original agent is out |
+| `agent_tool` | Many — call sub-agents like tools | Parent stays in charge, can call again, can interleave with its own tools |
+
+Reach for `agent_tool` when the parent needs to stay in charge — gather
+results from multiple specialists, interleave with its own tools, or decide
+mid-conversation whether more delegation is needed. Reach for `RouterAgent`
+when one decision is enough and the branches are mutually exclusive. Reach
+for `HandoffAgent` when control should fully transfer to the peer (the user
+is now talking to billing, not triage).
+
+### Local vs remote — pick the deploy boundary
+
+An agent is a *module* either way — the question is whether it lives in the
+same process as its caller, or in its own app behind A2A. That's an
+orthogonal choice from how the edge is selected (deterministic vs
+LLM-driven). Two axes, four corners:
+
+|                       | Local (same process)                              | Remote (A2A)                                       |
+|-----------------------|---------------------------------------------------|----------------------------------------------------|
+| **Deterministic edge** | `SequentialAgent` / `ParallelAgent` / `LoopAgent` | `RemoteAgent` inside a workflow                    |
+| **LLM-driven edge**    | `agent_tool(sub_agent)`                           | `sub_agents=[url]`                                 |
+
+Pick the deploy boundary by **lifecycle and consumers**, not by agent
+count. Six agents that always run together, version together, and have no
+external caller belong in one app composed locally. One agent that has
+multiple callers, evolves independently, or has a different scaling shape
+belongs in its own app reached over A2A.
+
+Reach for a separate app when at least one is true:
+
+- **Second consumer.** Another agent (or another team) wants to call it.
+- **Independent deploy cadence.** It changes on a different clock than its caller.
+- **Different scaling profile.** CPU-heavy vs LLM-latency-bound, bursty vs steady, etc.
+- **Cleaner OBO surface.** It owns a sensitive resource and the auth boundary should be explicit.
+
+Keep it local otherwise. Six agents stitched together by a `SequentialAgent`
+share conversation history for free, fail atomically, version together, and
+add no network hops.
+
+`python/examples/data-triage-agent/` demonstrates both corners in one
+codebase: a six-step `SequentialAgent` composed locally (deterministic +
+local), delegating to a `data-inspector` sub-agent over A2A (LLM-driven +
+remote). The pipeline steps live together because they always run together;
+the inspector lives apart because the pipeline *and* a separate general
+fallback agent both call it.
 
 ### Sub-agents — cross-endpoint composition
 

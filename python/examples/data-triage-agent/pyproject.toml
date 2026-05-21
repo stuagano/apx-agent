@@ -58,10 +58,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 # ADK shape: top-level user-facing files ride along as forced-includes.
-# agent_server/ + scripts/ + jobs/ are real packages.
-packages = ["agent_server", "scripts", "jobs"]
-force-include = { "agent.py" = "agent.py", "tools.py" = "tools.py", "app.py" = "app.py", "api.py" = "api.py", "webhook.py" = "webhook.py", "config.py" = "config.py", "jira_client.py" = "jira_client.py" }
+# agent_server/ + scripts/ are real packages. integrations/ holds opt-in
+# integrations (Jira, etc.) — see integrations/jira/README.md.
+packages = ["agent_server", "scripts", "integrations"]
+force-include = { "agent.py" = "agent.py", "tools.py" = "tools.py", "app.py" = "app.py", "api.py" = "api.py" }
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "integrations/jira/tests"]
 pythonpath = ["."]

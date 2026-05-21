@@ -44,10 +44,7 @@ artifacts:
       cp tools.py .build/ 2>/dev/null || true
       cp app.py .build/ 2>/dev/null || true
       cp api.py .build/ 2>/dev/null || true
-      cp webhook.py .build/ 2>/dev/null || true
-      cp config.py .build/ 2>/dev/null || true
-      cp jira_client.py .build/ 2>/dev/null || true
-      cp -r jobs .build/ 2>/dev/null || true
+      cp -r integrations .build/ 2>/dev/null || true
       cp -r sub_agents .build/ 2>/dev/null || true
       # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true

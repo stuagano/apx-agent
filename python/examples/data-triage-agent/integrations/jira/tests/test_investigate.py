@@ -4,7 +4,7 @@ import respx
 import httpx
 from unittest.mock import MagicMock
 
-from jobs.investigate import (
+from integrations.jira.jobs.investigate import (
     _extract_investigation_query,
     _format_comment,
     run_investigation,

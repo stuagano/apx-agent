@@ -59,6 +59,7 @@ def run_sql_query(sql: str, ws: Workspace) -> dict[str, Any]:
     """Execute a read-only SQL query against any Databricks table.
     Use this to check if specific data exists, count rows, or inspect values.
     sql: a SELECT query (read-only)"""
+    # Local because: framework sql_tool pins a warehouse at construction time; here we discover a serverless warehouse from the caller's accessible list at runtime.
     rows = _run_sql(ws, sql)
     return {"row_count": len(rows), "rows": rows[:50]}
 
@@ -66,6 +67,7 @@ def run_sql_query(sql: str, ws: Workspace) -> dict[str, Any]:
 def get_table_info(table_full_name: str, ws: Workspace) -> dict[str, Any]:
     """Get schema, row count, and data freshness for a Unity Catalog table.
     table_full_name: catalog.schema.table format"""
+    # Local because: framework's table-info path goes through UC REST; here we use a SQL DESCRIBE + COUNT against any reachable warehouse, keeping the same code path as run_sql_query.
     try:
         schema_rows = _run_sql(ws, f"DESCRIBE TABLE {table_full_name}")
     except Exception as e:
@@ -89,6 +91,7 @@ def get_table_info(table_full_name: str, ws: Workspace) -> dict[str, Any]:
 def get_table_lineage(table_full_name: str, ws: Workspace) -> dict[str, Any]:
     """Get upstream sources that feed into this table via Unity Catalog lineage.
     Use to trace where data comes from when it's missing from a target table."""
+    # Local because: framework lineage_tool() uses UC's REST lineage API. We query system.access.table_lineage directly so the result can be joined with jobs/pipelines in find_jobs_for_table — UC REST doesn't expose that join.
     rows = _run_sql(ws, f"""
         SELECT
             source_table_full_name,
@@ -107,6 +110,7 @@ def get_table_lineage(table_full_name: str, ws: Workspace) -> dict[str, Any]:
 def find_jobs_for_table(table_full_name: str, ws: Workspace) -> dict[str, Any]:
     """Find Databricks jobs that write to a given table via Unity Catalog lineage.
     Returns entity IDs to follow up with get_job_run_history."""
+    # Local because: needs the same system.access.table_lineage SQL surface as get_table_lineage to identify WORKFLOW_RUN / PIPELINE_UPDATE writers.
     rows = _run_sql(ws, f"""
         SELECT DISTINCT
             entity_id,
@@ -130,6 +134,7 @@ def find_jobs_for_table(table_full_name: str, ws: Workspace) -> dict[str, Any]:
 def get_job_run_history(job_id: int, ws: Workspace) -> dict[str, Any]:
     """Get recent run history for a Databricks job — status, duration, errors.
     Use to check if the job populating a table has been failing recently."""
+    # Local because: thin wrapper over ws.jobs.list_runs shaped for LLM consumption — the framework toolkit equivalent is a separate planned promotion (see jobs_tools).
     runs = list(ws.jobs.list_runs(job_id=job_id, limit=10))
     return {
         "job_id": job_id,
@@ -153,6 +158,7 @@ def get_job_run_history(job_id: int, ws: Workspace) -> dict[str, Any]:
 def get_job_run_logs(run_id: int, ws: Workspace) -> dict[str, Any]:
     """Get error output and logs from a specific failed job run.
     Use after get_job_run_history identifies a failure."""
+    # Local because: thin wrapper over ws.jobs.get_run_output — planned for the jobs_tools toolkit promotion.
     output = ws.jobs.get_run_output(run_id=run_id)
     return {
         "run_id": run_id,
@@ -165,6 +171,7 @@ def get_job_run_logs(run_id: int, ws: Workspace) -> dict[str, Any]:
 def get_job_source_paths(job_id: int, ws: Workspace) -> dict[str, Any]:
     """Get the notebook or file paths used by a job's tasks.
     Use to find the source code to inspect for filter or transformation logic."""
+    # Local because: extracts notebook/python/dbt/pipeline paths from job tasks — planned for the jobs_tools toolkit promotion.
     job = ws.jobs.get(job_id=job_id)
     raw_tasks = job.settings.tasks if job.settings else None
     tasks = []
@@ -192,6 +199,7 @@ def read_github_file(repo: str, path: str, ws: Workspace) -> dict[str, Any]:
     """Read a source file from a GitHub repository.
     Use to inspect transformation or filter logic in pipeline or API code.
     repo format: 'org/repo-name', e.g. 'my-org/my-repo'"""
+    # Local because: example-specific (GitHub MCP); currently stubbed.
     return {"stub": True, "message": f"GitHub not yet configured. Would read {repo}/{path}"}
 
 
@@ -199,6 +207,7 @@ def search_github_code(repo: str, query: str, ws: Workspace) -> dict[str, Any]:
     """Search for code patterns in a GitHub repository.
     Use to find filter conditions or column names that may be excluding data.
     repo format: 'org/repo-name', query: e.g. 'status filter WHERE active'"""
+    # Local because: example-specific (GitHub MCP); currently stubbed.
     return {"stub": True, "message": f"GitHub not yet configured. Would search '{query}' in {repo}"}
 
 
@@ -211,6 +220,7 @@ def list_genie_spaces(ws: Workspace) -> dict[str, Any]:
     Call this first to discover which Spaces exist and what they cover.
     Returns space IDs, titles, and descriptions — use the space_id with
     query_genie_space to ask questions."""
+    # Local because: framework genie_tool(space_id) pins the space at construction. This is the dynamic pattern — the LLM picks a space at runtime by calling list_genie_spaces first, then query_genie_space.
     resp = ws.genie.list_spaces()
     spaces = []
     for s in (resp.spaces or []):
@@ -228,6 +238,7 @@ def query_genie_space(space_id: str, question: str, ws: Workspace) -> dict[str, 
     Use list_genie_spaces first to find the right space_id.
     space_id: ID from list_genie_spaces
     question: plain English question (e.g. 'What upstream tables feed into gold.dr_accounts?')"""
+    # Local because: paired with list_genie_spaces for runtime space selection; the framework's static genie_tool factory can't express this.
     msg = ws.genie.start_conversation_and_wait(space_id=space_id, content=question)
 
     result: dict[str, Any] = {

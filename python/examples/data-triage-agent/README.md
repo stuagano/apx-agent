@@ -4,6 +4,8 @@ Investigates why data is missing from Databricks tables — **six-step `Sequenti
 
 A `SequentialAgent` composes six focused `Agent`s that each handle one phase of the investigation. Conversation history accumulates automatically — every agent's output is visible to the next. Delegates SQL and Delta forensics to the [data-inspector](../data-inspector/) sub-agent via A2A.
 
+> **Optional Jira integration:** A Jira-webhook-triggered investigation flow lives under [`integrations/jira/`](integrations/jira/README.md) — opt-in, ignore it and the agent still works.
+
 ---
 
 ## What makes this simple

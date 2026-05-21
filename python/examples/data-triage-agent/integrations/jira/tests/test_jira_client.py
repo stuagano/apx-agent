@@ -4,7 +4,7 @@ import pytest
 import respx
 import httpx
 
-from jira_client import JiraClient, JiraClientError
+from integrations.jira.jira_client import JiraClient, JiraClientError
 
 
 BASE = "https://test.atlassian.net"

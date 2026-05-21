@@ -22,6 +22,7 @@ pytest.importorskip("langchain_core")
 
 from apx_agent import (  # noqa: E402
     HandoffAgent,
+    KeywordRouter,
     LlmAgent,
     LoopAgent,
     ParallelAgent,
@@ -148,6 +149,72 @@ class TestRouterAgent:
         # All targets land in END after they run.
         for name in ("billing", "support", "sales"):
             assert (name, "__end__") in edge_pairs
+
+
+# ---------------------------------------------------------------------------
+# KeywordRouter
+# ---------------------------------------------------------------------------
+
+
+class TestKeywordRouter:
+    def test_match_predicate_picks_first_branch_with_hit(self) -> None:
+        """Pure routing predicate — case-insensitive substring, first hit wins."""
+        agent = KeywordRouter(
+            branches=[
+                ("investigation", LlmAgent(tools=[_noop_tool]),
+                 ["missing", "investigate", "root cause"]),
+                ("billing", LlmAgent(tools=[_noop_tool]),
+                 ["invoice", "charge"]),
+            ],
+            default=LlmAgent(tools=[_noop_tool]),
+        )
+        assert agent.match("Why is my data MISSING?") == "investigation"
+        assert agent.match("explain this invoice") == "billing"
+        assert agent.match("hello there") is None
+        # First-match wins when keywords overlap (investigation listed first)
+        assert agent.match("investigate this invoice") == "investigation"
+
+    def test_topology(self, fake_ws: MagicMock) -> None:
+        """Graph has router node + one node per branch + a default node."""
+        agent = KeywordRouter(
+            branches=[
+                ("investigation", LlmAgent(tools=[_noop_tool]),
+                 ["investigate"]),
+                ("billing", LlmAgent(tools=[_noop_tool]), ["invoice"]),
+            ],
+            default=LlmAgent(tools=[_noop_tool]),
+        )
+        compiled = compile_to_langgraph(agent, ws=fake_ws, model="any")
+        nodes = set(compiled.get_graph().nodes.keys())
+        assert {"router", "investigation", "billing",
+                KeywordRouter.DEFAULT_LABEL}.issubset(nodes)
+
+        edge_pairs = {(e.source, e.target) for e in compiled.get_graph().edges}
+        assert ("__start__", "router") in edge_pairs
+        for name in ("investigation", "billing", KeywordRouter.DEFAULT_LABEL):
+            assert (name, "__end__") in edge_pairs
+
+    def test_empty_branches_rejected(self) -> None:
+        with pytest.raises(ValueError, match="at least one branch"):
+            KeywordRouter(branches=[], default=LlmAgent(tools=[_noop_tool]))
+
+    def test_duplicate_branch_names_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Duplicate branch name"):
+            KeywordRouter(
+                branches=[
+                    ("dup", LlmAgent(tools=[_noop_tool]), ["a"]),
+                    ("dup", LlmAgent(tools=[_noop_tool]), ["b"]),
+                ],
+                default=LlmAgent(tools=[_noop_tool]),
+            )
+
+    def test_reserved_default_label_rejected(self) -> None:
+        with pytest.raises(ValueError, match="reserved"):
+            KeywordRouter(
+                branches=[(KeywordRouter.DEFAULT_LABEL,
+                           LlmAgent(tools=[_noop_tool]), ["x"])],
+                default=LlmAgent(tools=[_noop_tool]),
+            )
 
 
 # ---------------------------------------------------------------------------
