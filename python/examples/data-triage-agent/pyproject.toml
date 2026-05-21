@@ -26,7 +26,10 @@ dev = [
 ]
 
 [tool.uv.sources]
-apx-agent = { path = "../..", editable = true }
+# In-source-code-tree wheel — bundled into .build/ at deploy time so the App
+# container can resolve it without reaching outside source_code_path. Mirrors
+# memory_demo + customer_triage. Switch back to editable for local dev only.
+apx-agent = { path = "./apx_agent-0.18.0-py3-none-any.whl" }
 
 [project.scripts]
 investigate = "data_triage_agent.jobs.investigate:main"
