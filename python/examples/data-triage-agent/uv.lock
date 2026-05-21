@@ -202,7 +202,7 @@ dependencies = [
     { name = "pydantic-settings" },
 ]
 wheels = [
-    { filename = "apx_agent-0.18.0-py3-none-any.whl", hash = "sha256:a671837c21b8a2a19f2394b00f2213e6b62b143e508a6bcd4698abccc8e0e86e" },
+    { filename = "apx_agent-0.18.0-py3-none-any.whl", hash = "sha256:4c36154e2d0244c5e85bda006703e2ee0c617db405fec8fee82c07de8f707a2a" },
 ]
 
 [package.optional-dependencies]

@@ -43,7 +43,7 @@ from ._sql import decode_statement, get_warehouse_id, run_sql
 from ._llm import ChatDatabricksGptReasoning, get_llm
 
 # App factory and setup
-from ._wiring import create_app, setup_agent
+from ._wiring import create_app, mount_mcp_endpoints, setup_agent
 
 # Eval bridge
 from ._eval import app_predict_fn, evaluate
@@ -308,6 +308,7 @@ __all__ = [
     "get_llm",
     # App factory
     "create_app",
+    "mount_mcp_endpoints",
     "setup_agent",
     # Eval
     "app_predict_fn",
