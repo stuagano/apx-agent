@@ -405,6 +405,13 @@ dependencies = [
 start-server = "agent_server.start_server:main"
 quickstart = "scripts.quickstart:main"
 
+[tool.uv.sources]
+# Editable parent path keeps `uv sync` working on first checkout. At deploy
+# time, `apx deploy --target apps` builds the wheel + rewrites .build/
+# pyproject.toml to point at the wheel (since the App container can't
+# resolve ../..). If you're installing from PyPI instead, drop this block.
+apx-agent = { path = "../..", editable = true }
+
 [tool.apx.agent]
 name = "<APP_NAME>"
 description = "An apx-agent on Databricks Apps."
@@ -996,11 +1003,26 @@ def eval_cmd(
 @click.option(
     "--auto-build-wheel/--no-auto-build-wheel", default=True,
     help="When [tool.uv.sources].apx-agent in pyproject.toml points at a "
-         "local wheel that doesn't exist, walk up to find the apx-agent "
-         "source root, run `uv build --wheel`, copy the result into cwd, "
-         "and execute the bundle's artifacts.default.build script to "
-         "populate .build/. ON by default. Pass --no-auto-build-wheel to "
-         "manage wheel publishing yourself. Only used by --target apps.",
+         "local wheel that doesn't exist (or an editable parent path), "
+         "walk up to find the apx-agent source root, run `uv build --wheel`, "
+         "copy the result into cwd, execute the bundle's artifacts.default.build "
+         "script to populate .build/, and (for editable sources) rewrite "
+         ".build/pyproject.toml to use the wheel path. ON by default. Only "
+         "used by --target apps.",
+)
+@click.option(
+    "--auto-experiment/--no-auto-experiment", default=True,
+    help="Auto-resolve an MLflow experiment id for the deploy: if the "
+         "caller didn't pass --var mlflow_experiment_id=, look up "
+         "/Users/<current-user>/<app_name>-<target> and create it if "
+         "missing, then pass it through to bundle deploy + bundle run. "
+         "ON by default. Only used by --target apps.",
+)
+@click.option(
+    "--var", "vars", multiple=True,
+    help="Extra `--var key=value` pairs to forward to `databricks bundle "
+         "deploy + bundle run`. Repeatable. Use to override resources, "
+         "wire in a vector_search_index, etc.",
 )
 @click.option(
     "--json-output", is_flag=True, default=False,
@@ -1061,6 +1083,8 @@ def deploy(
     no_run: bool,
     auto_update_yml: bool,
     auto_build_wheel: bool,
+    auto_experiment: bool,
+    vars: tuple[str, ...],
     json_output: bool,
     no_deploy: bool,
     experiment: str | None,
@@ -1102,6 +1126,8 @@ def deploy(
             no_run=no_run,
             auto_update_yml=auto_update_yml,
             auto_build_wheel=auto_build_wheel,
+            auto_experiment=auto_experiment,
+            vars=vars,
             json_output=json_output,
         )
         return
@@ -1405,30 +1431,75 @@ def _ensure_apx_wheel(cwd: Path) -> Path | None:
         # Some other override (git, url, workspace). We don't manage those.
         return None
 
-    # Normalise the wheel target path (may be relative).
-    wheel_target = (cwd / raw_path).resolve()
-    expected_name = wheel_target.name
+    # Two shapes of [tool.uv.sources].apx-agent we recognise:
+    #
+    # 1. Wheel-pinned: { path = "./apx_agent-X.Y.Z.whl" } — deploy-correct
+    #    pyproject. We build the wheel if missing.
+    #
+    # 2. Editable parent: { path = "../..", editable = true } — local-dev
+    #    correct pyproject. We build the wheel + return the path so the
+    #    caller can rewrite .build/pyproject.toml to use the wheel for
+    #    the deployed container.
+    raw_target = (cwd / raw_path).resolve()
+    expected_name: str | None = None
+    is_editable_dir = bool(apx_source.get("editable")) or raw_target.is_dir()
 
-    if wheel_target.exists():
+    if is_editable_dir:
+        # raw_target should be the apx-agent source root. Resolve version
+        # from its pyproject and synthesize the expected wheel filename.
+        sub_pyproject = raw_target / "pyproject.toml"
+        if sub_pyproject.exists():
+            try:
+                sub_doc = tomllib.loads(sub_pyproject.read_text())
+                src_ver = str(sub_doc.get("project", {}).get("version") or "")
+            except Exception:
+                src_ver = ""
+        else:
+            src_ver = ""
+        if src_ver:
+            expected_name = f"apx_agent-{src_ver}-py3-none-any.whl"
+            wheel_target = cwd / expected_name
+        else:
+            wheel_target = cwd / "apx_agent-0.0.0-py3-none-any.whl"  # fallback
+    else:
+        # Wheel-pinned shape.
+        wheel_target = raw_target
+        expected_name = wheel_target.name
+
+    if wheel_target.exists() and not is_editable_dir:
         click.echo(
             f"  apx-agent wheel already staged: {wheel_target.name}", err=True,
         )
         return wheel_target
 
-    # Wheel is missing — walk up to find the apx-agent source root.
+    # Wheel is missing — locate the apx-agent source root.
     source_root: Path | None = None
-    for parent in (cwd, *cwd.parents):
-        marker = parent / "src" / "apx_agent" / "__init__.py"
-        sub_pyproject = parent / "pyproject.toml"
-        if not (marker.exists() and sub_pyproject.exists()):
-            continue
-        try:
-            sub_doc = tomllib.loads(sub_pyproject.read_text())
-        except Exception:
-            continue
-        if sub_doc.get("project", {}).get("name") == "apx-agent":
-            source_root = parent
-            break
+    if is_editable_dir and raw_target.is_dir():
+        # The editable path IS the source root (validated by checking for
+        # the marker + apx-agent name).
+        marker = raw_target / "src" / "apx_agent" / "__init__.py"
+        sub_pyproject = raw_target / "pyproject.toml"
+        if marker.exists() and sub_pyproject.exists():
+            try:
+                sub_doc = tomllib.loads(sub_pyproject.read_text())
+                if sub_doc.get("project", {}).get("name") == "apx-agent":
+                    source_root = raw_target
+            except Exception:
+                pass
+    if source_root is None:
+        # Walk up from cwd as a fallback (covers the wheel-pinned shape).
+        for parent in (cwd, *cwd.parents):
+            marker = parent / "src" / "apx_agent" / "__init__.py"
+            sub_pyproject = parent / "pyproject.toml"
+            if not (marker.exists() and sub_pyproject.exists()):
+                continue
+            try:
+                sub_doc = tomllib.loads(sub_pyproject.read_text())
+            except Exception:
+                continue
+            if sub_doc.get("project", {}).get("name") == "apx-agent":
+                source_root = parent
+                break
 
     if source_root is None:
         raise click.ClickException(
@@ -1545,6 +1616,187 @@ def _run_bundle_artifacts(cwd: Path) -> None:
             "Re-run with --no-auto-build-wheel if you'd rather pre-build "
             "the .build directory by hand."
         )
+
+
+def _rewrite_build_pyproject_for_deploy(
+    build_dir: Path, wheel_path: Path,
+) -> None:
+    """Rewrite ``.build/pyproject.toml`` to point at the bundled wheel.
+
+    The example's source pyproject can use editable
+    ``[tool.uv.sources].apx-agent = { path = "../..", editable = true }``
+    so ``uv sync`` works on first checkout. The deployed App container
+    can't resolve ``../..``, so this helper rewrites the staged copy in
+    ``.build/`` to use the local wheel path instead.
+
+    Idempotent: skips silently if ``.build/pyproject.toml`` already points
+    at a wheel, or if it has no ``[tool.uv.sources].apx-agent`` entry.
+
+    After rewriting, regenerates ``.build/uv.lock`` against the new
+    pyproject so the App container's ``uv sync`` resolves cleanly.
+    """
+    import subprocess
+
+    try:
+        import tomllib  # py>=3.11
+    except ImportError:  # pragma: no cover
+        import tomli as tomllib  # type: ignore[no-redef]
+
+    pyproject = build_dir / "pyproject.toml"
+    if not pyproject.exists():
+        return
+    text = pyproject.read_text()
+    try:
+        doc = tomllib.loads(text)
+    except Exception:
+        return
+
+    sources = doc.get("tool", {}).get("uv", {}).get("sources", {})
+    apx_source = sources.get("apx-agent") if isinstance(sources, dict) else None
+    if not isinstance(apx_source, dict):
+        return
+    current_path = apx_source.get("path")
+    if not isinstance(current_path, str):
+        return
+    # Already wheel-pinned? No-op.
+    if current_path.endswith(".whl"):
+        return
+
+    # Replace whichever line carries the apx-agent source. We avoid
+    # rewriting the whole TOML to preserve comments + ordering.
+    wheel_rel = f"./{wheel_path.name}"
+    new_block = f'apx-agent = {{ path = "{wheel_rel}" }}'
+    lines = text.splitlines()
+    swapped = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("apx-agent ") and "=" in stripped and "{" in stripped:
+            lines[i] = new_block
+            swapped = True
+            break
+    if not swapped:
+        return
+    pyproject.write_text("\n".join(lines) + "\n")
+    click.echo(
+        f"  rewrote .build/pyproject.toml: apx-agent -> {wheel_rel}", err=True,
+    )
+
+    # Make sure the wheel is staged in .build/ alongside the pyproject.
+    target_wheel = build_dir / wheel_path.name
+    if not target_wheel.exists():
+        import shutil
+        shutil.copy2(wheel_path, target_wheel)
+
+    # Regenerate uv.lock inside .build/ against the rewritten pyproject.
+    lockfile = build_dir / "uv.lock"
+    if lockfile.exists():
+        lockfile.unlink()
+    proc = subprocess.run(
+        ["uv", "lock"], cwd=str(build_dir),
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        raise click.ClickException(
+            f"`uv lock` failed in {build_dir} after rewriting pyproject "
+            f"(exit {proc.returncode}).\nstderr tail:\n"
+            f"{_tail_lines(proc.stderr or proc.stdout)}"
+        )
+    click.echo("  regenerated .build/uv.lock", err=True)
+
+
+def _ensure_experiment_id(
+    profile: str | None,
+    bundle_name: str,
+    bundle_target: str,
+    env_value: str | None,
+) -> str | None:
+    """Resolve an MLflow experiment id for `--var mlflow_experiment_id=...`.
+
+    Lookup order:
+      1. ``env_value`` (anything the caller already provided via --var)
+      2. Local ``.env`` if it has ``MLFLOW_EXPERIMENT_ID``
+      3. Look up by canonical path ``/Users/<user>/<bundle_name>-<target>``;
+         create it if missing.
+      4. Return ``None`` on failure (deploy proceeds without experiment).
+    """
+    import json as _json
+    import subprocess
+
+    if env_value:
+        return env_value
+
+    # Step 2: .env in cwd
+    env_file = Path.cwd() / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("MLFLOW_EXPERIMENT_ID="):
+                val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if val:
+                    return val
+
+    # Step 3: lookup / create via databricks CLI
+    cmd_user = ["databricks", "current-user", "me", "--output", "json"]
+    if profile:
+        cmd_user += ["--profile", profile]
+    try:
+        proc = subprocess.run(cmd_user, capture_output=True, text=True, check=True)
+        me = _json.loads(proc.stdout)
+    except Exception as exc:
+        click.echo(
+            f"# could not resolve current user for experiment auto-create: {exc}",
+            err=True,
+        )
+        return None
+
+    email = None
+    for entry in me.get("emails") or []:
+        if entry.get("primary") and entry.get("value"):
+            email = entry["value"]
+            break
+    email = email or me.get("userName")
+    if not email:
+        return None
+
+    exp_path = f"/Users/{email}/{bundle_name}-{bundle_target}"
+
+    # get-by-name (use --json to suppress the auto-error on miss)
+    get_cmd = [
+        "databricks", "experiments", "get-by-name", exp_path, "--output", "json",
+    ]
+    if profile:
+        get_cmd += ["--profile", profile]
+    proc = subprocess.run(get_cmd, capture_output=True, text=True, check=False)
+    if proc.returncode == 0:
+        try:
+            data = _json.loads(proc.stdout)
+            eid = data.get("experiment", {}).get("experiment_id") or data.get("experiment_id")
+            if eid:
+                click.echo(f"  reusing experiment: {exp_path} (id={eid})", err=True)
+                return str(eid)
+        except Exception:
+            pass
+
+    # Create
+    create_cmd = ["databricks", "experiments", "create-experiment", exp_path, "--output", "json"]
+    if profile:
+        create_cmd += ["--profile", profile]
+    proc = subprocess.run(create_cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        click.echo(
+            f"# experiment create failed for {exp_path}: "
+            f"{_tail_lines(proc.stderr or proc.stdout, 3)}",
+            err=True,
+        )
+        return None
+    try:
+        data = _json.loads(proc.stdout)
+        eid = data.get("experiment_id")
+        if eid:
+            click.echo(f"  created experiment: {exp_path} (id={eid})", err=True)
+            return str(eid)
+    except Exception:
+        pass
+    return None
 
 
 def _preflight_apps(cwd: Path) -> None:
@@ -1746,6 +1998,8 @@ def _deploy_apps(
     no_run: bool,
     auto_update_yml: bool,
     auto_build_wheel: bool,
+    auto_experiment: bool = True,
+    vars: tuple[str, ...] = (),
     json_output: bool,
 ) -> None:
     """Implement ``apx deploy --target apps``.
@@ -1766,6 +2020,8 @@ def _deploy_apps(
             bundle_target=bundle_target, no_run=no_run,
             auto_update_yml=auto_update_yml,
             auto_build_wheel=auto_build_wheel,
+            auto_experiment=auto_experiment,
+            vars=vars,
             json_output=json_output, log=log,
         )
     except click.ClickException as e:
@@ -1784,6 +2040,8 @@ def _deploy_apps_impl(
     no_run: bool,
     auto_update_yml: bool,
     auto_build_wheel: bool,
+    auto_experiment: bool = True,
+    vars: tuple[str, ...] = (),
     json_output: bool,
     log: Any,
 ) -> None:
@@ -1810,19 +2068,51 @@ def _deploy_apps_impl(
         )
 
     # 2b. Auto-build apx-agent wheel + populate .build/
+    wheel_path: Path | None = None
     if auto_build_wheel:
         wheel_path = _ensure_apx_wheel(cwd)
         if wheel_path:
             log(f"  built apx-agent wheel: {wheel_path}")
         _run_bundle_artifacts(cwd)
         log("  populated .build/")
+        # If the source pyproject used the editable shape, rewrite the
+        # staged copy in .build/ to use the wheel path instead. Idempotent
+        # when pyproject is already wheel-pinned.
+        if wheel_path:
+            build_dir = cwd / ".build"
+            if build_dir.is_dir():
+                _rewrite_build_pyproject_for_deploy(build_dir, wheel_path)
     else:
         log("# --no-auto-build-wheel: skipping wheel build + artifacts step")
+
+    # 2c. Auto-resolve mlflow_experiment_id if the bundle wants it and the
+    # caller didn't pass one. Looks up / creates an experiment at
+    # /Users/<current-user>/<bundle_name>-<target>.
+    extra_vars: list[str] = []
+    if auto_experiment:
+        existing_vars = list(vars or ())
+        already_set = any(
+            v.startswith("mlflow_experiment_id=") for v in existing_vars
+        )
+        if not already_set:
+            eid = _ensure_experiment_id(
+                profile=profile,
+                bundle_name=app_name,
+                bundle_target=bundle_target,
+                env_value=None,
+            )
+            if eid:
+                extra_vars.append(f"mlflow_experiment_id={eid}")
+
+    deploy_var_args: list[str] = []
+    for v in list(vars or ()) + extra_vars:
+        deploy_var_args.extend(["--var", v])
 
     # 3. databricks bundle validate
     log("# databricks bundle validate")
     validate_proc = _run_databricks_cmd(
-        ["bundle", "validate", "--target", bundle_target], profile=profile,
+        ["bundle", "validate", "--target", bundle_target] + deploy_var_args,
+        profile=profile,
     )
     if validate_proc.returncode != 0:
         msg = (
@@ -1838,7 +2128,8 @@ def _deploy_apps_impl(
     log("# databricks bundle deploy")
     deploy_t0 = time.monotonic()
     deploy_proc = _run_databricks_cmd(
-        ["bundle", "deploy", "--target", bundle_target], profile=profile,
+        ["bundle", "deploy", "--target", bundle_target] + deploy_var_args,
+        profile=profile,
     )
     deploy_seconds = round(time.monotonic() - deploy_t0, 2)
     if deploy_proc.returncode != 0:
@@ -1860,7 +2151,7 @@ def _deploy_apps_impl(
         log(f"# databricks bundle run {bundle_key}")
         run_t0 = time.monotonic()
         run_proc = _run_databricks_cmd(
-            ["bundle", "run", bundle_key, "--target", bundle_target],
+            ["bundle", "run", bundle_key, "--target", bundle_target] + deploy_var_args,
             profile=profile,
         )
         run_seconds = round(time.monotonic() - run_t0, 2)

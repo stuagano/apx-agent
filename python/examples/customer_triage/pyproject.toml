@@ -20,7 +20,7 @@ dependencies = [
 quickstart = "scripts.quickstart:main"
 
 [tool.uv.sources]
-apx-agent = { path = "./apx_agent-0.18.0-py3-none-any.whl" }
+apx-agent = { path = "../..", editable = true }
 
 [tool.apx.agent]
 name = "customer_triage"
