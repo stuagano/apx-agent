@@ -28,7 +28,7 @@ def _ensure_apx_agent_mock():
 
 def _load(name: str):
     _ensure_apx_agent_mock()
-    path = AGENTS_DIR / name / "main.py"
+    path = AGENTS_DIR / name / "agent.py"
     spec = importlib.util.spec_from_file_location(f"agent_{name}", path)
     mod  = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

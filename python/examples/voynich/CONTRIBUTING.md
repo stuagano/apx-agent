@@ -17,14 +17,14 @@ everything to MLflow.
 
 ## 1. Adding a tool to an existing agent
 
-Tools live in `agents/<name>/main.py`. A tool is any function that:
+Tools live in `agents/<name>/agent.py`. A tool is any function that:
 - Takes typed parameters (Pydantic-annotated or plain Python types)
 - Takes `Dependencies.*` parameters for Databricks access (injected, not in schema)
 - Returns a `dict` (serialized to JSON in the tool response)
 - Has a docstring (becomes the tool's description for the LLM)
 
 ```python
-# agents/historian/main.py
+# agents/historian/agent.py
 
 def score_linguistic_register(
     decoded_text: Annotated[str, "Decoded candidate text to analyze"],
@@ -74,7 +74,7 @@ class TestHistorianTools:
 mkdir -p agents/my_new_agent
 ```
 
-### Step 2: Write `agents/my_new_agent/main.py`
+### Step 2: Write `agents/my_new_agent/agent.py`
 
 ```python
 """
@@ -133,7 +133,7 @@ registry    = "$VOYNICH_AGENT_HUB_URL"
 ### Step 4: Wire it into the orchestrator (if needed)
 
 If the new agent participates in the evolutionary loop:
-1. Add its URL to `agents/orchestrator/main.py` env vars
+1. Add its URL to `agents/orchestrator/agent.py` env vars
 2. Add it to the `LoopConfig.fitness_agents` list in `loop_agent/loop_agent.py`
 3. Add it to the Workflow YAML's `spark_env_vars` section
 

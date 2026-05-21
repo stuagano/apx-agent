@@ -4,6 +4,7 @@
 from ._agents import (
     BaseAgent,
     HandoffAgent,
+    KeywordRouter,
     LlmAgent,
     LoopAgent,
     ParallelAgent,
@@ -46,7 +47,12 @@ from ._llm import ChatDatabricksGptReasoning, get_llm
 from ._wiring import create_app, mount_mcp_endpoints, setup_agent
 
 # Eval bridge
-from ._eval import app_predict_fn, evaluate
+from ._eval import (
+    app_predict_fn,
+    endpoint_predict_fn,
+    eval_against_endpoint,
+    evaluate,
+)
 
 # Genie tool factories
 from .genie import genie_query_tool, genie_tool
@@ -64,6 +70,13 @@ from .catalog import (
 from .vector_search import vector_search_tool
 from .sql_tools import sql_tool
 from .foundation_model import foundation_model_tool
+from .jobs_tools import (
+    jobs_for_table_tool,
+    jobs_history_tool,
+    jobs_logs_tool,
+    jobs_source_paths_tool,
+    jobs_tools,
+)
 
 # LangGraph compiler (optional — requires the ``langgraph`` extra)
 from ._compile import CompileContext, compile_to_langgraph
@@ -273,11 +286,15 @@ from ._audit import (
     set_audit_attrs,
 )
 
+# Bootstrap helpers for Apps-target quickstart
+from .bootstrap import init_apps_experiment
+
 __all__ = [
     # Agent types
     "Agent",
     "BaseAgent",
     "HandoffAgent",
+    "KeywordRouter",
     "LlmAgent",
     "LoopAgent",
     "ParallelAgent",
@@ -312,6 +329,8 @@ __all__ = [
     "setup_agent",
     # Eval
     "app_predict_fn",
+    "endpoint_predict_fn",
+    "eval_against_endpoint",
     "evaluate",
     # Tool factories
     "genie_query_tool",
@@ -324,6 +343,11 @@ __all__ = [
     "vector_search_tool",
     "sql_tool",
     "foundation_model_tool",
+    "jobs_for_table_tool",
+    "jobs_history_tool",
+    "jobs_logs_tool",
+    "jobs_source_paths_tool",
+    "jobs_tools",
     # LangGraph compiler
     "CompileContext",
     "compile_to_langgraph",
@@ -485,4 +509,6 @@ __all__ = [
     "hash_for_audit",
     "input_keys_summary",
     "output_summary",
+    # Bootstrap
+    "init_apps_experiment",
 ]

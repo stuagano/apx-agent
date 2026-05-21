@@ -45,6 +45,7 @@ except ImportError:  # pragma: no cover — let downstream code raise on use
 from ._agents import (
     BaseAgent,
     HandoffAgent,
+    KeywordRouter,
     LlmAgent,
     LoopAgent,
     ParallelAgent,
@@ -492,6 +493,53 @@ def _compile_router_agent(agent: RouterAgent, ctx: CompileContext) -> Any:
     return graph.compile()
 
 
+def _compile_keyword_router(agent: KeywordRouter, ctx: CompileContext) -> Any:
+    """Compile a ``KeywordRouter`` — zero-LLM substring match picks a branch.
+
+    Topology::
+
+        START → keyword_match → (conditional) → branch_a OR ... OR default → END
+
+    The keyword_match node inspects the latest ``HumanMessage`` in state
+    and writes the chosen branch name. No LLM call.
+    """
+    from langchain_core.messages import HumanMessage
+    from langgraph.graph import END, START, StateGraph
+
+    class KeywordRouterState(TypedDict):
+        messages: Annotated[list, add_messages]
+        chosen: str
+
+    branches = list(agent._branches)
+    branch_names = [name for name, _, _ in branches]
+    default_label = KeywordRouter.DEFAULT_LABEL
+
+    def _keyword_match(state: dict) -> dict[str, Any]:
+        text = ""
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, HumanMessage):
+                content = msg.content
+                text = content if isinstance(content, str) else str(content)
+                break
+        chosen = agent.match(text) or default_label
+        return {"chosen": chosen}
+
+    graph = StateGraph(KeywordRouterState)
+    graph.add_node("router", _keyword_match)
+    for name, sub, _ in branches:
+        graph.add_node(name, _compile_any(sub, ctx))
+        graph.add_edge(name, END)
+    graph.add_node(default_label, _compile_any(agent._default, ctx))
+    graph.add_edge(default_label, END)
+    graph.add_edge(START, "router")
+    graph.add_conditional_edges(
+        "router",
+        lambda s: s["chosen"],
+        {**{n: n for n in branch_names}, default_label: default_label},
+    )
+    return graph.compile()
+
+
 def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
     """Compile a ``HandoffAgent`` — each agent can transfer mid-conversation.
 
@@ -610,12 +658,14 @@ def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
         return _compile_loop_agent(agent, ctx)
     if isinstance(agent, RouterAgent):
         return _compile_router_agent(agent, ctx)
+    if isinstance(agent, KeywordRouter):
+        return _compile_keyword_router(agent, ctx)
     if isinstance(agent, HandoffAgent):
         return _compile_handoff_agent(agent, ctx)
     raise NotImplementedError(
         f"compile_to_langgraph: agent type {type(agent).__name__!r} not supported. "
         f"Supported: LlmAgent, SequentialAgent, ParallelAgent, LoopAgent, "
-        f"RouterAgent, HandoffAgent."
+        f"RouterAgent, KeywordRouter, HandoffAgent."
     )
 
 

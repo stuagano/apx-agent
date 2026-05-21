@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 from databricks.sdk import WorkspaceClient
 
-from jira_client import JiraClient, JiraClientError
+from integrations.jira.jira_client import JiraClient, JiraClientError
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)

@@ -2363,3 +2363,105 @@ def test_deploy_secret_scan_picks_up_dotenv_keys(
     assert "ATLASSIAN_API_KEY" in result.output
     # BENIGN_FLAG should not appear — it doesn't match the secret pattern.
     assert "BENIGN_FLAG" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# apx eval — endpoint-url flag, mutex, token parsing
+# ---------------------------------------------------------------------------
+
+
+def _write_evalset(tmp_path: Path) -> Path:
+    """Write a minimal JSONL eval set returning a Path."""
+    p = tmp_path / "evalset.jsonl"
+    p.write_text(
+        '{"inputs": {"question": "hi"}, "expectations": {"expected_facts": []}}\n'
+    )
+    return p
+
+
+def test_eval_endpoint_url_mutex_with_model(tmp_path: Path) -> None:
+    """--endpoint-url + --model raises a friendly UsageError."""
+    evalset = _write_evalset(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "eval", str(evalset),
+        "--endpoint-url", "https://app.example.com",
+        "--model", "databricks-claude-sonnet-4-6",
+    ])
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+    assert "--model" in result.output
+
+
+def test_eval_endpoint_url_mutex_with_module(tmp_path: Path) -> None:
+    """--endpoint-url + --module raises a friendly UsageError."""
+    evalset = _write_evalset(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "eval", str(evalset),
+        "--endpoint-url", "https://app.example.com",
+        "--module", "agent:agent",
+    ])
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+    assert "--module" in result.output
+
+
+def test_eval_endpoint_url_with_token_parses_cleanly(tmp_path: Path) -> None:
+    """--endpoint-url + --token routes to eval_against_endpoint without error."""
+    evalset = _write_evalset(tmp_path)
+
+    fake_result = SimpleNamespace(metrics={"score": 1.0})
+
+    runner = CliRunner()
+    with patch(
+        "apx_agent.eval_against_endpoint", return_value=fake_result,
+    ) as mock_eval:
+        result = runner.invoke(main, [
+            "eval", str(evalset),
+            "--endpoint-url", "https://app.example.com",
+            "--token", "T",
+        ])
+
+    assert result.exit_code == 0, result.output
+    assert mock_eval.called
+    kwargs = mock_eval.call_args.kwargs
+    args = mock_eval.call_args.args
+    # eval_against_endpoint(endpoint_url, data, token=..., ...) — first positional
+    # is the URL, second positional is the parsed JSONL data list.
+    assert args[0] == "https://app.example.com"
+    assert isinstance(args[1], list) and len(args[1]) == 1
+    assert kwargs["token"] == "T"
+    assert kwargs["stream"] is True  # default
+
+
+def test_eval_endpoint_url_no_stream_flag(tmp_path: Path) -> None:
+    """--no-stream flips the stream kwarg passed to eval_against_endpoint."""
+    evalset = _write_evalset(tmp_path)
+    fake_result = SimpleNamespace(metrics={})
+
+    runner = CliRunner()
+    with patch(
+        "apx_agent.eval_against_endpoint", return_value=fake_result,
+    ) as mock_eval:
+        result = runner.invoke(main, [
+            "eval", str(evalset),
+            "--endpoint-url", "https://app.example.com",
+            "--token", "T",
+            "--no-stream",
+        ])
+
+    assert result.exit_code == 0, result.output
+    assert mock_eval.call_args.kwargs["stream"] is False
+
+
+def test_eval_in_process_still_requires_model(tmp_path: Path) -> None:
+    """Without --endpoint-url, --model is still required."""
+    evalset = _write_evalset(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["eval", str(evalset)])
+    assert result.exit_code != 0
+    assert "--model is required" in result.output

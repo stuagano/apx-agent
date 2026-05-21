@@ -1,6 +1,6 @@
 """Eval bridge — run Mosaic AI Agent Evaluation against apx-agent agents.
 
-Two entry points:
+Three entry points:
 
   * ``app_predict_fn(url, token)`` — returns a predict function that drives
     a *deployed* Databricks App over HTTP. Use when you want to evaluate
@@ -9,11 +9,19 @@ Two entry points:
   * ``evaluate(agent, model, evalset, ...)`` — compiles the agent
     in-process and runs eval against the compiled ChatAgent directly. No
     HTTP, no deploy. Used for fast feedback during agent authoring and CI.
+
+  * ``eval_against_endpoint(endpoint_url, evalset, ...)`` — same surface as
+    ``evaluate()`` but routes every case through a deployed Databricks App's
+    ``/responses`` endpoint. Streams by default to avoid proxy timeouts on
+    long pipelines. Pairs with ``apx eval --endpoint-url <url>``.
 """
 
 from __future__ import annotations
 
+import json as _json
 import logging
+import os as _os
+import subprocess as _subprocess
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -240,6 +248,224 @@ def evaluate(
     return mlflow.genai.evaluate(  # type: ignore[attr-defined]
         data=evalset,
         predict_fn=_predict,
+        scorers=eval_scorers,
+        **mlflow_kwargs,
+    )
+
+
+# ---------------------------------------------------------------------------
+# HTTP-endpoint evaluation — drive a deployed Databricks App via /responses
+# ---------------------------------------------------------------------------
+
+
+def _extract_question(inputs: Any) -> str:
+    """Pull a single user prompt out of varied eval-row shapes.
+
+    Accepts: bare strings, ``{"question": ...}``, ``{"request": ...}``,
+    ``{"input": ...}``, ``{"prompt": ...}``, ``{"query": ...}``, or
+    ``{"messages": [...]}`` (uses the last user message).
+    """
+    if isinstance(inputs, str):
+        return inputs
+    if isinstance(inputs, dict):
+        if "messages" in inputs and isinstance(inputs["messages"], list):
+            for msg in reversed(inputs["messages"]):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    return str(msg.get("content", ""))
+            return str(inputs["messages"])
+        for key in ("question", "request", "input", "prompt", "query"):
+            if key in inputs and inputs[key] is not None:
+                return str(inputs[key])
+        return str(inputs)
+    return str(inputs)
+
+
+def _resolve_endpoint_token(
+    token: str | None = None,
+    *,
+    profile: str | None = None,
+) -> str:
+    """Resolve a Databricks bearer token for the endpoint call.
+
+    Fallback chain:
+
+      1. Explicit ``token`` argument.
+      2. ``DATABRICKS_TOKEN`` env var.
+      3. ``databricks auth token --profile <profile>`` via subprocess, where
+         ``<profile>`` is the explicit ``profile`` arg or
+         ``$DATABRICKS_CONFIG_PROFILE``.
+
+    Raises ``RuntimeError`` with an actionable message if none of the above
+    yield a token.
+    """
+    if token:
+        return token
+    env_token = _os.environ.get("DATABRICKS_TOKEN")
+    if env_token:
+        return env_token
+    resolved_profile = profile or _os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    if resolved_profile:
+        try:
+            result = _subprocess.run(
+                ["databricks", "auth", "token", "--profile", resolved_profile],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+        except (FileNotFoundError, _subprocess.CalledProcessError, _subprocess.TimeoutExpired) as e:
+            raise RuntimeError(
+                f"Could not resolve a Databricks token. The `databricks auth token "
+                f"--profile {resolved_profile}` fallback failed: {e}. "
+                "Pass `token=...` explicitly, set `DATABRICKS_TOKEN`, or fix the CLI profile."
+            ) from e
+        try:
+            payload = _json.loads(result.stdout)
+            access = payload.get("access_token")
+            if access:
+                return str(access)
+        except _json.JSONDecodeError:
+            pass
+        raise RuntimeError(
+            f"`databricks auth token --profile {resolved_profile}` did not return a "
+            "parseable access_token. Pass `token=...` explicitly or set `DATABRICKS_TOKEN`."
+        )
+    raise RuntimeError(
+        "Could not resolve a Databricks token for the endpoint. Tried: "
+        "explicit `token=...`, $DATABRICKS_TOKEN, and `databricks auth token` "
+        "(no $DATABRICKS_CONFIG_PROFILE set). Pass one of these."
+    )
+
+
+def endpoint_predict_fn(
+    endpoint_url: str,
+    *,
+    token: str | None = None,
+    profile: str | None = None,
+    stream: bool = True,
+    timeout: float = 300.0,
+) -> Callable[[Any], str]:
+    """Return a predict function that POSTs to a deployed App's ``/responses``.
+
+    Mirrors the pattern from ``examples/data-triage-agent/eval/eval_dataset.py``.
+    When ``stream=True`` (the default) the predict function consumes the
+    server-sent-events stream and accumulates ``text`` chunks. When
+    ``stream=False`` it expects a single JSON body and extracts the response
+    text from the standard ResponsesAgent envelope.
+
+    ``token`` resolves via the fallback chain in :func:`_resolve_endpoint_token`.
+    """
+    resolved_token = _resolve_endpoint_token(token, profile=profile)
+    base = endpoint_url.rstrip("/")
+    url = f"{base}/responses"
+    headers = {
+        "Authorization": f"Bearer {resolved_token}",
+        "Content-Type": "application/json",
+    }
+
+    def predict(inputs: Any) -> str:
+        import urllib.request
+
+        question = _extract_question(inputs)
+        body = _json.dumps({"input": question, "stream": stream}).encode()
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+
+        if stream:
+            full_text = ""
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8").strip()
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        chunk = _json.loads(line[6:])
+                    except (_json.JSONDecodeError, TypeError):
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    text = chunk.get("text", "")
+                    if text:
+                        full_text += text
+            return full_text
+
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        try:
+            return str(data["output"][0]["content"][0]["text"])
+        except (KeyError, IndexError, TypeError):
+            return str(data)
+
+    return predict
+
+
+def eval_against_endpoint(
+    endpoint_url: str,
+    evalset: Any,
+    *,
+    token: str | None = None,
+    profile: str | None = None,
+    scorers: list[Any] | None = None,
+    experiment: str | None = None,
+    stream: bool = True,
+    timeout: float = 300.0,
+    **mlflow_kwargs: Any,
+) -> Any:
+    """Run ``mlflow.genai.evaluate`` against a deployed apx-agent endpoint.
+
+    Drives each evalset row through the App's ``/responses`` endpoint over
+    HTTP. Returns whatever ``mlflow.genai.evaluate`` returns — the same
+    shape as :func:`evaluate`.
+
+    Args:
+        endpoint_url: Base URL of the deployed Databricks App (e.g.
+            ``https://my-agent.my-workspace.databricksapps.com``). The
+            ``/responses`` suffix is appended automatically.
+        evalset: Eval dataset. Same shape ``mlflow.genai.evaluate`` accepts —
+            list of dicts, DataFrame, or path-like.
+        token: Databricks bearer token. Falls back to ``$DATABRICKS_TOKEN``
+            then ``databricks auth token --profile $DATABRICKS_CONFIG_PROFILE``.
+        profile: Optional Databricks CLI profile name. Used as part of the
+            token-resolution fallback chain.
+        scorers: List of Mosaic AI Agent Evaluation scorers. Defaults to
+            ``[Correctness(), RelevanceToQuery()]`` when available.
+        experiment: Optional MLflow experiment name/path.
+        stream: Whether to use the streaming branch (default ``True``) —
+            matches the data-triage-agent example, avoids proxy timeouts.
+        timeout: Per-request timeout in seconds (default 300).
+        **mlflow_kwargs: Forwarded verbatim to ``mlflow.genai.evaluate``.
+
+    Requires ``mlflow`` (the ``eval`` extra). Does NOT require the
+    ``langgraph`` extra — there's no in-process compile.
+    """
+    try:
+        import mlflow
+    except ImportError as e:  # pragma: no cover — exercised only without extra
+        raise ImportError(
+            "eval_against_endpoint requires mlflow. Install with: "
+            "pip install 'apx-agent[eval]'"
+        ) from e
+
+    if experiment:
+        try:
+            mlflow.set_experiment(experiment)
+        except Exception as e:
+            raise RuntimeError(
+                f"mlflow.set_experiment({experiment!r}) failed: {e}."
+            ) from e
+
+    predict_fn = endpoint_predict_fn(
+        endpoint_url,
+        token=token,
+        profile=profile,
+        stream=stream,
+        timeout=timeout,
+    )
+
+    eval_scorers = scorers if scorers is not None else _default_scorers()
+
+    return mlflow.genai.evaluate(  # type: ignore[attr-defined]
+        data=evalset,
+        predict_fn=predict_fn,
         scorers=eval_scorers,
         **mlflow_kwargs,
     )
