@@ -76,10 +76,12 @@ Three rules locked in:
 2. **Explicit, three-part UC names.** `catalog.schema.function`. No implicit namespacing.
 3. **Declarative grants.** `grant=[...]` is the source of truth; `publish_tools_to_uc` enforces.
 
-Requires the `uc` extra:
+Requires the `uc` extra. apx-agent isn't on PyPI yet — install from a git clone:
 
 ```bash
-pip install 'apx-agent[uc]'
+git clone https://github.com/stuagano/apx-agent.git
+cd apx-agent/python
+pip install -e '.[uc]'
 ```
 
 ## Platform tool factories
