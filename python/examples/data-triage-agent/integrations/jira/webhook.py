@@ -17,7 +17,7 @@ from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from config import Settings, get_settings
+from integrations.jira.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 

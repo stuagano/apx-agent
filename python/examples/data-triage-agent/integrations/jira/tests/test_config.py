@@ -10,7 +10,7 @@ def test_settings_loads_from_env(monkeypatch):
     monkeypatch.setenv("DATA_TRIAGE_JOB_ID", "42")
     monkeypatch.setenv("DATA_INSPECTOR_URL", "https://inspector.example.com")
 
-    from config import Settings
+    from integrations.jira.config import Settings
     s = Settings()
 
     assert s.jira_base_url == "https://test.atlassian.net"
@@ -22,14 +22,14 @@ def test_settings_loads_from_env(monkeypatch):
 
 
 def test_settings_defaults():
-    from config import Settings
+    from integrations.jira.config import Settings
     s = Settings()
     assert s.data_inspector_url == "http://localhost:9000"
     assert s.data_triage_job_id == 0
 
 
 def test_get_settings_is_singleton(monkeypatch):
-    import config as cfg_mod
+    from integrations.jira import config as cfg_mod
     # Reset the singleton so we get a fresh instance
     cfg_mod._settings = None
     monkeypatch.setenv("JIRA_BASE_URL", "https://singleton.atlassian.net")

@@ -167,7 +167,7 @@ pyright loop_agent/
 
 # Dev server (orchestrator)
 cd agents/orchestrator
-uvicorn main:app --reload --port 8001
+uvicorn agent:app --reload --port 8001
 ```
 
 ## Relationship to apx-agent

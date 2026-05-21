@@ -18,7 +18,7 @@ from apx_agent._models import AgentConfig
 
 from agent import agent
 from api import router as api_router
-from webhook import router as webhook_router
+from integrations.jira.webhook import router as webhook_router
 
 logger = logging.getLogger(__name__)
 

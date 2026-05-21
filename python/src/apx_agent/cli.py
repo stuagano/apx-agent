@@ -520,143 +520,17 @@ if __name__ == "__main__":
 
 
 _SCAFFOLD_APPS_QUICKSTART = '''\
-"""Quickstart — local dev setup for the apx-agent Databricks App.
+"""quickstart — one-shot setup for the <APP_NAME> Apps deploy.
 
-Verifies the Databricks CLI is on PATH, resolves the active profile, creates
-an MLflow experiment at the canonical workspace path, and writes a local
-``.env`` file with ``DATABRICKS_CONFIG_PROFILE`` + ``MLFLOW_EXPERIMENT_ID``.
-
-Run with: ``uv run quickstart``.
+Creates the MLflow experiment for tracing and writes its ID to .env.
+Safe to re-run; idempotent.
 """
-from __future__ import annotations
-
-import os
-import shutil
-import subprocess
-import sys
-from pathlib import Path
-
-
-APP_NAME = "<APP_NAME>"
-
-
-def _require_databricks_cli() -> None:
-    """Fail fast if the Databricks CLI is not installed."""
-    if shutil.which("databricks") is None:
-        sys.stderr.write(
-            "databricks CLI not found on PATH. Install it from "
-            "https://docs.databricks.com/dev-tools/cli/install.html\\n"
-        )
-        sys.exit(1)
-
-
-def _resolve_profile() -> str:
-    """Resolve the Databricks profile from env or prompt the user."""
-    profile = os.environ.get("DATABRICKS_CONFIG_PROFILE")
-    if profile:
-        return profile
-    profile = input("Databricks CLI profile [DEFAULT]: ").strip() or "DEFAULT"
-    return profile
-
-
-def _current_user(profile: str) -> str:
-    """Return the workspace identity of the current Databricks user.
-
-    The workspace expects the *email* form (e.g. ``alice@example.com``) for
-    things like ``/Users/<user>/...`` experiment paths — the shell short name
-    (``alice``) yields ``NOT_FOUND: Parent directory does not exist``.
-
-    Prefers the ``primary`` entry in the ``emails`` list returned by
-    ``databricks current-user me``. Falls back to ``userName`` (often already
-    the email, but historically not on every workspace). Falls back to the
-    ``USER`` / ``USERNAME`` env vars only when the subprocess itself fails.
-    Raises ``RuntimeError`` if no identity could be resolved — silent
-    fallback to ``"unknown-user"`` just shifts the failure to MLflow.
-    """
-    import json
-
-    try:
-        result = subprocess.run(
-            ["databricks", "current-user", "me",
-             "--profile", profile, "--output", "json"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        env_user = os.environ.get("USER") or os.environ.get("USERNAME")
-        if env_user:
-            return env_user
-        raise RuntimeError(
-            "Could not resolve Databricks workspace user. "
-            "`databricks current-user me` failed and neither USER nor "
-            "USERNAME is set in the environment."
-        ) from exc
-
-    payload = json.loads(result.stdout)
-    emails = payload.get("emails") or []
-    if isinstance(emails, list):
-        for entry in emails:
-            if isinstance(entry, dict) and entry.get("primary") and entry.get("value"):
-                return str(entry["value"])
-        # No primary flagged — accept the first email with a non-empty value.
-        for entry in emails:
-            if isinstance(entry, dict) and entry.get("value"):
-                return str(entry["value"])
-    username = payload.get("userName")
-    if isinstance(username, str) and username:
-        return username
-    raise RuntimeError(
-        "`databricks current-user me` succeeded but returned no usable "
-        "identity (no emails[].value and no userName)."
-    )
-
-
-def _create_experiment(profile: str, user: str) -> str:
-    """Create (or look up) an MLflow experiment at /Users/<user>/<APP_NAME>-dev."""
-    import json
-    name = f"/Users/{user}/{APP_NAME}-dev"
-    # Try create; if it exists, look it up.
-    create = subprocess.run(
-        ["databricks", "experiments", "create-experiment",
-         "--name", name, "--profile", profile, "--output", "json"],
-        capture_output=True,
-        text=True,
-    )
-    if create.returncode == 0:
-        return json.loads(create.stdout)["experiment_id"]
-    lookup = subprocess.run(
-        ["databricks", "experiments", "get-by-name",
-         "--experiment-name", name, "--profile", profile, "--output", "json"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return json.loads(lookup.stdout)["experiment"]["experiment_id"]
-
-
-def _write_env(profile: str, experiment_id: str, experiment_name: str) -> None:
-    """Write .env with the resolved Databricks + MLflow settings."""
-    env_path = Path(".env")
-    lines = [
-        f"DATABRICKS_CONFIG_PROFILE={profile}",
-        f"MLFLOW_EXPERIMENT_ID={experiment_id}",
-        f"MLFLOW_EXPERIMENT_NAME={experiment_name}",
-    ]
-    env_path.write_text("\\n".join(lines) + "\\n")
+from apx_agent.bootstrap import init_apps_experiment
 
 
 def main() -> None:
-    """Run the quickstart flow."""
-    _require_databricks_cli()
-    profile = _resolve_profile()
-    user = _current_user(profile)
-    experiment_name = f"/Users/{user}/{APP_NAME}-dev"
-    experiment_id = _create_experiment(profile, user)
-    _write_env(profile, experiment_id, experiment_name)
-    sys.stdout.write(
-        f"Wrote .env (profile={profile}, experiment_id={experiment_id}).\\n"
-    )
+    path, exp_id = init_apps_experiment()
+    print(f"MLflow experiment: {path} (id={exp_id})")
 
 
 if __name__ == "__main__":
@@ -951,13 +825,41 @@ def run(module: str, port: int, host: str, reload: bool) -> None:
 @click.argument("evalset", type=click.Path(exists=True, dir_okay=False))
 @click.option(
     "--module",
-    default="agent:agent",
-    help='Agent module spec. Default: "agent:agent".',
+    default=None,
+    help='Agent module spec. Default: "agent:agent". Only used for in-process eval. '
+         'Mutually exclusive with --endpoint-url.',
 )
-@click.option("--model", required=True, help="Databricks serving endpoint for the LLM.")
+@click.option(
+    "--model", default=None,
+    help="Databricks serving endpoint for the LLM. Required for in-process eval. "
+         "Mutually exclusive with --endpoint-url.",
+)
+@click.option(
+    "--endpoint-url", default=None,
+    help="Base URL of a deployed Databricks App (e.g. "
+         "https://my-agent.<workspace>.databricksapps.com). When set, eval runs "
+         "against the App's /responses endpoint over HTTP. Mutually exclusive "
+         "with --model and --module.",
+)
+@click.option(
+    "--token", default=None,
+    help="Databricks bearer token for --endpoint-url. Falls back to "
+         "$DATABRICKS_TOKEN then `databricks auth token --profile $DATABRICKS_CONFIG_PROFILE`.",
+)
+@click.option(
+    "--profile", default=None,
+    help="Databricks CLI profile for the token-resolution fallback when "
+         "--endpoint-url is set. Falls back to $DATABRICKS_CONFIG_PROFILE.",
+)
+@click.option(
+    "--stream/--no-stream", default=True,
+    help="Stream the /responses endpoint (default). --no-stream waits for a "
+         "single JSON body. Only used with --endpoint-url.",
+)
 @click.option(
     "--user-token", default=None,
-    help="Optional OBO user token to evaluate under a specific user identity.",
+    help="Optional OBO user token to evaluate under a specific user identity. "
+         "Only used for in-process eval.",
 )
 @click.option(
     "--experiment", default=None,
@@ -966,15 +868,33 @@ def run(module: str, port: int, host: str, reload: bool) -> None:
 )
 def eval_cmd(
     evalset: str,
-    module: str,
-    model: str,
+    module: str | None,
+    model: str | None,
+    endpoint_url: str | None,
+    token: str | None,
+    profile: str | None,
+    stream: bool,
     user_token: str | None,
     experiment: str | None,
 ) -> None:
-    """Run Mosaic AI Agent Evaluation against EVALSET."""
-    from apx_agent import evaluate
+    """Run Mosaic AI Agent Evaluation against EVALSET.
 
-    agent = _load_agent(module)
+    Two modes:
+
+      In-process (default): compile the agent and run eval directly.
+        apx eval evalset.jsonl --model databricks-claude-sonnet-4-6
+
+      Endpoint: drive a deployed App's /responses endpoint over HTTP.
+        apx eval evalset.jsonl --endpoint-url https://<app>.databricksapps.com
+    """
+    # Mutex: --endpoint-url is incompatible with the in-process eval flags.
+    if endpoint_url and (model or module):
+        offenders = [f for f, v in [("--model", model), ("--module", module)] if v]
+        raise click.UsageError(
+            f"--endpoint-url is mutually exclusive with {', '.join(offenders)}. "
+            "Pass --endpoint-url to evaluate against a deployed App, or "
+            "--model/--module to compile and evaluate in-process — not both."
+        )
 
     # Auto-detect JSON / JSONL / YAML / CSV. mlflow.genai.evaluate accepts
     # most of these via the data kwarg, but only some via path — we read
@@ -991,6 +911,35 @@ def eval_cmd(
         data = evalset
 
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
+
+    if endpoint_url:
+        from apx_agent import eval_against_endpoint
+
+        try:
+            result = eval_against_endpoint(
+                endpoint_url,
+                data,
+                token=token,
+                profile=profile,
+                stream=stream,
+                experiment=effective_experiment,
+            )
+        except RuntimeError as e:
+            raise click.ClickException(str(e)) from e
+        click.echo(f"Eval complete. Result: {result}")
+        return
+
+    # In-process eval path.
+    if model is None:
+        raise click.UsageError(
+            "--model is required for in-process eval. "
+            "Pass --endpoint-url to evaluate a deployed App instead."
+        )
+    effective_module = module or "agent:agent"
+
+    from apx_agent import evaluate
+
+    agent = _load_agent(effective_module)
     result = evaluate(
         agent,
         model=model,

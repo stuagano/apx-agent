@@ -6,7 +6,7 @@ Every tool is a plain Python function; type hints become the schema;
 Dependencies.* params are injected by FastAPI and excluded from the tool schema.
 
 Deploy as a Databricks App:
-    uvicorn main:app --host 0.0.0.0 --port 8000
+    uvicorn agent:app --host 0.0.0.0 --port 8000
 """
 import json
 import os

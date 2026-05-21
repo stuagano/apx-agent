@@ -158,6 +158,6 @@ run-batch: install
 
 dev-%:
 	@echo "Starting $* agent dev server on port 8001..."
-	cd agents/$* && uvicorn main:app --reload --port 8001
+	cd agents/$* && uvicorn agent:app --reload --port 8001
 
 # e.g. make dev-decipherer, make dev-historian, make dev-critic

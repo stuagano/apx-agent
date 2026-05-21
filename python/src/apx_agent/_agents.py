@@ -662,3 +662,113 @@ class HandoffAgent(BaseAgent):
         for agent in self._agents.values():
             tools.extend(await agent.fetch_remote_tools())
         return tools
+
+
+class KeywordRouter(BaseAgent):
+    """Routes to one of several branches by substring match — zero LLM cost.
+
+    Use when the route is determined by keywords in the user's latest message
+    (e.g. "investigate" → investigation pipeline; everything else → general
+    fallback). Pairs cheaply with branches that are themselves expensive
+    (multi-step pipelines, LLM-heavy specialists) — the routing decision
+    avoids the round trip ``RouterAgent`` would pay an LLM for.
+
+    For semantic routing where the model should pick the branch, use
+    :class:`RouterAgent` instead.
+
+    Example::
+
+        investigation_pipeline = SequentialAgent(agents=[step1, step2, step3])
+        general_agent = Agent(instructions="...", tools=[...])
+
+        agent = KeywordRouter(
+            branches=[
+                ("investigation", investigation_pipeline,
+                 ["missing", "investigate", "root cause", "why is",
+                  "failed", "stale", "data gap"]),
+            ],
+            default=general_agent,
+        )
+    """
+
+    DEFAULT_LABEL = "__default__"
+
+    def __init__(
+        self,
+        branches: list[tuple[str, BaseAgent, list[str]]],
+        default: BaseAgent,
+    ) -> None:
+        if not branches:
+            raise ValueError("KeywordRouter requires at least one branch")
+        seen: set[str] = set()
+        for name, _, _ in branches:
+            if not name or name == self.DEFAULT_LABEL:
+                raise ValueError(
+                    f"Invalid branch name {name!r} (empty or reserved)"
+                )
+            if name in seen:
+                raise ValueError(f"Duplicate branch name: {name!r}")
+            seen.add(name)
+        self._branches = branches
+        self._default = default
+
+    def match(self, text: str) -> str | None:
+        """Return the branch name whose keywords appear in ``text``, else ``None``.
+
+        Case-insensitive substring match. First branch with a hit wins, so
+        list more specific branches first when keywords overlap.
+        """
+        lowered = text.lower()
+        for name, _, keywords in self._branches:
+            if any(kw.lower() in lowered for kw in keywords):
+                return name
+        return None
+
+    def _select_agent(self, messages: list[Message]) -> BaseAgent:
+        text = next(
+            (m.content for m in reversed(messages) if m.role == "user"),
+            "",
+        )
+        name = self.match(text)
+        if name is None:
+            return self._default
+        for branch_name, agent, _ in self._branches:
+            if branch_name == name:
+                return agent
+        return self._default
+
+    async def run(self, messages: list[Message], request: Request) -> str:
+        from ._compile_run import run_via_compile
+
+        return await run_via_compile(self, messages, request, instructions="")
+
+    async def stream(
+        self, messages: list[Message], request: Request
+    ) -> AsyncGenerator[str, None]:
+        from ._compile_run import stream_via_compile
+
+        async for chunk in stream_via_compile(
+            self, messages, request, instructions=""
+        ):
+            yield chunk
+
+    def collect_tools(self) -> list[AgentTool]:
+        tools: list[AgentTool] = []
+        for _, agent, _ in self._branches:
+            tools.extend(agent.collect_tools())
+        tools.extend(self._default.collect_tools())
+        return tools
+
+    def get_tool_routers(self) -> list[APIRouter]:
+        routers: list[APIRouter] = []
+        for _, agent, _ in self._branches:
+            routers.extend(agent.get_tool_routers())
+        routers.extend(self._default.get_tool_routers())
+        return routers
+
+    async def fetch_remote_tools(self) -> list[AgentTool]:
+        tools: list[AgentTool] = []
+        for _, agent, _ in self._branches:
+            tools.extend(await agent.fetch_remote_tools())
+        tools.extend(await self._default.fetch_remote_tools())
+        return tools

@@ -15,14 +15,22 @@ Quick index — what each example does and which direction data/auth flows.
 | [data-triage-agent](./data-triage-agent/) | Investigates missing Databricks data — 6-step SequentialAgent pipeline (presence → lineage → pipeline → genie → code → synthesis). Delegates SQL + Delta forensics to the data-inspector sub-agent via A2A. Deploys to either Apps (`--target apps`) or Model Serving (`--target model-serving`). |
 | [data-inspector](./data-inspector/) | SQL + Delta forensics — standalone or sub-agent via MCP/A2A |
 | [contract-parsing-agent](./contract-parsing-agent/) | Extracts structured terms from contract PDFs into Unity Catalog |
-| [entity-resolution-agent](./entity-resolution-agent/) | Fuzzy-match account resolution via Vector Search |
+| [entity-resolution-agent](./entity-resolution-agent/) | Fuzzy-match account resolution via Vector Search — HandoffAgent (Supervisor + Evaluator) |
 | [eligibility-agent](./eligibility-agent/) | Document-based program eligibility assessment (W-2s, paystubs) |
+| [explain-my-bill-agent](./explain-my-bill-agent/) | Energy billing Q&A — looks up customer profiles, AMI smart-meter data, billing history, and rate schedules from Unity Catalog. Ships a `catalog/register_agent.py` to expose the agent as a UC function (SQL-callable). |
 | [shortage-intelligence-agent](./shortage-intelligence-agent/) | Detects demand shortage signals, reports to sourcing + sales |
+| [apx-builder](./apx-builder/) | **Natural-language agent builder** — describe an agent, the builder scaffolds + deploys it. Tools: `search_tables`, `list_genie_spaces`, `scaffold_project`, `deploy_agent`, `poll_deployment`. |
 | [agent-hub](./agent-hub/) | Central registry + chat UI for all deployed apx-agent apps |
 | [account-search-service](./account-search-service/) | Standalone fuzzy account lookup API — callable by other agents |
 | [afr-enrollment-api](./afr-enrollment-api/) | Deterministic AFR enrollment pipeline — no LLM, high throughput |
 | [memory_demo](./memory_demo/) | **MemoryBank + ExampleStore** — seeded memories, few-shot examples, recall/remember tools, system prompt assembled per turn. Two run modes: local in-process (`app.py`) + Databricks Apps deploy (`agent_server/` + `databricks.yml`). Verified live on fe-stable. |
 | [customer_triage](./customer_triage/) | **HandoffAgent** over four LlmAgents (triage / billing / account / technical) with memory wired into the account specialist. Demonstrates the full apx-agent surface: `@tool(uc=...)` decorator, `Dependencies.Workspace` for OBO, `genie_tool` / `vector_search_tool`, peer handoffs, principal-keyed memory recall across handoffs. Apps-target deploy verified live on fe-stable. |
+
+## Experimental
+
+| Example | What it does |
+|---------|-------------|
+| [voynich](./voynich/) | **LoopAgent** — evolutionary population loop primitive for apx-agent. Five separately-deployed sub-agents (`critic`, `decipherer`, `historian`, `judge`, `orchestrator`) under `voynich/agents/<name>/` collaborate on Voynich manuscript decoding. Each sub-agent is independently deployable. |
 
 ## MCP Servers & Shared Libraries
 
