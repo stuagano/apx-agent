@@ -1,5 +1,5 @@
 import pytest
-from slack_agent.backend.config import Settings
+from config import Settings
 
 
 def test_settings_defaults():

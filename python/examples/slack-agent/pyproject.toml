@@ -19,12 +19,15 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-where = ["src", "."]
-include = ["slack_agent*", "agent_server*", "scripts*"]
+[tool.hatch.build.targets.wheel]
+# ADK shape: top-level agent.py / tools.py / webhook.py / config.py / token_store.py
+# ride along as forced-includes so the wheel ships them. agent_server/ + scripts/
+# are real packages.
+packages = ["agent_server", "scripts"]
+force-include = { "agent.py" = "agent.py", "webhook.py" = "webhook.py", "config.py" = "config.py", "token_store.py" = "token_store.py" }
 
 [project.scripts]
 quickstart = "scripts.quickstart:main"
@@ -46,3 +49,4 @@ apx-agent = { path = "../..", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

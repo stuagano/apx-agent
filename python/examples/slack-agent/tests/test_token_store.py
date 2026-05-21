@@ -1,5 +1,5 @@
 import pytest
-from slack_agent.backend import token_store
+import token_store
 
 
 @pytest.fixture(autouse=True)

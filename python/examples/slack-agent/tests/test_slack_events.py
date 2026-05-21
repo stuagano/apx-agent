@@ -2,12 +2,13 @@ import hashlib
 import hmac
 import time
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from unittest.mock import patch
 
-from slack_agent.backend.app import app
-from slack_agent.backend.config import Settings, get_settings
-from slack_agent.backend import token_store
+import token_store
+from config import Settings, get_settings
+from webhook import router as slack_router
 
 SECRET = "signing-secret"
 APP_URL = "https://my-app.databricksapps.com"
@@ -52,6 +53,8 @@ def clear_store():
 
 @pytest.fixture
 def client():
+    app = FastAPI()
+    app.include_router(slack_router)
     app.dependency_overrides[get_settings] = _make_settings
     yield TestClient(app)
     app.dependency_overrides.clear()
@@ -94,7 +97,7 @@ def test_command_without_stored_token_returns_connect_prompt(client):
 def test_command_with_token_returns_200_and_fires_task(client):
     token_store.set_token("U123", "dapi-fake-token")
     body, headers = _slash(command="/whoami", user_id="U123")
-    with patch("slack_agent.backend.slack_router.asyncio.create_task") as mock_task:
+    with patch("webhook.asyncio.create_task") as mock_task:
         resp = client.post("/slack/events", content=body, headers=headers)
     assert resp.status_code == 200
     data = resp.json()
@@ -106,9 +109,9 @@ def test_dispatch_receives_obo_token_and_host(client):
     token_store.set_token("U123", "dapi-real-token")
     body, headers = _slash(command="/whoami", user_id="U123", text="hello")
 
-    with patch("slack_agent.backend.slack_router._dispatch_to_agent") as mock_dispatch:
+    with patch("webhook._dispatch_to_agent") as mock_dispatch:
         mock_dispatch.return_value = None  # _dispatch_to_agent is async but create_task wraps it
-        with patch("slack_agent.backend.slack_router.asyncio.create_task"):
+        with patch("webhook.asyncio.create_task"):
             client.post("/slack/events", content=body, headers=headers)
 
     mock_dispatch.assert_called_once_with(

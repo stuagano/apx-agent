@@ -96,7 +96,7 @@ export DATABRICKS_CONFIG_PROFILE=my-workspace
 You can also prefix each `uv run` command:
 
 ```bash
-DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn data_inspector.backend.app:app --port 9000 --reload
+DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn app:app --port 9000 --reload
 ```
 
 ### Step 4: Run the tests
@@ -104,7 +104,7 @@ DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn data_inspector.backend.app
 This example doesn't include automated tests. Run the agent locally and try queries:
 
 ```bash
-DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn data_inspector.backend.app:app --port 9000 --reload
+DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn app:app --port 9000 --reload
 ```
 
 Then open `http://localhost:9000` and try:
@@ -121,7 +121,7 @@ Who last modified catalog.schema.accounts and when?
 The agent runs on port 9000 — this is the default used when the [data-triage-agent](../data-triage-agent/) calls it as a sub-agent:
 
 ```bash
-DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn data_inspector.backend.app:app --port 9000 --reload
+DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn app:app --port 9000 --reload
 ```
 
 ---
@@ -134,7 +134,7 @@ No env vars need to be set — the workspace client is injected automatically an
 
 ```yaml
 # app.yml — no changes required for a basic deployment
-command: ["uvicorn", "data_inspector.backend.app:app", "--workers", "2"]
+command: ["uvicorn", "app:app", "--workers", "2"]
 ```
 
 To register with an agent hub, add:

@@ -1,3 +1,10 @@
+"""Slack webhook surface — mounts at ``/slack/*`` on the agent server.
+
+Validates Slack's HMAC-SHA256 request signature, runs the Databricks OAuth
+install + callback dance, and on ``/slack/events`` looks up the calling Slack
+user's stored Databricks token and dispatches to the agent on the in-process
+``/invocations`` endpoint with ``X-Forwarded-Access-Token`` set.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -13,13 +20,13 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .config import Settings, get_settings
-from . import token_store
+import token_store
+from config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/slack")
 
-# Short-lived nonce store: nonce → slack_user_id.
+# Short-lived nonce store: nonce -> slack_user_id.
 # In production, add TTL expiry. For this example, in-memory is fine.
 _pending: dict[str, str] = {}
 

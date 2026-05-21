@@ -1,7 +1,16 @@
-from apx_agent import create_app
+"""Dev-mode FastAPI app — ``apx dev`` mounts this at ``/``.
+
+The Apps-target deployment uses ``agent_server/start_server.py`` instead.
+This file adds CORS so Genie Code (and other workspace-UI MCP clients) can
+call the /mcp endpoint cross-origin in local dev.
+"""
+from __future__ import annotations
+
 from fastapi.middleware.cors import CORSMiddleware
 
-from .agent_router import agent
+from apx_agent import create_app
+
+from agent import agent
 
 app = create_app(agent)
 

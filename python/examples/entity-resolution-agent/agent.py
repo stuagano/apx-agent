@@ -1,14 +1,31 @@
-"""entity-resolution-agent root agent — re-exported from the backend.
+"""entity-resolution-agent — HandoffAgent (Supervisor + Evaluator).
 
-The HandoffAgent (Supervisor + Evaluator) with Vector Search lookup is
-defined at ``entity_resolution_agent.backend.agent_router``. This file is
-the canonical top-level import point: ``agent_server/start_server.py``
-(Apps deploy) and ``apx deploy --target model-serving`` both consume
-``agent`` from here.
+ADK-style top-level definition:
 
-Edit ``src/entity_resolution_agent/backend/agent_router.py`` to change
-the agent's topology or tools; the re-export here stays stable.
+  * ``sub_agents/supervisor/agent.py`` — normalize + search candidates
+  * ``sub_agents/evaluator/agent.py`` — fuzzy decision + decision logging
+  * ``demo_data.py`` — synthetic utility accounts (used when ``DEMO_MODE=true``)
+
+Flow:
+  1. Supervisor: normalize record → vector_search across all three indexes
+     (full name+address, last name+address, first name+email) or sql_search
+     fallback for abnormal names → builds deduplicated candidate shortlist →
+     hands off to Evaluator.
+  2. Evaluator: fuzzy reasoning → enrollment decision + log → or retry
+     Supervisor with search hints if confidence is below threshold.
 """
 from __future__ import annotations
 
-from entity_resolution_agent.backend.agent_router import agent  # noqa: F401
+from apx_agent import HandoffAgent
+
+from sub_agents.evaluator.agent import evaluator
+from sub_agents.supervisor.agent import supervisor
+
+agent = HandoffAgent(
+    agents={
+        "supervisor": supervisor,
+        "evaluator": evaluator,
+    },
+    start="supervisor",
+    max_handoffs=4,
+)
