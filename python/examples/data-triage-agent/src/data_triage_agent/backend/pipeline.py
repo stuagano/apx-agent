@@ -378,3 +378,12 @@ class _DeterministicRouter(BaseAgent):
             await self._investigation.fetch_remote_tools()
             + await self._general.fetch_remote_tools()
         )
+
+
+# Module-level agent. Lives here (not in agent_router.py) because pipeline.py
+# already imports from agent_router; placing the construction there created a
+# circular import. App.py and other consumers import `agent` from .pipeline.
+import os as _os
+
+DATA_INSPECTOR_URL = _os.environ.get("DATA_INSPECTOR_URL", "http://localhost:9000")
+agent = create_investigation_pipeline(DATA_INSPECTOR_URL)
