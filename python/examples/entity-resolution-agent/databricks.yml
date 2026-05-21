@@ -1,22 +1,72 @@
-bundle:
-  name: entity-resolution-agent
+# Databricks Asset Bundle config for entity-resolution-agent (Apps target).
+#
+# Deploys the HandoffAgent (Supervisor + Evaluator) as a Databricks App.
+# Vector Search index lookup runs as user-scoped OBO via the calling user's
+# X-Forwarded-Access-Token; the user's UC grants on the index govern access.
 
+bundle:
+  name: mcp-entity-resolution-agent
+
+# Root .gitignore excludes **/.build/ — bundle deploy needs to upload .build/
 sync:
   include:
-    - .build
+    - .build/**
+
+variables:
+  llm_endpoint_name:
+    description: Foundation model endpoint the agent calls.
+    default: databricks-claude-sonnet-4-6
+  mlflow_experiment_id:
+    description: MLflow experiment ID for tracing.
+    default: ""
+  # vector_search_index / vector_search_endpoint vars are intentionally
+  # omitted — Databricks Apps rejects env entries whose value resolves to
+  # the empty string. When you wire Vector Search, declare them here AND
+  # uncomment the matching env entries below, then deploy with
+  # `apx deploy --target apps --var vector_search_index=... --var ...`.
 
 artifacts:
   default:
-    build: >-
-      uv build --wheel -o .build/ &&
-      ls .build/*.whl | xargs basename > .build/requirements.txt
+    build: |
+      mkdir -p .build
+      cp -r agent_server scripts src pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      cp apx_agent-*.whl .build/ 2>/dev/null || true
 
 resources:
   apps:
-    entity-resolution-agent-app:
-      name: "entity-resolution-agent"
-      description: "Fuzzy-match and resolve customer/account entities using Vector Search + SQL fallback"
+    mcp-entity-resolution-agent:
+      name: mcp-entity-resolution-agent
+      description: |
+        Fuzzy name+address matching via Vector Search + HandoffAgent
+        (Supervisor + Evaluator). /mcp exposed for Genie / Genie Code.
       source_code_path: ./.build
+
+      resources:
+        - name: llm-endpoint
+          description: Foundation model endpoint used by the agent.
+          serving_endpoint:
+            name: ${var.llm_endpoint_name}
+            permission: CAN_QUERY
+
+      config:
+        command:
+          - uvicorn
+          - agent_server.start_server:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - $DATABRICKS_APP_PORT
+        env:
+          - name: APX_MODEL
+            value: ${var.llm_endpoint_name}
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
+          # - name: VECTOR_SEARCH_INDEX
+          #   value: ${var.vector_search_index}
+          # - name: VECTOR_SEARCH_ENDPOINT
+          #   value: ${var.vector_search_endpoint}
 
 targets:
   dev:
@@ -24,3 +74,5 @@ targets:
     default: true
   prod:
     mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
