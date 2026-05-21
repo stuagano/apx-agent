@@ -1,10 +1,11 @@
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from slack_agent.backend.app import app
-from slack_agent.backend.config import Settings, get_settings
-from slack_agent.backend import token_store
+import token_store
+from config import Settings, get_settings
+from webhook import _pending, router as slack_router
 
 DATABRICKS_HOST = "adb-123.azuredatabricks.net"
 APP_URL = "https://my-app.databricksapps.com"
@@ -24,7 +25,6 @@ def _make_settings():
 @pytest.fixture(autouse=True)
 def clear_store():
     token_store._store.clear()
-    from slack_agent.backend.slack_router import _pending
     _pending.clear()
     yield
     token_store._store.clear()
@@ -33,6 +33,8 @@ def clear_store():
 
 @pytest.fixture
 def client():
+    app = FastAPI()
+    app.include_router(slack_router)
     app.dependency_overrides[get_settings] = _make_settings
     yield TestClient(app)
     app.dependency_overrides.clear()
@@ -57,7 +59,6 @@ def test_install_includes_redirect_uri(client):
 
 
 def test_oauth_callback_stores_token(client):
-    from slack_agent.backend.slack_router import _pending
     _pending["test-nonce"] = "U123"  # simulate prior /install call
 
     mock_response = MagicMock()
@@ -67,7 +68,7 @@ def test_oauth_callback_stores_token(client):
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("slack_agent.backend.slack_router.httpx.AsyncClient") as MockAsyncClient:
+    with patch("webhook.httpx.AsyncClient") as MockAsyncClient:
         MockAsyncClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockAsyncClient.return_value.__aexit__ = AsyncMock(return_value=False)
         resp = client.get("/slack/oauth/callback?code=abc123&state=test-nonce")
@@ -85,7 +86,7 @@ def test_oauth_callback_invalid_state_returns_400(client):
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("slack_agent.backend.slack_router.httpx.AsyncClient") as MockAsyncClient:
+    with patch("webhook.httpx.AsyncClient") as MockAsyncClient:
         MockAsyncClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockAsyncClient.return_value.__aexit__ = AsyncMock(return_value=False)
         resp = client.get("/slack/oauth/callback?code=abc123&state=unknown-nonce")
@@ -101,7 +102,7 @@ def test_oauth_callback_failed_exchange_returns_502(client):
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("slack_agent.backend.slack_router.httpx.AsyncClient") as MockAsyncClient:
+    with patch("webhook.httpx.AsyncClient") as MockAsyncClient:
         MockAsyncClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockAsyncClient.return_value.__aexit__ = AsyncMock(return_value=False)
         resp = client.get("/slack/oauth/callback?code=bad&state=U123")
@@ -118,7 +119,7 @@ def test_oauth_callback_missing_access_token_returns_502(client):
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("slack_agent.backend.slack_router.httpx.AsyncClient") as MockAsyncClient:
+    with patch("webhook.httpx.AsyncClient") as MockAsyncClient:
         MockAsyncClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockAsyncClient.return_value.__aexit__ = AsyncMock(return_value=False)
         resp = client.get("/slack/oauth/callback?code=abc&state=U123")

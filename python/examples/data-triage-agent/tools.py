@@ -1,13 +1,12 @@
 """Data triage agent tools.
 
-Orchestrates investigation across lineage, jobs, Genie Spaces, and GitHub.
-Delegates data presence checks and Delta forensics to the Data Inspector
-sub-agent via A2A.
+Lineage, jobs, GitHub (stubbed), and Genie Space query tools. Also a small
+SQL helper that's used by both the investigation pipeline and the general
+fallback agent.
 
-Tool functions are defined here and imported by pipeline.py, which composes
-them into a deterministic SequentialAgent pipeline.
+Data presence checks and Delta forensics are NOT here — those are delegated
+to the data-inspector sub-agent via A2A (DATA_INSPECTOR_URL).
 """
-
 from __future__ import annotations
 
 import logging
@@ -17,20 +16,16 @@ from typing import Any
 from databricks.sdk.service.dashboards import MessageStatus
 from databricks.sdk.service.sql import StatementState
 
-from .core import Dependencies
+from apx_agent import Dependencies
 
 Workspace = Dependencies.Workspace
 logger = logging.getLogger(__name__)
 
-# Data Inspector sub-agent URL — set via env var or default to local dev
-DATA_INSPECTOR_URL = os.environ.get(
-    "DATA_INSPECTOR_URL",
-    "http://localhost:9000",
-)
+DATA_INSPECTOR_URL = os.environ.get("DATA_INSPECTOR_URL", "http://localhost:9000")
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# SQL helpers (local — no sub-agent dependency)
 # ---------------------------------------------------------------------------
 
 def _get_warehouse_id(ws: Any) -> str:
@@ -58,6 +53,33 @@ def _run_sql(ws: Any, sql: str) -> list[dict[str, Any]]:
     cols = [c.name for c in (result.manifest.schema.columns or [])]
     rows = result.result.data_array or [] if result.result else []
     return [dict(zip(cols, r)) for r in rows]
+
+
+def run_sql_query(sql: str, ws: Workspace) -> dict[str, Any]:
+    """Execute a read-only SQL query against any Databricks table.
+    Use this to check if specific data exists, count rows, or inspect values.
+    sql: a SELECT query (read-only)"""
+    rows = _run_sql(ws, sql)
+    return {"row_count": len(rows), "rows": rows[:50]}
+
+
+def get_table_info(table_full_name: str, ws: Workspace) -> dict[str, Any]:
+    """Get schema, row count, and data freshness for a Unity Catalog table.
+    table_full_name: catalog.schema.table format"""
+    try:
+        schema_rows = _run_sql(ws, f"DESCRIBE TABLE {table_full_name}")
+    except Exception as e:
+        return {"error": f"Table not found or not accessible: {e}"}
+    try:
+        count_rows = _run_sql(ws, f"SELECT COUNT(*) as cnt FROM {table_full_name}")
+        row_count = count_rows[0].get("cnt", "unknown") if count_rows else "unknown"
+    except Exception:
+        row_count = "unknown"
+    return {
+        "table": table_full_name,
+        "row_count": row_count,
+        "columns": schema_rows[:30],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +267,3 @@ def query_genie_space(space_id: str, question: str, ws: Workspace) -> dict[str, 
         result["answer"] = msg.content or "(no text response)"
 
     return result
-
-
-# Pipeline composition lives in pipeline.py — importing it from here used to
-# cause a circular import (pipeline.py imports the tools defined above). The
-# `agent` module-level object is now exported from .pipeline directly.

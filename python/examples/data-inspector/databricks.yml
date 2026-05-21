@@ -26,11 +26,12 @@ artifacts:
       mkdir -p .build
       # Copy source tree into .build/. pyproject.toml and uv.lock get
       # rewritten in-place below if the apx-agent wheel is present.
-      # User-authored: top-level agent.py (+ optional tools.py, sub_agents/).
+      # User-authored: top-level agent.py + tools.py + app.py (+ optional sub_agents/).
       cp agent.py .build/ 2>/dev/null || true
       cp tools.py .build/ 2>/dev/null || true
+      cp app.py .build/ 2>/dev/null || true
       cp -r sub_agents .build/ 2>/dev/null || true
-      cp -r agent_server scripts src pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
       # Stage the apx-agent wheel (built by `apx deploy --target apps`
       # before this script runs). When the wheel is missing, .build still
       # contains the editable source pyproject — Databricks Apps will

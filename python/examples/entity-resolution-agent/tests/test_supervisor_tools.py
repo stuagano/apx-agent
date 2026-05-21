@@ -14,7 +14,7 @@ def set_env(monkeypatch):
 
 
 def test_normalize_record_basic(mock_ws):
-    from entity_resolution_agent.backend.core.supervisor import normalize_record
+    from sub_agents.supervisor.agent import normalize_record
     result = normalize_record(
         name="  jane smith  ",
         address="123 main st apt 2",
@@ -28,32 +28,32 @@ def test_normalize_record_basic(mock_ws):
 
 
 def test_normalize_record_initials_triggers_sql(mock_ws):
-    from entity_resolution_agent.backend.core.supervisor import normalize_record
+    from sub_agents.supervisor.agent import normalize_record
     result = normalize_record(name="J. Smith", address="", account_number="", ws=mock_ws)
     assert result["strategy"] == "sql"
 
 
 def test_normalize_record_acronym_triggers_sql(mock_ws):
-    from entity_resolution_agent.backend.core.supervisor import normalize_record
+    from sub_agents.supervisor.agent import normalize_record
     result = normalize_record(name="ABC LLC", address="", account_number="", ws=mock_ws)
     assert result["strategy"] == "sql"
 
 
 def test_search_accounts_fans_out_across_three_indexes(mock_ws):
-    from entity_resolution_agent.backend.core.supervisor import search_accounts
+    from sub_agents.supervisor.agent import search_accounts
     search_accounts(applicant_name="Jane Smith", address="123 Main St", ws=mock_ws)
     assert mock_ws.vector_search_indexes.query_index.call_count == 3
 
 
 def test_search_accounts_deduplicates_by_account_id(mock_ws):
-    from entity_resolution_agent.backend.core.supervisor import search_accounts
+    from sub_agents.supervisor.agent import search_accounts
     result = search_accounts(applicant_name="Jane Smith", address="123 Main St", ws=mock_ws)
     ids = [c["account_id"] for c in result["candidates"]]
     assert len(ids) == len(set(ids))
 
 
 def test_search_accounts_keeps_highest_score_on_dedup(mock_ws):
-    from entity_resolution_agent.backend.core.supervisor import search_accounts
+    from sub_agents.supervisor.agent import search_accounts
 
     rows_by_call = [
         [["acct-001", "Jane", "Smith", "123 Main St", "12345", "0.95"]],
@@ -73,7 +73,7 @@ def test_search_accounts_keeps_highest_score_on_dedup(mock_ws):
 
 def test_search_accounts_sql_path_for_initials(mock_ws):
     """Names with initials trigger the SQL fallback via _sql_fallback."""
-    from entity_resolution_agent.backend.core.supervisor import search_accounts
+    from sub_agents.supervisor.agent import search_accounts
     from databricks.sdk.service.sql import StatementStatus, StatementState
 
     sql_result = MagicMock()
@@ -97,7 +97,7 @@ def test_search_accounts_sql_path_for_initials(mock_ws):
 
 def test_search_accounts_demo_mode(monkeypatch):
     monkeypatch.setenv("DEMO_MODE", "true")
-    from entity_resolution_agent.backend.core.supervisor import search_accounts
+    from sub_agents.supervisor.agent import search_accounts
     result = search_accounts(applicant_name="Jane Smith", address="123 Maple Ave", ws=None)
     assert result["source"] == "demo"
     assert len(result["candidates"]) > 0

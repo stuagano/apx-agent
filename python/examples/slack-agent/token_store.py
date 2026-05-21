@@ -1,4 +1,4 @@
-# In-memory store: Slack user ID → Databricks access token.
+# In-memory store: Slack user ID -> Databricks access token.
 # Single-process safe. Resets on redeploy — for production use one of:
 #   Option B: slack_bolt InstallationStore (e.g. FileInstallationStore)
 #   Option C: Delta table via WorkspaceClient SQL execution

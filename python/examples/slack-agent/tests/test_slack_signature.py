@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import time
 
-from slack_agent.backend.slack_router import _verify_slack_signature
+from webhook import _verify_slack_signature
 
 SECRET = "test-signing-secret"
 

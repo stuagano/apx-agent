@@ -1,6 +1,6 @@
 """Synthetic utility account data for demo/POC runs.
 
-Used when DEMO_MODE=true so the agent can be demonstrated without a real
+Used when ``DEMO_MODE=true`` so the agent can be demonstrated without a real
 Vector Search index or SQL warehouse. Covers key entity resolution scenarios:
 high-confidence match, familial match, nickname variants, initials/acronym
 records (SQL path), and a low-confidence near-miss.
@@ -19,7 +19,7 @@ ACCOUNTS: list[dict] = [
     {"account_id": "DEN-004123", "name": "Sarah Johnson",    "address": "234 Elm Drive Thornton CO",      "account_number": "DEN-004123"},
     {"account_id": "DEN-004124", "name": "Sara Johnson",     "address": "235 Elm Drive Thornton CO",      "account_number": "DEN-004124"},  # near-miss (diff house)
     {"account_id": "DEN-005678", "name": "Michael O'Brien",  "address": "567 Birch Lane Westminster CO",  "account_number": "DEN-005678"},
-    {"account_id": "DEN-005679", "name": "M. O'Brien",       "address": "567 Birch Ln Westminster CO",    "account_number": "DEN-005679"},  # initials → SQL path
+    {"account_id": "DEN-005679", "name": "M. O'Brien",       "address": "567 Birch Ln Westminster CO",    "account_number": "DEN-005679"},  # initials -> SQL path
     {"account_id": "DEN-008901", "name": "Maria Garcia",     "address": "654 Willow Court Englewood CO",  "account_number": "DEN-008901"},
     {"account_id": "DEN-008902", "name": "Mary Garcia",      "address": "654 Willow Court Apt 3 Englewood CO", "account_number": "DEN-008902"},  # familial
     {"account_id": "DEN-009012", "name": "Robert Thompson",  "address": "987 Cedar Ave Arvada CO",        "account_number": "DEN-009012"},

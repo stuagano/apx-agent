@@ -1,6 +1,6 @@
 [project]
 name = "entity-resolution-agent"
-dynamic = ["version"]
+version = "0.1.0"
 description = "Entity resolution agent — fuzzy name+address matching via Databricks Vector Search, with Supervisor/Evaluator HandoffAgent for confidence-scored decisions"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,11 +18,9 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-# In-source-code-tree wheel — bundled into .build/ at deploy time so the App
 # Editable parent path keeps `uv sync` working on first checkout. At deploy
-# time, `apx deploy --target apps` builds the apx-agent wheel + rewrites
-# .build/pyproject.toml to point at it (the App container can't resolve
-# ../..). Mirrors memory_demo / customer_triage / data-triage-agent.
+# time, the apx-agent wheel is built + the artifacts script in databricks.yml
+# rewrites .build/pyproject.toml to point at the wheel.
 apx-agent = { path = "../..", editable = true }
 
 [dependency-groups]
@@ -35,9 +33,8 @@ dev = [
 [tool.apx.metadata]
 app-name = "entity-resolution-agent"
 app-slug = "entity_resolution_agent"
-app-entrypoint = "entity_resolution_agent.backend.app:app"
+app-entrypoint = "app:app"
 api-prefix = "/api"
-metadata-path = "src/entity_resolution_agent/_metadata.py"
 
 [tool.apx.agent]
 name = "entity_resolution_agent"
@@ -56,30 +53,16 @@ app_name = "mcp-entity-resolution-agent"
 [project.scripts]
 quickstart = "scripts.quickstart:main"
 
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [build-system]
-requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.version]
-source = "uv-dynamic-versioning"
-
-[tool.uv-dynamic-versioning]
-vcs = "git"
-fallback-version = "0.0.0"
-
-[tool.hatch.build.hooks.version]
-path = "src/entity_resolution_agent/_version.py"
-template = '''
-version = "{version}"
-'''
-
-[tool.hatch.build]
-artifacts = ["src/entity_resolution_agent/__dist__", "src/entity_resolution_agent/_metadata.py"]
-
 [tool.hatch.build.targets.wheel]
-# Includes the existing src/ package + the Apps-target agent_server/ and
-# scripts/ packages so `databricks bundle deploy` stages them together.
-packages = ["src/entity_resolution_agent", "agent_server", "scripts"]
+# ADK shape: top-level user-facing files ride along as forced-includes.
+# agent_server/ + scripts/ are real packages.
+packages = ["agent_server", "scripts"]
+force-include = { "agent.py" = "agent.py", "app.py" = "app.py", "api.py" = "api.py", "demo_data.py" = "demo_data.py", "sub_agents" = "sub_agents" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

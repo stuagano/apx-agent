@@ -1,16 +1,24 @@
+"""Application-specific API routes mounted at /api/* on the dev-mode app."""
+from __future__ import annotations
+
 from databricks.sdk.service.iam import User as UserOut
 from fastapi import APIRouter
+from pydantic import BaseModel
 
-from .core import Dependencies
+from apx_agent import Dependencies
 
-from .models import VersionOut
+__version__ = "0.1.0"
 
 router = APIRouter(prefix="/api")
 
 
+class VersionOut(BaseModel):
+    version: str
+
+
 @router.get("/version", response_model=VersionOut, operation_id="version")
 async def version():
-    return VersionOut.from_metadata()
+    return VersionOut(version=__version__)
 
 
 @router.get("/current-user", response_model=UserOut, operation_id="currentUser")

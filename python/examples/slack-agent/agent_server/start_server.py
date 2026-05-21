@@ -22,7 +22,7 @@ from mlflow.genai.agent_server import AgentServer, invoke, stream
 from apx_agent import compile_to_responses_agent, mount_mcp_endpoints
 
 from agent import agent
-from slack_agent.backend.slack_router import router as _slack_router
+from webhook import router as _slack_router
 
 MODEL = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
 

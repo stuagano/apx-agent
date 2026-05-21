@@ -914,6 +914,7 @@ wheels = [
 
 [[package]]
 name = "entity-resolution-agent"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "apx-agent", extra = ["langgraph"] },

@@ -165,7 +165,7 @@ Start data-inspector first (terminal 1):
 
 ```bash
 cd ../data-inspector
-DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn data_inspector.backend.app:app --port 9000 --reload
+DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn app:app --port 9000 --reload
 ```
 
 Then start data-triage-agent (terminal 2):
@@ -174,7 +174,7 @@ Then start data-triage-agent (terminal 2):
 cd ../data-triage-agent
 DATA_INSPECTOR_URL=http://localhost:9000 \
 DATABRICKS_CONFIG_PROFILE=my-workspace \
-uv run uvicorn data_triage_agent.backend.app:app --port 8001 --reload
+uv run uvicorn app:app --port 8001 --reload
 ```
 
 The chat interface opens at `http://localhost:8001`. Try:
@@ -230,7 +230,7 @@ curl -X POST "$APP_URL/invocations" \
 For production endpoints recognized by AI Playground, Review App, Supervisor Agent. Container build path.
 
 ```bash
-apx deploy --module data_triage_agent.backend.pipeline:agent \
+apx deploy --module agent:agent \
            --model databricks-claude-sonnet-4-6 \
            --name main.agents.data_triage_agent
 ```

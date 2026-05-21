@@ -1,8 +1,9 @@
 """Evaluator agent — fuzzy reasoning to produce an enrollment decision.
 
-Receives the normalized AFR application and the Supervisor's candidate shortlist.
-Applies rule-based edge case detection (familial matches, account number exact match)
-before returning a structured enrollment decision.
+Receives the normalized AFR application and the Supervisor's candidate
+shortlist. Applies rule-based edge-case detection (familial matches,
+account number exact match) before returning a structured enrollment
+decision.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from apx_agent import LlmAgent, Dependencies
+from apx_agent import Dependencies, LlmAgent
 
 Workspace = Dependencies.Workspace
 
@@ -46,7 +47,8 @@ def evaluate_candidates(
 ) -> dict[str, Any]:
     """Evaluate a list of candidates against the original AFR application.
 
-    Returns a structured decision dict with category, rationale, confidence, and matched flag.
+    Returns a structured decision dict with category, rationale, confidence,
+    and matched flag.
     applicant: normalized applicant record (name, address, account_number, email)
     candidates: list of candidate dicts from supervisor (account_id, name, address, score)"""
     if not candidates:
@@ -74,8 +76,9 @@ def evaluate_candidates(
     first_differs = _first_names_differ(app_name, best.get("name", ""))
     account_match = bool(app_account and app_account == best.get("account_number", ""))
 
-    # Exact name match: token overlap penalizes minor address differences (e.g. "Apt 2")
-    # but an identical name at the same street number is unambiguously the right record.
+    # Exact name match: token overlap penalizes minor address differences
+    # (e.g. "Apt 2") but an identical name at the same street number is
+    # unambiguously the right record.
     exact_name = app_name.strip().lower() == best.get("name", "").strip().lower()
     if exact_name and same_address:
         score = max(score, 0.92)
