@@ -1,30 +1,52 @@
-"""FastAPI entry point for Databricks Apps.
+"""FastAPI entry point for Databricks Apps — framework boilerplate.
 
-Databricks Apps will run this file via the command in ``databricks.yml``::
+Don't edit this file. Edit ``../agent.py`` instead — that's where the
+HandoffAgent + 4 specialist sub-agents + memory wiring live. This file
+wires that agent into the Databricks Apps runtime:
 
-    uvicorn agent_server.start_server:app --host 0.0.0.0 --port $DATABRICKS_APP_PORT
+  * Imports the user's ``agent`` from the top-level ``agent.py``.
+  * Compiles it to the MLflow ResponsesAgent contract.
+  * Registers ``@invoke`` / ``@stream`` handlers.
+  * Mounts apx-agent's ``/mcp`` + ``/.well-known/agent.json`` + ``/health``
+    so Genie / Genie Code can consume the same agent.
 
-Importing ``agent_server.agent`` triggers the ``@invoke()`` / ``@stream()``
-decorators that register the request handlers with the AgentServer
-singleton. The ``ResponsesAgent`` agent_type wires the MLflow validators
-and streaming-trace aggregation automatically.
+Run via ``uvicorn agent_server.start_server:app --host 0.0.0.0 --port $DATABRICKS_APP_PORT``
+(driven by ``databricks.yml`` on deploy).
 """
 
 from __future__ import annotations
 
-from mlflow.genai.agent_server import AgentServer
+import os
 
-# Importing the agent module triggers the @invoke()/@stream() decorators,
-# which register the handlers on the global AgentServer state. This MUST
-# happen before AgentServer() is constructed.
-from agent_server import agent  # noqa: F401  (import for side effects)
+from mlflow.genai.agent_server import AgentServer, invoke, stream
+
+from apx_agent import compile_to_responses_agent, mount_mcp_endpoints
+
+# Import the user's agent from the top-level module.
+from agent import agent
+
+MODEL = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
+
+_invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL)
+
+
+@invoke()
+def non_streaming(request):
+    """Non-streaming request handler — POST /invocations."""
+    return _invoke_fn(request)
+
+
+@stream()
+def streaming(request):
+    """Streaming request handler — POST /invocations with stream=true."""
+    yield from _stream_fn(request)
+
 
 server = AgentServer(agent_type="ResponsesAgent")
 app = server.app
 
+mount_mcp_endpoints(app, agent)
+
 
 if __name__ == "__main__":
-    # Local-dev entry point: `python -m agent_server.start_server`
-    # honors PORT / WORKERS / RELOAD CLI args. Production runs via the
-    # uvicorn command in databricks.yml.
     server.run("agent_server.start_server:app")
