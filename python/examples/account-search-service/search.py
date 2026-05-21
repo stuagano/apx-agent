@@ -41,7 +41,7 @@ def vector_search(
 ) -> dict[str, Any]:
     """Fan out across all three VS indexes; deduplicate by account_id keeping highest score."""
     if os.environ.get("DEMO_MODE", "").lower() == "true":
-        from .demo_data import vector_search_demo
+        from demo_data import vector_search_demo
         candidates = vector_search_demo(f"{applicant_name} {address}".strip(), k)
         return {"candidates": candidates, "count": len(candidates), "source": "demo"}
 
@@ -101,7 +101,7 @@ def sql_search(
 ) -> dict[str, Any]:
     """ILIKE fallback for names with initials or acronyms that embed poorly."""
     if os.environ.get("DEMO_MODE", "").lower() == "true":
-        from .demo_data import sql_search_demo
+        from demo_data import sql_search_demo
         candidates = sql_search_demo(name, address)
         return {"candidates": candidates, "count": len(candidates), "source": "demo"}
 

@@ -11,11 +11,11 @@ export default defineConfig({
     tailwindcss(),
   ],
   resolve: {
-    alias: { "@": path.resolve(__dirname, "./src/agent_hub/ui") },
+    alias: { "@": path.resolve(__dirname, "./ui") },
   },
-  root: "./src/agent_hub/ui",
+  root: "./ui",
   build: {
-    outDir: path.resolve(__dirname, "./src/agent_hub/__dist__"),
+    outDir: path.resolve(__dirname, "./__dist__"),
     emptyOutDir: true,
   },
   server: { port: 1420, strictPort: true },

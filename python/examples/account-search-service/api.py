@@ -4,8 +4,8 @@ from fastapi import APIRouter
 
 from apx_agent import Dependencies
 
-from .models import SearchRequest, SearchResponse
-from .core.search import search
+from models import SearchRequest, SearchResponse
+from search import search
 
 router = APIRouter(prefix="/api")
 

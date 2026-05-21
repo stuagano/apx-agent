@@ -29,4 +29,9 @@ def mock_ws():
         ["acct-001", "Jane", "Smith", "123 Main St", "12345", 0.92],
         ["acct-002", "John", "Smith", "123 Main St", "12346", 0.87],
     ])
+    # Mock a serverless SQL warehouse so search's SQL fallback can pick one up.
+    wh = MagicMock()
+    wh.id = "wh-test"
+    wh.warehouse_type = "serverless"
+    ws.warehouses.list.return_value = [wh]
     return ws
