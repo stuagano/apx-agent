@@ -46,3 +46,6 @@ reference/
 **/.build/
 **/apx_agent-*.whl
 **/.env
+**/dist/
+**/__dist__/
+package-lock.json
