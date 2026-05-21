@@ -8,7 +8,7 @@ resources:
       description: "Energy billing Q&A agent — exposes tools via MCP for Genie Code"
       source_code_path: ./
       config:
-        command: ["uv", "run", "uvicorn", "explain_my_bill_agent.backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
+        command: ["uv", "run", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
         env:
           - name: MLFLOW_TRACKING_URI
             value: "databricks"

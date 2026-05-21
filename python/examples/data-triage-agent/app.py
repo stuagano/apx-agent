@@ -1,8 +1,8 @@
-"""Dev-mode FastAPI app — ``apx dev`` mounts this at ``/``.
+"""data-triage-agent: FastAPI app for local dev.
 
-The Apps-target deployment uses ``agent_server/start_server.py`` instead.
-This file is the local-dev surface — it adds the apx dev UI, the /api/*
-routes, the Jira webhook, and CORS for the workspace MCP clients.
+The Apps-target deployment uses ``agent_server/start_server.py``. This file
+is what ``apx dev`` (or ``uvicorn app:app``) runs locally — adds the apx dev
+UI, the ``/api/*`` routes, the Jira webhook, and CORS for workspace MCP clients.
 """
 from __future__ import annotations
 

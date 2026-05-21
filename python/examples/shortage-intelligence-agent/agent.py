@@ -1,20 +1,10 @@
-"""shortage-intelligence-agent — ADK-style top-level definition.
+"""shortage-intelligence-agent: detect electronic component shortages early and produce dual sourcing/sales reports.
 
-Five-step ``SequentialAgent`` — structurally guarantees each step runs in
-order. Each step's output accumulates in the conversation history, so the
-synthesis step sees all prior findings without any extra wiring.
-
-Step order:
-  1. Demand Scanner    — detect 48-hour clustering signals
-  2. Historical Analyst — price delta and duration from past shortages
-  3. Market Validator  — KA + news confirmation
-  4. Vendor Pricer     — live DigiKey pricing + alternative parts
-  5. Report Generator  — dual reports for sourcing and sales teams
-
-Tool functions live in ``tools.py``; ``uc_helpers.py`` holds the
-classify_shortage_severity UC function.
+Five-step SequentialAgent that detects 48-hour demand-cluster signals, validates them against
+historical shortage patterns and market news, checks live vendor pricing and alternative parts,
+and synthesizes dual reports for sourcing and sales teams. Tool functions live in ``tools.py``;
+``uc_helpers.py`` holds the ``classify_shortage_severity`` UC function.
 """
-
 from __future__ import annotations
 
 from apx_agent import Agent, SequentialAgent, genie_query_tool
@@ -55,7 +45,6 @@ def create_shortage_pipeline() -> SequentialAgent:
     # Step 1: Demand Cluster Detection
     # ------------------------------------------------------------------
     detection_agent = Agent(
-        tools=[scan_demand_clusters],
         instructions=(
             "You are the Demand Cluster Detector.\n\n"
             "Your job: identify components showing multi-customer demand clustering "
@@ -68,13 +57,13 @@ def create_shortage_pipeline() -> SequentialAgent:
             "- Which signals to prioritize for deeper investigation (HIGH confidence first)\n\n"
             "If no signals are found, say so clearly and end the pipeline early."
         ),
+        tools=[scan_demand_clusters],
     )
 
     # ------------------------------------------------------------------
     # Step 2: Historical Pattern Analysis
     # ------------------------------------------------------------------
     historical_agent = Agent(
-        tools=[find_historical_patterns, classify_shortage_severity, *ad_hoc_explorer],
         instructions=(
             "You are the Historical Pattern Analyst.\n\n"
             "The demand scan above found shortage signals. For each HIGH or MEDIUM "
@@ -98,13 +87,13 @@ def create_shortage_pipeline() -> SequentialAgent:
             "Summarize overall severity: are these components historically volatile "
             "or is this a novel pattern?"
         ),
+        tools=[find_historical_patterns, classify_shortage_severity, *ad_hoc_explorer],
     )
 
     # ------------------------------------------------------------------
     # Step 3: Market Signal Validation
     # ------------------------------------------------------------------
     market_agent = Agent(
-        tools=[validate_against_market_news],
         instructions=(
             "You are the Market Signal Validator.\n\n"
             "For each component with a HIGH or MEDIUM demand signal, call "
@@ -118,13 +107,13 @@ def create_shortage_pipeline() -> SequentialAgent:
             "A CONFIRMED signal warrants immediate action. An UNCONFIRMED signal "
             "warrants monitoring."
         ),
+        tools=[validate_against_market_news],
     )
 
     # ------------------------------------------------------------------
     # Step 4: Vendor Pricing and Alternative Parts
     # ------------------------------------------------------------------
     vendor_agent = Agent(
-        tools=[check_vendor_availability, find_alternative_parts],
         instructions=(
             "You are the Vendor Intelligence Analyst.\n\n"
             "For each CONFIRMED shortage signal from the market validation step:\n\n"
@@ -138,13 +127,13 @@ def create_shortage_pipeline() -> SequentialAgent:
             "Flag any component where quantity_available < total_units_requested "
             "from the demand scan — that is a critical supply gap."
         ),
+        tools=[check_vendor_availability, find_alternative_parts],
     )
 
     # ------------------------------------------------------------------
     # Step 5: Dual Report Generation
     # ------------------------------------------------------------------
     report_agent = Agent(
-        tools=[],
         instructions=(
             "You are the Report Synthesizer.\n\n"
             "All investigation steps are complete. The conversation above contains:\n"
@@ -188,16 +177,10 @@ def create_shortage_pipeline() -> SequentialAgent:
             "Use specific numbers and dates from the investigation. "
             "Do not generalize — cite exact component IDs, prices, and customer names."
         ),
+        tools=[],
     )
 
     return SequentialAgent(
-        agents=[
-            detection_agent,
-            historical_agent,
-            market_agent,
-            vendor_agent,
-            report_agent,
-        ],
         instructions=(
             "You are the Shortage Intelligence Agent for a parts distributor. "
             "You run a five-step investigation to detect shortage signals, validate "
@@ -205,6 +188,13 @@ def create_shortage_pipeline() -> SequentialAgent:
             "availability, and produce actionable reports for the sourcing and sales teams. "
             "Follow each step in order — each step builds on the prior findings."
         ),
+        agents=[
+            detection_agent,
+            historical_agent,
+            market_agent,
+            vendor_agent,
+            report_agent,
+        ],
     )
 
 

@@ -1,9 +1,8 @@
-"""data-inspector — Delta table forensics + UC discovery agent.
+"""data-inspector: Delta table forensics + UC discovery agent.
 
-ADK-style top-level definition. Tool functions live in ``tools.py``; this
-module wires them onto the ``Agent`` along with the system prompt.
-
-Reusable by any agent via A2A (sub_agents URL) or MCP (/mcp/sse).
+Tool functions live in ``tools.py``; this module wires them onto the
+``Agent`` along with the system prompt. Reusable by any agent via A2A
+(sub_agents URL) or MCP (/mcp/sse).
 """
 from __future__ import annotations
 
@@ -76,6 +75,7 @@ that performed it.
 
 
 agent = Agent(
+    instructions=SYSTEM_PROMPT,
     tools=[
         list_catalogs,
         list_schemas,
@@ -88,5 +88,4 @@ agent = Agent(
         version_diff,
         audit_lookup,
     ],
-    instructions=SYSTEM_PROMPT,
 )
