@@ -16,13 +16,18 @@ name: apps-smoke-test
 # (default: databricks-claude-sonnet-4-6) and CAN_MANAGE on the bundle
 # workspace path. See docs/ci-smoke-test.md.
 
+# Manual trigger only until the DATABRICKS_CLI_CI_* secrets are configured
+# on the repo. Once secrets are in place, swap `workflow_dispatch:` for the
+# `pull_request:` block below to auto-run on every PR touching the watched
+# paths.
+#
+#   pull_request:
+#     branches: [main]
+#     paths:
+#       - 'python/src/apx_agent/**'
+#       - 'python/examples/memory_demo/**'
+#       - '.github/workflows/apps-smoke-test.yml'
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'python/src/apx_agent/**'
-      - 'python/examples/memory_demo/**'
-      - '.github/workflows/apps-smoke-test.yml'
   workflow_dispatch:
 
 concurrency:
