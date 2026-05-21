@@ -562,9 +562,8 @@ The MLflow GenAI Agent Server path. `compile_to_responses_agent` produces a `Res
 ```bash
 apx scaffold my_agent --target apps   # scaffolds agent_server/ + databricks.yml + pyproject.toml + quickstart
 cd my_agent
-uv sync
-uv run quickstart                     # creates MLflow experiment, writes .env
-apx deploy --target apps              # databricks bundle deploy + bundle run
+apx deploy --target apps              # one command — builds wheel, stages .build,
+                                       # auto-resolves MLflow experiment, bundle deploy + run
 ```
 
 - **Code-push deploy** — seconds to minutes from edit to running app

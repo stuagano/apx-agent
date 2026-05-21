@@ -196,17 +196,16 @@ Code-push deploy via `databricks bundle deploy + bundle run`. No container build
 
 ```bash
 cd python/examples/data-triage-agent
-uv sync
-uv run quickstart                              # create MLflow experiment, write .env
-
-# Set the data-inspector sub-agent URL the pipeline delegates to
-export DATA_INSPECTOR_URL=https://<your-data-inspector-app>.databricksapps.com
-
-apx deploy --target apps
-# OR equivalently:
-#   databricks bundle deploy --target dev --profile <p> --var "data_inspector_url=$DATA_INSPECTOR_URL"
-#   databricks bundle run mcp-data-triage-agent --target dev --profile <p>
+apx deploy --target apps --var "data_inspector_url=https://<your-data-inspector-app>.databricksapps.com"
 ```
+
+`apx deploy --target apps` is the complete pipeline — builds the
+apx-agent wheel, stages `.build/`, auto-resolves an MLflow experiment id
+(creates/reuses `/Users/<you>/mcp-data-triage-agent-dev`), runs
+`databricks bundle deploy + run`, polls until `RUNNING`/`ACTIVE`.
+
+The `--var data_inspector_url=...` plumbs the deployed data-inspector
+sub-agent URL into the pipeline's A2A handoff.
 
 Verify:
 
