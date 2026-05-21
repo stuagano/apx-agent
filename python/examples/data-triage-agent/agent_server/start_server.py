@@ -34,8 +34,7 @@ from apx_agent import compile_to_responses_agent, mount_mcp_endpoints
 
 # Import the user's agent (the deterministic router) from the top-level
 # module + the router subclass for the dispatch hook.
-from agent import agent
-from data_triage_agent.backend.pipeline import _DeterministicRouter
+from agent import _DeterministicRouter, agent
 
 assert isinstance(agent, _DeterministicRouter)
 

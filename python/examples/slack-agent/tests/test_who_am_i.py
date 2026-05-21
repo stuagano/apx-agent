@@ -1,5 +1,5 @@
 from unittest.mock import MagicMock
-from slack_agent.backend.agent_router import who_am_i
+from agent import who_am_i
 
 
 def test_who_am_i_formats_display_name_and_email():

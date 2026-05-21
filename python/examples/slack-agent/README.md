@@ -153,7 +153,7 @@ SLACK_BOT_TOKEN=xoxb-...
 
 ```bash
 uv sync
-uv run uvicorn slack_agent.backend.app:app --reload
+uv run uvicorn app:app --reload
 ```
 
 ### Step 3: Connect your Databricks account
@@ -227,7 +227,7 @@ async def _dispatch_to_agent(
 Because `_dispatch_to_agent` accepts primitive strings (not injected objects), tests can mock it directly and assert the exact token being forwarded:
 
 ```python
-with patch("slack_agent.backend.slack_router._dispatch_to_agent") as mock_dispatch:
+with patch("webhook._dispatch_to_agent") as mock_dispatch:
     client.post("/slack/events", data=payload, headers=slack_headers)
     mock_dispatch.assert_called_once_with(
         text="hello",

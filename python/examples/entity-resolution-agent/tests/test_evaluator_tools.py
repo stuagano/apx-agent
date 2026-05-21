@@ -21,7 +21,7 @@ SAMPLE_APPLICATION = {
 
 
 def test_evaluate_candidates_high_confidence(mock_ws):
-    from entity_resolution_agent.backend.core.evaluator import evaluate_candidates
+    from sub_agents.evaluator.agent import evaluate_candidates
     result = evaluate_candidates(applicant=SAMPLE_APPLICATION, candidates=SAMPLE_CANDIDATES, ws=mock_ws)
     assert "decision" in result
     assert result["decision"]["category"] in ("EXACT", "HIGH_CONFIDENCE", "LOW_CONFIDENCE", "NO_MATCH")
@@ -30,14 +30,14 @@ def test_evaluate_candidates_high_confidence(mock_ws):
 
 
 def test_evaluate_candidates_no_candidates(mock_ws):
-    from entity_resolution_agent.backend.core.evaluator import evaluate_candidates
+    from sub_agents.evaluator.agent import evaluate_candidates
     result = evaluate_candidates(applicant=SAMPLE_APPLICATION, candidates=[], ws=mock_ws)
     assert result["decision"]["category"] == "NO_MATCH"
     assert result["decision"]["matched"] is False
 
 
 def test_evaluate_candidates_familial_flag(mock_ws):
-    from entity_resolution_agent.backend.core.evaluator import evaluate_candidates
+    from sub_agents.evaluator.agent import evaluate_candidates
     # Same address, DIFFERENT surname — classic familial case (spouse or parent)
     candidates = [
         {"account_id": "acct-003", "name": "John Williams", "address": "123 Main St", "account_number": "99999", "score": 0.75},
@@ -51,7 +51,7 @@ def test_evaluate_candidates_familial_flag(mock_ws):
 
 
 def test_evaluate_candidates_account_number_boosts_score(mock_ws):
-    from entity_resolution_agent.backend.core.evaluator import evaluate_candidates
+    from sub_agents.evaluator.agent import evaluate_candidates
     candidates = [
         {"account_id": "acct-004", "name": "Jane Smith", "address": "123 Main St", "account_number": "12345", "score": 0.88},
     ]
@@ -65,7 +65,7 @@ def test_evaluate_candidates_account_number_boosts_score(mock_ws):
 
 
 def test_log_decision_writes_sql(mock_ws):
-    from entity_resolution_agent.backend.core.evaluator import log_decision
+    from sub_agents.evaluator.agent import log_decision
     from databricks.sdk.service.sql import StatementStatus, StatementState
     sql_result = MagicMock()
     sql_result.status = StatementStatus(state=StatementState.SUCCEEDED)

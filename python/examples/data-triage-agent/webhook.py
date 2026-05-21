@@ -1,3 +1,10 @@
+"""Jira webhook surface — mounted at ``/webhook/*`` on the dev-mode app.
+
+Jira hits ``/webhook/jira`` when a "Data Issue" ticket is created. The router
+validates Jira's HMAC signature, extracts the ticket fields, then triggers
+``data_triage_job_id`` via ``ws.jobs.run_now`` so investigation runs async on
+a Databricks Job (avoids Jira's 30s webhook timeout).
+"""
 from __future__ import annotations
 
 import hashlib
@@ -10,7 +17,7 @@ from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .config import Settings, get_settings
+from config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 

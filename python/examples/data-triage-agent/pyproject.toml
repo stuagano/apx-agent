@@ -26,28 +26,21 @@ dev = [
 ]
 
 [tool.uv.sources]
-# In-source-code-tree wheel — bundled into .build/ at deploy time so the App
-# container can resolve it without reaching outside source_code_path. Mirrors
-# memory_demo + customer_triage. Switch back to editable for local dev only.
 apx-agent = { path = "../..", editable = true }
 
 [project.scripts]
-investigate = "data_triage_agent.jobs.investigate:main"
 quickstart = "scripts.quickstart:main"
 
 [tool.apx.metadata]
 app-name = "data-triage-agent"
 app-slug = "data_triage_agent"
-app-entrypoint = "data_triage_agent.backend.app:app"
+app-entrypoint = "app:app"
 api-prefix = "/api"
-metadata-path = "src/data_triage_agent/_metadata.py"
 
 [tool.apx.agent]
 name = "data_triage_agent"
 description = "Investigate why data is missing from Databricks tables or APIs — traces lineage, checks job failures, and inspects source code"
 model = "databricks-claude-sonnet-4-6"
-# ADK-style layout: ``agent`` is re-exported by top-level ``agent.py``
-# (which imports from ``data_triage_agent.backend.pipeline``). Same symbol.
 module = "agent:agent"
 url = ""
 registry = ""
@@ -55,19 +48,20 @@ registry = ""
 [tool.apx.deploy]
 target = "apps"
 # App name MUST start with 'mcp-' for Databricks External MCP discovery to
-# pick up /mcp on the deployed Apps URL. The Apps platform requires this
-# naming convention for cross-app MCP source registration.
+# pick up /mcp on the deployed Apps URL.
 bundle_name = "mcp-data-triage-agent"
 app_name = "mcp-data-triage-agent"
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-# Includes the existing src/ package + the Apps-target agent_server/ and
-# scripts/ packages so `databricks bundle deploy` stages them together.
-packages = ["src/data_triage_agent", "agent_server", "scripts"]
+# ADK shape: top-level user-facing files ride along as forced-includes.
+# agent_server/ + scripts/ + jobs/ are real packages.
+packages = ["agent_server", "scripts", "jobs"]
+force-include = { "agent.py" = "agent.py", "tools.py" = "tools.py", "app.py" = "app.py", "api.py" = "api.py", "webhook.py" = "webhook.py", "config.py" = "config.py", "jira_client.py" = "jira_client.py" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,9 +1,8 @@
 """Databricks Job entrypoint for async Jira ticket investigation.
 
-Invoked by the data-triage-investigation job via python_wheel_task.
-Ticket fields arrive as sys.argv via python_params from run_now().
+Invoked by the data-triage-investigation job. Ticket fields arrive as
+sys.argv via python_params from run_now().
 """
-
 from __future__ import annotations
 
 import argparse
@@ -16,7 +15,7 @@ from typing import Any
 import httpx
 from databricks.sdk import WorkspaceClient
 
-from data_triage_agent.jira_client import JiraClient, JiraClientError
+from jira_client import JiraClient, JiraClientError
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -82,15 +81,15 @@ def run_investigation(query: str, ws: WorkspaceClient) -> str:
 
 def _dispatch_tool(name: str, args: dict[str, Any], ws: WorkspaceClient) -> Any:
     """Dispatch tool calls available in job context."""
-    from data_triage_agent.backend.agent_router import (
+    from tools import (
         _run_sql,
+        find_jobs_for_table,
         get_job_run_history,
         get_job_run_logs,
         get_job_source_paths,
+        get_table_info,
         get_table_lineage,
-        find_jobs_for_table,
     )
-    from data_triage_agent.backend.pipeline import get_table_info
 
     dispatch: dict[str, Any] = {
         "run_sql_query": lambda: _run_sql(ws, args["sql"]),

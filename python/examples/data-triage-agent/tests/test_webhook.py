@@ -5,8 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch
 
-from data_triage_agent.backend.app import app
-from data_triage_agent.backend.config import Settings, get_settings
+from app import app
+from config import Settings, get_settings
 
 
 SECRET = "test-secret-1234"
@@ -53,7 +53,7 @@ def client():
 
 def test_valid_webhook_returns_202(client):
     payload = json.dumps(_make_payload()).encode()
-    with patch("data_triage_agent.backend.webhook.WorkspaceClient") as MockWs:
+    with patch("webhook.WorkspaceClient") as MockWs:
         mock_ws = MagicMock()
         MockWs.return_value = mock_ws
         resp = client.post(
@@ -119,7 +119,7 @@ def test_missing_signature_returns_401(client):
 
 def test_run_now_called_with_issue_key(client):
     payload = json.dumps(_make_payload()).encode()
-    with patch("data_triage_agent.backend.webhook.WorkspaceClient") as MockWs:
+    with patch("webhook.WorkspaceClient") as MockWs:
         mock_ws = MagicMock()
         MockWs.return_value = mock_ws
         client.post(
@@ -151,7 +151,7 @@ def test_adf_description_extracted(client):
     payload_dict = _make_payload()
     payload_dict["issue"]["fields"]["description"] = adf_description
     payload = json.dumps(payload_dict).encode()
-    with patch("data_triage_agent.backend.webhook.WorkspaceClient") as MockWs:
+    with patch("webhook.WorkspaceClient") as MockWs:
         mock_ws = MagicMock()
         MockWs.return_value = mock_ws
         client.post(

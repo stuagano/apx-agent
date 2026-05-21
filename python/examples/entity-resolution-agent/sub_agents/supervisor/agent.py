@@ -1,8 +1,9 @@
 """Supervisor agent — normalizes AFR records and searches for candidates.
 
-When SEARCH_SERVICE_URL is configured, the Supervisor calls the account-search-service
-API via HTTP (recommended when running as separate deployed apps). Otherwise it runs
-Vector Search + SQL locally — useful for single-app dev and DEMO_MODE.
+When ``SEARCH_SERVICE_URL`` is configured, the Supervisor calls the
+account-search-service API via HTTP (recommended when running as separate
+deployed apps). Otherwise it runs Vector Search + SQL locally — useful for
+single-app dev and ``DEMO_MODE``.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import os
 import re
 from typing import Any
 
-from apx_agent import LlmAgent, Dependencies
+from apx_agent import Dependencies, LlmAgent
 
 Workspace = Dependencies.Workspace
 
@@ -57,11 +58,13 @@ def search_accounts(
 ) -> dict[str, Any]:
     """Search utility accounts for AFR application candidates.
 
-    If SEARCH_SERVICE_URL is set, calls the account-search-service API (recommended for
-    separate-app deployments). Otherwise runs Vector Search + SQL locally.
+    If SEARCH_SERVICE_URL is set, calls the account-search-service API
+    (recommended for separate-app deployments). Otherwise runs Vector Search
+    + SQL locally.
 
-    Fans out across embed_full (full name+address), embed_last_addr (familial match),
-    and embed_first_email (maiden name) indexes, deduplicates by account_id.
+    Fans out across embed_full (full name+address), embed_last_addr (familial
+    match), and embed_first_email (maiden name) indexes, deduplicates by
+    account_id.
 
     applicant_name: normalized full name
     address: normalized service address
@@ -103,7 +106,7 @@ def _call_search_service(url, applicant_name, address, email, tenant_id, k, ws):
 def _search_local(applicant_name, address, email, tenant_id, k, ws):
     """Local search — same logic as account-search-service, embedded for single-app dev."""
     if os.environ.get("DEMO_MODE", "").lower() == "true":
-        from .demo_data import vector_search_demo, sql_search_demo
+        from demo_data import sql_search_demo, vector_search_demo
         if _is_abnormal(applicant_name):
             candidates = sql_search_demo(applicant_name, address)
             return {"candidates": candidates, "count": len(candidates), "source": "demo", "strategy": "sql"}
@@ -157,7 +160,7 @@ def _search_local(applicant_name, address, email, tenant_id, k, ws):
 
 def _sql_fallback(name, address, ws):
     if os.environ.get("DEMO_MODE", "").lower() == "true":
-        from .demo_data import sql_search_demo
+        from demo_data import sql_search_demo
         candidates = sql_search_demo(name, address)
         return {"candidates": candidates, "count": len(candidates), "source": "demo", "strategy": "sql"}
 

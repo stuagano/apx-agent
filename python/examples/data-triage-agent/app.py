@@ -1,15 +1,24 @@
+"""Dev-mode FastAPI app — ``apx dev`` mounts this at ``/``.
+
+The Apps-target deployment uses ``agent_server/start_server.py`` instead.
+This file is the local-dev surface — it adds the apx dev UI, the /api/*
+routes, the Jira webhook, and CORS for the workspace MCP clients.
+"""
+from __future__ import annotations
+
 import logging
 import os
+
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from apx_agent import create_app
 from apx_agent._dev import build_dev_ui_router
 from apx_agent._models import AgentConfig
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
 
-from .pipeline import agent
-from .router import router
-from .webhook import router as webhook_router
+from agent import agent
+from api import router as api_router
+from webhook import router as webhook_router
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +33,9 @@ _agent_config = AgentConfig(
 )
 
 app = create_app(agent, config=_agent_config)
-app.include_router(router)
+app.include_router(api_router)
 app.include_router(webhook_router)
 
-# Explicitly mount dev UI so import errors surface rather than being swallowed
 try:
     app.include_router(build_dev_ui_router())
     logger.info("Dev UI mounted at /_apx/agent")

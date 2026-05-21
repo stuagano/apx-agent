@@ -4,7 +4,7 @@ import respx
 import httpx
 from unittest.mock import MagicMock
 
-from data_triage_agent.jobs.investigate import (
+from jobs.investigate import (
     _extract_investigation_query,
     _format_comment,
     run_investigation,

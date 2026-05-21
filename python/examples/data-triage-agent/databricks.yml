@@ -37,12 +37,28 @@ variables:
 artifacts:
   default:
     build: |
+      set -e
       mkdir -p .build
-      # User-authored: top-level agent.py re-exports the router from src/.
+      # User-authored: top-level agent.py + tools.py + app.py + helpers.
       cp agent.py .build/ 2>/dev/null || true
+      cp tools.py .build/ 2>/dev/null || true
+      cp app.py .build/ 2>/dev/null || true
+      cp api.py .build/ 2>/dev/null || true
+      cp webhook.py .build/ 2>/dev/null || true
+      cp config.py .build/ 2>/dev/null || true
+      cp jira_client.py .build/ 2>/dev/null || true
+      cp -r jobs .build/ 2>/dev/null || true
+      cp -r sub_agents .build/ 2>/dev/null || true
       # Framework boilerplate + project files (don't edit agent_server/).
-      cp -r agent_server scripts src pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
-      cp apx_agent-*.whl .build/ 2>/dev/null || true
+      cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      # Stage the apx-agent wheel + rewrite editable -> wheel path.
+      WHEEL=$(ls apx_agent-*.whl 2>/dev/null | head -1) || true
+      if [ -n "$WHEEL" ]; then
+        cp "$WHEEL" .build/
+        sed -i.bak -E 's|apx-agent = \{ path = "\.\./\.\." *, editable = true *\}|apx-agent = { path = "./'"$WHEEL"'" }|g' .build/pyproject.toml
+        rm -f .build/pyproject.toml.bak
+        (cd .build && uv lock --quiet)
+      fi
 
 resources:
   apps:

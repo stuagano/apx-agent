@@ -4,7 +4,7 @@ import pytest
 import respx
 import httpx
 
-from data_triage_agent.jira_client import JiraClient, JiraClientError
+from jira_client import JiraClient, JiraClientError
 
 
 BASE = "https://test.atlassian.net"

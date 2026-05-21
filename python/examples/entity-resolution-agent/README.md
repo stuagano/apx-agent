@@ -174,7 +174,7 @@ The agent ships with synthetic utility account data so you can run it locally be
 ```bash
 cd entity-resolution-agent
 uv sync
-DEMO_MODE=true uv run uvicorn entity_resolution_agent.backend.app:app --reload
+DEMO_MODE=true uv run uvicorn app:app --reload
 ```
 
 The chat interface opens at `http://localhost:8000`. Try:
@@ -186,7 +186,7 @@ The agent will normalize the input, call the demo search functions backed by `co
 To test the deterministic endpoint in demo mode:
 
 ```bash
-DEMO_MODE=true uv run uvicorn entity_resolution_agent.backend.app:app --reload &
+DEMO_MODE=true uv run uvicorn app:app --reload &
 
 curl -s -X POST http://localhost:8000/api/enroll \
   -H "Content-Type: application/json" \
@@ -423,7 +423,7 @@ tests/test_supervisor_tools.py::test_search_accounts_demo_mode PASSED
 ### Step 5: Run locally against live data
 
 ```bash
-uv run uvicorn entity_resolution_agent.backend.app:app --reload
+uv run uvicorn app:app --reload
 ```
 
 The chat interface opens at `http://localhost:8000`. For batch enrollment, run the sibling `afr-enrollment-api` instead.
@@ -582,7 +582,7 @@ Three YAML files serve distinct purposes — don't confuse them:
 Tells Databricks Apps how to start the app and what environment variables to inject at runtime:
 
 ```yaml
-command: ["uvicorn", "entity_resolution_agent.backend.app:app", "--workers", "2"]
+command: ["uvicorn", "app:app", "--workers", "2"]
 env:
   - name: VS_INDEX_FULL
     value: "catalog.schema.utility_account_entities_full_idx"

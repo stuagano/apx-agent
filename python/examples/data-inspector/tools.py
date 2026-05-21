@@ -1,9 +1,8 @@
-"""Data Inspector agent tools.
+"""Data Inspector tool functions.
 
-General-purpose Delta table forensics and data presence tools.
-Reusable by any agent via A2A (sub_agents URL) or MCP (/mcp/sse).
+General-purpose Delta table forensics and UC discovery tools. Reusable by
+any agent via A2A (sub_agents URL) or MCP (/mcp/sse).
 """
-
 from __future__ import annotations
 
 import logging
@@ -12,9 +11,7 @@ from typing import Any
 
 from databricks.sdk.service.sql import StatementState
 
-from apx_agent import Agent
-
-from .core import Dependencies
+from apx_agent import Dependencies
 
 Workspace = Dependencies.Workspace
 logger = logging.getLogger(__name__)
@@ -117,7 +114,6 @@ def delta_bisect(
     Returns the transition version — the first version where the condition
     result differs from version_lo. Also returns the DESCRIBE HISTORY entry
     for that version so you can see who/what changed it."""
-
     current = _get_current_version(ws, table)
 
     lo = version_lo if version_lo >= 0 else 0
@@ -199,7 +195,6 @@ def delta_bisect_column(
 
     Returns the transition version, the before/after column values, and
     the DESCRIBE HISTORY entry for that version."""
-
     current = _get_current_version(ws, table)
 
     lo = version_lo if version_lo >= 0 else 0
@@ -283,7 +278,6 @@ def version_diff(table: str, v_old: int, v_new: int, ws: Workspace) -> dict[str,
     table: fully qualified table name
     v_old: the 'before' version number
     v_new: the 'after' version number"""
-
     added = _run_sql(ws, f"""
         SELECT * FROM {table} VERSION AS OF {v_new}
         EXCEPT
@@ -313,7 +307,6 @@ def audit_lookup(table: str, version: int = -1, ws: Workspace = None) -> dict[st
 
     table: fully qualified table name
     version: specific version to look up (-1 for the 10 most recent versions)"""
-
     if version >= 0:
         rows = _run_sql(ws, f"DESCRIBE HISTORY {table} LIMIT {version + 1}")
         entry = None
@@ -324,14 +317,9 @@ def audit_lookup(table: str, version: int = -1, ws: Workspace = None) -> dict[st
         if not entry:
             return {"table": table, "version": version, "error": f"Version {version} not found in history"}
         return {"table": table, "version": version, "history": entry}
-    else:
-        rows = _run_sql(ws, f"DESCRIBE HISTORY {table} LIMIT 10")
-        return {"table": table, "recent_history": rows}
+    rows = _run_sql(ws, f"DESCRIBE HISTORY {table} LIMIT 10")
+    return {"table": table, "recent_history": rows}
 
-
-# ---------------------------------------------------------------------------
-# System prompt
-# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Discovery tools — "what data is here?"
@@ -379,9 +367,10 @@ def list_tables(catalog: str, schema: str, ws: Workspace) -> dict[str, Any]:
 
 
 def search_tables(query: str, ws: Workspace) -> dict[str, Any]:
-    """Find tables whose name or comment matches a substring across all catalogs/schemas
-    the caller can see. Use this when the user describes what they want
-    ('billing', 'customers', 'usage') but doesn't know the catalog/schema.
+    """Find tables whose name or comment matches a substring across all
+    catalogs/schemas the caller can see. Use this when the user describes
+    what they want ('billing', 'customers', 'usage') but doesn't know the
+    catalog/schema.
     query: substring to match against table names and comments (case-insensitive)."""
     safe_query = query.replace("'", "''")
     sql = f"""
@@ -394,77 +383,3 @@ def search_tables(query: str, ws: Workspace) -> dict[str, Any]:
     """
     rows = _run_sql(ws, sql)
     return {"query": query, "matches": rows, "count": len(rows)}
-
-
-SYSTEM_PROMPT = """\
-You are a data inspector agent that examines Delta tables in Databricks. \
-You check whether data exists, inspect table schemas, use Delta time travel \
-to forensically analyze when and how data changed, AND help users discover \
-what data is available when they don't know.
-
-## When to use each tool
-
-### Discovery (when the user doesn't know what's there)
-
-- **search_tables** — When the user describes what they want ("billing", \
-"customers", "ami") but doesn't name a specific table. Searches names AND \
-comments across all visible catalogs.
-
-- **list_catalogs** — When the user wants to start from the top.
-
-- **list_schemas** — Drill into a specific catalog.
-
-- **list_tables** — See what's in a specific schema.
-
-### Inspection
-
-- **run_sql_query** / **get_table_info** — Confirm the data exists (or \
-doesn't) and understand the table structure.
-
-- **audit_lookup** — Check recent DESCRIBE HISTORY to see what operations \
-have been run and by whom. Good first step before bisecting.
-
-- **delta_bisect** — When a row appeared or disappeared and you need to \
-find the exact version. Provide a WHERE clause that matches when the row \
-is "present". The tool binary-searches to find the transition.
-
-- **delta_bisect_column** — When the row still exists but a field value \
-changed.
-
-- **version_diff** — Once you know the transition version, compare the \
-before/after to see exactly what rows were added or removed.
-
-## Guidelines
-
-- If the user asks "what tables are there" or describes what they want \
-without naming a specific table, START with search_tables (substring \
-search) or list_catalogs (top-down browse). Don't go to Delta forensics \
-tools first.
-- Always cite specific table names, version numbers, and timestamps.
-- Report the operation type (MERGE, DELETE, WRITE, etc.) and the user/principal \
-that performed it.
-- If the table has very few versions, say so — bisecting isn't useful on a \
-2-version table.
-- Present findings step by step.
-"""
-
-
-# ---------------------------------------------------------------------------
-# Register
-# ---------------------------------------------------------------------------
-
-agent = Agent(
-    tools=[
-        list_catalogs,
-        list_schemas,
-        list_tables,
-        search_tables,
-        run_sql_query,
-        get_table_info,
-        delta_bisect,
-        delta_bisect_column,
-        version_diff,
-        audit_lookup,
-    ],
-    instructions=SYSTEM_PROMPT,
-)
