@@ -1,5 +1,5 @@
 import pytest
-from eligibility_agent.tools.reasoning_trail import build_reasoning_trail
+from tools.reasoning_trail import build_reasoning_trail
 
 
 @pytest.fixture

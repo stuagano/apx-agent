@@ -7,10 +7,10 @@ from datetime import date
 
 import pytest
 
-from eligibility_agent.tools.assess_eligibility import assess_eligibility
-from eligibility_agent.tools.check_residency import check_residency
-from eligibility_agent.tools.compute_income import compute_income
-from eligibility_agent.tools.reasoning_trail import build_reasoning_trail
+from tools.assess_eligibility import assess_eligibility
+from tools.check_residency import check_residency
+from tools.compute_income import compute_income
+from tools.reasoning_trail import build_reasoning_trail
 
 _TODAY = date.today().isoformat()
 _HOUSEHOLD = {"residence_address": "100 Main St", "residence_city": "Springfield", "residence_state": "CA"}
@@ -19,7 +19,7 @@ _HOUSEHOLD = {"residence_address": "100 Main St", "residence_city": "Springfield
 @pytest.fixture(autouse=True)
 def set_state(monkeypatch):
     monkeypatch.setenv("STATE_CODE", "CA")
-    from eligibility_agent import config
+    import config
     config.get_settings.cache_clear()
     yield
     config.get_settings.cache_clear()

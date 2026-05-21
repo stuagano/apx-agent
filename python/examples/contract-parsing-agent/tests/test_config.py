@@ -3,7 +3,7 @@ import textwrap
 
 import pytest
 
-from contract_parsing_agent.backend.config import Settings, load_settings
+from config import Settings, load_settings
 
 
 def test_load_settings_from_yaml(tmp_path: Path) -> None:

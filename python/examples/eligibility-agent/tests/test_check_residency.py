@@ -9,13 +9,13 @@ import pytest
 def set_state(monkeypatch):
     monkeypatch.setenv("STATE_CODE", "CA")
     # Reset lru_cache so env var takes effect
-    from eligibility_agent import config
+    import config
     config.get_settings.cache_clear()
     yield
     config.get_settings.cache_clear()
 
 
-from eligibility_agent.tools.check_residency import check_residency
+from tools.check_residency import check_residency
 
 _HOUSEHOLD = {"residence_address": "100 Main St", "residence_city": "Sacramento", "residence_state": "CA"}
 

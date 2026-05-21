@@ -17,16 +17,20 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.hatch.build.targets.wheel]
+# ADK shape: top-level user-facing files ride along as forced-includes.
+# tools/ is a real package.
+packages = ["tools"]
+force-include = { "agent.py" = "agent.py", "app.py" = "app.py", "prompts.py" = "prompts.py", "config.py" = "config.py" }
 
 [tool.apx.agent]
 name = "eligibility-agent"
 description = "Assess program eligibility from application documents — income, residency, and criteria verification."
 model = "databricks-claude-sonnet-4-6"
+module = "agent:agent"
 max_iterations = 8
 
 [tool.uv.sources]
@@ -34,3 +38,4 @@ apx-agent = { path = "../..", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

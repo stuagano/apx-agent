@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from contract_parsing_agent.backend.router import list_contracts
+from api import list_contracts
 
 
 def test_list_contracts_returns_rows():
@@ -17,9 +17,9 @@ def test_list_contracts_returns_rows():
         }
     ]
     with patch(
-        "contract_parsing_agent.backend.router.run_sql", return_value=expected
+        "api.run_sql", return_value=expected
     ) as mock_sql, patch(
-        "contract_parsing_agent.backend.router.get_settings"
+        "api.get_settings"
     ) as mock_cfg:
         mock_cfg.return_value.qualified_table.return_value = "cat.sch.tbl"
         result = list_contracts(ws=ws)
@@ -45,9 +45,9 @@ def test_list_contracts_coerces_types():
         }
     ]
     with patch(
-        "contract_parsing_agent.backend.router.run_sql", return_value=raw_rows
+        "api.run_sql", return_value=raw_rows
     ), patch(
-        "contract_parsing_agent.backend.router.get_settings"
+        "api.get_settings"
     ) as mock_cfg:
         mock_cfg.return_value.qualified_table.return_value = "cat.sch.tbl"
         result = list_contracts(ws=ws)

@@ -1,4 +1,4 @@
-from eligibility_agent.tools.assess_eligibility import assess_eligibility
+from tools.assess_eligibility import assess_eligibility
 
 # household_of_4: 100% FPL = $32,150 → 185% = $59,478 → 400% = $128,600
 

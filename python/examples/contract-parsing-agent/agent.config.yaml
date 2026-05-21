@@ -1,8 +1,17 @@
 # Reusability surface. A cloning team edits this file (and brings their own
 # generator/data) — everything else in this repo is generic.
 #
-# Deployment-specific values (catalog, schema, volumes, sub_agents) are set
-# via environment variables. See .env.example.
+# Deployment-specific values (catalog, schema, volumes, sub_agents) are
+# overridden by environment variables at runtime. The empty defaults here
+# let `import agent` succeed in tests / CI without a .env file. See
+# .env.example for the variables to set in deployment.
+
+catalog: ""
+schema: ""
+
+volumes:
+  raw: ""
+  uploads: ""
 
 model: databricks-claude-sonnet-4-6
 

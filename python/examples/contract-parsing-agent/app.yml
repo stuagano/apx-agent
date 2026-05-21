@@ -1,1 +1,1 @@
-command: ["uvicorn", "contract_parsing_agent.backend.app:app", "--workers", "2"]
+command: ["uvicorn", "app:app", "--workers", "2"]
