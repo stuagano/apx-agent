@@ -1,6 +1,6 @@
 [project]
 name = "agent-hub"
-dynamic = ["version"]
+version = "0.1.0"
 description = "Central portal for all deployed apx-agent apps — live status, tool lists, streaming chat, and links to full dev UIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,39 +12,24 @@ dependencies = [
     "httpx>=0.27.0",
 ]
 
+[tool.uv.sources]
+apx-agent = { path = "../..", editable = true }
+
 [tool.apx.metadata]
 app-name = "agent-hub"
 app-slug = "agent_hub"
-app-entrypoint = "agent_hub.backend.app:app"
+app-entrypoint = "app:app"
 api-prefix = "/api"
-metadata-path = "src/agent_hub/_metadata.py"
 
 [tool.apx.ui]
-ui-root = "src/agent_hub/ui"
-dist-dir = "src/agent_hub/__dist__"
-
-[tool.hatch.metadata]
-allow-direct-references = true
+ui-root = "ui"
+dist-dir = "__dist__"
 
 [build-system]
-requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.version]
-source = "uv-dynamic-versioning"
-
-[tool.uv-dynamic-versioning]
-vcs = "git"
-fallback-version = "0.0.0"
-
-[tool.hatch.version.raw-options]
-version_scheme = "post-release"
-
-[tool.hatch.build.hooks.version]
-path = "src/agent_hub/_version.py"
-template = '''
-version = "{version}"
-'''
-
-[tool.hatch.build]
-artifacts = ["src/agent_hub/__dist__", "src/agent_hub/_metadata.py"]
+[tool.hatch.build.targets.wheel]
+# Flat shape: top-level user-facing files + the Vite-built __dist__/ shipped via forced-includes.
+bypass-selection = true
+force-include = { "app.py" = "app.py", "api.py" = "api.py", "models.py" = "models.py", "__dist__" = "__dist__" }

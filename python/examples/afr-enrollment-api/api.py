@@ -4,9 +4,9 @@ from fastapi import APIRouter
 
 from apx_agent import Dependencies
 
-from .models import AfrApplication, EnrollmentDecision
-from .core.search_client import search_accounts
-from .core.evaluator import evaluate_candidates, log_decision
+from models import AfrApplication, EnrollmentDecision
+from search_client import search_accounts
+from evaluator import evaluate_candidates, log_decision
 
 router = APIRouter(prefix="/api")
 

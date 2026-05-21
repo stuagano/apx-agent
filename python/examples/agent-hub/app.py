@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import asyncio
 import logging
@@ -8,8 +9,11 @@ from databricks.sdk import WorkspaceClient
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .._metadata import app_name, dist_dir
-from .router import router, _AUTO_REGISTER_URLS, _crawl_agent, _card_from_a2a, _AGENTS
+from api import router, _AUTO_REGISTER_URLS, _crawl_agent, _card_from_a2a, _AGENTS
+
+app_name = "agent-hub"
+# Vite build outputs to __dist__/ (per vite.config.ts).
+dist_dir = Path(__file__).resolve().parent / "__dist__"
 
 logger = logging.getLogger(__name__)
 

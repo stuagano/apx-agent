@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import MagicMock
 
 from apx_agent import Dependencies, create_app
-from afr_enrollment_api.backend.app import app as _base_app
+from app import app as _base_app
 from tests.conftest import _col, _vs_result
 
 _WS_DEP_FUNC = typing.get_args(Dependencies.Workspace)[1].dependency

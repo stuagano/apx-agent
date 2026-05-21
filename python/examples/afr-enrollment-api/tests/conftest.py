@@ -29,4 +29,16 @@ def mock_ws():
         ["acct-001", "Jane", "Smith", "123 Main St", "12345", 0.92],
         ["acct-002", "John", "Smith", "123 Main St", "12346", 0.87],
     ])
+    # Mock a serverless SQL warehouse so evaluator.log_decision can pick one up.
+    wh = MagicMock()
+    wh.id = "wh-test"
+    wh.warehouse_type = "serverless"
+    ws.warehouses.list.return_value = [wh]
+    # SQL execute defaults to a benign success.
+    from databricks.sdk.service.sql import StatementState, StatementStatus
+    res = MagicMock()
+    res.status = StatementStatus(state=StatementState.SUCCEEDED)
+    res.manifest.schema.columns = [_col("account_id"), _col("name"), _col("address")]
+    res.result.data_array = []
+    ws.statement_execution.execute_statement.return_value = res
     return ws

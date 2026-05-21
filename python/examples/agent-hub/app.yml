@@ -1,1 +1,1 @@
-command: ["uvicorn", "agent_hub.backend.app:app", "--workers", "2"]
+command: ["uvicorn", "app:app", "--workers", "2"]
