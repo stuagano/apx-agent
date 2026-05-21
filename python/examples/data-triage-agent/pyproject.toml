@@ -46,7 +46,9 @@ metadata-path = "src/data_triage_agent/_metadata.py"
 name = "data_triage_agent"
 description = "Investigate why data is missing from Databricks tables or APIs — traces lineage, checks job failures, and inspects source code"
 model = "databricks-claude-sonnet-4-6"
-module = "data_triage_agent.backend.pipeline:agent"
+# ADK-style layout: ``agent`` is re-exported by top-level ``agent.py``
+# (which imports from ``data_triage_agent.backend.pipeline``). Same symbol.
+module = "agent:agent"
 url = ""
 registry = ""
 

@@ -39,6 +39,11 @@ artifacts:
   default:
     build: |
       mkdir -p .build
+      # User-authored: top-level agent.py (+ optional tools.py, sub_agents/).
+      cp agent.py .build/ 2>/dev/null || true
+      cp tools.py .build/ 2>/dev/null || true
+      cp -r sub_agents .build/ 2>/dev/null || true
+      # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
 

@@ -8,8 +8,8 @@ Each test builds a minimal scaffold under ``tmp_path``:
 
     databricks.yml          — bundle doc with a single app entry
     pyproject.toml          — present so pre-flight passes
-    agent_server/__init__.py
-    agent_server/agent.py   — defines a stub `agent` object
+    agent.py                — top-level (ADK-style) defines stub `agent`
+    agent_server/__init__.py — framework boilerplate dir (empty here)
 
 Then ``CliRunner.invoke(main, ["deploy", "--target", "apps", ...])`` runs
 against that cwd. Subprocess outputs are stubbed by patching
@@ -71,15 +71,19 @@ agent = _StubAgent()
 def _write_scaffold(tmp_path: Path, *, with_yml: bool = True) -> Path:
     """Write a minimal Apps-shaped project under ``tmp_path``.
 
+    Mirrors the ADK-style scaffold: stub agent at top-level ``agent.py``,
+    framework boilerplate dir ``agent_server/`` exists for the pre-flight
+    check but is otherwise empty.
+
     Returns ``tmp_path`` for convenience.
     """
     if with_yml:
         (tmp_path / "databricks.yml").write_text(_DATABRICKS_YML)
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "test-app"\n')
+    (tmp_path / "agent.py").write_text(_AGENT_PY)
     server = tmp_path / "agent_server"
     server.mkdir()
     (server / "__init__.py").write_text("")
-    (server / "agent.py").write_text(_AGENT_PY)
     return tmp_path
 
 
@@ -89,7 +93,8 @@ def scaffold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _write_scaffold(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.syspath_prepend(str(tmp_path))
-    # Drop any cached agent_server module from a previous test
+    # Drop any cached agent / agent_server modules from a previous test
+    sys.modules.pop("agent", None)
     sys.modules.pop("agent_server", None)
     sys.modules.pop("agent_server.agent", None)
     return tmp_path
@@ -267,8 +272,9 @@ def test_auto_update_yml_adds_missing_resources(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """--auto-update-yml merges ResourceSpec entries into databricks.yml."""
-    # Override the stub agent with one that declares a ResourceSpec.
-    (scaffold / "agent_server" / "agent.py").write_text(textwrap.dedent("""\
+    # Override the stub agent (top-level agent.py per the ADK-style layout)
+    # with one that declares a ResourceSpec.
+    (scaffold / "agent.py").write_text(textwrap.dedent("""\
         from apx_agent._resources import ResourceSpec
 
         class _StubAgent:
@@ -286,6 +292,7 @@ def test_auto_update_yml_adds_missing_resources(
 
         agent = _StubAgent()
         """))
+    sys.modules.pop("agent", None)
     # Make the agent look like an LlmAgent so the resource walker finds tools.
     monkeypatch.setattr(
         "apx_agent._resources._iter_tool_fns",
@@ -336,7 +343,7 @@ def test_auto_update_yml_preserves_user_added_resources(
         yaml.safe_dump(doc, default_flow_style=False, sort_keys=False),
     )
 
-    (scaffold / "agent_server" / "agent.py").write_text(textwrap.dedent("""\
+    (scaffold / "agent.py").write_text(textwrap.dedent("""\
         from apx_agent._resources import ResourceSpec
 
         class _StubAgent:
@@ -353,6 +360,7 @@ def test_auto_update_yml_preserves_user_added_resources(
 
         agent = _StubAgent()
         """))
+    sys.modules.pop("agent", None)
     monkeypatch.setattr(
         "apx_agent._resources._iter_tool_fns",
         lambda agent: iter(agent._tool_fns),
