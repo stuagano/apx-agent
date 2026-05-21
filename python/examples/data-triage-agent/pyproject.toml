@@ -52,8 +52,11 @@ registry = ""
 
 [tool.apx.deploy]
 target = "apps"
-bundle_name = "data-triage-agent"
-app_name = "data-triage-agent"
+# App name MUST start with 'mcp-' for Databricks External MCP discovery to
+# pick up /mcp on the deployed Apps URL. The Apps platform requires this
+# naming convention for cross-app MCP source registration.
+bundle_name = "mcp-data-triage-agent"
+app_name = "mcp-data-triage-agent"
 
 [tool.hatch.metadata]
 allow-direct-references = true

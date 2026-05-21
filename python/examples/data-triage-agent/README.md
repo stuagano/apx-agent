@@ -205,20 +205,20 @@ export DATA_INSPECTOR_URL=https://<your-data-inspector-app>.databricksapps.com
 apx deploy --target apps
 # OR equivalently:
 #   databricks bundle deploy --target dev --profile <p> --var "data_inspector_url=$DATA_INSPECTOR_URL"
-#   databricks bundle run data-triage-agent --target dev --profile <p>
+#   databricks bundle run mcp-data-triage-agent --target dev --profile <p>
 ```
 
 Verify:
 
 ```bash
-databricks apps get data-triage-agent --profile <p> -o json \
+databricks apps get mcp-data-triage-agent --profile <p> -o json \
   | jq '{url, app_status: .app_status.state, compute_status: .compute_status.state}'
 ```
 
 When both states are `RUNNING` / `ACTIVE`, invoke it:
 
 ```bash
-APP_URL=$(databricks apps get data-triage-agent --profile <p> -o json | jq -r .url)
+APP_URL=$(databricks apps get mcp-data-triage-agent --profile <p> -o json | jq -r .url)
 TOKEN=$(databricks auth token --profile <p> | jq -r .access_token)
 curl -X POST "$APP_URL/invocations" \
   -H "Authorization: Bearer $TOKEN" \
