@@ -1,15 +1,10 @@
-"""data-triage-agent — Deterministic 6-step SequentialAgent + general fallback.
+"""data-triage-agent: Deterministic 6-step SequentialAgent + general fallback.
 
-ADK-style top-level definition. Tool functions live in ``tools.py``; this
-module composes them into a SequentialAgent investigation pipeline plus a
-general-purpose fallback, wired via a deterministic keyword router.
-
-The router exposes ``.investigation`` and ``.general`` as public attributes so
-``agent_server/start_server.py`` (Apps target) can compile each branch
-separately via ``compile_to_responses_agent`` (which doesn't recognize the
-custom ``_DeterministicRouter`` BaseAgent subclass) and route at the request
-layer. Local dev (``apx dev``) uses the router's ``run`` / ``stream``
-directly.
+Tool functions live in ``tools.py``; this module composes them into a
+SequentialAgent investigation pipeline plus a general-purpose fallback, wired
+via a deterministic keyword router. The router exposes ``.investigation`` and
+``.general`` as public attributes so the Apps target can compile each branch
+separately and route at the request layer.
 """
 from __future__ import annotations
 
@@ -46,8 +41,6 @@ def create_investigation_pipeline(data_inspector_url: str) -> "_DeterministicRou
     # Step 1: Data Presence — confirm what data is missing.
     # Delegates SQL and Delta forensics to the data-inspector sub-agent.
     presence_agent = Agent(
-        tools=[run_sql_query, get_table_info],
-        sub_agents=[data_inspector_url],
         instructions=(
             "You are the Data Presence Investigator.\n\n"
             "Your job: confirm whether the reported data exists in the target "
@@ -63,11 +56,12 @@ def create_investigation_pipeline(data_inspector_url: str) -> "_DeterministicRou
             "'DATA PRESENT', 'DATA MISSING', or 'PARTIALLY MISSING' "
             "with supporting evidence."
         ),
+        tools=[run_sql_query, get_table_info],
+        sub_agents=[data_inspector_url],
     )
 
     # Step 2: Lineage Trace — find upstream sources.
     lineage_agent = Agent(
-        tools=[get_table_lineage, find_jobs_for_table],
         instructions=(
             "You are the Lineage Tracer.\n\n"
             "The previous step confirmed a data presence issue. Given that "
@@ -84,11 +78,11 @@ def create_investigation_pipeline(data_inspector_url: str) -> "_DeterministicRou
             "- Where in the chain the data appears to drop off\n"
             "- The job IDs that the next step should investigate"
         ),
+        tools=[get_table_lineage, find_jobs_for_table],
     )
 
     # Step 3: Pipeline Inspector — check jobs for failures and source paths.
     pipeline_agent = Agent(
-        tools=[get_job_run_history, get_job_run_logs, get_job_source_paths],
         instructions=(
             "You are the Pipeline Inspector.\n\n"
             "The previous steps identified the target table, its lineage, and "
@@ -105,11 +99,11 @@ def create_investigation_pipeline(data_inspector_url: str) -> "_DeterministicRou
             "- Source code paths (notebooks, Python files, dbt projects) to inspect\n"
             "- Whether the failures correlate with the data gap timeline"
         ),
+        tools=[get_job_run_history, get_job_run_logs, get_job_source_paths],
     )
 
     # Step 4: Genie Query — domain context via curated Genie Spaces.
     genie_agent = Agent(
-        tools=[list_genie_spaces, query_genie_space],
         instructions=(
             "You are the Domain Context Analyst.\n\n"
             "The investigation so far has identified a data gap, traced "
@@ -124,11 +118,11 @@ def create_investigation_pipeline(data_inspector_url: str) -> "_DeterministicRou
             "If no Genie Spaces are relevant, say so and move on.\n\n"
             "Summarize any additional context or business rules discovered."
         ),
+        tools=[list_genie_spaces, query_genie_space],
     )
 
     # Step 5: Code Inspector — filter logic + transformation rules.
     code_agent = Agent(
-        tools=[read_github_file, search_github_code],
         instructions=(
             "You are the Code Inspector.\n\n"
             "Using the source code paths from the Pipeline Inspector step and "
@@ -145,11 +139,11 @@ def create_investigation_pipeline(data_inspector_url: str) -> "_DeterministicRou
             "- Transformation logic that might drop or modify records\n"
             "- Code paths that warrant manual review"
         ),
+        tools=[read_github_file, search_github_code],
     )
 
     # Step 6: Synthesis — root-cause report.
     synthesis_agent = Agent(
-        tools=[],
         instructions=(
             "You are the Root Cause Analyst.\n\n"
             "The full investigation is complete. The conversation above "
@@ -175,6 +169,7 @@ def create_investigation_pipeline(data_inspector_url: str) -> "_DeterministicRou
             "Use plain language. Cite specific table names, job IDs, "
             "timestamps, and error messages from the investigation."
         ),
+        tools=[],
     )
 
     investigation_pipeline = SequentialAgent(
@@ -195,8 +190,6 @@ def create_investigation_pipeline(data_inspector_url: str) -> "_DeterministicRou
 
     # General agent for non-investigation queries.
     general_agent = Agent(
-        tools=[],
-        sub_agents=[data_inspector_url],
         instructions=(
             "You are a data triage assistant for Databricks. You help with "
             "questions about tables, pipelines, jobs, and data quality.\n\n"
@@ -228,6 +221,8 @@ def create_investigation_pipeline(data_inspector_url: str) -> "_DeterministicRou
             "- read_github_file / search_github_code: Source code inspection\n\n"
             "For general questions (what can you do, hello, etc.) answer directly."
         ),
+        tools=[],
+        sub_agents=[data_inspector_url],
     )
 
     return _DeterministicRouter(

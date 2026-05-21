@@ -1,11 +1,11 @@
-"""slack-agent root agent — ADK-style top-level definition.
+"""slack-agent: Databricks identity agent reachable from Slack slash commands.
 
-The Slack webhook surface lives in ``webhook.py``; ``agent_server/start_server.py``
-mounts it next to ``/invocations`` and ``/mcp``. Slack hits ``/slack/events`` with
-a slash-command payload, the webhook validates the signature + looks up the
-stored Databricks token, then calls this agent via the in-process HTTP loopback
-with ``X-Forwarded-Access-Token`` set so ``Dependencies.UserClient`` sees the
-real user.
+The Slack webhook surface lives in ``webhook.py`` and the stored OAuth tokens in
+``token_store.py``; ``agent_server/start_server.py`` mounts the webhook next to
+``/invocations`` and ``/mcp``. Slack hits ``/slack/events`` with a slash-command
+payload, the webhook validates the signature, looks up the stored Databricks
+token, and calls this agent via in-process HTTP loopback with
+``X-Forwarded-Access-Token`` set so ``Dependencies.UserClient`` sees the real user.
 """
 from __future__ import annotations
 
@@ -26,9 +26,7 @@ def who_am_i(ws: Dependencies.UserClient) -> str:
 
 
 agent = Agent(
+    instructions="You are a helpful assistant connected to Databricks. "
+                 "When asked who the user is or what account they are using, call who_am_i.",
     tools=[who_am_i],
-    instructions=(
-        "You are a helpful assistant connected to Databricks. "
-        "When asked who the user is or what account they are using, call who_am_i."
-    ),
 )

@@ -1,18 +1,34 @@
+"""apx-builder: natural-language agent builder for apx-agent projects.
+
+A FastAPI agent that scaffolds, deploys, and inspects apx-agent projects via
+natural language. Tools live in `tools/` (scaffold, deploy, discover, poll) and
+the system prompt is in `system_prompt.py`.
+"""
+from __future__ import annotations
+
 from pathlib import Path
 
 from apx_agent import Agent, create_app
 from fastapi.responses import FileResponse
 
 from system_prompt import SYSTEM_PROMPT
-from tools.discover_tables import list_genie_spaces, search_tables
 from tools.deploy_agent import deploy_agent
+from tools.discover_tables import list_genie_spaces, search_tables
 from tools.poll_deployment import poll_deployment
 from tools.scaffold_project import scaffold_project
 
+
 agent = Agent(
-    tools=[search_tables, list_genie_spaces, scaffold_project, deploy_agent, poll_deployment],
     instructions=SYSTEM_PROMPT,
+    tools=[
+        search_tables,
+        list_genie_spaces,
+        scaffold_project,
+        deploy_agent,
+        poll_deployment,
+    ],
 )
+
 app = create_app(agent)
 
 # Serve the React frontend via explicit GET routes.

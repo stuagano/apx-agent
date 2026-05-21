@@ -1,51 +1,12 @@
-"""customer_triage — root agent (ADK-style top-level definition).
+"""customer_triage: HandoffAgent routing support queries to billing, technical, and account specialists.
 
-Demonstrates the full apx-agent surface:
-
-  * ``@tool(uc=...)`` decorator for pure-Python tools that should live in UC
-  * ``Dependencies.Workspace`` for tools that need user-scoped OBO auth
-  * ``genie_tool`` for natural-language data questions
-  * ``vector_search_tool`` for retrieval over a doc index
-  * ``HandoffAgent`` for routing to specialists mid-conversation
-  * ``InMemoryMemoryStore`` + ``make_memory_tools`` for principal-keyed memory
-    on the ``account_specialist`` sub-agent — preferences and account history
-    that should outlive any single conversation
-
-``agent`` is the canonical top-level symbol. It is consumed by:
-
-  * ``agent_server/start_server.py`` — framework boilerplate that compiles
-    + serves the agent under Databricks Apps (ResponsesAgent contract +
-    MCP surface). Read by ``apx deploy --target apps``.
-  * ``app.py`` — local-only FastAPI runner used by ``apx run`` for
-    in-process dev.
-  * ``apx deploy --target model-serving`` — when the agent is published to
-    a Mosaic AI serving endpoint instead of an App.
-
-``APX_SMOKE_MODE=1`` (set in ``databricks.yml``) swaps every tool that
-depends on a workspace resource (UC function, Genie space, Vector Search
-index) for an in-process stub. That lets the Apps deploy succeed on a
-clean workspace without any prerequisite resources. The agent topology —
-HandoffAgent + four specialist sub-agents + memory wiring on
-``account_specialist`` — is identical in both modes; only the tool list
-on each specialist changes.
-
-Memory is keyed by ``principal_id``, NOT ``session_id``. Preferences
-captured during one conversation survive a handoff to billing/technical
-and persist when this user comes back tomorrow under a brand-new
-session_id. In production, swap ``InMemoryMemoryStore`` for
-``LakebaseMemoryStore`` — see ``docs/lakebase-recipe.md``.
-
-Run locally::
-
-    cd python/examples/customer_triage
-    uv sync
-    apx run
-
-Deploy to Databricks Apps::
-
-    apx deploy --target apps
+Top-level ``HandoffAgent`` with four sub-agents (triage + three specialists). The
+``account_specialist`` is wired with principal-keyed memory via
+``InMemoryMemoryStore`` + ``make_memory_tools``. Tools and prompts are defined
+inline; ``APX_SMOKE_MODE=1`` swaps workspace-dependent tools for in-process stubs
+so the bundle deploys cleanly on workspaces without the prerequisite UC / Genie /
+Vector Search resources.
 """
-
 from __future__ import annotations
 
 import os
@@ -58,24 +19,7 @@ from apx_agent import (
     tool,
 )
 
-# ---------------------------------------------------------------------------
-# Mode resolution. ``APX_SMOKE_MODE=1`` is set by ``databricks.yml`` so the
-# bundle deploys cleanly on a workspace where the production UC functions /
-# Genie space / Vector Search index don't yet exist. Flip to "0" once those
-# resources are provisioned.
-# ---------------------------------------------------------------------------
-
-
 SMOKE_MODE = os.environ.get("APX_SMOKE_MODE", "0") == "1"
-
-
-# ---------------------------------------------------------------------------
-# Tool definitions — branched on SMOKE_MODE at the tool-list level.
-#
-# In smoke mode every tool is a plain @tool callable with no external
-# dependency. In production mode tools are wired against UC / Genie / Vector
-# Search. The HandoffAgent topology below is identical regardless of mode.
-# ---------------------------------------------------------------------------
 
 
 if SMOKE_MODE:
@@ -209,19 +153,6 @@ else:
     ]
 
 
-# ---------------------------------------------------------------------------
-# Memory store — wired into account_specialist below.
-#
-# Why account_specialist, not billing or technical?
-#   * Account work is per-user-preference heavy (preferred channel, language,
-#     accessibility prefs, MFA recovery history) — the textbook fit for
-#     principal-keyed memory.
-#   * Billing is transactional (orders are already governed via UC).
-#   * Technical leans on doc retrieval (vector_search_tool) more than on
-#     remembered facts about the user.
-# ---------------------------------------------------------------------------
-
-
 account_memory_store = InMemoryMemoryStore()
 
 
@@ -255,8 +186,6 @@ for _principal, _seeds in _SEED_MEMORIES.items():
 
 # default_principal_id is load-bearing for the smoke test — no per-request
 # principal resolution is wired here, so every caller sees alice's memories.
-# That deterministic seed is what makes the across-handoff memory check
-# reproducible.
 account_memory_tools = make_memory_tools(
     store=account_memory_store,
     default_principal_id="user:alice",
@@ -264,35 +193,29 @@ account_memory_tools = make_memory_tools(
 )
 
 
-# ---------------------------------------------------------------------------
-# Specialist agents — each handles one branch of triage.
-# ---------------------------------------------------------------------------
-
-
 billing_agent = Agent(
-    name="billing_specialist",
     instructions=(
         "You're a billing specialist. Answer questions about invoices, charges, "
         "refunds, and payment methods. Use get_recent_orders to look up the "
         "customer's order history when relevant."
     ),
     tools=billing_tools,
+    name="billing_specialist",
 )
 
 
 technical_agent = Agent(
-    name="technical_specialist",
     instructions=(
         "You're a technical specialist. Answer questions about product errors, "
         "outages, and integration issues. Use the docs_search tool to find "
         "relevant troubleshooting articles before answering."
     ),
     tools=technical_tools,
+    name="technical_specialist",
 )
 
 
 account_agent = Agent(
-    name="account_specialist",
     instructions=(
         "You're an account specialist. Help with password resets, email changes, "
         "and account access.\n"
@@ -308,16 +231,11 @@ account_agent = Agent(
         "Use ask_account_data for live account-record lookups via the Genie space."
     ),
     tools=[*account_memory_tools, *account_extra_tools],
+    name="account_specialist",
 )
 
 
-# ---------------------------------------------------------------------------
-# Top-level triage agent — routes via HandoffAgent.
-# ---------------------------------------------------------------------------
-
-
 triage_classifier = Agent(
-    name="triage",
     instructions=(
         "You're a customer support triage agent. First, call classify_intent on "
         "the user's question. Then call exactly one of the transfer tools based "
@@ -329,11 +247,10 @@ triage_classifier = Agent(
         "do not transfer."
     ),
     tools=[classify_intent],
+    name="triage",
 )
 
 
-# The variable name ``agent`` is what ``apx run`` / ``apx deploy`` look for
-# by default, and what ``agent_server/start_server.py`` imports.
 agent = HandoffAgent(
     agents={
         "triage": triage_classifier,

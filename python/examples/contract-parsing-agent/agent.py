@@ -1,9 +1,10 @@
-"""Chatbot Contracts agent — tools + sub-agents wiring.
+"""contract-parsing-agent: typed contract tools with data-inspector sub-agent.
 
-Tools: the four typed contract tools.
-Sub-agents: the deployed data-inspector apx app (Delta forensics + ad-hoc SQL).
+Extracts structured data from contracts and answers portfolio questions. Tools
+live in tools/, system prompt and sub-agent registry in agent.config.yaml
+(loaded by config.py). The data-inspector sub-agent provides Delta forensics
+and ad-hoc SQL.
 """
-
 from __future__ import annotations
 
 import os
@@ -11,10 +12,10 @@ import os
 from apx_agent import Agent
 
 from config import get_settings
+from tools.extract_new_contract import extract_new_contract
+from tools.find_contracts_expiring import find_contracts_expiring
 from tools.query_portfolio import query_portfolio
 from tools.summarize_contract import summarize_contract
-from tools.find_contracts_expiring import find_contracts_expiring
-from tools.extract_new_contract import extract_new_contract
 
 
 def _resolve_sub_agents() -> list[str]:

@@ -1,18 +1,10 @@
-"""entity-resolution-agent — HandoffAgent (Supervisor + Evaluator).
+"""entity-resolution-agent: fuzzy customer entity resolution via Supervisor + Evaluator handoff.
 
-ADK-style top-level definition:
-
-  * ``sub_agents/supervisor/agent.py`` — normalize + search candidates
-  * ``sub_agents/evaluator/agent.py`` — fuzzy decision + decision logging
-  * ``demo_data.py`` — synthetic utility accounts (used when ``DEMO_MODE=true``)
-
-Flow:
-  1. Supervisor: normalize record → vector_search across all three indexes
-     (full name+address, last name+address, first name+email) or sql_search
-     fallback for abnormal names → builds deduplicated candidate shortlist →
-     hands off to Evaluator.
-  2. Evaluator: fuzzy reasoning → enrollment decision + log → or retry
-     Supervisor with search hints if confidence is below threshold.
+HandoffAgent composed of two sub-agents under ``sub_agents/``: ``supervisor`` normalizes
+records and searches candidate indexes, ``evaluator`` performs fuzzy decision and logging.
+``demo_data.py`` provides synthetic utility accounts when ``DEMO_MODE=true``. Supervisor
+hands off candidates to Evaluator, which either commits a decision or bounces back with
+search hints when confidence is below threshold.
 """
 from __future__ import annotations
 
@@ -20,6 +12,7 @@ from apx_agent import HandoffAgent
 
 from sub_agents.evaluator.agent import evaluator
 from sub_agents.supervisor.agent import supervisor
+
 
 agent = HandoffAgent(
     agents={

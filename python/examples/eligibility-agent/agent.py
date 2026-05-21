@@ -1,11 +1,9 @@
-"""eligibility-agent — ADK-style top-level definition.
+"""eligibility-agent: document-based eligibility assessment with audit-grade reasoning trail.
 
-Document-based eligibility assessment. Given an ``application_id``, the agent
-runs through a canonical 6-step reasoning order (get_household ->
-parse_documents -> compute_income -> check_residency -> assess_eligibility ->
-build_reasoning_trail) and produces an audit-grade decision trail.
-
-Tool functions live in ``tools/``; the system prompt lives in ``prompts.py``.
+Given an ``application_id``, the agent runs through a canonical 6-step reasoning order
+(get_household -> parse_documents -> compute_income -> check_residency -> assess_eligibility
+-> build_reasoning_trail) and produces an audit-grade decision trail. Tool functions live in
+``tools/``; the system prompt lives in ``prompts.py``.
 """
 from __future__ import annotations
 
@@ -19,7 +17,9 @@ from tools.get_household import get_household
 from tools.parse_documents import parse_documents
 from tools.reasoning_trail import build_reasoning_trail
 
+
 agent = Agent(
+    instructions=get_system_prompt(),
     tools=[
         get_household,
         parse_documents,
@@ -28,5 +28,4 @@ agent = Agent(
         assess_eligibility,
         build_reasoning_trail,
     ],
-    instructions=get_system_prompt(),
 )
