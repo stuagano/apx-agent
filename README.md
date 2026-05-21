@@ -1,7 +1,7 @@
 # apx-agent
 
 [![CI](https://github.com/stuagano/apx-agent/actions/workflows/test.yml/badge.svg)](https://github.com/stuagano/apx-agent/actions/workflows/test.yml)
-[![Python](https://img.shields.io/pypi/pyversions/apx-agent.svg)](https://pypi.org/project/apx-agent/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 **Write a Databricks AI agent once. Deploy to Model Serving or Databricks Apps with one flag.**
@@ -70,22 +70,27 @@ flowchart LR
 
 ## Quick start
 
+> Not on PyPI / npm yet — install from this repo until the first release.
+
 ### Python
 
 ```bash
-pip install apx-agent[langgraph]
+git clone https://github.com/stuagano/apx-agent.git
+cd apx-agent/python
+uv sync                       # or: pip install -e '.[langgraph]'
 apx init my-agent
 cd my-agent
-apx dev                      # local dev server on :8000
-apx deploy --target apps     # or --target model-serving
+apx dev                       # local dev server on :8000
+apx deploy --target apps      # or --target model-serving
 ```
 
 ### TypeScript
 
 ```bash
-npm install @apx-agent/core
-npx apx init my-agent
-cd my-agent
+git clone https://github.com/stuagano/apx-agent.git
+cd apx-agent/typescript
+npm install && npm run build
+cd ../my-agent                # or: npx apx init my-agent
 npx apx dev
 npx apx deploy --target apps
 ```
