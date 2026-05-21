@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from apx_agent import Dependencies
-from .models import AgentCard, AgentTool, InvokeRequest, RegisterRequest, VersionOut
+from models import AgentCard, AgentTool, InvokeRequest, RegisterRequest, VersionOut
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")

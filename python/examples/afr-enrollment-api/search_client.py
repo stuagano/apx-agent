@@ -84,7 +84,7 @@ def _search_local(
 ) -> dict[str, Any]:
     """Local fallback — same logic as account-search-service, embedded here for single-app deploys."""
     if os.environ.get("DEMO_MODE", "").lower() == "true":
-        from .demo_data import vector_search_demo, sql_search_demo
+        from demo_data import vector_search_demo, sql_search_demo
         if _is_abnormal(name):
             candidates = sql_search_demo(name, address)
             return {"candidates": candidates, "count": len(candidates), "strategy": "sql", "source": "demo"}

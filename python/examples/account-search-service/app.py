@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from .router import router
+from api import router
 
 app = FastAPI(
     title="Account Search Service",

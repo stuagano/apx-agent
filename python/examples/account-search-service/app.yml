@@ -1,6 +1,6 @@
 command:
   - uvicorn
-  - account_search_service.backend.app:app
+  - app:app
   - --workers
   - "2"
 

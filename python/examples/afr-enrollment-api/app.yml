@@ -1,6 +1,6 @@
 command:
   - uvicorn
-  - afr_enrollment_api.backend.app:app
+  - app:app
   - --workers
   - "2"
 

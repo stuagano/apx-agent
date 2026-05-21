@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock
 
-from account_search_service.backend.core.search import normalize, search, vector_search, sql_search
+from search import normalize, search, vector_search, sql_search
 from tests.conftest import _col, _vs_result
 
 

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from .. import __version__
+__version__ = "0.1.0"
 
 
 class VersionOut(BaseModel):
