@@ -42,7 +42,7 @@ chat.predict(
 
 Custom stores satisfy the `SessionStore` protocol (`get`/`put`/`delete`) — bring your own Redis, Memcached, etc.
 
-`LakebaseSessionStore` takes a SQLAlchemy `Engine` and stays narrow on SQL — the caller wires up OAuth token rotation on the engine. Install with `pip install 'apx-agent[lakebase]'`.
+`LakebaseSessionStore` takes a SQLAlchemy `Engine` and stays narrow on SQL — the caller wires up OAuth token rotation on the engine. From a git clone of this repo, install the lakebase extra with `cd apx-agent/python && pip install -e '.[lakebase]'`.
 
 When `custom_inputs["session_id"]` is absent the framework silently runs single-turn — the same compiled agent works in both modes.
 
