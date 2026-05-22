@@ -32,6 +32,14 @@ Same agent code. Same tools. Same `apx.*` MLflow trace schema either way.
 
 [**apx-builder**](python/examples/apx-builder/) is a natural-language agent builder shipped as an example app. Describe what you want; it scaffolds the project, wires the tools, deploys it, and polls until it's live.
 
+### See what you built
+
+Every deployed agent ships with `/_apx/topology` — an interactive graph of agents, tools, sub-agents, and the UC / Genie / Vector Search / serving-endpoint resources they reach. Click any node for its details.
+
+![/_apx/topology — interactive graph of agents, tools, sub-agents, and platform resources](docs/images/topology-customer-triage.png)
+
+See [docs/dev-ui.md](docs/dev-ui.md) for the full set of `/_apx/*` surfaces.
+
 ---
 
 📚 **[Docs](docs/)** · 🚀 **[Quick start](#quick-start)** · 🧪 **[Examples](python/examples/EXAMPLES.md)** · ⚙️ **[CLI](#cli)**
