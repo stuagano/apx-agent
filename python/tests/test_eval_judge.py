@@ -26,7 +26,9 @@ async def app_with_model() -> FastAPI:
 
 def _patch_judge_output(text: str):
     sdk = AsyncMock()
-    sdk.responses.create = AsyncMock(return_value=MagicMock(output_text=text))
+    sdk.chat.completions.create = AsyncMock(
+        return_value=MagicMock(choices=[MagicMock(message=MagicMock(content=text))])
+    )
     return patch("databricks_openai.AsyncDatabricksOpenAI", return_value=sdk), sdk
 
 
@@ -114,12 +116,12 @@ class TestEvalJudgeRoute:
                     "model": "claude-judge-fake",
                 })
         assert r.json()["model"] == "claude-judge-fake"
-        assert sdk.responses.create.call_args.kwargs["model"] == "claude-judge-fake"
+        assert sdk.chat.completions.create.call_args.kwargs["model"] == "claude-judge-fake"
 
     @pytest.mark.asyncio
     async def test_model_exception_returns_ok_false(self, app_with_model: FastAPI):
         sdk = AsyncMock()
-        sdk.responses.create = AsyncMock(side_effect=Exception("rate limited"))
+        sdk.chat.completions.create = AsyncMock(side_effect=Exception("rate limited"))
         with patch("databricks_openai.AsyncDatabricksOpenAI", return_value=sdk):
             async with AsyncClient(transport=ASGITransport(app=app_with_model), base_url="http://test") as ac:
                 r = await ac.post("/_apx/eval/judge", json={

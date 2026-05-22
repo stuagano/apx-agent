@@ -345,9 +345,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         t0 = _time.monotonic()
         try:
             client = AsyncDatabricksOpenAI()
-            resp = await client.responses.create(model=model, input=messages)
+            resp = await client.chat.completions.create(model=model, messages=messages)
             elapsed = int((_time.monotonic() - t0) * 1000)
-            output = getattr(resp, "output_text", "") or ""
+            choices = getattr(resp, "choices", None) or []
+            output = ""
+            if choices:
+                msg = getattr(choices[0], "message", None)
+                output = (getattr(msg, "content", None) or "") if msg else ""
             return JSONResponse({"ok": True, "output": output, "duration_ms": elapsed, "model": model})
         except Exception as exc:  # noqa: BLE001
             elapsed = int((_time.monotonic() - t0) * 1000)
@@ -888,12 +892,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         t0 = _time.monotonic()
         try:
             client = AsyncDatabricksOpenAI()
-            resp = await client.responses.create(
+            resp = await client.chat.completions.create(
                 model=model,
-                input=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": prompt}],
             )
             elapsed = int((_time.monotonic() - t0) * 1000)
-            text = (getattr(resp, "output_text", "") or "").strip()
+            choices = getattr(resp, "choices", None) or []
+            text = ""
+            if choices:
+                msg = getattr(choices[0], "message", None)
+                text = ((getattr(msg, "content", None) or "") if msg else "").strip()
             verdict, reason = _parse_judge_output(text)
             return JSONResponse({
                 "ok": True,
