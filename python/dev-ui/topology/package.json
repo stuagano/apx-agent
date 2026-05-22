@@ -1,0 +1,27 @@
+{
+  "name": "apx-topology",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Interactive topology view served at /_apx/topology",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.3.0",
+    "dagre": "^0.8.5",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@types/dagre": "^0.7.52",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0"
+  }
+}
