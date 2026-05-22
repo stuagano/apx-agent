@@ -164,7 +164,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def apx_openapi_spec(request: Request) -> Any:
         from fastapi.responses import JSONResponse
         ctx: AgentContext | None = request.app.state.agent_context
-        return JSONResponse(_build_apx_openapi_spec(ctx, api_prefix))
+        # base_url comes from the request so Scalar renders curl examples
+        # against the deployed origin instead of its localhost fallback.
+        return JSONResponse(
+            _build_apx_openapi_spec(ctx, api_prefix, base_url=str(request.base_url))
+        )
 
     @router.get("/_apx/probe", include_in_schema=False)
     async def probe_dev_ui() -> HTMLResponse:

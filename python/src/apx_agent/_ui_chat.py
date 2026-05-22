@@ -983,16 +983,27 @@ inputEl.focus();
 </html>"""
 
 
-def _build_apx_openapi_spec(ctx: AgentContext | None, api_prefix: str = "/api") -> dict[str, Any]:
+def _build_apx_openapi_spec(
+    ctx: AgentContext | None,
+    api_prefix: str = "/api",
+    base_url: str | None = None,
+) -> dict[str, Any]:
     """Build an OpenAPI 3.1 spec containing only tool endpoints with dep-stripped schemas.
 
     This is what the LLM sees — not the full FastAPI route signatures (which include
     injected deps like WorkspaceClient). Used by /_apx/openapi.json and Scalar.
+
+    When ``base_url`` is provided, the spec includes a ``servers`` field pointing at
+    that origin. Without it, Scalar falls back to ``http://localhost`` for "Try it"
+    URLs and curl examples — wrong on every deployed app. The route handler in
+    ``_dev.py`` passes ``request.base_url`` so the spec self-describes its host.
     """
+    servers = [{"url": base_url.rstrip("/")}] if base_url else []
     if ctx is None:
         return {
             "openapi": "3.1.0",
             "info": {"title": "Agent Tools", "version": "0.0.0"},
+            **({"servers": servers} if servers else {}),
             "paths": {},
         }
 
@@ -1042,6 +1053,7 @@ def _build_apx_openapi_spec(ctx: AgentContext | None, api_prefix: str = "/api") 
             "description": ctx.config.description or "",
             "version": "0.0.0",
         },
+        **({"servers": servers} if servers else {}),
         "paths": paths,
     }
 
