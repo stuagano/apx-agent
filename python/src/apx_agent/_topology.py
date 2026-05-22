@@ -25,6 +25,7 @@ or via the CLI::
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from dataclasses import dataclass, field
@@ -32,6 +33,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
+    from ._agents import BaseAgent
+    from ._models import AgentContext
 
 logger = logging.getLogger(__name__)
 
@@ -262,3 +265,471 @@ def _safe_id(name: str) -> str:
 
     cleaned = re.sub(r"[^a-zA-Z0-9_]+", "_", name).strip("_")
     return cleaned or "n"
+
+
+# ---------------------------------------------------------------------------
+# In-process agent-tree topology — powers the /_apx/topology dev UI.
+#
+# Distinct from the UC-discovery functions above: ``build_topology`` walks the
+# *live* ``BaseAgent`` tree (root agent + sub-agents + tools + declared
+# resources) and produces the JSON shape consumed by the React graph at
+# ``/_apx/topology``. ``inspect_node`` returns details for a single node by
+# its stable ID. Both are pure functions on the running ``AgentContext``.
+# ---------------------------------------------------------------------------
+
+
+# Map ResourceSpec.kind -> (NodeType, id_prefix)
+_RESOURCE_KIND_TO_TYPE: dict[str, tuple[str, str]] = {
+    "uc_function": ("UCFunction", "uc"),
+    "genie_space": ("GenieSpace", "genie"),
+    "vector_search_index": ("VectorIndex", "vs"),
+    "serving_endpoint": ("ServingEndpoint", "endpoint"),
+    "sql_warehouse": ("WarehouseSQL", "warehouse"),
+    "uc_table": ("UCFunction", "uc"),
+    "uc_connection": ("UCFunction", "uc"),
+    "lakebase_instance": ("ServingEndpoint", "endpoint"),
+}
+
+_RESOURCE_KIND_TO_DETAIL_KIND: dict[str, str] = {
+    "uc_function": "uc_function",
+    "genie_space": "genie_space",
+    "vector_search_index": "vector_index",
+    "serving_endpoint": "serving_endpoint",
+    "sql_warehouse": "sql_warehouse",
+    "uc_table": "uc_function",
+    "uc_connection": "uc_function",
+    "lakebase_instance": "serving_endpoint",
+}
+
+
+def _resource_node_for(kind: str, identifier: str) -> tuple[str, str, str] | None:
+    """Return ``(node_id, node_type, label)`` for a ResourceSpec, or ``None``."""
+    mapping = _RESOURCE_KIND_TO_TYPE.get(kind)
+    if mapping is None:
+        return None
+    node_type, prefix = mapping
+    return f"{prefix}:{identifier}", node_type, identifier
+
+
+def _agent_class_to_node_type(agent: "BaseAgent") -> str:
+    """Map an agent instance to its NodeType string.
+
+    Uses ``type(agent).__name__`` directly so the spec's exact NodeType values
+    are preserved (``LlmAgent`` for the canonical Agent class; ``Agent`` alias
+    resolves to the same class so ``__name__`` is ``LlmAgent``).
+    """
+    cls_name = type(agent).__name__
+    known = {
+        "LlmAgent",
+        "Agent",
+        "SequentialAgent",
+        "ParallelAgent",
+        "LoopAgent",
+        "RouterAgent",
+        "HandoffAgent",
+        "KeywordRouter",
+    }
+    return cls_name if cls_name in known else "Agent"
+
+
+def _agent_label(agent: "BaseAgent", fallback: str) -> str:
+    name = getattr(agent, "_name", None)
+    if name:
+        return str(name)
+    return fallback
+
+
+def _instructions_for(agent: "BaseAgent") -> str:
+    """Pull instructions string from any agent type; empty if not present."""
+    instr = getattr(agent, "_instructions", "")
+    if not instr and hasattr(agent, "_inner"):
+        instr = getattr(agent._inner, "_instructions", "")
+    return str(instr or "")
+
+
+def _iter_child_agents(agent: "BaseAgent") -> list[tuple[str, "BaseAgent"]]:
+    """Return ``[(child_name, child_agent), ...]`` for any composition agent.
+
+    Used both for building topology edges and for walking the tree. The child
+    name is the dict key for HandoffAgent (where ordering is by insertion) and
+    a positional ``step{i}`` / ``branch{i}`` for the list-based composers.
+    """
+    from ._agents import (
+        HandoffAgent,
+        KeywordRouter,
+        LoopAgent,
+        ParallelAgent,
+        RouterAgent,
+        SequentialAgent,
+    )
+
+    if isinstance(agent, HandoffAgent):
+        return [(str(n), a) for n, a in agent._agents.items()]
+    if isinstance(agent, RouterAgent):
+        return [(str(n), a) for n, _, a in agent._routes]
+    if isinstance(agent, KeywordRouter):
+        out = [(str(n), a) for n, a, _ in agent._branches]
+        out.append(("__default__", agent._default))
+        return out
+    if isinstance(agent, SequentialAgent):
+        return [(f"step{i}", a) for i, a in enumerate(agent._agents)]
+    if isinstance(agent, ParallelAgent):
+        return [(f"branch{i}", a) for i, a in enumerate(agent._agents)]
+    if isinstance(agent, LoopAgent):
+        return [("inner", agent._inner)]
+    return []
+
+
+def _edge_kind_for_parent(parent: "BaseAgent") -> str:
+    """The EdgeKind to use for edges from ``parent`` to its sub-agents."""
+    from ._agents import (
+        HandoffAgent,
+        KeywordRouter,
+        LoopAgent,
+        ParallelAgent,
+        RouterAgent,
+        SequentialAgent,
+    )
+
+    if isinstance(parent, SequentialAgent):
+        return "next-step"
+    if isinstance(parent, LoopAgent):
+        return "iterates"
+    if isinstance(parent, (RouterAgent, HandoffAgent, KeywordRouter)):
+        return "branch"
+    if isinstance(parent, ParallelAgent):
+        return "branch"
+    return "delegates-to"
+
+
+def _agent_tools(agent: "BaseAgent") -> list[Any]:
+    """Yield raw tool callables registered directly on this agent (no recursion)."""
+    from ._agents import LlmAgent
+
+    if isinstance(agent, LlmAgent):
+        return list(agent._tool_fns)
+    return []
+
+
+def _agent_sub_agent_urls(agent: "BaseAgent") -> list[str]:
+    from ._agents import LlmAgent
+
+    if isinstance(agent, LlmAgent):
+        return list(agent._sub_agent_urls)
+    return []
+
+
+def _is_dependency_param(annotation: Any) -> bool:
+    """True if a parameter annotation is a FastAPI ``Depends(...)`` injection."""
+    try:
+        from ._inspection import _is_fastapi_dependency
+
+        return _is_fastapi_dependency(annotation)
+    except Exception:
+        return False
+
+
+def _tool_input_schema(fn: Any) -> dict[str, Any] | None:
+    try:
+        from ._inspection import (
+            _inspect_tool_fn,
+            _make_input_model,
+            _schema_for_model,
+        )
+
+        plain_params, _ = _inspect_tool_fn(fn)
+        input_model = _make_input_model(fn, plain_params)
+        return _schema_for_model(input_model)
+    except Exception:
+        return None
+
+
+def _tool_has_obo_dep(fn: Any) -> bool:
+    """True if any parameter is annotated as a FastAPI dependency (workspace/obo)."""
+    try:
+        from typing import get_type_hints
+
+        hints = get_type_hints(fn, include_extras=True)
+    except Exception:
+        return False
+    return any(_is_dependency_param(annotation) for annotation in hints.values())
+
+
+def _resource_url_for(kind: str, identifier: str) -> str | None:
+    """Best-effort Managed MCP URL for a resource — None when not applicable."""
+    try:
+        from ._managed_mcp import managed_mcp_url_for_resource
+
+        return managed_mcp_url_for_resource(kind, identifier)
+    except Exception:
+        return None
+
+
+def build_topology(ctx: "AgentContext") -> dict[str, Any]:
+    """Walk ``ctx.agent`` and return the ``TopologyResponse``-shaped dict.
+
+    Returns ``{rootId, agentName, nodes, edges}``. Each node has ``{id, type,
+    label, description?}``; each edge has ``{id, source, target, kind}``. See
+    ``docs/superpowers/specs/2026-05-22-topology-ui.md`` for the schema.
+    """
+    from ._resources import get_resources
+
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    seen_node_ids: set[str] = set()
+    seen_edge_ids: set[str] = set()
+
+    def _add_node(node: dict[str, Any]) -> None:
+        if node["id"] in seen_node_ids:
+            return
+        seen_node_ids.add(node["id"])
+        nodes.append(node)
+
+    def _add_edge(source: str, target: str, kind: str) -> None:
+        edge_id = f"{source}->{target}:{kind}"
+        if edge_id in seen_edge_ids:
+            return
+        seen_edge_ids.add(edge_id)
+        edges.append({"id": edge_id, "source": source, "target": target, "kind": kind})
+
+    def _walk(agent: "BaseAgent", agent_id: str, label: str) -> None:
+        node_type = _agent_class_to_node_type(agent)
+        _add_node({
+            "id": agent_id,
+            "type": node_type,
+            "label": label,
+            "description": (_instructions_for(agent) or "").strip()[:280] or None,
+        })
+
+        # Tool nodes + their resource nodes
+        for fn in _agent_tools(agent):
+            tool_name = getattr(fn, "__name__", "tool")
+            tool_id = f"tool:{agent_id}:{tool_name}"
+            specs = get_resources(fn)
+            # Decide tool NodeType — if it has exactly one resource, use that
+            # kind's NodeType so the icon/colour matches the resource. Pure
+            # functions stay as ``Tool``.
+            if len(specs) == 1:
+                mapped = _RESOURCE_KIND_TO_TYPE.get(specs[0].kind)
+                tool_node_type = mapped[0] if mapped else "Tool"
+            else:
+                tool_node_type = "Tool"
+            _add_node({
+                "id": tool_id,
+                "type": tool_node_type,
+                "label": tool_name,
+                "description": (getattr(fn, "__doc__", "") or "").strip()[:280] or None,
+            })
+            _add_edge(agent_id, tool_id, "uses-tool")
+
+            for spec in specs:
+                resource = _resource_node_for(spec.kind, spec.identifier)
+                if resource is None:
+                    continue
+                res_id, res_type, res_label = resource
+                _add_node({
+                    "id": res_id,
+                    "type": res_type,
+                    "label": res_label,
+                    "description": f"{spec.kind}: {spec.identifier}",
+                })
+                _add_edge(tool_id, res_id, "delegates-to")
+
+        # Sub-agent URLs declared on this agent (remote A2A)
+        for raw_url in _agent_sub_agent_urls(agent):
+            sub_id = f"endpoint:{raw_url}"
+            _add_node({
+                "id": sub_id,
+                "type": "SubAgent",
+                "label": raw_url,
+                "description": f"Remote sub-agent URL: {raw_url}",
+            })
+            _add_edge(agent_id, sub_id, "delegates-to")
+
+        # Model endpoint reference (calls-model) — root-level only, derived from
+        # ctx.config so we don't have to peek at compile state. Done in the
+        # outer scope after the walk completes.
+
+        # Composition children
+        kind = _edge_kind_for_parent(agent)
+        for child_name, child_agent in _iter_child_agents(agent):
+            child_id = f"{agent_id}.{child_name}"
+            _walk(child_agent, child_id, child_name)
+            _add_edge(agent_id, child_id, kind)
+
+    root_id = "agent:root"
+    root_label = ctx.config.name if ctx and ctx.config else "agent"
+    _walk(ctx.agent, root_id, root_label)
+
+    # Add the model serving endpoint (calls-model edge) for the root
+    model = getattr(ctx.config, "model", None)
+    if model:
+        endpoint_id = f"endpoint:{model}"
+        _add_node({
+            "id": endpoint_id,
+            "type": "ServingEndpoint",
+            "label": model,
+            "description": f"LLM serving endpoint: {model}",
+        })
+        _add_edge(root_id, endpoint_id, "calls-model")
+
+    return {
+        "rootId": root_id,
+        "agentName": ctx.config.name if ctx and ctx.config else "agent",
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
+    """Return the ``InspectResponse`` dict for ``node_id``, or ``None`` if unknown."""
+    from ._resources import get_resources
+
+    if not node_id:
+        return None
+
+    # Agent IDs: ``agent:root`` (root) or ``agent:root.<child_name>...`` (nested)
+    if node_id == "agent:root" or node_id.startswith("agent:root."):
+        target = _resolve_agent(ctx, node_id)
+        if target is None:
+            return None
+        agent_obj, label = target
+        instr = _instructions_for(agent_obj)
+        tools = _agent_tools(agent_obj)
+        sub_count = len(_iter_child_agents(agent_obj))
+        agent_details: dict[str, Any] = {
+            "className": type(agent_obj).__name__,
+            "instructions": instr[:4096] if instr else None,
+            "model": getattr(ctx.config, "model", None) if node_id == "agent:root" else None,
+            "toolCount": len(tools),
+            "subAgentCount": sub_count,
+        }
+        max_iter = getattr(agent_obj, "_max_iterations", None)
+        if max_iter is not None:
+            agent_details["maxIterations"] = max_iter
+        return {
+            "id": node_id,
+            "type": _agent_class_to_node_type(agent_obj),
+            "label": label,
+            "description": (instr or "").strip()[:280] or None,
+            "agent": agent_details,
+        }
+
+    # Tool IDs: ``tool:<agent_id>:<tool_name>`` where <agent_id> contains a colon
+    # (it always starts with ``agent:``). Strip leading ``tool:`` then split on
+    # the LAST colon to recover (agent_id, tool_name).
+    if node_id.startswith("tool:"):
+        rest = node_id[len("tool:"):]
+        if ":" not in rest:
+            return None
+        owner_agent_id, _, tool_name = rest.rpartition(":")
+        target = _resolve_agent(ctx, owner_agent_id)
+        if target is None:
+            return None
+        agent_obj, _ = target
+        fn = next(
+            (f for f in _agent_tools(agent_obj) if getattr(f, "__name__", "") == tool_name),
+            None,
+        )
+        if fn is None:
+            return None
+        specs = get_resources(fn)
+        if len(specs) == 1:
+            mapped = _RESOURCE_KIND_TO_TYPE.get(specs[0].kind)
+            tool_node_type = mapped[0] if mapped else "Tool"
+        else:
+            tool_node_type = "Tool"
+        return {
+            "id": node_id,
+            "type": tool_node_type,
+            "label": tool_name,
+            "description": (getattr(fn, "__doc__", "") or "").strip()[:280] or None,
+            "tool": {
+                "name": tool_name,
+                "description": (getattr(fn, "__doc__", "") or "").strip() or None,
+                "inputSchema": _tool_input_schema(fn),
+                "isSync": not inspect.iscoroutinefunction(fn),
+                "hasObOTokenDep": _tool_has_obo_dep(fn),
+            },
+        }
+
+    # Resource IDs: ``<prefix>:<identifier>``
+    prefix, _, identifier = node_id.partition(":")
+    if not identifier:
+        return None
+
+    # Map prefix back to kind + NodeType
+    prefix_to_kind: dict[str, tuple[str, str]] = {
+        "uc": ("uc_function", "UCFunction"),
+        "genie": ("genie_space", "GenieSpace"),
+        "vs": ("vector_search_index", "VectorIndex"),
+        "endpoint": ("serving_endpoint", "ServingEndpoint"),
+        "warehouse": ("sql_warehouse", "WarehouseSQL"),
+    }
+    mapping = prefix_to_kind.get(prefix)
+    if mapping is None:
+        return None
+    kind, node_type = mapping
+
+    # Differentiate ServingEndpoint vs SubAgent: SubAgent if any LlmAgent in the
+    # tree lists this URL as a sub_agent. (Only matters for endpoint: prefix.)
+    if prefix == "endpoint":
+        for agent_obj, _ in _walk_all_agents(ctx):
+            if identifier in _agent_sub_agent_urls(agent_obj):
+                return {
+                    "id": node_id,
+                    "type": "SubAgent",
+                    "label": identifier,
+                    "description": f"Remote sub-agent URL: {identifier}",
+                    "subAgent": {
+                        "url": identifier,
+                        "cardSource": "config",
+                        "resolvedName": identifier,
+                    },
+                }
+
+    detail_kind = _RESOURCE_KIND_TO_DETAIL_KIND.get(kind, kind)
+    resource_details: dict[str, Any] = {
+        "resourceKind": detail_kind,
+        "identifier": identifier,
+    }
+    url = _resource_url_for(kind, identifier)
+    if url:
+        resource_details["url"] = url
+    return {
+        "id": node_id,
+        "type": node_type,
+        "label": identifier,
+        "description": f"{kind}: {identifier}",
+        "resource": resource_details,
+    }
+
+
+def _resolve_agent(
+    ctx: "AgentContext", agent_id: str
+) -> tuple["BaseAgent", str] | None:
+    """Walk ``agent:root.a.b.c`` to find the leaf agent + its display label."""
+    if agent_id == "agent:root":
+        return ctx.agent, ctx.config.name if ctx and ctx.config else "agent"
+    if not agent_id.startswith("agent:root."):
+        return None
+    parts = agent_id[len("agent:root."):].split(".")
+    current: "BaseAgent" = ctx.agent
+    label = ctx.config.name if ctx and ctx.config else "agent"
+    for part in parts:
+        children = dict(_iter_child_agents(current))
+        if part not in children:
+            return None
+        current = children[part]
+        label = part
+    return current, label
+
+
+def _walk_all_agents(ctx: "AgentContext"):
+    """Yield ``(agent, agent_id)`` for the root and every nested sub-agent."""
+    stack: list[tuple["BaseAgent", str]] = [(ctx.agent, "agent:root")]
+    while stack:
+        agent, agent_id = stack.pop()
+        yield agent, agent_id
+        for child_name, child_agent in _iter_child_agents(agent):
+            stack.append((child_agent, f"{agent_id}.{child_name}"))
