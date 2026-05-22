@@ -21,15 +21,43 @@ def _apx_nav_html(active: str) -> str:
         f'<a href="/_apx/{p}" {active_cls if p == active else ""}>{label}</a>'
         for p, label in pages
     )
+    # Hide the per-page nav when this page is loaded inside the unified
+    # shell at /_apx/agent — the shell renders its own tab bar and a second
+    # nav row would be redundant. Also hide any page-level <header> element
+    # (the chat page has its own, separate from #apx-header). Standalone
+    # visits to /_apx/edit, /_apx/topology, etc. still see their nav.
     return f"""<div id="apx-header"><div id="apx-nav">
   <span class="badge">APX dev</span>
   <nav>{links}</nav>
-</div></div>"""
+</div></div>
+<script>if (window.self !== window.top) {{
+  var h = document.getElementById("apx-header"); if (h) h.style.display = "none";
+  document.querySelectorAll("body > header").forEach(function (el) {{ el.style.display = "none"; }});
+}}</script>"""
 
 
 def _deploy_overlay_html() -> str:
-    """Shared deploy modal + SSE log viewer injected into every /_apx/ page."""
+    """Shared deploy modal + SSE log viewer injected into every /_apx/ page.
+
+    Also carries the iframe-suppression script: when the page is loaded
+    inside the unified shell at /_apx/agent, its own page-level <header>
+    + shared #apx-header are hidden so the shell's tab strip is the only
+    nav row visible. Standalone visits keep the per-page nav intact.
+    """
     return """
+<script>
+  if (window.self !== window.top) {
+    document.documentElement.classList.add("apx-embedded");
+    document.addEventListener("DOMContentLoaded", function () {
+      var apxHdr = document.getElementById("apx-header");
+      if (apxHdr) apxHdr.style.display = "none";
+      document.querySelectorAll("body > header").forEach(function (el) {
+        el.style.display = "none";
+      });
+    });
+  }
+</script>
+""" + """
 <style>
   #btn-deploy { background: #1a1040; color: #a78bfa; border: 1px solid #4c1d95;
                 border-radius: 6px; padding: 5px 14px; font-size: 12px; font-weight: 600;
