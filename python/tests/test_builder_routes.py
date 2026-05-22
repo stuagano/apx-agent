@@ -400,3 +400,98 @@ def test_deploy_rejects_invalid_target(tmp_path, monkeypatch, app):
     payload = {"target": "kubernetes", "profile": "fe-stable"}
     r = client.post("/_apx/builder/deploy", json=payload)
     assert r.status_code == 400
+
+
+def test_create_uc_function_runs_create_or_replace(tmp_path, monkeypatch, app):
+    """POST creates the UC function via ws.statement_execution.execute_statement."""
+    from unittest.mock import MagicMock
+    from databricks.sdk.service.sql import StatementState
+
+    fake_ws = MagicMock()
+    fake_result = MagicMock()
+    fake_result.status.state = StatementState.SUCCEEDED
+    fake_ws.statement_execution.execute_statement.return_value = fake_result
+
+    monkeypatch.setattr(
+        "apx_agent._builder_routes._resolve_workspace_client",
+        lambda request: fake_ws,
+    )
+
+    client = TestClient(app)
+    payload = {
+        "catalog": "main",
+        "schema": "tools",
+        "name": "classify_intent",
+        "parameters": [{"name": "query", "type": "STRING"}],
+        "return_type": "STRING",
+        "comment": "Classify a customer query.",
+        "sql_body": "CASE WHEN query LIKE '%bill%' THEN 'billing' ELSE 'other' END",
+        "warehouse_id": "wh-123",
+    }
+    r = client.post("/_apx/builder/create-uc-function", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["full_name"] == "main.tools.classify_intent"
+    # Verify CREATE FUNCTION DDL was sent
+    call_kwargs = fake_ws.statement_execution.execute_statement.call_args.kwargs
+    sql = call_kwargs.get("statement", "")
+    assert "CREATE OR REPLACE FUNCTION" in sql
+    assert "main.tools.classify_intent" in sql
+    assert "RETURNS STRING" in sql
+    assert "query STRING" in sql
+    assert "Classify a customer query." in sql
+    assert call_kwargs.get("warehouse_id") == "wh-123"
+
+
+def test_create_uc_function_rejects_unsafe_identifiers(tmp_path, monkeypatch, app):
+    """SQL identifiers must be safe — anything weird gets 400."""
+    monkeypatch.setattr(
+        "apx_agent._builder_routes._resolve_workspace_client",
+        lambda request: __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(),
+    )
+    client = TestClient(app)
+    bad_payloads = [
+        {"catalog": "main; DROP TABLE x", "schema": "tools", "name": "foo",
+         "parameters": [], "return_type": "STRING", "comment": "", "sql_body": "1",
+         "warehouse_id": "wh-1"},
+        {"catalog": "main", "schema": "tools", "name": "foo`bar",
+         "parameters": [], "return_type": "STRING", "comment": "", "sql_body": "1",
+         "warehouse_id": "wh-1"},
+        {"catalog": "main", "schema": "tools", "name": "foo",
+         "parameters": [{"name": "p; DROP", "type": "STRING"}],
+         "return_type": "STRING", "comment": "", "sql_body": "1",
+         "warehouse_id": "wh-1"},
+        {"catalog": "main", "schema": "tools", "name": "foo",
+         "parameters": [], "return_type": "STRING; DROP TABLE",
+         "comment": "", "sql_body": "1", "warehouse_id": "wh-1"},
+    ]
+    for bp in bad_payloads:
+        r = client.post("/_apx/builder/create-uc-function", json=bp)
+        assert r.status_code == 400, f"expected 400 for {bp}, got {r.status_code}: {r.text}"
+
+
+def test_create_uc_function_surfaces_sql_failure(tmp_path, monkeypatch, app):
+    """If the statement fails, return 502 with detail."""
+    from unittest.mock import MagicMock
+    from databricks.sdk.service.sql import StatementState
+
+    fake_ws = MagicMock()
+    fake_result = MagicMock()
+    fake_result.status.state = StatementState.FAILED
+    fake_result.status.error.message = "Schema main.tools does not exist."
+    fake_ws.statement_execution.execute_statement.return_value = fake_result
+
+    monkeypatch.setattr(
+        "apx_agent._builder_routes._resolve_workspace_client",
+        lambda request: fake_ws,
+    )
+    client = TestClient(app)
+    payload = {
+        "catalog": "main", "schema": "tools", "name": "foo",
+        "parameters": [], "return_type": "STRING",
+        "comment": "", "sql_body": "1",
+        "warehouse_id": "wh-1",
+    }
+    r = client.post("/_apx/builder/create-uc-function", json=payload)
+    assert r.status_code == 502
+    assert "Schema main.tools does not exist." in r.json()["detail"]

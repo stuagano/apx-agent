@@ -95,6 +95,10 @@ export const DEFAULT_UC_FUNCTION_CONFIG: UCFunctionConfig = {
   functionName: 'my_function',
   description: '',
   deploy: true,
+  parameters: [],
+  returnType: 'STRING',
+  sqlBody: '',
+  warehouseId: '',
 };
 
 export const DEFAULT_ROUTER_CONFIG: RouterConfig = {
