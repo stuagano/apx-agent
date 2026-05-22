@@ -21,10 +21,11 @@ import os
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from ._models import AgentContext, AgentTool
+from ._topology import build_topology, inspect_node
 from ._builder_routes import build_builder_router
 from ._ui_chat import _render_agent_ui, _build_apx_openapi_spec
 from ._ui_edit import (
@@ -199,6 +200,55 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "MLflow UI (set <code>MLFLOW_TRACKING_URI</code>), AI Playground, "
             "or Agent Evaluation.</p>"
         )
+
+    # ------------------------------------------------------------------
+    # Topology UI — interactive react-flow graph at /_apx/topology.
+    # Serves the built React bundle from _static/topology/, plus two JSON
+    # endpoints the UI fetches: /_apx/topology.json (full graph) and
+    # /_apx/topology/inspect/{node_id} (per-node details).
+    # ------------------------------------------------------------------
+
+    from pathlib import Path as _TopoPath
+    _topo_static_root = _TopoPath(__file__).parent / "_static" / "topology"
+
+    @router.get("/_apx/topology", include_in_schema=False)
+    async def topology_index() -> Any:
+        index = _topo_static_root / "index.html"
+        if not index.exists():
+            return HTMLResponse(
+                "Topology UI not built — run "
+                "<code>cd python/dev-ui/topology &amp;&amp; npm run build</code>.",
+                status_code=503,
+            )
+        return FileResponse(index, media_type="text/html")
+
+    @router.get("/_apx/topology.json", include_in_schema=False)
+    async def topology_json(request: Request) -> Any:
+        ctx: AgentContext | None = request.app.state.agent_context
+        if ctx is None:
+            return JSONResponse(
+                {"error": "Agent context not available"}, status_code=503
+            )
+        return JSONResponse(build_topology(ctx))
+
+    @router.get("/_apx/topology/inspect/{node_id:path}", include_in_schema=False)
+    async def topology_inspect(node_id: str, request: Request) -> Any:
+        ctx: AgentContext | None = request.app.state.agent_context
+        if ctx is None:
+            return JSONResponse(
+                {"error": "Agent context not available"}, status_code=503
+            )
+        details = inspect_node(ctx, node_id)
+        if details is None:
+            raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+        return JSONResponse(details)
+
+    @router.get("/_apx/topology/assets/{path:path}", include_in_schema=False)
+    async def topology_assets(path: str) -> Any:
+        target = _topo_static_root / "assets" / path
+        if target.is_file():
+            return FileResponse(target)
+        raise HTTPException(status_code=404, detail="asset not found")
 
     @router.post("/_apx/replay/tool", include_in_schema=False)
     async def replay_tool(request: Request) -> Any:

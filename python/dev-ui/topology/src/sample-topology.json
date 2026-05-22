@@ -1,0 +1,111 @@
+{
+  "rootId": "agent:root",
+  "agentName": "customer_triage",
+  "nodes": [
+    {
+      "id": "agent:root",
+      "type": "HandoffAgent",
+      "label": "customer_triage",
+      "description": "Triage agent with peer handoff to billing / technical / account specialists."
+    },
+    {
+      "id": "agent:root.billing",
+      "type": "LlmAgent",
+      "label": "billing_specialist",
+      "description": "Answers billing and invoice questions."
+    },
+    {
+      "id": "agent:root.technical",
+      "type": "LlmAgent",
+      "label": "technical_specialist",
+      "description": "Answers technical and integration questions."
+    },
+    {
+      "id": "agent:root.account",
+      "type": "LlmAgent",
+      "label": "account_specialist",
+      "description": "Answers account profile + preferences questions. Wired with principal-keyed memory."
+    },
+    {
+      "id": "tool:agent:root:classify_intent",
+      "type": "UCFunction",
+      "label": "classify_intent",
+      "description": "UC function — classify a customer query as billing/technical/account/other."
+    },
+    {
+      "id": "uc:main.tools.classify_intent",
+      "type": "UCFunction",
+      "label": "main.tools.classify_intent"
+    },
+    {
+      "id": "tool:agent:root.billing:get_recent_orders",
+      "type": "UCFunction",
+      "label": "get_recent_orders",
+      "description": "Returns the user's last N orders from billing.orders."
+    },
+    {
+      "id": "uc:main.tools.get_recent_orders",
+      "type": "UCFunction",
+      "label": "main.tools.get_recent_orders"
+    },
+    {
+      "id": "tool:agent:root.technical:genie_engineering",
+      "type": "GenieSpace",
+      "label": "engineering_genie",
+      "description": "Ask the engineering Genie space about platform issues."
+    },
+    {
+      "id": "genie:eng-abc-123",
+      "type": "GenieSpace",
+      "label": "engineering_genie (space eng-abc-123)"
+    },
+    {
+      "id": "tool:agent:root.account:vector_search_profile",
+      "type": "VectorIndex",
+      "label": "profile_vector_search",
+      "description": "Vector search over the customer profile index."
+    },
+    {
+      "id": "vs:main.search.profiles",
+      "type": "VectorIndex",
+      "label": "main.search.profiles"
+    },
+    {
+      "id": "tool:agent:root.account:recall",
+      "type": "Tool",
+      "label": "recall",
+      "description": "Recall principal-keyed memory — semantic search over stored facts."
+    },
+    {
+      "id": "tool:agent:root.account:remember",
+      "type": "Tool",
+      "label": "remember",
+      "description": "Persist a principal-keyed memory."
+    },
+    {
+      "id": "endpoint:databricks-claude-sonnet-4-6",
+      "type": "ServingEndpoint",
+      "label": "databricks-claude-sonnet-4-6",
+      "description": "Foundation model serving endpoint."
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "agent:root", "target": "agent:root.billing", "kind": "branch" },
+    { "id": "e2", "source": "agent:root", "target": "agent:root.technical", "kind": "branch" },
+    { "id": "e3", "source": "agent:root", "target": "agent:root.account", "kind": "branch" },
+    { "id": "e4", "source": "agent:root", "target": "tool:agent:root:classify_intent", "kind": "uses-tool" },
+    { "id": "e5", "source": "tool:agent:root:classify_intent", "target": "uc:main.tools.classify_intent", "kind": "delegates-to" },
+    { "id": "e6", "source": "agent:root.billing", "target": "tool:agent:root.billing:get_recent_orders", "kind": "uses-tool" },
+    { "id": "e7", "source": "tool:agent:root.billing:get_recent_orders", "target": "uc:main.tools.get_recent_orders", "kind": "delegates-to" },
+    { "id": "e8", "source": "agent:root.technical", "target": "tool:agent:root.technical:genie_engineering", "kind": "uses-tool" },
+    { "id": "e9", "source": "tool:agent:root.technical:genie_engineering", "target": "genie:eng-abc-123", "kind": "delegates-to" },
+    { "id": "e10", "source": "agent:root.account", "target": "tool:agent:root.account:vector_search_profile", "kind": "uses-tool" },
+    { "id": "e11", "source": "tool:agent:root.account:vector_search_profile", "target": "vs:main.search.profiles", "kind": "delegates-to" },
+    { "id": "e12", "source": "agent:root.account", "target": "tool:agent:root.account:recall", "kind": "uses-tool" },
+    { "id": "e13", "source": "agent:root.account", "target": "tool:agent:root.account:remember", "kind": "uses-tool" },
+    { "id": "e14", "source": "agent:root", "target": "endpoint:databricks-claude-sonnet-4-6", "kind": "calls-model" },
+    { "id": "e15", "source": "agent:root.billing", "target": "endpoint:databricks-claude-sonnet-4-6", "kind": "calls-model" },
+    { "id": "e16", "source": "agent:root.technical", "target": "endpoint:databricks-claude-sonnet-4-6", "kind": "calls-model" },
+    { "id": "e17", "source": "agent:root.account", "target": "endpoint:databricks-claude-sonnet-4-6", "kind": "calls-model" }
+  ]
+}

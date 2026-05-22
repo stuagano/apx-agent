@@ -211,3 +211,151 @@ def test_render_handles_empty_topology() -> None:
     assert mermaid.startswith("graph LR")
     graphviz = render_topology(topo, format="graphviz")
     assert graphviz.startswith("digraph apx_topology")
+
+
+# ---------------------------------------------------------------------------
+# build_topology / inspect_node — in-process agent-tree topology
+#
+# These exercise the dev-UI ``/_apx/topology`` data layer. ``build_topology``
+# walks a live ``BaseAgent`` tree and ``inspect_node`` returns details for a
+# given stable node ID.
+# ---------------------------------------------------------------------------
+
+
+from apx_agent import Agent, AgentConfig, AgentContext, HandoffAgent  # noqa: E402
+from apx_agent._models import AgentCard  # noqa: E402
+from apx_agent._resources import ResourceSpec, attach_resources  # noqa: E402
+from apx_agent._topology import build_topology, inspect_node  # noqa: E402
+
+
+def _make_ctx(agent, *, name: str = "test-agent", model: str = "databricks-claude-sonnet-4-6") -> AgentContext:
+    cfg = AgentConfig(name=name, model=model, instructions="You are helpful.")
+    tools = agent.collect_tools()
+    card = AgentCard(name=name, description="")
+    return AgentContext(config=cfg, tools=tools, card=card, agent=agent)
+
+
+def _uc_tool(name: str, uc_full_name: str):
+    """Mimic what ``uc_function_tool`` returns — a callable with _apx_resources."""
+    def _fn(x: int) -> str:
+        """Call the UC function."""
+        return str(x)
+    _fn.__name__ = name
+    _fn.__qualname__ = name
+    attach_resources(_fn, [ResourceSpec("uc_function", uc_full_name)])
+    return _fn
+
+
+def test_build_topology_llm_agent_with_uc_function_tools() -> None:
+    classify = _uc_tool("classify_intent", "main.tools.classify_intent")
+    lookup = _uc_tool("lookup_account", "main.tools.lookup_account")
+    agent = Agent(tools=[classify, lookup], instructions="Route customer support questions.")
+    ctx = _make_ctx(agent, name="support-agent")
+
+    topo = build_topology(ctx)
+
+    assert topo["rootId"] == "agent:root"
+    assert topo["agentName"] == "support-agent"
+
+    nodes_by_id = {n["id"]: n for n in topo["nodes"]}
+    # Root agent + 2 tool nodes + 2 UC function resource nodes + 1 model endpoint
+    assert "agent:root" in nodes_by_id
+    assert nodes_by_id["agent:root"]["type"] == "LlmAgent"
+
+    assert "tool:agent:root:classify_intent" in nodes_by_id
+    assert "tool:agent:root:lookup_account" in nodes_by_id
+
+    assert "uc:main.tools.classify_intent" in nodes_by_id
+    assert "uc:main.tools.lookup_account" in nodes_by_id
+    assert nodes_by_id["uc:main.tools.classify_intent"]["type"] == "UCFunction"
+
+    # Edges: root --uses-tool--> each tool; each tool --delegates-to--> its UC fn;
+    # root --calls-model--> endpoint
+    edge_triples = {(e["source"], e["target"], e["kind"]) for e in topo["edges"]}
+    assert ("agent:root", "tool:agent:root:classify_intent", "uses-tool") in edge_triples
+    assert ("agent:root", "tool:agent:root:lookup_account", "uses-tool") in edge_triples
+    assert (
+        "tool:agent:root:classify_intent",
+        "uc:main.tools.classify_intent",
+        "delegates-to",
+    ) in edge_triples
+    assert (
+        "tool:agent:root:lookup_account",
+        "uc:main.tools.lookup_account",
+        "delegates-to",
+    ) in edge_triples
+    assert (
+        "agent:root",
+        "endpoint:databricks-claude-sonnet-4-6",
+        "calls-model",
+    ) in edge_triples
+
+
+def test_build_topology_handoff_agent_with_sub_agents() -> None:
+    billing = Agent(tools=[], instructions="You handle billing.")
+    technical = Agent(tools=[], instructions="You handle technical issues.")
+    triage = HandoffAgent(agents={"billing": billing, "technical": technical}, start="billing")
+    ctx = _make_ctx(triage, name="triage")
+
+    topo = build_topology(ctx)
+
+    nodes_by_id = {n["id"]: n for n in topo["nodes"]}
+    assert "agent:root" in nodes_by_id
+    assert nodes_by_id["agent:root"]["type"] == "HandoffAgent"
+    # Both sub-agents present
+    assert "agent:root.billing" in nodes_by_id
+    assert "agent:root.technical" in nodes_by_id
+    assert nodes_by_id["agent:root.billing"]["type"] == "LlmAgent"
+
+    edge_triples = {(e["source"], e["target"], e["kind"]) for e in topo["edges"]}
+    assert ("agent:root", "agent:root.billing", "branch") in edge_triples
+    assert ("agent:root", "agent:root.technical", "branch") in edge_triples
+
+
+def test_inspect_node_returns_agent_tool_and_uc_function_details() -> None:
+    classify = _uc_tool("classify_intent", "main.tools.classify_intent")
+    agent = Agent(
+        tools=[classify],
+        instructions="Route customer questions.",
+        max_iterations=7,
+    )
+    ctx = _make_ctx(agent, name="support-agent")
+
+    # Agent detail
+    agent_detail = inspect_node(ctx, "agent:root")
+    assert agent_detail is not None
+    assert agent_detail["id"] == "agent:root"
+    assert agent_detail["type"] == "LlmAgent"
+    assert agent_detail["label"] == "support-agent"
+    assert agent_detail["agent"]["className"] == "LlmAgent"
+    assert agent_detail["agent"]["toolCount"] == 1
+    assert agent_detail["agent"]["subAgentCount"] == 0
+    assert agent_detail["agent"]["model"] == "databricks-claude-sonnet-4-6"
+    assert agent_detail["agent"]["maxIterations"] == 7
+    assert "Route" in (agent_detail["agent"]["instructions"] or "")
+
+    # Tool detail
+    tool_detail = inspect_node(ctx, "tool:agent:root:classify_intent")
+    assert tool_detail is not None
+    assert tool_detail["id"] == "tool:agent:root:classify_intent"
+    assert tool_detail["type"] == "UCFunction"  # single-resource tool inherits resource node-type
+    assert tool_detail["tool"]["name"] == "classify_intent"
+    assert tool_detail["tool"]["isSync"] is True
+    assert "hasObOTokenDep" in tool_detail["tool"]
+
+    # UC function detail
+    uc_detail = inspect_node(ctx, "uc:main.tools.classify_intent")
+    assert uc_detail is not None
+    assert uc_detail["type"] == "UCFunction"
+    assert uc_detail["label"] == "main.tools.classify_intent"
+    assert uc_detail["resource"]["resourceKind"] == "uc_function"
+    assert uc_detail["resource"]["identifier"] == "main.tools.classify_intent"
+
+
+def test_inspect_node_returns_none_for_unknown_id() -> None:
+    agent = Agent(tools=[], instructions="hi")
+    ctx = _make_ctx(agent)
+    assert inspect_node(ctx, "agent:root.does_not_exist") is None
+    assert inspect_node(ctx, "tool:agent:root:missing") is None
+    assert inspect_node(ctx, "") is None
+    assert inspect_node(ctx, "unknownprefix:foo") is None
