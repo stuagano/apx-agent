@@ -72,11 +72,16 @@ async def _check_model(ctx: AgentContext | None) -> dict[str, Any]:
 
         async def _call() -> str:
             client = AsyncDatabricksOpenAI()
-            resp = await client.responses.create(
+            resp = await client.chat.completions.create(
                 model=model,
-                input=[{"role": "user", "content": "ping"}],
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=8,
             )
-            return getattr(resp, "output_text", "") or ""
+            choices = getattr(resp, "choices", None) or []
+            if not choices:
+                return ""
+            msg = getattr(choices[0], "message", None)
+            return (getattr(msg, "content", None) or "") if msg else ""
 
         out = await asyncio.wait_for(_call(), timeout=_CHECK_TIMEOUT_S)
         if out:

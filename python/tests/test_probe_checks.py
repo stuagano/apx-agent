@@ -43,13 +43,15 @@ def _patch_workspace_fail():
 
 def _patch_model_ok(text: str = "hello"):
     sdk_instance = AsyncMock()
-    sdk_instance.responses.create = AsyncMock(return_value=MagicMock(output_text=text))
+    sdk_instance.chat.completions.create = AsyncMock(
+        return_value=MagicMock(choices=[MagicMock(message=MagicMock(content=text))])
+    )
     return patch("databricks_openai.AsyncDatabricksOpenAI", return_value=sdk_instance)
 
 
 def _patch_model_fail():
     sdk_instance = AsyncMock()
-    sdk_instance.responses.create = AsyncMock(side_effect=Exception("model down"))
+    sdk_instance.chat.completions.create = AsyncMock(side_effect=Exception("model down"))
     return patch("databricks_openai.AsyncDatabricksOpenAI", return_value=sdk_instance)
 
 
