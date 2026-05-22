@@ -35,6 +35,7 @@ import {
   ContextMenu,
   CodeExportModal,
   ProjectSettingsModal,
+  DeployModal,
   DatabricksAuth,
 } from '../components/Controls';
 import { DATABRICKS_MODELS } from '../constants';
@@ -124,6 +125,7 @@ export function AgentEditor() {
   const [projectSettings, setProjectSettings] = useState<ProjectSettings>(DEFAULT_PROJECT_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [showDeploy, setShowDeploy] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [apxState, setApxState] = useState<{
     drift: boolean;
@@ -766,6 +768,7 @@ export function AgentEditor() {
         isDownloadingZip={isDownloadingZip}
         onSaveToProject={handleSaveToProject}
         isSaving={isSaving}
+        onDeploy={() => setShowDeploy(true)}
         onAgentNameChange={setAgentName}
         auth={auth}
         onConnect={setAuth}
@@ -999,6 +1002,11 @@ export function AgentEditor() {
           onUpdate={setProjectSettings}
           onClose={() => setShowSettings(false)}
         />
+      )}
+
+      {/* Deploy modal */}
+      {showDeploy && (
+        <DeployModal onClose={() => setShowDeploy(false)} />
       )}
     </div>
   );

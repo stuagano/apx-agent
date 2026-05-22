@@ -339,3 +339,64 @@ def test_state_handles_missing_pyproject(tmp_path, monkeypatch, app):
     body = r.json()
     assert body["identity"] is None or body["identity"] == {}
     assert body["drift"] is False  # neither file exists → no drift
+
+
+def test_deploy_runs_apx_subprocess(tmp_path, monkeypatch, app):
+    """POST /_apx/builder/deploy spawns `apx deploy --target apps --profile <p>`."""
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["cwd"] = kwargs.get("cwd")
+            self.stdout = iter([b"line one\n", b"line two\n"])
+            self.returncode = None
+        def __iter__(self):
+            return self
+        def __next__(self):
+            return next(self.stdout)
+        def wait(self):
+            self.returncode = 0
+            return 0
+        def poll(self):
+            return self.returncode
+
+    def fake_popen(cmd, **kwargs):
+        return FakePopen(cmd, **kwargs)
+
+    monkeypatch.setattr("apx_agent._builder_routes.subprocess.Popen", fake_popen)
+
+    client = TestClient(app)
+    payload = {"target": "apps", "profile": "fe-stable"}
+    r = client.post("/_apx/builder/deploy", json=payload)
+    assert r.status_code == 200, r.text
+    # SSE response — the body contains the streamed lines
+    body = r.text
+    assert "line one" in body
+    assert "line two" in body
+    # Subprocess was called with the right argv
+    assert "apx" in captured["cmd"][0]
+    assert "deploy" in captured["cmd"]
+    assert "--target" in captured["cmd"]
+    assert "apps" in captured["cmd"]
+    assert "--profile" in captured["cmd"]
+    assert "fe-stable" in captured["cmd"]
+
+
+def test_deploy_rejects_unsafe_profile(tmp_path, monkeypatch, app):
+    """Profile names must match a safe regex (alphanumeric + dashes); injection rejected."""
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(app)
+    payload = {"target": "apps", "profile": "fe-stable; rm -rf /"}
+    r = client.post("/_apx/builder/deploy", json=payload)
+    assert r.status_code == 400
+
+
+def test_deploy_rejects_invalid_target(tmp_path, monkeypatch, app):
+    """target must be 'apps' or 'model-serving' — anything else 400."""
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(app)
+    payload = {"target": "kubernetes", "profile": "fe-stable"}
+    r = client.post("/_apx/builder/deploy", json=payload)
+    assert r.status_code == 400

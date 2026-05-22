@@ -11,13 +11,16 @@ from __future__ import annotations
 import importlib.resources as ir
 import json
 import os
+import re
+import shutil
+import subprocess
 import tempfile
 import tomllib  # Python 3.11+
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 
@@ -134,6 +137,49 @@ def _atomic_write(path: Path, content: str) -> None:
         raise
 
 
+class DeployPayload(BaseModel):
+    target: str = Field(..., description="Deploy target: 'apps' or 'model-serving'")
+    profile: str = Field(..., description="Databricks CLI profile name (alphanumeric + dashes)")
+
+
+_SAFE_PROFILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_VALID_TARGETS = {"apps", "model-serving"}
+
+
+def _validate_deploy_payload(payload: DeployPayload) -> None:
+    if payload.target not in _VALID_TARGETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"target must be one of {sorted(_VALID_TARGETS)}",
+        )
+    if not _SAFE_PROFILE.match(payload.profile):
+        raise HTTPException(
+            status_code=400,
+            detail="profile must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+        )
+
+
+def _stream_deploy(cmd: list[str], cwd: str):
+    """Yield bytes from a subprocess's stdout line by line; close on exit."""
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+    )
+    try:
+        for line in proc.stdout:
+            # SSE-compatible framing: "data: <line>\n\n"
+            text = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else line
+            yield f"data: {text.rstrip()}\n\n".encode("utf-8")
+        proc.wait()
+        yield f"data: __EXIT__ {proc.returncode}\n\n".encode("utf-8")
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+
+
 def build_builder_router() -> APIRouter:
     """Router that mounts the visual builder SPA at /_apx/builder/* + save endpoint."""
     router = APIRouter()
@@ -241,6 +287,16 @@ def build_builder_router() -> APIRouter:
             **_compute_drift(),
             "identity": _read_identity_from_pyproject(),
         }
+
+    @router.post("/_apx/builder/deploy", include_in_schema=False)
+    async def builder_deploy(payload: DeployPayload):
+        _validate_deploy_payload(payload)
+        apx_bin = shutil.which("apx") or "apx"
+        cmd = [apx_bin, "deploy", "--target", payload.target, "--profile", payload.profile]
+        return StreamingResponse(
+            _stream_deploy(cmd, cwd=str(Path.cwd())),
+            media_type="text/event-stream",
+        )
 
     @router.get("/_apx/builder/{path:path}", include_in_schema=False)
     async def builder_asset(path: str):
