@@ -97,8 +97,20 @@ def build_builder_router() -> APIRouter:
         return FileResponse(index, media_type="text/html")
 
     @router.post("/_apx/builder/save", include_in_schema=False)
-    async def builder_save(payload: SavePayload):
+    async def builder_save(payload: SavePayload, force: int = 0):
         target = _resolve_target(payload.target)
+        # Refuse-to-clobber: if target exists, contents must include SENTINEL
+        # OR caller must pass ?force=1.
+        if target.exists() and not force:
+            existing = target.read_text(errors="ignore")
+            if SENTINEL not in existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{target} exists and doesn't look canvas-generated "
+                        f"(missing '{SENTINEL}' sentinel). Pass ?force=1 to overwrite."
+                    ),
+                )
         sidecar = target.with_name(".apx-builder.json")
         _atomic_write(target, payload.code)
         _atomic_write(sidecar, json.dumps(payload.graph, indent=2))
