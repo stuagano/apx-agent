@@ -1,1372 +1,189 @@
 # apx-agent
 
 [![CI](https://github.com/stuagano/apx-agent/actions/workflows/test.yml/badge.svg)](https://github.com/stuagano/apx-agent/actions/workflows/test.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-A declarative framework for building governed AI agents on Databricks. Write one agent definition, deploy to **either** Mosaic AI Model Serving **or** Databricks Apps — picked by `--target` at deploy time. Available in **Python** and **TypeScript**.
+**Write a Databricks AI agent once. Deploy to Model Serving or Databricks Apps with one flag.**
 
-```python
-# Write once...
-from apx_agent import Agent, uc_function_tool
-
-agent = Agent(
-    instructions="You investigate customer accounts.",
-    tools=[uc_function_tool("main.tools.lookup_account")],
-)
-```
-
-```bash
-# ...deploy either way.
-apx deploy --target model-serving --name main.agents.account_lookup --model databricks-claude-sonnet-4-6
-apx deploy --target apps                # databricks bundle deploy + bundle run
-```
-
-Same agent code. Same tools. Same identity passthrough. Same `apx.*` MLflow trace schema. The compile target picks the runtime contract (`ChatAgent` vs `ResponsesAgent`), the deploy command picks the upload mechanism, and the OBO chain normalizes whichever auth shape the runtime injects. The [migration guide Databricks ships between the two runtimes](https://github.com/databricks/app-templates/blob/main/agent-openai-agents-sdk/.claude/skills/migrate-from-model-serving/SKILL.md) is a docs artifact, not a workflow.
-
-See [`docs/apps-vs-model-serving.md`](docs/apps-vs-model-serving.md) for when to pick which.
-
-## What's here
-
-Four building blocks. Everything else is built on top.
-
-### 1. Governed primitives
-
-Unity Catalog functions, Genie spaces, vector search indices, SQL warehouses — turn each into a tool with one line. Every tool factory declares itself as a Mosaic AI resource so that at deploy time, the platform mints a scoped token and Unity Catalog enforces user-scoped grants on every call.
+Author your agent in Python or TypeScript. The framework picks the runtime contract (`ChatAgent` for Mosaic AI Model Serving, `ResponsesAgent` for Databricks Apps) and the OBO chain normalizes whichever auth shape the runtime injects — so the calling user's OAuth token flows through every UC function, Genie space, vector index, and sub-agent call. Unity Catalog enforces *their* grants on *their* data; no auth code at the tool level.
 
 ```python
 from apx_agent import Agent, uc_function_tool, genie_tool
 
-agent = Agent(tools=[
-    uc_function_tool("main.tools.classify_intent"),
-    uc_function_tool("main.tools.score_customer"),
-    genie_tool("abc123", description="Answer sales data questions"),
-])
-```
-
-### 2. Identity passthrough
-
-The calling user's OAuth token flows through every tool, every sub-agent call, and every outbound Databricks API call. The agent runs as the user — not as a service principal. UC enforces *their* grants on *their* data. No auth code at the tool level; the framework handles capture, propagation, and resolution.
-
-### 3. Workflow patterns
-
-Composable agent patterns for multi-step orchestration. The LLM doesn't pick the route when the route is part of the contract.
-
-| Agent | Purpose |
-|-------|---------|
-| **SequentialAgent** | Pipeline execution (analyze → plan → execute) |
-| **ParallelAgent** | Fan-out / gather (fetch weather + news concurrently) |
-| **LoopAgent** | Iterative refinement (draft → review → revise until done) |
-| **RouterAgent** | Conditional routing (billing → bill agent, data → triage agent) |
-| **HandoffAgent** | Peer handoff mid-conversation (triage → billing) |
-| **RemoteAgent** | Cross-endpoint sub-agent call |
-
-When the *LLM* should decide whether to delegate (not the structure), use `agent_tool` instead — wrap any agent as a callable tool on a parent `LlmAgent`. Workflow agents compose along deterministic edges; `agent_tool` composes along LLM-driven edges.
-
-```python
-from apx_agent import Agent, agent_tool
-
-specialist = Agent(name="data_inspector",
-                   tools=[lineage_tool(), schema_tool()],
-                   instructions="You investigate data lineage.")
-
-orchestrator = Agent(tools=[
-    agent_tool(specialist,
-               name="data_inspector",
-               description="Investigate table lineage and schema questions."),
-])
-```
-
-The same wrapper handles remote agents — pass a `RemoteDatabricksAgent` (constructed via `RemoteDatabricksAgent.from_app_name(...)` or `.from_card_url(...)`) and the parent calls it over HTTP with identity passthrough preserved. The `Agent(sub_agents=[url, ...])` constructor provides a URL shorthand that auto-wraps each URL via `agent_tool` at startup. See [`agent_tool` — LLM-driven delegation](#agent_tool--llm-driven-delegation) for the full surface.
-
-### 4. Two runtimes, one agent
-
-apx-agent compiles the same agent definition to **either** the Mosaic AI Agent Framework (Model Serving) **or** the MLflow GenAI Agent Server (Databricks Apps), picked at deploy time:
-
-| | Model Serving (`--target model-serving`) | Databricks Apps (`--target apps`) |
-|---|---|---|
-| Contract | `ChatAgent` | `ResponsesAgent` |
-| Deploy | `databricks.agents.deploy()` | `databricks bundle deploy + run` |
-| Build pipeline | Container build (5–30 min) | Code push + restart (seconds) |
-| OBO source | `customInputs.user_token` | `X-Forwarded-Access-Token` header |
-| Resource declaration | MLflow `resources=[...]` | `databricks.yml.resources` |
-| Best for | Production endpoints with canary/traffic-split, Supervisor sub-agents | Dev loop, custom UI co-hosted with agent, durable workflows |
-
-Both runtimes share apx-agent's `extract_obo_headers` (so the calling user's identity threads through identically), the `apx.*` MLflow trace schema (so cost reports + watchdog + `apx export-traces` work the same), and every tool factory (`uc_function_tool`, `genie_tool`, etc.). Pick by workload, swap with one CLI flag.
-
-Compile primitives:
-- `compile_to_chat_agent(agent, model)` — Model Serving path
-- `compile_to_responses_agent(agent, model)` — Apps path
-- `extract_obo_headers(custom_inputs=..., headers=...)` — unified OBO across both
-
-See [`docs/apps-vs-model-serving.md`](docs/apps-vs-model-serving.md) for the full decision table.
-
-## CLI
-
-`apx` is the command-line wrapper. Every command maps to a single library primitive — the CLI is ergonomics, not logic.
-
-```bash
-apx scaffold my_agent                       # generate a Model Serving project (default)
-apx scaffold my_agent --target apps         # generate a Databricks Apps project
-cd my_agent && uv sync
-apx run                            # uvicorn against app.py:app
-apx publish-tools --dry-run        # preview UC function registrations
-apx publish-tools                  # actually register
-apx deploy --model databricks-claude-sonnet-4-6 \
-           --name main.agents.my_agent              # default: --target model-serving
-apx deploy --target apps                            # bundle deploy + bundle run, no container build
-apx publish --endpoint my_agent --supervisor sa-12345 \
-            --description "Handles X for users asking about Y"
-apx mcp-config --host https://workspace.cloud.databricks.com
-apx eval evalset.jsonl --model databricks-claude-sonnet-4-6
-apx logs --endpoint my_agent                # runtime logs from Model Serving
-apx logs --endpoint my_agent --build        # build-time logs
-apx logs --app my-app --profile prod        # Databricks Apps logs (via the CLI)
-apx info                                    # introspect tools, sub-agents, declared resources
-apx lint                                    # static checks: instructions, docstrings, env vars, model names
-apx test --prompt "what's the lineage?"     # local smoke test against a sample prompt
-apx trace --agent customer_triage           # recent MLflow traces, filtered by apx.* attrs
-apx list                                    # discover deployed apx-agents via UC tag scan
-apx cost --agent customer_triage --hours 24 # DBU + $ over a lookback window
-apx export-traces --table main.agents.traces --hours 24    # MLflow traces → Delta
-apx topology --format mermaid > topology.mmd               # multi-agent graph
-apx eval-chain evalset.jsonl --model X --experiment /Users/me/...  # per-prompt sub-agent coverage
-apx hot-swap --endpoint customer_triage --model databricks-claude-opus-4-7  # change LLM without re-logging
-apx canary deploy --endpoint customer_triage --model main.agents.x --version 42 --traffic 10
-apx canary analyze --endpoint customer_triage --hours 24    # per-version requests / errors / latency
-apx canary promote --endpoint customer_triage --model main.agents.x --version 42
-apx canary rollback --endpoint customer_triage --model main.agents.x --version 41
-apx watchdog violations --hours 24       # recent reject/redact decisions from the UC table
-apx watchdog status --agent customer_triage  # current posture via watchdog's MCP tool
-apx memory recall --principal-id user:alice --query "notification preferences"  # semantic recall
-apx memory remember --principal-id user:alice --content "..." --importance 0.8
-apx examples find --agent-id triage --query "why is my bill high?" -k 5
-apx examples save --agent-id triage --input "..." --output "..." --score 0.9
-```
-
-All commands that take an agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`).
-
-A worked example exercising the full surface — `@tool(uc=...)`, `genie_tool`, `vector_search_tool`, `sql`-style tools, and `HandoffAgent` routing — lives in `python/examples/customer_triage/`. Read its README for the end-to-end flow from scaffold to deploy to publish.
-
-## Quick start
-
-### Python
-
-```python
-from apx_agent import Agent, genie_tool, lineage_tool, uc_function_tool
-
 agent = Agent(
-    instructions="You investigate missing data in Databricks tables.",
+    instructions="Investigate customer accounts.",
     tools=[
-        lineage_tool(),
-        genie_tool("abc123", description="Answer data questions"),
-        uc_function_tool("main.tools.classify_intent"),
+        uc_function_tool("main.tools.lookup_account"),
+        genie_tool("abc123", description="Answer billing questions"),
     ],
 )
 ```
 
-Deploy as a Mosaic AI agent (Model Serving):
-
-```python
-import mlflow
-from databricks import agents
-from apx_agent import log_agent
-
-with mlflow.start_run():
-    info = log_agent(
-        agent,
-        model="databricks-claude-sonnet-4-6",
-        registered_model_name="main.agents.data_triage",
-    )
-
-agents.deploy("main.agents.data_triage", model_version=info.registered_model_version)
+```bash
+apx deploy --target model-serving --name main.agents.account_lookup
+# or
+apx deploy --target apps
 ```
 
-`log_agent` walks the agent tree, collects every declared resource (UC functions, Genie spaces, sub-agent endpoints, the LLM endpoint), and hands MLflow the full list. No manual `resources=[...]` to maintain.
+Same agent code. Same tools. Same `apx.*` MLflow trace schema either way.
 
-Host as a Databricks App instead (same agent, different runtime):
+### Don't want to write code?
 
-```python
-from apx_agent import create_app
-app = create_app(agent)  # uvicorn-compatible FastAPI app
+[**apx-builder**](python/examples/apx-builder/) is a natural-language agent builder shipped as an example app. Describe what you want; it scaffolds the project, wires the tools, deploys it, and polls until it's live.
+
+---
+
+📚 **[Docs](docs/)** · 🚀 **[Quick start](#quick-start)** · 🧪 **[Examples](python/examples/EXAMPLES.md)** · ⚙️ **[CLI](#cli)**
+
+---
+
+## What you get
+
+| | |
+|---|---|
+| **Two runtimes, one agent** | `--target apps` (ResponsesAgent + `/mcp` + `/invocations`) or `--target model-serving` (ChatAgent + `log_agent` + `databricks.agents.deploy`) |
+| **Identity passthrough** | Calling user's OAuth token flows through every tool call. UC grants enforced per-request. |
+| **Governed primitives** | `uc_function_tool`, `genie_tool`, `vector_search_tool` — every tool declares as a Mosaic AI resource so deploy mints scoped tokens automatically |
+| **Workflow agents** | `SequentialAgent`, `ParallelAgent`, `LoopAgent`, `RouterAgent`, `HandoffAgent` — deterministic composition |
+| **Remote sub-agents** | `agent_tool` wraps any local or remote agent. URL shorthand auto-wraps via A2A discovery. |
+| **MCP-native** | `/mcp` endpoint on every Apps deploy. Genie + Genie Code consume tools over standard MCP. |
+| **Sessions + memory** | `LakebaseSessionStore`, `LakebaseMemoryStore`, `InMemoryExampleStore`, few-shot retrieval |
+| **Compliance hooks** | Watchdog adapter, audit log schema, local guards, cost tracking, callbacks |
+| **Evaluation** | `apx eval` against MLflow experiments with custom judges |
+| **Dev UI** | `/_apx/agent` — traces, eval, tool editor, setup wizard |
+| **Visual builder** | `apx-builder` example: describe an agent in English → scaffold + deploy |
+| **CLI** | `apx init`, `apx dev`, `apx deploy`, `apx eval`, `apx publish` |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A["agent.py / agent.ts<br/>Python or TypeScript<br/>declarative definition"]
+    A -->|apx compile| C1["ChatAgent + MLflow<br/>ResourceSpec"]
+    A -->|apx compile| C2["ResponsesAgent +<br/>FastAPI + /mcp"]
+    C1 -->|apx deploy<br/>--target model-serving| D1["Mosaic AI<br/>Model Serving"]
+    C2 -->|apx deploy<br/>--target apps| D2["Databricks Apps<br/>(databricks bundle deploy)"]
+    D1 --> R["User OAuth → UC grants<br/>+ apx.* MLflow traces"]
+    D2 --> R
 ```
+
+## Quick start
+
+> Not on PyPI / npm yet — install from this repo until the first release.
+
+### Python
 
 ```bash
-cd python
-uv sync
-uvicorn my_app:app --reload
+git clone https://github.com/stuagano/apx-agent.git
+cd apx-agent/python
+uv sync                       # or: pip install -e '.[langgraph]'
+apx init my-agent
+cd my-agent
+apx dev                       # local dev server on :8000
+apx deploy --target apps      # or --target model-serving
 ```
 
 ### TypeScript
 
-```typescript
-import { createApp, server } from '@databricks/appkit';
-import { createAgentPlugin, lineageTool, genieTool, ucFunctionTool } from 'appkit-agent';
-
-createApp({
-  plugins: [
-    server(),
-    createAgentPlugin({
-      model: 'databricks-claude-sonnet-4-6',
-      instructions: 'You investigate missing data.',
-      tools: [
-        lineageTool(),
-        genieTool('abc123', { description: 'Answer data questions' }),
-        ucFunctionTool('main.tools.classify_intent'),
-      ],
-    }),
-  ],
-});
-```
-
 ```bash
-cd typescript
-npm install
-npm run dev
+git clone https://github.com/stuagano/apx-agent.git
+cd apx-agent/typescript
+npm install && npm run build
+cd ../my-agent                # or: npx apx init my-agent
+npx apx dev
+npx apx deploy --target apps
 ```
 
-## Governed primitives
-
-### UC functions are the unlock
-
-UC functions are already how data teams write and govern business logic. They define parameter types, write documentation, and apply access controls through standard UC governance. Without a UC function tool, an AI engineer duplicates that work by hand-writing a tool schema and a call implementation that mirrors what the data team already registered. The two definitions then drift apart.
-
-With `uc_function_tool`, the UC function *is* the tool definition. The data team owns the logic; the AI engineer registers it in one line. Governance, access control, and documentation flow through UC the same way they do for any other data asset. Data teams ship new agent capabilities through their normal workflow — write SQL or Python, register in UC, done — without touching agent code.
-
-```sql
--- Data team writes & registers the function in UC
-CREATE OR REPLACE FUNCTION main.tools.classify_intent(query STRING)
-RETURNS STRING
-COMMENT 'Classify a customer query as: billing, technical, account, other.'
-LANGUAGE PYTHON
-AS $$
-  # ... implementation
-$$;
-
-GRANT EXECUTE ON FUNCTION main.tools.classify_intent TO `agent_consumers`;
-```
-
-```python
-# AI engineer composes the agent
-from apx_agent import Agent, uc_function_tool
-
-agent = Agent(tools=[
-    uc_function_tool("main.tools.classify_intent"),
-])
-```
-
-When the agent runs, the user's grants on `main.tools.classify_intent` apply. If they can't execute it directly, the agent can't either. The function's `COMMENT` becomes the tool description; parameter types become the tool schema. One source of truth.
-
-### Author tools that live in UC — `@tool`
-
-When the agent author *is* the one writing the tool, `@tool` lets you author the Python function once and have it land in UC with one publish step. Type hints become parameter types; docstring becomes the function comment; `grant=[...]` enforces who can execute.
-
-```python
-from apx_agent import Agent, tool, log_agent, publish_tools_to_uc
-
-@tool(uc="main.tools.classify_intent", grant=["agent_consumers"])
-def classify_intent(query: str) -> str:
-    """Classify a customer query as billing/technical/account/other."""
-    return "billing" if "bill" in query.lower() else "other"
-
-agent = Agent(
-    instructions="Triage the user's question.",
-    tools=[classify_intent],
-)
-
-publish_tools_to_uc(agent)   # registers + grants in UC, idempotent
-log_agent(agent, model="databricks-claude-sonnet-4-6",
-          registered_model_name="main.agents.triage")
-```
-
-After `publish_tools_to_uc`, `main.tools.classify_intent` exists as a governed UC asset. Genie reaches it, Managed MCP exposes it, sibling agents wire it in one line via `uc_function_tool("main.tools.classify_intent")` — without redefinition. The Python function still runs in-process when *this* agent calls it; the UC function is the discovery and external-composition surface.
-
-#### Pulling a whole schema of UC functions as tools — `uc_function_toolkit`
-
-When the data team has curated a schema of agent-facing UC functions, register the entire toolkit in one line. Each function's UC `comment` becomes the tool description; parameter types come from UC; the `DatabricksFunction` resource declaration is attached automatically.
-
-```python
-from apx_agent import Agent, uc_function_toolkit
-from databricks.sdk import WorkspaceClient
-
-agent = Agent(
-    instructions="Triage customer queries using the curated tools.",
-    tools=uc_function_toolkit("main.agent_tools", ws=WorkspaceClient()),
-)
-```
-
-`include=[...]` and `exclude=[...]` bound the surface when the schema mixes agent-facing tools with internal helpers. The toolkit returns an empty list (with a warning) if listing fails — typically a UC permissions issue, surfaced loudly so it doesn't slip past in a deploy script.
-
-Three rules locked in:
-
-1. **UC-syncable iff pure.** `@tool(uc=...)` is rejected at definition time if the function has a `Dependencies.*` parameter — UC functions run server-side under the function owner, so user-scoped `WorkspaceClient` is unavailable. Tools that need the calling user's identity (lineage lookups, Genie calls, UC reads) stay Python-only.
-2. **Explicit, three-part UC names.** `catalog.schema.function`. No implicit namespacing.
-3. **Declarative grants.** `grant=[...]` is the source of truth; `publish_tools_to_uc` enforces.
-
-Requires the `uc` extra:
-
-```bash
-pip install 'apx-agent[uc]'
-```
-
-### Platform tool factories
-
-| Factory | What it does | Resource declared |
-|---------|--------------|-------------------|
-| `uc_function_tool(name)` | Execute a registered UC function. Schema auto-derived from UC. | `DatabricksFunction` |
-| `genie_tool(space_id)` | Ask a natural-language question to a Genie space | `DatabricksGenieSpace` |
-| `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
-| `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse. Returns rows + truncation flag | `DatabricksSQLWarehouse` *(if `warehouse_id` set)* |
-| `foundation_model_tool(endpoint)` | Ask a Foundation Model endpoint — agent-to-model routing | `DatabricksServingEndpoint` |
-| `lineage_tool()` | Get upstream/downstream lineage for a UC table | — *(UC REST gated by grants)* |
-| `schema_tool()` | Describe columns of a UC table | — |
-| `catalog_tool(catalog, schema)` | List tables in a UC schema | — |
-
-Each factory attaches its resource declaration to the returned tool. `log_agent` collects them automatically.
-
-```python
-from apx_agent import (
-    Agent, genie_tool, vector_search_tool, sql_tool, foundation_model_tool,
-)
-
-agent = Agent(
-    instructions="Answer questions using docs, data, and a deep-reasoning specialist.",
-    tools=[
-        genie_tool("space-abc"),
-        vector_search_tool("main.search.docs_index",
-                           columns=["doc_id", "title", "content"],
-                           num_results=5),
-        sql_tool(warehouse_id="wh-prod"),
-        foundation_model_tool("databricks-claude-opus-4-7",
-                              name="ask_opus",
-                              description="Ask the specialist for hard reasoning."),
-    ],
-)
-```
-
-### Declared resources
-
-When the agent is logged to MLflow for Model Serving, its resources are declared up front:
-
-```python
-log_agent(
-    agent,
-    model="databricks-claude-sonnet-4-6",
-    registered_model_name="main.agents.data_triage",
-)
-# resources auto-derived from the agent tree:
-#   DatabricksServingEndpoint("databricks-claude-sonnet-4-6")  # the LLM
-#   DatabricksGenieSpace("abc123")                              # from genie_tool(...)
-#   DatabricksFunction("main.tools.classify_intent")            # from uc_function_tool(...)
-#   DatabricksServingEndpoint("billing")                        # from sub_agents=[...]
-```
-
-The platform enforces that the agent can **only** access those resources. Need to declare something the framework can't infer (a specific SQL warehouse, vector index, UC table)? Pass `extra_resources=[ResourceSpec("sql_warehouse", "wh-prod"), ...]`.
-
-### Identity passthrough
-
-In Databricks Apps, the user's OAuth token arrives as `X-Forwarded-Access-Token`. The framework captures it at the middleware boundary, propagates it through the async context, and resolves it at every outbound call.
-
-```python
-def get_table_lineage(table_full_name: str, ws: Dependencies.Workspace) -> dict:
-    """Get upstream sources that feed into this table."""
-    # ws is a per-request WorkspaceClient scoped to the calling user.
-    # All Databricks API calls through ws run with that user's grants.
-    rows = run_sql(ws, f"SELECT ... WHERE target = '{table_full_name}'")
-    return {"target": table_full_name, "upstream_sources": rows}
-```
-
-Resolution order:
-
-| Priority | Source | When it's used |
-|----------|--------|---------------|
-| 1 | Per-request OBO context | Interactive — user hits the app, their token flows through |
-| 2 | Explicit headers | Caller passes auth directly (testing, manual invocation) |
-| 3 | `DATABRICKS_TOKEN` env var | Local dev with a static PAT |
-| 4 | M2M OAuth (`DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET`) | Background jobs, workflows — no user present |
-
-When deployed to Model Serving and called from a trusted Databricks surface (AI Playground, Genie, Review App, Supervisor sub-agent), the calling user's identity threads automatically through the agent and its sub-agents — scoped to the declared resources at every hop.
+See [docs/getting-started.md](docs/getting-started.md) for the longer walkthrough.
 
 ## Workflow patterns
 
-### Sequential — multi-step pipelines
-
-Each step receives the previous step's output as context. Use when step order is part of the contract.
-
-```python
-from apx_agent import Agent, SequentialAgent, lineage_tool, schema_tool
-
-pipeline = SequentialAgent([
-    Agent(instructions="Identify which tables the user is asking about.",
-          tools=[lineage_tool(), schema_tool()]),
-    Agent(instructions="Plan a multi-step investigation."),
-    Agent(instructions="Execute the plan and report findings."),
-])
-```
-
-### Parallel — fan-out / gather
-
-Run sub-agents concurrently, merge results. Use for independent lookups that don't depend on each other.
-
-```python
-from apx_agent import ParallelAgent
-
-merged = ParallelAgent([
-    Agent(instructions="Get weather", tools=[weather_tool]),
-    Agent(instructions="Get news", tools=[news_tool]),
-])
-```
-
-### Loop — iterative refinement
-
-Repeat a sub-agent until it calls `finish_loop()` or hits `max_iterations`. Use for draft → review → revise patterns.
-
-```python
-from apx_agent import LoopAgent
-
-drafter = Agent(instructions="Draft a response. Call finish_loop when satisfied.")
-refiner = LoopAgent(drafter, max_iterations=5)
-```
-
-### Router — conditional routing
-
-LLM picks one branch based on the user's input. Use when the route is data-dependent but the branch agents are fixed.
-
-```python
-from apx_agent import RouterAgent
-
-router = RouterAgent({
-    "billing": billing_agent,
-    "technical": tech_agent,
-    "data": data_agent,
-})
-```
-
-### Handoff — peer handoff mid-conversation
-
-An agent transfers the conversation to a peer agent. The new agent inherits the conversation state.
-
-```python
-from apx_agent import HandoffAgent
-
-triage = HandoffAgent(
-    instructions="Triage the user's question, then hand off to the right specialist.",
-    targets={
-        "billing_agent": billing_agent,
-        "technical_agent": tech_agent,
-    },
-)
-```
-
-### `agent_tool` — LLM-driven delegation
-
-When the parent agent's LLM should decide whether — and how many times — to
-delegate to a sub-agent, wrap the sub-agent as a tool. The parent calls it
-like any other tool, but the "tool" runs a full sub-agent loop and returns
-its final response. (This mirrors Google ADK's `AgentTool` pattern as a
-first-class composition primitive.)
-
-```python
-from apx_agent import Agent, agent_tool, lineage_tool, schema_tool
-
-specialist = Agent(
-    name="lineage_specialist",
-    tools=[lineage_tool(), schema_tool()],
-    instructions="You investigate Unity Catalog lineage and schemas.",
-)
-
-orchestrator = Agent(
-    instructions=(
-        "Answer the user's question. Delegate lineage and schema "
-        "questions to the lineage specialist."
-    ),
-    tools=[
-        agent_tool(
-            specialist,
-            name="ask_lineage_specialist",
-            description=(
-                "Investigate UC table lineage, upstream sources, and "
-                "schemas. Call this when the user asks where data "
-                "comes from or what columns exist."
-            ),
-        ),
-    ],
-)
-```
-
-**`name` and `description` are the routing contract.** They are what the
-parent LLM sees in the tool list — write them like tool docs: when to call,
-what it does, what it returns. Vague descriptions ("delegate to the
-specialist") leave the LLM guessing. `agent_tool` falls back to a generic
-delegate message if you omit `description`, but you should always set it
-explicitly for any real agent.
-
-#### Local or remote — same wrapper
-
-`agent_tool` accepts any `BaseAgent`. For a remote sub-agent, construct a
-`RemoteDatabricksAgent` first; the wrapper doesn't change:
-
-```python
-from apx_agent import RemoteDatabricksAgent
-
-# By Databricks App name (uses $DATABRICKS_HOST)
-remote_billing = await RemoteDatabricksAgent.from_app_name("billing-agent")
-
-# Or by full agent-card URL
-remote_billing = await RemoteDatabricksAgent.from_card_url(
-    "https://billing-agent.workspace.databricksapps.com/.well-known/agent.json"
-)
-
-orchestrator = Agent(tools=[
-    agent_tool(
-        remote_billing,
-        name="billing",
-        description="Answer billing and invoice questions for the calling user.",
-    ),
-])
-```
-
-`BaseAgent.run` is the only contract — the wrapper doesn't care whether the
-agent runs in-process or over HTTP. Identity passthrough flows through every
-form: in-process delegation, Model Serving sub-agent calls, and A2A
-app-to-app calls all preserve the calling user's OAuth token.
-
-#### `sub_agents=[url]` shorthand
-
-When the remote agent's own `/.well-known/agent.json` discovery card already
-has good `name` and `description`, the `Agent` constructor accepts a
-`sub_agents=[...]` list of URLs. Each entry is auto-resolved to a
-`RemoteDatabricksAgent` and wrapped via `agent_tool` at startup:
-
-```python
-agent = Agent(
-    tools=[run_sql_query, get_table_info],
-    sub_agents=["https://data-inspector.workspace.databricksapps.com"],
-)
-```
-
-Use explicit `agent_tool(...)` whenever the parent's calling context wants a
-different name or description than the remote agent self-describes — for
-example, when the parent's `instructions` reference the tool by a calling-
-context name, or when the remote's description is too generic to help the
-parent LLM pick it.
-
-#### When to pick `agent_tool` vs `RouterAgent` vs `HandoffAgent`
-
-All three are LLM-driven — the LLM picks the target. The differences are
-how often the LLM decides and who's in charge afterward:
-
-| | Decision shape | Control after |
-|---|---|---|
-| `RouterAgent` | One — pick a branch from a closed set | Branch returns; routing is done |
-| `HandoffAgent` | One — pick a peer from a closed set, transfer | Conversation moves to the peer; original agent is out |
-| `agent_tool` | Many — call sub-agents like tools | Parent stays in charge, can call again, can interleave with its own tools |
-
-Reach for `agent_tool` when the parent needs to stay in charge — gather
-results from multiple specialists, interleave with its own tools, or decide
-mid-conversation whether more delegation is needed. Reach for `RouterAgent`
-when one decision is enough and the branches are mutually exclusive. Reach
-for `HandoffAgent` when control should fully transfer to the peer (the user
-is now talking to billing, not triage).
-
-### Local vs remote — pick the deploy boundary
-
-An agent is a *module* either way — the question is whether it lives in the
-same process as its caller, or in its own app behind A2A. That's an
-orthogonal choice from how the edge is selected (deterministic vs
-LLM-driven). Two axes, four corners:
-
-|                       | Local (same process)                              | Remote (A2A)                                       |
-|-----------------------|---------------------------------------------------|----------------------------------------------------|
-| **Deterministic edge** | `SequentialAgent` / `ParallelAgent` / `LoopAgent` | `RemoteAgent` inside a workflow                    |
-| **LLM-driven edge**    | `agent_tool(sub_agent)`                           | `sub_agents=[url]`                                 |
-
-Pick the deploy boundary by **lifecycle and consumers**, not by agent
-count. Six agents that always run together, version together, and have no
-external caller belong in one app composed locally. One agent that has
-multiple callers, evolves independently, or has a different scaling shape
-belongs in its own app reached over A2A.
-
-Reach for a separate app when at least one is true:
-
-- **Second consumer.** Another agent (or another team) wants to call it.
-- **Independent deploy cadence.** It changes on a different clock than its caller.
-- **Different scaling profile.** CPU-heavy vs LLM-latency-bound, bursty vs steady, etc.
-- **Cleaner OBO surface.** It owns a sensitive resource and the auth boundary should be explicit.
-
-Keep it local otherwise. Six agents stitched together by a `SequentialAgent`
-share conversation history for free, fail atomically, version together, and
-add no network hops.
-
-`python/examples/data-triage-agent/` demonstrates both corners in one
-codebase: a six-step `SequentialAgent` composed locally (deterministic +
-local), delegating to a `data-inspector` sub-agent over A2A (LLM-driven +
-remote). The pipeline steps live together because they always run together;
-the inspector lives apart because the pipeline *and* a separate general
-fallback agent both call it.
-
-### Sub-agents — cross-endpoint composition
-
-When sub-agents are deployed as separate Model Serving endpoints or Databricks Apps:
-
-```python
-# Model Serving target — sub-agents become DatabricksServingEndpoint resources
-agent = Agent(
-    instructions="Route the user's question to the right specialist.",
-    sub_agents=[
-        "endpoints/data-triage",
-        "endpoints/billing",
-        "endpoints/sql-explainer",
-    ],
-)
-```
-
-```python
-# Databricks Apps target — sub-agents are sibling Apps
-agent = Agent(
-    instructions="Route the user's question to the right specialist.",
-    sub_agents=[
-        "$DATA_TRIAGE_URL",  # $VAR expanded at startup
-        "$BILLING_URL",
-    ],
-)
-```
-
-When deployed to Model Serving, sub-agent endpoints are auto-declared as resources — calls to them flow through Mosaic AI's identity passthrough. When hosted in Apps, sub-agent calls go through the app-to-app auth path (see below).
-
-### Durable execution
-
-`SequentialAgent`, `LoopAgent`, and `EvolutionaryAgent` can persist each step's output through a pluggable `WorkflowEngine` — a run can resume after a crash, redeploy, or pause.
-
-| Backend | When to use |
-|---------|-------------|
-| `InMemoryEngine` | Default — tests, dev, short interactive runs |
-| `DeltaEngine` | Production — SQL Statements API against a Delta table; survives restarts |
-| `InngestEngine` | Optional adapter — when you already run Inngest as your orchestrator |
-
-Durable workflows generally need Apps hosting — Model Serving is stateless and short-lived per request. See `docs/superpowers/specs/2026-04-19-durable-workflows-design.md`.
-
-## Typed tools — for custom code
-
-Define tools as functions with type annotations. The framework generates input schemas and descriptions from type hints and docstrings.
-
-**Python** — type hints + docstrings, with `Dependencies.*` parameters injected by FastAPI:
-
-```python
-def get_jobs_for_table(table_full_name: str, ws: Dependencies.Workspace) -> list[dict]:
-    """Find Databricks Jobs that write to a Unity Catalog table."""
-    rows = run_sql(ws, f"SELECT job_id, name FROM system.lakeflow.jobs WHERE ...")
-    return rows
-```
-
-**TypeScript** — Zod schemas + handler functions:
-
-```typescript
-const getJobs = defineTool({
-  name: 'get_jobs_for_table',
-  description: 'Find Databricks Jobs that write to a UC table',
-  parameters: z.object({ tableName: z.string() }),
-  handler: async ({ tableName, ws }) => { /* ... */ },
-});
-```
-
-Custom tools can declare their own resources:
-
-```python
-from apx_agent import ResourceSpec, attach_resources
-
-def query_orders(question: str, ws: Dependencies.Workspace) -> str:
-    """Query the orders Delta table."""
-    return run_sql(ws, f"SELECT ... FROM main.sales.orders WHERE ...")
-
-attach_resources(query_orders, [ResourceSpec("uc_table", "main.sales.orders")])
-```
-
-`log_agent` picks these up the same way it picks up the platform factories.
-
-## Deployment
-
-apx-agent compiles the same agent to either runtime. Pick by workload; swap with one CLI flag. The full decision table is in [`docs/apps-vs-model-serving.md`](docs/apps-vs-model-serving.md).
-
-### Model Serving (Mosaic AI) — `--target model-serving`
-
-The default. `compile_to_chat_agent` produces an MLflow `ChatAgent` with declared resources; `log_agent` registers it in Unity Catalog; `databricks.agents.deploy` promotes it to a serving endpoint. Recognized natively by AI Playground, Review App, Agent Evaluation, MLflow tracing, and Supervisor Agent as a sub-agent.
-
-```bash
-apx deploy --model databricks-claude-sonnet-4-6 \
-           --name main.agents.my_agent
-```
-
-- **Pay-per-request** — scale-to-zero, no idle cost
-- **Identity passthrough** automatic from Playground / Genie / Supervisor (via `customInputs.user_token`)
-- **Stateless** — request/response only; no persistent state between calls
-- **Production patterns** — canary deploys (`apx canary deploy/promote/rollback`), traffic-split, hot-swap LLM (`apx hot-swap`)
-- **Container build** — 5–30 min on first deploy; subsequent deploys reuse cached layers
-- **Best for** — production agents the platform routes traffic to (Supervisor sub-agents, AI Playground, Knowledge Assistants)
-
-### Databricks Apps — `--target apps`
-
-The MLflow GenAI Agent Server path. `compile_to_responses_agent` produces a `ResponsesAgent` with `@invoke` / `@stream` decorated functions; `databricks bundle deploy + bundle run` pushes code and restarts the app. No container build. The deploy is a code push.
-
-```bash
-apx scaffold my_agent --target apps   # scaffolds agent_server/ + databricks.yml + pyproject.toml + quickstart
-cd my_agent
-apx deploy --target apps              # one command — builds wheel, stages .build,
-                                       # auto-resolves MLflow experiment, bundle deploy + run
-```
-
-- **Code-push deploy** — seconds to minutes from edit to running app
-- **Identity passthrough** automatic via `X-Forwarded-Access-Token` injected by the Apps runtime
-- **Stateful** — in-memory caches, background loops, websockets, custom UI all work
-- **Async-native** — `@invoke()` and `@stream()` decorators support `async def`
-- **Best for** — dev loop, agents with co-located UI, durable workflows, anything that benefits from fast iteration
-
-The legacy `create_app(agent)` FastAPI wrapper still works for Apps hosting that doesn't go through MLflow GenAI Server — useful when you want apx-agent's full host (OBO middleware, `/mcp` MCP server, `/.well-known/agent.json` discovery card, hub auto-registration, dev UI at `/_apx/*`) without the bundle deploy flow.
-
-### Verified live deploys
-
-Both worked examples are deployed to a real workspace as Databricks Apps:
-
-- `python/examples/memory_demo/` — single agent with in-memory memory store
-- `python/examples/customer_triage/` — `HandoffAgent` over 4 sub-agents with memory wired into the account specialist
-
-Memory recall verified working across the HandoffAgent boundary — principal-keyed memory survives sub-agent transitions because the key is the user, not the session.
-
-## Compliance posture — Watchdog integration
-
-For compliance posture (cross-domain policies, violation lifecycle, owner accountability), apx-agent integrates with [databricks-watchdog](https://github.com/stuagano/databricks-watchdog) rather than rolling its own policy engine. Three pieces:
-
-```python
-from apx_agent import Agent, WatchdogClient, WatchdogGuard, emit_agent_metadata
-
-# 1. Adapter for the watchdog policy-decision and violation-report calls.
-#    The transport is pluggable — use the no-op default until the wire API
-#    is pinned down, or pass a callable that hits watchdog's HTTP/MCP surface.
-watchdog = WatchdogClient(transport=my_transport)
-
-# 2. Bridge watchdog decisions into the existing apx-agent hooks.
-guard = WatchdogGuard(watchdog, agent_name="customer_triage")
-
-agent = Agent(
-    instructions="...",
-    tools=[...],
-    input_guardrails=[guard.for_input()],
-    output_guardrails=[guard.for_output()],     # supports redact decisions
-    before_tool=guard.for_tool(),
-    before_model=guard.for_model(),
-)
-
-# 3. Emit the agent's metadata for watchdog's crawler.
-metadata = emit_agent_metadata(agent, name="customer_triage",
-                               model="databricks-claude-sonnet-4-6")
-# → JSON-serializable dict: name, model, instructions, tools (with UC sync metadata),
-#   sub-agents, resources. Drop into a UC manifest table, MLflow tag, or
-#   whatever stable shape watchdog crawls.
-```
-
-Watchdog returns `WatchdogDecision(action, reason, policy_id, domain, redacted_content, metadata)`. `reject` short-circuits the call; `redact` rewrites content (for outputs); `allow` is pass-through. On transport failure the guard fails open (logs a warning, allows the request) — the runtime decides its own fail-open vs fail-closed policy on top of this.
-
-### End-to-end wiring
-
-The three wire-protocol contracts are pinned:
-
-| Contract | Mechanism | Helper |
-|---|---|---|
-| Metadata for watchdog's crawler | UC tags on the registered model (`apx.agent.*`) | `set_uc_tags_for_agent(agent, registered_model_name=..., model=...)` |
-| Runtime policy decisions | One of watchdog's 13 MCP tools | `make_mcp_transport(mcp_url, tool_name=...)` |
-| Violation reports | INSERT into a watchdog-owned UC Delta table | `make_uc_violation_writer(violations_table, ws=...)` |
-
-```python
-from apx_agent import (
-    Agent, WatchdogClient, WatchdogGuard,
-    make_watchdog_transport, set_uc_tags_for_agent, log_agent,
-)
-from databricks.sdk import WorkspaceClient
-
-ws = WorkspaceClient()
-
-# One-time at deploy: write metadata as UC tags on the registered model
-log_agent(agent, model="databricks-claude-sonnet-4-6",
-          registered_model_name="main.agents.customer_triage")
-set_uc_tags_for_agent(
-    agent,
-    registered_model_name="main.agents.customer_triage",
-    model="databricks-claude-sonnet-4-6",
-    name="customer_triage",
-)
-
-# Runtime: MCP for evaluate + UC table for violations
-transport = make_watchdog_transport(
-    mcp_url="https://watchdog.example.com/mcp",
-    mcp_tool_name="evaluate_operation",
-    violations_table="main.watchdog.runtime_violations",
-    ws=ws,
-    warehouse_id="wh-prod",
-)
-watchdog = WatchdogClient(transport=transport)
-guard = WatchdogGuard(watchdog, agent_name="customer_triage")
-
-agent = Agent(
-    instructions="...",
-    tools=[...],
-    input_guardrails=[guard.for_input()],
-    output_guardrails=[guard.for_output()],
-    before_tool=guard.for_tool(),
-    before_model=guard.for_model(),
-)
-```
-
-The MCP transport calls `tools/call` on watchdog's streamable HTTP MCP endpoint; the UC writer auto-creates the violations table on first use (`auto_create=True`) and `INSERT`s a row per reject/redact decision. Both are pluggable — pass a custom `transport` to `WatchdogClient` for a different wire shape (e.g. plain HTTP, batched async writes).
-
-## Audit log schema
-
-Every framework-emitted MLflow span carries a consistent `apx.*` attribute set so downstream consumers (watchdog, compliance dashboards, ad-hoc SQL over the traces table) can query without knowing anything about specific agents.
-
-```python
-from apx_agent import AuditAttrs
-# AuditAttrs.AGENT_NAME           = "apx.agent.name"
-# AuditAttrs.SESSION_ID           = "apx.session.id"
-# AuditAttrs.OPERATION            = "apx.operation"  # predict | tool_call | model_call | sub_agent_call
-# AuditAttrs.USER_TOKEN_PROVIDED  = "apx.user.token_provided"
-# AuditAttrs.TOOL_NAME            = "apx.tool.name"
-# AuditAttrs.TOOL_UC_FUNCTION     = "apx.tool.uc_function"
-# AuditAttrs.TOOL_INPUT_KEYS      = "apx.tool.input_keys"
-# AuditAttrs.TOOL_INPUT_HASH      = "apx.tool.input_hash"
-# AuditAttrs.TOOL_OUTPUT_TYPE     = "apx.tool.output_type"
-# AuditAttrs.TOOL_OUTPUT_SIZE     = "apx.tool.output_size"
-# AuditAttrs.TOOL_DURATION_MS     = "apx.tool.duration_ms"
-# AuditAttrs.MODEL_ENDPOINT       = "apx.model.endpoint"
-# AuditAttrs.MODEL_INPUT_TOKENS   = "apx.model.input_tokens"
-# AuditAttrs.MODEL_OUTPUT_TOKENS  = "apx.model.output_tokens"
-# AuditAttrs.WATCHDOG_ACTION      = "apx.watchdog.action"
-# AuditAttrs.WATCHDOG_POLICY_ID   = "apx.watchdog.policy_id"
-# ...
-```
-
-Where they're set automatically:
-
-| Site | Attributes recorded |
+| Pattern | When |
 |---|---|
-| `predict` / `predict_stream` | `apx.operation`, `apx.model.endpoint`, `apx.session.id`, `apx.user.token_provided`, `apx.model.streaming`, `apx.model.input_messages` |
-| Tool call lifecycle (via `_AgentCallbackHandler`) | `apx.tool.name`, `apx.tool.input_keys`, `apx.tool.input_hash`, `apx.tool.output_type`, `apx.tool.output_size`, `apx.tool.duration_ms` |
-| Model call lifecycle | `apx.model.input_tokens`, `apx.model.output_tokens` (when the LLM returns usage info) |
-| Watchdog reject/redact | `apx.watchdog.action`, `apx.watchdog.policy_id`, `apx.watchdog.reason`, `apx.watchdog.domain`, `apx.agent.name` |
-
-Custom code can add attributes through the same schema:
-
-```python
-from apx_agent import set_audit_attrs, safe_span
-
-with safe_span("custom_step") as span:
-    set_audit_attrs(
-        span,
-        operation="sub_agent_call",
-        subagent_endpoint="endpoints/billing",
-        tool_duration_ms=123,
-    )
-```
-
-Typos fail loud — `set_audit_attrs` raises `ValueError` for unknown kwargs so the audit schema stays canonical instead of drifting across call sites. Use `hash_for_audit(value)` to fingerprint inputs/outputs without exfiltrating raw content.
-
-Watchdog and any other consumer can query the trace table (e.g. `system.access.audit_logs` or a workspace trace export) by `apx.*` keys to produce compliance reports without parsing agent-specific schemas.
-
-## Local guards — zero-latency runtime checks
-
-`_guards.py` ships a small set of in-process callables that plug into the existing hooks. Pair with `WatchdogGuard` for layered governance — local checks for things that should fail in microseconds, watchdog for cross-domain posture evaluation.
+| `SequentialAgent` | Pipeline (analyze → plan → execute) |
+| `ParallelAgent` | Fan-out / gather (weather + news concurrently) |
+| `LoopAgent` | Iterative refinement (draft → review → revise) |
+| `RouterAgent` | Deterministic routing (billing → bill agent) |
+| `HandoffAgent` | Peer handoff mid-conversation (triage → specialist) |
+| `RemoteAgent` | Cross-endpoint sub-agent call (A2A) |
+| `agent_tool` | LLM-driven delegation (wrap any agent as a tool on a parent `LlmAgent`) |
 
 ```python
-from apx_agent import (
-    Agent, RateLimit, ToolAllowlist, prompt_injection_heuristic, compose,
-    WatchdogGuard,
-)
+from apx_agent import Agent, SequentialAgent
 
-agent = Agent(
-    instructions="...",
-    tools=[...],
-    input_guardrails=[
-        prompt_injection_heuristic(),           # fast: regex over the user message
-        WatchdogGuard(watchdog).for_input(),    # slow: full posture eval
-    ],
-    before_tool=compose(
-        RateLimit(per_minute=60),
-        ToolAllowlist({"classify_intent", "get_recent_orders"}),
-        WatchdogGuard(watchdog).for_tool(),
-    ),
+investigation = SequentialAgent(
+    agents=[presence, lineage, pipeline, code, synthesis],
+    instructions="Investigate why data is missing.",
 )
 ```
 
-| Guard | Purpose |
+See [docs/workflow-patterns.md](docs/workflow-patterns.md) for full examples and decision criteria.
+
+## Examples
+
+13 worked examples under [`python/examples/`](python/examples/EXAMPLES.md):
+
+| Example | What it shows |
 |---|---|
-| `RateLimit(per_minute=..., burst=..., principal_key=...)` | In-process token-bucket per principal (default: global bucket). Pass a `principal_key` callable to scope per-user. Thread-safe. |
-| `prompt_injection_heuristic(patterns=..., message=...)` | Regex pass over message content. Default pattern set is small + high-specificity (favors false negatives over false positives — the slower-loop watchdog catches the long tail). |
-| `ToolAllowlist({names})` / `ToolDenylist({names})` | Gate tool calls by name. |
-| `compose(*callbacks)` | Chain N callbacks. Short-circuits on the first non-`None` return (for `input_guardrails`-style hooks) or first exception (for `before_*` hooks). |
+| **memory_demo** | MemoryBank + ExampleStore — recall across handoffs |
+| **customer_triage** | HandoffAgent + memory + UC tools |
+| **data-triage-agent** | 6-step SequentialAgent (presence → lineage → pipeline → genie → code → synthesis) |
+| **data-inspector** | Delta forensics + UC discovery, callable via MCP |
+| **entity-resolution-agent** | Fuzzy account match via Vector Search + HandoffAgent (Supervisor + Evaluator) |
+| **eligibility-agent** | Document-based program eligibility (PDFs, W-2s, paystubs) |
+| **contract-parsing-agent** | Contract PDF → structured fields in UC |
+| **shortage-intelligence-agent** | 5-step SequentialAgent for demand cluster detection |
+| **explain-my-bill-agent** | Energy billing Q&A over UC tables |
+| **slack-agent** | Slack-initiated agent runs as the Slack user's Databricks identity |
+| **apx-builder** | Describe-an-agent → scaffold + deploy via NL |
+| **agent-hub** | Central registry + chat UI for deployed agents |
+| **voynich** | LoopAgent + 5-agent evolutionary population |
 
-These are runtime helpers, not a policy engine. Compliance posture (cross-domain rules, ontology, violation tracking, owner accountability) lives in [databricks-watchdog](https://github.com/stuagano/databricks-watchdog) — wire `WatchdogGuard` next to these for the full layered story.
+Plus 3 supporting services (`account-search-service`, `afr-enrollment-api`, `agent-hub`) and the parallel Claude-Code stack (`databricks-builder-app`, `databricks-mcp-server`, `databricks-tools-core`, `databricks-skills`).
 
-## Cost tracking
-
-```python
-from apx_agent import cost_for_agent
-from databricks.sdk import WorkspaceClient
-
-breakdown = cost_for_agent(
-    agent_name="customer_triage",
-    ws=WorkspaceClient(),
-    lookback_hours=24,
-    warehouse_id="wh-prod",
-)
-print(f"Total DBUs: {breakdown.total_dbus}")
-print(f"Total USD:  ${breakdown.total_usd}")
-for row in breakdown.rows:
-    print(f"  {row['sku_name']}: {row['dbus']} DBUs → ${row['usd']}")
-```
-
-Queries `system.billing.usage` joined to `system.billing.list_prices` (best-effort) scoped to the agent's serving endpoint. `total_usd` is `None` when pricing isn't joinable for every row — partial coverage would understate the bill, so it's better to surface the gap than print a misleading total.
-
-Same surface from the CLI:
+## CLI
 
 ```bash
-apx cost --agent customer_triage --hours 24
-apx cost --endpoint my-endpoint --hours 168 --format json
+apx init <name>                    # scaffold a new agent
+apx dev                            # local FastAPI dev server (/_apx/agent)
+apx eval                           # run evalset.jsonl against deployed endpoint
+apx deploy --target apps           # deploy to Databricks Apps
+apx deploy --target model-serving --name catalog.schema.agent
+apx publish --hub-url <url>        # register with an agent hub
 ```
 
-Requires the `system.billing` share to be enabled in the workspace.
-
-## Callbacks
-
-Four lifecycle hooks per `LlmAgent` — useful for cost tracking, prompt-injection scanning, output filtering, custom tracing, and approval gates.
-
-```python
-from apx_agent import Agent
-
-def log_tool(name: str, args: dict) -> None:
-    print(f"calling {name}({args})")
-
-def reject_if_pii(prompts) -> None:
-    text = str(prompts).lower()
-    if "ssn" in text:
-        raise PermissionError("PII guardrail: SSN detected")
-
-agent = Agent(
-    instructions="...",
-    tools=[...],
-    before_tool=log_tool,
-    before_model=reject_if_pii,
-    # after_tool, after_model also supported
-)
-```
-
-| Hook | Signature | Fires |
-|------|-----------|-------|
-| `before_tool` | `(tool_name, arguments) -> None` | Before each tool dispatch — raise to abort |
-| `after_tool`  | `(tool_name, arguments, output) -> None` | After each tool returns — raise propagates |
-| `before_model` | `(prompts) -> None` | Before each LLM invocation — raise to abort |
-| `after_model` | `(response) -> None` | After each LLM response — raise propagates |
-
-Sync and async hooks are both accepted. The wiring sits on top of LangChain's callback system, so anything the chain runtime can observe (LLM start/end, tool start/end) is reachable.
-
-## Sessions — multi-turn memory
-
-By default, every `predict()` call is independent — the agent has no memory of prior turns. For conversational agents, pass a `SessionStore` to `compile_to_chat_agent` and include a `session_id` in `custom_inputs`. The framework loads the session before the LLM sees the new turn, prepends prior history, runs the agent, then persists the new messages.
-
-```python
-from apx_agent import (
-    Agent, compile_to_chat_agent, DeltaSessionStore,
-)
-from databricks.sdk import WorkspaceClient
-
-ws = WorkspaceClient()
-
-session_store = DeltaSessionStore(
-    table_path="main.agents.sessions",
-    ws=ws,
-    warehouse_id="wh-prod",   # explicit warehouse for predictable cost
-)
-
-agent = Agent(instructions="You help debug data pipelines.", tools=[...])
-chat = compile_to_chat_agent(agent, model="databricks-claude-sonnet-4-6", session_store=session_store)
-
-# Turn 1
-chat.predict(
-    messages=[ChatAgentMessage(role="user", content="why is finance.gold.revenue empty?")],
-    custom_inputs={"session_id": "user:alice:thread-42"},
-)
-
-# Turn 2 — history from turn 1 is automatically prepended
-chat.predict(
-    messages=[ChatAgentMessage(role="user", content="what about yesterday?")],
-    custom_inputs={"session_id": "user:alice:thread-42"},
-)
-```
-
-| Store | When to use |
-|-------|-------------|
-| `InMemorySessionStore` | Tests, dev, single-process Apps |
-| `DeltaSessionStore` | UC-governed Delta table. Analytics-style multi-step pipelines, durable across long-idle sessions. |
-| `LakebaseSessionStore` | Lakebase (managed Postgres) via SQLAlchemy. Low-latency chat-style sessions; cheaper at high turn rates than Delta. |
-
-Custom stores satisfy the `SessionStore` protocol (`get`/`put`/`delete`) — bring your own Redis, Memcached, etc.
-
-`LakebaseSessionStore` takes a SQLAlchemy `Engine` and stays narrow on SQL — the caller wires up OAuth token rotation on the engine. Install with `pip install 'apx-agent[lakebase]'`.
-
-When `custom_inputs["session_id"]` is absent the framework silently runs single-turn — the same compiled agent works in both modes.
-
-## Memory bank — long-lived recall across conversations
-
-Sessions hold a single conversation. **MemoryBank** holds durable facts per principal (user, customer, agent) with semantic recall. Same backing stores as sessions (Lakebase pgvector, Delta + Vector Search), different access pattern: `principal_id` + `namespace` scoping, vector retrieval by query.
-
-```python
-from apx_agent import LakebaseMemoryStore, make_memory_tools, assemble_memory_context
-
-# Caller wires the embedding source — no SDK import inside the package.
-def embed(texts):
-    return ws.serving_endpoints.query(
-        name="databricks-bge-large-en", inputs={"input": list(texts)}
-    ).predictions
-
-store = LakebaseMemoryStore(
-    engine=engine,
-    embedding_fn=embed,
-    embedding_dim=1024,
-)
-
-# Write
-store.add(
-    principal_id="user:alice",
-    content="Prefers email summaries on Mondays, not Slack pings.",
-    namespace="profile",
-    tags=["preference", "notification"],
-    importance=0.8,
-)
-
-# Read (semantic)
-hits = store.recall(
-    principal_id="user:alice",
-    query="how should I notify alice?",
-    namespace="profile",
-    k=3,
-)
-```
-
-Use it three ways:
-
-1. **As tools the LLM calls** — `make_memory_tools(store, principal_id_resolver=...)` returns `recall` / `remember` / `forget` callables bound to the store.
-2. **As prompt-assembly** — `assemble_memory_context(store, opts={"principal_id": ..., "query": ...})` returns a markdown block to prepend to `instructions`.
-3. **As raw CRUD** — `store.add` / `recall` / `list` / `update` / `delete` for offline batch flows.
-
-Stores: `InMemoryMemoryStore` (dev/tests), `LakebaseMemoryStore` (pgvector, low-latency chat-style), `DeltaMemoryStore` (Delta with optional `VectorSearchClient` delegation for managed indices, client-side cosine fallback, or recency-only fallback).
-
-**Consolidation**: `consolidate_memories(store, principal_id, summarize_fn=...)` LLM-summarizes older/low-importance memories into a rollup row (with optional deletion of originals). Keeps the bank tractable as it grows.
-
-## Example bank — few-shot retrieval
-
-Same shape as MemoryBank, different scope key: `agent_id` + `intent`. Stores per-agent input/output exemplars used for in-context learning. `findSimilar` ranks by similarity of the *input* field (so "examples whose inputs look like this query" works).
-
-```python
-from apx_agent import LakebaseExampleStore, mine_examples
-
-store = LakebaseExampleStore(engine=engine, embedding_fn=embed, embedding_dim=1024)
-
-# Cold-start from real session history
-result = mine_examples(
-    session_store=session_store,
-    example_store=store,
-    agent_id="triage",
-    score_fn=lambda turn: heuristic_score(turn),  # optional
-    min_score=0.6,
-)
-print(f"Added {result.examples_added} examples from {result.sessions_scanned} sessions")
-```
-
-CLI parity for both:
-
-```bash
-apx memory recall   --principal-id user:alice --query "notification preferences" -k 3
-apx memory remember --principal-id user:alice --content "..." --importance 0.8
-apx examples find   --agent-id triage --query "why is my bill high?" -k 5
-apx examples save   --agent-id triage --input "..." --output "..." --score 0.9
-```
-
-Store loaded via `--store-module MODULE:VAR` or `[tool.apx.agent].memory_store` / `example_store` in `pyproject.toml`.
-
-A worked example lives in `python/examples/memory_demo/` — seeded memories, recall/remember tools wired in, prompt assembly building the system prompt at every turn.
-
-## Publish — register as a Supervisor sub-agent
-
-Once an apx-agent is deployed as a Model Serving endpoint, `publish_to_supervisor` adds it as a sub-agent on an existing Mosaic AI Supervisor Agent. The supervisor's LLM routes among declared sub-agents — yours sits alongside Knowledge Assistants, Genie spaces, and other agents in the supervisor's tool list.
-
-```python
-from apx_agent import create_supervisor_agent, publish_to_supervisor
-from databricks.sdk import WorkspaceClient
-
-ws = WorkspaceClient()
-
-# One-time: create the supervisor (or use the ID of an existing one)
-supervisor = create_supervisor_agent(
-    display_name="Data Ops Supervisor",
-    description="Routes data-team queries to specialists.",
-    instructions="Pick the right specialist for the user's question.",
-    ws=ws,
-)
-
-# Per agent: register the deployed serving endpoint as a sub-agent
-publish_to_supervisor(
-    supervisor_agent_id=supervisor.id,
-    serving_endpoint="data-triage",
-    description="Triages questions about missing data in Databricks tables.",
-    ws=ws,
-)
-```
-
-User identity threads from the supervisor down through your sub-agent automatically — when the supervisor is called from AI Playground, the user's identity flows to the data-triage endpoint, scoped to *its* declared resources. No SP secrets, no CAN_USE grants between apps; the platform handles the chain.
-
-`extra_tool_kwargs={...}` is the escape hatch for additional `Tool` fields if the preview SDK surface evolves before this helper is updated.
-
-The Supervisor SDK (`databricks.sdk.service.supervisoragents`) is preview and may not be in older SDK versions. The helper raises a friendly `ImportError` pointing at the upgrade path when it's missing.
-
-## MLflow experiments
-
-Each agent gets its own experiment so runs, traces, and eval results stay organized. Set the experiment at three layers, in priority order:
-
-1. **CLI flag** — `apx deploy --experiment ...`, `apx eval --experiment ...`
-2. **`[tool.apx.agent]` in pyproject** — `experiment = "/Users/me/agents/my_agent"`
-3. **Direct kwarg** — `log_agent(..., experiment=...)`, `evaluate(..., experiment=...)`
-
-When none is set, MLflow's currently-active experiment (or default) is used.
-
-```toml
-# pyproject.toml
-[tool.apx.agent]
-name = "customer_triage"
-model = "databricks-claude-sonnet-4-6"
-experiment = "/Users/me@company.com/agents/customer_triage"
-```
-
-```python
-log_agent(agent, model="...", registered_model_name="...",
-          experiment="/Users/me@company.com/agents/triage")
-
-evaluate(agent, model="...", evalset=[...],
-         experiment="/Users/me@company.com/agents/triage")
-```
-
-On Databricks-hosted MLflow, experiment names are workspace paths (e.g. `/Users/you@company.com/agents/my_agent` or `/Shared/agents/my_agent`). Local MLflow accepts plain names. Errors from `mlflow.set_experiment` surface with a friendly message pointing at the path convention.
-
-## Evaluation
-
-`apx_agent.evaluate(agent, model=..., evalset=..., scorers=...)` runs Mosaic AI Agent Evaluation against the agent in-process — no deploy, no HTTP, fast feedback during authoring and CI. The agent compiles to a `ChatAgent` once; each evalset entry runs through the compiled graph; results come back as a standard `mlflow.genai.evaluate` result.
-
-```python
-from apx_agent import Agent, evaluate, lineage_tool
-
-agent = Agent(
-    instructions="Investigate missing data.",
-    tools=[lineage_tool()],
-)
-
-result = evaluate(
-    agent,
-    model="databricks-claude-sonnet-4-6",
-    evalset=[
-        {"request": "what feeds main.sales.orders?", "expected_response": "..."},
-        {"request": "trace lineage for main.finance.revenue", "expected_response": "..."},
-    ],
-    # scorers default to Correctness + RelevanceToQuery from mlflow.genai.scorers;
-    # pass scorers=[...] for custom judges.
-)
-```
-
-The wrapper tolerates the common eval-dataset shapes — bare strings, `{"request": ...}`, `{"input": ...}`, `{"prompt": ...}`, `{"messages": [...]}`. Pass `user_token=...` (and `workspace_host=...`) to evaluate as a specific user via the OBO path — useful for testing UC-grant boundaries during eval.
-
-Requires the `eval` and `langgraph` extras:
-
-```bash
-pip install 'apx-agent[eval,langgraph]'
-```
-
-## MCP — Databricks Managed MCP
-
-The modern path: every UC function, Genie space, and Vector Search index your agent declares is **automatically reachable as an MCP server** at the Databricks-hosted Managed MCP gateway. No per-app MCP route to deploy, no naming conventions for discovery, no app.yaml plumbing — the assets live in UC, and the gateway exposes them.
-
-URL patterns the platform hosts:
-
-| Kind | URL |
-|------|-----|
-| UC function | `https://<host>/api/2.0/mcp/functions/{catalog}/{schema}/{function}` |
-| Genie space | `https://<host>/api/2.0/mcp/genie/{space_id}` |
-| Vector Search index | `https://<host>/api/2.0/mcp/vector-search/{catalog}/{schema}/{index}` |
-
-apx-agent generates these URLs and the corresponding client config from the agent's declared resources:
-
-```python
-from apx_agent import managed_mcp_urls, managed_mcp_client_config
-
-endpoints = managed_mcp_urls(agent, workspace_host="https://my-workspace.cloud.databricks.com")
-config = managed_mcp_client_config(endpoints, name="data-triage")
-
-# config = {
-#   "mcpServers": {
-#     "data-triage.uc_function.main.tools.classify_intent": {
-#       "type": "http",
-#       "url": "https://my-workspace.cloud.databricks.com/api/2.0/mcp/functions/main/tools/classify_intent",
-#       "oauth_scope": "unity-catalog"
-#     },
-#     "data-triage.genie_space.abc123": { ... },
-#     ...
-#   }
-# }
-```
-
-Drop the result into Claude Desktop's `claude_desktop_config.json`, Cursor's `~/.cursor/mcp.json`, or any client that speaks the standard `mcpServers` shape. UC permissions are enforced end-to-end — the client authenticates as a user, the gateway calls UC, UC enforces the user's grants. No additional auth wiring.
-
-### Per-app MCP (Apps mode, legacy)
-
-When you need a custom MCP server hosted from a Databricks App (custom tools that aren't UC functions, agent-as-MCP-target endpoints), Apps-hosted agents still expose `/mcp` (streamable HTTP transport). This was the right call before Managed MCP shipped and remains the only path for agents that have non-UC-resident tools you want to expose. For UC-resident assets, prefer Managed MCP.
-
-```bash
-# Apps-hosted: http://localhost:8000/mcp  or  https://<app>.databricksapps.com/mcp
-```
-
-Model Serving agents don't expose `/mcp` — Model Serving has a fixed `/invocations` endpoint with the `ChatAgent` contract.
-
-## A2A discovery
-
-Apps-hosted agents publish `/.well-known/agent.json` with capabilities, skills, and MCP endpoint:
-
-```json
-{
-  "name": "data_triage_agent",
-  "description": "Investigate why data is missing from Databricks tables",
-  "url": "https://data-triage-agent.workspace.databricksapps.com",
-  "skills": [
-    {"name": "get_table_lineage", "description": "Get upstream sources..."},
-    {"name": "find_jobs_for_table", "description": "Which jobs write to a table..."}
-  ],
-  "mcpEndpoint": "https://data-triage-agent.workspace.databricksapps.com/mcp"
-}
-```
-
-On Model Serving, UC + the Mosaic AI registry are the equivalent discovery surface.
-
-## App-to-app authentication
-
-When sub-agents are deployed as sibling Apps (not Model Serving endpoints), the orchestrator's calls go through the Databricks Apps SSO gateway:
-
-1. **Routes under `/api/`** accept bearer tokens; other routes trigger interactive SSO. apx-agent mounts every endpoint at both its natural path and an `/api/` mirror.
-2. **Each app has a service principal.** The platform creates one automatically. M2M credentials authenticate outbound calls.
-3. **CAN_USE permission** on the callee app for the caller's SP. Without it, the gateway returns 401.
-4. **FMAPI uses the app's own identity.** When app A calls app B, B's internal LLM calls use B's own SP token, not A's.
-
-```bash
-# 1. Mint an OAuth secret for each app's SP
-databricks api post /api/2.0/accounts/servicePrincipals/<SP_ID>/credentials/secrets \
-  --profile <profile> --json '{}'
-
-# 2. Set credentials in each app.yaml
-env:
-  - name: DATABRICKS_CLIENT_ID
-    value: "<app-sp-client-id>"
-  - name: DATABRICKS_CLIENT_SECRET
-    value: "<secret-from-step-1>"
-
-# 3. Grant the orchestrator's SP CAN_USE on each sub-agent app
-databricks api patch /api/2.0/permissions/apps/<sub-agent-name> \
-  --profile <profile> --json '{
-    "access_control_list": [{
-      "service_principal_name": "<orchestrator-sp-client-id>",
-      "permission_level": "CAN_USE"
-    }]
-  }'
-```
-
-**Common pitfalls:**
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| 302 redirect (HTML login page) | Calling `/responses` instead of `/api/responses` | Use `/api/` prefix for programmatic calls |
-| 401 Unauthorized | Caller's SP lacks CAN_USE on callee | Grant via permissions API |
-| FMAPI 401 inside sub-agent | Sub-agent using caller's OBO for LLM calls | Set `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET` on the sub-agent |
-| `invalid_client` on M2M | Wrong SP secret (app recreated, SP changed) | Mint a new secret for the current SP |
-
-For user-scoped multi-agent across boundaries, prefer Model Serving deployment — the platform handles identity passthrough automatically, no SP-to-SP dance.
-
-## Hub
-
-A lightweight registry for Apps-deployed agents. Agents self-register on startup. Provides a browseable index and powers cross-agent discovery in Apps deployments. UC + Mosaic AI's agent registry serves the same role for Model Serving deployments.
-
-```toml
-# python/pyproject.toml
-[tool.apx.agent]
-name = "data_triage_agent"
-description = "Investigate missing data"
-model = "databricks-claude-sonnet-4-6"
-registry = "$AGENT_HUB_URL"
-```
-
-## Dev UI
-
-Apps-hosted agents include built-in development tooling at:
-- `/_apx/agent` — chat interface for testing
-- `/_apx/tools` — tool inspector with live invocation
-- `/_apx/probe?url=<url>` — outbound connectivity tester
-
-Model Serving deployments use AI Playground as the equivalent surface.
-
-## Ecosystem
-
-How apx-agent relates to other tools in the Databricks AI space:
-
-### Official Databricks projects
-
-| Project | Relationship |
-|---------|--------------|
-| [databrickslabs/mcp](https://github.com/databrickslabs/mcp) | Managed MCP endpoints for Genie, UC functions, vector search. apx-agent exposes your *own* tools over MCP (Apps mode); these expose Databricks platform capabilities as MCP. |
-| [databricks-solutions/custom-mcp-databricks-app](https://github.com/databricks-solutions/custom-mcp-databricks-app) | Reference for hosting a custom MCP server on Databricks Apps. apx-agent is the full-featured pattern — agent loop, A2A discovery, hub registration, dev UI. |
-| [databricks-solutions/genierails](https://github.com/databricks-solutions/genierails) | Configures Genie spaces (row filters, masks, guardrails). Orthogonal: use genierails to configure the spaces that `genie_tool()` calls at runtime. |
-
-### Community projects
-
-| Project | Relationship |
-|---------|--------------|
-| [alexxx-db/databricks-genie-mcp](https://github.com/alexxx-db/databricks-genie-mcp) | Genie spaces over MCP. apx-agent's `genie_tool()` covers the same ground natively; the MCP version is useful in non-apx clients. |
-| [RafaelCartenet/mcp-databricks-server](https://github.com/RafaelCartenet/mcp-databricks-server) | UC metadata over MCP. Prior art for apx-agent's `catalog_tool` / `lineage_tool` / `schema_tool`. |
+See [docs/cli.md](docs/cli.md) for the full surface.
+
+## Deeper docs
+
+| Topic | Doc |
+|---|---|
+| Apps vs Model Serving — when to pick which | [docs/apps-vs-model-serving.md](docs/apps-vs-model-serving.md) |
+| Governed primitives + UC function authoring | [docs/governed-primitives.md](docs/governed-primitives.md) |
+| Identity passthrough + OBO mechanics | [docs/identity-passthrough.md](docs/identity-passthrough.md) |
+| Workflow patterns + decision criteria | [docs/workflow-patterns.md](docs/workflow-patterns.md) |
+| Sessions + memory bank + example bank | [docs/sessions-and-memory.md](docs/sessions-and-memory.md) |
+| MCP + A2A discovery | [docs/mcp-and-a2a.md](docs/mcp-and-a2a.md) |
+| Evaluation + MLflow experiments | [docs/evaluation.md](docs/evaluation.md) |
+| Compliance — Watchdog, audit log, local guards | [docs/compliance.md](docs/compliance.md) |
+| Cost tracking + callbacks | [docs/cost-and-callbacks.md](docs/cost-and-callbacks.md) |
+| Hub + agent publishing | [docs/hub.md](docs/hub.md) |
+| Dev UI | [docs/dev-ui.md](docs/dev-ui.md) |
 
 ## Project structure
 
 ```
-python/          Python package — pyproject.toml, src/, tests/, examples/
-typescript/      TypeScript package — package.json, src/, tests/, examples/
-hub/             Agent Hub — catalog and chat dashboard (Databricks App)
-docs/            Design specs and implementation plans
+python/
+  src/apx_agent/        # framework source
+  examples/             # 13 worked examples — see EXAMPLES.md
+  tests/                # framework tests
+typescript/
+  packages/core/        # framework source
+  examples/             # 2 worked examples
+docs/                   # design docs + deeper guides
 ```
-
-## Configuration
-
-**Python** — `[tool.apx.agent]` in `pyproject.toml`:
-
-```toml
-[tool.apx.agent]
-name = "data_triage"
-description = "Investigate missing data"
-model = "databricks-claude-sonnet-4-6"
-instructions = "System prompt for the agent"
-max_iterations = 10
-sub_agents = ["endpoints/sql-explainer"]   # Model Serving target
-# sub_agents = ["$SQL_EXPLAINER_URL"]      # Apps target
-```
-
-**TypeScript** — plugin options:
-
-```typescript
-createAgentPlugin({
-  model: 'databricks-claude-sonnet-4-6',
-  instructions: 'System prompt for the agent',
-  tools: [myTool],
-  subAgents: ['endpoints/sql-explainer'],
-})
-```
-
-Environment variable references (`$VAR` or `${VAR}`) are resolved at startup.
 
 ## License
 
-Apache-2.0
+Apache 2.0 — see [LICENSE](LICENSE).
