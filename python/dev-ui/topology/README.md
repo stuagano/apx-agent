@@ -37,6 +37,12 @@ npm run build                # tsc --noEmit + vite build
 
 Outputs go to `python/src/apx_agent/_static/topology/`. The maintainer runs this before publishing the wheel; users get a working UI from `pip install` without needing Node installed.
 
+The wheel ships the built bundle via `[tool.hatch.build.targets.wheel.force-include]` in `python/pyproject.toml`:
+
+```toml
+"src/apx_agent/_static/topology" = "apx_agent/_static/topology"
+```
+
 ## Contract
 
 The full design + JSON schemas live in [`docs/superpowers/specs/2026-05-22-topology-ui.md`](../../../docs/superpowers/specs/2026-05-22-topology-ui.md).
