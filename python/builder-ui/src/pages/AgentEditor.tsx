@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   AgentNodeData,
   AgentNodeType,
@@ -35,6 +35,7 @@ import {
   ContextMenu,
   CodeExportModal,
   ProjectSettingsModal,
+  DeployModal,
   DatabricksAuth,
 } from '../components/Controls';
 import { DATABRICKS_MODELS } from '../constants';
@@ -124,6 +125,36 @@ export function AgentEditor() {
   const [projectSettings, setProjectSettings] = useState<ProjectSettings>(DEFAULT_PROJECT_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [showDeploy, setShowDeploy] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+  const [apxState, setApxState] = useState<{
+    drift: boolean;
+    agent_py_exists: boolean;
+    sidecar_exists: boolean;
+    identity: { name: string | null; profile: string | null } | null;
+  } | null>(null);
+
+  useEffect(() => {
+    fetch('/_apx/builder/state')
+      .then(r => (r.ok ? r.json() : null))
+      .then(setApxState)
+      .catch(() => setApxState(null));
+  }, []);
+
+  const refetchApxState = () => {
+    fetch('/_apx/builder/state')
+      .then(r => (r.ok ? r.json() : null))
+      .then(setApxState)
+      .catch(() => {});
+  };
+
+  const previewCode = useMemo(() => {
+    try {
+      return generateAgentCode(nodes, edges, agentName || 'agent');
+    } catch (e: any) {
+      return `# Preview unavailable: ${e?.message || String(e)}`;
+    }
+  }, [nodes, edges, agentName]);
 
   // Undo / redo
   const historyRef = useRef<{ nodes: AgentNodeData[]; edges: EdgeData[] }[]>([]);
@@ -691,6 +722,7 @@ export function AgentEditor() {
         return;
       }
       const data = await res.json() as { agent_py: string };
+      refetchApxState();
       alert(`Saved to ${data.agent_py}\n\nReload /_apx/agent to test.`);
     } catch (e: unknown) {
       alert(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -703,6 +735,26 @@ export function AgentEditor() {
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
+      {/* Identity title bar */}
+      <div style={{ padding: '6px 16px', background: '#1B3139', color: '#fff', fontSize: 12 }}>
+        {apxState?.identity?.name
+          ? `${apxState.identity.name}${apxState.identity.profile ? ` · ${apxState.identity.profile}` : ''}`
+          : 'Untitled agent (set [tool.apx.agent].name in pyproject.toml)'}
+      </div>
+
+      {/* Drift banner */}
+      {apxState?.drift && (
+        <div style={{
+          background: '#fef3c7',
+          border: '1px solid #f59e0b',
+          color: '#92400e',
+          padding: '8px 16px',
+          fontSize: 13,
+        }}>
+          <strong>agent.py has been edited since this canvas was last saved.</strong> Canvas changes will not include those edits — Save will require <code>?force=1</code>.
+        </div>
+      )}
+
       <Header
         agentName={agentName}
         currentTool={tool}
@@ -716,11 +768,14 @@ export function AgentEditor() {
         isDownloadingZip={isDownloadingZip}
         onSaveToProject={handleSaveToProject}
         isSaving={isSaving}
+        onDeploy={() => setShowDeploy(true)}
         onAgentNameChange={setAgentName}
         auth={auth}
         onConnect={setAuth}
         onDisconnect={() => setAuth(null)}
         onOpenSettings={() => setShowSettings(true)}
+        showPreview={showPreview}
+        onTogglePreview={() => setShowPreview(v => !v)}
       />
 
       <div className="flex flex-1 overflow-hidden">
@@ -876,6 +931,47 @@ export function AgentEditor() {
         />
       </div>
 
+      {/* Live code preview panel */}
+      {showPreview && (
+        <div
+          style={{
+            position: 'fixed',
+            right: 0,
+            top: 48,
+            bottom: 0,
+            width: 400,
+            background: '#0f172a',
+            color: '#e2e8f0',
+            borderLeft: '1px solid #334155',
+            overflow: 'auto',
+            padding: 12,
+            fontFamily: '"JetBrains Mono", "Fira Mono", monospace',
+            fontSize: 12,
+            zIndex: 10,
+          }}
+        >
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: 8,
+            paddingBottom: 8,
+            borderBottom: '1px solid #334155',
+          }}>
+            <strong style={{ color: '#94a3b8', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>
+              agent.py preview
+            </strong>
+            <button
+              onClick={() => setShowPreview(false)}
+              style={{ color: '#94a3b8', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}
+            >
+              ×
+            </button>
+          </div>
+          <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{previewCode}</pre>
+        </div>
+      )}
+
       {/* Context menu */}
       {contextMenu && (
         <ContextMenu
@@ -906,6 +1002,11 @@ export function AgentEditor() {
           onUpdate={setProjectSettings}
           onClose={() => setShowSettings(false)}
         />
+      )}
+
+      {/* Deploy modal */}
+      {showDeploy && (
+        <DeployModal onClose={() => setShowDeploy(false)} />
       )}
     </div>
   );

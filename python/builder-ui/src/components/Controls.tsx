@@ -4,7 +4,7 @@ import {
   Bot, GitBranch, Cpu, Search, Wrench, X, Copy, Check,
   ChevronDown, ChevronRight, Code2, Trash2, Copy as CopyIcon, Download,
   Unplug, Loader2, CircleDot, Square, Database, Settings,
-  Rocket, ArrowRight, ShieldCheck, FlaskConical,
+  Rocket, ArrowRight, ShieldCheck, FlaskConical, Code,
 } from 'lucide-react';
 import { ToolType, AgentNodeData, AgentNodeType, LLMConfig, VectorSearchConfig, UCFunctionConfig, RouterConfig, SupervisorConfig, GroupConfig, LakebaseConfig, ProjectSettings, CICDConfig, CICDProvider, PromotionGate, CICDEnvironment } from '../types';
 import { NODE_COLORS, DATABRICKS_MODELS, DEFAULT_NODE_SIZE, DEFAULT_CONFIGS, DEFAULT_CICD_CONFIG } from '../constants';
@@ -145,11 +145,14 @@ interface HeaderProps {
   isDownloadingZip: boolean;
   onSaveToProject: () => void;
   isSaving: boolean;
+  onDeploy: () => void;
   onAgentNameChange: (name: string) => void;
   auth: DatabricksAuth | null;
   onConnect: (auth: DatabricksAuth) => void;
   onDisconnect: () => void;
   onOpenSettings: () => void;
+  showPreview: boolean;
+  onTogglePreview: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -165,11 +168,14 @@ export const Header: React.FC<HeaderProps> = ({
   isDownloadingZip,
   onSaveToProject,
   isSaving,
+  onDeploy,
   onAgentNameChange,
   auth,
   onConnect,
   onDisconnect,
   onOpenSettings,
+  showPreview,
+  onTogglePreview,
 }) => {
   const [isEditingName, setIsEditingName] = useState(false);
   const [showConnectModal, setShowConnectModal] = useState(false);
@@ -307,6 +313,20 @@ export const Header: React.FC<HeaderProps> = ({
         <Settings size={15} />
       </button>
 
+      {/* Preview Code toggle */}
+      <button
+        onClick={onTogglePreview}
+        className={`flex items-center gap-2 px-3 h-8 text-xs font-semibold rounded-md transition-colors border ${
+          showPreview
+            ? 'bg-[#FF3621] border-[#FF3621] text-white'
+            : 'bg-[#243f49] hover:bg-[#2e5060] text-white border-[#34606f]'
+        }`}
+        title={showPreview ? 'Hide code preview' : 'Show code preview'}
+      >
+        <Code size={14} />
+        Preview
+      </button>
+
       {/* Export Code */}
       <button
         onClick={onExportCode}
@@ -337,6 +357,16 @@ export const Header: React.FC<HeaderProps> = ({
       >
         {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
         {isSaving ? 'Saving…' : 'Save to project'}
+      </button>
+
+      {/* Deploy */}
+      <button
+        onClick={onDeploy}
+        className="flex items-center gap-2 px-3 h-8 bg-[#243f49] hover:bg-[#2e5060] text-white text-xs font-semibold rounded-md transition-colors border border-[#34606f]"
+        title="Deploy agent to Databricks via apx deploy"
+      >
+        <Rocket size={14} />
+        Deploy
       </button>
 
       {showConnectModal && (
@@ -1325,6 +1355,186 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({ sett
             Save
           </button>
         </div>
+      </div>
+    </div>
+  );
+};
+
+// ── Deploy Modal ──────────────────────────────────────────────────────────────
+
+export type DeployStatus = 'idle' | 'running' | 'success' | 'failed';
+
+export const DeployModal: React.FC<{
+  onClose: () => void;
+}> = ({ onClose }) => {
+  const [deployTarget, setDeployTarget] = useState<'apps' | 'model-serving'>('apps');
+  const [deployProfile, setDeployProfile] = useState('');
+  const [deployLog, setDeployLog] = useState<string[]>([]);
+  const [deploying, setDeploying] = useState(false);
+  const [deployStatus, setDeployStatus] = useState<DeployStatus>('idle');
+  const logRef = useRef<HTMLPreElement>(null);
+
+  // Auto-scroll log to bottom on new lines
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [deployLog]);
+
+  const handleDeploy = async () => {
+    if (!deployProfile.trim()) return;
+    setDeploying(true);
+    setDeployStatus('running');
+    setDeployLog([]);
+    try {
+      const res = await fetch('/_apx/builder/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: deployTarget, profile: deployProfile.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        setDeployLog(prev => [...prev, `ERROR: ${err}`]);
+        setDeployStatus('failed');
+        return;
+      }
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split('\n\n');
+        buf = parts.pop() || '';
+        for (const part of parts) {
+          if (part.startsWith('data: ')) {
+            const line = part.slice(6);
+            setDeployLog(prev => [...prev, line]);
+            if (line.startsWith('__EXIT__')) {
+              const code = parseInt(line.split(' ')[1] || '1', 10);
+              setDeployStatus(code === 0 ? 'success' : 'failed');
+            }
+          }
+        }
+      }
+    } catch (e: unknown) {
+      setDeployLog(prev => [...prev, `ERROR: ${e instanceof Error ? e.message : String(e)}`]);
+      setDeployStatus('failed');
+    } finally {
+      setDeploying(false);
+    }
+  };
+
+  const statusIcon = deployStatus === 'running'
+    ? <Loader2 size={13} className="animate-spin text-[#FF3621]" />
+    : deployStatus === 'success'
+    ? <Check size={13} className="text-green-400" />
+    : deployStatus === 'failed'
+    ? <X size={13} className="text-red-400" />
+    : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="bg-[#1B3139] rounded-xl shadow-2xl w-[520px] max-w-[90vw] flex flex-col border border-[#34606f]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[#34606f]">
+          <div className="flex items-center gap-2">
+            <Rocket size={15} className="text-[#FF3621]" />
+            <span className="text-sm font-bold text-white">Deploy to Databricks</span>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-slate-400 hover:text-white p-1 rounded transition-colors"
+          >
+            <X size={15} />
+          </button>
+        </div>
+
+        {/* Form */}
+        <div className="px-4 py-4 space-y-3">
+          <div>
+            <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">
+              Deploy Target
+            </label>
+            <select
+              className="w-full border border-[#34606f] rounded-md px-3 py-1.5 text-xs bg-[#243f49] text-white focus:outline-none focus:ring-2 focus:ring-[#FF3621]/30 focus:border-[#FF3621]"
+              value={deployTarget}
+              onChange={(e) => setDeployTarget(e.target.value as 'apps' | 'model-serving')}
+              disabled={deploying}
+            >
+              <option value="apps">apps</option>
+              <option value="model-serving">model-serving</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">
+              Databricks CLI Profile
+            </label>
+            <input
+              type="text"
+              className="w-full border border-[#34606f] rounded-md px-3 py-1.5 text-xs bg-[#243f49] text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#FF3621]/30 focus:border-[#FF3621] font-mono"
+              placeholder="e.g. fe-stable"
+              value={deployProfile}
+              onChange={(e) => setDeployProfile(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !deploying && handleDeploy()}
+              disabled={deploying}
+            />
+            <p className="text-[10px] text-slate-500 mt-1">
+              Must match a profile in your <code className="text-slate-400">~/.databrickscfg</code>
+            </p>
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={handleDeploy}
+              disabled={deploying || !deployProfile.trim()}
+              className="flex items-center gap-2 px-4 py-1.5 bg-[#FF3621] hover:bg-[#e02d1a] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-md transition-colors"
+            >
+              {deploying
+                ? <><Loader2 size={13} className="animate-spin" /> Deploying…</>
+                : <><Rocket size={13} /> Deploy</>}
+            </button>
+            <button
+              onClick={onClose}
+              disabled={deploying}
+              className="flex items-center gap-2 px-4 py-1.5 bg-[#243f49] hover:bg-[#2e5060] disabled:opacity-50 text-white text-xs font-semibold rounded-md transition-colors border border-[#34606f]"
+            >
+              {deployStatus === 'success' || deployStatus === 'failed' ? 'Close' : 'Cancel'}
+            </button>
+          </div>
+        </div>
+
+        {/* Log area — only shown once deployment started */}
+        {deployLog.length > 0 && (
+          <div className="px-4 pb-4">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              {statusIcon}
+              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                {deployStatus === 'running'
+                  ? 'Running…'
+                  : deployStatus === 'success'
+                  ? 'Success'
+                  : deployStatus === 'failed'
+                  ? 'Failed'
+                  : 'Output'}
+              </span>
+            </div>
+            <pre
+              ref={logRef}
+              className="bg-[#0d1f26] border border-[#34606f] rounded-md p-3 text-[11px] font-mono text-slate-300 leading-relaxed overflow-y-auto max-h-[200px] whitespace-pre-wrap"
+            >
+              {deployLog.join('\n')}
+            </pre>
+          </div>
+        )}
       </div>
     </div>
   );
