@@ -609,14 +609,18 @@ document.getElementById('sel-schema').addEventListener('change', e => {{
 loadTools();
 
 // ── Agent Composer ──
-let agentNodeState = []; // [{name, tools, instructions, behavior, wrapper}]
+let agentNodeState = []; // [{{name, tools, instructions, behavior, wrapper}}]
 
 async function loadAgentNodes() {{
   try {{
     const r = await fetch('/_apx/setup/agents');
-    const nodes = await r.json();
-    // Preserve behavior field if we already have state for this node
-    agentNodeState = nodes.map(n => {{
+    // The /_apx/setup/agents endpoint isn't wired yet on every deploy —
+    // it returns 404 + a JSON error object in that case. Treat any
+    // non-array response as "no agent nodes" instead of trying to .map
+    // a dict, which throws "nodes.map is not a function".
+    const nodes = r.ok ? await r.json() : [];
+    const list = Array.isArray(nodes) ? nodes : [];
+    agentNodeState = list.map(n => {{
       const existing = agentNodeState.find(e => e.name === n.name);
       return {{ behavior: existing?.behavior || '', ...n }};
     }});

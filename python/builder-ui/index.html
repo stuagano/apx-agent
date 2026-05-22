@@ -13,19 +13,25 @@
         theme: {
           extend: {
             colors: {
-              background: '#ffffff',
-              surface: '#F4F6F8',
-              panel: '#ffffff',
-              border: '#DDE3E8',
-              text: '#1B3139',
-              textMuted: '#6b8897',
+              // Dark theme to match the rest of /_apx/* — see _ui_chat.py /
+              // _ui_nav.py for the canonical palette. Was the Databricks
+              // light palette previously; flipped so the builder doesn't
+              // look like a different product when embedded in the unified
+              // shell at /_apx/agent. Accent colors (primary, dbGreen,
+              // dbBlue, dbYellow) kept unchanged — they read fine on dark.
+              background: '#0a0a0a',
+              surface: '#111111',
+              panel: '#161616',
+              border: '#2a2a2a',
+              text: '#e5e7eb',
+              textMuted: '#888888',
               primary: '#FF3621',
               dbTeal: '#1B3139',
               dbTealMid: '#243f49',
               dbTealLight: '#2e5060',
               dbTealBorder: '#34606f',
               dbGreen: '#00A972',
-              dbBlue: '#2272B4',
+              dbBlue: '#60a5fa',
               dbYellow: '#F7A600'
             },
             fontFamily: {
@@ -33,21 +39,21 @@
               sans: ['"Sora"', 'sans-serif']
             },
             boxShadow: {
-              modern: '0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05)',
-              floating: '0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.08)'
+              modern: '0 4px 6px -1px rgb(0 0 0 / 0.4), 0 2px 4px -2px rgb(0 0 0 / 0.4)',
+              floating: '0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.5)'
             }
           }
         }
       }
     </script>
     <style>
-      body { background-color: #F4F6F8; color: #1B3139; overflow: hidden; font-family: 'Sora', sans-serif; }
+      body { background-color: #0a0a0a; color: #e5e7eb; overflow: hidden; font-family: 'Sora', sans-serif; }
       ::-webkit-scrollbar { width: 4px; height: 4px; }
       ::-webkit-scrollbar-track { background: transparent; }
-      ::-webkit-scrollbar-thumb { background: #DDE3E8; border-radius: 2px; }
-      ::-webkit-scrollbar-thumb:hover { background: #9ab0bb; }
+      ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 2px; }
+      ::-webkit-scrollbar-thumb:hover { background: #444; }
       .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-      .custom-scrollbar::-webkit-scrollbar-thumb { background: #DDE3E8; border-radius: 2px; }
+      .custom-scrollbar::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 2px; }
       pre { white-space: pre; }
     </style>
   </head>

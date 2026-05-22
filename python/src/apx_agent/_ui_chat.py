@@ -115,6 +115,118 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
 """
 
 
+def _render_eval_landing(
+    cases: list[dict],
+    loaded_path: str | None,
+    load_error: str | None,
+) -> str:
+    """Eval landing page — read-only list of persisted eval cases.
+
+    Backed by ``evals.json`` next to the agent source. Running cases
+    against the live agent is wired into the Chat panel's right-side
+    sub-tab; this page exists so the Eval tab in the unified shell has
+    a useful destination instead of bouncing through a redirect.
+    """
+    import html as _html
+    import json as _json
+
+    if load_error:
+        body = (
+            '<div class="banner banner-err">'
+            f"<strong>Couldn&rsquo;t load eval cases</strong> &middot; {_html.escape(load_error)}"
+            "</div>"
+        )
+    elif loaded_path is None:
+        body = (
+            '<div class="banner banner-info">'
+            "<strong>No evals.json yet.</strong> "
+            "The Chat panel&rsquo;s right-side <em>Eval</em> sub-tab will create "
+            "<code>evals.json</code> next to your agent source the first time you save a case."
+            "</div>"
+        )
+    elif not cases:
+        body = (
+            '<div class="banner banner-info">'
+            f"<strong>Empty eval set</strong> &middot; <code>{_html.escape(loaded_path)}</code> exists "
+            "but contains no cases. Open the Chat tab and use the right-side <em>Eval</em> "
+            "sub-tab to add some."
+            "</div>"
+        )
+    else:
+        rows = []
+        for i, case in enumerate(cases, 1):
+            q = _html.escape(str(case.get("question", "")))[:400]
+            expected = _html.escape(str(case.get("expected", case.get("expected_response", ""))))[:400]
+            criterion = _html.escape(str(case.get("criterion", "")))[:200]
+            rows.append(
+                f"<div class='case'>"
+                f"<div class='case-head'><span class='case-n'>#{i}</span>"
+                f"<span class='case-q'>{q or '<em>(empty question)</em>'}</span></div>"
+                f"{'<div class=case-row><span class=label>Expected</span><span>' + expected + '</span></div>' if expected else ''}"
+                f"{'<div class=case-row><span class=label>Criterion</span><span>' + criterion + '</span></div>' if criterion else ''}"
+                f"</div>"
+            )
+        body = "".join(rows)
+
+    case_count = len(cases)
+    file_label = _html.escape(loaded_path) if loaded_path else "(no evals.json)"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Eval &middot; APX dev</title>
+  <style>
+    :root {{ --bg: #0a0a0a; --panel: #111; --border: #2a2a2a; --text: #e5e7eb;
+             --text-muted: #888; --accent: #60b0ff; --accent-bg: #0d1f38;
+             --accent-border: #1e3a5f; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: var(--bg); color: var(--text);
+            font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+            font-size: 13px; line-height: 1.5; }}
+    .container {{ max-width: 960px; margin: 0 auto; padding: 24px 20px; }}
+    h1 {{ font-size: 18px; font-weight: 600; margin: 0 0 4px; }}
+    .meta {{ color: var(--text-muted); font-size: 12px; margin-bottom: 20px; }}
+    .meta code {{ background: #1a1a1a; padding: 1px 6px; border-radius: 3px; color: #ccc; }}
+    .banner {{ padding: 12px 16px; border-radius: 6px; margin-bottom: 20px;
+               border: 1px solid var(--border); background: var(--panel); }}
+    .banner-info {{ border-color: #1e3a5f; background: var(--accent-bg);
+                    color: #d6e6ff; }}
+    .banner-err {{ border-color: #7f1d1d; background: #2a0f0f; color: #fda4af; }}
+    .banner code {{ background: rgba(0,0,0,.3); padding: 1px 6px; border-radius: 3px; }}
+    .actions {{ display: flex; gap: 8px; margin: 20px 0 24px; }}
+    .actions a {{ font-size: 12px; color: var(--accent);
+                  background: var(--accent-bg); border: 1px solid var(--accent-border);
+                  padding: 6px 12px; border-radius: 5px; text-decoration: none; }}
+    .actions a:hover {{ background: #11294a; }}
+    .case {{ border: 1px solid var(--border); border-radius: 6px;
+             padding: 12px 14px; margin-bottom: 8px; background: var(--panel); }}
+    .case-head {{ display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; }}
+    .case-n {{ color: var(--text-muted); font-size: 11px; min-width: 28px; }}
+    .case-q {{ font-weight: 500; }}
+    .case-row {{ display: flex; gap: 10px; padding: 2px 0 2px 38px;
+                 color: var(--text-muted); font-size: 12px; }}
+    .label {{ min-width: 64px; color: #666; text-transform: uppercase;
+              font-size: 10px; letter-spacing: .5px; padding-top: 2px; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Eval cases</h1>
+    <div class="meta">
+      {case_count} case{'s' if case_count != 1 else ''} &middot;
+      file: <code>{file_label}</code>
+    </div>
+    <div class="actions">
+      <a href="/_apx/agent#chat">Run in Chat &rarr;</a>
+    </div>
+    {body}
+  </div>
+</body>
+</html>
+"""
+
+
 def _render_agent_ui(ctx: AgentContext | None) -> str:
     """Return a self-contained HTML page for interactively testing the agent."""
     import json as _json

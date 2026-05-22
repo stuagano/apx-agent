@@ -15,10 +15,34 @@ from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
 
 
 def _find_agent_router_path() -> "Path | None":
-    """Return the path to agent_router.py by scanning loaded modules."""
+    """Return the path to the agent definition file.
+
+    Looks for two layouts in priority order:
+
+    1. **ADK flat** (current convention) — a top-level ``agent`` module that
+       lives next to ``pyproject.toml`` (e.g. ``customer_triage/agent.py``).
+       The module is imported as ``agent`` because the example dir is on
+       ``sys.path`` via ``pythonpath = ["."]`` in pyproject.
+    2. **Legacy nested** (pre-flatten, kept for backwards-compat) — a
+       ``<pkg>.backend.agent_router`` module under ``src/<pkg>/backend/``.
+
+    Returns the resolved ``Path`` of whichever is loaded in this process,
+    or ``None`` if neither is present.
+    """
     import sys
     from pathlib import Path
 
+    # ADK flat: a top-level "agent" module. Filter to a plausible apx-agent
+    # entrypoint by checking the file is named ``agent.py`` — that excludes
+    # any unrelated module also called "agent" that might be in sys.modules.
+    flat = sys.modules.get("agent")
+    if flat is not None:
+        origin = getattr(flat, "__file__", None)
+        if origin and Path(origin).name == "agent.py":
+            return Path(origin)
+
+    # Legacy nested layout — kept for old examples that still use
+    # src/<pkg>/backend/agent_router.py.
     for name, mod in sys.modules.items():
         if name.endswith(".backend.agent_router"):
             origin = getattr(mod, "__file__", None)
@@ -491,7 +515,9 @@ def _parse_agent_nodes(source: str) -> list[dict[str, Any]]:
 def _render_edit_ui(content: str, not_found: bool = False) -> str:
     """Return a split-panel authoring page: CodeMirror left, schema preview right.
 
-    Left panel — editable agent_router.py with Python syntax highlighting.
+    Left panel — editable agent source (``agent.py`` in the ADK flat layout
+    or ``agent_router.py`` in the legacy nested layout) with Python syntax
+    highlighting.
     Right panel — live tool schemas (what the model sees) updated on debounce.
     New Tool modal — structured form that generates correct function boilerplate.
 
@@ -501,13 +527,19 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
     import re as _re
 
     content_js = _json.dumps(content)
+    # Surface the actual filename in the status bar so users know which file
+    # the editor is bound to.
+    _ar = _find_agent_router_path()
+    file_label = _ar.name if _ar else "agent source"
     # Detect the AppClient alias (e.g. "Client = Dependencies.Client" → "Client")
     _alias_m = _re.search(r"^(\w+)\s*=\s*Dependencies\.Client", content, _re.MULTILINE)
     ws_type = _alias_m.group(1) if _alias_m else "AppClient"
     ws_type_js = _json.dumps(ws_type)
     not_found_banner = (
-        '<div id="apx-banner"><strong>⚠ agent_router.py not found</strong> — '
-        "the file could not be located in the running process.</div>"
+        '<div id="apx-banner"><strong>⚠ agent source not found</strong> — '
+        "looked for a top-level <code>agent.py</code> (ADK flat layout) and a "
+        "<code>&lt;pkg&gt;.backend.agent_router</code> module (legacy nested layout); "
+        "neither is loaded in this process.</div>"
         if not_found
         else ""
     )
@@ -654,7 +686,7 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
   <button id="btn-save">Save &nbsp;<kbd>⌘S</kbd></button>
   <button id="btn-new-tool">+ New Tool</button>
   <span id="status-msg"></span>
-  <span style="margin-left:auto;font-size:11px;color:#333">agent_router.py</span>
+  <span style="margin-left:auto;font-size:11px;color:#333">{file_label}</span>
 </div>
 
 <!-- New Tool modal -->
