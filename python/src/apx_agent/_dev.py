@@ -164,10 +164,19 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def apx_openapi_spec(request: Request) -> Any:
         from fastapi.responses import JSONResponse
         ctx: AgentContext | None = request.app.state.agent_context
-        # base_url comes from the request so Scalar renders curl examples
-        # against the deployed origin instead of its localhost fallback.
+        # base_url goes into the openapi `servers` field so Scalar uses the
+        # right host in its curl examples. Prefer X-Forwarded-* headers (set
+        # by reverse proxies like the Databricks Apps gateway) over
+        # request.base_url, which reflects the internal port when uvicorn
+        # isn't started with --proxy-headers.
+        fwd_host = request.headers.get("x-forwarded-host")
+        if fwd_host:
+            fwd_proto = request.headers.get("x-forwarded-proto", "https")
+            base_url = f"{fwd_proto}://{fwd_host}"
+        else:
+            base_url = str(request.base_url)
         return JSONResponse(
-            _build_apx_openapi_spec(ctx, api_prefix, base_url=str(request.base_url))
+            _build_apx_openapi_spec(ctx, api_prefix, base_url=base_url)
         )
 
     @router.get("/_apx/probe", include_in_schema=False)
