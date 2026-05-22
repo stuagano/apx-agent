@@ -49,3 +49,7 @@ reference/
 **/dist/
 **/__dist__/
 package-lock.json
+
+# direnv per-shell env (personal — pins gh account for git push)
+.envrc
+.envrc.local
