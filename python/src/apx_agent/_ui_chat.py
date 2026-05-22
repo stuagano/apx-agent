@@ -1,4 +1,4 @@
-"""Dev UI — /_apx/agent chat interface, OpenAPI spec builder, and /_apx/tools inspector."""
+"""Dev UI — /_apx/agent unified shell, chat interface, OpenAPI spec builder, and /_apx/tools inspector."""
 
 from __future__ import annotations
 
@@ -8,6 +8,112 @@ from typing import Any
 from ._models import AgentContext
 from ._ui_edit import _find_agent_router_path
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
+
+
+# Tabs exposed by the unified shell at /_apx/agent. Each entry is
+# (slug, label, iframe URL). The shell defaults to the first tab. To
+# add a tab, append here — the shell auto-renders it and the URL
+# fragment-router handles selection.
+_UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
+    ("chat", "Chat", "/_apx/chat"),
+    ("edit", "Edit", "/_apx/edit"),
+    ("topology", "Topology", "/_apx/topology"),
+    ("builder", "Builder", "/_apx/builder"),
+    ("eval", "Eval", "/_apx/eval"),
+    ("setup", "Setup", "/_apx/setup"),
+    ("probe", "Probe", "/_apx/probe"),
+)
+
+
+def _render_unified_shell(ctx: AgentContext | None) -> str:
+    """Render the tabbed shell that hosts every /_apx/* page in one iframe.
+
+    Each tab swaps the iframe src + updates the URL hash so bookmarks +
+    browser back/forward work. The inner pages detect iframe context via
+    ``window.self !== window.top`` and hide their own nav bar (see
+    ``_apx_nav_html``) so the shell's tab strip is the only nav.
+    """
+    agent_name = ctx.config.name if ctx else "Agent"
+    agent_desc = ctx.config.description if ctx else ""
+
+    tab_buttons = "".join(
+        f'<button class="tab" data-tab="{slug}" data-src="{src}">{label}</button>'
+        for slug, label, src in _UNIFIED_TABS
+    )
+    default_slug = _UNIFIED_TABS[0][0]
+    default_src = _UNIFIED_TABS[0][2]
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{agent_name} · APX dev</title>
+  <style>
+    :root {{
+      --bg: #0a0a0a; --panel: #111; --border: #2a2a2a; --border-strong: #333;
+      --text: #e5e7eb; --text-muted: #888; --accent: #60b0ff;
+      --accent-bg: #0d1f38; --accent-border: #1e3a5f;
+    }}
+    * {{ box-sizing: border-box; }}
+    html, body {{ margin: 0; height: 100%; background: var(--bg); color: var(--text);
+                  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; font-size: 13px; }}
+    header {{ height: 52px; padding: 0 16px; display: flex; align-items: center;
+              gap: 16px; background: var(--panel); border-bottom: 1px solid var(--border); }}
+    .badge {{ background: var(--accent-bg); color: var(--accent); font-size: 11px;
+              font-weight: 600; padding: 3px 8px; border-radius: 4px; letter-spacing: .5px;
+              text-transform: uppercase; }}
+    .title {{ display: flex; flex-direction: column; gap: 1px; }}
+    .agent-name {{ font-weight: 600; font-size: 14px; }}
+    .agent-desc {{ color: var(--text-muted); font-size: 11px; max-width: 480px;
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .tabs {{ display: flex; gap: 2px; margin-left: auto; }}
+    .tab {{ font: inherit; color: var(--text-muted); background: transparent;
+            border: 1px solid transparent; border-radius: 5px; padding: 5px 12px;
+            cursor: pointer; font-size: 12px; }}
+    .tab:hover {{ color: var(--text); border-color: var(--border-strong); }}
+    .tab.active {{ color: var(--accent); background: var(--accent-bg);
+                   border-color: var(--accent-border); }}
+    main {{ height: calc(100% - 52px); background: var(--bg); }}
+    iframe {{ width: 100%; height: 100%; border: 0; background: var(--bg); }}
+  </style>
+</head>
+<body>
+  <header>
+    <span class="badge">APX dev</span>
+    <div class="title">
+      <div class="agent-name">{agent_name}</div>
+      <div class="agent-desc">{agent_desc}</div>
+    </div>
+    <div class="tabs">{tab_buttons}</div>
+  </header>
+  <main><iframe id="dash-frame" src="{default_src}"></iframe></main>
+  <script>
+    (function () {{
+      const frame = document.getElementById("dash-frame");
+      const tabs = document.querySelectorAll(".tab");
+      function selectTab(slug) {{
+        const btn = document.querySelector('.tab[data-tab="' + slug + '"]');
+        if (!btn) return;
+        tabs.forEach((t) => t.classList.remove("active"));
+        btn.classList.add("active");
+        if (frame.src.replace(location.origin, "") !== btn.dataset.src) {{
+          frame.src = btn.dataset.src;
+        }}
+        history.replaceState(null, "", "#" + slug);
+      }}
+      tabs.forEach((t) => t.addEventListener("click", () => selectTab(t.dataset.tab)));
+      window.addEventListener("hashchange", () => {{
+        const slug = (location.hash || "#{default_slug}").slice(1);
+        selectTab(slug);
+      }});
+      const initial = (location.hash || "#{default_slug}").slice(1);
+      selectTab(initial);
+    }})();
+  </script>
+</body>
+</html>
+"""
+
 
 def _render_agent_ui(ctx: AgentContext | None) -> str:
     """Return a self-contained HTML page for interactively testing the agent."""

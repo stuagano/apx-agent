@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from ._models import AgentContext, AgentTool
 from ._topology import build_topology, inspect_node
 from ._builder_routes import build_builder_router
-from ._ui_chat import _render_agent_ui, _build_apx_openapi_spec
+from ._ui_chat import _render_agent_ui, _render_unified_shell, _build_apx_openapi_spec
 from ._ui_edit import (
     _find_agent_router_path,
     _find_deploy_root,
@@ -153,13 +153,25 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.get("/_apx/agent", include_in_schema=False)
     async def agent_dev_ui(request: Request) -> HTMLResponse:
+        """Unified tabbed shell hosting every /_apx/* page in one iframe."""
+        ctx: AgentContext | None = request.app.state.agent_context
+        return HTMLResponse(_render_unified_shell(ctx))
+
+    @router.get("/_apx/chat", include_in_schema=False)
+    async def chat_dev_ui(request: Request) -> HTMLResponse:
+        """Bare chat content — loaded by the unified shell's Chat tab.
+
+        Older bookmarks of /_apx/agent (which used to point at the chat
+        page) now land on the shell. The shell's default tab is Chat, so
+        the user-visible behaviour is unchanged.
+        """
         ctx: AgentContext | None = request.app.state.agent_context
         return HTMLResponse(_render_agent_ui(ctx))
 
     @router.get("/_apx/tools", include_in_schema=False)
     async def tools_dev_ui() -> Any:
         from starlette.responses import RedirectResponse as _R
-        return _R("/_apx/agent", status_code=302)
+        return _R("/_apx/agent#chat", status_code=302)
 
     @router.get("/_apx/openapi.json", include_in_schema=False)
     async def apx_openapi_spec(request: Request) -> Any:

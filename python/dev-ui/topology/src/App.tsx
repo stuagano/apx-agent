@@ -67,39 +67,48 @@ export default function App() {
   const edgeCount = data?.edges.length ?? 0;
   const agentName = data?.agentName ?? "apx-agent";
 
+  // When this React app is loaded inside the unified shell at /_apx/agent,
+  // the shell already renders the agent name + nav. Skip our own header so
+  // there's no duplicate row. Standalone visits to /_apx/topology still get
+  // the full header with Refresh + nav links.
+  const isEmbedded =
+    typeof window !== "undefined" && window.self !== window.top;
+
   return (
     <div className="apx-app">
-      <header className="apx-header">
-        <div className="apx-title">
-          <div className="apx-agent-name">{agentName}</div>
-          <div className="apx-counter">
-            topology &middot; {nodeCount} {nodeCount === 1 ? "node" : "nodes"} &middot;{" "}
-            {edgeCount} {edgeCount === 1 ? "edge" : "edges"}
+      {!isEmbedded && (
+        <header className="apx-header">
+          <div className="apx-title">
+            <div className="apx-agent-name">{agentName}</div>
+            <div className="apx-counter">
+              topology &middot; {nodeCount} {nodeCount === 1 ? "node" : "nodes"} &middot;{" "}
+              {edgeCount} {edgeCount === 1 ? "edge" : "edges"}
+            </div>
           </div>
-        </div>
-        <nav className="apx-nav">
-          <button
-            type="button"
-            className="apx-nav-link apx-refresh"
-            onClick={load}
-            disabled={state.loading}
-            title="Re-fetch /_apx/topology.json"
-          >
-            <span className="apx-nav-icon" aria-hidden="true">
-              {"\u{21BB}"}
-            </span>
-            <span>Refresh</span>
-          </button>
-          {NAV_LINKS.map((link) => (
-            <a key={link.href} href={link.href} className="apx-nav-link">
+          <nav className="apx-nav">
+            <button
+              type="button"
+              className="apx-nav-link apx-refresh"
+              onClick={load}
+              disabled={state.loading}
+              title="Re-fetch /_apx/topology.json"
+            >
               <span className="apx-nav-icon" aria-hidden="true">
-                {link.icon}
+                {"\u{21BB}"}
               </span>
-              <span>{link.label}</span>
-            </a>
-          ))}
-        </nav>
-      </header>
+              <span>Refresh</span>
+            </button>
+            {NAV_LINKS.map((link) => (
+              <a key={link.href} href={link.href} className="apx-nav-link">
+                <span className="apx-nav-icon" aria-hidden="true">
+                  {link.icon}
+                </span>
+                <span>{link.label}</span>
+              </a>
+            ))}
+          </nav>
+        </header>
+      )}
 
       <main className="apx-main">
         {state.loading ? (
