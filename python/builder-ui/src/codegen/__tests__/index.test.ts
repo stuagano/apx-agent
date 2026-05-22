@@ -92,4 +92,51 @@ describe('generateAgentCode (apx-agent target)', () => {
     expect(code).toContain('RouterAgent(');
     expect(code).toMatch(/from apx_agent import[\s\S]*RouterAgent/);
   });
+
+  it('inlines uc_function_tool factories into the LLM tools=[] list', () => {
+    const nodes: AgentNodeData[] = [
+      { id: 'l', type: 'llm', config: { endpointName: 'x', systemPrompt: 'use the tool' }, position: { x: 0, y: 0 } } as any,
+      { id: 't1', type: 'uc_function', config: { catalog: 'main', schema: 'tools', functionName: 'classify_intent', description: 'classify' }, position: { x: 0, y: 0 } } as any,
+    ];
+    const edges: EdgeData[] = [{ source: 'l', target: 't1' } as any];
+    const code = generateAgentCode(nodes, edges, 'a');
+    expect(code).toContain('uc_function_tool("main.tools.classify_intent")');
+    // Inlined into the LLM Agent's tools list, not emitted as a separate variable
+    expect(code).toMatch(/tools=\[[^\]]*uc_function_tool\("main\.tools\.classify_intent"\)/);
+    expect(code).toMatch(/from apx_agent import[\s\S]*uc_function_tool/);
+  });
+
+  it('inlines vector_search_tool factories', () => {
+    const nodes: AgentNodeData[] = [
+      { id: 'l', type: 'llm', config: { endpointName: 'x', systemPrompt: 's' }, position: { x: 0, y: 0 } } as any,
+      { id: 'v', type: 'vector_search', config: { endpointName: 'vs', indexName: 'main.search.docs', columns: 'doc_id,title,content', numResults: 5 }, position: { x: 0, y: 0 } } as any,
+    ];
+    const edges: EdgeData[] = [{ source: 'l', target: 'v' } as any];
+    const code = generateAgentCode(nodes, edges, 'a');
+    expect(code).toContain('vector_search_tool("main.search.docs"');
+    expect(code).toMatch(/tools=\[[^\]]*vector_search_tool/);
+    expect(code).toMatch(/from apx_agent import[\s\S]*vector_search_tool/);
+  });
+
+  it('emits genie_tool when a genie node is wired to an LLM', () => {
+    const nodes: AgentNodeData[] = [
+      { id: 'l', type: 'llm', config: { endpointName: 'x', systemPrompt: 's' }, position: { x: 0, y: 0 } } as any,
+      { id: 'g', type: 'genie', config: { spaceId: 'abc123', description: 'sales questions' }, position: { x: 0, y: 0 } } as any,
+    ];
+    const edges: EdgeData[] = [{ source: 'l', target: 'g' } as any];
+    const code = generateAgentCode(nodes, edges, 'a');
+    expect(code).toContain('genie_tool("abc123"');
+    expect(code).toMatch(/from apx_agent import[\s\S]*genie_tool/);
+  });
+
+  it('emits a Lakebase placeholder when a lakebase node is present', () => {
+    const nodes: AgentNodeData[] = [
+      { id: 'l', type: 'llm', config: { endpointName: 'x', systemPrompt: 's' }, position: { x: 0, y: 0 } } as any,
+      { id: 'lb', type: 'lakebase', config: { instanceName: 'prod-lakebase' }, position: { x: 0, y: 0 } } as any,
+    ];
+    const edges: EdgeData[] = [];
+    const code = generateAgentCode(nodes, edges, 'a');
+    expect(code).toMatch(/from apx_agent import[\s\S]*LakebaseMemoryStore/);
+    expect(code).toContain('# TODO: configure Lakebase engine for "prod-lakebase"');
+  });
 });

@@ -44,12 +44,47 @@ const childrenOf = (parentId: string, edges: EdgeData[], nodes: AgentNodeData[])
   return ids.map(id => nodes.find(n => n.id === id)).filter((n): n is AgentNodeData => !!n);
 };
 
-const renderLlm = (node: AgentNodeData, varName: string): string => {
+const renderLlm = (
+  node: AgentNodeData,
+  varName: string,
+  edges: EdgeData[],
+  nodes: AgentNodeData[]
+): string => {
   const cfg = node.config as { endpointName: string; systemPrompt: string };
+  // Find tool nodes connected to this LLM via outgoing edges
+  const connectedToolIds = edges
+    .filter(e => (e as any).source === node.id)
+    .map(e => (e as any).target);
+  const toolNodes = connectedToolIds
+    .map(id => nodes.find(n => n.id === id))
+    .filter((n): n is AgentNodeData => !!n)
+    .filter(n => n.type === 'uc_function' || n.type === 'vector_search' || n.type === 'genie');
+
+  const toolCalls = toolNodes.map(n => {
+    if (n.type === 'uc_function') {
+      const c = n.config as { catalog: string; schema: string; functionName: string };
+      return `uc_function_tool("${c.catalog}.${c.schema}.${c.functionName}")`;
+    }
+    if (n.type === 'vector_search') {
+      const c = n.config as { indexName: string; numResults?: number; columns?: string };
+      const args: string[] = [`"${c.indexName}"`];
+      if (c.numResults) args.push(`num_results=${c.numResults}`);
+      if (c.columns) args.push(`columns=[${c.columns.split(',').map(s => `"${s.trim()}"`).join(', ')}]`);
+      return `vector_search_tool(${args.join(', ')})`;
+    }
+    if (n.type === 'genie') {
+      const c = n.config as { spaceId: string; description?: string };
+      const args: string[] = [`"${c.spaceId}"`];
+      if (c.description) args.push(`description="${c.description}"`);
+      return `genie_tool(${args.join(', ')})`;
+    }
+    return '';
+  });
+
   return Mustache.render(llmTpl, {
     nodeName: varName,
     systemPrompt: cfg.systemPrompt,
-    tools: [],
+    tools: toolCalls,
   });
 };
 
@@ -112,7 +147,7 @@ const renderNode = (
   emitted.add(node.id);
 
   if (node.type === 'llm') {
-    sections.push(renderLlm(node, varName));
+    sections.push(renderLlm(node, varName, edges, nodes));
     return varName;
   }
 
@@ -161,21 +196,26 @@ export const generateAgentCode = (
   const sections: string[] = [];
   sections.push(Mustache.render(headerTpl, { agentName, ...flags }));
 
+  // Lakebase placeholder — engine wiring is hand-written for v1
+  if (lakebaseNodes.length > 0) {
+    const lbCfg = lakebaseNodes[0].config as { instanceName?: string };
+    const name = lbCfg.instanceName || 'lakebase-instance';
+    sections.push(
+      `# TODO: configure Lakebase engine for "${name}"\n` +
+      `# Example: store = LakebaseMemoryStore(engine=engine, embedding_fn=embed, embedding_dim=1024)`
+    );
+  }
+
   const emitted = new Set<string>();
   const roots = findRoots(nodes, edges);
 
   // If there's only one LLM node and no composition, emit a single-Agent
   // with variable name "agent" so simple_agent test still passes.
-  const llmOnly = nodes.length > 0 && nodes.every(n => n.type === 'llm');
-  if (llmOnly && nodes.length === 1) {
-    const cfg = nodes[0].config as { endpointName: string; systemPrompt: string };
-    sections.push(
-      Mustache.render(llmTpl, {
-        nodeName: 'agent',
-        systemPrompt: cfg.systemPrompt,
-        tools: [],
-      })
-    );
+  const llmOnly = nodes.length > 0 && nodes.every(n => n.type === 'llm' || n.type === 'uc_function' || n.type === 'vector_search' || n.type === 'genie' || n.type === 'lakebase');
+  if (llmOnly && nodes.filter(n => n.type === 'llm').length === 1) {
+    const llmNode = nodes.find(n => n.type === 'llm')!;
+    const cfg = llmNode.config as { endpointName: string; systemPrompt: string };
+    sections.push(renderLlm(llmNode, 'agent', edges, nodes));
     sections.push(`# Model: ${cfg.endpointName}`);
     return sections.join('\n\n');
   }

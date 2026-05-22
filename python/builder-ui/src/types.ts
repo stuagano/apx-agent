@@ -1,4 +1,4 @@
-export type AgentNodeType = 'supervisor' | 'router' | 'llm' | 'vector_search' | 'uc_function' | 'group' | 'lakebase';
+export type AgentNodeType = 'supervisor' | 'router' | 'llm' | 'vector_search' | 'uc_function' | 'group' | 'lakebase' | 'genie';
 
 export interface LLMConfig {
   endpointName: string;
