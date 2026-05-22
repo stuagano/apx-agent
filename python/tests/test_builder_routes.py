@@ -180,3 +180,108 @@ def test_save_overwrites_canvas_generated_file_without_force(tmp_path, monkeypat
     r = client.post("/_apx/builder/save", json=payload)
     assert r.status_code == 200
     assert "new" in (tmp_path / "agent.py").read_text()
+
+
+def test_list_uc_functions(tmp_path, monkeypatch, app):
+    """GET /uc-functions returns a list of UC functions in the requested schema."""
+    from unittest.mock import MagicMock
+    from databricks.sdk import WorkspaceClient
+
+    fake_ws = MagicMock(spec=WorkspaceClient)
+    fake_func1 = MagicMock(
+        full_name="main.tools.classify_intent",
+        name="classify_intent",
+        comment="Classify a customer query.",
+        input_params=MagicMock(parameters=[
+            MagicMock(name="query", type_text="STRING"),
+        ]),
+    )
+    fake_func2 = MagicMock(
+        full_name="main.tools.score_customer",
+        name="score_customer",
+        comment="Score a customer.",
+        input_params=None,
+    )
+    fake_ws.functions.list.return_value = iter([fake_func1, fake_func2])
+
+    # Patch the ws resolver
+    monkeypatch.setattr(
+        "apx_agent._builder_routes._resolve_workspace_client",
+        lambda request: fake_ws,
+    )
+
+    client = TestClient(app)
+    r = client.get("/_apx/builder/uc-functions?catalog=main&schema=tools")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert "functions" in data
+    assert len(data["functions"]) == 2
+    assert data["functions"][0]["full_name"] == "main.tools.classify_intent"
+    assert data["functions"][0]["comment"] == "Classify a customer query."
+
+
+def test_list_uc_functions_handles_errors(tmp_path, monkeypatch, app):
+    """If ws.functions.list raises, the endpoint returns 502 with detail."""
+    from unittest.mock import MagicMock
+    fake_ws = MagicMock()
+    fake_ws.functions.list.side_effect = RuntimeError("permission denied")
+    monkeypatch.setattr(
+        "apx_agent._builder_routes._resolve_workspace_client",
+        lambda request: fake_ws,
+    )
+    client = TestClient(app)
+    r = client.get("/_apx/builder/uc-functions?catalog=main&schema=tools")
+    assert r.status_code == 502
+    assert "permission denied" in r.json()["detail"]
+
+
+def test_list_vector_indexes(tmp_path, monkeypatch, app):
+    """GET /vector-indexes returns a list of VS indexes."""
+    from unittest.mock import MagicMock
+    fake_ws = MagicMock()
+    fake_idx = MagicMock(name="docs", index_type="DELTA_SYNC")
+    fake_idx.name = "main.search.docs"
+    fake_endpoint = MagicMock(name="vs-endpoint")
+    fake_endpoint.name = "vs-endpoint"
+    fake_ws.vector_search_endpoints.list_endpoints.return_value = iter([fake_endpoint])
+    fake_ws.vector_search_indexes.list_indexes.return_value = MagicMock(
+        vector_indexes=[fake_idx]
+    )
+    monkeypatch.setattr(
+        "apx_agent._builder_routes._resolve_workspace_client",
+        lambda request: fake_ws,
+    )
+    client = TestClient(app)
+    r = client.get("/_apx/builder/vector-indexes")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert "indexes" in data
+
+
+def test_list_genie_spaces(tmp_path, monkeypatch, app):
+    """GET /genie-spaces returns a list of Genie spaces."""
+    from unittest.mock import MagicMock
+    fake_ws = MagicMock()
+    fake_space1 = MagicMock(
+        space_id="abc123",
+        title="Sales Genie",
+        description="Answer sales questions.",
+    )
+    fake_space2 = MagicMock(
+        space_id="def456",
+        title="Support Genie",
+        description="Answer support questions.",
+    )
+    fake_ws.genie.list_spaces.return_value = MagicMock(spaces=[fake_space1, fake_space2])
+    monkeypatch.setattr(
+        "apx_agent._builder_routes._resolve_workspace_client",
+        lambda request: fake_ws,
+    )
+    client = TestClient(app)
+    r = client.get("/_apx/builder/genie-spaces")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert "spaces" in data
+    assert len(data["spaces"]) == 2
+    assert data["spaces"][0]["space_id"] == "abc123"
+    assert data["spaces"][0]["title"] == "Sales Genie"
