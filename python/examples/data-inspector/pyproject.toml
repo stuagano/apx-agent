@@ -36,6 +36,7 @@ name = "data_inspector"
 description = "Inspect and forensically analyze Delta tables — check data presence, binary search version history, diff versions, and audit who changed what"
 model = "databricks-claude-sonnet-4-6"
 module = "agent:agent"
+profile = "fe-stable"
 url = ""
 registry = ""
 
