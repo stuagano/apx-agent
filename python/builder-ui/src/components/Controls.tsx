@@ -1372,6 +1372,7 @@ export const DeployModal: React.FC<{
   const [deployLog, setDeployLog] = useState<string[]>([]);
   const [deploying, setDeploying] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus>('idle');
+  const [deployedUrl, setDeployedUrl] = useState<string | null>(null);
   const logRef = useRef<HTMLPreElement>(null);
 
   // Auto-scroll log to bottom on new lines
@@ -1386,6 +1387,7 @@ export const DeployModal: React.FC<{
     setDeploying(true);
     setDeployStatus('running');
     setDeployLog([]);
+    setDeployedUrl(null);
     try {
       const res = await fetch('/_apx/builder/deploy', {
         method: 'POST',
@@ -1411,6 +1413,11 @@ export const DeployModal: React.FC<{
           if (part.startsWith('data: ')) {
             const line = part.slice(6);
             setDeployLog(prev => [...prev, line]);
+            // Extract URL from lines like "https://mcp-data-inspector-7474652869938903.aws.databricksapps.com"
+            const urlMatch = line.match(/^https:\/\/[\w.-]+\.databricksapps\.com[^\s]*$/);
+            if (urlMatch) {
+              setDeployedUrl(urlMatch[0]);
+            }
             if (line.startsWith('__EXIT__')) {
               const code = parseInt(line.split(' ')[1] || '1', 10);
               setDeployStatus(code === 0 ? 'success' : 'failed');
@@ -1511,6 +1518,37 @@ export const DeployModal: React.FC<{
             </button>
           </div>
         </div>
+
+        {/* Success banner — shown when deploy completes with URL */}
+        {deployStatus === 'success' && deployedUrl && (
+          <div className="px-4 pb-4">
+            <div
+              className="rounded-md p-3 mb-3 flex items-center gap-2"
+              style={{ backgroundColor: '#065f46', borderLeft: '4px solid #10b981' }}
+            >
+              <div style={{ color: '#d1fae5', fontSize: 16 }}>🚀</div>
+              <div className="flex-1">
+                <div style={{ color: '#d1fae5', fontSize: '11px', fontWeight: 600, marginBottom: 4 }}>
+                  Deployed
+                </div>
+                <a
+                  href={deployedUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    color: '#d1fae5',
+                    fontSize: '11px',
+                    textDecoration: 'underline',
+                    wordBreak: 'break-all',
+                    fontFamily: 'monospace',
+                  }}
+                >
+                  {deployedUrl}
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Log area — only shown once deployment started */}
         {deployLog.length > 0 && (
