@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   MousePointer2, Hand, Cable, Undo2, Redo2,
   Bot, GitBranch, Cpu, Search, Wrench, X, Copy, Check,
@@ -528,6 +528,56 @@ const Field = ({
 const inputCls = 'w-full text-xs text-[#1B3139] bg-[#F4F6F8] border border-[#DDE3E8] rounded px-2 py-1.5 outline-none focus:border-[#2272B4] focus:ring-1 focus:ring-[#2272B4]/20 transition-colors font-mono';
 const textareaCls = inputCls + ' resize-none';
 
+// ── UC Function Create Button ─────────────────────────────────────────────────
+
+interface UCFunctionCreateButtonProps {
+  cfg: { catalog?: string; schema?: string; functionName?: string; parameters?: { name: string; type: string }[]; returnType?: string; description?: string; sqlBody?: string; warehouseId?: string };
+}
+
+const UCFunctionCreateButton: React.FC<UCFunctionCreateButtonProps> = ({ cfg }) => {
+  const [creating, setCreating] = useState(false);
+
+  const handleCreateInUC = useCallback(async () => {
+    setCreating(true);
+    try {
+      const res = await fetch('/_apx/builder/create-uc-function', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          catalog: cfg.catalog || '',
+          schema: cfg.schema || '',
+          name: cfg.functionName || '',
+          parameters: cfg.parameters || [],
+          return_type: cfg.returnType || 'STRING',
+          comment: cfg.description || '',
+          sql_body: cfg.sqlBody || '',
+          warehouse_id: cfg.warehouseId || '',
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        alert(`Create failed: ${err.detail || res.statusText}`);
+        return;
+      }
+      const data = await res.json();
+      alert(`Created: ${data.full_name}`);
+    } finally {
+      setCreating(false);
+    }
+  }, [cfg]);
+
+  return (
+    <button
+      onClick={handleCreateInUC}
+      disabled={creating}
+      className="w-full flex items-center justify-center gap-1.5 text-[11px] font-semibold text-white bg-[#F7A600] hover:bg-[#d98f00] disabled:opacity-50 disabled:cursor-not-allowed rounded px-2 py-1.5 transition-colors"
+    >
+      {creating ? <Loader2 size={12} className="animate-spin" /> : <Wrench size={12} />}
+      {creating ? 'Creating…' : 'Create in UC'}
+    </button>
+  );
+};
+
 export const RightPanel: React.FC<RightPanelProps> = ({
   selectedNode,
   onUpdateNode,
@@ -814,6 +864,96 @@ export const RightPanel: React.FC<RightPanelProps> = ({
                 onChange={(e) => updateConfig({ description: e.target.value })}
               />
             </Field>
+
+            {/* ── Author in UC section ── */}
+            <div className="border-t border-slate-200 pt-3 space-y-3">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
+                Author in Unity Catalog
+              </p>
+
+              <Field label="Return Type">
+                <input
+                  className={inputCls}
+                  placeholder="STRING"
+                  value={cfg.returnType ?? 'STRING'}
+                  onChange={(e) => updateConfig({ returnType: e.target.value })}
+                />
+              </Field>
+
+              <Field label="Parameters">
+                <div className="space-y-1.5">
+                  {(cfg.parameters ?? []).map((param, idx) => (
+                    <div key={idx} className="flex gap-1 items-center">
+                      <input
+                        className={inputCls + ' flex-1'}
+                        placeholder="name"
+                        value={param.name}
+                        onChange={(e) => {
+                          const updated = (cfg.parameters ?? []).map((p, i) =>
+                            i === idx ? { ...p, name: e.target.value } : p
+                          );
+                          updateConfig({ parameters: updated });
+                        }}
+                      />
+                      <input
+                        className={inputCls + ' flex-1'}
+                        placeholder="STRING"
+                        value={param.type}
+                        onChange={(e) => {
+                          const updated = (cfg.parameters ?? []).map((p, i) =>
+                            i === idx ? { ...p, type: e.target.value } : p
+                          );
+                          updateConfig({ parameters: updated });
+                        }}
+                      />
+                      <button
+                        onClick={() => {
+                          const updated = (cfg.parameters ?? []).filter((_, i) => i !== idx);
+                          updateConfig({ parameters: updated });
+                        }}
+                        className="text-slate-400 hover:text-red-500 transition-colors flex-shrink-0 px-1"
+                        title="Remove parameter"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => {
+                      const updated = [...(cfg.parameters ?? []), { name: '', type: 'STRING' }];
+                      updateConfig({ parameters: updated });
+                    }}
+                    className="text-[10px] font-medium text-[#2272B4] hover:text-[#1a5a9e] transition-colors"
+                  >
+                    + Add parameter
+                  </button>
+                </div>
+              </Field>
+
+              <Field label="SQL Body">
+                <textarea
+                  className={textareaCls}
+                  rows={4}
+                  placeholder="CASE WHEN query LIKE '%bill%' THEN 'billing' ELSE 'other' END"
+                  value={cfg.sqlBody ?? ''}
+                  onChange={(e) => updateConfig({ sqlBody: e.target.value })}
+                />
+                <p className="text-[9px] text-slate-400 mt-0.5">
+                  Expression after RETURN. Runs as the calling user via OBO — UC permissions apply.
+                </p>
+              </Field>
+
+              <Field label="Warehouse ID">
+                <input
+                  className={inputCls}
+                  placeholder="e.g. 0123abcd4567ef89"
+                  value={cfg.warehouseId ?? ''}
+                  onChange={(e) => updateConfig({ warehouseId: e.target.value })}
+                />
+              </Field>
+
+              <UCFunctionCreateButton cfg={cfg} />
+            </div>
           </>
         )}
 
@@ -1372,6 +1512,7 @@ export const DeployModal: React.FC<{
   const [deployLog, setDeployLog] = useState<string[]>([]);
   const [deploying, setDeploying] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus>('idle');
+  const [deployedUrl, setDeployedUrl] = useState<string | null>(null);
   const logRef = useRef<HTMLPreElement>(null);
 
   // Auto-scroll log to bottom on new lines
@@ -1386,6 +1527,7 @@ export const DeployModal: React.FC<{
     setDeploying(true);
     setDeployStatus('running');
     setDeployLog([]);
+    setDeployedUrl(null);
     try {
       const res = await fetch('/_apx/builder/deploy', {
         method: 'POST',
@@ -1411,6 +1553,11 @@ export const DeployModal: React.FC<{
           if (part.startsWith('data: ')) {
             const line = part.slice(6);
             setDeployLog(prev => [...prev, line]);
+            // Extract URL from lines like "https://mcp-data-inspector-7474652869938903.aws.databricksapps.com"
+            const urlMatch = line.match(/^https:\/\/[\w.-]+\.databricksapps\.com[^\s]*$/);
+            if (urlMatch) {
+              setDeployedUrl(urlMatch[0]);
+            }
             if (line.startsWith('__EXIT__')) {
               const code = parseInt(line.split(' ')[1] || '1', 10);
               setDeployStatus(code === 0 ? 'success' : 'failed');
@@ -1511,6 +1658,37 @@ export const DeployModal: React.FC<{
             </button>
           </div>
         </div>
+
+        {/* Success banner — shown when deploy completes with URL */}
+        {deployStatus === 'success' && deployedUrl && (
+          <div className="px-4 pb-4">
+            <div
+              className="rounded-md p-3 mb-3 flex items-center gap-2"
+              style={{ backgroundColor: '#065f46', borderLeft: '4px solid #10b981' }}
+            >
+              <div style={{ color: '#d1fae5', fontSize: 16 }}>🚀</div>
+              <div className="flex-1">
+                <div style={{ color: '#d1fae5', fontSize: '11px', fontWeight: 600, marginBottom: 4 }}>
+                  Deployed
+                </div>
+                <a
+                  href={deployedUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    color: '#d1fae5',
+                    fontSize: '11px',
+                    textDecoration: 'underline',
+                    wordBreak: 'break-all',
+                    fontFamily: 'monospace',
+                  }}
+                >
+                  {deployedUrl}
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Log area — only shown once deployment started */}
         {deployLog.length > 0 && (

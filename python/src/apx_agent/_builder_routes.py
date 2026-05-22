@@ -21,7 +21,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def _dist_root() -> Path:
@@ -144,6 +144,63 @@ class DeployPayload(BaseModel):
 
 _SAFE_PROFILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _VALID_TARGETS = {"apps", "model-serving"}
+
+# Identifier validation: SQL-safe — alphanumeric + underscores, can't start with digit
+_SAFE_SQL_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+# Return-type and parameter-type tokens: limited to alphanumerics + a few SQL type chars.
+# Accepts STRING, INT, BIGINT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, MAP<...>, ARRAY<...>,
+# STRUCT<...>, TABLE(...). Anything with a semicolon or comment is rejected.
+_SAFE_SQL_TYPE = re.compile(r"^[A-Za-z0-9_<>,()\s]+$")
+
+# Warehouse IDs: hex-like, may start with a digit, allow alphanumeric + dashes + underscores
+_SAFE_WAREHOUSE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+class UCFunctionParameter(BaseModel):
+    name: str
+    type: str
+
+
+class CreateUCFunctionPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    catalog: str
+    schema_name: str = Field(alias="schema")
+    name: str
+    parameters: list[UCFunctionParameter] = Field(default_factory=list)
+    return_type: str
+    comment: str = ""
+    sql_body: str
+    warehouse_id: str
+
+
+def _validate_uc_function_payload(p: CreateUCFunctionPayload) -> None:
+    for label, val in (("catalog", p.catalog), ("schema", p.schema_name), ("name", p.name)):
+        if not _SAFE_SQL_IDENT.match(val):
+            raise HTTPException(status_code=400, detail=f"Invalid {label}: {val!r}")
+    if not _SAFE_SQL_TYPE.match(p.return_type) or ";" in p.return_type or "--" in p.return_type:
+        raise HTTPException(status_code=400, detail=f"Invalid return_type: {p.return_type!r}")
+    for param in p.parameters:
+        if not _SAFE_SQL_IDENT.match(param.name):
+            raise HTTPException(status_code=400, detail=f"Invalid parameter name: {param.name!r}")
+        if not _SAFE_SQL_TYPE.match(param.type) or ";" in param.type or "--" in param.type:
+            raise HTTPException(status_code=400, detail=f"Invalid parameter type: {param.type!r}")
+    if not _SAFE_WAREHOUSE_ID.match(p.warehouse_id):
+        raise HTTPException(status_code=400, detail=f"Invalid warehouse_id: {p.warehouse_id!r}")
+
+
+def _compose_create_function_ddl(p: CreateUCFunctionPayload) -> str:
+    full_name = f"{p.catalog}.{p.schema_name}.{p.name}"
+    params = ", ".join(f"{param.name} {param.type}" for param in p.parameters)
+    # Escape comment by replacing single quotes with two single quotes (SQL escape)
+    comment_escaped = p.comment.replace("'", "''")
+    return (
+        f"CREATE OR REPLACE FUNCTION {full_name}({params})\n"
+        f"RETURNS {p.return_type}\n"
+        f"COMMENT '{comment_escaped}'\n"
+        f"RETURN {p.sql_body}"
+    )
 
 
 def _validate_deploy_payload(payload: DeployPayload) -> None:
@@ -297,6 +354,33 @@ def build_builder_router() -> APIRouter:
             _stream_deploy(cmd, cwd=str(Path.cwd())),
             media_type="text/event-stream",
         )
+
+    @router.post("/_apx/builder/create-uc-function", include_in_schema=False)
+    async def create_uc_function(payload: CreateUCFunctionPayload, request: Request):
+        _validate_uc_function_payload(payload)
+        ws = _resolve_workspace_client(request)
+        ddl = _compose_create_function_ddl(payload)
+        try:
+            result = ws.statement_execution.execute_statement(
+                warehouse_id=payload.warehouse_id,
+                statement=ddl,
+                wait_timeout="30s",
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+        from databricks.sdk.service.sql import StatementState
+        state = getattr(result.status, "state", None) if result and result.status else None
+        if state != StatementState.SUCCEEDED:
+            err_msg = "Unknown error"
+            if result and result.status and result.status.error:
+                err_msg = result.status.error.message or str(result.status.error)
+            raise HTTPException(status_code=502, detail=err_msg)
+
+        return {
+            "status": "ok",
+            "full_name": f"{payload.catalog}.{payload.schema_name}.{payload.name}",
+        }
 
     @router.get("/_apx/builder/{path:path}", include_in_schema=False)
     async def builder_asset(path: str):
