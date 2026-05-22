@@ -23,6 +23,11 @@ export interface UCFunctionConfig {
   functionName: string;
   description: string;
   deploy: boolean;  // true = generate stub + deploy via tools bundle; false = call existing UC function
+  // v1.2 authoring fields — used by "Create in UC" to CREATE OR REPLACE FUNCTION
+  parameters?: { name: string; type: string }[];
+  returnType?: string;
+  sqlBody?: string;
+  warehouseId?: string;
 }
 
 export interface RouterConfig {
