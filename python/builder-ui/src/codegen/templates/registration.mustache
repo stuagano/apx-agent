@@ -1,0 +1,15 @@
+#####################
+# Assemble tools & launch
+#####################
+tools = []
+{{#hasUCFunctions}}
+tools.extend(uc_toolkit.tools)
+{{/hasUCFunctions}}
+{{#hasVectorSearch}}
+tools.extend(VECTOR_SEARCH_TOOLS)
+{{/hasVectorSearch}}
+
+mlflow.langchain.autolog()
+agent_graph = create_tool_calling_agent(llm, tools, system_prompt)
+AGENT = LangGraphResponsesAgent(agent_graph)
+mlflow.models.set_model(AGENT)

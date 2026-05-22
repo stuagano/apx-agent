@@ -1,0 +1,9 @@
+############################################
+# LLM endpoint and system prompt
+############################################
+LLM_ENDPOINT_NAME = "{{{endpointName}}}"
+llm = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME)
+
+system_prompt = """
+{{{systemPrompt}}}
+"""
