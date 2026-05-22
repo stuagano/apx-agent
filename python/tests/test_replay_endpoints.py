@@ -81,7 +81,11 @@ class TestReplayLlm:
     @pytest.mark.asyncio
     async def test_replays_with_default_model(self, app_with_tool: FastAPI):
         sdk = AsyncMock()
-        sdk.responses.create = AsyncMock(return_value=MagicMock(output_text="replayed answer"))
+        sdk.chat.completions.create = AsyncMock(
+            return_value=MagicMock(
+                choices=[MagicMock(message=MagicMock(content="replayed answer"))]
+            )
+        )
         with patch("databricks_openai.AsyncDatabricksOpenAI", return_value=sdk):
             async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
                 r = await ac.post("/_apx/replay/llm", json={
@@ -93,14 +97,16 @@ class TestReplayLlm:
         assert data["output"] == "replayed answer"
         assert data["model"] == "claude-fake"
         # Confirm the model received the edited messages
-        call_kwargs = sdk.responses.create.call_args.kwargs
+        call_kwargs = sdk.chat.completions.create.call_args.kwargs
         assert call_kwargs["model"] == "claude-fake"
-        assert call_kwargs["input"] == [{"role": "user", "content": "what is 6*7?"}]
+        assert call_kwargs["messages"] == [{"role": "user", "content": "what is 6*7?"}]
 
     @pytest.mark.asyncio
     async def test_model_override_in_body(self, app_with_tool: FastAPI):
         sdk = AsyncMock()
-        sdk.responses.create = AsyncMock(return_value=MagicMock(output_text="ok"))
+        sdk.chat.completions.create = AsyncMock(
+            return_value=MagicMock(choices=[MagicMock(message=MagicMock(content="ok"))])
+        )
         with patch("databricks_openai.AsyncDatabricksOpenAI", return_value=sdk):
             async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
                 r = await ac.post("/_apx/replay/llm", json={
@@ -109,7 +115,7 @@ class TestReplayLlm:
                 })
         assert r.status_code == 200
         assert r.json()["model"] == "claude-other"
-        assert sdk.responses.create.call_args.kwargs["model"] == "claude-other"
+        assert sdk.chat.completions.create.call_args.kwargs["model"] == "claude-other"
 
     @pytest.mark.asyncio
     async def test_returns_400_for_empty_messages(self, app_with_tool: FastAPI):
@@ -140,7 +146,7 @@ class TestReplayLlm:
     @pytest.mark.asyncio
     async def test_model_exception_returned_as_ok_false(self, app_with_tool: FastAPI):
         sdk = AsyncMock()
-        sdk.responses.create = AsyncMock(side_effect=Exception("upstream timeout"))
+        sdk.chat.completions.create = AsyncMock(side_effect=Exception("upstream timeout"))
         with patch("databricks_openai.AsyncDatabricksOpenAI", return_value=sdk):
             async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
                 r = await ac.post("/_apx/replay/llm", json={
