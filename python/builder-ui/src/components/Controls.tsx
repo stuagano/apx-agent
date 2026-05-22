@@ -143,6 +143,8 @@ interface HeaderProps {
   onExportCode: () => void;
   onDownloadZip: () => void;
   isDownloadingZip: boolean;
+  onSaveToProject: () => void;
+  isSaving: boolean;
   onAgentNameChange: (name: string) => void;
   auth: DatabricksAuth | null;
   onConnect: (auth: DatabricksAuth) => void;
@@ -161,6 +163,8 @@ export const Header: React.FC<HeaderProps> = ({
   onExportCode,
   onDownloadZip,
   isDownloadingZip,
+  onSaveToProject,
+  isSaving,
   onAgentNameChange,
   auth,
   onConnect,
@@ -322,6 +326,17 @@ export const Header: React.FC<HeaderProps> = ({
       >
         <Download size={14} />
         {isDownloadingZip ? 'Generating…' : 'Download DAB'}
+      </button>
+
+      {/* Save to project */}
+      <button
+        onClick={onSaveToProject}
+        disabled={isSaving}
+        className="flex items-center gap-2 px-3 h-8 bg-[#243f49] hover:bg-[#2e5060] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-md transition-colors border border-[#34606f]"
+        title="Save agent.py directly to the active project via the APX dev server"
+      >
+        {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+        {isSaving ? 'Saving…' : 'Save to project'}
       </button>
 
       {showConnectModal && (

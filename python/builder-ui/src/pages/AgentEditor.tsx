@@ -123,6 +123,7 @@ export function AgentEditor() {
   const [auth, setAuth] = useState<DatabricksAuth | null>(null);
   const [projectSettings, setProjectSettings] = useState<ProjectSettings>(DEFAULT_PROJECT_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Undo / redo
   const historyRef = useRef<{ nodes: AgentNodeData[]; edges: EdgeData[] }[]>([]);
@@ -672,6 +673,32 @@ export function AgentEditor() {
     }
   };
 
+  const handleSaveToProject = async () => {
+    setIsSaving(true);
+    try {
+      const code = generateAgentCode(nodes, edges, agentName);
+      const res = await fetch('/_apx/builder/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          graph: { nodes, edges },
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        alert(`Save failed: ${(err as { detail?: string }).detail || res.statusText}`);
+        return;
+      }
+      const data = await res.json() as { agent_py: string };
+      alert(`Saved to ${data.agent_py}\n\nReload /_apx/agent to test.`);
+    } catch (e: unknown) {
+      alert(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -687,6 +714,8 @@ export function AgentEditor() {
         onExportCode={() => setShowCodeExport(true)}
         onDownloadZip={handleDownloadZip}
         isDownloadingZip={isDownloadingZip}
+        onSaveToProject={handleSaveToProject}
+        isSaving={isSaving}
         onAgentNameChange={setAgentName}
         auth={auth}
         onConnect={setAuth}
