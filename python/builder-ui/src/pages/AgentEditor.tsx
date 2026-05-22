@@ -124,6 +124,26 @@ export function AgentEditor() {
   const [projectSettings, setProjectSettings] = useState<ProjectSettings>(DEFAULT_PROJECT_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [apxState, setApxState] = useState<{
+    drift: boolean;
+    agent_py_exists: boolean;
+    sidecar_exists: boolean;
+    identity: { name: string | null; profile: string | null } | null;
+  } | null>(null);
+
+  useEffect(() => {
+    fetch('/_apx/builder/state')
+      .then(r => (r.ok ? r.json() : null))
+      .then(setApxState)
+      .catch(() => setApxState(null));
+  }, []);
+
+  const refetchApxState = () => {
+    fetch('/_apx/builder/state')
+      .then(r => (r.ok ? r.json() : null))
+      .then(setApxState)
+      .catch(() => {});
+  };
 
   // Undo / redo
   const historyRef = useRef<{ nodes: AgentNodeData[]; edges: EdgeData[] }[]>([]);
@@ -691,6 +711,7 @@ export function AgentEditor() {
         return;
       }
       const data = await res.json() as { agent_py: string };
+      refetchApxState();
       alert(`Saved to ${data.agent_py}\n\nReload /_apx/agent to test.`);
     } catch (e: unknown) {
       alert(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -703,6 +724,26 @@ export function AgentEditor() {
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
+      {/* Identity title bar */}
+      <div style={{ padding: '6px 16px', background: '#1B3139', color: '#fff', fontSize: 12 }}>
+        {apxState?.identity?.name
+          ? `${apxState.identity.name}${apxState.identity.profile ? ` · ${apxState.identity.profile}` : ''}`
+          : 'Untitled agent (set [tool.apx.agent].name in pyproject.toml)'}
+      </div>
+
+      {/* Drift banner */}
+      {apxState?.drift && (
+        <div style={{
+          background: '#fef3c7',
+          border: '1px solid #f59e0b',
+          color: '#92400e',
+          padding: '8px 16px',
+          fontSize: 13,
+        }}>
+          <strong>agent.py has been edited since this canvas was last saved.</strong> Canvas changes will not include those edits — Save will require <code>?force=1</code>.
+        </div>
+      )}
+
       <Header
         agentName={agentName}
         currentTool={tool}
