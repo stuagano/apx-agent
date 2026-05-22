@@ -350,6 +350,7 @@ __pycache__/
 .env.local
 mlruns/
 .databricks/
+.apx-builder.json
 """
 
 
