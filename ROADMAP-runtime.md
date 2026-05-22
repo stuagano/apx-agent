@@ -27,6 +27,13 @@ Pairs with [`ROADMAP-dev-ui.md`](ROADMAP-dev-ui.md) (developer surface).
 - **MCP integration** — managed and unmanaged MCP servers as tools.
 - **Memory** — in-memory, Lakebase, and delta-backed memory stores with
   consolidation.
+- **Visual builder at `/_apx/builder`** — node-based canvas for composing apx-agent
+  graphs without hand-writing Python. Ported from
+  [veenaramesh/dbrx-agent-builder](https://github.com/veenaramesh/dbrx-agent-builder),
+  retargeted from raw LangGraph emission to apx-agent DSL. Saves to `agent.py`
+  + `.apx-builder.json` sidecar; hot reload + chat-tab testing in the same dev
+  UI. v1 is forward-only (no round-trip parsing); follow-up plan tracked for
+  Python → canvas re-import.
 
 ## Next up
 
@@ -142,3 +149,7 @@ shapes here are informed by [natefleming/dao-ai](https://github.com/natefleming/
 implementation. Convergent evolution on the broader runtime shape — declarative
 agents, LangGraph engine, dual Databricks target — is its own signal that the
 niche is real.
+
+The `/_apx/builder` visual canvas is ported from
+[veenaramesh/dbrx-agent-builder](https://github.com/veenaramesh/dbrx-agent-builder).
+Same node taxonomy; retargeted code emission from raw LangGraph to apx-agent DSL.
