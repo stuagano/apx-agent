@@ -1,0 +1,93 @@
+#####################
+# Agent logic
+#####################
+# {{{description}}}
+
+
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[AnyMessage], add_messages]
+    custom_inputs: Optional[dict[str, Any]]
+    custom_outputs: Optional[dict[str, Any]]
+
+
+def create_tool_calling_agent(
+    model: ChatDatabricks,
+    tools: Union[ToolNode, Sequence[BaseTool]],
+    system_prompt: Optional[str] = None,
+):
+    model = model.bind_tools(tools)
+
+    def should_continue(state: AgentState):
+        last_message = state["messages"][-1]
+        if isinstance(last_message, AIMessage) and last_message.tool_calls:
+            return "continue"
+        return "end"
+
+    if system_prompt:
+        preprocessor = RunnableLambda(
+            lambda state: [{"role": "system", "content": system_prompt}] + state["messages"]
+        )
+    else:
+        preprocessor = RunnableLambda(lambda state: state["messages"])
+
+    model_runnable = preprocessor | model
+
+    def call_model(state: AgentState, config: RunnableConfig):
+        response = model_runnable.invoke(state, config)
+        return {"messages": [response]}
+
+    workflow = StateGraph(AgentState)
+    workflow.add_node("agent", RunnableLambda(call_model))
+    workflow.add_node("tools", ToolNode(tools))
+    workflow.set_entry_point("agent")
+    workflow.add_conditional_edges("agent", should_continue, {"continue": "tools", "end": END})
+    workflow.add_edge("tools", "agent")
+    return workflow.compile()
+
+
+class LangGraphResponsesAgent(ResponsesAgent):
+    def __init__(self, agent):
+        self.agent = agent
+
+    def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
+        session_id = self._get_session_id(request)
+        if session_id:
+            mlflow.update_current_trace(metadata={"mlflow.trace.session": session_id})
+
+        outputs = [
+            event.item
+            for event in self.predict_stream(request)
+            if event.type == "response.output_item.done"
+        ]
+        return ResponsesAgentResponse(output=outputs, custom_outputs=request.custom_inputs)
+
+    def predict_stream(
+        self, request: ResponsesAgentRequest
+    ) -> Generator[ResponsesAgentStreamEvent, None, None]:
+        session_id = self._get_session_id(request)
+        if session_id:
+            mlflow.update_current_trace(metadata={"mlflow.trace.session": session_id})
+
+        cc_msgs = to_chat_completions_input([i.model_dump() for i in request.input])
+        for event in self.agent.stream({"messages": cc_msgs}, stream_mode=["updates", "messages"]):
+            if event[0] == "updates":
+                for node_data in event[1].values():
+                    if len(node_data.get("messages", [])) > 0:
+                        yield from output_to_responses_items_stream(node_data["messages"])
+            elif event[0] == "messages":
+                try:
+                    chunk = event[1][0]
+                    if isinstance(chunk, AIMessageChunk) and (content := chunk.content):
+                        yield ResponsesAgentStreamEvent(
+                            **self.create_text_delta(delta=content, item_id=chunk.id)
+                        )
+                except Exception as e:
+                    print(e)
+
+    @staticmethod
+    def _get_session_id(request: ResponsesAgentRequest) -> Optional[str]:
+        if request.custom_inputs and "session_id" in request.custom_inputs:
+            return request.custom_inputs.get("session_id")
+        if request.context and request.context.conversation_id:
+            return request.context.conversation_id
+        return None

@@ -1,0 +1,10 @@
+############################################
+# Unity Catalog function tools
+############################################
+UC_TOOL_NAMES = [
+{{#tools}}
+    # {{{description}}}
+    "{{{fullName}}}",
+{{/tools}}
+]
+uc_toolkit = UCFunctionToolkit(function_names=UC_TOOL_NAMES)

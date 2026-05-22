@@ -15,7 +15,7 @@ def _apx_nav_css() -> str:
 
 
 def _apx_nav_html(active: str) -> str:
-    pages = [("agent", "Chat"), ("edit", "Edit"), ("setup", "Setup")]
+    pages = [("agent", "Chat"), ("edit", "Edit"), ("builder", "Builder"), ("setup", "Setup")]
     active_cls = 'class="active"'
     links = "".join(
         f'<a href="/_apx/{p}" {active_cls if p == active else ""}>{label}</a>'

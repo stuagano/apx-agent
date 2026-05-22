@@ -1,0 +1,13 @@
+############################################
+# Vector Search retriever tools
+############################################
+VECTOR_SEARCH_TOOLS = [
+{{#retrievers}}
+    VectorSearchRetrieverTool(
+        index_name="{{{indexName}}}",
+        # endpoint_name="{{{endpointName}}}",
+        # num_results={{numResults}},
+        # columns=[{{{columns}}}],
+    ),
+{{/retrievers}}
+]
