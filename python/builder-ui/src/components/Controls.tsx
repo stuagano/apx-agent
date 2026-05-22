@@ -4,7 +4,7 @@ import {
   Bot, GitBranch, Cpu, Search, Wrench, X, Copy, Check,
   ChevronDown, ChevronRight, Code2, Trash2, Copy as CopyIcon, Download,
   Unplug, Loader2, CircleDot, Square, Database, Settings,
-  Rocket, ArrowRight, ShieldCheck, FlaskConical,
+  Rocket, ArrowRight, ShieldCheck, FlaskConical, Code,
 } from 'lucide-react';
 import { ToolType, AgentNodeData, AgentNodeType, LLMConfig, VectorSearchConfig, UCFunctionConfig, RouterConfig, SupervisorConfig, GroupConfig, LakebaseConfig, ProjectSettings, CICDConfig, CICDProvider, PromotionGate, CICDEnvironment } from '../types';
 import { NODE_COLORS, DATABRICKS_MODELS, DEFAULT_NODE_SIZE, DEFAULT_CONFIGS, DEFAULT_CICD_CONFIG } from '../constants';
@@ -150,6 +150,8 @@ interface HeaderProps {
   onConnect: (auth: DatabricksAuth) => void;
   onDisconnect: () => void;
   onOpenSettings: () => void;
+  showPreview: boolean;
+  onTogglePreview: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -170,6 +172,8 @@ export const Header: React.FC<HeaderProps> = ({
   onConnect,
   onDisconnect,
   onOpenSettings,
+  showPreview,
+  onTogglePreview,
 }) => {
   const [isEditingName, setIsEditingName] = useState(false);
   const [showConnectModal, setShowConnectModal] = useState(false);
@@ -305,6 +309,20 @@ export const Header: React.FC<HeaderProps> = ({
         title="Project Settings"
       >
         <Settings size={15} />
+      </button>
+
+      {/* Preview Code toggle */}
+      <button
+        onClick={onTogglePreview}
+        className={`flex items-center gap-2 px-3 h-8 text-xs font-semibold rounded-md transition-colors border ${
+          showPreview
+            ? 'bg-[#FF3621] border-[#FF3621] text-white'
+            : 'bg-[#243f49] hover:bg-[#2e5060] text-white border-[#34606f]'
+        }`}
+        title={showPreview ? 'Hide code preview' : 'Show code preview'}
+      >
+        <Code size={14} />
+        Preview
       </button>
 
       {/* Export Code */}

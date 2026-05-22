@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   AgentNodeData,
   AgentNodeType,
@@ -124,6 +124,7 @@ export function AgentEditor() {
   const [projectSettings, setProjectSettings] = useState<ProjectSettings>(DEFAULT_PROJECT_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
   const [apxState, setApxState] = useState<{
     drift: boolean;
     agent_py_exists: boolean;
@@ -144,6 +145,14 @@ export function AgentEditor() {
       .then(setApxState)
       .catch(() => {});
   };
+
+  const previewCode = useMemo(() => {
+    try {
+      return generateAgentCode(nodes, edges, agentName || 'agent');
+    } catch (e: any) {
+      return `# Preview unavailable: ${e?.message || String(e)}`;
+    }
+  }, [nodes, edges, agentName]);
 
   // Undo / redo
   const historyRef = useRef<{ nodes: AgentNodeData[]; edges: EdgeData[] }[]>([]);
@@ -762,6 +771,8 @@ export function AgentEditor() {
         onConnect={setAuth}
         onDisconnect={() => setAuth(null)}
         onOpenSettings={() => setShowSettings(true)}
+        showPreview={showPreview}
+        onTogglePreview={() => setShowPreview(v => !v)}
       />
 
       <div className="flex flex-1 overflow-hidden">
@@ -916,6 +927,47 @@ export function AgentEditor() {
           models={auth?.models ?? DATABRICKS_MODELS}
         />
       </div>
+
+      {/* Live code preview panel */}
+      {showPreview && (
+        <div
+          style={{
+            position: 'fixed',
+            right: 0,
+            top: 48,
+            bottom: 0,
+            width: 400,
+            background: '#0f172a',
+            color: '#e2e8f0',
+            borderLeft: '1px solid #334155',
+            overflow: 'auto',
+            padding: 12,
+            fontFamily: '"JetBrains Mono", "Fira Mono", monospace',
+            fontSize: 12,
+            zIndex: 10,
+          }}
+        >
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: 8,
+            paddingBottom: 8,
+            borderBottom: '1px solid #334155',
+          }}>
+            <strong style={{ color: '#94a3b8', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>
+              agent.py preview
+            </strong>
+            <button
+              onClick={() => setShowPreview(false)}
+              style={{ color: '#94a3b8', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}
+            >
+              ×
+            </button>
+          </div>
+          <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{previewCode}</pre>
+        </div>
+      )}
 
       {/* Context menu */}
       {contextMenu && (
