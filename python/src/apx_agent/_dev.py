@@ -913,9 +913,30 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     # Redirects for old routes
     @router.get("/_apx/eval", include_in_schema=False)
-    async def eval_ui() -> Any:
-        from starlette.responses import RedirectResponse as _R
-        return _R("/_apx/agent", status_code=302)
+    async def eval_ui() -> HTMLResponse:
+        """Eval landing page — lists persisted eval cases.
+
+        Running cases live in the Chat panel's right-side sub-tab. This
+        standalone page surfaces the same ``evals.json`` data as a
+        read-only list with a link back to Chat, so the Eval tab in the
+        unified shell shows something useful instead of bouncing through
+        a redirect.
+        """
+        from ._ui_chat import _render_eval_landing
+        path = _find_evals_path()
+        cases: list[dict[str, Any]] = []
+        loaded_path: str | None = None
+        load_error: str | None = None
+        if path is not None and path.exists():
+            loaded_path = str(path)
+            try:
+                cases = _json.loads(path.read_text())
+                if not isinstance(cases, list):
+                    cases = []
+                    load_error = f"{path} did not contain a JSON list."
+            except (OSError, ValueError) as exc:
+                load_error = f"Could not parse {path}: {exc}"
+        return HTMLResponse(_render_eval_landing(cases, loaded_path, load_error))
 
     @router.get("/_apx/wizard", include_in_schema=False)
     async def wizard_ui() -> Any:
