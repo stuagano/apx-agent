@@ -236,3 +236,20 @@ def test_scaffold_apps_force_overwrites_existing_dir(tmp_path: Path) -> None:
     assert "# OLD STALE CONTENT" not in fresh
     # The top-level scaffold template defines an ``agent = Agent(...)`` block.
     assert "agent = Agent(" in fresh
+
+
+# ---------------------------------------------------------------------------
+# Test 7: .gitignore ignores the personal canvas sidecar
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_apps_gitignore_includes_sidecar(tmp_path: Path) -> None:
+    """The scaffold's .gitignore should ignore the personal canvas sidecar."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    gitignore = (tmp_path / "my_agent" / ".gitignore").read_text()
+    assert ".apx-builder.json" in gitignore
