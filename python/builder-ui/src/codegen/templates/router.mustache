@@ -1,0 +1,10 @@
+{{{nodeName}}} = RouterAgent(
+    agents=[
+{{#routes}}
+        ("{{name}}", "{{{description}}}", {{{agent}}}),
+{{/routes}}
+    ],
+{{#hasInstructions}}
+    instructions="""{{{instructions}}}""",
+{{/hasInstructions}}
+)
