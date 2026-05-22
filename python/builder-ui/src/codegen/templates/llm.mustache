@@ -1,9 +1,7 @@
-############################################
-# LLM endpoint and system prompt
-############################################
-LLM_ENDPOINT_NAME = "{{{endpointName}}}"
-llm = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME)
-
-system_prompt = """
-{{{systemPrompt}}}
-"""
+{{{nodeName}}} = Agent(
+    instructions="""{{{systemPrompt}}}""",
+    tools=[{{#tools}}{{{.}}}, {{/tools}}],
+{{#hasSubAgentUrls}}
+    sub_agents=[{{#subAgentUrls}}"{{.}}", {{/subAgentUrls}}],
+{{/hasSubAgentUrls}}
+)
