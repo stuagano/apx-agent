@@ -51,6 +51,191 @@ from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
 
 logger = logging.getLogger(__name__)
 
+_TRACE_CSS = """
+  :root{--bg:#0a0a0a;--panel:#111;--border:#2a2a2a;--text:#e5e7eb;--muted:#888;
+        --accent:#60b0ff;--accent-bg:#0d1f38;--accent-border:#1e3a5f;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;
+       font-size:13px;background:var(--bg);color:var(--text);min-height:100vh;}
+  header{height:48px;padding:0 16px;display:flex;align-items:center;gap:12px;
+         background:var(--panel);border-bottom:1px solid var(--border);}
+  .badge{background:var(--accent-bg);color:var(--accent);font-size:11px;
+         font-weight:600;padding:2px 8px;border-radius:4px;letter-spacing:.5px;
+         text-transform:uppercase;}
+  h1{font-size:14px;font-weight:600;}
+  .back{margin-left:auto;font-size:12px;color:var(--accent);text-decoration:none;
+        padding:4px 10px;border:1px solid var(--accent-border);border-radius:5px;
+        background:var(--accent-bg);}
+  .back:hover{background:#112a4a;}
+  main{padding:24px 28px;max-width:960px;}
+  .meta{color:var(--muted);font-size:11px;margin-bottom:20px;
+        font-family:monospace;word-break:break-all;}
+  /* Trace list */
+  table{width:100%;border-collapse:collapse;font-size:12px;}
+  th{color:var(--muted);text-align:left;padding:6px 10px;
+     border-bottom:1px solid var(--border);font-weight:500;white-space:nowrap;}
+  td{padding:7px 10px;border-bottom:1px solid #1a1a1a;vertical-align:top;}
+  tr:hover td{background:#111;}
+  td a{color:var(--accent);text-decoration:none;}
+  td a:hover{text-decoration:underline;}
+  .st-ok{color:#4ade80;} .st-err{color:#f87171;} .st-run{color:#facc15;}
+  .preview{max-width:360px;overflow:hidden;text-overflow:ellipsis;
+           white-space:nowrap;color:var(--muted);}
+  .dur{font-family:monospace;color:var(--muted);white-space:nowrap;}
+  .empty{color:var(--muted);padding:32px 10px;font-style:italic;}
+  /* Span tree */
+  .span-tree{display:flex;flex-direction:column;gap:6px;}
+  .span-card{background:var(--panel);border:1px solid var(--border);
+             border-radius:7px;overflow:hidden;}
+  .span-head{display:flex;align-items:center;gap:10px;padding:9px 13px;
+             cursor:pointer;user-select:none;}
+  .span-head:hover{background:#151515;}
+  .stype{font-size:10px;font-weight:600;padding:2px 7px;border-radius:10px;
+         text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;}
+  .stype-LLM{color:#22d3ee;background:#042929;}
+  .stype-TOOL{color:#facc15;background:#1a1500;}
+  .stype-CHAIN{color:#a78bfa;background:#1a1030;}
+  .stype-AGENT{color:#60b0ff;background:#0d1f38;}
+  .stype-OTHER{color:#94a3b8;background:#1a1a1a;}
+  .sname{font-weight:500;font-size:13px;flex:1;overflow:hidden;
+         text-overflow:ellipsis;white-space:nowrap;}
+  .sdur{font-family:monospace;font-size:11px;color:var(--muted);white-space:nowrap;}
+  .sstatus{font-size:10px;font-weight:600;white-space:nowrap;}
+  .sstatus-ok{color:#4ade80;} .sstatus-err{color:#f87171;}
+  .span-body{padding:10px 14px;border-top:1px solid var(--border);
+             display:none;flex-direction:column;gap:8px;}
+  .span-body.open{display:flex;}
+  .io-block{display:flex;flex-direction:column;gap:4px;}
+  .io-label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;
+            color:#555;font-weight:600;}
+  pre.io-pre{background:#0d0d0d;border:1px solid #1e1e1e;border-radius:5px;
+             padding:8px 10px;font-size:11px;font-family:monospace;
+             color:#aaa;white-space:pre-wrap;word-break:break-all;
+             max-height:240px;overflow-y:auto;}
+  .indent{border-left:2px solid var(--border);padding-left:16px;margin-top:4px;}
+  .err-banner{background:#2a0f0f;border:1px solid #7f1d1d;border-radius:6px;
+              padding:12px 16px;color:#fda4af;margin-bottom:16px;}
+"""
+
+
+def _span_type_css(span_type: str) -> str:
+    t = (span_type or "").upper()
+    if t in ("LLM", "CHAT_MODEL", "EMBEDDING"):
+        return "LLM"
+    if t in ("TOOL", "RETRIEVER"):
+        return "TOOL"
+    if t in ("CHAIN",):
+        return "CHAIN"
+    if t in ("AGENT",):
+        return "AGENT"
+    return "OTHER"
+
+
+def _render_traces_list(rows: list, agent_name: str | None) -> str:
+    import json as _json, html as _html
+
+    title = f"{agent_name} — traces" if agent_name else "Traces"
+    if not rows:
+        body = '<p class="empty">No traces found. Run the agent and traces will appear here.</p>'
+    else:
+        ths = "<tr><th>Time</th><th>Duration</th><th>Status</th><th>Request</th><th>Response</th></tr>"
+        tds = []
+        for r in rows:
+            ts = r["request_time_ms"]
+            import datetime
+            dt = datetime.datetime.fromtimestamp(ts / 1000).strftime("%m/%d %H:%M:%S") if ts else "—"
+            dur = f"{r['duration_ms']}ms" if r["duration_ms"] is not None else "—"
+            st = r["state"]
+            st_cls = "st-ok" if "OK" in st or "COMPLETE" in st else ("st-err" if "ERR" in st or "FAIL" in st else "st-run")
+            req = _html.escape((r["request_preview"] or "")[:120])
+            resp = _html.escape((r["response_preview"] or "")[:120])
+            tid = _html.escape(r["trace_id"])
+            tds.append(
+                f'<tr>'
+                f'<td><a href="/_apx/traces/{tid}">{dt}</a></td>'
+                f'<td class="dur">{dur}</td>'
+                f'<td class="{st_cls}">{st}</td>'
+                f'<td class="preview">{req}</td>'
+                f'<td class="preview">{resp}</td>'
+                f'</tr>'
+            )
+        body = f'<table>{ths}{"".join(tds)}</table>'
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>{_html.escape(title)}</title>
+<style>{_TRACE_CSS}</style></head><body>
+<header>
+  <span class="badge">APX</span><h1>{_html.escape(title)}</h1>
+  <a class="back" href="/_apx/agent">← Agent</a>
+</header>
+<main>{body}</main>
+</body></html>"""
+
+
+def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -> str:
+    import json as _json, html as _html
+
+    err_html = f'<div class="err-banner">{_html.escape(error or "Unknown error")}</div>' if error else ""
+
+    if not spans:
+        body = err_html + '<p class="empty">No spans found for this trace.</p>'
+    else:
+        # Build parent→children map
+        children: dict = {}
+        roots = []
+        for s in spans:
+            pid = s.get("parent_id")
+            if pid:
+                children.setdefault(pid, []).append(s)
+            else:
+                roots.append(s)
+
+        def _render_span(s: dict, depth: int = 0) -> str:
+            st = _span_type_css(s.get("span_type", ""))
+            dur = f"{s['duration_ms']}ms" if s.get("duration_ms") is not None else "—"
+            status = s.get("status", "")
+            st_cls = "sstatus-ok" if "OK" in status.upper() else "sstatus-err"
+            name = _html.escape(s.get("name", ""))
+            sid = _html.escape(s.get("span_id", ""))
+            inp = _json.dumps(s.get("inputs"), indent=2) if s.get("inputs") else None
+            out = _json.dumps(s.get("outputs"), indent=2) if s.get("outputs") else None
+            io_html = ""
+            if inp:
+                io_html += f'<div class="io-block"><div class="io-label">Inputs</div><pre class="io-pre">{_html.escape(inp[:4000])}</pre></div>'
+            if out:
+                io_html += f'<div class="io-block"><div class="io-label">Outputs</div><pre class="io-pre">{_html.escape(out[:4000])}</pre></div>'
+            kids = "".join(_render_span(c, depth + 1) for c in children.get(s.get("span_id", ""), []))
+            indent = f'<div class="indent">{kids}</div>' if kids else ""
+            return (
+                f'<div class="span-card">'
+                f'<div class="span-head" onclick="this.nextSibling.classList.toggle(\'open\')">'
+                f'<span class="stype stype-{st}">{st}</span>'
+                f'<span class="sname">{name}</span>'
+                f'<span class="sdur">{dur}</span>'
+                f'<span class="sstatus {st_cls}">{status}</span>'
+                f'</div>'
+                f'<div class="span-body">{io_html}</div>'
+                f'</div>'
+                f'{indent}'
+            )
+
+        tree_html = '<div class="span-tree">' + "".join(_render_span(s) for s in roots) + "</div>"
+        body = err_html + tree_html
+
+    tid_escaped = _html.escape(trace_id)
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Trace {tid_escaped}</title>
+<style>{_TRACE_CSS}</style></head><body>
+<header>
+  <span class="badge">APX</span><h1>Trace</h1>
+  <a class="back" href="/_apx/traces">← All traces</a>
+</header>
+<main>
+  <div class="meta">ID: {tid_escaped}</div>
+  {body}
+</main>
+</body></html>"""
+
 
 def _parse_judge_output(text: str) -> tuple[str, str]:
     """Extract verdict and reason from a judge model's output.
@@ -203,15 +388,70 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         return JSONResponse(await _run_probe_checks(ctx))
 
     @router.get("/_apx/traces", include_in_schema=False)
-    async def traces_list_ui() -> HTMLResponse:
-        # The custom in-memory trace system was removed when the framework
-        # moved to MLflow tracing. Point users at the MLflow UI for traces.
-        return HTMLResponse(
-            "<h1>Traces moved</h1>"
-            "<p>apx-agent now emits traces via MLflow. View them in the "
-            "MLflow UI (set <code>MLFLOW_TRACKING_URI</code>), AI Playground, "
-            "or Agent Evaluation.</p>"
-        )
+    async def traces_list_ui(request: Request) -> Any:
+        from fastapi.responses import JSONResponse
+        ctx: AgentContext | None = request.app.state.agent_context
+        agent_name = ctx.config.name if ctx else None
+        fmt = request.query_params.get("fmt")
+        try:
+            import mlflow as _mlflow
+            traces = _mlflow.search_traces(
+                max_results=50,
+                order_by=["request_time DESC"],
+                return_type="list",
+                filter_string=f"tags.mlflow.traceName = '{agent_name}'" if agent_name else None,
+            )
+        except Exception:
+            traces = []
+        rows = []
+        for t in traces:
+            info = t.info
+            dur_ms = int(info.execution_duration / 1_000_000) if info.execution_duration else None
+            rows.append({
+                "trace_id": info.trace_id,
+                "state": info.state.value if hasattr(info.state, "value") else str(info.state),
+                "request_time_ms": info.request_time,
+                "duration_ms": dur_ms,
+                "request_preview": info.request_preview or "",
+                "response_preview": info.response_preview or "",
+            })
+        if fmt == "json":
+            return JSONResponse(rows)
+        return HTMLResponse(_render_traces_list(rows, agent_name))
+
+    @router.get("/_apx/traces/{trace_id:path}", include_in_schema=False)
+    async def trace_detail_ui(trace_id: str, request: Request) -> Any:
+        from fastapi.responses import JSONResponse
+        fmt = request.query_params.get("fmt")
+        try:
+            import mlflow as _mlflow
+            trace = _mlflow.get_trace(trace_id)
+        except Exception as exc:
+            if fmt == "json":
+                return JSONResponse({"error": str(exc)}, status_code=404)
+            return HTMLResponse(_render_trace_detail(trace_id, None, str(exc)))
+        if trace is None:
+            if fmt == "json":
+                return JSONResponse({"error": "not found"}, status_code=404)
+            return HTMLResponse(_render_trace_detail(trace_id, None, "Trace not found"))
+        spans = list(getattr(trace.data, "spans", None) or [])
+        span_dicts = []
+        for s in spans:
+            span_dicts.append({
+                "span_id": s.span_id,
+                "parent_id": s.parent_id,
+                "name": s.name,
+                "span_type": s.span_type.value if hasattr(s.span_type, "value") else str(s.span_type),
+                "status": s.status.status_code.value if hasattr(getattr(s.status, "status_code", None), "value") else str(s.status),
+                "start_time_ns": s.start_time_ns,
+                "end_time_ns": s.end_time_ns,
+                "duration_ms": round((s.end_time_ns - s.start_time_ns) / 1_000_000, 1) if s.end_time_ns and s.start_time_ns else None,
+                "inputs": s.inputs,
+                "outputs": s.outputs,
+            })
+        if fmt == "json":
+            return JSONResponse({"trace_id": trace_id, "spans": span_dicts})
+        return HTMLResponse(_render_trace_detail(trace_id, span_dicts, None))
 
     # ------------------------------------------------------------------
     # Topology UI — interactive react-flow graph at /_apx/topology.

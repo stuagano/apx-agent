@@ -111,6 +111,9 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
     <button id="topo-open" class="util-btn" title="Open topology graph">
       <span class="ico">⧉</span> Topology
     </button>
+    <a href="/_apx/traces" target="_blank" class="util-btn" title="Browse trace history">
+      <span class="ico">⏱</span> Traces
+    </a>
   </header>
   <main><iframe id="dash-frame" src="{default_src}"></iframe></main>
   <div id="topo-overlay" role="dialog" aria-modal="true" aria-labelledby="topo-title">
@@ -1094,17 +1097,89 @@ function renderSpanEnd(span) {{
 }}
 
 function resetTrace() {{
-  traceBody.innerHTML = '';
-  spanNodes.clear();
-  traceStatusEl.textContent = 'streaming…';
+  traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">Running…</div>';
+  traceStatusEl.textContent = 'running…';
   traceLinkEl.style.display = 'none';
 }}
 
-function finalizeTrace(traceId, status) {{
-  traceStatusEl.textContent = status === 'error' ? 'errored' : 'completed';
-  if (traceId) {{
-    traceLinkEl.href = `/_apx/traces/${{traceId}}`;
-    traceLinkEl.style.display = 'inline';
+async function finalizeTrace(traceId, status) {{
+  traceStatusEl.textContent = status === 'error' ? 'errored' : 'done';
+  if (!traceId) {{
+    traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">No trace ID returned.</div>';
+    return;
+  }}
+  traceLinkEl.href = `/_apx/traces/${{traceId}}`;
+  traceLinkEl.style.display = 'inline';
+  // Load and render spans inline
+  try {{
+    const r = await fetch(`/_apx/traces/${{traceId}}?fmt=json`);
+    const data = await r.json();
+    if (data.error || !data.spans || !data.spans.length) {{
+      traceBody.innerHTML = `<div style="color:#555;font-size:12px;padding:8px 0">${{data.error || 'No spans.'}}</div>`;
+      return;
+    }}
+    traceBody.innerHTML = '';
+    // Build parent→children
+    const byParent = {{}};
+    const roots = [];
+    for (const s of data.spans) {{
+      if (s.parent_id) (byParent[s.parent_id] = byParent[s.parent_id] || []).push(s);
+      else roots.push(s);
+    }}
+    const SPAN_COLORS = {{LLM:'#22d3ee',TOOL:'#facc15',CHAIN:'#a78bfa',AGENT:'#60b0ff',OTHER:'#94a3b8'}};
+    function spanTypeShort(t) {{
+      t = (t||'').toUpperCase();
+      if (['LLM','CHAT_MODEL','EMBEDDING'].includes(t)) return 'LLM';
+      if (['TOOL','RETRIEVER'].includes(t)) return 'TOOL';
+      if (t === 'CHAIN') return 'CHAIN';
+      if (t === 'AGENT') return 'AGENT';
+      return 'OTHER';
+    }}
+    function renderSpanNode(s, depth) {{
+      const type = spanTypeShort(s.span_type);
+      const color = SPAN_COLORS[type] || '#888';
+      const dur = s.duration_ms != null ? `${{s.duration_ms}}ms` : '';
+      const isErr = (s.status||'').toUpperCase().includes('ERR');
+      const wrap = document.createElement('div');
+      wrap.style.cssText = `padding-left:${{depth*14}}px;margin-bottom:3px;`;
+      const card = document.createElement('div');
+      card.className = 'span-step';
+      card.style.cssText = 'position:relative;padding-left:18px;';
+      const dot = document.createElement('div');
+      dot.className = 'step-dot';
+      dot.style.cssText = `position:absolute;left:1px;top:5px;width:9px;height:9px;border-radius:50%;background:${{color}};`;
+      const content = document.createElement('div');
+      content.className = 'step-content';
+      const header = document.createElement('div');
+      header.className = 'step-header';
+      header.innerHTML =
+        `<span class="who" style="color:${{color}};font-size:12px;font-weight:600">${{escHtml(s.name)}}</span>` +
+        `<span style="font-size:10px;color:#555;font-family:monospace;margin-left:4px">${{type}}</span>` +
+        (dur ? `<span class="dur" style="margin-left:auto">${{dur}}</span>` : '') +
+        (isErr ? `<span style="color:#f87171;font-size:10px;margin-left:8px">ERR</span>` : '');
+      content.appendChild(header);
+      // Show inputs/outputs compactly
+      for (const [label, val] of [['in', s.inputs], ['out', s.outputs]]) {{
+        if (!val) continue;
+        const msg = extractMsg(val);
+        if (!msg) continue;
+        const bubble = document.createElement('div');
+        const bubbleCls = label === 'in' ? (type === 'TOOL' ? 'tool-in' : 'agent-ask') : (type === 'TOOL' ? 'tool-out' : 'llm-reply');
+        bubble.className = `span-bubble ${{bubbleCls}}`;
+        bubble.style.cssText = 'font-size:11px;margin-top:3px;';
+        bubble.textContent = msg.slice(0, 300) + (msg.length > 300 ? '…' : '');
+        content.appendChild(bubble);
+      }}
+      card.appendChild(dot); card.appendChild(content);
+      wrap.appendChild(card);
+      for (const child of (byParent[s.span_id] || [])) {{
+        wrap.appendChild(renderSpanNode(child, depth + 1));
+      }}
+      return wrap;
+    }}
+    for (const root of roots) traceBody.appendChild(renderSpanNode(root, 0));
+  }} catch(e) {{
+    traceBody.innerHTML = `<div style="color:#f87171;font-size:12px">${{escHtml(e.message)}}</div>`;
   }}
 }}
 
@@ -1178,7 +1253,7 @@ form.addEventListener('submit', async e => {{
   try {{
     const res = await fetch('/responses', {{
       method: 'POST',
-      headers: {{ 'Content-Type': 'application/json' }},
+      headers: {{ 'Content-Type': 'application/json', 'x-return-trace-id': 'true' }},
       body: JSON.stringify({{ input: history, stream: true }}),
     }});
     if (!res.ok) throw new Error(`${{res.status}} ${{await res.text()}}`);
@@ -1198,6 +1273,9 @@ form.addEventListener('submit', async e => {{
         else if (line.startsWith('data: ')) {{
           try {{
             const payload = JSON.parse(line.slice(6));
+            if (payload.trace_id && !traceId) {{
+              traceId = payload.trace_id;
+            }}
             if (eventType === 'response.output_item.start' && payload.trace_id) {{
               traceId = payload.trace_id;
             }} else if (eventType === 'output_text.delta' && payload.text) {{
@@ -1205,16 +1283,9 @@ form.addEventListener('submit', async e => {{
               assistantDiv.textContent = full;
               chat.scrollTop = chat.scrollHeight;
             }} else if (eventType === 'tool.trace') {{
-              // Inline tool pills — kept alongside the Trace tab's
-              // tool span bubbles intentionally; different views,
-              // both wanted.
               if (Array.isArray(payload) && payload.length) {{
                 addToolPills(payload);
               }}
-            }} else if (eventType === 'span.start') {{
-              renderSpanStart(payload);
-            }} else if (eventType === 'span.end') {{
-              renderSpanEnd(payload);
             }} else if (eventType === 'error') {{
               traceStatus = 'error';
             }}
