@@ -17,7 +17,6 @@ from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
 _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
     ("chat", "Chat", "/_apx/chat"),
     ("edit", "Edit", "/_apx/edit"),
-    ("topology", "Topology", "/_apx/topology"),
     ("builder", "Builder", "/_apx/builder"),
     ("eval", "Eval", "/_apx/eval"),
     ("setup", "Setup", "/_apx/setup"),
@@ -73,8 +72,32 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
     .tab:hover {{ color: var(--text); border-color: var(--border-strong); }}
     .tab.active {{ color: var(--accent); background: var(--accent-bg);
                    border-color: var(--accent-border); }}
+    .util-btn {{ font: inherit; color: var(--text-muted); background: transparent;
+                 border: 1px solid var(--border-strong); border-radius: 5px;
+                 padding: 5px 10px; cursor: pointer; font-size: 12px;
+                 display: inline-flex; align-items: center; gap: 6px; }}
+    .util-btn:hover {{ color: var(--text); border-color: #555; }}
+    .util-btn .ico {{ font-size: 13px; line-height: 1; }}
     main {{ height: calc(100% - 52px); background: var(--bg); }}
     iframe {{ width: 100%; height: 100%; border: 0; background: var(--bg); }}
+    /* Topology pop-out modal */
+    #topo-overlay {{ display: none; position: fixed; inset: 0; z-index: 1500;
+                     background: rgba(0,0,0,.7); align-items: center; justify-content: center; }}
+    #topo-overlay.open {{ display: flex; }}
+    #topo-modal {{ background: var(--panel); border: 1px solid var(--border);
+                   border-radius: 10px; width: min(1100px, 95vw);
+                   height: min(720px, 90vh); display: flex; flex-direction: column;
+                   overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.5); }}
+    #topo-head {{ height: 44px; padding: 0 14px; display: flex; align-items: center;
+                  gap: 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }}
+    #topo-head h2 {{ margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }}
+    #topo-head .badge {{ font-size: 10px; padding: 2px 7px; }}
+    #topo-close {{ margin-left: auto; background: none; border: none;
+                   color: var(--text-muted); font-size: 20px; cursor: pointer;
+                   padding: 0 6px; line-height: 1; }}
+    #topo-close:hover {{ color: var(--text); }}
+    #topo-body {{ flex: 1; background: var(--bg); min-height: 0; }}
+    #topo-frame {{ width: 100%; height: 100%; border: 0; }}
   </style>
 </head>
 <body>
@@ -85,8 +108,21 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
       <div class="agent-desc">{agent_desc}</div>
     </div>
     <div class="tabs">{tab_buttons}</div>
+    <button id="topo-open" class="util-btn" title="Open topology graph">
+      <span class="ico">⧉</span> Topology
+    </button>
   </header>
   <main><iframe id="dash-frame" src="{default_src}"></iframe></main>
+  <div id="topo-overlay" role="dialog" aria-modal="true" aria-labelledby="topo-title">
+    <div id="topo-modal">
+      <div id="topo-head">
+        <span class="badge">APX</span>
+        <h2 id="topo-title">Agent topology</h2>
+        <button id="topo-close" aria-label="Close">×</button>
+      </div>
+      <div id="topo-body"><iframe id="topo-frame" title="Agent topology"></iframe></div>
+    </div>
+  </div>
   <script>
     (function () {{
       const frame = document.getElementById("dash-frame");
@@ -108,6 +144,24 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
       }});
       const initial = (location.hash || "#{default_slug}").slice(1);
       selectTab(initial);
+    }})();
+    (function () {{
+      const overlay = document.getElementById("topo-overlay");
+      const openBtn = document.getElementById("topo-open");
+      const closeBtn = document.getElementById("topo-close");
+      const tframe = document.getElementById("topo-frame");
+      let loaded = false;
+      function open() {{
+        if (!loaded) {{ tframe.src = "/_apx/topology"; loaded = true; }}
+        overlay.classList.add("open");
+      }}
+      function close() {{ overlay.classList.remove("open"); }}
+      openBtn.addEventListener("click", open);
+      closeBtn.addEventListener("click", close);
+      overlay.addEventListener("click", (e) => {{ if (e.target === overlay) close(); }});
+      document.addEventListener("keydown", (e) => {{
+        if (e.key === "Escape" && overlay.classList.contains("open")) close();
+      }});
     }})();
   </script>
 </body>
