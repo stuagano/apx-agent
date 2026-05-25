@@ -441,12 +441,18 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
         try:
             import mlflow as _mlflow
-            traces = _mlflow.search_traces(
+            # include_spans=False skips artifact download — works even when
+            # the blob-storage endpoint is unreachable (e.g. private-link
+            # workspaces where *.storage.cloud.databricks.com is blocked).
+            from mlflow.tracking import MlflowClient as _MlflowClient
+            client = _MlflowClient()
+            paged = client.search_traces(
                 experiment_ids=[experiment_id] if experiment_id else None,
                 max_results=max_results,
                 order_by=["timestamp DESC"],
-                return_type="list",
+                include_spans=False,
             )
+            traces = list(paged)
         except Exception:
             traces = []
         rows = []
