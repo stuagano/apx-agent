@@ -86,7 +86,7 @@ flowchart LR
 git clone https://github.com/stuagano/apx-agent.git
 cd apx-agent/python
 uv sync                                    # install framework
-uv run apx scaffold my-agent && cd my-agent
+uv run apx init my-agent && cd my-agent
 uv sync                                    # install agent deps
 uv run apx run                             # local dev server on :8000
 uv run apx deploy --target apps            # or --target model-serving
@@ -188,7 +188,7 @@ python/
   examples/             # 13 worked examples — see EXAMPLES.md
   tests/                # framework tests
 typescript/
-  packages/core/        # framework source
+  src/                  # framework source
   examples/             # 2 worked examples
 docs/                   # design docs + deeper guides
 ```
