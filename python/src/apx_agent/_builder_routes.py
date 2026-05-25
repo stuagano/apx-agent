@@ -34,17 +34,15 @@ def _dist_root() -> Path:
 
 
 def _resolve_workspace_client(request: Request):
-    """Resolve the OBO WorkspaceClient from request state, falling back to env-based default.
-
-    On Databricks Apps the per-request OBO client is stashed on request.state by
-    setup_agent.  For local development (apx dev / uvicorn --reload) it falls
-    back to env-based credentials (DATABRICKS_TOKEN etc.).
-    """
+    """Resolve the WorkspaceClient: per-request OBO → app-level → env-based fallback."""
     ws = getattr(request.state, "workspace_client", None)
     if ws is not None:
         return ws
-    from databricks.sdk import WorkspaceClient
-    return WorkspaceClient()
+    ws = getattr(request.app.state, "workspace_client", None)
+    if ws is not None:
+        return ws
+    from apx_agent._defaults import _make_workspace_client
+    return _make_workspace_client()
 
 
 def _read_identity_from_pyproject() -> dict | None:
@@ -225,6 +223,7 @@ def _stream_deploy(cmd: list[str], cwd: str):
         stderr=subprocess.STDOUT,
         bufsize=1,
     )
+    assert proc.stdout is not None
     try:
         for line in proc.stdout:
             # SSE-compatible framing: "data: <line>\n\n"
@@ -242,6 +241,10 @@ def build_builder_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/_apx/builder", include_in_schema=False)
+    async def builder_index_redirect():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/_apx/builder/", status_code=302)
+
     @router.get("/_apx/builder/", include_in_schema=False)
     async def builder_index():
         index = _dist_root() / "index.html"
@@ -257,7 +260,8 @@ def build_builder_router() -> APIRouter:
         return FileResponse(index, media_type="text/html")
 
     @router.post("/_apx/builder/save", include_in_schema=False)
-    async def builder_save(payload: SavePayload, force: int = 0):
+    async def builder_save(payload: SavePayload, request: Request, force: int = 0):
+        import asyncio as _asyncio
         target = _resolve_target(payload.target)
         # Refuse-to-clobber: if target exists, contents must include SENTINEL
         # OR caller must pass ?force=1.
@@ -274,10 +278,32 @@ def build_builder_router() -> APIRouter:
         sidecar = target.with_name(".apx-builder.json")
         _atomic_write(target, payload.code)
         _atomic_write(sidecar, json.dumps(payload.graph, indent=2))
+
+        # Write back to workspace so changes survive restarts.
+        ctx = getattr(request.app.state, "agent_context", None)
+        app_name = ctx.config.name if ctx else None
+        if app_name:
+            ws = _resolve_workspace_client(request)
+            try:
+                app_info = await _asyncio.to_thread(lambda: ws.apps.get(app_name))
+                ws_source = getattr(app_info, "default_source_code_path", None)
+                if ws_source:
+                    for local_path, content in [
+                        (target, payload.code),
+                        (sidecar, json.dumps(payload.graph, indent=2)),
+                    ]:
+                        ws_path = ws_source.rstrip("/") + f"/{local_path.name}"
+                        await _asyncio.to_thread(
+                            lambda p=ws_path, c=content: ws.workspace.upload(p, c.encode(), overwrite=True)
+                        )
+            except Exception:
+                pass
+
         return {
             "status": "ok",
             "agent_py": str(target),
             "sidecar": str(sidecar),
+            "restart_required": True,
         }
 
     @router.get("/_apx/builder/uc-functions", include_in_schema=False)
@@ -308,8 +334,9 @@ def build_builder_router() -> APIRouter:
             endpoints = list(ws.vector_search_endpoints.list_endpoints())
             all_indexes = []
             for ep in endpoints:
-                resp = ws.vector_search_indexes.list_indexes(endpoint_name=ep.name)
-                for idx in resp.vector_indexes or []:
+                if not ep.name:
+                    continue
+                for idx in ws.vector_search_indexes.list_indexes(endpoint_name=ep.name):
                     all_indexes.append(
                         {
                             "name": getattr(idx, "name", ""),
@@ -347,8 +374,14 @@ def build_builder_router() -> APIRouter:
 
     @router.post("/_apx/builder/deploy", include_in_schema=False)
     async def builder_deploy(payload: DeployPayload):
+        from fastapi.responses import JSONResponse
         _validate_deploy_payload(payload)
-        apx_bin = shutil.which("apx") or "apx"
+        apx_bin = shutil.which("apx")
+        if apx_bin is None:
+            return JSONResponse(
+                {"ok": False, "error": "apx CLI is not available in this environment. Deploy from your local machine: uv run apx deploy --target apps"},
+                status_code=503,
+            )
         cmd = [apx_bin, "deploy", "--target", payload.target, "--profile", payload.profile]
         return StreamingResponse(
             _stream_deploy(cmd, cwd=str(Path.cwd())),

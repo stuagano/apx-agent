@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     slack_webhook_sourcing: str = ""
     slack_webhook_sales: str = ""
 
+    # Watchdog compliance integration (optional — noop when unset)
+    watchdog_mcp_url: str = ""
+    watchdog_violations_table: str = ""  # catalog.schema.watchdog_violations
+
+    # Lakebase session persistence (optional — stateless when unset)
+    # Use postgresql+psycopg://user@host:5432/dbname — password injected via OAuth
+    lakebase_connection_url: str = ""
+    lakebase_instance_name: str = ""   # Lakebase instance name for token rotation
+    lakebase_table: str = "apx_sessions"
+
     def require(self, *fields: str) -> None:
         missing = [f for f in fields if not getattr(self, f)]
         if missing:

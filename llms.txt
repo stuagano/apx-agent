@@ -1,0 +1,30 @@
+# apx-agent
+
+> Write a Databricks AI agent once. Deploy to Model Serving or Databricks Apps with one flag.
+
+apx-agent is a Python + TypeScript framework for authoring Databricks AI agents. It handles the dual-runtime compile target (ChatAgent for Mosaic AI Model Serving, ResponsesAgent for Databricks Apps), identity passthrough so the calling user's OAuth token flows through every tool call, and governed primitives (UC functions, Genie spaces, Vector Search) that register as Mosaic AI resources so deployment mints scoped tokens automatically.
+
+## Guides
+
+- [Getting Started](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/getting-started.md): Installation, first agent, local dev server, deploy to Apps or Model Serving
+- [Apps vs Model Serving](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/apps-vs-model-serving.md): Decision criteria — when to pick each runtime target
+- [Workflow Patterns](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/workflow-patterns.md): SequentialAgent, ParallelAgent, LoopAgent, RouterAgent, HandoffAgent — decision criteria and full examples
+- [Sessions + Memory Bank + Example Bank](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/sessions-and-memory.md): Multi-turn sessions (LakebaseSessionStore, DeltaSessionStore), durable MemoryBank, few-shot ExampleStore
+- [Governed Primitives](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/governed-primitives.md): uc_function_tool, genie_tool, vector_search_tool — authoring and UC registration
+- [Identity Passthrough](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/identity-passthrough.md): OBO mechanics, how user OAuth flows through every tool call
+- [MCP + A2A Discovery](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/mcp-and-a2a.md): /mcp endpoint, agent_tool, cross-endpoint sub-agent calls
+- [Compliance](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/compliance.md): WatchdogGuard, audit log schema, local guards (RateLimit, ToolAllowlist, prompt_injection_heuristic)
+- [Evaluation](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/evaluation.md): apx eval, evalset.jsonl, MLflow experiments, custom judges
+- [Cost Tracking + Callbacks](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/cost-and-callbacks.md): Cost callbacks, token tracking, usage hooks
+- [Hub + Agent Publishing](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/hub.md): apx publish, agent registry, AgentHub UI
+- [Dev UI](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/dev-ui.md): /_apx/* surfaces — traces, eval, tool editor, topology graph, setup wizard
+- [Lakebase Recipe](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/lakebase-recipe.md): Provisioning, pgvector, pool tuning, OAuth token rotation
+- [Deployment](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/deployment.md): Full deploy workflow, apx deploy flags, MLflow logging
+- [Deployment Troubleshooting](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/deployment-troubleshooting.md): Common deploy failures and fixes
+- [Configuration](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/configuration.md): pyproject.toml [tool.apx.agent] section, env vars, settings
+- [Typed Tools](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/typed-tools.md): @tool decorator, UC function publishing, Pydantic schemas
+- [Ecosystem](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/ecosystem.md): How apx-agent fits in the Databricks AI ecosystem
+
+## Reference
+
+- [CLI Reference](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/cli.md): Full CLI surface — init, dev, deploy, eval, publish, memory, examples, trace, cost, topology, list

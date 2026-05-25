@@ -1,76 +1,96 @@
 # Getting started
 
-## Python
+An **agent** is a declaration: `instructions` + `tools` + a model name. apx-agent compiles it to whichever Databricks runtime you target without changing the agent definition.
+
+## Prerequisites
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv (Python 3.11+ required)
+pip install databricks-cli
+databricks configure          # enter workspace URL + personal access token
+```
+
+You'll also need a Databricks workspace with access to a model serving endpoint (e.g. `databricks-claude-sonnet-4-6`).
+
+---
+
+## Deploy to Databricks Apps
+
+Five commands from clone to a live agent:
+
+```bash
+git clone https://github.com/stuagano/apx-agent.git
+cd apx-agent/python && uv sync
+uv run apx scaffold my-agent --target apps
+cd my-agent && uv sync
+uv run apx deploy --target apps
+```
+
+When it finishes, `apx deploy` prints the app URL. Open it — the scaffolded agent (with an `echo` tool) is live and ready to chat.
+
+---
+
+## Test locally first
+
+Before deploying, run the agent on your machine:
+
+```bash
+uv run uvicorn agent_server.start_server:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://localhost:8000/_apx/agent` and try **"echo hello"**. When it looks good, run `apx deploy`.
+
+---
+
+## The agent file
+
+`agent.py` is the only file you edit. The scaffolded version has a working `echo` tool:
 
 ```python
-from apx_agent import Agent, genie_tool, lineage_tool, uc_function_tool
+from apx_agent import Agent, tool
+
+@tool
+def echo(message: str) -> str:
+    """Echo the user's message back."""
+    return f"echo: {message}"
 
 agent = Agent(
-    instructions="You investigate missing data in Databricks tables.",
-    tools=[
-        lineage_tool(),
-        genie_tool("abc123", description="Answer data questions"),
-        uc_function_tool("main.tools.classify_intent"),
-    ],
+    instructions="You are a helpful assistant.",
+    tools=[echo],
 )
 ```
 
-Deploy as a Mosaic AI agent (Model Serving):
+Replace the echo tool with a real Databricks tool:
 
-```python
-import mlflow
-from databricks import agents
-from apx_agent import log_agent
+| Tool | What it wraps |
+|------|---------------|
+| `uc_function_tool("catalog.schema.fn")` | A Unity Catalog SQL function |
+| `genie_tool("space_id")` | A Genie space — natural-language SQL over any data |
+| `vector_search_tool("index_name")` | A Databricks Vector Search index |
+| `@tool def fn(...) -> str` | Any Python function |
 
-with mlflow.start_run():
-    info = log_agent(
-        agent,
-        model="databricks-claude-sonnet-4-6",
-        registered_model_name="main.agents.data_triage",
-    )
+## Updating your agent
 
-agents.deploy("main.agents.data_triage", model_version=info.registered_model_version)
-```
+After the initial deploy, `apx deploy` uploads your code to a path in your Databricks workspace (visible in the deploy output as `Downloading source code from /Workspace/Users/.../src/...`). That's where your agent lives at runtime.
 
-`log_agent` walks the agent tree, collects every declared resource (UC functions, Genie spaces, sub-agent endpoints, the LLM endpoint), and hands MLflow the full list. No manual `resources=[...]` to maintain.
+To update it without redeploying from the CLI:
 
-Host as a Databricks App instead (same agent, different runtime):
+1. Go to your workspace → **Apps** → select your app
+2. Click **Edit source** to open `agent.py` in the workspace editor
+3. Make your changes and save
+4. Click **Restart** — the app stops the running process, re-reads `agent.py` from the workspace, and starts fresh at the same endpoint
 
-```python
-from apx_agent import create_app
-app = create_app(agent)  # uvicorn-compatible FastAPI app
-```
+No new deployment, no URL change.
 
-```bash
-cd python
-uv sync
-uvicorn my_app:app --reload
-```
+---
 
-## TypeScript
+## What's next
 
-```typescript
-import { createApp, server } from '@databricks/appkit';
-import { createAgentPlugin, lineageTool, genieTool, ucFunctionTool } from 'appkit-agent';
-
-createApp({
-  plugins: [
-    server(),
-    createAgentPlugin({
-      model: 'databricks-claude-sonnet-4-6',
-      instructions: 'You investigate missing data.',
-      tools: [
-        lineageTool(),
-        genieTool('abc123', { description: 'Answer data questions' }),
-        ucFunctionTool('main.tools.classify_intent'),
-      ],
-    }),
-  ],
-});
-```
-
-```bash
-cd typescript
-npm install
-npm run dev
-```
+| Goal | Doc |
+|------|-----|
+| Choose Apps vs Model Serving | [apps-vs-model-serving.md](apps-vs-model-serving.md) |
+| Build a multi-step pipeline | [workflow-patterns.md](workflow-patterns.md) |
+| Add multi-turn memory | [sessions-and-memory.md](sessions-and-memory.md) |
+| Write and publish UC function tools | [governed-primitives.md](governed-primitives.md) |
+| Add compliance guards | [compliance.md](compliance.md) |
+| Full CLI reference | [cli.md](cli.md) |

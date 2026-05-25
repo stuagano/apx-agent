@@ -56,7 +56,7 @@ See [docs/dev-ui.md](docs/dev-ui.md) for the full set of `/_apx/*` surfaces.
 | **Workflow agents** | `SequentialAgent`, `ParallelAgent`, `LoopAgent`, `RouterAgent`, `HandoffAgent` — deterministic composition |
 | **Remote sub-agents** | `agent_tool` wraps any local or remote agent. URL shorthand auto-wraps via A2A discovery. |
 | **MCP-native** | `/mcp` endpoint on every Apps deploy. Genie + Genie Code consume tools over standard MCP. |
-| **Sessions + memory** | `LakebaseSessionStore`, `LakebaseMemoryStore`, `InMemoryExampleStore`, few-shot retrieval |
+| **Sessions + memory** | Sessions = named threads: `session_id` ties turns together; history auto-loaded each turn. `LakebaseSessionStore` (~1–10 ms, chat-style), `DeltaSessionStore` (durable, long-idle), `InMemorySessionStore` (dev). Plus `MemoryBank` for durable cross-session recall and `ExampleStore` for few-shot retrieval. |
 | **Compliance hooks** | Watchdog adapter, audit log schema, local guards, cost tracking, callbacks |
 | **Evaluation** | `apx eval` against MLflow experiments with custom judges |
 | **Dev UI** | `/_apx/agent` — traces, eval, tool editor, setup wizard |
@@ -85,11 +85,11 @@ flowchart LR
 ```bash
 git clone https://github.com/stuagano/apx-agent.git
 cd apx-agent/python
-uv sync                       # or: pip install -e '.[langgraph]'
-apx init my-agent
-cd my-agent
-apx dev                       # local dev server on :8000
-apx deploy --target apps      # or --target model-serving
+uv sync                                    # install framework
+uv run apx scaffold my-agent && cd my-agent
+uv sync                                    # install agent deps
+uv run apx run                             # local dev server on :8000
+uv run apx deploy --target apps            # or --target model-serving
 ```
 
 ### TypeScript
@@ -98,8 +98,9 @@ apx deploy --target apps      # or --target model-serving
 git clone https://github.com/stuagano/apx-agent.git
 cd apx-agent/typescript
 npm install && npm run build
-cd ../my-agent                # or: npx apx init my-agent
-npx apx dev
+npx apx scaffold my-agent && cd my-agent
+npm install
+npx apx run
 npx apx deploy --target apps
 ```
 
@@ -190,6 +191,34 @@ typescript/
   packages/core/        # framework source
   examples/             # 2 worked examples
 docs/                   # design docs + deeper guides
+```
+
+## For AI coding assistants
+
+The repo ships an [`llms.txt`](llms.txt) index of all documentation URLs in the [llmstxt.org](https://llmstxt.org) format. Add the docs as a local MCP server in Claude Code so you can query them inline:
+
+```bash
+claude mcp add apx-agent-docs --transport stdio -- \
+  uvx --from mcpdoc mcpdoc \
+  --urls "apxAgent:https://raw.githubusercontent.com/stuagano/apx-agent/main/llms.txt" \
+  --transport stdio
+```
+
+Or add it to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "apx-agent-docs": {
+      "command": "uvx",
+      "args": [
+        "--from", "mcpdoc", "mcpdoc",
+        "--urls", "apxAgent:https://raw.githubusercontent.com/stuagano/apx-agent/main/llms.txt",
+        "--transport", "stdio"
+      ]
+    }
+  }
+}
 ```
 
 ## License

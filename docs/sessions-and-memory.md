@@ -2,7 +2,19 @@
 
 ## Sessions — multi-turn memory
 
-By default, every `predict()` call is independent — the agent has no memory of prior turns. For conversational agents, pass a `SessionStore` to `compile_to_chat_agent` and include a `session_id` in `custom_inputs`. The framework loads the session before the LLM sees the new turn, prepends prior history, runs the agent, then persists the new messages.
+A **session** is a named conversation thread. Give it a `session_id` string and the framework ties multiple `predict()` calls together: history is loaded before each turn, the new exchange is appended, and everything is persisted. Without a session, every call starts fresh — same compiled agent, two different modes.
+
+Three stores cover the main workloads:
+
+| Store | Best for | Latency |
+|-------|----------|---------|
+| `InMemorySessionStore` | Tests, dev, single-process Apps | in-process |
+| `DeltaSessionStore` | UC-governed Delta table; durable across long-idle sessions | ~100–500 ms/turn |
+| `LakebaseSessionStore` | Chat UIs and high-frequency turns (Lakebase managed Postgres) | ~1–10 ms/turn |
+
+Custom stores satisfy the `SessionStore` protocol (`get`/`put`/`delete`) — bring your own Redis, Memcached, etc.
+
+Wire a store by passing it to `compile_to_chat_agent` and including a `session_id` in `custom_inputs`:
 
 ```python
 from apx_agent import (
@@ -34,15 +46,38 @@ chat.predict(
 )
 ```
 
-| Store | When to use |
-|-------|-------------|
-| `InMemorySessionStore` | Tests, dev, single-process Apps |
-| `DeltaSessionStore` | UC-governed Delta table. Analytics-style multi-step pipelines, durable across long-idle sessions. |
-| `LakebaseSessionStore` | Lakebase (managed Postgres) via SQLAlchemy. Low-latency chat-style sessions; cheaper at high turn rates than Delta. |
+`LakebaseSessionStore` takes a SQLAlchemy `Engine` and stays narrow on SQL. The canonical wiring pattern — always use this, not a static password in the URL:
 
-Custom stores satisfy the `SessionStore` protocol (`get`/`put`/`delete`) — bring your own Redis, Memcached, etc.
+```python
+from sqlalchemy import create_engine, event
+from databricks.sdk import WorkspaceClient
+from apx_agent import LakebaseSessionStore
 
-`LakebaseSessionStore` takes a SQLAlchemy `Engine` and stays narrow on SQL — the caller wires up OAuth token rotation on the engine. From a git clone of this repo, install the lakebase extra with `cd apx-agent/python && pip install -e '.[lakebase]'`.
+ws = WorkspaceClient()
+instance = ws.database.get_database_instance(name="my-lakebase-instance")
+
+engine = create_engine(
+    f"postgresql+psycopg://{ws.current_user.me().user_name}@{instance.read_write_dns}:5432/agentdb",
+    pool_pre_ping=True,
+    pool_recycle=1800,   # well under the ~1h Lakebase token TTL
+)
+
+@event.listens_for(engine, "do_connect")
+def _refresh_token(_dialect, _record, _args, kwargs):
+    cred = ws.database.generate_database_credential(
+        instance_names=["my-lakebase-instance"],
+        request_id="apx-sessions",
+    )
+    kwargs["password"] = cred.token
+
+session_store = LakebaseSessionStore(engine=engine)
+```
+
+`do_connect` fires before every new connection is opened from the pool, so the password is always a fresh token. `pool_recycle=1800` ensures connections are dropped and re-opened before the token expires — never keep a connection alive across the full TTL.
+
+See [`docs/lakebase-recipe.md`](lakebase-recipe.md) for provisioning, pgvector, pool tuning, and token rotation gotchas.
+
+Install the lakebase extra: `pip install 'apx-agent[lakebase]'`.
 
 When `custom_inputs["session_id"]` is absent the framework silently runs single-turn — the same compiled agent works in both modes.
 

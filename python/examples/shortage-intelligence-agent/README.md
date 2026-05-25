@@ -170,6 +170,30 @@ The report agent (Step 5) posts dual reports — one to the sourcing team, one t
 
 If webhooks are not configured, reports are logged to stdout instead.
 
+### Step 6: (Optional) Provision a Lakebase instance for session memory
+
+By default the agent is stateless — each conversation starts fresh. Wiring a Lakebase (managed Postgres) instance enables multi-turn memory: the agent remembers context across separate requests within the same `conversation_id`.
+
+Lakebase is the right store here over Delta because it's optimised for low-latency Postgres point-reads/writes (~1–10ms vs. SQL warehouse round-trips). Each turn reads and writes the session once.
+
+1. In the Databricks UI, go to **Compute → Lakebase** and create a new Postgres instance. Note the instance name (e.g. `shortage-sessions`) and the connection host shown in the instance details.
+
+2. Create a database:
+   ```sql
+   CREATE DATABASE agentdb;
+   ```
+
+3. Set the connection env vars:
+   ```env
+   LAKEBASE_CONNECTION_URL=postgresql+psycopg://token@<host>:5432/agentdb
+   LAKEBASE_INSTANCE_NAME=shortage-sessions
+   # LAKEBASE_TABLE=apx_sessions  # optional — this is the default
+   ```
+
+   The password field in the URL is intentionally omitted — the app mints a fresh OAuth token on every new connection via `ws.postgres.generate_database_credential()` so credentials never expire mid-run.
+
+The `apx_sessions` table is created automatically on first request if it doesn't exist.
+
 ---
 
 ## Part 2: Local development
@@ -209,6 +233,11 @@ PARTS_CATALOG_TABLE=catalog.schema.parts_catalog
 # DIGIKEY_CLIENT_SECRET=...
 # SLACK_WEBHOOK_SOURCING=https://hooks.slack.com/services/...
 # SLACK_WEBHOOK_SALES=https://hooks.slack.com/services/...
+
+# Lakebase session memory (Part 1, Step 6)
+# LAKEBASE_CONNECTION_URL=postgresql+psycopg://token@<host>:5432/agentdb
+# LAKEBASE_INSTANCE_NAME=shortage-sessions
+# LAKEBASE_TABLE=apx_sessions
 ```
 
 > `.env` is gitignored. Never commit it.
@@ -218,13 +247,13 @@ PARTS_CATALOG_TABLE=catalog.schema.parts_catalog
 This example does not currently include a test suite. To verify the agent loads correctly:
 
 ```bash
-uv run python -c "from shortage_intelligence_agent.backend.app import app; print('OK')"
+uv run python -c "from app import app; print('OK')"
 ```
 
 ### Step 5: Run locally
 
 ```bash
-uv run uvicorn shortage_intelligence_agent.backend.app:app --reload --port 8000
+uv run uvicorn app:app --reload --port 8000
 ```
 
 The agent UI opens at `http://localhost:8000`. Try:
@@ -316,6 +345,11 @@ If Slack webhooks are not configured, reports are logged to the job run output i
 | `DIGIKEY_CLIENT_SECRET` | DigiKey OAuth2 client secret |
 | `SLACK_WEBHOOK_SOURCING` | Slack incoming webhook for sourcing team reports |
 | `SLACK_WEBHOOK_SALES` | Slack incoming webhook for sales team reports |
+| `LAKEBASE_CONNECTION_URL` | `postgresql+psycopg://user@host:5432/dbname` — password injected via OAuth; stateless when unset |
+| `LAKEBASE_INSTANCE_NAME` | Lakebase instance name for OAuth token rotation (required if `LAKEBASE_CONNECTION_URL` is set) |
+| `LAKEBASE_TABLE` | Session table name within the Lakebase database (default: `apx_sessions`) |
+| `WATCHDOG_MCP_URL` | Watchdog MCP endpoint URL — noop when unset |
+| `WATCHDOG_VIOLATIONS_TABLE` | UC table for watchdog violation reports (`catalog.schema.table`) |
 
 ---
 
@@ -323,18 +357,19 @@ If Slack webhooks are not configured, reports are logged to the job run output i
 
 ```
 shortage-intelligence-agent/
-├── app.yml                                    # Runtime command + env vars
-├── pyproject.toml                             # Package config and deps
-├── databricks.yml                             # Asset Bundle — app + morning-scan job
-└── src/shortage_intelligence_agent/
-    └── backend/
-        ├── app.py                             # FastAPI app entry point
-        ├── agent_router.py                    # SequentialAgent: 5-step pipeline
-        ├── pipeline.py                        # Step agent definitions
-        ├── config.py                          # Settings from env vars
-        ├── models.py                          # Pydantic models
-        ├── router.py                          # HTTP routes: /version, /current-user
-        └── core/                              # Tool implementations per step
+├── app.yml                       # Runtime command + env vars
+├── pyproject.toml                # Package config and deps
+├── databricks.yml                # Asset Bundle — app + morning-scan job
+├── evalset.jsonl                 # Eval prompts for apx eval-chain
+├── agent.py                      # SequentialAgent: 5-step pipeline
+├── app.py                        # FastAPI app entry point
+├── api.py                        # HTTP routes: /version, /current-user
+├── config.py                     # Settings from env vars
+├── models.py                     # Pydantic models
+├── tools.py                      # Tool implementations per step
+├── uc_helpers.py                 # classify_shortage_severity UC function
+└── jobs/
+    └── morning_scan.py           # Scheduled job entry point
 ```
 
 ---
@@ -362,22 +397,22 @@ The job must be able to reach the deployed app URL. Confirm the app is `RUNNING`
 
 ## Migration to the 2026-05 primitives
 
-See [`MIGRATION.md`](./MIGRATION.md) for the dry-run analysis. Quick summary:
+Migration status:
 
 | Move | Status |
 |---|---|
 | Deploy via `apx deploy` (chains publish-tools + log_agent + agents.deploy + set_uc_tags) | ✅ shipped |
 | `evalset.jsonl` for `apx eval-chain` | ✅ shipped |
 | Extract `classify_shortage_severity` as `@tool(uc=...)` (worked UC-function example) | ✅ shipped |
-| Wire `DeltaSessionStore` (multi-turn) | documented, depends on UX decision |
-| Wire `WatchdogGuard` + local guards | documented, depends on watchdog availability |
+| Wire `DeltaSessionStore` (multi-turn) | ✅ shipped 2026-05-25 |
+| Wire `WatchdogGuard` + local guards | ✅ shipped 2026-05-25 |
 | Move data-fetching tools to `@tool(uc=...)` | ❌ blocked — needs user-scoped OBO |
 
 ### Deploy via the canonical flow
 
 ```bash
 apx deploy \
-  --module shortage_intelligence_agent.backend.agent_router:agent \
+  --module agent:agent \
   --model databricks-claude-sonnet-4-6 \
   --name main.agents.shortage_intelligence \
   --agent-name shortage_intelligence \
@@ -396,7 +431,7 @@ Toggle individual stages with `--no-publish-tools`, `--no-deploy`, or `--no-set-
 ### Operate via the apx CLI
 
 ```bash
-apx info  --module shortage_intelligence_agent.backend.agent_router:agent
+apx info  --module agent:agent
 apx logs  --endpoint shortage_intelligence
 apx trace --agent shortage_intelligence --limit 20
 apx cost  --agent shortage_intelligence --hours 24
@@ -408,7 +443,7 @@ apx list
 
 ```bash
 apx eval-chain evalset.jsonl \
-    --module shortage_intelligence_agent.backend.agent_router:agent \
+    --module agent:agent \
     --model "$SERVING_MODEL_ENDPOINT" \
     --experiment "$APX_EXPERIMENT"
 ```

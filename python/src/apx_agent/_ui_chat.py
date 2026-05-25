@@ -36,7 +36,9 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
     agent_desc = ctx.config.description if ctx else ""
 
     tab_buttons = "".join(
-        f'<button class="tab" data-tab="{slug}" data-src="{src}">{label}</button>'
+        f'<a class="tab" href="{src}">{label}</a>'
+        if slug == "builder"
+        else f'<button class="tab" data-tab="{slug}" data-src="{src}">{label}</button>'
         for slug, label, src in _UNIFIED_TABS
     )
     default_slug = _UNIFIED_TABS[0][0]
@@ -143,9 +145,11 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
       tabs.forEach((t) => t.addEventListener("click", () => selectTab(t.dataset.tab)));
       window.addEventListener("hashchange", () => {{
         const slug = (location.hash || "#{default_slug}").slice(1);
+        if (slug === "builder") {{ window.location.replace("/_apx/builder"); return; }}
         selectTab(slug);
       }});
       const initial = (location.hash || "#{default_slug}").slice(1);
+      if (initial === "builder") {{ window.location.replace("/_apx/builder"); return; }}
       selectTab(initial);
     }})();
     (function () {{
@@ -177,56 +181,24 @@ def _render_eval_landing(
     loaded_path: str | None,
     load_error: str | None,
 ) -> str:
-    """Eval landing page — read-only list of persisted eval cases.
-
-    Backed by ``evals.json`` next to the agent source. Running cases
-    against the live agent is wired into the Chat panel's right-side
-    sub-tab; this page exists so the Eval tab in the unified shell has
-    a useful destination instead of bouncing through a redirect.
-    """
+    """Eval page — run eval cases against the live agent with LLM-as-judge scoring."""
     import html as _html
     import json as _json
 
+    cases_json = _json.dumps(cases)
+    file_label = _html.escape(loaded_path) if loaded_path else "(no evals.json)"
+    case_count = len(cases)
+
+    empty_banner = ""
     if load_error:
-        body = (
-            '<div class="banner banner-err">'
-            f"<strong>Couldn&rsquo;t load eval cases</strong> &middot; {_html.escape(load_error)}"
-            "</div>"
-        )
-    elif loaded_path is None:
-        body = (
-            '<div class="banner banner-info">'
-            "<strong>No evals.json yet.</strong> "
-            "The Chat panel&rsquo;s right-side <em>Eval</em> sub-tab will create "
-            "<code>evals.json</code> next to your agent source the first time you save a case."
-            "</div>"
+        empty_banner = (
+            f'<div class="banner banner-err"><strong>Couldn\'t load eval cases</strong> &middot; {_html.escape(load_error)}</div>'
         )
     elif not cases:
-        body = (
-            '<div class="banner banner-info">'
-            f"<strong>Empty eval set</strong> &middot; <code>{_html.escape(loaded_path)}</code> exists "
-            "but contains no cases. Open the Chat tab and use the right-side <em>Eval</em> "
-            "sub-tab to add some."
-            "</div>"
+        empty_banner = (
+            '<div class="banner banner-info"><strong>No eval cases yet.</strong> '
+            'Add a question below to get started.</div>'
         )
-    else:
-        rows = []
-        for i, case in enumerate(cases, 1):
-            q = _html.escape(str(case.get("question", "")))[:400]
-            expected = _html.escape(str(case.get("expected", case.get("expected_response", ""))))[:400]
-            criterion = _html.escape(str(case.get("criterion", "")))[:200]
-            rows.append(
-                f"<div class='case'>"
-                f"<div class='case-head'><span class='case-n'>#{i}</span>"
-                f"<span class='case-q'>{q or '<em>(empty question)</em>'}</span></div>"
-                f"{'<div class=case-row><span class=label>Expected</span><span>' + expected + '</span></div>' if expected else ''}"
-                f"{'<div class=case-row><span class=label>Criterion</span><span>' + criterion + '</span></div>' if criterion else ''}"
-                f"</div>"
-            )
-        body = "".join(rows)
-
-    case_count = len(cases)
-    file_label = _html.escape(loaded_path) if loaded_path else "(no evals.json)"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -235,50 +207,209 @@ def _render_eval_landing(
   <title>Eval &middot; APX dev</title>
   <style>
     :root {{ --bg: #0a0a0a; --panel: #111; --border: #2a2a2a; --text: #e5e7eb;
-             --text-muted: #888; --accent: #60b0ff; --accent-bg: #0d1f38;
-             --accent-border: #1e3a5f; }}
+             --muted: #888; --accent: #60b0ff; --accent-bg: #0d1f38; --accent-border: #1e3a5f; }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; background: var(--bg); color: var(--text);
-            font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
-            font-size: 13px; line-height: 1.5; }}
-    .container {{ max-width: 960px; margin: 0 auto; padding: 24px 20px; }}
-    h1 {{ font-size: 18px; font-weight: 600; margin: 0 0 4px; }}
-    .meta {{ color: var(--text-muted); font-size: 12px; margin-bottom: 20px; }}
-    .meta code {{ background: #1a1a1a; padding: 1px 6px; border-radius: 3px; color: #ccc; }}
-    .banner {{ padding: 12px 16px; border-radius: 6px; margin-bottom: 20px;
+            font-family: ui-sans-serif, system-ui, sans-serif; font-size: 13px; line-height: 1.5; }}
+    .container {{ max-width: 900px; margin: 0 auto; padding: 24px 20px; }}
+    h1 {{ font-size: 17px; font-weight: 600; margin: 0 0 4px; }}
+    .meta {{ color: var(--muted); font-size: 12px; margin-bottom: 16px; }}
+    .meta code {{ background: #1a1a1a; padding: 1px 5px; border-radius: 3px; color: #ccc; }}
+    .toolbar {{ display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }}
+    .btn {{ padding: 5px 14px; border-radius: 5px; font-size: 12px; cursor: pointer; border: 1px solid; }}
+    .btn-run {{ background: var(--accent-bg); color: var(--accent); border-color: var(--accent-border); }}
+    .btn-run:disabled {{ opacity: .4; cursor: default; }}
+    .btn-reset {{ background: transparent; color: var(--muted); border-color: #333; }}
+    #status {{ font-size: 11px; color: var(--muted); }}
+    .progress {{ height: 2px; background: #1a1a1a; margin-bottom: 16px; border-radius: 1px; }}
+    .progress-fill {{ height: 100%; background: #2563eb; width: 0%; transition: width .3s; border-radius: 1px; }}
+    .banner {{ padding: 10px 14px; border-radius: 6px; margin-bottom: 16px;
                border: 1px solid var(--border); background: var(--panel); }}
-    .banner-info {{ border-color: #1e3a5f; background: var(--accent-bg);
-                    color: #d6e6ff; }}
+    .banner-info {{ border-color: var(--accent-border); background: var(--accent-bg); color: #d6e6ff; }}
     .banner-err {{ border-color: #7f1d1d; background: #2a0f0f; color: #fda4af; }}
-    .banner code {{ background: rgba(0,0,0,.3); padding: 1px 6px; border-radius: 3px; }}
-    .actions {{ display: flex; gap: 8px; margin: 20px 0 24px; }}
-    .actions a {{ font-size: 12px; color: var(--accent);
-                  background: var(--accent-bg); border: 1px solid var(--accent-border);
-                  padding: 6px 12px; border-radius: 5px; text-decoration: none; }}
-    .actions a:hover {{ background: #11294a; }}
-    .case {{ border: 1px solid var(--border); border-radius: 6px;
-             padding: 12px 14px; margin-bottom: 8px; background: var(--panel); }}
-    .case-head {{ display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; }}
-    .case-n {{ color: var(--text-muted); font-size: 11px; min-width: 28px; }}
-    .case-q {{ font-weight: 500; }}
-    .case-row {{ display: flex; gap: 10px; padding: 2px 0 2px 38px;
-                 color: var(--text-muted); font-size: 12px; }}
-    .label {{ min-width: 64px; color: #666; text-transform: uppercase;
-              font-size: 10px; letter-spacing: .5px; padding-top: 2px; }}
+    .case {{ border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px;
+             margin-bottom: 8px; background: var(--panel); }}
+    .case.pass {{ border-color: #1a4a1a; }}
+    .case.fail {{ border-color: #4a1a1a; }}
+    .case-head {{ display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }}
+    .case-n {{ color: var(--muted); font-size: 11px; min-width: 24px; }}
+    .case-q {{ font-weight: 500; flex: 1; }}
+    .badge {{ font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 3px; }}
+    .badge-pass {{ background: #14532d; color: #86efac; }}
+    .badge-fail {{ background: #7f1d1d; color: #fca5a5; }}
+    .badge-running {{ background: #1e3a5f; color: #93c5fd; }}
+    .case-row {{ display: flex; gap: 8px; padding: 2px 0 2px 32px; font-size: 12px; color: var(--muted); }}
+    .label {{ min-width: 64px; color: #555; text-transform: uppercase; font-size: 10px; letter-spacing: .4px; padding-top: 2px; }}
+    .case-response {{ padding: 6px 14px 6px 32px; font-size: 12px; color: #ccc; white-space: pre-wrap; word-break: break-word; line-height: 1.6; border-left: 2px solid #222; margin: 4px 14px 4px 32px; padding-left: 10px; }}
+    .case-reason {{ padding: 2px 32px 6px; font-size: 11px; color: #888; font-style: italic; }}
+    .run-btn {{ background: transparent; border: none; color: var(--accent); cursor: pointer;
+                font-size: 13px; padding: 0 4px; opacity: .7; }}
+    .run-btn:hover {{ opacity: 1; }}
+    .add-section {{ margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px; }}
+    .add-section h2 {{ font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }}
+    textarea, input {{ width: 100%; background: #161616; border: 1px solid #2a2a2a; color: var(--text);
+                        border-radius: 5px; padding: 8px 10px; font-size: 12px; font-family: inherit;
+                        resize: none; outline: none; margin-bottom: 6px; }}
+    textarea:focus, input:focus {{ border-color: #444; }}
+    .btn-add {{ background: transparent; color: var(--muted); border: 1px solid #333;
+                border-radius: 5px; padding: 5px 12px; font-size: 11px; cursor: pointer; }}
+    .btn-add:hover {{ color: var(--text); border-color: #555; }}
   </style>
 </head>
 <body>
-  <div class="container">
-    <h1>Eval cases</h1>
-    <div class="meta">
-      {case_count} case{'s' if case_count != 1 else ''} &middot;
-      file: <code>{file_label}</code>
-    </div>
-    <div class="actions">
-      <a href="/_apx/agent#chat">Run in Chat &rarr;</a>
-    </div>
-    {body}
+<div class="container">
+  <h1>Eval</h1>
+  <div class="meta">{case_count} case{'' if case_count == 1 else 's'} &middot; <code>{file_label}</code></div>
+  {empty_banner}
+  <div class="toolbar">
+    <button class="btn btn-run" id="run-all">&#9654; Run All</button>
+    <button class="btn btn-reset" id="reset">&#8635; Reset</button>
+    <span id="status"></span>
   </div>
+  <div class="progress"><div class="progress-fill" id="progress-fill"></div></div>
+  <div id="cases"></div>
+
+  <div class="add-section">
+    <h2>Add case</h2>
+    <textarea id="add-q" rows="2" placeholder="Test question…"></textarea>
+    <input id="add-criterion" placeholder="Judge criterion (optional) — e.g. &quot;response should mention the word hello&quot;" />
+    <button class="btn-add" id="add-btn">+ Add</button>
+  </div>
+</div>
+<script>
+let rows = {cases_json};
+
+function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+
+function render() {{
+  const el = document.getElementById('cases');
+  if (!rows.length) {{ el.innerHTML = ''; return; }}
+  el.innerHTML = rows.map((r, i) => {{
+    const cls = r.status === 'pass' ? 'pass' : r.status === 'fail' ? 'fail' : '';
+    const badge = r.status === 'running'
+      ? '<span class="badge badge-running">running…</span>'
+      : r.status === 'pass' ? '<span class="badge badge-pass">PASS</span>'
+      : r.status === 'fail' ? '<span class="badge badge-fail">FAIL</span>'
+      : '';
+    const runBtn = r.status !== 'running'
+      ? `<button class="run-btn" onclick="runCase(${{i}})" title="Run">&#9654;</button>` : '';
+    const criterion = r.expected_judge || r.criterion || '';
+    const expected = r.expected || '';
+    return `<div class="case ${{cls}}">
+      <div class="case-head">
+        <span class="case-n">#${{i+1}}</span>
+        <span class="case-q">${{esc(r.question || '')}}</span>
+        ${{badge}} ${{runBtn}}
+      </div>
+      ${{criterion ? `<div class="case-row"><span class="label">Criterion</span><span>${{esc(criterion)}}</span></div>` : ''}}
+      ${{expected ? `<div class="case-row"><span class="label">Expected</span><span>${{esc(expected)}}</span></div>` : ''}}
+      ${{r.response ? `<div class="case-response">${{esc(r.response)}}</div>` : ''}}
+      ${{r.judge_reason ? `<div class="case-reason">${{esc(r.judge_reason)}}</div>` : ''}}
+    </div>`;
+  }}).join('');
+}}
+
+async function runCase(i) {{
+  const r = rows[i];
+  r.status = 'running'; r.response = ''; r.judge_verdict = null; r.judge_reason = null;
+  render();
+  let text = '';
+  try {{
+    const resp = await fetch('/responses', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{input: [{{role: 'user', content: r.question}}], stream: true}}),
+    }});
+    if (!resp.ok) throw new Error(`${{resp.status}} ${{await resp.text()}}`);
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {{
+      const {{done, value}} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {{stream: true}});
+      const lines = buf.split('\\n'); buf = lines.pop();
+      for (const line of lines) {{
+        if (!line.startsWith('data: ')) continue;
+        try {{
+          const d = JSON.parse(line.slice(6));
+          if (d.type === 'response.output_text.delta' && d.delta) {{ text += d.delta; }}
+          else if (d.type === 'response.output_item.done') {{
+            const item = d.item || {{}};
+            if (item.type === 'message' && Array.isArray(item.content)) {{
+              for (const p of item.content) {{ if (p.type === 'output_text' && p.text) text += p.text; }}
+            }}
+          }} else if (d.type === 'response.completed' && !text) {{
+            const out = d.response && d.response.output;
+            if (Array.isArray(out)) for (const it of out) if (it.type === 'message' && Array.isArray(it.content))
+              for (const p of it.content) if (p.type === 'output_text' && p.text) text += p.text;
+          }}
+        }} catch {{}}
+      }}
+    }}
+    r.response = text || '(no response)';
+    const criterion = r.expected_judge || r.criterion || '';
+    if (criterion) {{
+      const j = await fetch('/_apx/eval/judge', {{
+        method: 'POST', headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{question: r.question, response: text, criterion}}),
+      }});
+      const jd = await j.json();
+      r.status = jd.ok && jd.pass ? 'pass' : 'fail';
+      r.judge_verdict = jd.verdict || 'ERROR';
+      r.judge_reason = jd.reason || jd.error || '';
+    }} else {{
+      r.status = text.length > 10 ? 'pass' : 'fail';
+    }}
+  }} catch(e) {{
+    r.response = 'Error: ' + e.message; r.status = 'fail';
+  }}
+  render();
+  save();
+}}
+
+async function save() {{
+  await fetch('/_apx/eval/data', {{
+    method: 'POST', headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify(rows),
+  }});
+}}
+
+document.getElementById('run-all').addEventListener('click', async () => {{
+  const btn = document.getElementById('run-all');
+  const fill = document.getElementById('progress-fill');
+  const st = document.getElementById('status');
+  btn.disabled = true;
+  for (let i = 0; i < rows.length; i++) {{
+    st.textContent = `${{i+1}}/${{rows.length}}`;
+    fill.style.width = (i / rows.length * 100) + '%';
+    await runCase(i);
+  }}
+  fill.style.width = '100%';
+  const passed = rows.filter(r => r.status === 'pass').length;
+  st.textContent = `${{passed}}/${{rows.length}} passed`;
+  btn.disabled = false;
+}});
+
+document.getElementById('reset').addEventListener('click', () => {{
+  rows.forEach(r => {{ r.status = 'pending'; r.response = ''; r.judge_verdict = null; r.judge_reason = null; }});
+  document.getElementById('progress-fill').style.width = '0%';
+  document.getElementById('status').textContent = '';
+  render(); save();
+}});
+
+document.getElementById('add-btn').addEventListener('click', async () => {{
+  const q = document.getElementById('add-q').value.trim();
+  const criterion = document.getElementById('add-criterion').value.trim();
+  if (!q) return;
+  rows.push({{question: q, expected_judge: criterion, status: 'pending', response: ''}});
+  document.getElementById('add-q').value = '';
+  document.getElementById('add-criterion').value = '';
+  render(); await save();
+  document.querySelector('.meta').textContent = rows.length + ' case' + (rows.length === 1 ? '' : 's');
+}});
+
+render();
+</script>
 </body>
 </html>
 """
@@ -314,7 +445,7 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
             setup_banner = (
                 '<div id="setup-banner" style="background:#1a1200;border-color:#5a3a00;color:#ffb84d">'
                 '<strong>👋 First time here?</strong> '
-                '<a href="/_apx/setup" style="color:#ffd080;text-decoration:underline">Open Setup</a> '
+                '<a href="/_apx/agent#setup" target="_top" style="color:#ffd080;text-decoration:underline">Open Setup</a> '
                 'to connect your data and generate tools automatically.'
                 '</div>'
             )
@@ -758,8 +889,8 @@ function renderEval() {{
           onblur="updateExpectedJudge(${{i}}, this.value)"
           style="width:100%;background:transparent;border:none;border-bottom:1px solid #1a1a1a;color:#888;font-size:11px;padding:2px 0;outline:none;margin-top:2px" />
       </div>
-      ${{r.judge_reason ? `<div style="font-size:11px;color:#888;margin:4px 0 0 16px;font-style:italic" class="eval-judge-reason">judge: ${{esc(r.judge_reason)}}</div>` : ''}}
-      ${{r.response ? `<div style="font-size:11px;color:#666;margin:4px 0 0 16px;display:none;white-space:pre-wrap" class="eval-resp">${{esc(r.response.slice(0,400))}}${{r.response.length>400?'…':''}}</div>` : ''}}
+      ${{r.response ? `<div style="font-size:11px;color:#aaa;margin:6px 0 2px 16px;white-space:pre-wrap;line-height:1.5;border-left:2px solid #222;padding-left:8px" class="eval-resp">${{esc(r.response.slice(0,600))}}${{r.response.length>600?'…':''}}</div>` : ''}}
+      ${{r.judge_reason ? `<div style="font-size:11px;color:#666;margin:2px 0 0 16px;font-style:italic">judge: ${{esc(r.judge_reason)}}</div>` : ''}}
     </div>`;
   }}).join('');
 }}
@@ -840,19 +971,23 @@ async function runEvalCase(i) {{
       buf += decoder.decode(value, {{stream:true}});
       const lines = buf.split('\\n');
       buf = lines.pop();
-      let evt = '';
       for (const line of lines) {{
-        if (line.startsWith('event: ')) evt = line.slice(7).trim();
-        else if (line.startsWith('data: ') && evt) {{
-          try {{
-            const payload = JSON.parse(line.slice(6));
-            if (evt === 'response.output_item.start' && payload.trace_id) traceId = payload.trace_id;
-            else if (evt === 'output_text.delta' && payload.text) text += payload.text;
-            else if (evt === 'span.start') renderSpanStart(payload);
-            else if (evt === 'span.end') renderSpanEnd(payload);
-          }} catch {{}}
-          evt = '';
-        }}
+        if (!line.startsWith('data: ')) continue;
+        try {{
+          const payload = JSON.parse(line.slice(6));
+          if (payload.trace_id && !traceId) traceId = payload.trace_id;
+          if (payload.type === 'response.output_text.delta' && payload.delta) {{ text += payload.delta; }}
+          else if (payload.type === 'response.output_item.done') {{
+            const item = payload.item || {{}};
+            if (item.type === 'message' && Array.isArray(item.content))
+              for (const p of item.content) if (p.type === 'output_text' && p.text) text += p.text;
+          }} else if (payload.type === 'response.completed' && !text) {{
+            const out = payload.response && payload.response.output;
+            if (Array.isArray(out)) for (const it of out) if (it.type === 'message' && Array.isArray(it.content))
+              for (const p of it.content) if (p.type === 'output_text' && p.text) text += p.text;
+          }} else if (payload.type === 'span.start') {{ renderSpanStart(payload); }}
+          else if (payload.type === 'span.end') {{ renderSpanEnd(payload); }}
+        }} catch {{}}
       }}
     }}
     r.response = text;
@@ -1267,30 +1402,45 @@ form.addEventListener('submit', async e => {{
       buf += decoder.decode(value, {{ stream: true }});
       const lines = buf.split('\\n');
       buf = lines.pop();
-      let eventType = '';
       for (const line of lines) {{
-        if (line.startsWith('event: ')) eventType = line.slice(7).trim();
-        else if (line.startsWith('data: ')) {{
-          try {{
-            const payload = JSON.parse(line.slice(6));
-            if (payload.trace_id && !traceId) {{
-              traceId = payload.trace_id;
-            }}
-            if (eventType === 'response.output_item.start' && payload.trace_id) {{
-              traceId = payload.trace_id;
-            }} else if (eventType === 'output_text.delta' && payload.text) {{
-              full += payload.text;
-              assistantDiv.textContent = full;
-              chat.scrollTop = chat.scrollHeight;
-            }} else if (eventType === 'tool.trace') {{
-              if (Array.isArray(payload) && payload.length) {{
-                addToolPills(payload);
+        if (!line.startsWith('data: ')) continue;
+        try {{
+          const payload = JSON.parse(line.slice(6));
+          const ptype = payload.type || '';
+          if (payload.trace_id && !traceId) traceId = payload.trace_id;
+          if (ptype === 'response.output_text.delta' && payload.delta) {{
+            full += payload.delta;
+            assistantDiv.textContent = full;
+            chat.scrollTop = chat.scrollHeight;
+          }} else if (ptype === 'response.output_item.done') {{
+            const item = payload.item || {{}};
+            if (item.type === 'message' && Array.isArray(item.content)) {{
+              for (const part of item.content) {{
+                if (part.type === 'output_text' && part.text) {{
+                  full += part.text;
+                  assistantDiv.textContent = full;
+                  chat.scrollTop = chat.scrollHeight;
+                }}
               }}
-            }} else if (eventType === 'error') {{
-              traceStatus = 'error';
             }}
-          }} catch {{}}
-        }}
+          }} else if (ptype === 'response.completed' && !full) {{
+            const out = payload.response && payload.response.output;
+            if (Array.isArray(out)) {{
+              for (const item of out) {{
+                if (item.type === 'message' && Array.isArray(item.content)) {{
+                  for (const part of item.content) {{
+                    if (part.type === 'output_text' && part.text) full += part.text;
+                  }}
+                }}
+              }}
+              if (full) assistantDiv.textContent = full;
+            }}
+          }} else if (ptype === 'tool.trace') {{
+            if (Array.isArray(payload.tools) && payload.tools.length) addToolPills(payload.tools);
+          }} else if (ptype === 'error') {{
+            traceStatus = 'error';
+          }}
+        }} catch {{}}
       }}
     }}
   }} catch (err) {{

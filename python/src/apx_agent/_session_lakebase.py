@@ -91,7 +91,7 @@ class LakebaseSessionStore:
 
         @event.listens_for(engine, "do_connect")
         def add_oauth_token(_dialect, _record, _args, kwargs):
-            cred = ws.postgres.generate_database_credential(
+            cred = ws.database.generate_database_credential(
                 instance_names=["my-lakebase-instance"],
                 request_id="apx-sessions",
             )
