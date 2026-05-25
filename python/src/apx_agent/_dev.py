@@ -432,17 +432,20 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.get("/_apx/traces", include_in_schema=False)
     async def traces_list_ui(request: Request) -> Any:
+        import os
         from fastapi.responses import JSONResponse
-        ctx: AgentContext | None = request.app.state.agent_context
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
         agent_name = ctx.config.name if ctx else None
         fmt = request.query_params.get("fmt")
+        max_results = int(request.query_params.get("max", "50"))
+        experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
         try:
             import mlflow as _mlflow
             traces = _mlflow.search_traces(
-                max_results=50,
-                order_by=["request_time DESC"],
+                experiment_ids=[experiment_id] if experiment_id else None,
+                max_results=max_results,
+                order_by=["timestamp DESC"],
                 return_type="list",
-                filter_string=f"tags.mlflow.traceName = '{agent_name}'" if agent_name else None,
             )
         except Exception:
             traces = []

@@ -1240,7 +1240,17 @@ function resetTrace() {{
 async function finalizeTrace(traceId, status) {{
   traceStatusEl.textContent = status === 'error' ? 'errored' : 'done';
   if (!traceId) {{
-    traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">No trace ID returned.</div>';
+    // ResponsesAgent doesn't emit trace_id in the stream — fall back to the
+    // most recent trace logged in this experiment.
+    try {{
+      await new Promise(r => setTimeout(r, 500)); // let MLflow flush the trace
+      const r = await fetch('/_apx/traces?fmt=json&max=1');
+      const rows = await r.json();
+      if (rows && rows.length) traceId = rows[0].trace_id;
+    }} catch {{}}
+  }}
+  if (!traceId) {{
+    traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">No trace found.</div>';
     return;
   }}
   traceLinkEl.href = `/_apx/traces/${{traceId}}`;
