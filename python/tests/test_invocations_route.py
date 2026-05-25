@@ -61,7 +61,7 @@ def app_and_chat_agent():
 
     original_factory = _ca_module.chat_agent_for
 
-    def _spy_factory(agent_arg, *, model):
+    def _spy_factory(agent_arg, *, model, session_store=None):
         ca = original_factory(agent_arg, model=model)
         captured["chat_agent"] = ca
         ca.predict = MagicMock(name="mock_predict")

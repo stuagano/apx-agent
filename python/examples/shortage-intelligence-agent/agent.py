@@ -7,7 +7,15 @@ and synthesizes dual reports for sourcing and sales teams. Tool functions live i
 """
 from __future__ import annotations
 
-from apx_agent import Agent, SequentialAgent, genie_query_tool
+from apx_agent import (
+    Agent,
+    SequentialAgent,
+    WatchdogClient,
+    WatchdogGuard,
+    genie_query_tool,
+    make_watchdog_transport,
+)
+from apx_agent._guards import RateLimit, compose, prompt_injection_heuristic
 
 from config import get_settings
 
@@ -23,6 +31,19 @@ def create_shortage_pipeline() -> SequentialAgent:
     from uc_helpers import classify_shortage_severity
 
     settings = get_settings()
+
+    # Noop by default; real transport wired if WATCHDOG_MCP_URL is configured.
+    _transport = (
+        make_watchdog_transport(
+            settings.watchdog_mcp_url,
+            violations_table=settings.watchdog_violations_table or None,
+        )
+        if settings.watchdog_mcp_url
+        else None
+    )
+    _watchdog = WatchdogClient(transport=_transport) if _transport else WatchdogClient()
+    _guard = WatchdogGuard(_watchdog, agent_name="shortage_intelligence")
+
     # Ad-hoc Genie exploration is added as an optional tool when a space is
     # configured. The LLM chooses to call it when the canned queries don't
     # cover what the user actually asked.
@@ -58,6 +79,8 @@ def create_shortage_pipeline() -> SequentialAgent:
             "If no signals are found, say so clearly and end the pipeline early."
         ),
         tools=[scan_demand_clusters],
+        input_guardrails=[prompt_injection_heuristic(), _guard.for_input()],
+        before_tool=compose(RateLimit(per_minute=60), _guard.for_tool()),
     )
 
     # ------------------------------------------------------------------
@@ -108,6 +131,7 @@ def create_shortage_pipeline() -> SequentialAgent:
             "warrants monitoring."
         ),
         tools=[validate_against_market_news],
+        before_tool=compose(RateLimit(per_minute=60), _guard.for_tool()),
     )
 
     # ------------------------------------------------------------------
@@ -128,6 +152,7 @@ def create_shortage_pipeline() -> SequentialAgent:
             "from the demand scan — that is a critical supply gap."
         ),
         tools=[check_vendor_availability, find_alternative_parts],
+        before_tool=compose(RateLimit(per_minute=30), _guard.for_tool()),
     )
 
     # ------------------------------------------------------------------

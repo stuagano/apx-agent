@@ -68,6 +68,7 @@ def mount_invocations_route(
     app: FastAPI,
     agent: BaseAgent,
     config: "AgentConfig",
+    session_store: Any | None = None,
 ) -> bool:
     """Mount POST ``/invocations`` (MLflow ChatAgent protocol) onto ``app``.
 
@@ -79,6 +80,9 @@ def mount_invocations_route(
             not at mount.
         config: The ``AgentConfig`` — ``config.model`` is the serving endpoint
             the compiled graph uses for LLM calls.
+        session_store: Optional ``SessionStore`` for multi-turn memory. When
+            provided, conversation history is persisted across requests keyed
+            by the ``conversation_id`` in ``context``.
 
     Returns:
         ``True`` if the route was mounted; ``False`` if the optional
@@ -97,7 +101,7 @@ def mount_invocations_route(
         )
         return False
 
-    chat_agent = chat_agent_for(agent, model=config.model)
+    chat_agent = chat_agent_for(agent, model=config.model, session_store=session_store)
 
     @app.post("/invocations", include_in_schema=False)
     async def invocations(request: Request) -> Any:

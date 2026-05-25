@@ -342,12 +342,17 @@ def create_app(
     agent: BaseAgent,
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
+    session_store: Any | None = None,
 ) -> FastAPI:
     """Create a complete FastAPI app: ``/invocations`` + discovery + MCP + dev UI.
 
     ``pyproject_path`` can be an explicit path to ``pyproject.toml``. When
     omitted, the config is discovered from the entry-point module's location
     or the current working directory.
+
+    ``session_store`` is an optional ``SessionStore`` (e.g. ``DeltaSessionStore``)
+    for multi-turn memory. When provided, conversation history is persisted
+    across requests keyed by ``conversation_id``.
 
     Example::
 
@@ -385,7 +390,7 @@ def create_app(
             try:
                 from ._invocations import mount_invocations_route
 
-                mount_invocations_route(app, agent, ctx.config)
+                mount_invocations_route(app, agent, ctx.config, session_store=session_store)
             except Exception as exc:
                 logger.warning("Skipping /invocations mount: %s", exc)
 

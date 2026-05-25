@@ -39,6 +39,7 @@ from ._ui_edit import (
     _splice_tool,
     _fix_sql_identifiers,
     _remove_tool,
+    _parse_agent_nodes,
 )
 from ._ui_setup import (
     _find_env_path,
@@ -46,7 +47,7 @@ from ._ui_setup import (
     _write_env_file,
     _render_setup_ui,
 )
-from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks
+from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
 
 logger = logging.getLogger(__name__)
@@ -311,8 +312,13 @@ def inject_create_tool_meta(ctx: AgentContext) -> None:
     logger.info("Dev mode: create_tool meta-tool injected into agent context")
 
 
-def _persist_instructions(ctx: "AgentContext | None", instructions: str) -> None:
-    """Update instructions in memory and write to pyproject.toml."""
+def _persist_instructions(
+    ctx: "AgentContext | None",
+    instructions: str,
+    ws_client: "WorkspaceClient | None" = None,
+) -> None:
+    """Update instructions in memory and write to pyproject.toml (+ workspace write-back)."""
+    import asyncio as _asyncio
     import re as _re
     if ctx:
         addendum = ""
@@ -330,11 +336,48 @@ def _persist_instructions(ctx: "AgentContext | None", instructions: str) -> None
             updated = _re.sub(r'instructions\s*=\s*"""[\s\S]*?"""', new_block, src, count=1)
             if updated != src:
                 toml_path.write_text(updated)
+                if ws_client and ctx:
+                    app_name = ctx.config.name if ctx else None
+                    if app_name:
+                        try:
+                            app_info = ws_client.apps.get(app_name)
+                            ws_source = getattr(app_info, "default_source_code_path", None)
+                            if ws_source:
+                                ws_path = ws_source.rstrip("/") + "/pyproject.toml"
+                                ws_client.workspace.upload(ws_path, updated.encode(), overwrite=True)
+                        except Exception:
+                            pass
+
+
+async def _ws_upload_agent_file(request: Request, local_path: "Path", content: str) -> None:
+    """Write-back helper: upload a local agent file to its workspace counterpart."""
+    import asyncio as _asyncio
+    ctx: "AgentContext | None" = getattr(request.app.state, "agent_context", None)
+    ws_client: "WorkspaceClient | None" = getattr(request.app.state, "workspace_client", None)
+    app_name = ctx.config.name if ctx else None
+    if not app_name or not ws_client:
+        return
+    try:
+        app_info = await _asyncio.to_thread(lambda: ws_client.apps.get(app_name))
+        ws_source = getattr(app_info, "default_source_code_path", None)
+        if ws_source:
+            ws_path = ws_source.rstrip("/") + f"/{local_path.name}"
+            await _asyncio.to_thread(
+                lambda: ws_client.workspace.upload(ws_path, content.encode(), overwrite=True)
+            )
+    except Exception:
+        pass
 
 
 def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     """Build the /_apx/* dev UI routes."""
+    from fastapi.responses import RedirectResponse
+
     router = APIRouter()
+
+    @router.get("/", include_in_schema=False)
+    async def root_redirect() -> RedirectResponse:
+        return RedirectResponse(url="/_apx/agent")
 
     @router.get("/_apx/agent", include_in_schema=False)
     async def agent_dev_ui(request: Request) -> HTMLResponse:
@@ -610,6 +653,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.post("/_apx/edit", include_in_schema=False)
     async def save_agent_router(request: Request) -> Any:
+        import asyncio as _asyncio
         from fastapi.responses import JSONResponse
         body = await request.json()
         content: str = body.get("content", "")
@@ -621,7 +665,26 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if not path:
             return JSONResponse({"ok": False, "error": "agent_router.py not found in running process"})
         path.write_text(content)
-        return JSONResponse({"ok": True})
+
+        # Write back to workspace so the change survives restarts.
+        ctx: AgentContext | None = request.app.state.agent_context
+        ws_client: WorkspaceClient | None = getattr(request.app.state, "workspace_client", None)
+        app_name = ctx.config.name if ctx else None
+        restart_required = False
+        if app_name and ws_client:
+            try:
+                app_info = await _asyncio.to_thread(lambda: ws_client.apps.get(app_name))
+                ws_source = getattr(app_info, "default_source_code_path", None)
+                if ws_source:
+                    ws_path = ws_source.rstrip("/") + f"/{path.name}"
+                    await _asyncio.to_thread(
+                        lambda: ws_client.workspace.upload(ws_path, content.encode(), overwrite=True)
+                    )
+                    restart_required = True
+            except Exception:
+                pass
+
+        return JSONResponse({"ok": True, "restart_required": restart_required})
 
     @router.post("/_apx/edit/preview", include_in_schema=False)
     async def preview_tool_schemas(request: Request) -> Any:
@@ -892,10 +955,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"ok": False, "error": f"Syntax error at line {e.lineno}: {e.msg}"})
 
         path.write_text(updated)
+        await _ws_upload_agent_file(request, path, updated)
         return JSONResponse({"ok": True})
 
     @router.delete("/_apx/tools/{fn_name}", include_in_schema=False)
-    async def delete_tool(fn_name: str) -> Any:
+    async def delete_tool(fn_name: str, request: Request) -> Any:
         from fastapi.responses import JSONResponse
         import re as _re
 
@@ -914,6 +978,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"ok": False, "error": f"Syntax error after removal at line {e.lineno}: {e.msg}"})
 
         path.write_text(updated)
+        await _ws_upload_agent_file(request, path, updated)
         return JSONResponse({"ok": True})
 
     @router.get("/_apx/deploy/stream", include_in_schema=False)
@@ -1002,8 +1067,50 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"error": str(e)}, status_code=500)
         return JSONResponse(whs)
 
+    @router.get("/_apx/setup/agents", include_in_schema=False)
+    async def setup_agents(request: Request) -> Any:
+        """Discover agents in the workspace by probing /.well-known/agent.json."""
+        import asyncio as _asyncio
+        import urllib.request as _urllib
+        from fastapi.responses import JSONResponse
+        ws: WorkspaceClient = request.app.state.workspace_client
+        try:
+            apps = await _asyncio.to_thread(lambda: list(ws.apps.list()))
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+        running = [
+            a for a in apps
+            if getattr(getattr(a, "app_status", None), "state", None) is not None
+            and str(getattr(getattr(a, "app_status", None), "state", "")).upper() == "RUNNING"
+            and getattr(a, "url", None)
+        ]
+
+        async def probe(app_url: str) -> dict | None:
+            url = app_url.rstrip("/") + "/.well-known/agent.json"
+            try:
+                data = await _asyncio.to_thread(
+                    lambda: _urllib.urlopen(url, timeout=3).read()  # noqa: S310
+                )
+                import json as _json
+                card = _json.loads(data)
+                return {
+                    "name": card.get("name", app_url),
+                    "url": app_url,
+                    "description": card.get("description", ""),
+                    "tools": [s.get("name", s.get("id", "")) for s in card.get("skills", [])],
+                    "instructions": "",
+                }
+            except Exception:
+                return None
+
+        results = await _asyncio.gather(*[probe(a.url) for a in running])
+        agents = [r for r in results if r is not None]
+        return JSONResponse(agents)
+
     @router.post("/_apx/setup", include_in_schema=False)
     async def save_setup(request: Request) -> Any:
+        import asyncio as _asyncio
         from fastapi.responses import JSONResponse
 
         body = await request.json()
@@ -1017,18 +1124,36 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if env_path is None:
             return JSONResponse({"ok": False, "error": "Could not find project root"})
 
-        _write_env_file(env_path, {
-            "DEMO_CATALOG": catalog,
-            "DEMO_SCHEMA": schema,
-            "WAREHOUSE_ID": wh_id,
-        })
+        updates = {"DEMO_CATALOG": catalog, "DEMO_SCHEMA": schema, "WAREHOUSE_ID": wh_id}
+        _write_env_file(env_path, updates)
+
+        # Persist to workspace so the config survives restarts and redeployments.
+        ctx: AgentContext | None = request.app.state.agent_context
+        ws: WorkspaceClient = request.app.state.workspace_client
+        app_name = ctx.config.name if ctx else None
+        if app_name:
+            try:
+                app_info = await _asyncio.to_thread(lambda: ws.apps.get(app_name))
+                ws_source = getattr(app_info, "default_source_code_path", None)
+                if ws_source:
+                    ws_env_path = ws_source.rstrip("/") + "/.env"
+                    env_content = env_path.read_text() if env_path.exists() else ""
+                    await _asyncio.to_thread(
+                        lambda: ws.workspace.upload(
+                            ws_env_path,
+                            env_content.encode(),
+                            overwrite=True,
+                        )
+                    )
+            except Exception:
+                pass  # workspace write is best-effort; local write already succeeded
 
         instructions: str | None = None
         if body.get("generate_instructions"):
             ctx: AgentContext | None = request.app.state.agent_context
             ws: WorkspaceClient = request.app.state.workspace_client
             instructions = await _generate_agent_instructions(ws, ctx, catalog, schema, wh_id)
-            _persist_instructions(ctx, instructions)
+            _persist_instructions(ctx, instructions, ws_client=ws)
 
         return JSONResponse({"ok": True, "instructions": instructions})
 
@@ -1041,7 +1166,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         instructions = await _generate_agent_instructions(
             ws, ctx, body.get("catalog", ""), body.get("schema", ""), body.get("warehouse_id", ""),
         )
-        _persist_instructions(ctx, instructions)
+        _persist_instructions(ctx, instructions, ws_client=ws)
         return JSONResponse({"ok": True, "instructions": instructions})
 
     @router.post("/_apx/setup/apply-instructions", include_in_schema=False)
@@ -1054,8 +1179,388 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"ok": False, "error": "No instructions provided"})
 
         ctx: AgentContext | None = request.app.state.agent_context
-        _persist_instructions(ctx, new_instructions)
+        ws_client: WorkspaceClient | None = getattr(request.app.state, "workspace_client", None)
+        _persist_instructions(ctx, new_instructions, ws_client=ws_client)
         return JSONResponse({"ok": True})
+
+    @router.get("/_apx/setup/tools", include_in_schema=False)
+    async def setup_list_tools() -> Any:
+        from fastapi.responses import JSONResponse
+        path = _find_agent_router_path()
+        if not path or not path.exists():
+            return JSONResponse([])
+        schemas = _extract_schemas_from_source(path.read_text())
+        result = []
+        for s in schemas:
+            if s.get("_error"):
+                continue
+            props = s.get("parameters", {}).get("properties", {})
+            result.append({
+                "name": s["name"],
+                "description": s.get("description", ""),
+                "params": [{"name": k, "type": v.get("type", "string")} for k, v in props.items()],
+            })
+        return JSONResponse(result)
+
+    @router.post("/_apx/setup/create-tool", include_in_schema=False)
+    async def setup_create_tool(request: Request) -> Any:
+        from fastapi.responses import JSONResponse
+        import httpx
+
+        body = await request.json()
+        desc: str = body.get("description", "").strip()
+        if not desc:
+            return JSONResponse({"ok": False, "error": "No description provided"}, status_code=400)
+
+        # Chain suggest → new via ASGI transport so we reuse all existing logic.
+        transport = httpx.ASGITransport(app=request.app)  # type: ignore[arg-type]
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            suggest_r = await client.post(
+                "/_apx/tools/suggest",
+                json={"prompt": desc},
+                headers={k: v for k, v in request.headers.items() if k.lower() != "content-length"},
+                timeout=60.0,
+            )
+            suggest_data = suggest_r.json()
+            if not suggest_data.get("ok"):
+                return JSONResponse(suggest_data)
+
+            spec: dict = suggest_data["spec"]
+            new_r = await client.post(
+                "/_apx/tools/new",
+                json=spec,
+                headers={k: v for k, v in request.headers.items() if k.lower() != "content-length"},
+                timeout=15.0,
+            )
+            new_data = new_r.json()
+            if not new_data.get("ok"):
+                return JSONResponse(new_data)
+
+        return JSONResponse({"ok": True, "tool_name": spec.get("name", "")})
+
+    @router.post("/_apx/wizard/generate-tools", include_in_schema=False)
+    async def wizard_generate_tools(request: Request) -> Any:
+        from fastapi.responses import JSONResponse
+        import httpx
+
+        body = await request.json()
+        description: str = body.get("description", "").strip()
+        if not description:
+            return JSONResponse({"ok": False, "error": "No description provided"}, status_code=400)
+
+        transport = httpx.ASGITransport(app=request.app)  # type: ignore[arg-type]
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            suggest_r = await client.post(
+                "/_apx/tools/suggest",
+                json={"prompt": description},
+                headers={k: v for k, v in request.headers.items() if k.lower() != "content-length"},
+                timeout=60.0,
+            )
+            suggest_data = suggest_r.json()
+            if not suggest_data.get("ok"):
+                return JSONResponse(suggest_data)
+
+            spec: dict = suggest_data["spec"]
+            new_r = await client.post(
+                "/_apx/tools/new",
+                json=spec,
+                headers={k: v for k, v in request.headers.items() if k.lower() != "content-length"},
+                timeout=15.0,
+            )
+            new_data = new_r.json()
+            if not new_data.get("ok"):
+                return JSONResponse(new_data)
+
+        return JSONResponse({"ok": True, "tool_name": spec.get("name", "")})
+
+    @router.post("/_apx/setup/wire-agent", include_in_schema=False)
+    async def setup_wire_agent(request: Request) -> Any:
+        from fastapi.responses import JSONResponse
+        import json as _json
+
+        body = await request.json()
+        behavior: str = body.get("behavior", "").strip()
+        agent_name: str = body.get("agent_name", "agent").strip()
+        if not behavior:
+            return JSONResponse({"ok": False, "error": "No behavior description provided"}, status_code=400)
+
+        ctx: AgentContext | None = request.app.state.agent_context
+        if ctx is None:
+            return JSONResponse({"ok": False, "error": "Agent not configured"}, status_code=503)
+        model = getattr(ctx.config, "model", "") or ""
+        if not model:
+            return JSONResponse({"ok": False, "error": "No model configured"}, status_code=400)
+
+        path = _find_agent_router_path()
+        tool_list: list[dict[str, str]] = []
+        if path and path.exists():
+            for s in _extract_schemas_from_source(path.read_text()):
+                if not s.get("_error"):
+                    tool_list.append({"name": s["name"], "description": s.get("description", "")})
+
+        if not tool_list:
+            return JSONResponse({"ok": True, "tools": [], "instructions": f"You are {agent_name}. {behavior}"})
+
+        tool_names = [t["name"] for t in tool_list]
+        tool_summary = "\n".join(f"- {t['name']}: {t['description']}" for t in tool_list)
+
+        system_msg = (
+            "You are helping configure an AI agent. "
+            "Given a behavior description and a list of available tools, "
+            "select the most relevant tools and write brief agent instructions.\n"
+            "Output ONLY a JSON object with exactly two fields:\n"
+            '  "tools": array of tool names from the provided list only\n'
+            '  "instructions": one paragraph of agent instructions\n'
+            "Do not include any tool not in the provided list. Output only valid JSON."
+        )
+        user_content = (
+            f"Agent name: {agent_name}\n"
+            f"Behavior: {behavior}\n\n"
+            f"Available tools:\n{tool_summary}\n\n"
+            "Select tools and write instructions."
+        )
+
+        try:
+            from databricks_openai import AsyncDatabricksOpenAI
+        except ImportError as exc:
+            return JSONResponse({"ok": False, "error": f"databricks_openai not available: {exc}"}, status_code=500)
+
+        try:
+            llm = AsyncDatabricksOpenAI()
+            resp = await llm.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=512,
+                temperature=0.0,
+            )
+            choices = getattr(resp, "choices", None) or []
+            raw = ""
+            if choices:
+                msg = getattr(choices[0], "message", None)
+                raw = ((getattr(msg, "content", None) or "") if msg else "").strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            result = _json.loads(raw)
+            selected = [t for t in (result.get("tools") or []) if t in tool_names]
+            instructions = str(result.get("instructions") or behavior)
+            return JSONResponse({"ok": True, "tools": selected, "instructions": instructions})
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)})
+
+    @router.post("/_apx/setup/agents", include_in_schema=False)
+    async def setup_save_agents(request: Request) -> Any:
+        from fastapi.responses import JSONResponse
+        import ast as _ast
+        import re as _re
+
+        body = await request.json()
+        nodes_data = body.get("nodes", [])
+        if not isinstance(nodes_data, list):
+            return JSONResponse({"ok": False, "error": "nodes must be a list"}, status_code=400)
+
+        path = _find_agent_router_path()
+        if not path or not path.exists():
+            return JSONResponse({"ok": False, "error": "agent_router.py not found"}, status_code=404)
+
+        source = path.read_text()
+        known_tools = {
+            s["name"] for s in _extract_schemas_from_source(source) if not s.get("_error")
+        }
+
+        try:
+            tree = _ast.parse(source)
+        except SyntaxError as exc:
+            return JSONResponse({"ok": False, "error": f"Syntax error in source: {exc}"}, status_code=400)
+
+        existing_ranges: dict[str, tuple[int, int]] = {}
+        for stmt in tree.body:
+            if (isinstance(stmt, _ast.Assign) and stmt.targets and
+                    isinstance(stmt.targets[0], _ast.Name) and stmt.end_lineno is not None):
+                existing_ranges[stmt.targets[0].id] = (stmt.lineno, stmt.end_lineno)
+
+        lines = source.splitlines(keepends=True)
+        updates: list[tuple[int, int, str]] = []
+        appends: list[str] = []
+
+        for node_data in nodes_data:
+            name = str(node_data.get("name", "")).strip()
+            if not name or name == "agent":
+                continue
+            if not _re.match(r"^[a-z_][a-z0-9_]*$", name):
+                continue
+            tools = [t for t in (node_data.get("tools") or []) if t in known_tools]
+            instr = str(node_data.get("instructions") or "")
+            new_line = f"{name} = Agent(tools=[{', '.join(tools)}], instructions={repr(instr)})\n"
+            if name in existing_ranges:
+                start, end = existing_ranges[name]
+                updates.append((start, end, new_line))
+            else:
+                appends.append(new_line)
+
+        updates.sort(key=lambda x: x[0], reverse=True)
+        for start, end, new_line in updates:
+            lines[start - 1:end] = [new_line]
+        lines.extend(appends)
+        updated = "".join(lines)
+
+        try:
+            compile(updated, "agent_router.py", "exec")
+        except SyntaxError as exc:
+            return JSONResponse({"ok": False, "error": f"Generated code has syntax error: {exc}"}, status_code=400)
+
+        path.write_text(updated)
+        await _ws_upload_agent_file(request, path, updated)
+        return JSONResponse({"ok": True})
+
+    @router.get("/_apx/setup/probe-json", include_in_schema=False)
+    async def setup_probe_json(request: Request) -> Any:
+        import time as _time
+        from fastapi.responses import JSONResponse
+        import httpx
+
+        url = request.query_params.get("url", "").strip()
+        if not url:
+            return JSONResponse({"error": "url parameter required"}, status_code=400)
+
+        t0 = _time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                r = await client.get(url)
+            latency = int((_time.monotonic() - t0) * 1000)
+            return JSONResponse({"status": r.status_code, "latency_ms": latency, "url": url})
+        except Exception as exc:
+            latency = int((_time.monotonic() - t0) * 1000)
+            return JSONResponse({"error": str(exc), "latency_ms": latency, "url": url})
+
+    @router.get("/_apx/setup/vs-indexes", include_in_schema=False)
+    async def setup_vs_indexes(request: Request) -> Any:
+        import asyncio as _asyncio
+        from fastapi.responses import JSONResponse
+        ws: WorkspaceClient = request.app.state.workspace_client
+        try:
+            indexes = await _asyncio.to_thread(lambda: _discover_vs_indexes(ws))
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse(indexes)
+
+    @router.get("/_apx/setup/agent-pattern", include_in_schema=False)
+    async def setup_get_agent_pattern() -> Any:
+        from fastapi.responses import JSONResponse
+        path = _find_agent_router_path()
+        if not path or not path.exists():
+            return JSONResponse({"type": "Agent"})
+        nodes = _parse_agent_nodes(path.read_text())
+        agent_node = next((n for n in nodes if n["name"] == "agent"), None)
+        if not agent_node:
+            return JSONResponse({"type": "Agent"})
+        return JSONResponse({"type": agent_node["wrapper"] or "Agent"})
+
+    @router.post("/_apx/setup/agent-pattern", include_in_schema=False)
+    async def setup_set_agent_pattern(request: Request) -> Any:
+        from fastapi.responses import JSONResponse
+        import ast as _ast
+
+        body = await request.json()
+        pattern: str = body.get("pattern", "").strip()
+
+        _SNIPPET_PATTERNS: dict[str, str] = {
+            "SequentialAgent": (
+                "agent = SequentialAgent(\n"
+                "    agents=[\n"
+                "        step1_agent,\n"
+                "        step2_agent,\n"
+                "    ],\n"
+                ")\n"
+            ),
+            "ParallelAgent": (
+                "agent = ParallelAgent(\n"
+                "    agents=[\n"
+                "        branch1_agent,\n"
+                "        branch2_agent,\n"
+                "    ],\n"
+                ")\n"
+            ),
+            "RouterAgent": (
+                "agent = RouterAgent(\n"
+                "    agents={\n"
+                "        'route_a': agent_a,\n"
+                "        'route_b': agent_b,\n"
+                "    },\n"
+                "    instructions='Route to the correct specialist.',\n"
+                ")\n"
+            ),
+            "HandoffAgent": (
+                "agent = HandoffAgent(\n"
+                "    agents={\n"
+                "        'specialist_a': agent_a,\n"
+                "        'specialist_b': agent_b,\n"
+                "    },\n"
+                "    instructions='Hand off to the correct specialist.',\n"
+                ")\n"
+            ),
+        }
+        if pattern in _SNIPPET_PATTERNS:
+            return JSONResponse({"ok": True, "snippet": _SNIPPET_PATTERNS[pattern]})
+
+        _AUTO_PATTERNS = {"Agent", "LlmAgent", "LoopAgent"}
+        if pattern not in _AUTO_PATTERNS:
+            return JSONResponse({"ok": False, "error": f"Unknown pattern: {pattern}"}, status_code=400)
+
+        path = _find_agent_router_path()
+        if not path or not path.exists():
+            return JSONResponse({"ok": False, "error": "agent_router.py not found"}, status_code=404)
+
+        source = path.read_text()
+        nodes = _parse_agent_nodes(source)
+        agent_node = next((n for n in nodes if n["name"] == "agent"), None)
+        if not agent_node:
+            return JSONResponse({"ok": False, "error": "No 'agent' variable in agent_router.py"}, status_code=400)
+
+        current_type = agent_node["wrapper"] or "Agent"
+        if current_type == pattern or (pattern in ("Agent", "LlmAgent") and current_type in ("Agent", "LlmAgent")):
+            return JSONResponse({"ok": True, "type": current_type, "changed": False})
+
+        tools = agent_node["tools"]
+        instructions = agent_node["instructions"]
+        tools_str = "[" + ", ".join(tools) + "]"
+
+        if pattern in ("Agent", "LlmAgent"):
+            new_assignment = f"agent = Agent(tools={tools_str}, instructions={repr(instructions)})\n"
+        else:  # LoopAgent
+            new_assignment = f"agent = LoopAgent(Agent(tools={tools_str}, instructions={repr(instructions)}))\n"
+
+        try:
+            tree = _ast.parse(source)
+        except SyntaxError as exc:
+            return JSONResponse({"ok": False, "error": f"Syntax error in source: {exc}"}, status_code=400)
+
+        agent_range: tuple[int, int] | None = None
+        for stmt in tree.body:
+            if (isinstance(stmt, _ast.Assign) and stmt.targets and
+                    isinstance(stmt.targets[0], _ast.Name) and stmt.targets[0].id == "agent"
+                    and stmt.end_lineno is not None):
+                agent_range = (stmt.lineno, stmt.end_lineno)
+                break
+
+        if not agent_range:
+            return JSONResponse({"ok": False, "error": "Could not locate 'agent' assignment"}, status_code=400)
+
+        lines = source.splitlines(keepends=True)
+        start, end = agent_range
+        lines[start - 1:end] = [new_assignment]
+        updated = "".join(lines)
+
+        try:
+            compile(updated, "agent_router.py", "exec")
+        except SyntaxError as exc:
+            return JSONResponse({"ok": False, "error": f"Generated code has syntax error: {exc}"}, status_code=400)
+
+        path.write_text(updated)
+        await _ws_upload_agent_file(request, path, updated)
+        return JSONResponse({"ok": True, "type": pattern, "changed": True})
 
     @router.get("/_apx/eval/data", include_in_schema=False)
     async def eval_data_get() -> Any:
@@ -1079,10 +1584,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         path = _find_evals_path()
         if path is None:
             return JSONResponse({"ok": False, "error": "agent_router.py not found in running process"}, status_code=503)
+        content = _json.dumps(body, indent=2)
         try:
-            path.write_text(_json.dumps(body, indent=2))
+            path.write_text(content)
         except OSError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        await _ws_upload_agent_file(request, path, content)
         return JSONResponse({"ok": True, "count": len(body)})
 
     @router.post("/_apx/eval/judge", include_in_schema=False)
@@ -1194,7 +1701,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     @router.get("/_apx/wizard/tables", include_in_schema=False)
     async def wizard_tables(request: Request, catalog: str, schema: str) -> Any:
         from fastapi.responses import JSONResponse
-        ws = WorkspaceClient()
+        ws: WorkspaceClient = request.app.state.workspace_client
         warehouse_id = os.environ.get("WAREHOUSE_ID", "")
         env_path = _find_env_path()
         if env_path and env_path.exists():

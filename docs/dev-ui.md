@@ -78,3 +78,9 @@ The builder SPA lives at `python/builder-ui/`. To rebuild after editing canvas c
     cd python/builder-ui && npm run build:dist
 
 This writes static assets into `python/src/apx_agent/_builder_ui_dist/`, which the framework wheel ships via `hatch`'s `force-include`.
+
+When you also need to ship a deployable wheel (e.g. for `hello-world`), use the Makefile target which handles everything in order — frontend build, wheel package, file copies, and `uv.lock` hash update:
+
+    make wheel
+
+> **Note:** Don't run `python3 -m hatchling build` directly after editing the builder — it will package whatever is already on disk in `_builder_ui_dist/`. `make wheel` ensures the frontend is rebuilt first.

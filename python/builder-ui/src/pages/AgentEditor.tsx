@@ -736,10 +736,13 @@ export function AgentEditor() {
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
       {/* Identity title bar */}
-      <div style={{ padding: '6px 16px', background: '#1B3139', color: '#fff', fontSize: 12 }}>
-        {apxState?.identity?.name
-          ? `${apxState.identity.name}${apxState.identity.profile ? ` · ${apxState.identity.profile}` : ''}`
-          : 'Untitled agent (set [tool.apx.agent].name in pyproject.toml)'}
+      <div style={{ padding: '6px 16px', background: '#1B3139', color: '#fff', fontSize: 12, display: 'flex', alignItems: 'center', gap: 16 }}>
+        <a href="/_apx/agent" style={{ color: '#60b0ff', textDecoration: 'none', fontSize: 11, whiteSpace: 'nowrap' }}>← Agent</a>
+        <span>
+          {apxState?.identity?.name
+            ? `${apxState.identity.name}${apxState.identity.profile ? ` · ${apxState.identity.profile}` : ''}`
+            : 'Untitled agent (set [tool.apx.agent].name in pyproject.toml)'}
+        </span>
       </div>
 
       {/* Drift banner */}

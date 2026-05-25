@@ -5,7 +5,7 @@ description = "Autonomous shortage intelligence — scans demand clusters, valid
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "apx-agent",
+    "apx-agent[lakebase]",
     "fastapi>=0.119.0",
     "pydantic-settings>=2.11.0",
     "uvicorn>=0.37.0",

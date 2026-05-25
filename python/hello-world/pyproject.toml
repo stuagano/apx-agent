@@ -1,0 +1,34 @@
+[project]
+name = "hello-world"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    # The [langgraph] extra is REQUIRED at runtime for any app that calls
+    # ``compile_to_responses_agent``: it transitively pulls in langchain +
+    # langgraph + databricks-langchain, which the responses-agent compiler
+    # imports lazily under the hood. A bare ``apx-agent`` dep would let
+    # ``uv sync`` succeed but fail at first request inside the deployed App.
+    "apx-agent[langgraph]",
+    "mlflow[databricks]>=3.0",
+    # Add your agent's deps here
+]
+
+[project.scripts]
+quickstart = "scripts.quickstart:main"
+
+[tool.uv.sources]
+# Editable local install — keeps `uv sync` working from this directory.
+# At deploy time apx deploy builds a wheel and rewrites .build/pyproject.toml
+# to reference it (since the App container can't resolve ".."). Drop this block
+# and pin "apx-agent[langgraph]==<version>" once published to PyPI.
+apx-agent = { path = "..", editable = true }
+
+[tool.apx.agent]
+name = "hello-world"
+description = "An apx-agent on Databricks Apps."
+model = "databricks-claude-sonnet-4-6"
+instructions = "You are a helpful assistant."
+# ADK-style layout: the user's agent definition lives at top-level
+# ``agent.py``. ``agent_server/start_server.py`` is framework boilerplate
+# that imports + wraps it for the Databricks Apps runtime.
+module = "agent:agent"

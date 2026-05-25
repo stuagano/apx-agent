@@ -304,6 +304,13 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = ["apx-agent"]
 
+[tool.uv.sources]
+# Editable local install — keeps `uv sync` working from this directory.
+# At deploy time apx deploy builds a wheel and rewrites pyproject.toml to
+# reference it (since the App container can't resolve ".."). Drop this block
+# and change dependencies to `"apx-agent==<version>"` once published to PyPI.
+apx-agent = {{ path = "..", editable = true }}
+
 [tool.apx.agent]
 name = "{name}"
 description = "An apx-agent."
@@ -406,11 +413,11 @@ dependencies = [
 quickstart = "scripts.quickstart:main"
 
 [tool.uv.sources]
-# Editable parent path keeps `uv sync` working on first checkout. At deploy
-# time, `apx deploy --target apps` builds the wheel + rewrites .build/
-# pyproject.toml to point at the wheel (since the App container can't
-# resolve ../..). If you're installing from PyPI instead, drop this block.
-apx-agent = { path = "../..", editable = true }
+# Editable local install — keeps `uv sync` working from this directory.
+# At deploy time apx deploy builds a wheel and rewrites .build/pyproject.toml
+# to reference it (since the App container can't resolve ".."). Drop this block
+# and pin "apx-agent[langgraph]==<version>" once published to PyPI.
+apx-agent = { path = "..", editable = true }
 
 [tool.apx.agent]
 name = "<APP_NAME>"
@@ -514,6 +521,9 @@ app = server.app
 
 mount_mcp_endpoints(app, agent)
 
+from apx_agent._defaults import _make_workspace_client
+app.state.workspace_client = _make_workspace_client()
+
 
 if __name__ == "__main__":
     server.run("agent_server.start_server:app")
@@ -582,8 +592,11 @@ artifacts:
       cp tools.py .build/ 2>/dev/null || true
       cp -r sub_agents .build/ 2>/dev/null || true
       # Framework boilerplate + project files (don't edit agent_server/).
-      cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      cp -r agent_server scripts README.md .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
+      # pyproject.toml and uv.lock are written by apx deploy (wheel-pinned).
+      # Do NOT copy them here — bundle deploy re-runs this script and would
+      # overwrite the rewritten versions.
 
 resources:
   experiments:
@@ -783,11 +796,10 @@ def scaffold(name: str, directory: str, scaffold_target: str, force: bool) -> No
     click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")
     if scaffold_target == "apps":
         click.echo(
-            f"Next: cd {name} && uv sync && uv run quickstart && "
-            "uv run uvicorn agent_server.start_server:app --port 8000"
+            f"Next: cd {name} && uv sync && uv run apx deploy --target apps"
         )
     else:
-        click.echo(f"Next: cd {name} && uv sync && apx run")
+        click.echo(f"Next: cd {name} && uv sync && uv run apx run")
 
 
 # ---------------------------------------------------------------------------
@@ -1641,42 +1653,49 @@ def _rewrite_build_pyproject_for_deploy(
 
     pyproject = build_dir / "pyproject.toml"
     if not pyproject.exists():
-        return
+        # Artifacts script no longer copies pyproject.toml — read from source.
+        source_pyproject = build_dir.parent / "pyproject.toml"
+        if not source_pyproject.exists():
+            return
+        import shutil
+        shutil.copy2(source_pyproject, pyproject)
     text = pyproject.read_text()
     try:
         doc = tomllib.loads(text)
     except Exception:
         return
 
+    # Always write .build/pyproject.toml from the source so bundle deploy's
+    # re-run of the artifacts script (which no longer copies pyproject.toml)
+    # leaves the correct wheel-pinned version in place.
     sources = doc.get("tool", {}).get("uv", {}).get("sources", {})
     apx_source = sources.get("apx-agent") if isinstance(sources, dict) else None
-    if not isinstance(apx_source, dict):
-        return
-    current_path = apx_source.get("path")
-    if not isinstance(current_path, str):
-        return
-    # Already wheel-pinned? No-op.
-    if current_path.endswith(".whl"):
-        return
-
-    # Replace whichever line carries the apx-agent source. We avoid
-    # rewriting the whole TOML to preserve comments + ordering.
-    wheel_rel = f"./{wheel_path.name}"
-    new_block = f'apx-agent = {{ path = "{wheel_rel}" }}'
-    lines = text.splitlines()
-    swapped = False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith("apx-agent ") and "=" in stripped and "{" in stripped:
-            lines[i] = new_block
-            swapped = True
-            break
-    if not swapped:
-        return
-    pyproject.write_text("\n".join(lines) + "\n")
-    click.echo(
-        f"  rewrote .build/pyproject.toml: apx-agent -> {wheel_rel}", err=True,
+    has_editable = (
+        isinstance(apx_source, dict)
+        and isinstance(apx_source.get("path"), str)
+        and not apx_source["path"].endswith(".whl")
     )
+
+    wheel_rel = f"./{wheel_path.name}"
+    if has_editable:
+        # Swap the editable line for the wheel path in-place, preserving
+        # comments and ordering.
+        new_block = f'apx-agent = {{ path = "{wheel_rel}" }}'
+        lines = text.splitlines()
+        swapped = False
+        for i, line in enumerate(lines):
+            stripped = line.lstrip()
+            if stripped.startswith("apx-agent ") and "=" in stripped and "{" in stripped:
+                lines[i] = new_block
+                swapped = True
+                break
+        if swapped:
+            text = "\n".join(lines) + "\n"
+            click.echo(
+                f"  rewrote .build/pyproject.toml: apx-agent -> {wheel_rel}", err=True,
+            )
+
+    pyproject.write_text(text)
 
     # Make sure the wheel is staged in .build/ alongside the pyproject.
     target_wheel = build_dir / wheel_path.name
