@@ -442,3 +442,42 @@ def test_yml_full_agent_round_trip() -> None:
     assert "serving_endpoint" in block_keys
     assert "uc_securable" in block_keys
     assert "genie_space" in block_keys
+
+
+# --- user_api_scopes_for (OBO scope derivation for Apps deploy) ---------------
+
+def test_user_api_scopes_sql_family_dedups_to_sql() -> None:
+    from apx_agent._resources import ResourceSpec, user_api_scopes_for
+
+    specs = [
+        ResourceSpec("sql_warehouse", "wh"),
+        ResourceSpec("uc_table", "main.s.t"),
+        ResourceSpec("uc_function", "main.s.f"),
+        ResourceSpec("uc_connection", "conn"),
+    ]
+    assert user_api_scopes_for(specs) == ["sql"]
+
+
+def test_user_api_scopes_per_kind() -> None:
+    from apx_agent._resources import ResourceSpec, user_api_scopes_for
+
+    assert user_api_scopes_for([ResourceSpec("serving_endpoint", "m")]) == ["serving.serving-endpoints"]
+    assert user_api_scopes_for([ResourceSpec("genie_space", "sp")]) == ["dashboards.genie"]
+    assert user_api_scopes_for([ResourceSpec("vector_search_index", "i")]) == ["vectorsearch.vector-search-endpoints"]
+
+
+def test_user_api_scopes_mixed_sorted_union() -> None:
+    from apx_agent._resources import ResourceSpec, user_api_scopes_for
+
+    specs = [
+        ResourceSpec("serving_endpoint", "m"),
+        ResourceSpec("uc_function", "main.s.f"),
+        ResourceSpec("genie_space", "sp"),
+    ]
+    assert user_api_scopes_for(specs) == ["dashboards.genie", "serving.serving-endpoints", "sql"]
+
+
+def test_user_api_scopes_empty() -> None:
+    from apx_agent._resources import user_api_scopes_for
+
+    assert user_api_scopes_for([]) == []
