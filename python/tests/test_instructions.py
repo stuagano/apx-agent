@@ -62,43 +62,52 @@ class TestBuildInstructionsFromSchema:
 
 
 class TestPersistInstructions:
+    """_persist_instructions writes the root agent's instructions= in agent.py
+    (the editor's + runtime's source of truth), not the ignored pyproject field."""
+
     def test_updates_ctx_instructions(self):
         ctx = _make_ctx("old instructions")
-        with patch("apx_agent._dev._find_deploy_root", return_value=None):
+        with patch("apx_agent._ui_edit._find_agent_router_path", return_value=None):
             _persist_instructions(ctx, "new instructions")
         assert ctx.config.instructions == "new instructions"
 
     def test_preserves_dev_mode_addendum(self):
         ctx = _make_ctx("base\n\n[DEV MODE] You have create_tool")
-        with patch("apx_agent._dev._find_deploy_root", return_value=None):
+        with patch("apx_agent._ui_edit._find_agent_router_path", return_value=None):
             _persist_instructions(ctx, "updated base")
         assert ctx.config.instructions.startswith("updated base")
         assert "[DEV MODE]" in ctx.config.instructions
         assert "create_tool" in ctx.config.instructions
 
     def test_ctx_none_does_not_raise(self):
-        with patch("apx_agent._dev._find_deploy_root", return_value=None):
+        with patch("apx_agent._ui_edit._find_agent_router_path", return_value=None):
             _persist_instructions(None, "some instructions")
 
-    def test_writes_to_pyproject_toml(self, tmp_path: Path):
-        toml = tmp_path / "pyproject.toml"
-        toml.write_text('[tool.apx]\ninstructions = """\nold\n"""\n')
-        with patch("apx_agent._dev._find_deploy_root", return_value=tmp_path):
-            _persist_instructions(None, "new content")
-        updated = toml.read_text()
-        assert "new content" in updated
-        assert "old" not in updated
+    def test_writes_instructions_into_agent_py(self, tmp_path: Path):
+        agent_py = tmp_path / "agent.py"
+        agent_py.write_text(
+            'from apx_agent import Agent\n'
+            'agent = Agent(name="x", instructions="old", tools=[t])\n'
+        )
+        with patch("apx_agent._ui_edit._find_agent_router_path", return_value=agent_py):
+            _persist_instructions(None, "brand new instructions")
+        updated = agent_py.read_text()
+        assert "brand new instructions" in updated
+        assert '"old"' not in updated
+        # other args preserved
+        assert 'name="x"' in updated and "tools=[t]" in updated
+        compile(updated, "agent.py", "exec")  # never leaves broken source
 
-    def test_skips_toml_write_when_no_file(self, tmp_path: Path):
-        with patch("apx_agent._dev._find_deploy_root", return_value=tmp_path):
+    def test_skips_when_no_agent_file(self, tmp_path: Path):
+        with patch("apx_agent._ui_edit._find_agent_router_path", return_value=None):
             _persist_instructions(None, "instructions")
-        # No pyproject.toml — should not raise
+        # No agent.py — should not raise
 
-    def test_skips_toml_write_when_no_match(self, tmp_path: Path):
-        toml = tmp_path / "pyproject.toml"
-        toml.write_text("[tool.apx]\nname = 'test'\n")
-        original = toml.read_text()
-        with patch("apx_agent._dev._find_deploy_root", return_value=tmp_path):
-            _persist_instructions(None, "new instructions")
-        # No instructions block → file unchanged
-        assert toml.read_text() == original
+    def test_does_not_corrupt_unparseable_agent_py(self, tmp_path: Path):
+        agent_py = tmp_path / "agent.py"
+        broken = "agent = Agent(instructions=\n"  # syntax error
+        agent_py.write_text(broken)
+        with patch("apx_agent._ui_edit._find_agent_router_path", return_value=agent_py):
+            _persist_instructions(None, "new")
+        # Left untouched rather than corrupted further
+        assert agent_py.read_text() == broken

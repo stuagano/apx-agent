@@ -317,36 +317,47 @@ def _persist_instructions(
     instructions: str,
     ws_client: "WorkspaceClient | None" = None,
 ) -> None:
-    """Update instructions in memory and write to pyproject.toml (+ workspace write-back)."""
-    import asyncio as _asyncio
-    import re as _re
+    """Write instructions into the root agent's ``Agent(instructions=...)`` in
+    agent.py — the single source of truth the editor edits and the runtime
+    imports — plus an in-memory update and best-effort workspace write-back.
+
+    (Previously wrote pyproject.toml's ``[tool.apx_agent].instructions``, which
+    the running ``LlmAgent`` ignores — so Setup's "apply" had no effect. Writing
+    agent.py is what actually connects Setup, the editor, and the live agent.)
+    """
+    from ._ui_edit import _find_agent_router_path, _set_agent_instructions
+
     if ctx:
         addendum = ""
         if "[DEV MODE]" in (ctx.config.instructions or ""):
             dev_suffix = ctx.config.instructions.split("[DEV MODE]", 1)[1]
             addendum = "\n\n[DEV MODE]" + dev_suffix
         ctx.config.instructions = instructions + addendum
-    root = _find_deploy_root()
-    if root:
-        toml_path = root / "pyproject.toml"
-        if toml_path.exists():
-            src = toml_path.read_text()
-            escaped = instructions.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-            new_block = f'instructions = """\n{escaped}\n"""'
-            updated = _re.sub(r'instructions\s*=\s*"""[\s\S]*?"""', new_block, src, count=1)
-            if updated != src:
-                toml_path.write_text(updated)
-                if ws_client and ctx:
-                    app_name = ctx.config.name if ctx else None
-                    if app_name:
-                        try:
-                            app_info = ws_client.apps.get(app_name)
-                            ws_source = getattr(app_info, "default_source_code_path", None)
-                            if ws_source:
-                                ws_path = ws_source.rstrip("/") + "/pyproject.toml"
-                                ws_client.workspace.upload(ws_path, updated.encode(), overwrite=True)
-                        except Exception:
-                            pass
+
+    path = _find_agent_router_path()
+    if not path or not path.exists():
+        return
+    src = path.read_text()
+    try:
+        updated = _set_agent_instructions(src, instructions)
+        compile(updated, str(path), "exec")  # never write syntactically broken source
+    except Exception as exc:  # noqa: BLE001 — bad parse/splice: skip the write, don't corrupt
+        logger.warning("Could not update instructions in %s: %s", path, exc)
+        return
+    if updated == src:
+        return
+    path.write_text(updated)
+    if ws_client and ctx:
+        app_name = ctx.config.name if ctx else None
+        if app_name:
+            try:
+                app_info = ws_client.apps.get(app_name)
+                ws_source = getattr(app_info, "default_source_code_path", None)
+                if ws_source:
+                    ws_path = ws_source.rstrip("/") + "/" + path.name
+                    ws_client.workspace.upload(ws_path, updated.encode(), overwrite=True)
+            except Exception:
+                pass
 
 
 async def _ws_upload_agent_file(request: Request, local_path: "Path", content: str) -> None:
