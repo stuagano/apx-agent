@@ -56,6 +56,13 @@ resources:
       name: bakehouse-agent
       description: bakehouse-agent apx-agent
       source_code_path: ./.build
+      # OAuth scopes the forwarded user (OBO) token carries (the iam.* defaults
+      # are always granted and must NOT be listed here). DataAgent / sql_tool
+      # need `sql`; add dashboards.genie / vectorsearch when the agent uses
+      # genie_tool / vector_search_tool.
+      user_api_scopes:
+        - sql
+        - serving.serving-endpoints
       resources:
         - name: experiment
           experiment:
