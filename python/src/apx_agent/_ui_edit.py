@@ -512,6 +512,84 @@ def _parse_agent_nodes(source: str) -> list[dict[str, Any]]:
     return nodes
 
 
+def _py_str_literal(s: str) -> str:
+    """Render a Python string literal — triple-quoted for readable multi-line
+    content when safe, else a ``repr`` that escapes everything correctly.
+    """
+    if "\n" in s and '"""' not in s and "\\" not in s and not s.endswith('"'):
+        return f'"""{s}"""'
+    return repr(s)
+
+
+def _abs_offset(source: str, lineno: int, col: int) -> int:
+    """Convert a 1-based (lineno, col) AST position to an absolute char index."""
+    lines = source.splitlines(keepends=True)
+    return sum(len(line) for line in lines[: lineno - 1]) + col
+
+
+def _set_agent_instructions(source: str, instructions: str, *, target: str = "agent") -> str:
+    """Set the ``instructions=`` argument of the root agent's call in ``source``.
+
+    Surgically replaces only the ``instructions=`` keyword value of the
+    ``{target} = Agent(...)`` / ``LlmAgent(...)`` call (direct or wrapped, e.g.
+    ``agent = LoopAgent(Agent(...))``), preserving every other argument. Inserts
+    the keyword if absent. The result is the same agent.py that the editor edits
+    and the runtime imports — so Setup, the editor, and the running agent share
+    one source of truth.
+
+    Raises ValueError if no ``{target}`` agent assignment/call is found.
+    """
+    import ast as _ast
+
+    tree = _ast.parse(source)
+
+    def _find_agent_call(value: Any) -> Any:
+        if isinstance(value, _ast.Call):
+            fn = value.func
+            fname = (
+                fn.id if isinstance(fn, _ast.Name)
+                else fn.attr if isinstance(fn, _ast.Attribute)
+                else ""
+            )
+            if fname in ("Agent", "LlmAgent"):
+                return value
+            for arg in value.args:  # wrapped: Wrapper(Agent(...), ...)
+                inner = _find_agent_call(arg)
+                if inner is not None:
+                    return inner
+        return None
+
+    call = None
+    for stmt in tree.body:
+        if (
+            isinstance(stmt, _ast.Assign)
+            and stmt.targets
+            and isinstance(stmt.targets[0], _ast.Name)
+            and stmt.targets[0].id == target
+        ):
+            call = _find_agent_call(stmt.value)
+            if call is not None:
+                break
+    if call is None:
+        raise ValueError(f"Could not find `{target} = Agent(...)` in the agent file")
+
+    literal = _py_str_literal(instructions)
+    kw = next((k for k in call.keywords if k.arg == "instructions"), None)
+    if kw is not None:
+        v = kw.value
+        start = _abs_offset(source, v.lineno, v.col_offset)
+        end = _abs_offset(source, v.end_lineno, v.end_col_offset)  # type: ignore[arg-type]
+        return source[:start] + literal + source[end:]
+
+    # No instructions= keyword — insert one right after the call's '('.
+    fn_end = _abs_offset(source, call.func.end_lineno, call.func.end_col_offset)  # type: ignore[arg-type]
+    paren = source.find("(", fn_end)
+    insert_at = paren + 1
+    has_args = bool(call.args or call.keywords)
+    piece = f"instructions={literal}" + (", " if has_args else "")
+    return source[:insert_at] + piece + source[insert_at:]
+
+
 def _render_edit_ui(content: str, not_found: bool = False) -> str:
     """Return a split-panel authoring page: CodeMirror left, schema preview right.
 

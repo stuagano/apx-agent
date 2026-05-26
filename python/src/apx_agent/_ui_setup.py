@@ -305,8 +305,9 @@ def _render_setup_ui(current: "dict[str, str]") -> str:
     </p>
     <div class="field">
       <textarea id="instructions-box" placeholder="Instructions will appear here…"></textarea>
-      <p class="note">These will be written to <code>pyproject.toml</code> as <code>instructions</code>
-        under <code>[tool.apx.agent]</code> and applied immediately.</p>
+      <p class="note">Written into <code>agent.py</code> as the agent's
+        <code>instructions=</code> — the same file the Editor shows and the
+        running agent uses. Open the Editor to see the change.</p>
     </div>
     <div class="btn-row">
       <button class="btn-secondary" id="btn-regen">↺ Regenerate</button>
