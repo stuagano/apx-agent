@@ -322,6 +322,7 @@ def _agent_class_to_node_type(agent: "BaseAgent") -> str:
     known = {
         "LlmAgent",
         "Agent",
+        "DataAgent",
         "SequentialAgent",
         "ParallelAgent",
         "LoopAgent",
