@@ -8,7 +8,7 @@ import os
 from typing import Any
 
 from ._models import AgentContext
-from ._ui_nav import _deploy_overlay_html
+from ._ui_nav import _apx_nav_links, _deploy_overlay_html
 from ._ui_setup import _find_env_path, _read_env_file
 
 logger = logging.getLogger(__name__)
@@ -219,15 +219,388 @@ async def _gather_sub_agent_checks(ctx: AgentContext | None) -> list[dict[str, A
     return list(await asyncio.gather(*[_check_sub_agent(raw, url) for raw, url in resolved]))
 
 
-async def _run_probe_checks(ctx: AgentContext | None) -> dict[str, Any]:
+async def _check_mlflow_config() -> dict[str, Any]:
+    """Verify MLFLOW_TRACKING_URI + MLFLOW_EXPERIMENT_ID look sane."""
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
+    experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID", "")
+
+    if not tracking_uri:
+        return {
+            "name": "mlflow_config",
+            "status": "warn",
+            "message": "MLFLOW_TRACKING_URI not set — traces go to local SQLite",
+            "hint": "Add MLFLOW_TRACKING_URI=databricks to app.yaml env or .env file.",
+        }
+    if tracking_uri != "databricks":
+        return {
+            "name": "mlflow_config",
+            "status": "warn",
+            "message": f"MLFLOW_TRACKING_URI={tracking_uri!r} (expected 'databricks')",
+            "hint": "Set MLFLOW_TRACKING_URI=databricks to use the workspace MLflow backend.",
+        }
+    if not experiment_id:
+        return {
+            "name": "mlflow_config",
+            "status": "warn",
+            "message": "MLFLOW_EXPERIMENT_ID not set — traces land in the default experiment",
+            "hint": "Set MLFLOW_EXPERIMENT_ID to pin the experiment. Find the ID in the MLflow UI URL.",
+        }
+
+    # Verify the experiment actually exists and is reachable.
+    try:
+        from mlflow.tracking import MlflowClient as _MlflowClient
+
+        def _verify() -> str:
+            exp = _MlflowClient().get_experiment(experiment_id)
+            return getattr(exp, "name", experiment_id)
+
+        exp_name = await asyncio.wait_for(
+            asyncio.to_thread(_verify), timeout=_CHECK_TIMEOUT_S
+        )
+        return {
+            "name": "mlflow_config",
+            "status": "ok",
+            "message": f"Experiment {experiment_id!r} ({exp_name}) reachable",
+            "hint": "",
+        }
+    except ImportError:
+        return {
+            "name": "mlflow_config",
+            "status": "skip",
+            "message": "mlflow not installed",
+            "hint": "Install apx-agent[eval] to enable MLflow tracing.",
+        }
+    except asyncio.TimeoutError:
+        return {
+            "name": "mlflow_config",
+            "status": "warn",
+            "message": f"MLflow experiment lookup timed out after {_CHECK_TIMEOUT_S}s",
+            "hint": "Workspace may be slow or MLFLOW_EXPERIMENT_ID may be wrong.",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "name": "mlflow_config",
+            "status": "fail",
+            "message": f"Experiment {experiment_id!r} not found: {str(exc)[:160]}",
+            "hint": "Verify MLFLOW_EXPERIMENT_ID matches an experiment in this workspace.",
+        }
+
+
+async def _check_mlflow_export() -> dict[str, Any]:
+    """Check for recent MLflow trace-export failures (e.g. blob-storage blocked)."""
+    try:
+        from ._mlflow_tracing import _mlflow_export_errors
+    except ImportError:
+        return {
+            "name": "mlflow_export",
+            "status": "skip",
+            "message": "mlflow not installed",
+            "hint": "",
+        }
+
+    errors = list(_mlflow_export_errors)
+    if not errors:
+        return {
+            "name": "mlflow_export",
+            "status": "ok",
+            "message": "No MLflow export failures recorded",
+            "hint": "",
+        }
+
+    import re
+
+    # Categorize the most recent error by signature so the hint is specific.
+    last = errors[-1]
+    host_match = re.search(r"([\w.-]+\.storage\.cloud\.databricks\.com)", last)
+    perm_match = re.search(r"permission denied|PERMISSION_DENIED|\b403\b", last, re.I)
+    exp_match = re.search(r"[Ee]xperiment .* does not exist|RESOURCE_DOES_NOT_EXIST", last)
+
+    if host_match:
+        category = "egress_blocked"
+        hint = (
+            f"Egress to {host_match.group(1)} is blocked. This is expected on "
+            "FEVM/private-link workspaces. Trace metadata still saves; the "
+            "list view uses include_spans=False so it keeps working."
+        )
+    elif exp_match:
+        category = "experiment_missing"
+        hint = (
+            "The MLflow experiment does not exist. Verify MLFLOW_EXPERIMENT_ID "
+            "matches an experiment in this workspace (see mlflow_config)."
+        )
+    elif perm_match:
+        category = "write_denied"
+        hint = (
+            "Trace writes are being denied. The app's service principal needs "
+            "EDIT on the MLflow experiment. Grant it in the experiment's "
+            "permissions, or point MLFLOW_EXPERIMENT_ID at an owned experiment."
+        )
+    else:
+        category = "unknown"
+        hint = "Check app logs for the full mlflow.tracing.export error."
+
+    return {
+        "name": "mlflow_export",
+        "status": "warn",
+        "message": f"{len(errors)} export failure(s) [{category}]. Last: {last[:180]}",
+        "hint": hint,
+    }
+
+
+# Maps ResourceSpec.kind -> (human label, positional getter on WorkspaceClient).
+# Positional args are used deliberately: the SDK has renamed these keyword
+# params across versions (e.g. functions.get full_name -> name), but positional
+# calls stay stable.
+def _verify_resource(ws: Any, kind: str, ident: str) -> None:
+    """Call the SDK getter for ``ident``. Raises if it doesn't resolve."""
+    if kind == "uc_function":
+        ws.functions.get(ident)
+    elif kind == "uc_table":
+        ws.tables.get(ident)
+    elif kind == "genie_space":
+        ws.genie.get_space(ident)
+    elif kind == "sql_warehouse":
+        ws.warehouses.get(ident)
+    elif kind == "serving_endpoint":
+        ws.serving_endpoints.get(ident)
+    elif kind == "vector_search_index":
+        ws.vector_search_indexes.get_index(ident)
+    else:  # pragma: no cover — unknown kind, treat as unverifiable
+        raise ValueError(f"no verifier for resource kind {kind!r}")
+
+
+async def _check_resources(ctx: AgentContext | None) -> dict[str, Any]:
+    """Verify every declared governed resource resolves at runtime.
+
+    Covers all ResourceSpec kinds reachable from the agent's tool tree — UC
+    functions/tables, Genie spaces, SQL warehouses, serving endpoints, and
+    vector search indexes. Catches the "tool 403s or returns nothing" class of
+    failure across every governed primitive, not just UC functions.
+    """
+    if ctx is None:
+        return {
+            "name": "resources",
+            "status": "skip",
+            "message": "No agent context",
+            "hint": "",
+        }
+
+    try:
+        from ._resources import _iter_tool_fns, get_resources
+    except ImportError:
+        return {
+            "name": "resources",
+            "status": "skip",
+            "message": "Resource helpers not available",
+            "hint": "",
+        }
+
+    # Collect unique (kind, identifier) pairs across the tool tree.
+    seen: set[tuple[str, str]] = set()
+    specs: list[tuple[str, str]] = []
+    _verifiable = {
+        "uc_function", "uc_table", "genie_space",
+        "sql_warehouse", "serving_endpoint", "vector_search_index",
+    }
+    try:
+        for fn in _iter_tool_fns(ctx.agent):
+            for spec in get_resources(fn):
+                key = (spec.kind, spec.identifier)
+                if spec.kind in _verifiable and key not in seen:
+                    seen.add(key)
+                    specs.append(key)
+    except Exception:
+        pass
+
+    if not specs:
+        return {
+            "name": "resources",
+            "status": "skip",
+            "message": "No governed resources declared by tools",
+            "hint": "Add uc_function_tool / genie_tool / vector_search_tool to enable.",
+        }
+
+    def _verify_all() -> list[tuple[str, str, str]]:
+        from databricks.sdk import WorkspaceClient
+        ws = WorkspaceClient()
+        failures: list[tuple[str, str, str]] = []
+        for kind, ident in specs:
+            try:
+                _verify_resource(ws, kind, ident)
+            except Exception as exc:  # noqa: BLE001
+                failures.append((kind, ident, str(exc)[:100]))
+        return failures
+
+    try:
+        failures = await asyncio.wait_for(
+            asyncio.to_thread(_verify_all), timeout=_CHECK_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        return {
+            "name": "resources",
+            "status": "warn",
+            "message": f"Resource lookup timed out after {_CHECK_TIMEOUT_S}s ({len(specs)} resources)",
+            "hint": "Workspace may be slow. Check DATABRICKS_HOST and credentials.",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "name": "resources",
+            "status": "fail",
+            "message": f"Could not check resources: {str(exc)[:160]}",
+            "hint": "Verify WorkspaceClient can authenticate (see workspace_auth check).",
+        }
+
+    if not failures:
+        return {
+            "name": "resources",
+            "status": "ok",
+            "message": f"All {len(specs)} governed resource(s) reachable",
+            "hint": "",
+        }
+
+    summary = "; ".join(f"{kind} {ident}: {err}" for kind, ident, err in failures[:3])
+    if len(failures) > 3:
+        summary += f" (+ {len(failures) - 3} more)"
+    return {
+        "name": "resources",
+        "status": "fail",
+        "message": f"{len(failures)}/{len(specs)} resource(s) unreachable: {summary}",
+        "hint": "Grant the app's service principal access, or check the identifier.",
+    }
+
+
+def _running_in_apps(headers: dict[str, str] | None) -> bool:
+    """True when this process looks like a Databricks Apps deployment.
+
+    Detected via the Apps-injected port env var or any ``X-Forwarded-*``
+    header on the inbound request (the Apps proxy sets these; bare uvicorn
+    does not).
+    """
+    if os.environ.get("DATABRICKS_APP_PORT"):
+        return True
+    if headers:
+        return any(k.lower().startswith("x-forwarded-") for k in headers)
+    return False
+
+
+async def _check_obo(headers: dict[str, str] | None) -> dict[str, Any]:
+    """Report whether the calling user's OBO token is flowing on this request.
+
+    In Databricks Apps the proxy injects ``X-Forwarded-Access-Token`` on every
+    request (including this probe). When identity passthrough breaks, every
+    tool call 403s opaquely — this surfaces the root cause directly.
+
+    Outside Apps (local uvicorn) there is no proxy and no header, so the check
+    skips rather than failing every local dev session.
+    """
+    if not _running_in_apps(headers):
+        return {
+            "name": "obo_identity",
+            "status": "skip",
+            "message": "Not running in Databricks Apps — no OBO proxy",
+            "hint": "Identity passthrough only applies to deployed Apps requests.",
+        }
+
+    from ._obo import _header_lookup
+
+    hdrs = headers or {}
+    token = _header_lookup(hdrs, "X-Forwarded-Access-Token")  # type: ignore[arg-type]
+    user_email = _header_lookup(hdrs, "X-Forwarded-Email")  # type: ignore[arg-type]
+
+    if not token:
+        return {
+            "name": "obo_identity",
+            "status": "fail",
+            "message": "No X-Forwarded-Access-Token on this request",
+            "hint": (
+                "User Authorization (OBO) is not enabled for this App, or the "
+                "scopes are missing. Enable 'User authorization' in the App's "
+                "settings so tools run as the calling user."
+            ),
+        }
+    who = f" (user: {user_email})" if user_email else ""
+    return {
+        "name": "obo_identity",
+        "status": "ok",
+        "message": f"OBO token present on request{who}",
+        "hint": "",
+    }
+
+
+async def _check_session_store(session_store: Any | None) -> dict[str, Any]:
+    """Ping the configured session backend with a non-destructive read."""
+    if session_store is None:
+        return {
+            "name": "session_store",
+            "status": "skip",
+            "message": "No session store configured",
+            "hint": "Pass session_store= to enable multi-turn history.",
+        }
+
+    store_kind = type(session_store).__name__
+    # InMemory has no backend to reach — report it but don't ping.
+    if store_kind == "InMemorySessionStore":
+        return {
+            "name": "session_store",
+            "status": "ok",
+            "message": f"{store_kind} (in-process, no backend)",
+            "hint": "InMemory history is lost on restart — use Lakebase/Delta for durability.",
+        }
+
+    def _ping() -> None:
+        # get() of a non-existent id returns None but still exercises the
+        # backend connection (and surfaces auth/network errors).
+        session_store.get("__apx_probe_healthcheck__")
+
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_ping), timeout=_CHECK_TIMEOUT_S)
+        return {
+            "name": "session_store",
+            "status": "ok",
+            "message": f"{store_kind} backend reachable",
+            "hint": "",
+        }
+    except asyncio.TimeoutError:
+        return {
+            "name": "session_store",
+            "status": "fail",
+            "message": f"{store_kind} ping timed out after {_CHECK_TIMEOUT_S}s",
+            "hint": "Backend is slow or unreachable — history will silently fail to load.",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "name": "session_store",
+            "status": "fail",
+            "message": f"{store_kind}: {str(exc)[:160]}",
+            "hint": "Backend unreachable — verify connection settings and credentials.",
+        }
+
+
+async def _run_probe_checks(
+    ctx: AgentContext | None,
+    *,
+    headers: dict[str, str] | None = None,
+    session_store: Any | None = None,
+) -> dict[str, Any]:
     """Run every health check in parallel and assemble a single response."""
-    workspace, model, env_vars, sub_agents = await asyncio.gather(
+    (
+        workspace, model, env_vars, sub_agents,
+        mlflow_cfg, mlflow_exp, resources, obo, session,
+    ) = await asyncio.gather(
         _check_workspace_auth(),
         _check_model(ctx),
         _check_env_vars(ctx),
         _gather_sub_agent_checks(ctx),
+        _check_mlflow_config(),
+        _check_mlflow_export(),
+        _check_resources(ctx),
+        _check_obo(headers),
+        _check_session_store(session_store),
     )
-    checks: list[dict[str, Any]] = [workspace, model, env_vars, *sub_agents]
+    checks: list[dict[str, Any]] = [  # type: ignore[list-item]
+        workspace, model, env_vars, *sub_agents,
+        mlflow_cfg, mlflow_exp, resources, obo, session,
+    ]
     counts = {"ok": 0, "warn": 0, "fail": 0, "skip": 0}
     for c in checks:
         counts[c["status"]] = counts.get(c["status"], 0) + 1
@@ -450,15 +823,7 @@ def _render_probe_ui(
 <header>
   <span class="badge">APX dev</span>
   <h1>Probe</h1>
-  <nav>
-    <a href="/_apx/agent">Chat</a>
-    <a href="/_apx/tools">Tools</a>
-    <a href="/_apx/edit">Edit</a>
-    <a href="/_apx/probe" class="active">Probe</a>
-    <a href="/_apx/setup">Setup</a>
-    <a href="/_apx/eval">Eval</a>
-    <a href="/_apx/wizard">Wizard</a>
-  </nav>
+  <nav>{_apx_nav_links("probe")}</nav>
   <button id="btn-deploy">Deploy ▶</button>
 </header>
 <main>

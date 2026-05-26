@@ -14,13 +14,37 @@ def _apx_nav_css() -> str:
 """
 
 
-def _apx_nav_html(active: str) -> str:
-    pages = [("agent", "Chat"), ("edit", "Edit"), ("builder", "Builder"), ("topology", "Topology"), ("setup", "Setup")]
+# Single source of truth for dev-UI navigation. Each entry is
+# ``(slug, label)``; the link target is ``/_apx/<slug>``. Every page renders
+# its nav from this list (via _apx_nav_links) so the bar can't drift out of
+# sync with the routes that actually exist. Keep aligned with the real GET
+# routes in _dev.py — test_dev_ui_routes.py enforces it.
+APX_NAV_PAGES: list[tuple[str, str]] = [
+    ("agent", "Chat"),
+    ("edit", "Edit"),
+    ("builder", "Builder"),
+    ("eval", "Eval"),
+    ("setup", "Setup"),
+    ("probe", "Probe"),
+    ("topology", "Topology"),
+]
+
+
+def _apx_nav_links(active: str) -> str:
+    """Return the ``<a>`` tags for the canonical nav, marking ``active``.
+
+    Pages embed this inside their own ``<nav>`` so they share one link list
+    while keeping their existing header chrome.
+    """
     active_cls = 'class="active"'
-    links = "".join(
-        f'<a href="/_apx/{p}" {active_cls if p == active else ""}>{label}</a>'
-        for p, label in pages
+    return "".join(
+        f'<a href="/_apx/{slug}" {active_cls if slug == active else ""}>{label}</a>'
+        for slug, label in APX_NAV_PAGES
     )
+
+
+def _apx_nav_html(active: str) -> str:
+    links = _apx_nav_links(active)
     # Hide the per-page nav when this page is loaded inside the unified
     # shell at /_apx/agent — the shell renders its own tab bar and a second
     # nav row would be redundant. Also hide any page-level <header> element
