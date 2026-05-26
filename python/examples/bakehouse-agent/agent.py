@@ -1,60 +1,66 @@
-"""bakehouse-agent — a RouterAgent over structured sales + unstructured reviews.
+"""bakehouse-agent — a RouterAgent over a bakery's sales + customer reviews.
 
-A showcase of three apx-agent ideas working together on Databricks' built-in
-``samples.bakehouse`` dataset (a bakery's sales + customer reviews):
+A showcase of DataAgent + multi-agent routing on Databricks' built-in
+``samples.bakehouse`` dataset:
 
-  * **DataAgent** — a governed agent over the structured sales tables
-    (transactions / customers / franchises / suppliers). With ``ws`` it
-    introspects the schema, wires the schema's tools, and grounds its
-    instructions in the real columns.
-  * **Vector Search** — semantic retrieval over the pre-chunked customer
-    reviews (``samples.bakehouse.media_gold_reviews_chunked``).
-  * **RouterAgent** — routes "how are sales doing?" to the data agent and
-    "what do customers say?" to the reviews agent.
+  * **sales_agent** — a ``DataAgent`` for sales metrics (transactions,
+    customers, franchises, suppliers).
+  * **reviews_agent** — a ``DataAgent`` for customer feedback, querying the
+    review text.
+  * **RouterAgent** — routes "how are sales?" to sales, "what do customers
+    say?" to reviews.
 
-Each leaf runs as the calling user, so Unity Catalog grants apply per request.
+Zero setup: both leaves use SQL, so on a workspace with serverless SQL the
+agent runs immediately (``sql_tool`` auto-discovers a warehouse) — no Vector
+Search endpoint, no index, no idle cost. Each leaf runs as the calling user,
+so Unity Catalog grants apply per request.
 
-Setup (one-time): the reviews path needs a Vector Search index over the chunked
-reviews — see README.md. Until it exists, the sales path works on its own; or
-swap the reviews agent for the SQL fallback shown below.
+Upgrade — semantic review search: for production-grade retrieval over reviews,
+swap ``reviews_agent`` for a Vector Search version (one-time index, see
+README.md → "Upgrade"). The structured/sales path is unchanged.
 """
 
 from __future__ import annotations
 
 import os
 
-from apx_agent import Agent, DataAgent, RouterAgent, vector_search_tool
+from apx_agent import DataAgent, RouterAgent
 
 WAREHOUSE_ID = os.environ.get("WAREHOUSE_ID") or None
-REVIEWS_INDEX = os.environ.get("REVIEWS_INDEX", "main.default.bakehouse_reviews_idx")
 
-# --- Sales: a governed DataAgent over the structured bakehouse tables ---------
-# Pass ws=WorkspaceClient() to introspect the schema at startup (auto-wires the
-# tables as resources + grounds the instructions). Left lazy here so the example
-# starts without a warehouse round-trip; sql_tool discovers a warehouse at call time.
+# --- Sales: metrics over the structured tables --------------------------------
 sales_agent = DataAgent(
     "samples", "bakehouse",
     warehouse_id=WAREHOUSE_ID,
     name="sales_agent",
+    instructions=(
+        "You answer questions about the bakery's sales. Query the sales tables "
+        "(sales_transactions, sales_customers, sales_franchises, sales_suppliers) "
+        "with the SQL tool — aggregate with GROUP BY, join on the id columns. "
+        "Base every answer on query results."
+    ),
 )
 
-# --- Reviews: semantic search over the pre-chunked customer reviews -----------
-reviews_agent = Agent(
+# --- Reviews: customer feedback over the review text --------------------------
+reviews_agent = DataAgent(
+    "samples", "bakehouse",
+    warehouse_id=WAREHOUSE_ID,
     name="reviews_agent",
     instructions=(
-        "You answer questions about what bakery customers are saying. "
-        "Search the customer reviews for relevant passages and summarize the "
-        "sentiment and themes, quoting briefly. If nothing relevant is found, "
-        "say so rather than guessing."
+        "You answer questions about what customers say. Query the "
+        "media_customer_reviews table with the SQL tool — filter the review text "
+        "with WHERE ... LIKE, read the rows, and summarize sentiment and themes, "
+        "quoting briefly. Say so if nothing relevant is found."
     ),
-    tools=[vector_search_tool(REVIEWS_INDEX, num_results=5)],
 )
-# SQL fallback (no index needed) — uncomment to query review text directly instead:
-# reviews_agent = DataAgent(
-#     "samples", "bakehouse", warehouse_id=WAREHOUSE_ID, name="reviews_agent",
-#     instructions="Answer questions about customer feedback by querying "
-#                  "media_customer_reviews with targeted SELECTs.",
-# )
+# Upgrade — semantic search over reviews (needs a one-time Vector Search index):
+#   from apx_agent import Agent, vector_search_tool
+#   reviews_agent = Agent(
+#       name="reviews_agent",
+#       instructions="Answer questions about what customers say using the review "
+#                    "search tool; summarize sentiment and themes, quoting briefly.",
+#       tools=[vector_search_tool(os.environ["REVIEWS_INDEX"], num_results=5)],
+#   )
 
 # --- Route between them --------------------------------------------------------
 agent = RouterAgent(

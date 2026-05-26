@@ -1,65 +1,56 @@
 # bakehouse-agent
 
-A `RouterAgent` that routes between **structured sales data** and **unstructured
-customer reviews** — a showcase of `DataAgent` + Vector Search + multi-agent
-composition over Databricks' built-in `samples.bakehouse` dataset (a bakery's
-sales + reviews).
+A `RouterAgent` that routes between **sales metrics** and **customer reviews** —
+a showcase of `DataAgent` + multi-agent routing over Databricks' built-in
+`samples.bakehouse` dataset (a bakery's sales + reviews).
 
 ```
-                         ┌──────────────────────────────┐
-   "how are sales?" ───▶ │ sales_agent  (DataAgent over  │
-                         │ samples.bakehouse sales tables)│
+                         ┌───────────────────────────────┐
+   "how are sales?" ───▶ │ sales_agent   (DataAgent over  │
+                         │ the structured sales tables)   │
    RouterAgent ──────────┤                                │
-                         │ reviews_agent (Vector Search   │
-"what do customers say?"▶│ over the pre-chunked reviews)  │
-                         └──────────────────────────────┘
+"what do customers say?"▶│ reviews_agent (DataAgent over  │
+                         │ the customer-review text)      │
+                         └───────────────────────────────┘
 ```
 
-Every leaf runs as the **calling user** — Unity Catalog grants apply per request.
+**Zero setup — runs immediately.** Both leaves use SQL, so on a workspace with
+serverless SQL the agent works out of the box: `sql_tool` auto-discovers a
+warehouse, with **no Vector Search endpoint, no index, no idle cost**. Every
+leaf runs as the **calling user** — Unity Catalog grants apply per request.
 
 ## What it demonstrates
-- **`DataAgent("samples", "bakehouse")`** — a governed agent over the structured
-  tables (transactions, customers, franchises, suppliers). Pass
-  `ws=WorkspaceClient()` to have it introspect the schema at startup: auto-wire
-  the tables as `uc_table` resources and ground its instructions in the real columns.
-- **`vector_search_tool(...)`** — semantic retrieval over
-  `samples.bakehouse.media_gold_reviews_chunked` (the reviews come pre-chunked
-  for exactly this).
-- **`RouterAgent`** — deterministic routing between the two leaf agents.
-
-## Setup
-```bash
-uv sync
-uv run quickstart            # MLflow experiment + .env
-```
-
-### Reviews path — one-time Vector Search index
-The reviews leaf needs an index over the chunked reviews. Create one (UI or SQL),
-then point the agent at it via `REVIEWS_INDEX`:
-
-```sql
--- on a Vector Search endpoint, index the pre-chunked reviews
-CREATE VECTOR INDEX main.default.bakehouse_reviews_idx
-  ON samples.bakehouse.media_gold_reviews_chunked
-  ... ;   -- see docs.databricks.com → Vector Search
-```
-```bash
-export REVIEWS_INDEX=main.default.bakehouse_reviews_idx
-export WAREHOUSE_ID=<your-sql-warehouse>   # optional; auto-discovered if unset
-```
-
-Don't want to set up an index? The **sales path works on its own**, or uncomment
-the SQL-fallback `reviews_agent` in `agent.py` to query the review text directly.
+- **`DataAgent("samples", "bakehouse")`** — a governed agent over the schema.
+  Pass `ws=WorkspaceClient()` to have it introspect at startup: auto-wire the
+  tables as `uc_table` resources and ground its instructions in the real columns.
+- **`RouterAgent`** — deterministic routing between two focused leaf agents.
 
 ## Run
 ```bash
+uv sync
+uv run quickstart            # MLflow experiment + .env
+export WAREHOUSE_ID=<id>      # optional — auto-discovered if your workspace has serverless SQL
+
 uv run uvicorn agent_server.start_server:app --host 127.0.0.1 --port 8000
 # open http://localhost:8000/_apx/agent and try:
-#   "what were total sales by franchise?"   → routed to sales_agent
-#   "what do customers love about us?"       → routed to reviews_agent
+#   "total sales by franchise?"        → routed to sales_agent
+#   "what do customers love about us?" → routed to reviews_agent
 ```
 
 ## Deploy
 ```bash
 apx deploy --target apps
 ```
+
+## Upgrade — semantic review search (optional)
+The default `reviews_agent` keyword-searches the review text with SQL — zero
+infra, but no semantic ranking. For production-grade retrieval, point a Vector
+Search agent at the pre-chunked reviews (`samples.bakehouse.media_gold_reviews_chunked`):
+
+1. **One-time:** create a Vector Search index over the chunked reviews (UI or
+   SQL — see docs.databricks.com → Vector Search). This provisions a VS
+   **endpoint** (ongoing compute) — which is why it's opt-in, not the default.
+2. Set `REVIEWS_INDEX=<your.index.name>` and swap in the commented
+   `vector_search_tool` version of `reviews_agent` in `agent.py`.
+
+The sales path is unchanged either way.
