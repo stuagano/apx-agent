@@ -1096,44 +1096,17 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.get("/_apx/setup/agents", include_in_schema=False)
     async def setup_agents(request: Request) -> Any:
-        """Discover agents in the workspace by probing /.well-known/agent.json."""
-        import asyncio as _asyncio
-        import urllib.request as _urllib
+        """Return the agents defined in the LOCAL agent.py — the file the editor
+        edits and the runtime imports — as ``[{name, tools, instructions, wrapper}]``.
+
+        (Previously this discovered deployed *workspace* apps, which is the wrong
+        data for the composer: it edits this project's agents, not other apps.)
+        """
         from fastapi.responses import JSONResponse
-        ws: WorkspaceClient = request.app.state.workspace_client
-        try:
-            apps = await _asyncio.to_thread(lambda: list(ws.apps.list()))
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
-
-        running = [
-            a for a in apps
-            if getattr(getattr(a, "app_status", None), "state", None) is not None
-            and str(getattr(getattr(a, "app_status", None), "state", "")).upper() == "RUNNING"
-            and getattr(a, "url", None)
-        ]
-
-        async def probe(app_url: str) -> dict | None:
-            url = app_url.rstrip("/") + "/.well-known/agent.json"
-            try:
-                data = await _asyncio.to_thread(
-                    lambda: _urllib.urlopen(url, timeout=3).read()  # noqa: S310
-                )
-                import json as _json
-                card = _json.loads(data)
-                return {
-                    "name": card.get("name", app_url),
-                    "url": app_url,
-                    "description": card.get("description", ""),
-                    "tools": [s.get("name", s.get("id", "")) for s in card.get("skills", [])],
-                    "instructions": "",
-                }
-            except Exception:
-                return None
-
-        results = await _asyncio.gather(*[probe(a.url) for a in running])
-        agents = [r for r in results if r is not None]
-        return JSONResponse(agents)
+        path = _find_agent_router_path()
+        if not path or not path.exists():
+            return JSONResponse([])
+        return JSONResponse(_parse_agent_nodes(path.read_text()))
 
     @router.post("/_apx/setup", include_in_schema=False)
     async def save_setup(request: Request) -> Any:
@@ -1380,8 +1353,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     @router.post("/_apx/setup/agents", include_in_schema=False)
     async def setup_save_agents(request: Request) -> Any:
         from fastapi.responses import JSONResponse
-        import ast as _ast
         import re as _re
+
+        from ._ui_edit import _parse_agent_nodes, _set_agent_instructions, _set_agent_tools
 
         body = await request.json()
         nodes_data = body.get("nodes", [])
@@ -1390,57 +1364,56 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         path = _find_agent_router_path()
         if not path or not path.exists():
-            return JSONResponse({"ok": False, "error": "agent_router.py not found"}, status_code=404)
+            return JSONResponse({"ok": False, "error": "agent.py not found"}, status_code=404)
 
         source = path.read_text()
         known_tools = {
             s["name"] for s in _extract_schemas_from_source(source) if not s.get("_error")
         }
+        existing = {n["name"] for n in _parse_agent_nodes(source)}
 
-        try:
-            tree = _ast.parse(source)
-        except SyntaxError as exc:
-            return JSONResponse({"ok": False, "error": f"Syntax error in source: {exc}"}, status_code=400)
-
-        existing_ranges: dict[str, tuple[int, int]] = {}
-        for stmt in tree.body:
-            if (isinstance(stmt, _ast.Assign) and stmt.targets and
-                    isinstance(stmt.targets[0], _ast.Name) and stmt.end_lineno is not None):
-                existing_ranges[stmt.targets[0].id] = (stmt.lineno, stmt.end_lineno)
-
-        lines = source.splitlines(keepends=True)
-        updates: list[tuple[int, int, str]] = []
-        appends: list[str] = []
-
+        # Surgically patch each EXISTING agent's tools + instructions, preserving
+        # every other argument (name=, sub_agents=, etc.). New agent names are
+        # deferred to the multi-agent composition follow-up rather than appended
+        # as orphan, never-referenced Agent(...) lines.
+        applied: list[str] = []
+        skipped: list[str] = []
+        updated = source
         for node_data in nodes_data:
             name = str(node_data.get("name", "")).strip()
-            if not name or name == "agent":
+            if not name or not _re.match(r"^[a-z_][a-z0-9_]*$", name):
                 continue
-            if not _re.match(r"^[a-z_][a-z0-9_]*$", name):
+            if name not in existing:
+                skipped.append(name)
                 continue
             tools = [t for t in (node_data.get("tools") or []) if t in known_tools]
             instr = str(node_data.get("instructions") or "")
-            new_line = f"{name} = Agent(tools=[{', '.join(tools)}], instructions={repr(instr)})\n"
-            if name in existing_ranges:
-                start, end = existing_ranges[name]
-                updates.append((start, end, new_line))
-            else:
-                appends.append(new_line)
-
-        updates.sort(key=lambda x: x[0], reverse=True)
-        for start, end, new_line in updates:
-            lines[start - 1:end] = [new_line]
-        lines.extend(appends)
-        updated = "".join(lines)
+            try:
+                updated = _set_agent_tools(updated, tools, target=name)
+                updated = _set_agent_instructions(updated, instr, target=name)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(
+                    {"ok": False, "error": f"Could not update `{name}`: {exc}"}, status_code=400
+                )
+            applied.append(name)
 
         try:
-            compile(updated, "agent_router.py", "exec")
+            compile(updated, str(path), "exec")
         except SyntaxError as exc:
             return JSONResponse({"ok": False, "error": f"Generated code has syntax error: {exc}"}, status_code=400)
 
-        path.write_text(updated)
-        await _ws_upload_agent_file(request, path, updated)
-        return JSONResponse({"ok": True})
+        if updated != source:
+            path.write_text(updated)
+            await _ws_upload_agent_file(request, path, updated)
+
+        resp: dict[str, Any] = {"ok": True, "applied": applied}
+        if skipped:
+            resp["skipped"] = skipped
+            resp["note"] = (
+                "Editing existing agents is live; creating + wiring new agents "
+                "(" + ", ".join(skipped) + ") is coming in the multi-agent step."
+            )
+        return JSONResponse(resp)
 
     @router.get("/_apx/setup/probe-json", include_in_schema=False)
     async def setup_probe_json(request: Request) -> Any:

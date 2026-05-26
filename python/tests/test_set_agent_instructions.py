@@ -7,7 +7,30 @@ import ast
 
 import pytest
 
-from apx_agent._ui_edit import _set_agent_instructions
+from apx_agent._ui_edit import _set_agent_instructions, _set_agent_tools
+
+
+def _tools_of(source: str, target: str = "agent") -> list[str]:
+    tree = ast.parse(source)
+
+    def find(value):
+        if isinstance(value, ast.Call):
+            fn = value.func
+            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if name in ("Agent", "LlmAgent"):
+                return value
+            for a in value.args:
+                inner = find(a)
+                if inner is not None:
+                    return inner
+        return None
+
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign) and getattr(stmt.targets[0], "id", None) == target:
+            call = find(stmt.value)
+            kw = next((k for k in call.keywords if k.arg == "tools"), None)
+            return [e.id for e in kw.value.elts] if kw else None
+    return None
 
 
 def _instructions_of(source: str, target: str = "agent") -> str:
@@ -101,3 +124,41 @@ class TestErrors:
         src = 'x = 1\n'
         with pytest.raises(ValueError, match="Could not find"):
             _set_agent_instructions(src, "nope")
+
+
+class TestSetAgentTools:
+    def test_replaces_tools_preserving_other_args(self):
+        src = 'agent = Agent(name="hw", instructions="hi", tools=[echo])\n'
+        out = _set_agent_tools(src, ["lookup", "search"])
+        assert _tools_of(out) == ["lookup", "search"]
+        assert 'name="hw"' in out and 'instructions="hi"' in out
+
+    def test_empty_tools(self):
+        src = 'agent = Agent(tools=[echo], instructions="x")\n'
+        out = _set_agent_tools(src, [])
+        assert _tools_of(out) == []
+        compile(out, "agent.py", "exec")
+
+    def test_inserts_when_absent(self):
+        src = 'agent = Agent(instructions="x")\n'
+        out = _set_agent_tools(src, ["echo"])
+        compile(out, "agent.py", "exec")
+        assert _tools_of(out) == ["echo"]
+
+    def test_targets_named_agent(self):
+        src = (
+            'helper = Agent(tools=[a], instructions="h")\n'
+            'agent = Agent(tools=[b], instructions="r")\n'
+        )
+        out = _set_agent_tools(src, ["c"], target="helper")
+        assert _tools_of(out, "helper") == ["c"]
+        assert _tools_of(out, "agent") == ["b"]  # untouched
+
+    def test_tools_and_instructions_compose(self):
+        # Mirrors what setup_save_agents does: apply both surgically in sequence.
+        src = 'agent = Agent(name="x", tools=[echo], instructions="old")\n'
+        out = _set_agent_tools(src, ["a", "b"])
+        out = _set_agent_instructions(out, "new")
+        assert _tools_of(out) == ["a", "b"]
+        assert 'name="x"' in out
+        compile(out, "agent.py", "exec")
