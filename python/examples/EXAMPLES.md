@@ -12,7 +12,7 @@ Quick index — what each example does and which direction data/auth flows.
 
 | Example | What it does |
 |---------|-------------|
-| [bakehouse-agent](./bakehouse-agent/) | **DataAgent + Vector Search + RouterAgent showcase** over the built-in `samples.bakehouse` dataset. Routes "how are sales?" to a governed `DataAgent` over the structured sales tables, and "what do customers say?" to a Vector Search agent over the pre-chunked reviews — the simplest end-to-end view of governed data + RAG + multi-agent routing. |
+| [bakehouse-agent](./bakehouse-agent/) | **DataAgent + RouterAgent showcase** over the built-in `samples.bakehouse` dataset. Routes "how are sales?" to a governed `DataAgent` over the sales tables and "what do customers say?" to a `DataAgent` over the review text. **Zero setup** — both leaves use SQL (serverless warehouse auto-discovered), no Vector Search endpoint required; an optional README "Upgrade" swaps the reviews leaf to semantic Vector Search. |
 | [data-triage-agent](./data-triage-agent/) | Investigates missing Databricks data — 6-step SequentialAgent pipeline (presence → lineage → pipeline → genie → code → synthesis). Delegates SQL + Delta forensics to the data-inspector sub-agent via A2A. Deploys to either Apps (`--target apps`) or Model Serving (`--target model-serving`). |
 | [data-inspector](./data-inspector/) | SQL + Delta forensics — standalone or sub-agent via MCP/A2A |
 | [contract-parsing-agent](./contract-parsing-agent/) | Extracts structured terms from contract PDFs into Unity Catalog |
