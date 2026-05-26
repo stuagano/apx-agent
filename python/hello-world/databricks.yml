@@ -56,6 +56,12 @@ resources:
       name: hello-world
       description: hello-world apx-agent
       source_code_path: ./.build
+      # OBO scopes the forwarded user token carries so governed tools run as the
+      # caller. `sql` is what DataAgent / sql_tool need. (iam.* are auto; changing
+      # scopes requires users to re-authorize the app.)
+      user_api_scopes:
+        - sql
+        - serving.serving-endpoints
       resources:
         - name: experiment
           experiment:
