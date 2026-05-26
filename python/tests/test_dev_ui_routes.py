@@ -81,7 +81,7 @@ class TestNoDeadNavLinks:
 class TestLegacyRedirects:
     """Removed pages still redirect somewhere valid (no hard 404)."""
 
-    @pytest.mark.parametrize("slug,target", [("tools", "/_apx/agent"), ("wizard", "/_apx/setup")])
+    @pytest.mark.parametrize("slug,target", [("tools", "/_apx/edit"), ("wizard", "/_apx/setup")])
     @pytest.mark.asyncio
     async def test_legacy_route_redirects(self, app: FastAPI, slug: str, target: str):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:

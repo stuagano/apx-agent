@@ -409,8 +409,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.get("/_apx/tools", include_in_schema=False)
     async def tools_dev_ui() -> Any:
+        # The standalone tools page is retired — tool authoring (incl. the
+        # natural-language generator) now lives in the Edit page's New Tool modal.
         from starlette.responses import RedirectResponse as _R
-        return _R("/_apx/agent#chat", status_code=302)
+        return _R("/_apx/edit", status_code=302)
 
     @router.get("/_apx/openapi.json", include_in_schema=False)
     async def apx_openapi_spec(request: Request) -> Any:
