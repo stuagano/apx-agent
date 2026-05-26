@@ -23,6 +23,12 @@ quickstart = "scripts.quickstart:main"
 # and pin "apx-agent[langgraph]==<version>" once published to PyPI.
 apx-agent = { path = "../..", editable = true }
 
+[tool.apx.metadata]
+app-name = "bakehouse-agent"
+app-slug = "bakehouse_agent"
+app-entrypoint = "app:app"
+api-prefix = "/api"
+
 [tool.apx.agent]
 name = "bakehouse-agent"
 description = "An apx-agent on Databricks Apps."

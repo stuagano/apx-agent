@@ -34,10 +34,11 @@ sales_agent = DataAgent(
     warehouse_id=WAREHOUSE_ID,
     name="sales_agent",
     instructions=(
-        "You answer questions about the bakery's sales. Query the sales tables "
-        "(sales_transactions, sales_customers, sales_franchises, sales_suppliers) "
-        "with the SQL tool — aggregate with GROUP BY, join on the id columns. "
-        "Base every answer on query results."
+        "You answer questions about the bakery's sales. Always use FULLY-QUALIFIED "
+        "table names: samples.bakehouse.sales_transactions, "
+        "samples.bakehouse.sales_customers, samples.bakehouse.sales_franchises, "
+        "samples.bakehouse.sales_suppliers. Aggregate with GROUP BY, join on the id "
+        "columns, and base every answer on the SQL tool's results."
     ),
 )
 
@@ -47,10 +48,10 @@ reviews_agent = DataAgent(
     warehouse_id=WAREHOUSE_ID,
     name="reviews_agent",
     instructions=(
-        "You answer questions about what customers say. Query the "
-        "media_customer_reviews table with the SQL tool — filter the review text "
-        "with WHERE ... LIKE, read the rows, and summarize sentiment and themes, "
-        "quoting briefly. Say so if nothing relevant is found."
+        "You answer questions about what customers say. Query the fully-qualified "
+        "table samples.bakehouse.media_customer_reviews with the SQL tool — filter "
+        "the review text with WHERE ... LIKE, read the rows, and summarize sentiment "
+        "and themes, quoting briefly. Say so if nothing relevant is found."
     ),
 )
 # Upgrade — semantic search over reviews (needs a one-time Vector Search index):
