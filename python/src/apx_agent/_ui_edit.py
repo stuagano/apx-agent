@@ -334,37 +334,53 @@ def _mine_schema_from_source(source: str) -> "dict[str, list[str]]":
 
 
 def _remove_tool(source: str, fn_name: str) -> str:
-    """Remove a tool function definition and its entry from Agent(tools=[...])."""
+    """Remove a tool function (incl. its decorators) and drop it from the root
+    agent's ``tools=`` list.
+
+    AST-based: removes the whole ``FunctionDef`` — ``@tool`` decorator and all,
+    no orphaned decorator left behind — and drops only the ``tools=`` entry,
+    not other textual occurrences of the name (a string, comment, or another
+    function's body). Returns ``source`` unchanged if the function isn't found.
+    """
+    import ast as _ast
     import re as _re
 
-    # Find the function definition start
-    fn_start = _re.search(rf'^def {_re.escape(fn_name)}\b', source, _re.MULTILINE)
-    if not fn_start:
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
         return source
 
-    # Find the end: next top-level def/class/agent= line
-    rest = source[fn_start.start():]
-    fn_end_m = _re.search(r'\n(?=(?:def |class |agent\s*=))', rest)
-    fn_end = fn_start.start() + (fn_end_m.start() + 1 if fn_end_m else len(rest))
+    target = next(
+        (
+            n for n in tree.body
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and n.name == fn_name
+        ),
+        None,
+    )
+    if target is None:
+        return source
 
-    # Strip any blank lines immediately before the def
-    before = source[:fn_start.start()].rstrip("\n")
-    after = source[fn_end:]
-    result = before + "\n\n" + after
+    # Span includes decorators (their lineno sits above the `def` line).
+    start_line = min([d.lineno for d in target.decorator_list], default=target.lineno)
+    end_line = target.end_lineno or target.lineno
 
-    # Remove from tools list — handles both `name` and `, name` forms
-    result = _re.sub(rf',?\s*\b{_re.escape(fn_name)}\b\s*,?', _clean_tools_list_comma, result)
+    lines = source.splitlines(keepends=True)
+    del lines[start_line - 1:end_line]
+    result = _re.sub(r"\n{3,}", "\n\n", "".join(lines))
+
+    # Drop the name from the root agent's tools= list (surgical, AST-based).
+    try:
+        call = _find_root_agent_call(result, "agent")
+        if call is not None:
+            kw = next((k for k in call.keywords if k.arg == "tools"), None)
+            if kw is not None and isinstance(kw.value, _ast.List):
+                names = [e.id for e in kw.value.elts if isinstance(e, _ast.Name)]
+                if fn_name in names:
+                    result = _set_agent_tools(result, [n for n in names if n != fn_name], target="agent")
+    except Exception:  # noqa: BLE001
+        pass
 
     return result
-
-
-def _clean_tools_list_comma(m: "re.Match[str]") -> str:  # type: ignore[name-defined]
-    """Collapse double-commas / trailing commas left after removing a tools entry."""
-    txt = m.group(0)
-    # If we removed 'name,' leave the preceding comma; if ', name' leave nothing
-    if txt.startswith(",") and txt.endswith(","):
-        return ","  # was ", name,"  → collapse to ","
-    return ""  # was "name," or ", name" → remove entirely
 
 
 def _extract_schemas_from_source(source: str) -> list[dict[str, Any]]:

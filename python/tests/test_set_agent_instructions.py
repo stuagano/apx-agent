@@ -7,7 +7,12 @@ import ast
 
 import pytest
 
-from apx_agent._ui_edit import _set_agent_instructions, _set_agent_tools, _splice_tool
+from apx_agent._ui_edit import (
+    _remove_tool,
+    _set_agent_instructions,
+    _set_agent_tools,
+    _splice_tool,
+)
 
 
 def _tools_of(source: str, target: str = "agent") -> list[str]:
@@ -205,3 +210,48 @@ class TestSpliceTool:
         out = _splice_tool(src, _NEW_FN, "add")
         compile(out, "agent.py", "exec")
         assert _tools_of(out) == ["add"]
+
+
+class TestRemoveTool:
+    def test_add_then_remove_round_trips(self):
+        out = _splice_tool(_SCAFFOLD, _NEW_FN, "add")
+        assert _tools_of(out) == ["echo", "add"]
+        back = _remove_tool(out, "add")
+        compile(back, "agent.py", "exec")
+        assert _tools_of(back) == ["echo"]
+        assert "def add(" not in back
+
+    def test_removes_decorator_no_orphan(self):
+        # Regression: the old ^def search left the @tool decorator behind.
+        out = _splice_tool(_SCAFFOLD, _NEW_FN, "add")
+        back = _remove_tool(out, "add")
+        # No dangling decorator immediately before the agent assignment.
+        assert "@tool\n\n\nagent" not in back
+        assert "@tool\nagent" not in back
+        # Exactly one @tool remains (echo's).
+        assert back.count("@tool") == 1
+
+    def test_does_not_clobber_name_elsewhere(self):
+        # 'echo' appears in another function's body — removing the tool must
+        # only drop the tools= entry + its def, not mangle unrelated text.
+        src = (
+            'from apx_agent import Agent, tool\n\n'
+            '@tool\n'
+            'def echo(message: str) -> str:\n'
+            '    """Echo."""\n'
+            '    return message\n\n'
+            '@tool\n'
+            'def shout(message: str) -> str:\n'
+            '    """Shout. Calls echo conceptually: echo echo echo."""\n'
+            '    return message.upper()\n\n'
+            'agent = Agent(tools=[echo, shout], instructions="hi")\n'
+        )
+        back = _remove_tool(src, "echo")
+        compile(back, "agent.py", "exec")
+        assert _tools_of(back) == ["shout"]
+        assert "def echo(" not in back
+        # shout's docstring mention of "echo" is untouched.
+        assert "echo echo echo" in back
+
+    def test_missing_function_unchanged(self):
+        assert _remove_tool(_SCAFFOLD, "nonexistent") == _SCAFFOLD
