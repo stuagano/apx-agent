@@ -105,9 +105,9 @@ See [docs/identity-passthrough.md](docs/identity-passthrough.md) for the OBO mec
 Add it to your own project (pin a release tag, or use `main` for the latest):
 
 ```bash
-uv add "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@v0.18.0#subdirectory=python"
+uv add "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@v0.2.0#subdirectory=python"
 # pip equivalent:
-# pip install "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@v0.18.0#subdirectory=python"
+# pip install "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@v0.2.0#subdirectory=python"
 ```
 
 Or grab the built wheel from the [Releases page](https://github.com/stuagano/apx-agent/releases).
