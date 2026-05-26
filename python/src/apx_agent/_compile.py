@@ -164,9 +164,31 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
         async def _async_wrapper(**kwargs: Any) -> Any:
             return await fn(**kwargs, **resolved_deps)
 
-        _async_wrapper.__name__ = fn.__name__
-        _async_wrapper.__doc__ = fn.__doc__
+        def _sync_bridge(**kwargs: Any) -> Any:
+            # langgraph's *sync* graph.invoke() path (used by the Apps
+            # /invocations and ChatAgent runtimes) calls tools synchronously —
+            # and a coroutine-only StructuredTool raises "does not support sync
+            # invocation". Bridge to the coroutine here so async tools (sql_tool,
+            # genie_tool, uc_function_tool, ...) work in the sync path too.
+            import asyncio
+
+            async def _call() -> Any:
+                return await fn(**kwargs, **resolved_deps)
+
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return asyncio.run(_call())
+            # Already inside a running loop — run the coroutine in a worker thread.
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                return ex.submit(lambda: asyncio.run(_call())).result()
+
+        _async_wrapper.__name__ = _sync_bridge.__name__ = fn.__name__
+        _async_wrapper.__doc__ = _sync_bridge.__doc__ = fn.__doc__
         return StructuredTool.from_function(
+            func=_sync_bridge,
             coroutine=_async_wrapper,
             name=fn.__name__,
             description=(fn.__doc__ or fn.__name__).strip(),
