@@ -234,8 +234,8 @@ def test_scaffold_apps_force_overwrites_existing_dir(tmp_path: Path) -> None:
 
     fresh = sentinel.read_text()
     assert "# OLD STALE CONTENT" not in fresh
-    # The top-level scaffold template defines an ``agent = Agent(...)`` block.
-    assert "agent = Agent(" in fresh
+    # The top-level scaffold template defines an ``agent = DataAgent(...)`` block.
+    assert "agent = DataAgent(" in fresh
 
 
 # ---------------------------------------------------------------------------

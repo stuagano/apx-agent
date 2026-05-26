@@ -26,7 +26,7 @@ cd my-agent && uv sync
 uv run apx deploy --target apps
 ```
 
-When it finishes, `apx deploy` prints the app URL. Open it — the scaffolded agent (with an `echo` tool) is live and ready to chat.
+When it finishes, `apx deploy` prints the app URL. Open it — the scaffolded agent (a `DataAgent` over the built-in `samples.nyctaxi` dataset) is live and ready to chat.
 
 ---
 
@@ -38,29 +38,29 @@ Before deploying, run the agent on your machine:
 uv run uvicorn agent_server.start_server:app --host 127.0.0.1 --port 8000
 ```
 
-Open `http://localhost:8000/_apx/agent` and try **"echo hello"**. When it looks good, run `apx deploy`.
+Open `http://localhost:8000/_apx/agent` and try **"what tables can you query?"** or **"how many taxi trips are in the data?"**. When it looks good, run `apx deploy`.
 
 ---
 
 ## The agent file
 
-`agent.py` is the only file you edit. The scaffolded version has a working `echo` tool:
+`agent.py` is the only file you edit. The scaffolded version is a one-line **`DataAgent`** — a governed agent over a Unity Catalog schema:
 
 ```python
-from apx_agent import Agent, tool
+from apx_agent import DataAgent
 
-@tool
-def echo(message: str) -> str:
-    """Echo the user's message back."""
-    return f"echo: {message}"
-
-agent = Agent(
-    instructions="You are a helpful assistant.",
-    tools=[echo],
-)
+# Governed data agent over the built-in samples.nyctaxi dataset.
+agent = DataAgent("samples", "nyctaxi")
 ```
 
-Replace the echo tool with a real Databricks tool:
+Point it at your own data by changing the catalog/schema, and pass `ws=WorkspaceClient()` to have it auto-discover the schema's tables and UC functions and ground its instructions in the real columns:
+
+```python
+from databricks.sdk import WorkspaceClient
+agent = DataAgent("main", "sales", ws=WorkspaceClient())
+```
+
+`DataAgent` is just a specialized `Agent`, so you can also drop to the general form and wire tools yourself:
 
 | Tool | What it wraps |
 |------|---------------|

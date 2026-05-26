@@ -15,23 +15,17 @@ agent's behavior.
 """
 from __future__ import annotations
 
-from apx_agent import Agent, tool
+from apx_agent import DataAgent
 
 
-@tool
-def echo(message: str) -> str:
-    """Echo the user's message back.
-
-    Replace this with your real tool(s) — pure-Python ``@tool`` callables,
-    ``uc_function_tool(...)``, ``genie_tool(...)``, ``vector_search_tool(...)``,
-    or remote sub-agent URLs in ``sub_agents=[...]``.
-    """
-    return f"echo: {message}"
-
-
-# Define your agent. Add tools / sub-agents / memory stores here.
-agent = Agent(
-    name="hello-world",
-    instructions="You are a helpful assistant.",
-    tools=[echo],
-)
+# A governed data agent over Databricks' built-in ``samples.nyctaxi`` dataset.
+# It answers questions grounded in that schema and queries via a SQL tool that
+# runs as the calling user — their Unity Catalog grants apply.
+#
+# Make it your own:
+#   * point it at your own data:  DataAgent("main", "sales", name="hello-world")
+#   * pass ``ws=WorkspaceClient()`` to auto-discover the schema's tables + UC
+#     functions and ground the instructions in the real columns
+#   * add ``genie_space=...`` / ``vector_index=...`` for Genie or Vector Search
+#   * or drop back to a plain ``Agent(tools=[...])`` with your own ``@tool``s
+agent = DataAgent("samples", "nyctaxi", name="hello-world")
