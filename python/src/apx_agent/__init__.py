@@ -19,6 +19,9 @@ Agent = LlmAgent
 # Agent-as-tool composition primitive
 from ._agent_tool import agent_tool
 
+# DataAgent — LlmAgent specialized for governed UC data access
+from .data_agent import DataAgent
+
 # Models
 from ._models import (
     AfterModelHook,
@@ -296,6 +299,7 @@ __all__ = [
     # Agent types
     "Agent",
     "BaseAgent",
+    "DataAgent",
     "HandoffAgent",
     "KeywordRouter",
     "LlmAgent",

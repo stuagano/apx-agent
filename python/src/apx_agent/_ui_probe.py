@@ -960,52 +960,10 @@ async def _run_probe(url: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _build_instructions_from_schema(
-    catalog: str,
-    schema: str,
-    tables: "dict[str, list[str]]",
-) -> str:
-    """Build agent instructions from schema metadata without an LLM call.
-
-    Produces the same 5-part structure (persona, first-tool rule, call chains,
-    recovery rule, grounding rule) that the old LLM prompt required, but
-    deterministically from the table names already in hand.
-    """
-    fqn = f"{catalog}.{schema}" if catalog and schema else schema or catalog or "the data"
-    table_names = list(tables.keys())
-
-    if table_names:
-        table_list = ", ".join(table_names)
-        if len(table_names) == 1:
-            chain = (
-                f"To answer questions about {table_names[0]}: "
-                f"query the table with targeted filters and return the results directly."
-            )
-        else:
-            chain = (
-                f"To answer questions about {table_names[0]}: query it with the relevant filters. "
-                f"For questions spanning multiple tables (e.g. {' and '.join(table_names[:2])}): "
-                f"run separate queries then combine the results."
-            )
-    else:
-        table_list = fqn
-        chain = (
-            "To answer data questions: use the SQL tool with a targeted SELECT statement. "
-            "For aggregations: use GROUP BY with the appropriate metric column."
-        )
-
-    return (
-        f"You are a data assistant for {fqn}. "
-        f"Your data includes: {table_list}.\n\n"
-        f"At the start of every session, call the SQL tool to confirm what tables and columns "
-        f"are available before answering questions.\n\n"
-        f"{chain}\n\n"
-        f"When a query returns empty results or an error, try a broader filter or verify the "
-        f"column name exists in the schema before telling the user you cannot help.\n\n"
-        f"Always base your answers on tool results. "
-        f"Never estimate or fabricate data values. "
-        f"If you cannot retrieve what was asked, say so clearly and describe what you can provide."
-    )
+# Schema introspection + instruction generation now live in _schema.py (UI-free,
+# shared with DataAgent). Kept here as thin wrappers for back-compat.
+from ._schema import build_instructions_from_schema as _build_instructions_from_schema  # noqa: E402
+from ._schema import introspect_schema as _introspect_schema  # noqa: E402
 
 
 async def _generate_agent_instructions(
@@ -1018,35 +976,9 @@ async def _generate_agent_instructions(
     """Fetch schema metadata then build instructions via Python template (no LLM)."""
     import asyncio as _asyncio
 
-    tables: dict[str, list[str]] = {}
-    if catalog and schema and warehouse_id:
-        def _fetch() -> dict[str, list[str]]:
-            resp = ws.statement_execution.execute_statement(
-                warehouse_id=warehouse_id,
-                statement=(
-                    f"SELECT table_name, column_name, data_type "
-                    f"FROM information_schema.columns "
-                    f"WHERE table_schema = '{schema}' "
-                    f"ORDER BY table_name, ordinal_position"
-                ),
-                catalog=catalog,
-                schema=schema,
-            )
-            if not resp.result or not resp.result.data_array:
-                return {}
-            col_names = [c.name for c in resp.manifest.schema.columns]
-            result: dict[str, list[str]] = {}
-            for row in resp.result.data_array:
-                r = dict(zip(col_names, row))
-                result.setdefault(r["table_name"], []).append(
-                    f"{r['column_name']}({r['data_type']})"
-                )
-            return result
-        try:
-            tables = await _asyncio.to_thread(_fetch)
-        except Exception:
-            pass
-
+    tables = await _asyncio.to_thread(
+        _introspect_schema, ws, catalog, schema, warehouse_id
+    )
     return _build_instructions_from_schema(catalog, schema, tables)
 
 
