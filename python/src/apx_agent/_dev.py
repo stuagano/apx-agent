@@ -1461,7 +1461,6 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     @router.post("/_apx/setup/agent-pattern", include_in_schema=False)
     async def setup_set_agent_pattern(request: Request) -> Any:
         from fastapi.responses import JSONResponse
-        import ast as _ast
 
         body = await request.json()
         pattern: str = body.get("pattern", "").strip()
@@ -1509,58 +1508,34 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if pattern not in _AUTO_PATTERNS:
             return JSONResponse({"ok": False, "error": f"Unknown pattern: {pattern}"}, status_code=400)
 
+        from ._ui_edit import _parse_agent_nodes, _set_agent_wrapper
+
         path = _find_agent_router_path()
         if not path or not path.exists():
-            return JSONResponse({"ok": False, "error": "agent_router.py not found"}, status_code=404)
+            return JSONResponse({"ok": False, "error": "agent.py not found"}, status_code=404)
 
         source = path.read_text()
         nodes = _parse_agent_nodes(source)
         agent_node = next((n for n in nodes if n["name"] == "agent"), None)
         if not agent_node:
-            return JSONResponse({"ok": False, "error": "No 'agent' variable in agent_router.py"}, status_code=400)
+            return JSONResponse({"ok": False, "error": "No 'agent' variable in agent.py"}, status_code=400)
 
         current_type = agent_node["wrapper"] or "Agent"
         if current_type == pattern or (pattern in ("Agent", "LlmAgent") and current_type in ("Agent", "LlmAgent")):
             return JSONResponse({"ok": True, "type": current_type, "changed": False})
 
-        tools = agent_node["tools"]
-        instructions = agent_node["instructions"]
-        tools_str = "[" + ", ".join(tools) + "]"
-
-        if pattern in ("Agent", "LlmAgent"):
-            new_assignment = f"agent = Agent(tools={tools_str}, instructions={repr(instructions)})\n"
-        else:  # LoopAgent
-            new_assignment = f"agent = LoopAgent(Agent(tools={tools_str}, instructions={repr(instructions)}))\n"
-
+        # Surgically re-wrap the inner Agent(...) call, preserving all its args
+        # (name=, sub_agents=, etc.) instead of regenerating a lossy assignment.
         try:
-            tree = _ast.parse(source)
-        except SyntaxError as exc:
-            return JSONResponse({"ok": False, "error": f"Syntax error in source: {exc}"}, status_code=400)
+            updated = _set_agent_wrapper(source, pattern, target="agent")
+            compile(updated, str(path), "exec")
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": f"Could not switch pattern: {exc}"}, status_code=400)
 
-        agent_range: tuple[int, int] | None = None
-        for stmt in tree.body:
-            if (isinstance(stmt, _ast.Assign) and stmt.targets and
-                    isinstance(stmt.targets[0], _ast.Name) and stmt.targets[0].id == "agent"
-                    and stmt.end_lineno is not None):
-                agent_range = (stmt.lineno, stmt.end_lineno)
-                break
-
-        if not agent_range:
-            return JSONResponse({"ok": False, "error": "Could not locate 'agent' assignment"}, status_code=400)
-
-        lines = source.splitlines(keepends=True)
-        start, end = agent_range
-        lines[start - 1:end] = [new_assignment]
-        updated = "".join(lines)
-
-        try:
-            compile(updated, "agent_router.py", "exec")
-        except SyntaxError as exc:
-            return JSONResponse({"ok": False, "error": f"Generated code has syntax error: {exc}"}, status_code=400)
-
-        path.write_text(updated)
-        await _ws_upload_agent_file(request, path, updated)
-        return JSONResponse({"ok": True, "type": pattern, "changed": True})
+        if updated != source:
+            path.write_text(updated)
+            await _ws_upload_agent_file(request, path, updated)
+        return JSONResponse({"ok": True, "type": pattern, "changed": updated != source})
 
     @router.get("/_apx/eval/data", include_in_schema=False)
     async def eval_data_get() -> Any:

@@ -11,6 +11,7 @@ from apx_agent._ui_edit import (
     _remove_tool,
     _set_agent_instructions,
     _set_agent_tools,
+    _set_agent_wrapper,
     _splice_tool,
 )
 
@@ -255,3 +256,41 @@ class TestRemoveTool:
 
     def test_missing_function_unchanged(self):
         assert _remove_tool(_SCAFFOLD, "nonexistent") == _SCAFFOLD
+
+
+class TestSetAgentWrapper:
+    def test_wrap_in_loopagent_preserves_kwargs(self):
+        # Regression: the old rewrite regenerated the line and dropped name=.
+        out = _set_agent_wrapper(_SCAFFOLD, "LoopAgent")
+        compile(out, "agent.py", "exec")
+        assert "LoopAgent(Agent(" in out.replace("\n", "").replace(" ", "")
+        assert 'name="hw"' in out          # preserved
+        assert "instructions=" in out       # preserved
+        assert _tools_of(out) == ["echo"]   # inner Agent intact
+
+    def test_unwrap_loopagent_to_agent(self):
+        src = (
+            'from apx_agent import Agent, LoopAgent\n'
+            'agent = LoopAgent(Agent(name="hw", instructions="hi", tools=[echo]), max_iterations=3)\n'
+        )
+        out = _set_agent_wrapper(src, "Agent")
+        compile(out, "agent.py", "exec")
+        assert "LoopAgent" not in out.split("agent =")[1]
+        assert 'name="hw"' in out and _tools_of(out) == ["echo"]
+
+    def test_preserves_sub_agents_kwarg(self):
+        src = (
+            'agent = Agent(\n'
+            '    name="root",\n'
+            '    instructions="hi",\n'
+            '    tools=[echo],\n'
+            '    sub_agents=["https://other/agent"],\n'
+            ')\n'
+        )
+        out = _set_agent_wrapper(src, "LoopAgent")
+        compile(out, "agent.py", "exec")
+        assert 'sub_agents=["https://other/agent"]' in out  # not dropped
+
+    def test_unknown_wrapper_raises(self):
+        with pytest.raises(ValueError, match="Unsupported"):
+            _set_agent_wrapper(_SCAFFOLD, "SequentialAgent")
