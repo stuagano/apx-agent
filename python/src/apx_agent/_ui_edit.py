@@ -1042,6 +1042,19 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
   #btn-insert {{ background: #2563eb; color: #fff; border: none; border-radius: 6px;
                  padding: 7px 18px; font-size: 13px; cursor: pointer; font-weight: 500; }}
   #btn-insert:hover {{ background: #1d4ed8; }}
+  /* Natural-language generate section */
+  #f-gen {{ background: #0c1a2e; border: 1px solid #1e3a5f; border-radius: 8px;
+            padding: 12px; display: flex; flex-direction: column; gap: 8px; }}
+  #f-gen > label {{ font-size: 11px; font-weight: 600; color: #60b0ff;
+                    text-transform: uppercase; letter-spacing: .4px; }}
+  #f-gen-row {{ display: flex; gap: 8px; align-items: stretch; }}
+  #f-prompt {{ flex: 1; }}
+  #btn-generate {{ background: #1e3a5f; color: #cfe6ff; border: 1px solid #2d568a;
+                   border-radius: 6px; padding: 7px 14px; font-size: 13px; cursor: pointer;
+                   font-weight: 500; white-space: nowrap; }}
+  #btn-generate:hover {{ background: #285080; }}
+  #btn-generate:disabled {{ opacity: .5; cursor: default; }}
+  #gen-msg {{ font-size: 11px; color: #5a7fae; min-height: 14px; }}
   #btn-cancel {{ background: transparent; color: #888; border: 1px solid #333;
                  border-radius: 6px; padding: 7px 14px; font-size: 13px; cursor: pointer; }}
   #btn-cancel:hover {{ color: #ccc; border-color: #555; }}
@@ -1080,6 +1093,14 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
       <button id="modal-close">✕</button>
     </div>
     <div id="modal-body">
+      <div id="f-gen">
+        <label>Describe it <span style="font-weight:400;text-transform:none;color:#5a7fae">— generate the tool from natural language</span></label>
+        <div id="f-gen-row">
+          <textarea id="f-prompt" rows="2" placeholder="e.g. get a customer's total spend by month for a given year"></textarea>
+          <button id="btn-generate" type="button">✨ Generate</button>
+        </div>
+        <span id="gen-msg"></span>
+      </div>
       <div class="field">
         <label>Function name</label>
         <input id="f-name" type="text" placeholder="my_tool" spellcheck="false">
@@ -1107,6 +1128,10 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
       <div class="field">
         <label>Attach to agent</label>
         <select id="f-agent"><option value="agent">agent</option></select>
+      </div>
+      <div class="field">
+        <label>Body <span style="font-weight:400;text-transform:none;color:#444">(generated — edit before inserting; leave blank for a stub)</span></label>
+        <textarea id="f-body" rows="6" placeholder="# generated implementation appears here after Generate" spellcheck="false"></textarea>
       </div>
       <div class="field">
         <label>Preview</label>
@@ -1260,7 +1285,9 @@ function buildFunctionCode() {{
     ? `    {chr(34)*3}${{docLines[0]}}\\n${{docLines.slice(1).join('\\n')}}\\n    {chr(34)*3}`
     : `    {chr(34)*3}${{docLines[0]}}{chr(34)*3}`;
 
-  return `${{sig}}\\n${{docstring}}\\n    # TODO: implement your tool\\n    pass`;
+  const body = document.getElementById('f-body').value.replace(/\\s+$/,'');
+  const bodyBlock = body ? body : '    # TODO: implement your tool\\n    pass';
+  return `${{sig}}\\n${{docstring}}\\n${{bodyBlock}}`;
 }}
 
 function updatePreview() {{
@@ -1282,14 +1309,54 @@ async function populateAgentPicker() {{
 }}
 
 document.getElementById('btn-new-tool').addEventListener('click', () => {{
+  document.getElementById('f-prompt').value = '';
+  document.getElementById('gen-msg').textContent = '';
   document.getElementById('f-name').value = '';
   document.getElementById('f-desc').value = '';
   document.getElementById('f-return').value = 'str';
+  document.getElementById('f-body').value = '';
   document.getElementById('param-rows').innerHTML = '';
   populateAgentPicker();
   updatePreview();
   overlay.classList.add('open');
-  document.getElementById('f-name').focus();
+  document.getElementById('f-prompt').focus();
+}});
+
+// Natural-language generation: describe the tool, the model fills the fields
+// below (name/description/params/body) for review before inserting.
+document.getElementById('btn-generate').addEventListener('click', async () => {{
+  const prompt = document.getElementById('f-prompt').value.trim();
+  const gmsg = document.getElementById('gen-msg');
+  const gbtn = document.getElementById('btn-generate');
+  if (!prompt) {{ gmsg.textContent = 'Type a description first.'; return; }}
+  gbtn.disabled = true; gbtn.textContent = 'Generating…'; gmsg.textContent = '';
+  try {{
+    // Persist the buffer first so the generator grounds on the latest source
+    // (it mines table/column names from agent.py).
+    await fetch('/_apx/edit', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ content: view.state.doc.toString() }}),
+    }});
+    const r = await fetch('/_apx/tools/suggest', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ prompt }}),
+    }});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'Generation failed');
+    const s = d.spec || {{}};
+    document.getElementById('f-name').value = s.name || '';
+    document.getElementById('f-desc').value = s.description || '';
+    document.getElementById('param-rows').innerHTML = '';
+    (s.params || []).forEach(p => addParamRow(p.name || '', p.type || 'str', p.desc || ''));
+    if (s.returns) document.getElementById('f-return').value = s.returns;
+    document.getElementById('f-body').value = s.body || '';
+    updatePreview();
+    gmsg.textContent = '✓ Generated — review the fields below, then Insert.';
+  }} catch (e) {{
+    gmsg.textContent = '✗ ' + e.message;
+  }} finally {{
+    gbtn.disabled = false; gbtn.textContent = '✨ Generate';
+  }}
 }});
 document.getElementById('modal-close').onclick =
 document.getElementById('btn-cancel').onclick = () => overlay.classList.remove('open');
@@ -1299,6 +1366,7 @@ document.getElementById('btn-add-param').onclick = () => addParamRow();
 document.getElementById('f-name').addEventListener('input', updatePreview);
 document.getElementById('f-desc').addEventListener('input', updatePreview);
 document.getElementById('f-return').addEventListener('input', updatePreview);
+document.getElementById('f-body').addEventListener('input', updatePreview);
 
 document.getElementById('btn-insert').addEventListener('click', async () => {{
   const btn = document.getElementById('btn-insert');
@@ -1308,6 +1376,7 @@ document.getElementById('btn-insert').addEventListener('click', async () => {{
     description: document.getElementById('f-desc').value.trim() || 'Describe what this tool does.',
     params: collectParams(),
     returns: document.getElementById('f-return').value,
+    body: document.getElementById('f-body').value.replace(/\\s+$/,'') || null,
     agent: document.getElementById('f-agent').value || 'agent',
   }};
   btn.disabled = true; btn.textContent = 'Inserting…';
