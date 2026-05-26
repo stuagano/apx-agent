@@ -96,9 +96,23 @@ See [docs/identity-passthrough.md](docs/identity-passthrough.md) for the OBO mec
 
 ## Quick start
 
-> Not on PyPI / npm yet — install from this repo until the first release.
+> Not on PyPI / npm yet — install straight from GitHub. The Python package
+> lives in the `python/` subdirectory, so the install URL needs
+> `#subdirectory=python`.
 
-### Python
+### Install from GitHub
+
+Add it to your own project (pin a release tag, or use `main` for the latest):
+
+```bash
+uv add "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@v0.18.0#subdirectory=python"
+# pip equivalent:
+# pip install "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@v0.18.0#subdirectory=python"
+```
+
+Or grab the built wheel from the [Releases page](https://github.com/stuagano/apx-agent/releases).
+
+### Python (develop / scaffold)
 
 ```bash
 git clone https://github.com/stuagano/apx-agent.git
