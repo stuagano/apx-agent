@@ -127,6 +127,36 @@ class TestCompileLlmAgent:
         assert "ws" not in schema["properties"]
 
 
+class TestAsyncToolInvocation:
+    """Regression: async tools (sql_tool, genie_tool, uc_function_tool, ...) must
+    work in the SYNC graph.invoke() path used by the Apps + ChatAgent runtimes.
+    A coroutine-only StructuredTool raised "does not support sync invocation"."""
+
+    def test_async_tool_supports_sync_invoke(self, fake_ws: MagicMock) -> None:
+        from apx_agent._compile import CompileContext, _make_langchain_tool
+
+        async def fetch_row(row_id: str) -> str:
+            """Fetch a row."""
+            return f"row:{row_id}"
+
+        lc_tool = _make_langchain_tool(fetch_row, CompileContext(ws=fake_ws, model="any"))
+        # The bug: this raised ToolException "does not support sync invocation".
+        assert lc_tool.invoke({"row_id": "42"}) == "row:42"
+
+    @pytest.mark.asyncio
+    async def test_async_tool_supports_async_invoke(self, fake_ws: MagicMock) -> None:
+        from apx_agent._compile import CompileContext, _make_langchain_tool
+
+        async def fetch_row(row_id: str) -> str:
+            """Fetch a row."""
+            return f"row:{row_id}"
+
+        lc_tool = _make_langchain_tool(fetch_row, CompileContext(ws=fake_ws, model="any"))
+        # Sync bridge must also work even when called from within a running loop.
+        assert lc_tool.invoke({"row_id": "9"}) == "row:9"
+        assert await lc_tool.ainvoke({"row_id": "7"}) == "row:7"
+
+
 class TestCompileSequentialAgent:
     def test_pipeline_becomes_state_graph(self, fake_ws: MagicMock) -> None:
         pipeline = SequentialAgent(
