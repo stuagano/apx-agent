@@ -1,9 +1,6 @@
-.PHONY: builder-ui wheel
+.PHONY: wheel
 
-builder-ui:
-	cd python/builder-ui && npm ci && npm run build:dist
-
-wheel: builder-ui
+wheel:
 	cd python && python3 -m hatchling build --target wheel
 	cp python/dist/apx_agent-*.whl python/hello-world/
 	cp python/dist/apx_agent-*.whl python/hello-world/.build/

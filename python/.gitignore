@@ -1,3 +1,0 @@
-# Visual-builder SPA dist — built locally by `npm run build:dist`, shipped in wheel
-src/apx_agent/_builder_ui_dist/*
-!src/apx_agent/_builder_ui_dist/.gitkeep

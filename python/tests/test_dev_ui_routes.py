@@ -46,8 +46,8 @@ class TestCanonicalNavRoutesResolve:
     @pytest.mark.asyncio
     async def test_route_resolves_to_page(self, app: FastAPI, slug: str):
         # Follow redirects — what the browser actually experiences. Some pages
-        # (e.g. /_apx/builder) intentionally 302 to a trailing-slash variant so
-        # the SPA's relative asset paths resolve.
+        # intentionally 302 (e.g. to a trailing-slash variant so an SPA's
+        # relative asset paths resolve).
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             r = await ac.get(f"/_apx/{slug}", follow_redirects=True)
         assert r.status_code == 200, (
@@ -70,7 +70,7 @@ class TestNoDeadNavLinks:
         linked = set(re.findall(r'href="/_apx/([a-z]+)"', r.text))
         # The page may link to non-nav destinations (traces, chat). Only assert
         # that it does NOT link to known-removed pages.
-        removed = {"tools", "wizard"}
+        removed = {"tools", "wizard", "builder"}
         dead = linked & removed
         assert not dead, (
             f"/_apx/{slug} still links to removed page(s) {dead}. "

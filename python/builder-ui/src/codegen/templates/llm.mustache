@@ -1,7 +1,0 @@
-{{{nodeName}}} = Agent(
-    instructions="""{{{systemPrompt}}}""",
-    tools=[{{#tools}}{{{.}}}, {{/tools}}],
-{{#hasSubAgentUrls}}
-    sub_agents=[{{#subAgentUrls}}"{{.}}", {{/subAgentUrls}}],
-{{/hasSubAgentUrls}}
-)

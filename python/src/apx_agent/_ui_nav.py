@@ -22,7 +22,6 @@ def _apx_nav_css() -> str:
 APX_NAV_PAGES: list[tuple[str, str]] = [
     ("agent", "Chat"),
     ("edit", "Edit"),
-    ("builder", "Builder"),
     ("eval", "Eval"),
     ("setup", "Setup"),
     ("probe", "Probe"),
