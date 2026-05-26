@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -62,18 +63,30 @@ def _patch_no_env():
 class TestProbeChecks:
     @pytest.mark.asyncio
     async def test_all_green_path(self, app_with_ctx: FastAPI):
-        with _patch_workspace_ok(), _patch_model_ok(), _patch_no_env():
+        mock_exp = MagicMock()
+        mock_exp.name = "test-experiment"
+        mock_client_instance = MagicMock()
+        mock_client_instance.get_experiment.return_value = mock_exp
+        mlflow_env = {"MLFLOW_TRACKING_URI": "databricks", "MLFLOW_EXPERIMENT_ID": "test-123"}
+
+        with _patch_workspace_ok(), _patch_model_ok(), _patch_no_env(), \
+             patch.dict(os.environ, mlflow_env), \
+             patch("mlflow.tracking.MlflowClient", return_value=mock_client_instance):
             async with AsyncClient(transport=ASGITransport(app=app_with_ctx), base_url="http://test") as ac:
                 r = await ac.get("/_apx/probe/checks")
         assert r.status_code == 200
         data = r.json()
-        # workspace_auth ok, model ok, env_vars skip, sub_agents skip → overall ok
-        assert data["overall"] == "ok"
         names = {c["name"]: c["status"] for c in data["checks"]}
         assert names["workspace_auth"] == "ok"
         assert names["model"] == "ok"
         assert names["env_vars"] == "skip"
         assert names["sub_agents"] == "skip"
+        assert names["mlflow_config"] == "ok"
+        assert names["mlflow_export"] == "ok"
+        assert names["resources"] == "skip"
+        assert names["obo_identity"] == "skip"  # not in Apps context under test
+        assert names["session_store"] == "skip"  # none configured
+        assert data["overall"] == "ok"
 
     @pytest.mark.asyncio
     async def test_workspace_auth_failure_marks_overall_fail(self, app_with_ctx: FastAPI):
@@ -248,3 +261,144 @@ class TestProbeUiRoute:
         assert r.status_code == 200
         assert "Health checks" in r.text
         assert "/_apx/probe/checks" in r.text  # JS fetches the JSON endpoint
+
+
+class TestCheckObo:
+    @pytest.mark.asyncio
+    async def test_skips_outside_apps(self):
+        from apx_agent._ui_probe import _check_obo
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DATABRICKS_APP_PORT", None)
+            result = await _check_obo(headers={})
+        assert result["status"] == "skip"
+
+    @pytest.mark.asyncio
+    async def test_ok_when_token_present(self):
+        from apx_agent._ui_probe import _check_obo
+        headers = {
+            "x-forwarded-access-token": "tok-abc",
+            "x-forwarded-email": "user@example.com",
+        }
+        result = await _check_obo(headers=headers)
+        assert result["status"] == "ok"
+        assert "user@example.com" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_fail_in_apps_without_token(self):
+        from apx_agent._ui_probe import _check_obo
+        # X-Forwarded-Host present (proxy) but no access token → OBO not enabled.
+        headers = {"x-forwarded-host": "app.example.com"}
+        result = await _check_obo(headers=headers)
+        assert result["status"] == "fail"
+        assert "OBO" in result["hint"]
+
+
+class TestCheckSessionStore:
+    @pytest.mark.asyncio
+    async def test_skips_when_none(self):
+        from apx_agent._ui_probe import _check_session_store
+        result = await _check_session_store(None)
+        assert result["status"] == "skip"
+
+    @pytest.mark.asyncio
+    async def test_inmemory_ok_without_ping(self):
+        from apx_agent import InMemorySessionStore
+        from apx_agent._ui_probe import _check_session_store
+        result = await _check_session_store(InMemorySessionStore())
+        assert result["status"] == "ok"
+        assert "in-process" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_ping_reachable(self):
+        from apx_agent._ui_probe import _check_session_store
+        store = MagicMock()
+        store.get = MagicMock(return_value=None)
+        result = await _check_session_store(store)
+        assert result["status"] == "ok"
+        store.get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ping_failure(self):
+        from apx_agent._ui_probe import _check_session_store
+        store = MagicMock()
+        store.get = MagicMock(side_effect=Exception("connection refused"))
+        result = await _check_session_store(store)
+        assert result["status"] == "fail"
+        assert "connection refused" in result["message"]
+
+
+class TestCheckResources:
+    @pytest.mark.asyncio
+    async def test_skips_when_no_resources(self):
+        from apx_agent._ui_probe import _check_resources
+        ctx = _make_ctx()
+        result = await _check_resources(ctx)
+        assert result["status"] == "skip"
+
+    @pytest.mark.asyncio
+    async def test_verifies_uc_function_via_positional(self):
+        from apx_agent import LlmAgent, uc_function_tool
+        from apx_agent._ui_probe import _check_resources
+
+        agent = LlmAgent(tools=[uc_function_tool("main.tools.lookup")])
+        config = AgentConfig(name="r", model="m")
+        ctx = AgentContext(
+            config=config, tools=[],
+            card=AgentCard(name="r", description="", skills=[]), agent=agent,
+        )
+        ws = MagicMock()
+        ws.functions.get = MagicMock(return_value=MagicMock())
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            result = await _check_resources(ctx)
+        assert result["status"] == "ok"
+        # Verify positional call (version-agnostic), not keyword.
+        ws.functions.get.assert_called_once_with("main.tools.lookup")
+
+    @pytest.mark.asyncio
+    async def test_reports_unreachable_resource(self):
+        from apx_agent import LlmAgent, uc_function_tool
+        from apx_agent._ui_probe import _check_resources
+
+        agent = LlmAgent(tools=[uc_function_tool("main.tools.missing")])
+        config = AgentConfig(name="r", model="m")
+        ctx = AgentContext(
+            config=config, tools=[],
+            card=AgentCard(name="r", description="", skills=[]), agent=agent,
+        )
+        ws = MagicMock()
+        ws.functions.get = MagicMock(side_effect=Exception("does not exist"))
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            result = await _check_resources(ctx)
+        assert result["status"] == "fail"
+        assert "missing" in result["message"]
+
+
+class TestCheckMlflowExportCategories:
+    @pytest.mark.asyncio
+    async def test_egress_blocked_category(self):
+        from apx_agent import _mlflow_tracing
+        from apx_agent._ui_probe import _check_mlflow_export
+        _mlflow_tracing._mlflow_export_errors.clear()
+        _mlflow_tracing._mlflow_export_errors.append(
+            "Failed to send trace: Connection refused to "
+            "us-east-1.storage.cloud.databricks.com:443"
+        )
+        result = await _check_mlflow_export()
+        assert result["status"] == "warn"
+        assert "egress_blocked" in result["message"]
+        assert "private-link" in result["hint"]
+        _mlflow_tracing._mlflow_export_errors.clear()
+
+    @pytest.mark.asyncio
+    async def test_write_denied_category(self):
+        from apx_agent import _mlflow_tracing
+        from apx_agent._ui_probe import _check_mlflow_export
+        _mlflow_tracing._mlflow_export_errors.clear()
+        _mlflow_tracing._mlflow_export_errors.append(
+            "Failed to log trace: PERMISSION_DENIED on experiment"
+        )
+        result = await _check_mlflow_export()
+        assert result["status"] == "warn"
+        assert "write_denied" in result["message"]
+        assert "EDIT" in result["hint"]
+        _mlflow_tracing._mlflow_export_errors.clear()

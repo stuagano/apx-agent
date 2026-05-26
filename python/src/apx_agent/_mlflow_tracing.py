@@ -36,12 +36,52 @@ Encoded conventions:
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import logging
 import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Export-error buffer — read by /_apx/probe/checks for the mlflow_export check
+# ---------------------------------------------------------------------------
+
+# Bounded deque of recent export-failure log messages.  The probe reads from
+# this to detect the FEVM/private-link blob-storage footgun without injecting
+# test traces.
+_mlflow_export_errors: collections.deque[str] = collections.deque(maxlen=20)
+
+
+class _ExportErrorCapture(logging.Handler):
+    """Capture WARNING+ messages from the MLflow v3 exporter into a deque."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno >= logging.WARNING:
+            _mlflow_export_errors.append(self.format(record))
+
+
+def _install_export_error_handler() -> None:
+    """Attach the capture handler to the MLflow v3 tracing exporter logger.
+
+    Called once at module import.  Safe to call multiple times — the guard
+    skips reinstall if our handler is already present.
+    """
+    target = logging.getLogger("mlflow.tracing.export.mlflow_v3")
+    for h in target.handlers:
+        if isinstance(h, _ExportErrorCapture):
+            return
+    handler = _ExportErrorCapture()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    target.addHandler(handler)
+    # Ensure WARNING-level messages propagate even if the root logger is higher.
+    if target.level == logging.NOTSET or target.level > logging.WARNING:
+        target.setLevel(logging.WARNING)
+
+
+_install_export_error_handler()
 
 
 # ---------------------------------------------------------------------------

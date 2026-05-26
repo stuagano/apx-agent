@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ._models import AgentContext
-from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
+from ._ui_nav import _apx_nav_css, _apx_nav_html, _apx_nav_links, _deploy_overlay_html
 
 # ---------------------------------------------------------------------------
 # /_apx/edit — in-browser agent_router.py editor
@@ -664,11 +664,7 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
 <header>
   <span class="badge">APX dev</span>
   <h1>Edit</h1>
-  <nav>
-    <a href="/_apx/agent">Chat</a>
-    <a href="/_apx/edit" class="active">Edit</a>
-    <a href="/_apx/setup">Setup</a>
-  </nav>
+  <nav>{_apx_nav_links("edit")}</nav>
   <button id="btn-deploy">Deploy ▶</button>
 </header>
 {not_found_banner}

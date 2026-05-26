@@ -7,7 +7,7 @@ from typing import Any
 
 from ._models import AgentContext
 from ._ui_edit import _find_agent_router_path
-from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
+from ._ui_nav import _apx_nav_css, _apx_nav_html, _apx_nav_links, _deploy_overlay_html
 
 
 # Tabs exposed by the unified shell at /_apx/agent. Each entry is
@@ -644,11 +644,7 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   <span class="badge">APX dev</span>
   <h1>{agent_name}</h1>
   <span class="desc">{agent_desc}</span>
-  <nav>
-    <a href="/_apx/agent" class="active">Chat</a>
-    <a href="/_apx/edit">Edit</a>
-    <a href="/_apx/setup">Setup</a>
-  </nav>
+  <nav>{_apx_nav_links("agent")}</nav>
   <button id="btn-deploy">Deploy ▶</button>
 </header>
 {setup_banner}
@@ -1751,15 +1747,7 @@ def _render_tools_ui(ctx: AgentContext | None) -> str:
   <div id="apx-nav">
     <span class="badge">APX dev</span>
     <h1>Tools</h1>
-    <nav>
-      <a href="/_apx/agent">Chat</a>
-      <a href="/_apx/tools" class="active">Tools</a>
-      <a href="/_apx/edit">Edit</a>
-      <a href="/_apx/probe">Probe</a>
-      <a href="/_apx/setup">Setup</a>
-      <a href="/_apx/eval">Eval</a>
-      <a href="/_apx/wizard">Wizard</a>
-    </nav>
+    <nav>{_apx_nav_links("")}</nav>
     <button id="btn-new-tool">+ New Tool</button>
     <button id="btn-deploy">Deploy ▶</button>
   </div>

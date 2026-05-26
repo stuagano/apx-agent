@@ -379,6 +379,7 @@ def create_app(
             logger.debug("MLflow autolog setup skipped: %s", exc)
 
         app.state.workspace_client = _make_workspace_client()
+        app.state.session_store = session_store
 
         ctx = await setup_agent(
             app, agent, config, pyproject_path=pyproject_path
