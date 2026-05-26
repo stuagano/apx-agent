@@ -12,6 +12,16 @@ databricks configure          # enter workspace URL + personal access token
 
 You'll also need a Databricks workspace with access to a model serving endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
+### Installing apx-agent
+
+It's not on PyPI yet — install straight from GitHub. The package lives in the `python/` subdirectory, so the URL needs `#subdirectory=python`:
+
+```bash
+uv add "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@v0.18.0#subdirectory=python"
+```
+
+Pin a release tag (`@v0.18.0`) for stability or `@main` for the latest. Or download the wheel from the [Releases page](https://github.com/stuagano/apx-agent/releases). The clone-and-`uv sync` flow below is the easiest way to scaffold + deploy.
+
 ---
 
 ## Deploy to Databricks Apps
