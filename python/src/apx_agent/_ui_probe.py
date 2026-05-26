@@ -576,6 +576,59 @@ async def _check_session_store(session_store: Any | None) -> dict[str, Any]:
         }
 
 
+async def _check_agent_source() -> dict[str, Any]:
+    """Confirm agent.py parses and every tool referenced in an ``Agent(tools=[...])``
+    is a defined/imported name — catches a half-applied dev-UI edit or a tool that
+    was removed but still listed (valid syntax, runtime NameError)."""
+    try:
+        from ._ui_edit import _find_agent_router_path, _parse_agent_nodes
+    except ImportError:
+        return {"name": "agent_source", "status": "skip", "message": "editor helpers unavailable", "hint": ""}
+
+    path = _find_agent_router_path()
+    if not path or not path.exists():
+        return {"name": "agent_source", "status": "skip", "message": "agent.py not found", "hint": ""}
+
+    import ast as _ast
+
+    src = path.read_text()
+    try:
+        tree = _ast.parse(src)
+    except SyntaxError as exc:
+        return {
+            "name": "agent_source", "status": "fail",
+            "message": f"agent.py syntax error (line {exc.lineno}): {exc.msg}",
+            "hint": "A dev-UI edit may have left it broken — open /_apx/edit to fix.",
+        }
+
+    known: set[str] = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            known.add(node.name)
+    for stmt in tree.body:
+        if isinstance(stmt, _ast.Assign):
+            known.update(t.id for t in stmt.targets if isinstance(t, _ast.Name))
+        elif isinstance(stmt, (_ast.Import, _ast.ImportFrom)):
+            known.update(a.asname or a.name for a in stmt.names)
+
+    dangling = [
+        f"{n['name']}: {tool}"
+        for n in _parse_agent_nodes(src)
+        for tool in n.get("tools", [])
+        if tool not in known
+    ]
+    if dangling:
+        return {
+            "name": "agent_source", "status": "fail",
+            "message": "tools reference undefined names: " + ", ".join(dangling[:5]),
+            "hint": "A tool was removed/renamed but is still in tools=[...]. Re-add it or drop the reference.",
+        }
+    return {
+        "name": "agent_source", "status": "ok",
+        "message": "agent.py parses; all tool references resolve", "hint": "",
+    }
+
+
 async def _run_probe_checks(
     ctx: AgentContext | None,
     *,
@@ -585,7 +638,7 @@ async def _run_probe_checks(
     """Run every health check in parallel and assemble a single response."""
     (
         workspace, model, env_vars, sub_agents,
-        mlflow_cfg, mlflow_exp, resources, obo, session,
+        mlflow_cfg, mlflow_exp, resources, obo, session, agent_src,
     ) = await asyncio.gather(
         _check_workspace_auth(),
         _check_model(ctx),
@@ -596,10 +649,11 @@ async def _run_probe_checks(
         _check_resources(ctx),
         _check_obo(headers),
         _check_session_store(session_store),
+        _check_agent_source(),
     )
     checks: list[dict[str, Any]] = [  # type: ignore[list-item]
         workspace, model, env_vars, *sub_agents,
-        mlflow_cfg, mlflow_exp, resources, obo, session,
+        mlflow_cfg, mlflow_exp, resources, obo, session, agent_src,
     ]
     counts = {"ok": 0, "warn": 0, "fail": 0, "skip": 0}
     for c in checks:

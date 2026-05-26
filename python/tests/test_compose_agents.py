@@ -37,6 +37,15 @@ def _root_expr(source: str) -> str:
     return ""
 
 
+def _exec_agent(source: str):
+    """Execute generated agent.py in a fresh namespace and return the `agent`
+    object — proves the code actually RUNS (imports + instantiates), not just
+    that it parses."""
+    ns: dict = {}
+    exec(compile(source, "agent.py", "exec"), ns)  # noqa: S102 — test-only, our own generated source
+    return ns["agent"]
+
+
 class TestEnsureImport:
     def test_appends_to_existing_import(self):
         out = _ensure_apx_import(_BASE, "SequentialAgent")
@@ -59,6 +68,19 @@ class TestRenderLeaf:
         line = _render_leaf_agent("data_agent", ["echo", "lookup"], "Do stuff.")
         assert line == 'data_agent = Agent(tools=[echo, lookup], instructions=\'Do stuff.\')'
         compile(line, "x.py", "exec")
+
+
+class TestComposedAgentRuns:
+    """Stronger than compile(): the generated module must import + instantiate."""
+
+    @pytest.mark.parametrize("pattern", ["SequentialAgent", "ParallelAgent", "RouterAgent", "HandoffAgent"])
+    def test_composition_instantiates(self, pattern):
+        leaves = [
+            {**leaf, "route_key": leaf["name"], "route_description": "d"}
+            for leaf in _LEAVES
+        ]
+        agent = _exec_agent(_compose_agents(_BASE, pattern, leaves))
+        assert type(agent).__name__ == pattern
 
 
 class TestComposeAllPatterns:
@@ -159,3 +181,30 @@ class TestComposeBehavior:
     def test_rejects_unknown_pattern(self):
         with pytest.raises(ValueError, match="Unsupported composition pattern"):
             _compose_agents(_BASE, "MegaAgent", _LEAVES)
+
+
+class TestEditOnComposed:
+    """Tool add/delete must work against a composed agent (root is a wrapper)."""
+
+    def test_splice_attaches_to_a_chosen_leaf(self):
+        from apx_agent._ui_edit import _splice_tool
+
+        composed = _compose_agents(_BASE, "SequentialAgent", _LEAVES)
+        fn = '@tool\ndef add(a: int, b: int) -> int:\n    """Add."""\n    return a + b'
+        out = _splice_tool(composed, fn, "add", target="data_agent")
+        agent = _exec_agent(out)  # still runs
+        assert type(agent).__name__ == "SequentialAgent"
+        nodes = {n["name"]: n for n in _parse_agent_nodes(out)}
+        assert "add" in nodes["data_agent"]["tools"]
+        # NOT wired into the wrapper root.
+        assert "tools=" not in _root_expr(out)
+
+    def test_remove_drops_tool_from_the_leaf(self):
+        from apx_agent._ui_edit import _remove_tool
+
+        composed = _compose_agents(_BASE, "SequentialAgent", _LEAVES)  # data_agent has echo
+        out = _remove_tool(composed, "echo")
+        compile(out, "agent.py", "exec")
+        nodes = {n["name"]: n for n in _parse_agent_nodes(out)}
+        assert "echo" not in nodes["data_agent"]["tools"]
+        assert "def echo(" not in out  # function gone, no dangling reference

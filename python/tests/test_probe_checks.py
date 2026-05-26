@@ -253,6 +253,50 @@ class TestCheckSubAgentDirect:
         assert "DNS lookup failed" in result["message"]
 
 
+class TestCheckAgentSource:
+    @pytest.mark.asyncio
+    async def test_ok_when_tools_resolve(self, tmp_path):
+        from apx_agent._ui_probe import _check_agent_source
+        f = tmp_path / "agent.py"
+        f.write_text(
+            "from apx_agent import Agent, tool\n"
+            "@tool\ndef echo(m: str) -> str:\n    'e'\n    return m\n"
+            "agent = Agent(tools=[echo], instructions='x')\n"
+        )
+        with patch("apx_agent._ui_edit._find_agent_router_path", return_value=f):
+            r = await _check_agent_source()
+        assert r["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_fail_on_dangling_tool_reference(self, tmp_path):
+        from apx_agent._ui_probe import _check_agent_source
+        f = tmp_path / "agent.py"
+        f.write_text(
+            "from apx_agent import Agent\n"
+            "agent = Agent(tools=[ghost_tool], instructions='x')\n"
+        )
+        with patch("apx_agent._ui_edit._find_agent_router_path", return_value=f):
+            r = await _check_agent_source()
+        assert r["status"] == "fail"
+        assert "ghost_tool" in r["message"]
+
+    @pytest.mark.asyncio
+    async def test_fail_on_syntax_error(self, tmp_path):
+        from apx_agent._ui_probe import _check_agent_source
+        f = tmp_path / "agent.py"
+        f.write_text("agent = Agent(tools=[\n")
+        with patch("apx_agent._ui_edit._find_agent_router_path", return_value=f):
+            r = await _check_agent_source()
+        assert r["status"] == "fail" and "syntax" in r["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_skip_when_no_file(self):
+        from apx_agent._ui_probe import _check_agent_source
+        with patch("apx_agent._ui_edit._find_agent_router_path", return_value=None):
+            r = await _check_agent_source()
+        assert r["status"] == "skip"
+
+
 class TestProbeUiRoute:
     @pytest.mark.asyncio
     async def test_probe_returns_html(self, app_with_ctx: FastAPI):

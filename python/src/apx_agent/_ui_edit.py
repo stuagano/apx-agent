@@ -161,39 +161,57 @@ def _write_env_file(path: "Path", updates: "dict[str, str]") -> None:
 
 
 
-def _splice_tool(source: str, fn_code: str, fn_name: str) -> str:
-    """Insert fn_code before the top-level agent assignment and add fn_name to the LlmAgent tools list.
-
-    Handles any agent wrapper: Agent/LlmAgent, LoopAgent, SequentialAgent, ParallelAgent, etc.
-    """
-    import re as _re
-
+def _agent_tool_names(source: str, target: str) -> list[str] | None:
+    """Return the tool names in ``{target} = Agent(...)``'s ``tools=`` list, or
+    None if there is no such Agent call (e.g. a composition wrapper)."""
     import ast as _ast
 
-    stub = "\n\n" + fn_code
+    call = _find_root_agent_call(source, target)
+    if call is None:
+        return None
+    kw = next((k for k in call.keywords if k.arg == "tools"), None)
+    if kw is None or not isinstance(kw.value, _ast.List):
+        return []
+    return [e.id for e in kw.value.elts if isinstance(e, _ast.Name)]
 
-    # Find insertion point: last `agent = <anything>(` — works with LoopAgent, SequentialAgent, etc.
-    insert_at = -1
-    for m in _re.finditer(r'\nagent\s*=\s*\w+\s*\(', source):
-        insert_at = m.start()
-    result = (source[:insert_at] + stub + source[insert_at:]) if insert_at != -1 else (source + stub)
 
-    # Wire fn_name into the root agent's tools= list. AST-based so it works
-    # regardless of argument order or multi-line formatting — the old literal
-    # ``rfind("Agent(tools=[")`` only matched when tools= was the first arg on
-    # the same line, so scaffolded agents (name=/instructions= first) silently
-    # got the function defined but never registered.
+def _splice_tool(source: str, fn_code: str, fn_name: str, *, target: str = "agent") -> str:
+    """Insert ``fn_code`` before the root agent assignment and register ``fn_name``
+    in ``target``'s ``tools=`` list.
+
+    ``target`` defaults to the root ``agent``. When the root is a composition
+    wrapper (no ``Agent(...)`` of its own), pass the leaf agent's name to attach
+    the tool there. Wiring is AST-based — order- and multi-line-agnostic. If the
+    target has no ``Agent(...)`` call, the function is still defined but left
+    unwired (callers can detect this and prompt for a target).
+    """
+    import ast as _ast
+    import re as _re
+
+    # Insert the function definition immediately before the TARGET agent's
+    # assignment, so a leaf that references it is defined *after* the function
+    # (inserting before the root would leave a leaf referencing an undefined name).
+    insert_at: int | None = None
     try:
-        call = _find_root_agent_call(result, "agent")
-        if call is not None:
-            kw = next((k for k in call.keywords if k.arg == "tools"), None)
-            existing: list[str] = (
-                [e.id for e in kw.value.elts if isinstance(e, _ast.Name)]
-                if kw is not None and isinstance(kw.value, _ast.List)
-                else []
-            )
-            if fn_name not in existing:
-                result = _set_agent_tools(result, existing + [fn_name], target="agent")
+        for s in _ast.parse(source).body:
+            if (isinstance(s, _ast.Assign) and s.targets
+                    and isinstance(s.targets[0], _ast.Name) and s.targets[0].id == target):
+                insert_at = _abs_offset(source, s.lineno, 0)
+                break
+    except SyntaxError:
+        pass
+    if insert_at is None:  # fall back to before the last `agent = <wrapper>(`
+        for m in _re.finditer(r'\nagent\s*=\s*\w+\s*\(', source):
+            insert_at = m.start() + 1
+    if insert_at is None:
+        result = source.rstrip("\n") + "\n\n" + fn_code + "\n"
+    else:
+        result = source[:insert_at] + fn_code + "\n\n" + source[insert_at:]
+
+    try:
+        existing = _agent_tool_names(result, target)
+        if existing is not None and fn_name not in existing:
+            result = _set_agent_tools(result, existing + [fn_name], target=target)
     except Exception:  # noqa: BLE001 — never block the function insert on a wiring hiccup
         pass
 
@@ -368,15 +386,15 @@ def _remove_tool(source: str, fn_name: str) -> str:
     del lines[start_line - 1:end_line]
     result = _re.sub(r"\n{3,}", "\n\n", "".join(lines))
 
-    # Drop the name from the root agent's tools= list (surgical, AST-based).
+    # Drop the name from EVERY agent's tools= list (surgical, AST-based) — so it
+    # is unwired whether it lived on the root or a leaf of a composition.
     try:
-        call = _find_root_agent_call(result, "agent")
-        if call is not None:
-            kw = next((k for k in call.keywords if k.arg == "tools"), None)
-            if kw is not None and isinstance(kw.value, _ast.List):
-                names = [e.id for e in kw.value.elts if isinstance(e, _ast.Name)]
-                if fn_name in names:
-                    result = _set_agent_tools(result, [n for n in names if n != fn_name], target="agent")
+        for node in _parse_agent_nodes(result):
+            names = node.get("tools") or []
+            if fn_name in names:
+                result = _set_agent_tools(
+                    result, [n for n in names if n != fn_name], target=node["name"]
+                )
     except Exception:  # noqa: BLE001
         pass
 
