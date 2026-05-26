@@ -209,6 +209,43 @@ class TestStream:
         assert item["type"] == "message"
         assert item["content"][0]["text"] == "hello world"
 
+    def test_human_message_echo_does_not_crash_stream(self) -> None:
+        """Regression: workflow agents (RouterAgent) inject HumanMessages into
+        the graph state when handing off to a sub-agent. The streaming path
+        used to forward those as ``role: user`` items, which
+        ``ResponsesAgentStreamEvent`` rejects ("Invalid role: user. Must be
+        'assistant'."). They must be filtered out, not crash the stream."""
+        from langchain_core.messages import HumanMessage
+
+        agent = LlmAgent(tools=[_trivial_tool])
+        _, streaming = compile_to_responses_agent(agent, model="any")
+
+        def _stream_with_human(state: dict[str, Any], stream_mode: str = "updates"):
+            # router re-states the query to the sub-agent (role=user) ...
+            yield {"router": {"messages": [HumanMessage(content="routed query")]}}
+            # ... then the sub-agent answers (role=assistant)
+            yield {"sub": {"messages": [AIMessage(content="the answer")]}}
+
+        graph = MagicMock(name="router_graph")
+        graph.stream.side_effect = _stream_with_human
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._responses_agent.compile_to_langgraph",
+            return_value=graph,
+        ):
+            events = list(streaming(_user_request("go")))
+
+        item_events = [e for e in events if e.type == "response.output_item.done"]
+        # The HumanMessage echo is dropped; only the assistant answer is emitted.
+        assert len(item_events) == 1
+        item = item_events[0].model_dump()["item"]
+        assert item["role"] == "assistant"
+        assert item["content"][0]["text"] == "the answer"
+        assert events[-1].type == "response.completed"
+
 
 # ---------------------------------------------------------------------------
 # OBO user-scope auth — the load-bearing assertion

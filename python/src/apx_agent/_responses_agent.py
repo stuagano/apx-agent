@@ -301,13 +301,27 @@ def _json_str(value: Any) -> str:
 
 
 def _flatten_output_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Flatten ``_multi`` wrapper dicts from ``_langchain_to_output_item``."""
+    """Flatten ``_multi`` wrapper dicts, dropping non-emittable echoes.
+
+    The Responses output contract only accepts assistant messages, function
+    calls, and function-call outputs. Workflow agents (e.g. ``RouterAgent``)
+    inject ``HumanMessage`` / system messages into the graph state when handing
+    off to a sub-agent; those surface as ``role: user`` / ``role: system``
+    message items, which ``ResponsesAgentStreamEvent`` rejects ("Invalid role:
+    user. Must be 'assistant'."). Skip them — they are input echoes, not agent
+    output.
+    """
     out: list[dict[str, Any]] = []
     for item in items:
-        if isinstance(item, dict) and "_multi" in item:
-            out.extend(item["_multi"])
-        else:
-            out.append(item)
+        candidates = item["_multi"] if isinstance(item, dict) and "_multi" in item else [item]
+        for c in candidates:
+            if (
+                isinstance(c, dict)
+                and c.get("type") == "message"
+                and c.get("role") not in (None, "assistant")
+            ):
+                continue
+            out.append(c)
     return out
 
 
