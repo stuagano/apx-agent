@@ -168,6 +168,8 @@ def _splice_tool(source: str, fn_code: str, fn_name: str) -> str:
     """
     import re as _re
 
+    import ast as _ast
+
     stub = "\n\n" + fn_code
 
     # Find insertion point: last `agent = <anything>(` — works with LoopAgent, SequentialAgent, etc.
@@ -176,15 +178,24 @@ def _splice_tool(source: str, fn_code: str, fn_name: str) -> str:
         insert_at = m.start()
     result = (source[:insert_at] + stub + source[insert_at:]) if insert_at != -1 else (source + stub)
 
-    # Add fn_name to the last `Agent(tools=[` list — handles both flat and wrapped patterns.
-    # rfind picks the innermost LlmAgent when multiple Agent() calls exist.
-    tools_pos = result.rfind("Agent(tools=[")
-    if tools_pos != -1:
-        close_bracket = result.find("])", tools_pos)
-        if close_bracket != -1:
-            inside = result[tools_pos:close_bracket]
-            sep = "" if inside.rstrip().endswith("[") else ", "
-            result = result[:close_bracket] + sep + fn_name + result[close_bracket:]
+    # Wire fn_name into the root agent's tools= list. AST-based so it works
+    # regardless of argument order or multi-line formatting — the old literal
+    # ``rfind("Agent(tools=[")`` only matched when tools= was the first arg on
+    # the same line, so scaffolded agents (name=/instructions= first) silently
+    # got the function defined but never registered.
+    try:
+        call = _find_root_agent_call(result, "agent")
+        if call is not None:
+            kw = next((k for k in call.keywords if k.arg == "tools"), None)
+            existing: list[str] = (
+                [e.id for e in kw.value.elts if isinstance(e, _ast.Name)]
+                if kw is not None and isinstance(kw.value, _ast.List)
+                else []
+            )
+            if fn_name not in existing:
+                result = _set_agent_tools(result, existing + [fn_name], target="agent")
+    except Exception:  # noqa: BLE001 — never block the function insert on a wiring hiccup
+        pass
 
     return result
 

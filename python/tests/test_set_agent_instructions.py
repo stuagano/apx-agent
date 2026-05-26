@@ -7,7 +7,7 @@ import ast
 
 import pytest
 
-from apx_agent._ui_edit import _set_agent_instructions, _set_agent_tools
+from apx_agent._ui_edit import _set_agent_instructions, _set_agent_tools, _splice_tool
 
 
 def _tools_of(source: str, target: str = "agent") -> list[str]:
@@ -162,3 +162,46 @@ class TestSetAgentTools:
         assert _tools_of(out) == ["a", "b"]
         assert 'name="x"' in out
         compile(out, "agent.py", "exec")
+
+
+_SCAFFOLD = (
+    'from apx_agent import Agent, tool\n\n'
+    '@tool\n'
+    'def echo(message: str) -> str:\n'
+    '    """Echo."""\n'
+    '    return message\n\n\n'
+    'agent = Agent(\n'
+    '    name="hw",\n'
+    '    instructions="You are helpful.",\n'
+    '    tools=[echo],\n'
+    ')\n'
+)
+
+_NEW_FN = '@tool\ndef add(a: int, b: int) -> int:\n    """Add."""\n    return a + b'
+
+
+class TestSpliceTool:
+    def test_wires_new_tool_into_multiline_agent(self):
+        # Regression: the old literal rfind("Agent(tools=[") missed scaffolded
+        # agents where tools= isn't the first arg, so the function was defined
+        # but never registered in tools=.
+        out = _splice_tool(_SCAFFOLD, _NEW_FN, "add")
+        compile(out, "agent.py", "exec")
+        assert _tools_of(out) == ["echo", "add"]
+        assert "def add(a: int, b: int)" in out
+        assert 'name="hw"' in out  # other args preserved
+
+    def test_inserts_function_definition_before_agent(self):
+        out = _splice_tool(_SCAFFOLD, _NEW_FN, "add")
+        assert out.index("def add(") < out.index("agent = Agent(")
+
+    def test_no_duplicate_when_already_present(self):
+        out = _splice_tool(_SCAFFOLD, _NEW_FN, "add")
+        out2 = _splice_tool(out, _NEW_FN, "add")  # idempotent on the tools list
+        assert _tools_of(out2).count("add") == 1
+
+    def test_wires_into_agent_with_no_tools_kwarg(self):
+        src = 'from apx_agent import Agent\nagent = Agent(instructions="hi")\n'
+        out = _splice_tool(src, _NEW_FN, "add")
+        compile(out, "agent.py", "exec")
+        assert _tools_of(out) == ["add"]
