@@ -59,7 +59,8 @@ def sql_tool(
             with a warning if the query produces more. Default 1000.
     """
     from ._defaults import UserClientDependency
-    from ._resources import ResourceSpec, attach_resources
+    from ._resources import ResourceSpec
+    from ._tool_factory import build_tool
 
     if description is None:
         if warehouse_id:
@@ -95,10 +96,9 @@ def sql_tool(
             "rows": rows,
         }
 
-    _run_sql.__name__ = name
-    _run_sql.__qualname__ = name
-    _run_sql.__doc__ = _desc
-
-    if warehouse_id:
-        attach_resources(_run_sql, [ResourceSpec("sql_warehouse", warehouse_id)])
-    return _run_sql
+    return build_tool(
+        _run_sql,
+        name=name,
+        description=_desc,
+        resources=[ResourceSpec("sql_warehouse", warehouse_id)] if warehouse_id else (),
+    )

@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 
 from ._defaults import Dependencies
 from ._models import Message
+from ._tool_factory import build_tool
 
 if TYPE_CHECKING:
     from ._agents import BaseAgent
@@ -88,7 +89,4 @@ def agent_tool(
         )
         return result
 
-    _wrapped.__name__ = tool_name
-    _wrapped.__qualname__ = tool_name
-    _wrapped.__doc__ = tool_desc
-    return _wrapped
+    return build_tool(_wrapped, name=tool_name, description=tool_desc)
