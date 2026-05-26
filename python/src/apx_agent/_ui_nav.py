@@ -239,3 +239,80 @@ def _deploy_overlay_html() -> str:
 """
 
 
+def _topology_minimap_html() -> str:
+    """A floating topology minimap for embedding on a dev-UI page.
+
+    Three states, toggled by classes on ``#apx-mm``:
+      * default — a thumbnail card pinned bottom-right showing the whole graph
+        (a transparent catcher over the iframe expands it on click);
+      * ``.expanded`` — a large interactive panel (catcher removed, so pan/zoom
+        and node clicks work);
+      * ``.min`` — collapsed to a small "⬡ Topology" pill, out of the way.
+
+    Reuses the existing ``/_apx/topology`` react-flow app via an iframe rather
+    than re-rendering the graph, so it always matches the dedicated view.
+    """
+    return """
+<style>
+  #apx-mm { position: fixed; right: 16px; bottom: 16px; z-index: 1200;
+            width: 320px; height: 220px; background: #0d0d0d;
+            border: 1px solid #2a2a2a; border-radius: 10px; overflow: hidden;
+            box-shadow: 0 8px 30px rgba(0,0,0,.55); display: flex;
+            flex-direction: column; transition: width .22s ease, height .22s ease; }
+  #apx-mm.expanded { width: min(880px, 78vw); height: min(620px, 78vh); }
+  #apx-mm-bar { height: 28px; flex-shrink: 0; display: flex; align-items: center;
+                gap: 6px; padding: 0 8px; background: #141414;
+                border-bottom: 1px solid #1e1e1e; cursor: default; user-select: none; }
+  #apx-mm-bar .t { font-size: 11px; font-weight: 600; color: #9aa; letter-spacing: .4px;
+                   text-transform: uppercase; }
+  #apx-mm-bar .sp { margin-left: auto; }
+  #apx-mm-bar button { background: none; border: none; color: #667; cursor: pointer;
+                       font-size: 13px; line-height: 1; padding: 3px 5px; border-radius: 4px; }
+  #apx-mm-bar button:hover { color: #ccc; background: #222; }
+  #apx-mm-body { flex: 1; position: relative; }
+  #apx-mm-frame { width: 100%; height: 100%; border: 0; background: #0d0d0d; }
+  /* Transparent catcher: lets a thumbnail click expand the widget. Removed in
+     expanded state so the graph itself receives pan/zoom/click events. */
+  #apx-mm-catch { position: absolute; inset: 0; cursor: zoom-in; background: transparent; }
+  #apx-mm.expanded #apx-mm-catch { display: none; }
+  #apx-mm.min { width: auto; height: auto; }
+  #apx-mm.min #apx-mm-bar, #apx-mm.min #apx-mm-body { display: none; }
+  #apx-mm-pill { display: none; align-items: center; gap: 6px; cursor: pointer;
+                 padding: 7px 12px; font-size: 12px; font-weight: 600; color: #9bf;
+                 background: #0d1f38; border: none; }
+  #apx-mm.min #apx-mm-pill { display: flex; }
+</style>
+<div id="apx-mm" aria-label="Agent topology minimap">
+  <div id="apx-mm-bar">
+    <span class="t">⬡ Topology</span>
+    <span class="sp"></span>
+    <button id="apx-mm-expand" title="Expand / collapse">⤢</button>
+    <button id="apx-mm-min" title="Minimize">–</button>
+  </div>
+  <div id="apx-mm-body">
+    <iframe id="apx-mm-frame" title="Agent topology" src="/_apx/topology?embed=1"></iframe>
+    <div id="apx-mm-catch" title="Click to expand"></div>
+  </div>
+  <button id="apx-mm-pill" title="Show topology">⬡ Topology</button>
+</div>
+<script>
+(function () {
+  var mm = document.getElementById('apx-mm');
+  if (!mm) return;
+  var expandBtn = document.getElementById('apx-mm-expand');
+  var minBtn = document.getElementById('apx-mm-min');
+  var catch_ = document.getElementById('apx-mm-catch');
+  var pill = document.getElementById('apx-mm-pill');
+  function setExpanded(on) {
+    mm.classList.toggle('expanded', on);
+    expandBtn.textContent = on ? '⤡' : '⤢';
+  }
+  catch_.addEventListener('click', function () { setExpanded(true); });
+  expandBtn.addEventListener('click', function () { setExpanded(!mm.classList.contains('expanded')); });
+  minBtn.addEventListener('click', function () { mm.classList.add('min'); mm.classList.remove('expanded'); expandBtn.textContent = '⤢'; });
+  pill.addEventListener('click', function () { mm.classList.remove('min'); });
+})();
+</script>
+"""
+
+
