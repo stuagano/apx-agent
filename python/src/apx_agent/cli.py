@@ -1872,6 +1872,7 @@ def _auto_update_databricks_yml(
     from apx_agent._resources import (
         collect_resource_specs,
         resources_to_databricks_yml,
+        user_api_scopes_for,
     )
 
     path = cwd / "databricks.yml"
@@ -1929,8 +1930,21 @@ def _auto_update_databricks_yml(
         added.append(name)
 
     app_block["resources"] = existing
+
+    # Union the OBO scopes the agent's tools need onto the existing baseline
+    # (the scaffold ships sql + serving; this adds dashboards.genie / vectorsearch
+    # etc. when the agent actually uses those tools). Never drops existing scopes.
+    derived_scopes = user_api_scopes_for(specs)
+    existing_scopes = app_block.get("user_api_scopes") or []
+    merged_scopes = sorted(set(existing_scopes) | set(derived_scopes))
+    new_scopes = sorted(set(merged_scopes) - set(existing_scopes))
+    if merged_scopes:
+        app_block["user_api_scopes"] = merged_scopes
+
     path.write_text(yaml.safe_dump(doc, default_flow_style=False, sort_keys=False))
 
+    if new_scopes:
+        log(f"  added {len(new_scopes)} OBO scope(s): {', '.join(new_scopes)}")
     if added:
         log(f"  auto-added {len(added)} resources: {', '.join(added)}")
     if skipped:

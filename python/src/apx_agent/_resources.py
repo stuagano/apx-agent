@@ -562,3 +562,33 @@ def resources_to_databricks_yml(
         if entry is not None:
             out.append(entry)
     return out
+
+
+# Map a ResourceSpec kind → the Databricks Apps OAuth scope the forwarded user
+# (OBO) token needs to use it. The iam.* defaults are always granted and are
+# never listed. sql/serving.serving-endpoints are validated; the genie/vector
+# strings track the documented Apps authorization scopes.
+_KIND_TO_SCOPE: dict[str, str] = {
+    "sql_warehouse": "sql",
+    "uc_table": "sql",
+    "uc_function": "sql",
+    "uc_connection": "sql",
+    "serving_endpoint": "serving.serving-endpoints",
+    "genie_space": "dashboards.genie",
+    "vector_search_index": "vectorsearch.vector-search-endpoints",
+}
+
+
+def user_api_scopes_for(resources: Iterable["ResourceSpec"]) -> list[str]:
+    """Derive the OBO ``user_api_scopes`` an Apps deploy needs from its resources.
+
+    e.g. a Genie space → ``dashboards.genie``; a serving endpoint →
+    ``serving.serving-endpoints``. Returned sorted + de-duplicated. Note: a
+    ``sql_tool`` that auto-discovers its warehouse declares no SQL resource, so
+    the ``sql`` baseline is kept in the scaffold rather than derived here — the
+    deploy *unions* these derived scopes onto that baseline.
+    """
+    scopes = {
+        _KIND_TO_SCOPE[s.kind] for s in resources if s.kind in _KIND_TO_SCOPE
+    }
+    return sorted(scopes)
