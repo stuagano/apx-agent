@@ -4,10 +4,12 @@
 export type NodeType =
   | "Agent"
   | "LlmAgent"
+  | "DataAgent"
   | "SequentialAgent"
   | "ParallelAgent"
   | "LoopAgent"
   | "RouterAgent"
+  | "KeywordRouter"
   | "HandoffAgent"
   | "Tool"
   | "UCFunction"
@@ -97,10 +99,12 @@ export interface InspectResponse {
 export const NODE_STYLE: Record<NodeType, { fill: string; stroke: string }> = {
   Agent: { fill: "#1e293b", stroke: "#60a5fa" },
   LlmAgent: { fill: "#1e293b", stroke: "#60a5fa" },
+  DataAgent: { fill: "#1e293b", stroke: "#34d399" },
   SequentialAgent: { fill: "#1e293b", stroke: "#a78bfa" },
   ParallelAgent: { fill: "#1e293b", stroke: "#a78bfa" },
   LoopAgent: { fill: "#1e293b", stroke: "#a78bfa" },
   RouterAgent: { fill: "#1e293b", stroke: "#f472b6" },
+  KeywordRouter: { fill: "#1e293b", stroke: "#f472b6" },
   HandoffAgent: { fill: "#1e293b", stroke: "#f472b6" },
   Tool: { fill: "#0f172a", stroke: "#94a3b8" },
   UCFunction: { fill: "#0f172a", stroke: "#34d399" },

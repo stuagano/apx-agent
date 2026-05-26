@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from ._models import AgentContext
-from ._ui_nav import _apx_nav_css, _apx_nav_html, _apx_nav_links, _deploy_overlay_html
+from ._ui_nav import (
+    _apx_nav_css,
+    _apx_nav_html,
+    _apx_nav_links,
+    _deploy_overlay_html,
+    _topology_minimap_html,
+)
 
 # ---------------------------------------------------------------------------
 # /_apx/edit — in-browser agent_router.py editor
@@ -1331,6 +1337,7 @@ document.getElementById('btn-insert').addEventListener('click', async () => {{
 }});
 </script>
 {_deploy_overlay_html()}
+{_topology_minimap_html()}
 </body>
 </html>"""
 

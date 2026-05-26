@@ -8,12 +8,13 @@
 //   - Click → onNodeClick(nodeId).
 //   - Includes MiniMap, Controls, Background.
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import {
   Background,
   Controls,
   MiniMap,
   ReactFlow,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeMouseHandler,
@@ -30,6 +31,20 @@ export interface TopologyGraphProps {
   selected: string | null;
   onNodeClick: (nodeId: string) => void;
 }
+
+// Fallback style for any node type the backend emits that isn't in
+// NODE_STYLE (e.g. a newly added agent class). Without this, an unmapped
+// type makes NODE_STYLE[type] undefined and crashes the whole graph render.
+const DEFAULT_NODE_STYLE = { fill: "#1e293b", stroke: "#64748b" };
+const styleFor = (type: string) =>
+  NODE_STYLE[type as NodeType] ?? DEFAULT_NODE_STYLE;
+
+// Embed mode (``?embed=1``): hide the Controls + MiniMap chrome so the graph
+// reads cleanly inside a small minimap thumbnail. Pan/zoom still work via
+// mouse/trackpad. Used by the topology minimap on the Edit page.
+const EMBED =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("embed") === "1";
 
 // Dagre layout constants — match the spec's Visual contract.
 const NODE_WIDTH = 200;
@@ -62,7 +77,7 @@ function layout(
 
   const rfNodes: Node[] = data.nodes.map((n) => {
     const pos = g.node(n.id);
-    const style = NODE_STYLE[n.type as NodeType];
+    const style = styleFor(n.type);
     const isSelected = selected === n.id;
     return {
       id: n.id,
@@ -109,6 +124,19 @@ function layout(
   return { nodes: rfNodes, edges: rfEdges };
 }
 
+// Re-fit the graph when the container (e.g. an embedding iframe) resizes.
+// ReactFlow's `fitView` prop only runs on mount, so without this the graph
+// stays at its initial zoom when the topology minimap expands/collapses.
+function FitOnResize() {
+  const { fitView } = useReactFlow();
+  useEffect(() => {
+    const handler = () => fitView({ duration: 200, padding: 0.15 });
+    window.addEventListener("resize", handler);
+    return () => window.removeEventListener("resize", handler);
+  }, [fitView]);
+  return null;
+}
+
 export function TopologyGraph(props: TopologyGraphProps) {
   const { data, selected, onNodeClick } = props;
 
@@ -131,24 +159,27 @@ export function TopologyGraph(props: TopologyGraphProps) {
       minZoom={0.2}
       maxZoom={2}
     >
+      <FitOnResize />
       <Background color="#1e293b" gap={20} />
-      <Controls />
-      <MiniMap
-        pannable
-        zoomable
-        maskColor="rgba(10, 10, 10, 0.7)"
-        style={{ background: "#0f172a" }}
-        nodeColor={(node) => {
-          const topoNode = data.nodes.find((n) => n.id === node.id);
-          if (!topoNode) return "#475569";
-          return NODE_STYLE[topoNode.type as NodeType].stroke;
-        }}
-        nodeStrokeColor={(node) => {
-          const topoNode = data.nodes.find((n) => n.id === node.id);
-          if (!topoNode) return "#475569";
-          return NODE_STYLE[topoNode.type as NodeType].stroke;
-        }}
-      />
+      {!EMBED && <Controls />}
+      {!EMBED && (
+        <MiniMap
+          pannable
+          zoomable
+          maskColor="rgba(10, 10, 10, 0.7)"
+          style={{ background: "#0f172a" }}
+          nodeColor={(node) => {
+            const topoNode = data.nodes.find((n) => n.id === node.id);
+            if (!topoNode) return "#475569";
+            return styleFor(topoNode.type).stroke;
+          }}
+          nodeStrokeColor={(node) => {
+            const topoNode = data.nodes.find((n) => n.id === node.id);
+            if (!topoNode) return "#475569";
+            return styleFor(topoNode.type).stroke;
+          }}
+        />
+      )}
     </ReactFlow>
   );
 }

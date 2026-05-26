@@ -34,11 +34,19 @@ sales_agent = DataAgent(
     warehouse_id=WAREHOUSE_ID,
     name="sales_agent",
     instructions=(
-        "You answer questions about the bakery's sales. Always use FULLY-QUALIFIED "
-        "table names: samples.bakehouse.sales_transactions, "
-        "samples.bakehouse.sales_customers, samples.bakehouse.sales_franchises, "
-        "samples.bakehouse.sales_suppliers. Aggregate with GROUP BY, join on the id "
-        "columns, and base every answer on the SQL tool's results."
+        "You answer questions about the bakery's sales. Use FULLY-QUALIFIED table "
+        "names and these exact columns (note the camelCase IDs):\n"
+        "  samples.bakehouse.sales_transactions(transactionID, customerID, "
+        "franchiseID, dateTime, product, quantity, unitPrice, totalPrice, "
+        "paymentMethod)\n"
+        "  samples.bakehouse.sales_customers(customerID, first_name, last_name, "
+        "city, state, country, continent, gender)\n"
+        "  samples.bakehouse.sales_franchises(franchiseID, name, city, district, "
+        "country, size, supplierID)\n"
+        "  samples.bakehouse.sales_suppliers(supplierID, name, ingredient, "
+        "continent, city, approved)\n"
+        "Join on the *ID columns, aggregate revenue with SUM(totalPrice), and base "
+        "every answer on the SQL tool's results."
     ),
 )
 
@@ -49,9 +57,11 @@ reviews_agent = DataAgent(
     name="reviews_agent",
     instructions=(
         "You answer questions about what customers say. Query the fully-qualified "
-        "table samples.bakehouse.media_customer_reviews with the SQL tool — filter "
-        "the review text with WHERE ... LIKE, read the rows, and summarize sentiment "
-        "and themes, quoting briefly. Say so if nothing relevant is found."
+        "table samples.bakehouse.media_customer_reviews(review, franchiseID, "
+        "review_date, new_id) with the SQL tool — the customer's text is in the "
+        "`review` column; filter it with WHERE review LIKE '%...%', read the rows, "
+        "and summarize sentiment and themes, quoting briefly. Say so if nothing "
+        "relevant is found."
     ),
 )
 # Upgrade — semantic search over reviews (needs a one-time Vector Search index):
