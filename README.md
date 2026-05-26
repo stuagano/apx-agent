@@ -76,6 +76,24 @@ flowchart LR
     D2 --> R
 ```
 
+## Multi-user & governance
+
+Deploy once; everyone runs as themselves. The app forwards **each caller's own
+OAuth token** per request (on-behalf-of), and apx-agent builds a per-request
+client from it — so every tool call executes under the **calling user's**
+identity, and Unity Catalog enforces **their** grants on **their** data. No
+shared service principal seeing everything; no auth code at the tool level.
+
+What it takes to hand an agent to a team:
+
+1. **Share the app** — grant teammates access to the Databricks App (one action by the owner).
+2. **Consent once** — each user gets a one-time prompt for the OBO scopes the agent's tools need (`sql`, `dashboards.genie`, …), which `apx deploy` declares automatically from the agent's tools.
+3. **Their grants apply** — each user sees exactly their own slice. If they lack `SELECT` on a table, the query returns nothing — *that's the governance working*, not a bug. The agent can't grant access a user doesn't already have.
+
+So a `DataAgent("main", "sales")` shared with the team means each person queries `sales` as themselves, with their own permissions and their own identity in the traces — the difference between "an agent that can see everything" and "an agent safe to give a whole team."
+
+See [docs/identity-passthrough.md](docs/identity-passthrough.md) for the OBO mechanics.
+
 ## Quick start
 
 > Not on PyPI / npm yet — install from this repo until the first release.
