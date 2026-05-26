@@ -26,7 +26,6 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from ._models import AgentContext, AgentTool
 from ._topology import build_topology, inspect_node
-from ._builder_routes import build_builder_router
 from ._ui_chat import _render_agent_ui, _render_unified_shell, _build_apx_openapi_spec
 from ._ui_edit import (
     _find_agent_router_path,
@@ -1779,5 +1778,4 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             tables.append({"name": tname, "columns": cols, "row_count": row_count})
         return JSONResponse({"tables": tables, "warehouse_id": warehouse_id})
 
-    router.include_router(build_builder_router())
     return router

@@ -1,6 +1,0 @@
-# Do not delete. python/pyproject.toml force-includes
-# src/apx_agent/_builder_ui_dist into the wheel, so this directory MUST exist on
-# a fresh clone or `uv sync` fails the editable build with:
-#   FileNotFoundError: Forced include not found: .../_builder_ui_dist
-# The actual visual-builder SPA bundle is built by `make builder-ui` (see the
-# sibling .gitignore) — only this placeholder is tracked.

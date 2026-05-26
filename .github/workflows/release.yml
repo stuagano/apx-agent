@@ -19,23 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
       - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
-
-      # The visual-builder SPA is gitignored (only a .gitkeep placeholder is
-      # tracked — see python/src/apx_agent/_builder_ui_dist/.gitkeep). Build it
-      # before packaging or the released wheel ships an empty _builder_ui_dist.
-      # package-lock.json is gitignored repo-wide (.gitignore), so `npm ci`
-      # (which requires a committed lock) can't run in CI — use `npm install`.
-      - name: Build visual-builder SPA
-        run: npm install && npm run build:dist
-        working-directory: python/builder-ui
 
       # Until hatch-vcs lands, the version is set by hand in pyproject.toml.
       # Refuse to release if the tag doesn't match it, so the release name and

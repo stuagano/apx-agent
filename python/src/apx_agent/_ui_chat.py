@@ -17,7 +17,6 @@ from ._ui_nav import _apx_nav_css, _apx_nav_html, _apx_nav_links, _deploy_overla
 _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
     ("chat", "Chat", "/_apx/chat"),
     ("edit", "Edit", "/_apx/edit"),
-    ("builder", "Builder", "/_apx/builder"),
     ("eval", "Eval", "/_apx/eval"),
     ("setup", "Setup", "/_apx/setup"),
     ("probe", "Probe", "/_apx/probe"),
@@ -36,9 +35,7 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
     agent_desc = ctx.config.description if ctx else ""
 
     tab_buttons = "".join(
-        f'<a class="tab" href="{src}">{label}</a>'
-        if slug == "builder"
-        else f'<button class="tab" data-tab="{slug}" data-src="{src}">{label}</button>'
+        f'<button class="tab" data-tab="{slug}" data-src="{src}">{label}</button>'
         for slug, label, src in _UNIFIED_TABS
     )
     default_slug = _UNIFIED_TABS[0][0]
@@ -145,11 +142,9 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
       tabs.forEach((t) => t.addEventListener("click", () => selectTab(t.dataset.tab)));
       window.addEventListener("hashchange", () => {{
         const slug = (location.hash || "#{default_slug}").slice(1);
-        if (slug === "builder") {{ window.location.replace("/_apx/builder"); return; }}
         selectTab(slug);
       }});
       const initial = (location.hash || "#{default_slug}").slice(1);
-      if (initial === "builder") {{ window.location.replace("/_apx/builder"); return; }}
       selectTab(initial);
     }})();
     (function () {{
