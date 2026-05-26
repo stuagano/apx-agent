@@ -1537,6 +1537,47 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             await _ws_upload_agent_file(request, path, updated)
         return JSONResponse({"ok": True, "type": pattern, "changed": updated != source})
 
+    @router.post("/_apx/setup/compose", include_in_schema=False)
+    async def setup_compose(request: Request) -> Any:
+        """Compose ≥2 leaf agents into a workflow root via the chosen pattern.
+
+        Body: ``{pattern, nodes: [{name, tools, instructions, route_key?,
+        route_description?}], start?}``. Writes the leaf agents + the workflow
+        root into agent.py and adds the wrapper import.
+        """
+        from fastapi.responses import JSONResponse
+        from ._ui_edit import _compose_agents
+
+        body = await request.json()
+        pattern: str = body.get("pattern", "").strip()
+        nodes = body.get("nodes", [])
+        start: str | None = body.get("start") or None
+        if not isinstance(nodes, list):
+            return JSONResponse({"ok": False, "error": "nodes must be a list"}, status_code=400)
+
+        # Leaves = the named agents (everything but the reserved root wrapper).
+        leaves = [n for n in nodes if str(n.get("name", "")).strip() and n.get("name") != "agent"]
+
+        path = _find_agent_router_path()
+        if not path or not path.exists():
+            return JSONResponse({"ok": False, "error": "agent.py not found"}, status_code=404)
+
+        source = path.read_text()
+        try:
+            updated = _compose_agents(source, pattern, leaves, start=start)
+            compile(updated, str(path), "exec")
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+        if updated != source:
+            path.write_text(updated)
+            await _ws_upload_agent_file(request, path, updated)
+        return JSONResponse({
+            "ok": True, "type": pattern,
+            "agents": [leaf["name"] for leaf in leaves],
+            "changed": updated != source,
+        })
+
     @router.get("/_apx/eval/data", include_in_schema=False)
     async def eval_data_get() -> Any:
         """Read persisted eval cases. Returns [] if no file or no agent_router."""

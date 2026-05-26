@@ -105,3 +105,39 @@ class TestApplyNodes:
         assert d["skipped"] == ["brand_new_agent"]
         # No orphan brand_new_agent = Agent(...) line was appended.
         assert "brand_new_agent" not in agent_py.read_text()
+
+
+class TestCompose:
+    @pytest.mark.asyncio
+    async def test_compose_sequential_wires_leaves(self, tmp_path):
+        agent_py = tmp_path / "agent.py"
+        agent_py.write_text(_AGENT_PY)
+        payload = {"pattern": "SequentialAgent", "nodes": [
+            {"name": "data_agent", "tools": ["echo"], "instructions": "Fetch."},
+            {"name": "response_agent", "tools": [], "instructions": "Respond."},
+        ]}
+        with patch("apx_agent._dev._find_agent_router_path", return_value=agent_py), \
+             patch("apx_agent._dev._ws_upload_agent_file"):
+            async with AsyncClient(transport=ASGITransport(app=_app()), base_url="http://t") as ac:
+                r = await ac.post("/_apx/setup/compose", json=payload)
+        d = r.json()
+        assert d["ok"] is True and d["agents"] == ["data_agent", "response_agent"]
+        written = agent_py.read_text()
+        compile(written, "agent.py", "exec")
+        assert "SequentialAgent(agents=[data_agent, response_agent])" in written
+        assert "data_agent = Agent(" in written and "response_agent = Agent(" in written
+        assert "SequentialAgent" in written.split("\n")[0] or ", SequentialAgent" in written
+
+    @pytest.mark.asyncio
+    async def test_compose_rejects_single_leaf(self, tmp_path):
+        agent_py = tmp_path / "agent.py"
+        agent_py.write_text(_AGENT_PY)
+        payload = {"pattern": "ParallelAgent", "nodes": [
+            {"name": "only_one", "tools": [], "instructions": "x"},
+        ]}
+        with patch("apx_agent._dev._find_agent_router_path", return_value=agent_py), \
+             patch("apx_agent._dev._ws_upload_agent_file"):
+            async with AsyncClient(transport=ASGITransport(app=_app()), base_url="http://t") as ac:
+                r = await ac.post("/_apx/setup/compose", json=payload)
+        d = r.json()
+        assert d["ok"] is False and "at least two" in d["error"]

@@ -841,31 +841,45 @@ document.querySelectorAll('.pcard').forEach(card => {{
     const pattern = card.dataset.pattern;
     const isAuto = card.dataset.auto === '1';
     const status = document.getElementById('pattern-status');
-    status.style.color = '#60b0ff';
-    status.textContent = isAuto ? 'Applying…' : 'Loading snippet…';
     document.getElementById('pattern-snippet-wrap').style.display = 'none';
     try {{
+      if (!isAuto) {{
+        // Composition: wire the defined leaf agents into this workflow root.
+        const leaves = agentNodeState.filter(n => n.name !== 'agent');
+        if (leaves.length < 2) {{
+          status.style.color = '#f87171';
+          status.textContent = `Define at least 2 agents above (under "Agents"), then click ${{pattern}}.`;
+          return;
+        }}
+        status.style.color = '#60b0ff'; status.textContent = `Composing ${{pattern}}…`;
+        const cr = await fetch('/_apx/setup/compose', {{
+          method: 'POST', headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{pattern, nodes: leaves}}),
+        }});
+        const cd = await cr.json();
+        if (!cd.ok) {{ status.style.color = '#f87171'; status.textContent = cd.error || 'Compose failed'; return; }}
+        setActiveCard(pattern);
+        status.style.color = '#4ade80';
+        status.textContent = `✓ Composed ${{pattern}} over ${{cd.agents.join(', ')}} — written to agent.py`;
+        await loadAgentNodes();
+        return;
+      }}
+      status.style.color = '#60b0ff'; status.textContent = 'Applying…';
       const r = await fetch('/_apx/setup/agent-pattern', {{
         method: 'POST',
         headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify({{pattern}}),
       }});
       const d = await r.json();
-      if (!d.ok && !d.snippet) {{
+      if (!d.ok) {{
         status.style.color = '#f87171';
         status.textContent = d.error || 'Failed';
         return;
       }}
-      if (d.snippet) {{
-        document.getElementById('pattern-snippet').textContent = d.snippet;
-        document.getElementById('pattern-snippet-wrap').style.display = 'block';
-        status.textContent = '';
-      }} else {{
-        setActiveCard(d.type);
-        status.style.color = '#4ade80';
-        status.textContent = d.changed ? 'Saved — hot-reload in progress' : `Already ${{d.type}}`;
-        setTimeout(() => {{ status.textContent = ''; }}, 4000);
-      }}
+      setActiveCard(d.type);
+      status.style.color = '#4ade80';
+      status.textContent = d.changed ? 'Saved — hot-reload in progress' : `Already ${{d.type}}`;
+      setTimeout(() => {{ status.textContent = ''; }}, 4000);
     }} catch(e) {{
       status.style.color = '#f87171';
       status.textContent = e.message;

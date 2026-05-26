@@ -530,13 +530,51 @@ def _parse_agent_nodes(source: str) -> list[dict[str, Any]]:
         # Wrapped: agent = LoopAgent(Agent(tools=[...]), ...)
         if isinstance(val, _ast.Call) and isinstance(val.func, _ast.Name):
             wrapper_name = val.func.id
+            inner_found = False
             for arg in val.args:
                 inner = _extract_agent_call(arg)
                 if inner is not None:
                     nodes.append({"name": var_name, "wrapper": wrapper_name, **inner})
+                    inner_found = True
                     break
+            if inner_found:
+                continue
+            # Composition: agent = SequentialAgent(agents=[a, b]) — leaves are
+            # referenced by name. Record the wrapper + member names so the
+            # composer round-trips the pattern and its members.
+            if wrapper_name in _COMPOSITION_WRAPPERS:
+                nodes.append({
+                    "name": var_name, "wrapper": wrapper_name,
+                    "tools": [], "instructions": "",
+                    "members": _extract_member_names(val),
+                })
 
     return nodes
+
+
+def _extract_member_names(call: Any) -> list[str]:
+    """Extract leaf-agent names referenced by a workflow wrapper's ``agents=``.
+
+    Handles list-of-Names (Sequential/Parallel), list-of-tuples (Router:
+    ``(key, desc, agent)``), and dict-of-Names (Handoff: ``{key: agent}``).
+    """
+    import ast as _ast
+
+    kw = next((k for k in getattr(call, "keywords", []) if k.arg == "agents"), None)
+    if kw is None:
+        return []
+    names: list[str] = []
+    if isinstance(kw.value, _ast.List):
+        for elt in kw.value.elts:
+            if isinstance(elt, _ast.Name):
+                names.append(elt.id)
+            elif isinstance(elt, _ast.Tuple):  # Router (key, desc, agent)
+                agent_elt = next((e for e in reversed(elt.elts) if isinstance(e, _ast.Name)), None)
+                if agent_elt is not None:
+                    names.append(agent_elt.id)
+    elif isinstance(kw.value, _ast.Dict):  # Handoff {key: agent}
+        names = [v.id for v in kw.value.values if isinstance(v, _ast.Name)]
+    return names
 
 
 def _py_str_literal(s: str) -> str:
@@ -682,6 +720,159 @@ def _set_agent_wrapper(source: str, wrapper: str, *, target: str = "agent") -> s
     vstart = _abs_offset(source, val.lineno, val.col_offset)
     vend = _abs_offset(source, val.end_lineno, val.end_col_offset)  # type: ignore[arg-type]
     return source[:vstart] + new_rhs + source[vend:]
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent composition — wire defined leaf agents into a workflow root
+# ---------------------------------------------------------------------------
+
+_COMPOSITION_WRAPPERS = {"SequentialAgent", "ParallelAgent", "RouterAgent", "HandoffAgent"}
+
+
+def _ensure_apx_import(source: str, *names: str) -> str:
+    """Ensure each of ``names`` is imported from ``apx_agent``.
+
+    Appends missing names to an existing ``from apx_agent import ...`` statement
+    (collapsing it to one line), or adds a new import after ``from __future__``
+    if none exists.
+    """
+    import ast as _ast
+
+    for node in _ast.parse(source).body:
+        if isinstance(node, _ast.ImportFrom) and node.module == "apx_agent":
+            ordered = [a.name for a in node.names]
+            missing = [n for n in names if n not in ordered]
+            if not missing:
+                return source
+            ordered += missing
+            start = _abs_offset(source, node.lineno, node.col_offset)
+            end = _abs_offset(source, node.end_lineno, node.end_col_offset)  # type: ignore[arg-type]
+            return source[:start] + "from apx_agent import " + ", ".join(ordered) + source[end:]
+
+    new_line = "from apx_agent import " + ", ".join(names) + "\n"
+    lines = source.splitlines(keepends=True)
+    insert_idx = 0
+    for i, line in enumerate(lines):
+        if line.startswith("from __future__"):
+            insert_idx = i + 1
+            break
+    lines.insert(insert_idx, new_line)
+    return "".join(lines)
+
+
+def _render_leaf_agent(name: str, tools: list[str], instructions: str) -> str:
+    """Render a leaf-agent assignment: ``name = Agent(tools=[...], instructions=...)``."""
+    return (
+        f"{name} = Agent(tools=[{', '.join(tools)}], "
+        f"instructions={_py_str_literal(instructions)})"
+    )
+
+
+def _compose_root_expr(pattern: str, leaves: list[dict[str, Any]], *, start: str | None = None) -> str:
+    """Build the workflow-wrapper expression that composes the leaf agents.
+
+    ``leaves`` is an ordered list of ``{name, route_key?, route_description?}``.
+    Returns e.g. ``SequentialAgent(agents=[a, b])`` or
+    ``RouterAgent(agents=[("k", "desc", a), ...])`` /
+    ``HandoffAgent(agents={"k": a, ...}, start="k")``.
+    """
+    names = [leaf["name"] for leaf in leaves]
+    if pattern in ("SequentialAgent", "ParallelAgent"):
+        return f"{pattern}(agents=[{', '.join(names)}])"
+    if pattern == "RouterAgent":
+        tuples = ", ".join(
+            f"({_py_str_literal(leaf.get('route_key') or leaf['name'])}, "
+            f"{_py_str_literal(leaf.get('route_description') or '')}, {leaf['name']})"
+            for leaf in leaves
+        )
+        return f"RouterAgent(agents=[{tuples}])"
+    if pattern == "HandoffAgent":
+        keys = [leaf.get("route_key") or leaf["name"] for leaf in leaves]
+        entries = ", ".join(
+            f"{_py_str_literal(k)}: {leaf['name']}" for k, leaf in zip(keys, leaves)
+        )
+        start_key = start or (keys[0] if keys else "")
+        return f"HandoffAgent(agents={{{entries}}}, start={_py_str_literal(start_key)})"
+    raise ValueError(f"Unsupported composition pattern: {pattern!r}")
+
+
+def _compose_agents(
+    source: str,
+    pattern: str,
+    leaves: list[dict[str, Any]],
+    *,
+    start: str | None = None,
+) -> str:
+    """Compose ``leaves`` into the root ``agent`` via the chosen workflow pattern.
+
+    Each leaf (``{name, tools, instructions, route_key?, route_description?}``)
+    is upserted as ``name = Agent(tools=[...], instructions=...)`` — existing
+    ones patched surgically, new ones inserted before the root. The root
+    ``agent =`` is then rewritten to the workflow wrapper referencing them, and
+    the wrapper class is added to the apx_agent import.
+
+    Raises ValueError on an unknown pattern or fewer than two leaves.
+    """
+    import ast as _ast
+
+    if pattern not in _COMPOSITION_WRAPPERS:
+        raise ValueError(f"Unsupported composition pattern: {pattern!r}")
+    if len(leaves) < 2:
+        raise ValueError("A composition needs at least two agents")
+
+    existing = {n["name"] for n in _parse_agent_nodes(source)}
+    result = source
+
+    # 1. Upsert each leaf agent (skip the reserved root name "agent").
+    for leaf in leaves:
+        name = leaf["name"]
+        if name == "agent":
+            raise ValueError("Leaf agents cannot be named 'agent' (that is the root wrapper)")
+        tools = leaf.get("tools") or []
+        instr = leaf.get("instructions") or ""
+        if name in existing:
+            result = _set_agent_tools(result, tools, target=name)
+            result = _set_agent_instructions(result, instr, target=name)
+        else:
+            # Insert the new leaf assignment just before the root `agent =`.
+            tree = _ast.parse(result)
+            root = next(
+                (
+                    s for s in tree.body
+                    if isinstance(s, _ast.Assign) and s.targets
+                    and isinstance(s.targets[0], _ast.Name) and s.targets[0].id == "agent"
+                ),
+                None,
+            )
+            leaf_line = _render_leaf_agent(name, tools, instr) + "\n"
+            if root is None:
+                result = result.rstrip("\n") + "\n" + leaf_line
+            else:
+                at = _abs_offset(result, root.lineno, 0)  # type: ignore[arg-type]
+                result = result[:at] + leaf_line + result[at:]
+
+    # 2. Rewrite the root `agent =` value to the workflow wrapper.
+    root_expr = _compose_root_expr(pattern, leaves, start=start)
+    tree = _ast.parse(result)
+    root_assign = next(
+        (
+            s for s in tree.body
+            if isinstance(s, _ast.Assign) and s.targets
+            and isinstance(s.targets[0], _ast.Name) and s.targets[0].id == "agent"
+        ),
+        None,
+    )
+    if root_assign is None:
+        result = result.rstrip("\n") + "\nagent = " + root_expr + "\n"
+    else:
+        val = root_assign.value
+        vstart = _abs_offset(result, val.lineno, val.col_offset)  # type: ignore[arg-type]
+        vend = _abs_offset(result, val.end_lineno, val.end_col_offset)  # type: ignore[arg-type]
+        result = result[:vstart] + root_expr + result[vend:]
+
+    # 3. Ensure the wrapper class (and Agent) are imported.
+    result = _ensure_apx_import(result, "Agent", pattern)
+    return result
 
 
 def _render_edit_ui(content: str, not_found: bool = False) -> str:
