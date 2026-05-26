@@ -527,23 +527,15 @@ def _abs_offset(source: str, lineno: int, col: int) -> int:
     return sum(len(line) for line in lines[: lineno - 1]) + col
 
 
-def _set_agent_instructions(source: str, instructions: str, *, target: str = "agent") -> str:
-    """Set the ``instructions=`` argument of the root agent's call in ``source``.
+def _find_root_agent_call(source: str, target: str) -> Any:
+    """Return the ``Agent()``/``LlmAgent()`` Call node assigned to ``target``.
 
-    Surgically replaces only the ``instructions=`` keyword value of the
-    ``{target} = Agent(...)`` / ``LlmAgent(...)`` call (direct or wrapped, e.g.
-    ``agent = LoopAgent(Agent(...))``), preserving every other argument. Inserts
-    the keyword if absent. The result is the same agent.py that the editor edits
-    and the runtime imports — so Setup, the editor, and the running agent share
-    one source of truth.
-
-    Raises ValueError if no ``{target}`` agent assignment/call is found.
+    Handles both direct (``agent = Agent(...)``) and wrapped
+    (``agent = LoopAgent(Agent(...))``) forms. Returns ``None`` if not found.
     """
     import ast as _ast
 
-    tree = _ast.parse(source)
-
-    def _find_agent_call(value: Any) -> Any:
+    def _find(value: Any) -> Any:
         if isinstance(value, _ast.Call):
             fn = value.func
             fname = (
@@ -554,40 +546,69 @@ def _set_agent_instructions(source: str, instructions: str, *, target: str = "ag
             if fname in ("Agent", "LlmAgent"):
                 return value
             for arg in value.args:  # wrapped: Wrapper(Agent(...), ...)
-                inner = _find_agent_call(arg)
+                inner = _find(arg)
                 if inner is not None:
                     return inner
         return None
 
-    call = None
-    for stmt in tree.body:
+    for stmt in _ast.parse(source).body:
         if (
             isinstance(stmt, _ast.Assign)
             and stmt.targets
             and isinstance(stmt.targets[0], _ast.Name)
             and stmt.targets[0].id == target
         ):
-            call = _find_agent_call(stmt.value)
+            call = _find(stmt.value)
             if call is not None:
-                break
+                return call
+    return None
+
+
+def _set_agent_kwarg(source: str, *, arg: str, literal: str, target: str) -> str:
+    """Surgically replace (or insert) the ``arg=`` keyword of ``target``'s Agent
+    call with the already-rendered ``literal`` source text, preserving every
+    other argument. Raises ValueError if the agent call isn't found.
+    """
+    call = _find_root_agent_call(source, target)
     if call is None:
         raise ValueError(f"Could not find `{target} = Agent(...)` in the agent file")
 
-    literal = _py_str_literal(instructions)
-    kw = next((k for k in call.keywords if k.arg == "instructions"), None)
+    kw = next((k for k in call.keywords if k.arg == arg), None)
     if kw is not None:
         v = kw.value
         start = _abs_offset(source, v.lineno, v.col_offset)
         end = _abs_offset(source, v.end_lineno, v.end_col_offset)  # type: ignore[arg-type]
         return source[:start] + literal + source[end:]
 
-    # No instructions= keyword — insert one right after the call's '('.
+    # Keyword absent — insert right after the call's opening '('.
     fn_end = _abs_offset(source, call.func.end_lineno, call.func.end_col_offset)  # type: ignore[arg-type]
-    paren = source.find("(", fn_end)
-    insert_at = paren + 1
+    insert_at = source.find("(", fn_end) + 1
     has_args = bool(call.args or call.keywords)
-    piece = f"instructions={literal}" + (", " if has_args else "")
+    piece = f"{arg}={literal}" + (", " if has_args else "")
     return source[:insert_at] + piece + source[insert_at:]
+
+
+def _set_agent_instructions(source: str, instructions: str, *, target: str = "agent") -> str:
+    """Set the ``instructions=`` argument of the root agent's call in ``source``.
+
+    Surgically replaces only the ``instructions=`` keyword value of the
+    ``{target} = Agent(...)`` / ``LlmAgent(...)`` call (direct or wrapped),
+    preserving every other argument; inserts if absent. So Setup, the editor,
+    and the running agent share one source of truth (agent.py).
+    """
+    return _set_agent_kwarg(source, arg="instructions", literal=_py_str_literal(instructions), target=target)
+
+
+def _set_agent_tools(source: str, tools: list[str], *, target: str = "agent") -> str:
+    """Set the ``tools=[...]`` argument of the root agent's call in ``source``.
+
+    ``tools`` are tool-function identifier names (e.g. ``["echo", "lookup"]``);
+    they are written as a bare name list (``tools=[echo, lookup]``), so the
+    functions must be defined/imported in the agent file. Surgically replaces
+    only the ``tools=`` value, preserving every other argument; inserts if absent.
+    """
+    literal = "[" + ", ".join(tools) + "]"
+    return _set_agent_kwarg(source, arg="tools", literal=literal, target=target)
 
 
 def _render_edit_ui(content: str, not_found: bool = False) -> str:

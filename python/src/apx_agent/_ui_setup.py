@@ -753,7 +753,8 @@ document.getElementById('btn-apply-agents').addEventListener('click', async () =
     }});
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || 'Apply failed');
-    st.style.color = '#4ade80'; st.textContent = '✓ Applied';
+    st.style.color = '#4ade80';
+    st.textContent = d.note ? ('✓ Applied — ' + d.note) : '✓ Applied to agent.py';
     await loadAgentNodes();
   }} catch(e) {{
     st.style.color = '#f87171'; st.textContent = e.message;
