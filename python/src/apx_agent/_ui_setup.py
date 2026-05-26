@@ -281,6 +281,11 @@ def _render_setup_ui(current: "dict[str, str]") -> str:
         <div class="pcard-desc">Active agent transfers control to another mid-turn.</div>
       </div>
     </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <label style="font-size:11px;color:#888">Handoff start agent</label>
+      <select id="handoff-start" style="background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:4px 8px;font-size:12px"></select>
+      <span style="font-size:10px;color:#444">entry point for HandoffAgent</span>
+    </div>
     <div id="pattern-snippet-wrap" style="display:none;margin-top:8px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
         <span style="font-size:11px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.4px">
@@ -623,7 +628,12 @@ async function loadAgentNodes() {{
     const list = Array.isArray(nodes) ? nodes : [];
     agentNodeState = list.map(n => {{
       const existing = agentNodeState.find(e => e.name === n.name);
-      return {{ behavior: existing?.behavior || '', ...n }};
+      return {{
+        behavior: existing?.behavior || '',
+        route_key: existing?.route_key || '',
+        route_description: existing?.route_description || '',
+        ...n,
+      }};
     }});
     renderAgentNodes();
   }} catch(e) {{
@@ -676,8 +686,29 @@ function renderAgentNodes() {{
       <textarea class="anode-instructions" id="anode-instr-${{idx}}"
                 oninput="agentNodeState[${{idx}}].instructions=this.value"
                 placeholder="Wire tools above to auto-draft, or write directly…">${{node.instructions||''}}</textarea>
+      <div class="anode-label" style="margin-top:8px">Routing
+        <span style="font-size:10px;color:#444;font-weight:400;margin-left:6px">for Router / Handoff patterns</span>
+      </div>
+      <input id="anode-rk-${{idx}}" type="text" value="${{node.route_key||''}}"
+             placeholder="route key (default: ${{node.name}})"
+             oninput="agentNodeState[${{idx}}].route_key=this.value"
+             style="width:100%;box-sizing:border-box;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px;margin-bottom:4px">
+      <textarea id="anode-rd-${{idx}}"
+                oninput="agentNodeState[${{idx}}].route_description=this.value"
+                placeholder="When should the router route here? (used by RouterAgent)"
+                style="width:100%;box-sizing:border-box;min-height:38px;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px">${{node.route_description||''}}</textarea>
     </div>`;
   }}).join('');
+  _refreshHandoffStart();
+}}
+
+function _refreshHandoffStart() {{
+  const sel = document.getElementById('handoff-start');
+  if (!sel) return;
+  const leaves = agentNodeState.filter(n => n.name !== 'agent');
+  const prev = sel.value;
+  sel.innerHTML = leaves.map(n => `<option value="${{n.name}}">${{n.name}}</option>`).join('');
+  if (leaves.some(n => n.name === prev)) sel.value = prev;
 }}
 
 function toggleNodeTool(idx, toolName) {{
@@ -852,9 +883,11 @@ document.querySelectorAll('.pcard').forEach(card => {{
           return;
         }}
         status.style.color = '#60b0ff'; status.textContent = `Composing ${{pattern}}…`;
+        const startSel = document.getElementById('handoff-start');
+        const start = (pattern === 'HandoffAgent' && startSel) ? startSel.value : null;
         const cr = await fetch('/_apx/setup/compose', {{
           method: 'POST', headers: {{'Content-Type': 'application/json'}},
-          body: JSON.stringify({{pattern, nodes: leaves}}),
+          body: JSON.stringify({{pattern, nodes: leaves, start}}),
         }});
         const cd = await cr.json();
         if (!cd.ok) {{ status.style.color = '#f87171'; status.textContent = cd.error || 'Compose failed'; return; }}
