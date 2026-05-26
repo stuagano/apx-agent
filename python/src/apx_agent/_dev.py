@@ -964,26 +964,42 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         ]
         returns: str = req_body.get("returns", "str")
         fn_body: str | None = req_body.get("body") or None
+        target: str = (req_body.get("agent") or "agent").strip() or "agent"
 
         path = _find_agent_router_path()
         if not path:
-            return JSONResponse({"ok": False, "error": "agent_router.py not found"})
+            return JSONResponse({"ok": False, "error": "agent.py not found"})
 
         source = path.read_text()
         _m = _re.search(r"^(\w+)\s*=\s*Dependencies\.Client", source, _re.MULTILINE)
         ws_type = _m.group(1) if _m else "AppClient"
 
         fn_code = _build_tool_function(name, description, params, returns, ws_type, body=fn_body)
-        updated = _splice_tool(source, fn_code, name)
+        updated = _splice_tool(source, fn_code, name, target=target)
 
         try:
-            compile(updated, "agent_router.py", "exec")
+            compile(updated, str(path), "exec")
         except SyntaxError as e:
             return JSONResponse({"ok": False, "error": f"Syntax error at line {e.lineno}: {e.msg}"})
 
         path.write_text(updated)
         await _ws_upload_agent_file(request, path, updated)
-        return JSONResponse({"ok": True})
+
+        # Honest reporting: if the agent is a composition, the new tool is defined
+        # but not attached to any single agent — tell the user to pick a leaf.
+        from ._ui_edit import _parse_agent_nodes
+        nodes = _parse_agent_nodes(updated)
+        wired = any(name in (n.get("tools") or []) for n in nodes)
+        if not wired:
+            leaves = [n["name"] for n in nodes if n["name"] != "agent" and n.get("wrapper") is None]
+            return JSONResponse({
+                "ok": True, "wired": False, "agents": leaves,
+                "note": (
+                    f"`{name}` was added to agent.py but not attached to an agent "
+                    f"(this agent is composed). Re-add it choosing one of: {', '.join(leaves) or '(define a leaf agent first)'}."
+                ),
+            })
+        return JSONResponse({"ok": True, "wired": True})
 
     @router.delete("/_apx/tools/{fn_name}", include_in_schema=False)
     async def delete_tool(fn_name: str, request: Request) -> Any:
@@ -1523,6 +1539,19 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         current_type = agent_node["wrapper"] or "Agent"
         if current_type == pattern or (pattern in ("Agent", "LlmAgent") and current_type in ("Agent", "LlmAgent")):
             return JSONResponse({"ok": True, "type": current_type, "changed": False})
+
+        # Can't collapse a multi-agent composition back to a single agent here —
+        # give a specific, actionable message rather than a raw AST error.
+        if current_type in ("SequentialAgent", "ParallelAgent", "RouterAgent", "HandoffAgent"):
+            members = ", ".join(agent_node.get("members") or [])
+            return JSONResponse({
+                "ok": False,
+                "error": (
+                    f"This agent is a {current_type} composing [{members}]. Switching it "
+                    f"back to a single {pattern} isn't supported here — edit agent.py in the "
+                    f"Editor, or recompose with a different pattern."
+                ),
+            }, status_code=400)
 
         # Surgically re-wrap the inner Agent(...) call, preserving all its args
         # (name=, sub_agents=, etc.) instead of regenerating a lossy assignment.
