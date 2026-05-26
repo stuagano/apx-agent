@@ -64,7 +64,8 @@ def foundation_model_tool(
             omitted, generated from the endpoint name.
     """
     from ._defaults import UserClientDependency
-    from ._resources import ResourceSpec, attach_resources
+    from ._resources import ResourceSpec
+    from ._tool_factory import build_tool
 
     _desc = description or (
         f"Ask the `{endpoint_name}` foundation model a question. "
@@ -100,9 +101,9 @@ def foundation_model_tool(
             return ""
         return getattr(message, "content", "") or ""
 
-    _ask_model.__name__ = name
-    _ask_model.__qualname__ = name
-    _ask_model.__doc__ = _desc
-
-    attach_resources(_ask_model, [ResourceSpec("serving_endpoint", endpoint_name)])
-    return _ask_model
+    return build_tool(
+        _ask_model,
+        name=name,
+        description=_desc,
+        resources=[ResourceSpec("serving_endpoint", endpoint_name)],
+    )

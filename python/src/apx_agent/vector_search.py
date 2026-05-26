@@ -54,7 +54,8 @@ def vector_search_tool(
             generated from the index name.
     """
     from ._defaults import UserClientDependency
-    from ._resources import ResourceSpec, attach_resources
+    from ._resources import ResourceSpec
+    from ._tool_factory import build_tool
 
     _desc = description or (
         f"Search the Vector Search index `{index_name}` for documents matching "
@@ -86,9 +87,5 @@ def vector_search_tool(
         data = rows_holder.data_array or []
         return [dict(zip(column_names, row)) for row in data]
 
-    _vector_search.__name__ = name
-    _vector_search.__qualname__ = name
-    _vector_search.__doc__ = _desc
-
-    attach_resources(_vector_search, [ResourceSpec("vector_search_index", index_name)])
-    return _vector_search
+    return build_tool(_vector_search, name=name, description=_desc,
+                      resources=[ResourceSpec("vector_search_index", index_name)])

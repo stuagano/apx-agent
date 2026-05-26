@@ -115,14 +115,10 @@ def genie_tool(
             return f"Genie query did not complete (status: {msg.status})."
         return _extract_text(msg)
 
-    _ask_genie.__name__ = name
-    _ask_genie.__qualname__ = name
-    _ask_genie.__doc__ = _desc
-
-    from ._resources import ResourceSpec, attach_resources
-    attach_resources(_ask_genie, [ResourceSpec("genie_space", space_id)])
-
-    return _ask_genie
+    from ._resources import ResourceSpec
+    from ._tool_factory import build_tool
+    return build_tool(_ask_genie, name=name, description=_desc,
+                      resources=[ResourceSpec("genie_space", space_id)])
 
 
 # ---------------------------------------------------------------------------
@@ -193,11 +189,7 @@ def genie_query_tool(
             "generated_sql": _extract_generated_sql(msg),
         }
 
-    _query_genie.__name__ = name
-    _query_genie.__qualname__ = name
-    _query_genie.__doc__ = _desc
-
-    from ._resources import ResourceSpec, attach_resources
-    attach_resources(_query_genie, [ResourceSpec("genie_space", space_id)])
-
-    return _query_genie
+    from ._resources import ResourceSpec
+    from ._tool_factory import build_tool
+    return build_tool(_query_genie, name=name, description=_desc,
+                      resources=[ResourceSpec("genie_space", space_id)])

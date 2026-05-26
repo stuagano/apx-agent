@@ -254,10 +254,15 @@ def uc_function_tool(
                 function_name, e,
             )
 
-    _initial_desc = description or _comment_desc or (
-        f"Execute the Unity Catalog function `{function_name}`. "
-        f"Pass parameters as a dict with parameter names as keys, e.g. "
-        f'`{{"param1": "value1", "param2": 42}}`.'
+    from ._tool_factory import resolve_description
+    _initial_desc = resolve_description(
+        description,
+        uc_comment=_comment_desc,
+        fallback=(
+            f"Execute the Unity Catalog function `{function_name}`. "
+            f"Pass parameters as a dict with parameter names as keys, e.g. "
+            f'`{{"param1": "value1", "param2": 42}}`.'
+        ),
     )
 
     async def _call_uc_function(params: dict[str, Any], ws: UserClientDependency) -> Any:  # type: ignore[valid-type]
@@ -297,16 +302,16 @@ def uc_function_tool(
             return next(iter(rows[0].values()))
         return rows
 
-    _call_uc_function.__name__ = _tool_name
-    _call_uc_function.__qualname__ = _tool_name
-    _call_uc_function.__doc__ = _initial_desc
-
     # Declare the UC function as a Mosaic AI resource so the compile path can
     # auto-derive ``resources=[DatabricksFunction(...)]`` at log time.
-    from ._resources import ResourceSpec, attach_resources
-    attach_resources(_call_uc_function, [ResourceSpec("uc_function", function_name)])
-
-    return _call_uc_function
+    from ._resources import ResourceSpec
+    from ._tool_factory import build_tool
+    return build_tool(
+        _call_uc_function,
+        name=_tool_name,
+        description=_initial_desc,
+        resources=[ResourceSpec("uc_function", function_name)],
+    )
 
 
 def uc_function_toolkit(

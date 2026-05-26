@@ -64,7 +64,8 @@ def jobs_for_table_tool(
         description: Tool description shown to the LLM.
     """
     from ._defaults import UserClientDependency
-    from ._resources import ResourceSpec, attach_resources
+    from ._resources import ResourceSpec
+    from ._tool_factory import build_tool
 
     _desc = description or (
         "Find Databricks Jobs and DLT pipelines that write to a Unity Catalog "
@@ -98,13 +99,12 @@ def jobs_for_table_tool(
             return {"table": table_full_name, "writers": [], "error": str(e)}
         return {"table": table_full_name, "writers": rows}
 
-    _find_jobs_for_table.__name__ = name
-    _find_jobs_for_table.__qualname__ = name
-    _find_jobs_for_table.__doc__ = _desc
-
-    if warehouse_id:
-        attach_resources(_find_jobs_for_table, [ResourceSpec("sql_warehouse", warehouse_id)])
-    return _find_jobs_for_table
+    return build_tool(
+        _find_jobs_for_table,
+        name=name,
+        description=_desc,
+        resources=[ResourceSpec("sql_warehouse", warehouse_id)] if warehouse_id else (),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +137,7 @@ def jobs_history_tool(
         limit: Maximum number of recent runs returned. Default 10.
     """
     from ._defaults import UserClientDependency
+    from ._tool_factory import build_tool
 
     _desc = description or (
         f"Get the {limit} most recent run records for a Databricks Job — "
@@ -173,10 +174,7 @@ def jobs_history_tool(
             ],
         }
 
-    _get_job_run_history.__name__ = name
-    _get_job_run_history.__qualname__ = name
-    _get_job_run_history.__doc__ = _desc
-    return _get_job_run_history
+    return build_tool(_get_job_run_history, name=name, description=_desc)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +207,7 @@ def jobs_logs_tool(
         max_log_chars: Truncation cap for the ``logs`` field. Default 5000.
     """
     from ._defaults import UserClientDependency
+    from ._tool_factory import build_tool
 
     _desc = description or (
         "Get the error output and logs for a specific Databricks Job run. "
@@ -230,10 +229,7 @@ def jobs_logs_tool(
             "logs": (output.logs or "")[:max_log_chars],
         }
 
-    _get_job_run_logs.__name__ = name
-    _get_job_run_logs.__qualname__ = name
-    _get_job_run_logs.__doc__ = _desc
-    return _get_job_run_logs
+    return build_tool(_get_job_run_logs, name=name, description=_desc)
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +261,7 @@ def jobs_source_paths_tool(
         description: Tool description shown to the LLM.
     """
     from ._defaults import UserClientDependency
+    from ._tool_factory import build_tool
 
     _desc = description or (
         "Get the notebook, python file, dbt project, or pipeline references "
@@ -297,10 +294,7 @@ def jobs_source_paths_tool(
             "tasks": tasks,
         }
 
-    _get_job_source_paths.__name__ = name
-    _get_job_source_paths.__qualname__ = name
-    _get_job_source_paths.__doc__ = _desc
-    return _get_job_source_paths
+    return build_tool(_get_job_source_paths, name=name, description=_desc)
 
 
 # ---------------------------------------------------------------------------

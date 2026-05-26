@@ -69,6 +69,8 @@ from .catalog import (
 # Platform tool factories
 from .vector_search import vector_search_tool
 from .sql_tools import sql_tool
+from .http_tools import http_tool, openapi_tool
+from .mcp_consume import mcp_tool, mcp_toolkit
 from .foundation_model import foundation_model_tool
 from .jobs_tools import (
     jobs_for_table_tool,
@@ -101,6 +103,7 @@ from ._resources import (
 
 # @tool decorator and UC publishing
 from ._tool import ToolMetadata, get_tool_metadata, tool
+from ._tool_factory import build_tool, resolve_description
 from ._tool_publish import PublishResult, publish_tools_to_uc
 
 # Session / multi-turn memory
@@ -342,6 +345,10 @@ __all__ = [
     "uc_function_toolkit",
     "vector_search_tool",
     "sql_tool",
+    "http_tool",
+    "openapi_tool",
+    "mcp_tool",
+    "mcp_toolkit",
     "foundation_model_tool",
     "jobs_for_table_tool",
     "jobs_history_tool",
@@ -368,6 +375,8 @@ __all__ = [
     "resources_to_databricks_yml",
     # @tool decorator and UC publishing
     "tool",
+    "build_tool",
+    "resolve_description",
     "ToolMetadata",
     "get_tool_metadata",
     "publish_tools_to_uc",
