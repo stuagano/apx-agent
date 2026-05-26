@@ -41,6 +41,10 @@ artifacts:
       cp -r sub_agents .build/ 2>/dev/null || true
       # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts README.md .build/ 2>/dev/null || true
+      # app.yaml pins the uvicorn entrypoint + env. Without it Databricks Apps
+      # defaults to ``python agent.py`` (finds agent.py at root) and the app
+      # crashes — agent_server/start_server.py is the real ASGI entrypoint.
+      cp app.yaml .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
       # pyproject.toml and uv.lock are written by apx deploy (wheel-pinned).
       # Do NOT copy them here — bundle deploy re-runs this script and would
