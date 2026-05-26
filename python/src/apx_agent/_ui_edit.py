@@ -1099,6 +1099,10 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
         </select>
       </div>
       <div class="field">
+        <label>Attach to agent</label>
+        <select id="f-agent"><option value="agent">agent</option></select>
+      </div>
+      <div class="field">
         <label>Preview</label>
         <pre id="modal-preview"></pre>
       </div>
@@ -1257,11 +1261,26 @@ function updatePreview() {{
   document.getElementById('modal-preview').textContent = buildFunctionCode();
 }}
 
+async function populateAgentPicker() {{
+  const sel = document.getElementById('f-agent');
+  try {{
+    const r = await fetch('/_apx/setup/agents');
+    const nodes = r.ok ? await r.json() : [];
+    const list = Array.isArray(nodes) ? nodes : [];
+    // Offer the leaf agents first (where tools usually belong), then the root.
+    const names = [...list.filter(n => n.name !== 'agent' && !n.wrapper).map(n => n.name),
+                   ...list.filter(n => n.name === 'agent').map(n => n.name)];
+    const opts = names.length ? names : ['agent'];
+    sel.innerHTML = opts.map(n => `<option value="${{n}}">${{n}}</option>`).join('');
+  }} catch (e) {{ sel.innerHTML = '<option value="agent">agent</option>'; }}
+}}
+
 document.getElementById('btn-new-tool').addEventListener('click', () => {{
   document.getElementById('f-name').value = '';
   document.getElementById('f-desc').value = '';
   document.getElementById('f-return').value = 'str';
   document.getElementById('param-rows').innerHTML = '';
+  populateAgentPicker();
   updatePreview();
   overlay.classList.add('open');
   document.getElementById('f-name').focus();
@@ -1275,34 +1294,40 @@ document.getElementById('f-name').addEventListener('input', updatePreview);
 document.getElementById('f-desc').addEventListener('input', updatePreview);
 document.getElementById('f-return').addEventListener('input', updatePreview);
 
-document.getElementById('btn-insert').addEventListener('click', () => {{
-  const code = buildFunctionCode();
-  const fnName = (document.getElementById('f-name').value.trim() || 'my_tool').replace(/\\W/g,'_');
-  const stub = '\\n\\n' + code;
-
-  const doc = view.state.doc.toString();
-  // 1. Insert function before agent = Agent(...)
-  const agentMarker = '\\nagent = Agent(';
-  const insertAt = doc.lastIndexOf(agentMarker) !== -1 ? doc.lastIndexOf(agentMarker) : doc.length;
-
-  // 2. Add to agent = Agent(tools=[...]) list
-  const agentLine = doc.lastIndexOf('agent = Agent(tools=[');
-  let changes = [{{ from: insertAt, to: insertAt, insert: stub }}];
-  if (agentLine !== -1) {{
-    const closeBracket = doc.indexOf('])', agentLine);
-    if (closeBracket !== -1) {{
-      const inside = doc.slice(agentLine, closeBracket);
-      const sep = inside.trimEnd().endsWith('[') ? '' : ', ';
-      changes.push({{ from: closeBracket, to: closeBracket, insert: sep + fnName }});
-    }}
+document.getElementById('btn-insert').addEventListener('click', async () => {{
+  const btn = document.getElementById('btn-insert');
+  const name = (document.getElementById('f-name').value.trim() || 'my_tool').replace(/\\W/g,'_');
+  const spec = {{
+    name,
+    description: document.getElementById('f-desc').value.trim() || 'Describe what this tool does.',
+    params: collectParams(),
+    returns: document.getElementById('f-return').value,
+    agent: document.getElementById('f-agent').value || 'agent',
+  }};
+  btn.disabled = true; btn.textContent = 'Inserting…';
+  try {{
+    // 1. Persist the current buffer so the backend splices into the latest
+    //    source (it reads the file, not this editor buffer).
+    const sv = await fetch('/_apx/edit', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ content: view.state.doc.toString() }}),
+    }});
+    const svd = await sv.json();
+    if (!svd.ok) throw new Error(svd.error || 'Could not save current edits');
+    // 2. Create + wire the tool via the backend (correct AST splice + target).
+    const r = await fetch('/_apx/tools/new', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(spec),
+    }});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'Could not create tool');
+    if (d.wired === false && d.note) alert(d.note);
+    // 3. Reload so the editor shows the updated agent.py.
+    window.location.reload();
+  }} catch (e) {{
+    btn.disabled = false; btn.textContent = 'Insert Tool';
+    alert(e.message);
   }}
-
-  view.dispatch(view.state.update({{
-    changes,
-    selection: {{ anchor: insertAt + stub.indexOf(fnName) }},
-  }}));
-  overlay.classList.remove('open');
-  view.focus();
 }});
 </script>
 {_deploy_overlay_html()}
