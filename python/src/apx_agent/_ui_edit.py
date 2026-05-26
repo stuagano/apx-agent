@@ -638,6 +638,52 @@ def _set_agent_tools(source: str, tools: list[str], *, target: str = "agent") ->
     return _set_agent_kwarg(source, arg="tools", literal=literal, target=target)
 
 
+def _set_agent_wrapper(source: str, wrapper: str, *, target: str = "agent") -> str:
+    """Change the single-agent wrapper of ``{target}`` while preserving the inner
+    ``Agent(...)`` call verbatim — name=, sub_agents=, temperature=, everything.
+
+    Supports the auto-applicable forms:
+      * ``"Agent"`` / ``"LlmAgent"`` → unwrap to the bare ``Agent(...)`` call.
+      * ``"LoopAgent"`` → wrap the inner call as ``LoopAgent(Agent(...))``.
+
+    Reuses the inner call's exact source text rather than regenerating it, so no
+    arguments are dropped. Raises ValueError if the target agent isn't found or
+    ``wrapper`` isn't one of the supported single-agent forms.
+    """
+    import ast as _ast
+
+    if wrapper not in ("Agent", "LlmAgent", "LoopAgent"):
+        raise ValueError(f"Unsupported single-agent wrapper: {wrapper!r}")
+
+    tree = _ast.parse(source)
+    assign = next(
+        (
+            s for s in tree.body
+            if isinstance(s, _ast.Assign)
+            and s.targets and isinstance(s.targets[0], _ast.Name)
+            and s.targets[0].id == target
+        ),
+        None,
+    )
+    if assign is None:
+        raise ValueError(f"Could not find `{target} = ...` assignment")
+
+    inner = _find_root_agent_call(source, target)
+    if inner is None:
+        raise ValueError(f"`{target}` is not an Agent(...) call")
+
+    inner_src = source[
+        _abs_offset(source, inner.lineno, inner.col_offset):
+        _abs_offset(source, inner.end_lineno, inner.end_col_offset)  # type: ignore[arg-type]
+    ]
+    new_rhs = inner_src if wrapper in ("Agent", "LlmAgent") else f"LoopAgent({inner_src})"
+
+    val = assign.value
+    vstart = _abs_offset(source, val.lineno, val.col_offset)
+    vend = _abs_offset(source, val.end_lineno, val.end_col_offset)  # type: ignore[arg-type]
+    return source[:vstart] + new_rhs + source[vend:]
+
+
 def _render_edit_ui(content: str, not_found: bool = False) -> str:
     """Return a split-panel authoring page: CodeMirror left, schema preview right.
 
