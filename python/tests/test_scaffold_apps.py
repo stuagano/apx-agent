@@ -193,8 +193,8 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_default_target_is_model_serving(tmp_path: Path) -> None:
-    """No ``--target`` flag still emits the flat agent.py + app.py layout."""
+def test_scaffold_default_target_is_apps(tmp_path: Path) -> None:
+    """No ``--target`` flag now emits the Databricks Apps bundle layout."""
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -203,14 +203,13 @@ def test_scaffold_default_target_is_model_serving(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     base = tmp_path / "my_agent"
 
-    # Model-serving shape: flat agent.py + app.py
-    for rel in ("pyproject.toml", "agent.py", "app.py", ".gitignore", "README.md"):
+    # Apps shape: agent.py + agent_server/ + databricks.yml bundle.
+    for rel in ("pyproject.toml", "agent.py", "databricks.yml",
+                "agent_server/start_server.py", "scripts/quickstart.py"):
         assert (base / rel).exists(), f"missing {rel}"
 
-    # Apps-only artefacts must NOT appear.
-    assert not (base / "agent_server").exists()
-    assert not (base / "scripts").exists()
-    assert not (base / "databricks.yml").exists()
+    # The flat model-serving app.py must NOT appear by default anymore.
+    assert not (base / "app.py").exists()
 
 
 # ---------------------------------------------------------------------------

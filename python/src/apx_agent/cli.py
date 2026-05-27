@@ -189,13 +189,27 @@ def _preflight_databricks_auth() -> None:
         Config()
     except Exception as e:
         profiles = _databrickscfg_profiles()
-        found = f"\nConfigured profiles: {', '.join(profiles)}." if profiles else ""
+        if profiles:
+            # Has profiles but couldn't pick one (unset, or ambiguous hosts).
+            guidance = (
+                "Pick the profile to use:\n"
+                "    DATABRICKS_CONFIG_PROFILE=<name> apx run\n"
+                f"Configured profiles: {', '.join(profiles)}."
+            )
+        else:
+            # First-timer: no ~/.databrickscfg profiles at all — log in first.
+            guidance = (
+                "No Databricks profiles found (~/.databrickscfg is missing or "
+                "empty). Log in first:\n"
+                "    databricks auth login --host https://<your-workspace>.cloud.databricks.com\n"
+                "  (or `databricks configure --token` for a personal access token)\n"
+                "then re-run `apx run`. If you create a named profile, select it "
+                "with DATABRICKS_CONFIG_PROFILE=<name>."
+            )
         raise click.ClickException(
-            "Could not resolve Databricks authentication. This agent connects "
-            "to a workspace at startup, so `apx run` needs a working profile. "
-            "Set one with DATABRICKS_CONFIG_PROFILE:\n"
-            "    DATABRICKS_CONFIG_PROFILE=<name> apx run"
-            f"{found}\n\nUnderlying error: {e}"
+            "Could not resolve Databricks authentication. This agent connects to "
+            "a workspace at startup, so `apx run` needs working credentials.\n\n"
+            f"{guidance}\n\nUnderlying error: {e}"
         ) from e
 
 
@@ -408,12 +422,12 @@ _SCAFFOLD_AGENT = '''\
 
 from apx_agent import DataAgent
 
-
-# A governed data agent over Databricks' built-in ``samples.nyctaxi`` dataset.
-# Point it at your own ``catalog.schema``, and pass ``ws=WorkspaceClient()`` to
-# auto-discover the schema's tables + UC functions and ground the instructions
-# in the real columns.
-agent = DataAgent("samples", "nyctaxi")
+{example_tool}
+# A governed data agent over ``{catalog}.{schema}`` (auto-detected from your
+# workspace at scaffold time). Point it at your own ``catalog.schema``, and
+# pass ``ws=WorkspaceClient()`` to auto-discover the schema's tables + UC
+# functions and ground the instructions in the real columns.
+agent = DataAgent("{catalog}", "{schema}"{extra_tools})
 '''
 
 
@@ -530,10 +544,10 @@ from __future__ import annotations
 
 from apx_agent import DataAgent
 
-
-# A governed data agent over Databricks' built-in ``samples.nyctaxi`` dataset.
-# It answers questions grounded in that schema and queries via a SQL tool that
-# runs as the calling user — their Unity Catalog grants apply.
+<EXAMPLE_TOOL>
+# A governed data agent over ``<CATALOG>.<SCHEMA>`` (auto-detected from your
+# workspace at scaffold time). It answers questions grounded in that schema and
+# queries via a SQL tool that runs as the calling user — their UC grants apply.
 #
 # Make it your own:
 #   * point it at your own data:  DataAgent("main", "sales", name="<APP_NAME>")
@@ -541,7 +555,7 @@ from apx_agent import DataAgent
 #     functions and ground the instructions in the real columns
 #   * add ``genie_space=...`` / ``vector_index=...`` for Genie or Vector Search
 #   * or drop back to a plain ``Agent(tools=[...])`` with your own ``@tool``s
-agent = DataAgent("samples", "nyctaxi", name="<APP_NAME>")
+agent = DataAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS>, name="<APP_NAME>")
 '''
 
 
@@ -775,14 +789,108 @@ shouldn't need to edit it.
 '''
 
 
-def _scaffold_model_serving(target: Path, name: str, force: bool) -> None:
+def _discover_default_data(
+    profile: str | None = None,
+) -> "tuple[str, str, str | None] | None":
+    """Best-effort: pick a (catalog, schema, sample_table) the scaffold's default
+    DataAgent can actually read, so a fresh ``apx run`` answers a real question
+    immediately — and a baked example tool queries a real table.
+
+    Prefers ``samples.nyctaxi`` (Databricks' built-in demo data) when present;
+    otherwise the first accessible catalog/schema that has tables. Returns the
+    triple, or None when auth can't be resolved / nothing readable is found —
+    the caller falls back to the samples default. Scans are capped for speed.
+    """
+    try:
+        from databricks.sdk import WorkspaceClient
+        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    except Exception:
+        return None
+
+    def _first_table(cat: str, sch: str) -> str | None:
+        try:
+            for t in ws.tables.list(catalog_name=cat, schema_name=sch):
+                if t.name:
+                    return t.name
+        except Exception:
+            return None
+        return None
+
+    nyc = _first_table("samples", "nyctaxi")
+    if nyc:
+        return ("samples", "nyctaxi", nyc)
+
+    skip_cat = {"system", "__databricks_internal"}
+    skip_sch = {"information_schema"}
+    try:
+        cats = list(ws.catalogs.list())
+    except Exception:
+        return None
+    probed = 0
+    for cat in cats[:25]:
+        cname = cat.name or ""
+        if not cname or cname in skip_cat:
+            continue
+        try:
+            schemas = list(ws.schemas.list(catalog_name=cname))
+        except Exception:
+            continue
+        for sch in schemas[:25]:
+            sname = sch.name or ""
+            if not sname or sname in skip_sch:
+                continue
+            probed += 1
+            if probed > 40:  # hard cap — keep scaffold snappy on big metastores
+                return None
+            tbl = _first_table(cname, sname)
+            if tbl:
+                return (cname, sname, tbl)
+    return None
+
+
+def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[str, str]":
+    """Bake a 'talk to your data' example tool against a real table.
+
+    Returns ``(prelude, extra_tools_arg)`` — the imports + tool function source,
+    and the ``, extra_tools=[fn]`` snippet to splice into the DataAgent call.
+    Empty strings when there's no known table (caller leaves the bare agent).
+    """
+    if not table:
+        return ("", "")
+    import re as _re
+    fn = "sample_" + (_re.sub(r"\W", "_", table).strip("_") or "rows")
+    prelude = (
+        "from apx_agent import Dependencies\n"
+        "from apx_agent.sql_tools import run_sql\n"
+        "\n\n"
+        f"def {fn}(ws: Dependencies.Workspace) -> dict:\n"
+        f'    """Preview a few rows of `{catalog}.{schema}.{table}` — your first tool.\n'
+        "\n"
+        "    Runs as the calling user, so Unity Catalog enforces *their* grants\n"
+        "    (auth passthrough — no token handling here). Add params + richer SQL\n"
+        "    to make it your own, or generate more tools on the Edit page.\n"
+        '    """\n'
+        f'    return run_sql(ws, "SELECT * FROM `{catalog}`.`{schema}`.`{table}` LIMIT 5")\n'
+        "\n\n"
+    )
+    return (prelude, f", extra_tools=[{fn}]")
+
+
+def _scaffold_model_serving(
+    target: Path, name: str, force: bool, catalog: str, schema: str,
+    table: str | None = None,
+) -> None:
     """Write the original Model Serving project layout into ``target``.
 
     Mirrors the pre-``--target`` shape: top-level ``agent.py`` + ``app.py``.
     """
+    prelude, extra_tools = _example_tool_block(catalog, schema, table)
     files = {
         "pyproject.toml": _SCAFFOLD_PYPROJECT.format(name=name),
-        "agent.py": _SCAFFOLD_AGENT.format(name=name),
+        "agent.py": _SCAFFOLD_AGENT.format(
+            name=name, catalog=catalog, schema=schema,
+            example_tool=prelude, extra_tools=extra_tools,
+        ),
         "app.py": _SCAFFOLD_APP,
         ".gitignore": _SCAFFOLD_GITIGNORE,
         "README.md": _SCAFFOLD_README.format(name=name),
@@ -796,14 +904,25 @@ def _scaffold_model_serving(target: Path, name: str, force: bool) -> None:
         click.echo(f"  write  {path}")
 
 
-def _scaffold_apps(target: Path, name: str, force: bool) -> None:
+def _scaffold_apps(
+    target: Path, name: str, force: bool, catalog: str, schema: str,
+    table: str | None = None,
+) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
     Produces the ``agent_server/`` + ``scripts/`` + ``databricks.yml``
     bundle shape consumed by ``databricks bundle deploy``.
     """
+    prelude, extra_tools = _example_tool_block(catalog, schema, table)
+
     def _sub(template: str) -> str:
-        return template.replace("<APP_NAME>", name)
+        return (
+            template.replace("<APP_NAME>", name)
+            .replace("<CATALOG>", catalog)
+            .replace("<SCHEMA>", schema)
+            .replace("<EXAMPLE_TOOL>", prelude)
+            .replace("<EXTRA_TOOLS>", extra_tools)
+        )
 
     files: dict[str, str] = {
         "pyproject.toml": _sub(_SCAFFOLD_APPS_PYPROJECT),
@@ -839,26 +958,46 @@ def _scaffold_apps(target: Path, name: str, force: bool) -> None:
 )
 @click.option(
     "--target", "scaffold_target",
-    type=click.Choice(["model-serving", "apps"]),
-    default="model-serving",
+    type=click.Choice(["apps", "model-serving"]),
+    default="apps",
     show_default=True,
     help=(
         "Runtime to generate scaffolding for. "
-        "'model-serving' (default, backwards-compatible) generates the "
-        "flat agent.py + app.py layout deployed via apx deploy. "
-        "'apps' generates a Databricks Asset Bundle layout with "
-        "agent_server/ + databricks.yml deployed via apx deploy --target apps."
+        "'apps' (default) generates a Databricks Apps bundle: agent_server/ + "
+        "databricks.yml, with the built-in dev UI (chat, edit, tool builder), "
+        "deployed via apx deploy. 'model-serving' generates the flat "
+        "agent.py + app.py layout for a Mosaic AI ChatAgent serving endpoint."
     ),
 )
 @click.option("--force", is_flag=True, help="Overwrite existing files.")
-def scaffold(name: str, directory: str, scaffold_target: str, force: bool) -> None:
+@click.option(
+    "--catalog", default=None,
+    help="Catalog for the default DataAgent. Skips workspace auto-detection.",
+)
+@click.option(
+    "--schema", default=None,
+    help="Schema for the default DataAgent. Skips workspace auto-detection.",
+)
+@click.option(
+    "--profile", default=None,
+    help="Databricks CLI profile used to probe the workspace for a default "
+         "catalog/schema. Falls back to $DATABRICKS_CONFIG_PROFILE.",
+)
+def scaffold(
+    name: str, directory: str, scaffold_target: str, force: bool,
+    catalog: str | None, schema: str | None, profile: str | None,
+) -> None:
     """Generate a new agent project at <NAME>.
 
-    With ``--target model-serving`` (the default) writes a flat
-    ``agent.py``/``app.py`` project. With ``--target apps`` writes a
-    Databricks Apps bundle: ``agent_server/`` package + ``databricks.yml``,
-    deployable with ``apx deploy --target apps`` (or directly via
-    ``databricks bundle deploy``).
+    With ``--target apps`` (the default) writes a Databricks Apps bundle:
+    ``agent_server/`` package + ``databricks.yml`` + the dev UI, deployable
+    with ``apx deploy``. With ``--target model-serving`` writes a flat
+    ``agent.py``/``app.py`` project for a Mosaic AI ChatAgent serving endpoint.
+
+    The default agent is a ``DataAgent`` grounded in real data: unless you pass
+    ``--catalog``/``--schema``, the workspace is probed (best-effort) for a
+    catalog/schema you can read — preferring ``samples.nyctaxi`` — so a fresh
+    ``apx run`` can answer a real question immediately.
     """
     target = Path(directory) / name
     if target.exists() and not force:
@@ -868,10 +1007,33 @@ def scaffold(name: str, directory: str, scaffold_target: str, force: bool) -> No
             )
     target.mkdir(parents=True, exist_ok=True)
 
-    if scaffold_target == "apps":
-        _scaffold_apps(target, name, force)
+    # Resolve the default DataAgent's data target + a sample table for the
+    # baked example tool: explicit flags win, else probe the workspace
+    # (best-effort), else fall back to the samples demo.
+    table: str | None = None
+    if catalog and schema:
+        click.echo(f"# data source: {catalog}.{schema} (from --catalog/--schema)")
     else:
-        _scaffold_model_serving(target, name, force)
+        found = _discover_default_data(profile)
+        if found:
+            catalog, schema, table = found
+            extra = f" (example tool over `{table}`)" if table else ""
+            click.echo(
+                f"# data source: {catalog}.{schema} — auto-detected from your "
+                f"workspace{extra}"
+            )
+        else:
+            catalog, schema = "samples", "nyctaxi"
+            click.echo(
+                "# data source: samples.nyctaxi (default — couldn't probe the "
+                "workspace; pass --catalog/--schema or set a profile to ground "
+                "the agent in your own data)"
+            )
+
+    if scaffold_target == "apps":
+        _scaffold_apps(target, name, force, catalog, schema, table)
+    else:
+        _scaffold_model_serving(target, name, force, catalog, schema, table)
 
     click.echo()
     click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")

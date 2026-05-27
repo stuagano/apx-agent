@@ -138,9 +138,11 @@ def test_version_runs() -> None:
 
 def test_scaffold_creates_expected_files(tmp_path: Path) -> None:
     runner = CliRunner()
+    # Pin model-serving (flat agent.py + app.py); apps is the default and is
+    # covered by test_scaffold_apps.py.
     result = runner.invoke(
         main,
-        ["scaffold", "my_agent", "--dir", str(tmp_path)],
+        ["scaffold", "my_agent", "--target", "model-serving", "--dir", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
     base = tmp_path / "my_agent"
@@ -2604,3 +2606,45 @@ def test_sanitize_uv_lock_rewrites_internal_index(tmp_path: Path) -> None:
     assert 'registry = "https://pypi.org/simple"' in text
     assert "files.pythonhosted.org/x/foo-1.0-py3-none-any.whl" in text  # untouched
     assert _sanitize_uv_lock(lock) is False  # idempotent
+
+
+def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
+    """--catalog/--schema bake the default DataAgent's data source (no probe)."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["scaffold", "ag", "--catalog", "main", "--schema", "sales",
+               "--dir", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    agent_py = (tmp_path / "ag" / "agent.py").read_text()
+    assert 'DataAgent("main", "sales"' in agent_py
+
+
+def test_splice_tool_wires_into_dataagent_extra_tools() -> None:
+    """A generated tool attaches to a DataAgent via extra_tools= (no tools=
+    list exists), and the result is valid Python. Regression for the orphaned
+    tool on a composed/DataAgent default."""
+    import ast as _ast
+    from apx_agent._ui_edit import _splice_tool, _agent_tool_names
+
+    src = 'from apx_agent import DataAgent\nagent = DataAgent("samples", "nyctaxi")\n'
+    fn = 'def avg_trips(ws):\n    """Average trips."""\n    return {}\n'
+    out = _splice_tool(src, fn, "avg_trips", target="agent")
+    _ast.parse(out)  # must not be a positional-after-keyword SyntaxError
+    assert "extra_tools=[avg_trips]" in out
+    assert _agent_tool_names(out, "agent") == ["avg_trips"]
+
+
+def test_run_auth_error_first_timer_points_to_login() -> None:
+    """With no ~/.databrickscfg profiles, the auth error hands a first-timer the
+    `databricks auth login` command (not just 'set a profile')."""
+    runner = CliRunner()
+    fake_uvicorn = MagicMock()
+    fake_config = MagicMock(side_effect=ValueError("no creds"))
+    with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
+            patch("databricks.sdk.core.Config", fake_config), \
+            patch("apx_agent.cli._databrickscfg_profiles", return_value=[]):
+        result = runner.invoke(main, ["run"])
+    assert result.exit_code != 0
+    assert "databricks auth login" in result.output
+    fake_uvicorn.run.assert_not_called()
