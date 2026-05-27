@@ -21,7 +21,7 @@ jobs:
         with:
           fetch-depth: 0  # hatch-vcs derives the version from the tag — needs full history + tags
 
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
 
