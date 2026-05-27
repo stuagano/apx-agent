@@ -2483,3 +2483,49 @@ def test_run_passes_app_dir_to_uvicorn() -> None:
     fake_uvicorn.run.assert_called_once()
     assert fake_uvicorn.run.call_args.args[0] == "app:app"
     assert fake_uvicorn.run.call_args.kwargs.get("app_dir") == str(Path.cwd())
+
+
+def test_detect_target_distinguishes_layouts(tmp_path: Path) -> None:
+    """apps layout has agent_server/start_server.py; flat layout doesn't."""
+    from apx_agent.cli import _detect_target
+
+    assert _detect_target(tmp_path) == "model-serving"
+    (tmp_path / "agent_server").mkdir()
+    (tmp_path / "agent_server" / "start_server.py").write_text("app = None\n")
+    assert _detect_target(tmp_path) == "apps"
+
+
+def test_run_autodetects_apps_module() -> None:
+    """In an apps layout, `apx run` serves the agent_server module."""
+    runner = CliRunner()
+    fake_uvicorn = MagicMock()
+    with runner.isolated_filesystem(), patch.dict(sys.modules, {"uvicorn": fake_uvicorn}):
+        Path("agent_server").mkdir()
+        Path("agent_server/start_server.py").write_text("app = None\n")
+        result = runner.invoke(main, ["run"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_uvicorn.run.call_args.args[0] == "agent_server.start_server:app"
+
+
+def test_deploy_autodetects_apps_target() -> None:
+    """In an apps layout, `apx deploy` (no --target) takes the apps path."""
+    runner = CliRunner()
+    with runner.isolated_filesystem(), \
+            patch("apx_agent.cli._deploy_apps") as mock_apps:
+        Path("agent_server").mkdir()
+        Path("agent_server/start_server.py").write_text("app = None\n")
+        result = runner.invoke(main, ["deploy"])
+
+    assert result.exit_code == 0, result.output
+    mock_apps.assert_called_once()
+
+
+def test_deploy_autodetects_model_serving_target() -> None:
+    """A flat layout defaults to model-serving, which still requires --model."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(main, ["deploy"])
+
+    assert result.exit_code != 0
+    assert "--model is required" in result.output

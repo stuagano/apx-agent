@@ -117,6 +117,28 @@ def _load_agent(module_spec: str) -> Any:
     return getattr(module, variable)
 
 
+# ASGI app module spec served by `apx run`, per scaffold layout.
+_RUN_MODULE_BY_TARGET = {
+    "model-serving": "app:app",
+    "apps": "agent_server.start_server:app",
+}
+
+
+def _detect_target(cwd: Path | None = None) -> str:
+    """Infer the project's target (model-serving vs apps) from its layout.
+
+    The apps scaffold writes ``agent_server/start_server.py``; the flat
+    model-serving scaffold writes a top-level ``app.py``. Lets ``apx run`` and
+    ``apx deploy`` work without an explicit ``--module``/``--target`` regardless
+    of which scaffold the user chose. Defaults to model-serving when neither
+    marker is present.
+    """
+    cwd = cwd or Path.cwd()
+    if (cwd / "agent_server" / "start_server.py").exists():
+        return "apps"
+    return "model-serving"
+
+
 # ---------------------------------------------------------------------------
 # Deploy env-var / secret-scan helpers
 # ---------------------------------------------------------------------------
@@ -791,12 +813,13 @@ def scaffold(name: str, directory: str, scaffold_target: str, force: bool) -> No
 
     click.echo()
     click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")
+    click.echo(f"Next: cd {name} && uv sync && uv run apx run    # serve locally")
     if scaffold_target == "apps":
-        click.echo(
-            f"Next: cd {name} && uv sync && uv run apx deploy --target apps"
-        )
+        click.echo(f"      uv run apx deploy                        # → Databricks Apps")
     else:
-        click.echo(f"Next: cd {name} && uv sync && uv run apx run")
+        click.echo(
+            f"      uv run apx deploy --model <endpoint> --name <catalog.schema.model>"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -807,14 +830,20 @@ def scaffold(name: str, directory: str, scaffold_target: str, force: bool) -> No
 @main.command()
 @click.option(
     "--module",
-    default="app:app",
-    help='FastAPI app module spec, "module:variable". Default: "app:app".',
+    default=None,
+    help='ASGI app module spec, "module:variable". Auto-detected from the '
+         'project layout when omitted: "app:app" (model-serving) or '
+         '"agent_server.start_server:app" (apps).',
 )
 @click.option("--port", default=8000, type=int, help="Port. Default: 8000.")
 @click.option("--host", default="127.0.0.1", help="Host. Default: 127.0.0.1.")
 @click.option("--reload", is_flag=True, help="Enable auto-reload for dev.")
-def run(module: str, port: int, host: str, reload: bool) -> None:
-    """Run the agent locally via uvicorn against the FastAPI app."""
+def run(module: str | None, port: int, host: str, reload: bool) -> None:
+    """Run the agent locally via uvicorn against the FastAPI app.
+
+    Works for both scaffold layouts — the ASGI module is auto-detected from
+    the project unless you pass --module.
+    """
     try:
         import uvicorn
     except ImportError as e:
@@ -822,7 +851,17 @@ def run(module: str, port: int, host: str, reload: bool) -> None:
             "uvicorn is required for `apx run`. Install with: "
             "pip install 'uvicorn[standard]'"
         ) from e
-    # app_dir puts the project dir on sys.path so the scaffold's `app.py`
+    if module is None:
+        detected = _detect_target()
+        module = _RUN_MODULE_BY_TARGET[detected]
+        click.echo(f"# Detected {detected} layout → serving {module}", err=True)
+        if detected == "apps":
+            model = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
+            click.echo(
+                f"# apps runtime uses APX_MODEL={model} (export APX_MODEL to override)",
+                err=True,
+            )
+    # app_dir puts the project dir on sys.path so the scaffold's app module
     # resolves. The `apx` console-script's sys.path does NOT include the CWD
     # (unlike `python`/`uvicorn` invoked directly), so without this uvicorn
     # reports `Could not import module "app"`. app_dir also propagates to the
@@ -974,13 +1013,14 @@ def eval_cmd(
               '"agent:agent" for both --target model-serving and '
               '--target apps (ADK-style top-level layout).')
 @click.option(
-    "--target", "target", default="model-serving",
+    "--target", "target", default=None,
     type=click.Choice(["model-serving", "apps"]),
-    help="Deployment target. 'model-serving' (default) runs the canonical "
-         "log_agent + databricks.agents.deploy flow. 'apps' runs the "
-         "Databricks Asset Bundle deploy + run flow against a scaffolded "
-         "Apps project. The two targets accept different option sets — "
-         "see --help for details.",
+    help="Deployment target. Auto-detected from the project layout when "
+         "omitted (apps if agent_server/start_server.py exists, else "
+         "model-serving). 'model-serving' runs the canonical log_agent + "
+         "databricks.agents.deploy flow. 'apps' runs the Databricks Asset "
+         "Bundle deploy + run flow. The two targets accept different option "
+         "sets — see --help for details.",
 )
 @click.option("--model", default=None, help="Databricks serving endpoint for "
               "the LLM. Required when --target model-serving.")
@@ -1085,7 +1125,7 @@ def eval_cmd(
 )
 def deploy(
     module: str | None,
-    target: str,
+    target: str | None,
     model: str | None,
     registered_model_name: str | None,
     profile: str | None,
@@ -1128,6 +1168,13 @@ def deploy(
     apply to ``--target apps`` (no model version to tag). Apps tagging will
     be addressed in a follow-up.
     """
+    if target is None:
+        target = _detect_target()
+        click.echo(
+            f"# Detected {target} project layout (override with --target).",
+            err=True,
+        )
+
     if target == "apps":
         _deploy_apps(
             module=module or "agent:agent",
