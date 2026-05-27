@@ -2547,3 +2547,42 @@ def test_run_friendly_error_when_auth_unresolved() -> None:
     assert result.exit_code != 0
     assert "DATABRICKS_CONFIG_PROFILE" in result.output
     fake_uvicorn.run.assert_not_called()  # bailed before starting the server
+
+
+def test_ensure_apx_wheel_resolves_dynamic_version(tmp_path: Path, monkeypatch) -> None:
+    """Editable apx-agent with a dynamic (hatch-vcs) version: the wheel name
+    isn't in pyproject, so _ensure_apx_wheel must resolve it from the built
+    dist/. Regression for the `dist_dir / None` TypeError that broke
+    `apx deploy --target apps` after hatch-vcs landed.
+    """
+    from apx_agent.cli import _ensure_apx_wheel
+
+    # apx-agent source root with a *dynamic* version (no project.version).
+    src = tmp_path / "src_root"
+    (src / "src" / "apx_agent").mkdir(parents=True)
+    (src / "src" / "apx_agent" / "__init__.py").write_text("")
+    (src / "pyproject.toml").write_text(
+        '[project]\nname = "apx-agent"\ndynamic = ["version"]\n'
+    )
+    # Project that depends on it via an editable path.
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\ndynamic = ["version"]\n\n'
+        '[tool.uv.sources]\napx-agent = { path = "../src_root", editable = true }\n'
+    )
+
+    def fake_build(cmd, **kwargs):
+        # Simulate `uv build --wheel` producing a dev-versioned wheel.
+        dist = src / "dist"
+        dist.mkdir(exist_ok=True)
+        (dist / "apx_agent-0.2.2.dev6+gabc.d20260527-py3-none-any.whl").write_text("whl")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", fake_build)
+
+    staged = _ensure_apx_wheel(proj)
+    assert staged is not None
+    assert staged.name == "apx_agent-0.2.2.dev6+gabc.d20260527-py3-none-any.whl"
+    assert staged.exists()
