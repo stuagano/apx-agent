@@ -139,6 +139,46 @@ def _detect_target(cwd: Path | None = None) -> str:
     return "model-serving"
 
 
+def _databrickscfg_profiles() -> list[str]:
+    """Section names from ~/.databrickscfg (best-effort; includes DEFAULT)."""
+    path = Path.home() / ".databrickscfg"
+    if not path.exists():
+        return []
+    names = []
+    for line in path.read_text(errors="ignore").splitlines():
+        s = line.strip()
+        if s.startswith("[") and s.endswith("]"):
+            names.append(s[1:-1].strip())
+    return names
+
+
+def _preflight_databricks_auth() -> None:
+    """Fail `apx run` with dev-time guidance when Databricks auth is unresolved.
+
+    The scaffolded agent connects to a workspace during app startup, so an
+    unresolved/ambiguous profile otherwise surfaces as a deep SDK traceback
+    inside uvicorn's startup. This converts it into one clear line. Dev-time
+    only — the deployed runtime keeps the raw error, the right signal in an ops
+    context with no ~/.databrickscfg.
+    """
+    try:
+        from databricks.sdk.core import Config
+    except Exception:
+        return  # SDK not importable in some minimal setups; let it fail later.
+    try:
+        Config()
+    except Exception as e:
+        profiles = _databrickscfg_profiles()
+        found = f"\nConfigured profiles: {', '.join(profiles)}." if profiles else ""
+        raise click.ClickException(
+            "Could not resolve Databricks authentication. This agent connects "
+            "to a workspace at startup, so `apx run` needs a working profile. "
+            "Set one with DATABRICKS_CONFIG_PROFILE:\n"
+            "    DATABRICKS_CONFIG_PROFILE=<name> apx run"
+            f"{found}\n\nUnderlying error: {e}"
+        ) from e
+
+
 # ---------------------------------------------------------------------------
 # Deploy env-var / secret-scan helpers
 # ---------------------------------------------------------------------------
@@ -861,6 +901,7 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
                 f"# apps runtime uses APX_MODEL={model} (export APX_MODEL to override)",
                 err=True,
             )
+    _preflight_databricks_auth()
     # app_dir puts the project dir on sys.path so the scaffold's app module
     # resolves. The `apx` console-script's sys.path does NOT include the CWD
     # (unlike `python`/`uvicorn` invoked directly), so without this uvicorn
