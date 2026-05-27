@@ -156,14 +156,18 @@ def _from_langchain_message(msg: Any, idx: int) -> "ChatAgentMessage":
     content = msg.content if isinstance(msg.content, str) else str(msg.content)
 
     if isinstance(msg, AIMessage):
+        import json
         tool_calls = []
         for tc in msg.tool_calls or []:
+            # ChatAgentMessage requires `arguments` to be a JSON string;
+            # langchain hands them back as a dict.
+            args = tc.get("args", {})
             tool_calls.append({
                 "id": tc.get("id", ""),
                 "type": "function",
                 "function": {
                     "name": tc.get("name", ""),
-                    "arguments": tc.get("args", {}),
+                    "arguments": args if isinstance(args, str) else json.dumps(args),
                 },
             })
         return ChatAgentMessage(
@@ -173,11 +177,13 @@ def _from_langchain_message(msg: Any, idx: int) -> "ChatAgentMessage":
             tool_calls=tool_calls or None,
         )
     if isinstance(msg, ToolMessage):
+        # ChatAgentMessage requires both name and tool_call_id for tool msgs.
         return ChatAgentMessage(
             role="tool",
             content=content,
             id=msg_id,
-            tool_call_id=msg.tool_call_id,
+            name=getattr(msg, "name", None) or "tool",
+            tool_call_id=msg.tool_call_id or "",
         )
     if isinstance(msg, SystemMessage):
         return ChatAgentMessage(role="system", content=content, id=msg_id)
