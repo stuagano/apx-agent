@@ -53,11 +53,18 @@ def _write_env_file(path: "Path", updates: "dict[str, str]") -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
-def _render_setup_ui(current: "dict[str, str]") -> str:
-    """Setup wizard page — catalog/schema/warehouse picker + instruction generator."""
+def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
+    """Setup wizard page — catalog/schema/warehouse picker + instruction generator.
+
+    When ``embed=True`` the page drops its nav + deploy chrome so it can be
+    hosted inside an iframe modal (the Edit page's "Generate from data" modal),
+    and posts an ``apx:tool-created`` message to the parent window whenever a
+    tool is created — so the host page can surface it and refresh.
+    """
     import json as _json
-    nav = _apx_nav_html("setup")
-    overlay = _deploy_overlay_html()
+    nav = "" if embed else _apx_nav_html("setup")
+    overlay = "" if embed else _deploy_overlay_html()
+    body_attr = ' class="apx-embed"' if embed else ""
     cur_catalog = current.get("DEMO_CATALOG", "")
     cur_schema = current.get("DEMO_SCHEMA", "")
     cur_wh = current.get("WAREHOUSE_ID", "")
@@ -73,6 +80,9 @@ def _render_setup_ui(current: "dict[str, str]") -> str:
   body {{ background: #0d0d0d; color: #ccc; font-family: system-ui, sans-serif; font-size: 13px; }}
   {_apx_nav_css()}
   .page {{ max-width: 680px; margin: 72px auto 40px; padding: 0 20px; }}
+  /* embedded in the Edit "Generate from data" modal: no nav, tighter top */
+  .apx-embed .page {{ margin: 20px auto 28px; }}
+  .apx-embed h2 {{ display: none; }}
   h2 {{ font-size: 18px; font-weight: 600; color: #fff; margin-bottom: 4px; }}
   .subtitle {{ color: #555; margin-bottom: 28px; font-size: 13px; }}
   .section {{ background: #111; border: 1px solid #1e1e1e; border-radius: 10px;
@@ -168,7 +178,7 @@ def _render_setup_ui(current: "dict[str, str]") -> str:
   .anode-wire-btn:disabled {{ opacity: .5; cursor: not-allowed; }}
 </style>
 </head>
-<body>
+<body{body_attr}>
 {nav}
 <div class="page">
   <h2>Setup</h2>
@@ -525,6 +535,7 @@ document.getElementById('btn-desc-tool').addEventListener('click', async () => {
     st.style.color = '#4ade80';
     st.textContent = `✓ Created ${{d.tool_name || ''}}`;
     document.getElementById('tool-desc-input').value = '';
+    if (window.parent !== window) window.parent.postMessage({{ type: 'apx:tool-created', name: d.tool_name || '' }}, '*');
     await loadTools();
     const cards = document.querySelectorAll('.tcard');
     if (cards.length) cards[cards.length-1].classList.add('tcard-appear');
@@ -543,7 +554,11 @@ async function loadTables(catalog, schema) {{
   btn.disabled = true;
   try {{
     const r = await fetch(`/_apx/wizard/tables?catalog=${{encodeURIComponent(catalog)}}&schema=${{encodeURIComponent(schema)}}`);
-    tableList = await r.json();
+    const data = await r.json();
+    // Endpoint returns {{tables:[...], warehouse_id}}; older code read the
+    // object as if it were the array, so the list was always "No tables found".
+    if (data.error) throw new Error(data.error);
+    tableList = data.tables || [];
     if (!tableList.length) {{
       listEl.innerHTML = '<p style="color:#444;font-size:12px">No tables found in this schema.</p>';
       return;
@@ -602,7 +617,10 @@ document.getElementById('btn-gen-tools').addEventListener('click', async () => {
   btn.disabled = false;
   st.textContent = `${{created}}/${{checked.length}} tools created`;
   st.style.color = created === checked.length ? '#22c55e' : '#f59e0b';
-  if (created > 0) await loadTools();
+  if (created > 0) {{
+    if (window.parent !== window) window.parent.postMessage({{ type: 'apx:tool-created', count: created }}, '*');
+    await loadTools();
+  }}
 }});
 
 // trigger table load when schema changes
