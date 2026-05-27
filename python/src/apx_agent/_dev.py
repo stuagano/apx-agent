@@ -1071,7 +1071,8 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def setup_ui(request: Request) -> HTMLResponse:
         env_path = _find_env_path()
         current = _read_env_file(env_path) if env_path and env_path.exists() else {}
-        return HTMLResponse(_render_setup_ui(current))
+        embed = request.query_params.get("embed") == "1"
+        return HTMLResponse(_render_setup_ui(current, embed=embed))
 
     @router.get("/_apx/setup/catalogs", include_in_schema=False)
     async def setup_catalogs(request: Request) -> Any:

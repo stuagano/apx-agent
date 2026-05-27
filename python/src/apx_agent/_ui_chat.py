@@ -18,7 +18,8 @@ _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
     ("chat", "Chat", "/_apx/chat"),
     ("edit", "Edit", "/_apx/edit"),
     ("eval", "Eval", "/_apx/eval"),
-    ("setup", "Setup", "/_apx/setup"),
+    # "setup" is intentionally not a shell tab — its data-source + tool
+    # generation flow is reached from the Edit page's "✨ From data" modal.
     ("probe", "Probe", "/_apx/probe"),
 )
 
