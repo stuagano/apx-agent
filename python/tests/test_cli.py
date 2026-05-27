@@ -2648,3 +2648,18 @@ def test_run_auth_error_first_timer_points_to_login() -> None:
     assert result.exit_code != 0
     assert "databricks auth login" in result.output
     fake_uvicorn.run.assert_not_called()
+
+
+def test_scaffold_explicit_target_bakes_example_tool(tmp_path: Path) -> None:
+    """--catalog/--schema also bakes an example tool over a probed real table
+    (parity with the auto-detected path)."""
+    runner = CliRunner()
+    with patch("apx_agent.cli._probe_first_table", return_value="trips"):
+        result = runner.invoke(
+            main, ["scaffold", "ag", "--catalog", "main", "--schema", "sales",
+                   "--dir", str(tmp_path)],
+        )
+    assert result.exit_code == 0, result.output
+    agent_py = (tmp_path / "ag" / "agent.py").read_text()
+    assert "def sample_trips(" in agent_py
+    assert "extra_tools=[sample_trips]" in agent_py
