@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Write a Databricks AI agent once. Deploy to Model Serving or Databricks Apps with one flag.**
+**Write a Databricks AI agent once. Deploy to Databricks Apps (the default) or Mosaic AI Model Serving with one flag.**
 
 Author your agent in Python or TypeScript. The framework picks the runtime contract (`ChatAgent` for Mosaic AI Model Serving, `ResponsesAgent` for Databricks Apps) and the OBO chain normalizes whichever auth shape the runtime injects — so the calling user's OAuth token flows through every UC function, Genie space, vector index, and sub-agent call. Unity Catalog enforces *their* grants on *their* data; no auth code at the tool level.
 
@@ -120,8 +120,8 @@ cd apx-agent/python
 uv sync                                    # install framework
 uv run apx scaffold my-agent && cd my-agent
 uv sync                                    # install agent deps
-uv run apx run                             # local dev server on :8000
-uv run apx deploy --target apps            # or --target model-serving
+uv run apx run                             # local dev server on :8000 (chat + dev UI)
+uv run apx deploy                          # → Databricks Apps (the default target, auto-detected)
 ```
 
 ### TypeScript

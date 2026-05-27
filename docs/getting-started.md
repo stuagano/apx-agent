@@ -31,10 +31,12 @@ Five commands from clone to a live agent:
 ```bash
 git clone https://github.com/stuagano/apx-agent.git
 cd apx-agent/python && uv sync
-uv run apx scaffold my-agent --target apps
+uv run apx scaffold my-agent          # defaults to a Databricks Apps project
 cd my-agent && uv sync
-uv run apx deploy --target apps
+uv run apx deploy                     # target auto-detected from the project
 ```
+
+(For a Mosaic AI Model Serving endpoint instead, scaffold with `--target model-serving` and deploy with `--target model-serving --name <catalog.schema.model>`.)
 
 When it finishes, `apx deploy` prints the app URL. Open it — the scaffolded agent (a `DataAgent` over the built-in `samples.nyctaxi` dataset) is live and ready to chat.
 
