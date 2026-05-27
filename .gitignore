@@ -49,6 +49,8 @@ reference/
 **/dist/
 **/__dist__/
 package-lock.json
+# ...except the TS package's lockfile, which CI's `npm ci` needs.
+!typescript/package-lock.json
 
 # direnv per-shell env (personal — pins gh account for git push)
 .envrc
