@@ -183,6 +183,39 @@ def test_scaffold_overwrites_with_force(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# `apx run`
+# ---------------------------------------------------------------------------
+
+
+def test_run_puts_cwd_on_sys_path_for_uvicorn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`apx run` must make the cwd importable before handing off to uvicorn.
+
+    Regression: apx runs from a console-script entry point whose sys.path[0]
+    is the venv bin dir, not the cwd, so uvicorn.run("app:app") failed with
+    "Could not import module 'app'" for every freshly scaffolded project.
+    """
+    monkeypatch.chdir(tmp_path)
+    cwd = str(tmp_path)
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if p != cwd])
+
+    captured = {}
+
+    def fake_uvicorn_run(module: str, **kwargs: object) -> None:
+        captured["module"] = module
+        captured["cwd_on_path"] = cwd in sys.path
+
+    fake_uvicorn = SimpleNamespace(run=fake_uvicorn_run)
+    with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}):
+        result = CliRunner().invoke(main, ["run"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["module"] == "app:app"
+    assert captured["cwd_on_path"] is True
+
+
+# ---------------------------------------------------------------------------
 # `apx mcp-config`
 # ---------------------------------------------------------------------------
 
