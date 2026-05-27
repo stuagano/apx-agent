@@ -1648,23 +1648,36 @@ def _ensure_apx_wheel(cwd: Path) -> Path | None:
             "Manual workaround:\n"
             f"  cd {source_root}\n"
             "  uv build --wheel\n"
-            f"  cp dist/{expected_name} {cwd}/"
+            f"  cp dist/apx_agent-*.whl {cwd}/"
         )
 
     dist_dir = source_root / "dist"
-    built = dist_dir / expected_name
-    if not built.exists():
-        # The build succeeded but the produced wheel doesn't match what
-        # pyproject.toml expects. List what's actually in dist/ so the
-        # user can spot the mismatch.
-        found = sorted(p.name for p in dist_dir.glob("apx_agent-*.whl"))
-        raise click.ClickException(
-            f"`uv build --wheel` produced wheels in {dist_dir} but none "
-            f"matched the expected name {expected_name!r}.\n"
-            f"Found: {found}\n"
-            f"Update [tool.uv.sources].apx-agent.path in {pyproject_path} "
-            "to point at one of these filenames, then re-run."
+    if expected_name is None:
+        # Dynamic (hatch-vcs) version: the wheel name isn't knowable before the
+        # build, so resolve it from what was actually produced (newest wheel).
+        produced = sorted(
+            dist_dir.glob("apx_agent-*.whl"), key=lambda p: p.stat().st_mtime
         )
+        if not produced:
+            raise click.ClickException(
+                f"`uv build --wheel` succeeded in {source_root} but produced no "
+                f"apx_agent-*.whl in {dist_dir}."
+            )
+        built = produced[-1]
+        wheel_target = cwd / built.name
+    else:
+        built = dist_dir / expected_name
+        if not built.exists():
+            # Build succeeded but the produced wheel doesn't match the name
+            # pyproject expects. List what's in dist/ so the user can spot it.
+            found = sorted(p.name for p in dist_dir.glob("apx_agent-*.whl"))
+            raise click.ClickException(
+                f"`uv build --wheel` produced wheels in {dist_dir} but none "
+                f"matched the expected name {expected_name!r}.\n"
+                f"Found: {found}\n"
+                f"Update [tool.uv.sources].apx-agent.path in {pyproject_path} "
+                "to point at one of these filenames, then re-run."
+            )
 
     shutil.copy2(built, wheel_target)
     return wheel_target
