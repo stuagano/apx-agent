@@ -139,6 +139,26 @@ def _detect_target(cwd: Path | None = None) -> str:
     return "model-serving"
 
 
+def _sanitize_uv_lock(lock_path: Path) -> bool:
+    """Re-point a uv.lock's internal Databricks PyPI proxy at public PyPI.
+
+    The dev's UV_INDEX_URL leaks ``pypi-proxy.dev.databricks.com`` into the
+    lock's per-package ``source.registry``. Deployed apps / serving endpoints
+    (and external users) can't reach that index, so any lock we ship must
+    resolve from public PyPI. Download URLs are already public
+    (files.pythonhosted.org); only the recorded index changes. Returns True if
+    the file changed.
+    """
+    if not lock_path.exists():
+        return False
+    text = lock_path.read_text()
+    proxy = "https://pypi-proxy.dev.databricks.com/simple"
+    if proxy not in text:
+        return False
+    lock_path.write_text(text.replace(proxy, "https://pypi.org/simple"))
+    return True
+
+
 def _databrickscfg_profiles() -> list[str]:
     """Section names from ~/.databrickscfg (best-effort; includes DEFAULT)."""
     path = Path.home() / ".databrickscfg"
@@ -1332,6 +1352,12 @@ def deploy(
             click.echo(f"# publish-tools failed: {e}", err=True)
             click.echo("# continuing with log + deploy", err=True)
 
+    # MLflow captures the project's uv.lock into the logged model. Re-point its
+    # internal Databricks PyPI proxy at public PyPI so the deployed serving
+    # endpoint can install deps (it can't reach the dev proxy).
+    if _sanitize_uv_lock(Path.cwd() / "uv.lock"):
+        click.echo("# sanitized uv.lock → public PyPI for the logged model", err=True)
+
     # 2. Log + register
     if effective_experiment:
         mlflow.set_experiment(effective_experiment)
@@ -1822,6 +1848,8 @@ def _rewrite_build_pyproject_for_deploy(
             f"{_tail_lines(proc.stderr or proc.stdout)}"
         )
     click.echo("  regenerated .build/uv.lock", err=True)
+    if _sanitize_uv_lock(lockfile):
+        click.echo("  sanitized .build/uv.lock → public PyPI", err=True)
 
 
 def _ensure_experiment_id(

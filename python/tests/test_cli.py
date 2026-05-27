@@ -2586,3 +2586,21 @@ def test_ensure_apx_wheel_resolves_dynamic_version(tmp_path: Path, monkeypatch) 
     assert staged is not None
     assert staged.name == "apx_agent-0.2.2.dev6+gabc.d20260527-py3-none-any.whl"
     assert staged.exists()
+
+
+def test_sanitize_uv_lock_rewrites_internal_index(tmp_path: Path) -> None:
+    """Deploy artifacts must resolve from public PyPI: the internal Databricks
+    proxy in a uv.lock's source.registry is rewritten, download URLs untouched."""
+    from apx_agent.cli import _sanitize_uv_lock
+
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        'source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }\n'
+        'url = "https://files.pythonhosted.org/x/foo-1.0-py3-none-any.whl"\n'
+    )
+    assert _sanitize_uv_lock(lock) is True
+    text = lock.read_text()
+    assert "pypi-proxy.dev.databricks.com" not in text
+    assert 'registry = "https://pypi.org/simple"' in text
+    assert "files.pythonhosted.org/x/foo-1.0-py3-none-any.whl" in text  # untouched
+    assert _sanitize_uv_lock(lock) is False  # idempotent
