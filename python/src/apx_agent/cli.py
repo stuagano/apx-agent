@@ -822,8 +822,12 @@ def run(module: str, port: int, host: str, reload: bool) -> None:
             "uvicorn is required for `apx run`. Install with: "
             "pip install 'uvicorn[standard]'"
         ) from e
-    # uvicorn handles the module:app parsing itself
-    uvicorn.run(module, host=host, port=port, reload=reload)
+    # app_dir puts the project dir on sys.path so the scaffold's `app.py`
+    # resolves. The `apx` console-script's sys.path does NOT include the CWD
+    # (unlike `python`/`uvicorn` invoked directly), so without this uvicorn
+    # reports `Could not import module "app"`. app_dir also propagates to the
+    # --reload subprocess, which a bare sys.path.insert here would not.
+    uvicorn.run(module, host=host, port=port, reload=reload, app_dir=str(Path.cwd()))
 
 
 # ---------------------------------------------------------------------------
