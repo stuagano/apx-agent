@@ -2476,7 +2476,8 @@ def test_run_passes_app_dir_to_uvicorn() -> None:
     """
     runner = CliRunner()
     fake_uvicorn = MagicMock()
-    with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}):
+    with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
+            patch("apx_agent.cli._preflight_databricks_auth"):
         result = runner.invoke(main, ["run"])
 
     assert result.exit_code == 0, result.output
@@ -2499,7 +2500,9 @@ def test_run_autodetects_apps_module() -> None:
     """In an apps layout, `apx run` serves the agent_server module."""
     runner = CliRunner()
     fake_uvicorn = MagicMock()
-    with runner.isolated_filesystem(), patch.dict(sys.modules, {"uvicorn": fake_uvicorn}):
+    with runner.isolated_filesystem(), \
+            patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
+            patch("apx_agent.cli._preflight_databricks_auth"):
         Path("agent_server").mkdir()
         Path("agent_server/start_server.py").write_text("app = None\n")
         result = runner.invoke(main, ["run"])
@@ -2529,3 +2532,18 @@ def test_deploy_autodetects_model_serving_target() -> None:
 
     assert result.exit_code != 0
     assert "--model is required" in result.output
+
+
+def test_run_friendly_error_when_auth_unresolved() -> None:
+    """When Databricks auth can't resolve, `apx run` gives dev guidance, not a
+    deep SDK traceback. The agent connects to a workspace at startup."""
+    runner = CliRunner()
+    fake_uvicorn = MagicMock()
+    fake_config = MagicMock(side_effect=ValueError("ambiguous profile"))
+    with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
+            patch("databricks.sdk.core.Config", fake_config):
+        result = runner.invoke(main, ["run"])
+
+    assert result.exit_code != 0
+    assert "DATABRICKS_CONFIG_PROFILE" in result.output
+    fake_uvicorn.run.assert_not_called()  # bailed before starting the server
