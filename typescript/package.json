@@ -3,12 +3,12 @@
   "version": "0.3.0",
   "description": "AppKit plugins for building AI agents on Databricks Apps — typed tools, A2A discovery, MCP server, dev UI",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
     }
   },
   "bin": {

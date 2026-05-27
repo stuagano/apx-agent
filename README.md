@@ -136,8 +136,7 @@ cd apx-agent/typescript
 npm install && npm run build
 npm link                          # not on npm yet — expose the local `apx` CLI
 apx scaffold my-agent && cd my-agent
-npm link appkit-agent             # use the local framework build
-npm install && npm run build
+npm install && npm run build      # appkit-agent resolves via "file:.." to the local build
 node dist/app.js                  # local dev server on :8000
 apx deploy --target apps
 ```

@@ -65,7 +65,9 @@ describe('apx scaffold --target apps', () => {
         readFileSync(join(tmp, 'cool_app', 'package.json'), 'utf8'),
       );
       expect(pkg.name).toBe('cool_app');
-      expect(pkg.dependencies?.['appkit-agent']).toBeTypeOf('string');
+      // appkit-agent isn't published to npm yet — the scaffold must reference
+      // the local framework build, not a registry version that 404s.
+      expect(pkg.dependencies?.['appkit-agent']).toBe('file:..');
 
       const yml = readFileSync(join(tmp, 'cool_app', 'databricks.yml'), 'utf8');
       expect(yml).toContain('name: cool_app');
