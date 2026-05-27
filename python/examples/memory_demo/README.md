@@ -115,5 +115,4 @@ replaces them:
 | Delta + Vector Search backing | `DeltaMemoryStore`, `DeltaExampleStore` | `apx_agent._memory_delta` / `_example_delta` source |
 
 When you move to Lakebase, also add a `database` resource to `databricks.yml`
-under the `memory-demo` app so the App SP gets DB credentials. The
-`databricks-builder-app` example shows the shape.
+under the `memory-demo` app so the App SP gets DB credentials.

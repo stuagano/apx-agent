@@ -181,7 +181,7 @@ See [docs/workflow-patterns.md](docs/workflow-patterns.md) for full examples and
 | **agent-hub** | Central registry + chat UI for deployed agents |
 | **voynich** | LoopAgent + 5-agent evolutionary population |
 
-Plus 3 supporting services (`account-search-service`, `afr-enrollment-api`, `agent-hub`) and the parallel Claude-Code stack (`databricks-builder-app`, `databricks-mcp-server`, `databricks-tools-core`, `databricks-skills`).
+Plus 3 supporting services (`account-search-service`, `afr-enrollment-api`, `agent-hub`) and the parallel Claude-Code stack (`databricks-mcp-server`, `databricks-tools-core`, `databricks-skills`).
 
 ## CLI
 
