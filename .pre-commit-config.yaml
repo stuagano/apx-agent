@@ -9,3 +9,9 @@ repos:
         language: script
         files: ^typescript/package-lock\.json$
         pass_filenames: false
+      - id: uv-lock-registry
+        name: uv.lock uses public PyPI (auto-fix)
+        entry: scripts/check-uv-lock-registry.sh --fix
+        language: script
+        files: uv\.lock$
+        pass_filenames: false
