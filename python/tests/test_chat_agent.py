@@ -189,3 +189,47 @@ class TestUserScopeAuth:
 
         # No kwargs — default SP/CLI path.
         mock_factory.assert_called_once_with()
+
+
+# --- _from_langchain_message conversion (model-serving deploy regressions) ---
+
+def test_from_langchain_message_serializes_tool_call_arguments() -> None:
+    """AIMessage tool-call args (a dict) must become a JSON *string* for
+    ChatAgentMessage. Regression: model-serving deploy failed at log_agent's
+    input-example validation with `arguments` as a dict."""
+    import json
+    from apx_agent._chat_agent import _from_langchain_message
+
+    msg = AIMessage(
+        content="",
+        tool_calls=[{"id": "call_1", "name": "run_sql",
+                     "args": {"query": "SELECT 1"}}],
+    )
+    dumped = _from_langchain_message(msg, 0).model_dump()
+    arguments = dumped["tool_calls"][0]["function"]["arguments"]
+    assert isinstance(arguments, str)
+    assert json.loads(arguments) == {"query": "SELECT 1"}
+
+
+def test_from_langchain_message_tool_message_has_name_and_id() -> None:
+    """ToolMessage -> ChatAgentMessage must carry both name and tool_call_id;
+    ChatAgentMessage rejects tool messages missing either."""
+    from langchain_core.messages import ToolMessage
+    from apx_agent._chat_agent import _from_langchain_message
+
+    out = _from_langchain_message(
+        ToolMessage(content="result", tool_call_id="call_1", name="run_sql"), 1
+    )
+    assert out.role == "tool"
+    assert out.name == "run_sql"
+    assert out.tool_call_id == "call_1"
+
+
+def test_from_langchain_message_tool_message_name_fallback() -> None:
+    """A nameless ToolMessage still satisfies ChatAgentMessage via a fallback."""
+    from langchain_core.messages import ToolMessage
+    from apx_agent._chat_agent import _from_langchain_message
+
+    out = _from_langchain_message(ToolMessage(content="r", tool_call_id="c2"), 2)
+    assert out.name  # non-empty fallback
+    assert out.tool_call_id == "c2"
