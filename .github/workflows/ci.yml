@@ -32,6 +32,29 @@ jobs:
       - name: Run tests
         run: uv run pytest tests/ -v --tb=short
 
+  typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      # Gates new type errors. Pre-existing offenders are excluded via the
+      # shrinking type-debt registry in pyproject.toml [tool.pyright].
+      - name: Run pyright
+        run: uv run pyright src/apx_agent/
+
   typecheck-ts:
     runs-on: ubuntu-latest
     strategy:
