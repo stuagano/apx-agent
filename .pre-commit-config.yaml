@@ -1,0 +1,11 @@
+# Optional local guard. Install once with:  pip install pre-commit && pre-commit install
+# CI enforces the same check regardless, so this is just a faster local fail.
+repos:
+  - repo: local
+    hooks:
+      - id: ts-lockfile-registry
+        name: TS lockfile uses public npm registry
+        entry: scripts/check-ts-lockfile-registry.sh
+        language: script
+        files: ^typescript/package-lock\.json$
+        pass_filenames: false
