@@ -61,7 +61,7 @@ See [docs/dev-ui.md](docs/dev-ui.md) for the full set of `/_apx/*` surfaces.
 | **Evaluation** | `apx eval` against MLflow experiments with custom judges |
 | **Dev UI** | `/_apx/agent` — traces, eval, tool editor, setup wizard |
 | **Visual builder** | `apx-builder` example: describe an agent in English → scaffold + deploy |
-| **CLI** | `apx init`, `apx dev`, `apx deploy`, `apx eval`, `apx publish` |
+| **CLI** | `apx scaffold`, `apx run`, `apx deploy`, `apx eval`, `apx publish` |
 
 ## Architecture
 
@@ -118,7 +118,7 @@ Or grab the built wheel from the [Releases page](https://github.com/stuagano/apx
 git clone https://github.com/stuagano/apx-agent.git
 cd apx-agent/python
 uv sync                                    # install framework
-uv run apx init my-agent && cd my-agent
+uv run apx scaffold my-agent && cd my-agent
 uv sync                                    # install agent deps
 uv run apx run                             # local dev server on :8000
 uv run apx deploy --target apps            # or --target model-serving
@@ -186,8 +186,8 @@ Plus 3 supporting services (`account-search-service`, `afr-enrollment-api`, `age
 ## CLI
 
 ```bash
-apx init <name>                    # scaffold a new agent
-apx dev                            # local FastAPI dev server (/_apx/agent)
+apx scaffold <name>                # scaffold a new agent
+apx run                            # local FastAPI dev server (/_apx/agent)
 apx eval                           # run evalset.jsonl against deployed endpoint
 apx deploy --target apps           # deploy to Databricks Apps
 apx deploy --target model-serving --name catalog.schema.agent
