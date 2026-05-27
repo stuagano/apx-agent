@@ -364,7 +364,9 @@ _SCAFFOLD_PYPROJECT = '''\
 name = "{name}"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["apx-agent"]
+# [langgraph] pulls langchain/langgraph/databricks-langchain — required by the
+# agent compile path that `apx deploy` (log_agent) and `apx run` exercise.
+dependencies = ["apx-agent[langgraph]"]
 
 [tool.uv.sources]
 # Editable local install — keeps `uv sync` working from this directory.
