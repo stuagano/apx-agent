@@ -848,6 +848,20 @@ def _discover_default_data(
     return None
 
 
+def _probe_first_table(catalog: str, schema: str, profile: str | None = None) -> str | None:
+    """First readable table in ``catalog.schema`` (best-effort) for the example
+    tool. Returns None when auth can't be resolved or the schema is empty."""
+    try:
+        from databricks.sdk import WorkspaceClient
+        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        for t in ws.tables.list(catalog_name=catalog, schema_name=schema):
+            if t.name:
+                return t.name
+    except Exception:
+        return None
+    return None
+
+
 def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[str, str]":
     """Bake a 'talk to your data' example tool against a real table.
 
@@ -1012,7 +1026,11 @@ def scaffold(
     # (best-effort), else fall back to the samples demo.
     table: str | None = None
     if catalog and schema:
-        click.echo(f"# data source: {catalog}.{schema} (from --catalog/--schema)")
+        # Explicit target — still probe a table so the baked example tool
+        # grounds in real data (parity with the auto-detected path).
+        table = _probe_first_table(catalog, schema, profile)
+        extra = f" (example tool over `{table}`)" if table else ""
+        click.echo(f"# data source: {catalog}.{schema} (from --catalog/--schema){extra}")
     else:
         found = _discover_default_data(profile)
         if found:
