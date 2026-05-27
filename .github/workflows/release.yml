@@ -18,27 +18,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from the tag — needs full history + tags
 
       - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
 
-      # Until hatch-vcs lands, the version is set by hand in pyproject.toml.
-      # Refuse to release if the tag doesn't match it, so the release name and
-      # the wheel inside it can never disagree.
-      - name: Verify tag matches package version
-        run: |
-          PKG=$(grep -m1 '^version' python/pyproject.toml | sed -E 's/.*"(.*)".*/\1/')
-          TAG="${GITHUB_REF_NAME#v}"
-          echo "pyproject version: $PKG   tag: $TAG"
-          if [ "$PKG" != "$TAG" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject version ${PKG}. Bump python/pyproject.toml before tagging."
-            exit 1
-          fi
-
       - name: Build wheel
         run: uv build --wheel
         working-directory: python
+
+      # The version comes from the git tag via hatch-vcs, so the wheel and the
+      # tag can't disagree by construction — but verify the built artifact to
+      # catch a tagless/fallback build (would produce a 0.0.0 wheel).
+      - name: Verify wheel version matches tag
+        run: |
+          WHL=$(ls python/dist/apx_agent-*.whl)
+          VER=$(basename "$WHL" | sed -E 's/^apx_agent-(.+)-py3-none-any\.whl$/\1/')
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "wheel version: $VER   tag: $TAG"
+          if [ "$VER" != "$TAG" ]; then
+            echo "::error::Built wheel version ${VER} does not match tag ${TAG}. Tag a clean commit (no extra commits past the tag)."
+            exit 1
+          fi
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
