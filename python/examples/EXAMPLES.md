@@ -2,12 +2,6 @@
 
 Quick index — what each example does and which direction data/auth flows.
 
-## Reference Implementation
-
-| Example | What it does |
-|---------|-------------|
-| [databricks-builder-app](./databricks-builder-app/) | **Full-stack reference app** — multi-user chat UI with streaming, session resumption, per-request auth, and MLflow tracing. Runs the [Claude Code Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) (`ClaudeSDKClient` + `McpSSEServerConfig`) and uses apx-agent's `safe_span` + `set_audit_attrs` so the trace stream lands under the standard `apx.*` schema. Complement to apx-agent for builder/IDE-style flows; apx-agent itself is for Mosaic AI ChatAgent deployments. |
-
 ## Agents & Apps
 
 | Example | What it does |
@@ -37,8 +31,8 @@ Quick index — what each example does and which direction data/auth flows.
 
 | Example | What it does |
 |---------|-------------|
-| [databricks-mcp-server](./databricks-mcp-server/) | Exposes 71 Databricks operations as MCP tools — used by `databricks-builder-app` via SSE |
-| [databricks-skills](./databricks-skills/) | Claude Code skills for Databricks workflows — loaded by `databricks-builder-app` |
+| [databricks-mcp-server](./databricks-mcp-server/) | Exposes 71 Databricks operations as MCP tools over SSE |
+| [databricks-skills](./databricks-skills/) | Claude Code skills for Databricks workflows |
 | [databricks-tools-core](./databricks-tools-core/) | Core Databricks auth and tool primitives shared across examples |
 
 ## Slack Integration — Two Opposite Directions
