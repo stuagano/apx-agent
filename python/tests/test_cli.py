@@ -2465,3 +2465,21 @@ def test_eval_in_process_still_requires_model(tmp_path: Path) -> None:
     result = runner.invoke(main, ["eval", str(evalset)])
     assert result.exit_code != 0
     assert "--model is required" in result.output
+
+
+def test_run_passes_app_dir_to_uvicorn() -> None:
+    """`apx run` must hand uvicorn an app_dir of the CWD.
+
+    Regression for "Error loading ASGI app. Could not import module 'app'":
+    the `apx` console-script's sys.path does not include the CWD, so without
+    app_dir uvicorn can't import the scaffold's top-level app.py.
+    """
+    runner = CliRunner()
+    fake_uvicorn = MagicMock()
+    with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}):
+        result = runner.invoke(main, ["run"])
+
+    assert result.exit_code == 0, result.output
+    fake_uvicorn.run.assert_called_once()
+    assert fake_uvicorn.run.call_args.args[0] == "app:app"
+    assert fake_uvicorn.run.call_args.kwargs.get("app_dir") == str(Path.cwd())
