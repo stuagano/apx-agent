@@ -5,9 +5,25 @@ An **agent** is a declaration: `instructions` + `tools` + a model name. apx-agen
 ## Prerequisites
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv (Python 3.11+ required)
-pip install databricks-cli
-databricks configure          # enter workspace URL + personal access token
+# 1. uv (Python 3.11+ required)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. The Databricks CLI v2 — Homebrew is the recommended install. Older
+#    docs reference `pip install databricks-cli`; that's the legacy v0.17
+#    Python CLI and won't work with `databricks auth login` below.
+brew tap databricks/tap && brew install databricks
+#   (or:  curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh)
+
+# 3. Authenticate against your workspace. Pick a profile name you'll remember.
+databricks auth login --host https://<workspace>.cloud.databricks.com --profile <name>
+
+# 4. Verify auth resolves — this MUST succeed before `apx run`, which fails
+#    fast with "Could not resolve Databricks authentication" otherwise.
+databricks current-user me --profile <name>
+
+# 5. If you have multiple profiles, tell apx which one to use (either export
+#    it for the shell session, or put it in the scaffolded project's .env).
+export DATABRICKS_CONFIG_PROFILE=<name>
 ```
 
 You'll also need a Databricks workspace with access to a model serving endpoint (e.g. `databricks-claude-sonnet-4-6`).
@@ -42,15 +58,57 @@ When it finishes, `apx deploy` prints the app URL. Open it — the scaffolded ag
 
 ---
 
-## Test locally first
+## Your first 5 minutes
 
-Before deploying, run the agent on your machine:
+### What scaffold gave you
 
-```bash
-uv run uvicorn agent_server.start_server:app --host 127.0.0.1 --port 8000
+`apx scaffold my-agent` wrote this tree:
+
+```
+my-agent/
+├── agent.py                  ← the one file you edit
+├── pyproject.toml            ← deps + [tool.apx.agent] config
+├── databricks.yml            ← Databricks bundle (used by `apx deploy`)
+├── .env.example              ← copy to .env for local secrets
+├── .gitignore
+├── README.md
+├── agent_server/
+│   ├── __init__.py
+│   └── start_server.py       ← framework boilerplate — don't edit
+└── scripts/
+    ├── __init__.py
+    └── quickstart.py         ← `uv run quickstart` creates the MLflow experiment
 ```
 
-Open `http://localhost:8000/_apx/agent` and try **"what tables can you query?"** or **"how many taxi trips are in the data?"**. When it looks good, run `apx deploy`.
+There are **two surfaces** for this agent and you'll bounce between them:
+
+- **Your IDE** — open `agent.py`. This is the source of truth. Add tools, change instructions, swap the model. Save the file and the dev server reloads.
+- **The browser at `http://localhost:8000`** — chat with the agent, see traces, run the setup wizard, edit tools through a UI. Every view lives under `/_apx/*` and is just a window onto the same `agent.py`.
+
+The deployed app on Databricks Apps is the third surface — same code, same `/_apx/*` UI, just hosted. You don't need to deploy to develop.
+
+### Run it
+
+```bash
+uv run apx run --reload
+```
+
+This starts FastAPI on `:8000` with file-watch reload. Leave it running in one terminal; edit `agent.py` in your IDE in the other.
+
+### What you should see (walk this end-to-end)
+
+1. **Open `http://localhost:8000`.** It redirects to `/_apx/agent` — a tabbed shell with four tabs (**Chat · Edit · Eval · Probe**) and two header buttons (**⧉ Topology** opens an in-page modal, **⏱ Traces** opens `/_apx/traces` in a new browser tab). The default tab is Chat.
+2. **Spot the orange banner at the top of the chat panel:** *"👋 First time here? **Open Setup** to connect your data and generate tools automatically."* It appears whenever `DEMO_CATALOG` / `WAREHOUSE_ID` aren't set in `.env`. Click **Open Setup** — it takes you to the standalone `/_apx/setup` page.
+3. **In `/_apx/setup`,** pick a catalog (try `samples`), a schema (try `nyctaxi`), and a SQL warehouse. Click **Save** — this writes the values to your project's `.env` and reloads the agent. Optionally tick "generate instructions" and Setup will inspect the schema and rewrite `agent.py`'s `instructions=` for you. Navigate back to `/_apx/agent` when done.
+4. **Back on the Chat tab,** ask **"what tables can you query?"** then **"how many taxi trips are in the data?"**. The agent picks the SQL tool, runs the query as you (your OAuth token, your UC grants), and streams the answer with the tool call shown inline.
+5. **Click the ⏱ Traces button in the header.** A new tab opens at `/_apx/traces` listing recent turns. Click a row to drill into the span tree — LLM call, tool call, SQL execution, response. This is what you'll deploy with; production traces look identical, just stored in the workspace's MLflow experiment.
+6. **Open `agent.py` in your IDE.** Change `instructions=` to something specific to your data, save. The reload kicks in; ask another question and watch the new behavior. This is the loop.
+
+If a SQL query returns nothing, the warehouse is probably stopped — open the **Probe** tab (or hit `/_apx/probe/checks`) to confirm and click through to start it. Auth errors at this point usually mean a stale token — re-run `databricks auth login --profile <name>` and restart `apx run`.
+
+When it looks good, `uv run apx deploy` ships it.
+
+See [docs/dev-ui.md](dev-ui.md) for the full `/_apx/*` surface map (topology graph, eval harness, outbound connectivity probe, deploy streamer).
 
 ---
 

@@ -497,7 +497,7 @@ dependencies = [
     # langgraph + databricks-langchain, which the responses-agent compiler
     # imports lazily under the hood. A bare ``apx-agent`` dep would let
     # ``uv sync`` succeed but fail at first request inside the deployed App.
-    "apx-agent[langgraph]",
+    <APX_AGENT_DEP>
     "mlflow[databricks]>=3.0",
     # Add your agent's deps here
 ]
@@ -505,13 +505,7 @@ dependencies = [
 [project.scripts]
 quickstart = "scripts.quickstart:main"
 
-[tool.uv.sources]
-# Editable local install — keeps `uv sync` working from this directory.
-# At deploy time apx deploy builds a wheel and rewrites .build/pyproject.toml
-# to reference it (since the App container can't resolve ".."). Drop this block
-# and pin "apx-agent[langgraph]==<version>" once published to PyPI.
-apx-agent = { path = "..", editable = true }
-
+<APX_AGENT_SOURCE>
 [tool.apx.agent]
 name = "<APP_NAME>"
 description = "An apx-agent on Databricks Apps."
@@ -768,7 +762,10 @@ uv run quickstart  # creates the MLflow experiment + writes .env
 
 ## Local dev
 ```bash
-uv run uvicorn agent_server.start_server:app --host 127.0.0.1 --port 8000
+uv run apx run --reload
+# → FastAPI on http://localhost:8000 with the /_apx/* dev UI (chat, edit,
+#   topology, traces, eval, setup wizard). Edit agent.py in your IDE;
+#   --reload picks up changes. See docs/getting-started.md for the walkthrough.
 curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","content":"hi"}]}'
 ```
 
@@ -918,6 +915,41 @@ def _scaffold_model_serving(
         click.echo(f"  write  {path}")
 
 
+def _is_inside_framework_repo(target: Path) -> bool:
+    """True when ``target.parent`` is the apx-agent framework's ``python/``
+    directory — the one layout where the editable ``path = ".."`` source in
+    the scaffolded pyproject resolves to a real Python project.
+
+    Anywhere else, the editable source breaks ``uv sync`` (the parent isn't
+    a Python project), so the scaffold needs to emit a git+https install
+    instead. Detection is: parent has a pyproject whose ``[project].name``
+    is ``apx-agent``.
+    """
+    try:
+        parent_pyproject = target.resolve().parent / "pyproject.toml"
+        if not parent_pyproject.is_file():
+            return False
+        import tomllib
+        data = tomllib.loads(parent_pyproject.read_text())
+        return data.get("project", {}).get("name") == "apx-agent"
+    except Exception:
+        return False
+
+
+def _scaffold_install_ref() -> str:
+    """Git ref to pin in scaffolded pyprojects when installing apx-agent from
+    GitHub. Uses the running version (``v0.2.3``) when it's a clean release,
+    else ``main`` for dev installs / unknown versions. The user can always
+    rewrite the tag later — this just picks a sensible default."""
+    import re
+    from importlib.metadata import version
+    try:
+        v = version("apx-agent")
+    except Exception:
+        return "main"
+    return f"v{v}" if re.match(r"^\d+\.\d+\.\d+$", v) else "main"
+
+
 def _scaffold_apps(
     target: Path, name: str, force: bool, catalog: str, schema: str,
     table: str | None = None,
@@ -929,6 +961,31 @@ def _scaffold_apps(
     """
     prelude, extra_tools = _example_tool_block(catalog, schema, table)
 
+    # Pick the apx-agent install ref that will let ``uv sync`` succeed from
+    # this scaffold directory. Inside the framework repo, use the editable
+    # parent-dir source (fast dev loop). Outside, embed a pinned git+https
+    # URL in the dep line so the user doesn't need a sibling checkout.
+    if _is_inside_framework_repo(target):
+        apx_dep = '"apx-agent[langgraph]",'
+        apx_source = (
+            "[tool.uv.sources]\n"
+            "# Editable local install — keeps `uv sync` working from this directory.\n"
+            "# At deploy time apx deploy builds a wheel and rewrites .build/pyproject.toml\n"
+            "# to reference it (since the App container can't resolve \"..\").\n"
+            'apx-agent = { path = "..", editable = true }\n'
+        )
+    else:
+        ref = _scaffold_install_ref()
+        apx_dep = (
+            f'"apx-agent[langgraph] @ '
+            f'git+https://github.com/stuagano/apx-agent.git@{ref}#subdirectory=python",'
+        )
+        apx_source = (
+            "# [tool.uv.sources] intentionally omitted — the git+https URL in\n"
+            "# [project].dependencies above is the install source. Bump the @ref\n"
+            "# in that URL to upgrade; switch to a PyPI pin once apx-agent ships there.\n"
+        )
+
     def _sub(template: str) -> str:
         return (
             template.replace("<APP_NAME>", name)
@@ -936,6 +993,8 @@ def _scaffold_apps(
             .replace("<SCHEMA>", schema)
             .replace("<EXAMPLE_TOOL>", prelude)
             .replace("<EXTRA_TOOLS>", extra_tools)
+            .replace("<APX_AGENT_DEP>", apx_dep)
+            .replace("<APX_AGENT_SOURCE>", apx_source)
         )
 
     files: dict[str, str] = {
@@ -1104,6 +1163,24 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
                 err=True,
             )
     _preflight_databricks_auth()
+    # Default ON for the dev loop: the Trace panel is useless without per-tool
+    # and per-LLM spans, and the runtime's manual ``safe_span`` wraps only emit
+    # the outer wrapper. ``setdefault`` so anyone who really wants the bare
+    # boot can ``APX_AGENT_MLFLOW_AUTOLOG=0 apx run``. Deploy paths are
+    # unaffected — they never go through this code.
+    #
+    # Important: the ``apps`` scaffold's ASGI module bypasses ``_wiring.create_app``
+    # (it uses ``mlflow.genai.agent_server.AgentServer`` directly), so the
+    # autolog call that lives in that lifespan never runs in the dev loop.
+    # We call it here, in-process, *before* uvicorn imports the user's
+    # ``agent`` module — autolog has to be active before LangChain components
+    # are instantiated for the instrumentation to attach.
+    os.environ.setdefault("APX_AGENT_MLFLOW_AUTOLOG", "1")
+    try:
+        from ._mlflow_tracing import autolog_if_env
+        autolog_if_env()
+    except Exception as exc:  # pragma: no cover — defensive
+        click.echo(f"# MLflow autolog setup skipped: {exc}", err=True)
     # app_dir puts the project dir on sys.path so the scaffold's app module
     # resolves. The `apx` console-script's sys.path does NOT include the CWD
     # (unlike `python`/`uvicorn` invoked directly), so without this uvicorn
