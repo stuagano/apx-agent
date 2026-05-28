@@ -19,6 +19,7 @@ typescript/deploy/*/app.yaml
 
 # Claude / agent IDE state
 .claude/
+.antigravitycli/
 
 # Git worktrees
 .worktrees/
@@ -41,6 +42,10 @@ mlruns/
 
 # Local reference clones (not part of the project)
 reference/
+
+# Local scaffold sandboxes (developer's own apx-agent scratch projects)
+python/apxshared/
+python/my-agent/
 
 # Apps deploy artifacts — built from source by `databricks bundle deploy`
 **/.build/
