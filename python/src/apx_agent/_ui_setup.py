@@ -535,7 +535,6 @@ document.getElementById('btn-desc-tool').addEventListener('click', async () => {
     st.style.color = '#4ade80';
     st.textContent = `✓ Created ${{d.tool_name || ''}}`;
     document.getElementById('tool-desc-input').value = '';
-    if (window.parent !== window) window.parent.postMessage({{ type: 'apx:tool-created', name: d.tool_name || '' }}, '*');
     await loadTools();
     const cards = document.querySelectorAll('.tcard');
     if (cards.length) cards[cards.length-1].classList.add('tcard-appear');
@@ -618,7 +617,6 @@ document.getElementById('btn-gen-tools').addEventListener('click', async () => {
   st.textContent = `${{created}}/${{checked.length}} tools created`;
   st.style.color = created === checked.length ? '#22c55e' : '#f59e0b';
   if (created > 0) {{
-    if (window.parent !== window) window.parent.postMessage({{ type: 'apx:tool-created', count: created }}, '*');
     await loadTools();
   }}
 }});
@@ -929,7 +927,7 @@ document.querySelectorAll('.pcard').forEach(card => {{
       }}
       setActiveCard(d.type);
       status.style.color = '#4ade80';
-      status.textContent = d.changed ? 'Saved — hot-reload in progress' : `Already ${{d.type}}`;
+      status.textContent = d.changed ? 'Saved — restart `apx run` to load' : `Already ${{d.type}}`;
       setTimeout(() => {{ status.textContent = ''; }}, 4000);
     }} catch(e) {{
       status.style.color = '#f87171';
