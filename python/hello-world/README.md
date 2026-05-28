@@ -10,7 +10,9 @@ uv run quickstart  # creates the MLflow experiment + writes .env
 
 ## Local dev
 ```bash
-uv run uvicorn agent_server.start_server:app --host 127.0.0.1 --port 8000
+uv run apx run --reload
+# → FastAPI on http://localhost:8000 with the /_apx/* dev UI. Edit agent.py;
+#   --reload picks up changes. See docs/getting-started.md for the walkthrough.
 curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","content":"hi"}]}'
 ```
 

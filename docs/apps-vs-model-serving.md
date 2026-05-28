@@ -51,7 +51,7 @@ the single biggest source of iteration pain in the SDK today.
 | **Cost model (busy)** | DBU per compute-hour at the endpoint sku | DBU per compute-hour at the App's compute |
 | **Deletion semantics** | `databricks serving-endpoints delete` — endpoint and its versions go | `databricks apps delete` — removes the App; bundle artifact remains in workspace files |
 | **Logs surface** | Model Serving logs UI; CLI: `databricks serving-endpoints query-logs` | App logs UI; CLI: `databricks apps logs <app>` |
-| **Local-dev parity** | Approximate — `apx run` runs FastAPI, but the ChatAgent wrapper is bypassed | High — `uvicorn agent_server.start_server:app` matches prod exactly |
+| **Local-dev parity** | Approximate — `apx run` runs FastAPI, but the ChatAgent wrapper is bypassed | High — `apx run` wraps `uvicorn agent_server.start_server:app`, the same command `databricks.yml` runs in prod |
 
 ### Pick **Apps** when
 
