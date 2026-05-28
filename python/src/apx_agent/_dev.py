@@ -26,7 +26,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from ._models import AgentContext, AgentTool
 from ._topology import build_topology, inspect_node
-from ._ui_chat import _render_agent_ui, _render_unified_shell, _build_apx_openapi_spec
+from ._ui_chat import (
+    _render_agent_ui,
+    _render_unified_shell,
+    _build_apx_openapi_spec,
+)
 from ._ui_edit import (
     _find_agent_router_path,
     _find_deploy_root,
@@ -286,7 +290,7 @@ def inject_create_tool_meta(ctx: AgentContext) -> None:
         description=(
             "Create a new tool for this agent from a natural language description. "
             "Call this when the user asks to add a new capability, tool, or function to the agent. "
-            "After creation, the tool is live after hot-reload (a few seconds)."
+            "The tool is appended to agent.py; restart `apx run` (or redeploy) to load it."
         ),
         input_schema={
             "type": "object",
@@ -305,7 +309,7 @@ def inject_create_tool_meta(ctx: AgentContext) -> None:
         "\n\n[DEV MODE] You have a special `create_tool` capability. "
         "When the user asks you to add a new tool, capability, or function, "
         "call `create_tool` with a detailed description of what it should do. "
-        "The tool will be generated, inserted into agent_router.py, and live after hot-reload."
+        "The tool will be generated and inserted into agent_router.py; restart `apx run` to load it."
     )
     ctx.config.instructions = (ctx.config.instructions or "") + _dev_addendum
     logger.info("Dev mode: create_tool meta-tool injected into agent context")
@@ -465,13 +469,23 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             # workspaces where *.storage.cloud.databricks.com is blocked).
             from mlflow.tracking import MlflowClient as _MlflowClient
             client = _MlflowClient()
-            paged = client.search_traces(
-                experiment_ids=[experiment_id] if experiment_id else None,
+            # MLflow's search_traces(experiment_ids=None) trips on the local
+            # sqlite store ("'NoneType' object is not iterable"), which is the
+            # default backend for local `apx run` — so the Trace panel sees
+            # nothing even when traces are being recorded. Resolve to all
+            # experiments when no MLFLOW_EXPERIMENT_ID is set so the dev loop
+            # surfaces its traces. In the deployed runtime MLFLOW_EXPERIMENT_ID
+            # is always set and this branch is a no-op.
+            exp_ids = (
+                [experiment_id] if experiment_id
+                else [e.experiment_id for e in client.search_experiments()]
+            )
+            traces = list(client.search_traces(
+                experiment_ids=exp_ids,
                 max_results=max_results,
                 order_by=["timestamp DESC"],
                 include_spans=False,
-            )
-            traces = list(paged)
+            )) if exp_ids else []
         except Exception:
             traces = []
         rows = []

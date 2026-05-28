@@ -127,6 +127,12 @@ def enable_langchain_autolog() -> bool:
 def autolog_if_env() -> None:
     """If ``APX_AGENT_MLFLOW_AUTOLOG=1`` is set in the environment, enable
     LangChain autolog. Call this once at app startup.
+
+    ``apx run`` sets this variable by default (via ``os.environ.setdefault``)
+    so the dev loop's Trace panel gets per-tool + per-LLM spans without the
+    user opting in. Deploy runtimes reach this with the env unset and stay
+    on the cheaper boot path. Set ``APX_AGENT_MLFLOW_AUTOLOG=0`` to force off
+    in either case.
     """
     if os.environ.get("APX_AGENT_MLFLOW_AUTOLOG", "").strip().lower() in (
         "1", "true", "yes",

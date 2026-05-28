@@ -23,7 +23,7 @@ Color coding follows NodeType: pink stroke for routing agents (`HandoffAgent`, `
 Data is served from `GET /_apx/topology.json` (full graph) and `GET /_apx/topology/inspect/{node_id}` (per-node details). See the [topology spec](superpowers/specs/2026-05-22-topology-ui.md) for the full schema.
 
 ### `/_apx/edit` — Edit agent source
-Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file and the dev server hot-reloads.
+Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file; restart `apx run` to load the new code (there is no live hot-reload — the agent is compiled at startup).
 
 ### `/_apx/probe` — Outbound connectivity tester
 Pass `?url=<url>` to verify outbound network reachability from the App. Pairs with `/_apx/probe/checks` for a curated list of common Databricks endpoints (control plane, model serving, UC, Genie). Useful when an App can't reach a managed MCP / vector index / endpoint.

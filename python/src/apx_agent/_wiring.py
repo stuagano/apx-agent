@@ -369,8 +369,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-        # Opt-in MLflow auto-tracing (off by default — autolog adds ~30s
-        # overhead per run; selective spans in the compile path are always on).
+        # MLflow auto-tracing. ``apx run`` sets ``APX_AGENT_MLFLOW_AUTOLOG=1``
+        # before importing the user's module so the dev loop gets per-tool +
+        # per-LLM spans by default. Deploy paths reach this lifespan with the
+        # env unset, so autolog stays off there (selective spans in the
+        # compile path are always on either way).
         try:
             from ._mlflow_tracing import autolog_if_env
 
