@@ -254,8 +254,14 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
     </div>
   </div>
 
-  <div class="section" id="pattern-section">
-    <div class="section-title">Agent Pattern</div>
+  <details class="section" id="pattern-section" style="padding:0">
+    <summary style="cursor:pointer;user-select:none;padding:20px;list-style:none;display:flex;align-items:center;justify-content:space-between">
+      <span class="section-title" style="margin:0">▸ Agent Pattern</span>
+      <span style="font-size:11px;color:#555;text-transform:none;letter-spacing:0">
+        defaults to <code style="color:#888">LlmAgent</code> — click to change
+      </span>
+    </summary>
+    <div style="padding:0 20px 20px">
     <p style="color:#555;font-size:12px;margin-bottom:14px;line-height:1.6">
       Choose how your agent executes. Click a pattern to apply it or see the code.
     </p>
@@ -311,7 +317,8 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
            padding:12px;font-size:11px;color:#ccc;overflow-x:auto;white-space:pre;margin:0;line-height:1.5"></pre>
     </div>
     <div id="pattern-status" style="margin-top:8px;font-size:12px;min-height:16px"></div>
-  </div>
+    </div>
+  </details>
 
   <div class="section" id="instructions-section">
     <div class="section-title">Agent Instructions</div>
@@ -702,17 +709,19 @@ function renderAgentNodes() {{
       <textarea class="anode-instructions" id="anode-instr-${{idx}}"
                 oninput="agentNodeState[${{idx}}].instructions=this.value"
                 placeholder="Wire tools above to auto-draft, or write directly…">${{node.instructions||''}}</textarea>
-      <div class="anode-label" style="margin-top:8px">Routing
-        <span style="font-size:10px;color:#444;font-weight:400;margin-left:6px">for Router / Handoff patterns</span>
-      </div>
-      <input id="anode-rk-${{idx}}" type="text" value="${{node.route_key||''}}"
-             placeholder="route key (default: ${{node.name}})"
-             oninput="agentNodeState[${{idx}}].route_key=this.value"
-             style="width:100%;box-sizing:border-box;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px;margin-bottom:4px">
-      <textarea id="anode-rd-${{idx}}"
-                oninput="agentNodeState[${{idx}}].route_description=this.value"
-                placeholder="When should the router route here? (used by RouterAgent)"
-                style="width:100%;box-sizing:border-box;min-height:38px;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px">${{node.route_description||''}}</textarea>
+      <details style="margin-top:8px">
+        <summary class="anode-label" style="cursor:pointer;user-select:none;list-style:none">▸ Routing
+          <span style="font-size:10px;color:#444;font-weight:400;margin-left:6px">for Router / Handoff patterns</span>
+        </summary>
+        <input id="anode-rk-${{idx}}" type="text" value="${{node.route_key||''}}"
+               placeholder="route key (default: ${{node.name}})"
+               oninput="agentNodeState[${{idx}}].route_key=this.value"
+               style="width:100%;box-sizing:border-box;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px;margin:4px 0">
+        <textarea id="anode-rd-${{idx}}"
+                  oninput="agentNodeState[${{idx}}].route_description=this.value"
+                  placeholder="When should the router route here? (used by RouterAgent)"
+                  style="width:100%;box-sizing:border-box;min-height:38px;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px">${{node.route_description||''}}</textarea>
+      </details>
     </div>`;
   }}).join('');
   _refreshHandoffStart();
