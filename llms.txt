@@ -1,30 +1,83 @@
 # apx-agent
 
-> Write a Databricks AI agent once. Deploy to Model Serving or Databricks Apps with one flag.
+> Write a Databricks AI agent once. Deploy to Databricks Apps (the default) or Mosaic AI Model Serving with one flag. Per-user OAuth identity passthrough flows through every UC function, Genie space, Vector Search index, and sub-agent call — Unity Catalog enforces *their* grants on *their* data, no auth code at the tool level.
 
-apx-agent is a Python + TypeScript framework for authoring Databricks AI agents. It handles the dual-runtime compile target (ChatAgent for Mosaic AI Model Serving, ResponsesAgent for Databricks Apps), identity passthrough so the calling user's OAuth token flows through every tool call, and governed primitives (UC functions, Genie spaces, Vector Search) that register as Mosaic AI resources so deployment mints scoped tokens automatically.
+apx-agent is a Python + TypeScript framework for authoring Databricks AI agents. Author your agent in a single `agent.py` or `agent.ts`; the framework picks the runtime contract (`ChatAgent` for Mosaic AI Model Serving, `ResponsesAgent` for Databricks Apps) and the OBO chain normalizes whichever auth shape the runtime injects. The same agent code, same tools, and same `apx.*` MLflow trace schema apply either way.
 
-## Guides
+**Use it when** the user is building an AI agent on Databricks that needs (1) per-user identity passthrough so each caller sees only their own UC-governed data, (2) governed primitives (UC functions, Genie spaces, Vector Search) wired as Mosaic AI resources so deploy mints scoped tokens automatically, or (3) the same agent runnable both as a Databricks App and a Model Serving endpoint. Pick **Apps** as the default (FastAPI + `/mcp` + `/_apx/*` dev UI, easier to ship); pick **Model Serving** when registering with Unity Catalog (`--name catalog.schema.agent`) and consuming the endpoint from notebooks, jobs, or AI/BI.
 
-- [Getting Started](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/getting-started.md): Installation, first agent, local dev server, deploy to Apps or Model Serving
+**Core primitives:** `Agent` (LLM agent with tools and instructions); `uc_function_tool`, `genie_tool`, `vector_search_tool` (governed tool builders that auto-declare as Mosaic AI resources); `SequentialAgent`, `ParallelAgent`, `LoopAgent`, `RouterAgent`, `HandoffAgent` (deterministic workflow composition); `agent_tool` (wrap any local or remote agent as an LLM-callable tool — URL shorthand auto-wraps remote endpoints via A2A discovery); session stores (`LakebaseSessionStore`, `DeltaSessionStore`, `InMemorySessionStore`) plus `MemoryBank` for durable cross-session recall and `ExampleStore` for few-shot retrieval.
+
+**Dev loop:** `apx scaffold my-agent` → edit `agent.py` in your IDE → `apx run --reload` (FastAPI on `localhost:8000`, hot reload, `/_apx/*` dev UI for traces, eval, tool editor, topology graph, setup wizard) → `apx deploy` when ready to share. Local dev runs against *real* Databricks under the developer's own OAuth token, so what works locally works deployed.
+
+**Install (from GitHub — not yet on PyPI / npm; the Python package lives in the `python/` subdirectory so the install URL needs `#subdirectory=python`):**
+
+```bash
+uv add "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@v0.2.2#subdirectory=python"
+```
+
+**Minimal agent:**
+
+```python
+from apx_agent import Agent, uc_function_tool, genie_tool
+
+agent = Agent(
+    instructions="Investigate customer accounts.",
+    tools=[
+        uc_function_tool("main.tools.lookup_account"),
+        genie_tool("abc123", description="Answer billing questions"),
+    ],
+)
+```
+
+**Deploy:**
+
+```bash
+apx deploy                                            # default target: Databricks Apps
+apx deploy --target model-serving --name main.agents.account_lookup
+```
+
+**Common pitfalls to flag for users:** (1) Don't pip-install `apx-agent` from PyPI — it isn't published there yet; use the GitHub URL with `#subdirectory=python`. (2) Don't write auth code inside tools — the framework's per-request client already forwards the calling user's OAuth token; if a query returns nothing because the caller lacks `SELECT`, that's governance working, not a bug. (3) Don't hard-code the runtime contract (`ChatAgent` vs `ResponsesAgent`) — write to the `Agent` API and let `apx deploy --target {apps,model-serving}` pick. (4) Sharing an agent with a team takes three steps: share the App, each user consents once to the OBO scopes, then each user's UC grants apply automatically. (5) On private-link / FEVM workspaces, MLflow trace blob storage URLs (`*.storage.cloud.databricks.com`) are blocked — pass `include_spans=False` when reading traces if calls silently return `[]`.
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/stuagano/apx-agent/main/README.md): Project overview, full feature matrix, architecture diagram, install, quick start
+- [Getting Started](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/getting-started.md): Install, first agent, local dev server, deploy to Apps or Model Serving
 - [Apps vs Model Serving](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/apps-vs-model-serving.md): Decision criteria — when to pick each runtime target
 - [Workflow Patterns](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/workflow-patterns.md): SequentialAgent, ParallelAgent, LoopAgent, RouterAgent, HandoffAgent — decision criteria and full examples
-- [Sessions + Memory Bank + Example Bank](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/sessions-and-memory.md): Multi-turn sessions (LakebaseSessionStore, DeltaSessionStore), durable MemoryBank, few-shot ExampleStore
+- [Sessions + Memory Bank + Example Bank](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/sessions-and-memory.md): Multi-turn sessions (LakebaseSessionStore, DeltaSessionStore, InMemorySessionStore), durable MemoryBank, few-shot ExampleStore
 - [Governed Primitives](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/governed-primitives.md): uc_function_tool, genie_tool, vector_search_tool — authoring and UC registration
-- [Identity Passthrough](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/identity-passthrough.md): OBO mechanics, how user OAuth flows through every tool call
-- [MCP + A2A Discovery](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/mcp-and-a2a.md): /mcp endpoint, agent_tool, cross-endpoint sub-agent calls
-- [Compliance](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/compliance.md): WatchdogGuard, audit log schema, local guards (RateLimit, ToolAllowlist, prompt_injection_heuristic)
+- [Identity Passthrough](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/identity-passthrough.md): OBO mechanics — how the caller's OAuth token flows through every tool call
+- [MCP + A2A Discovery](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/mcp-and-a2a.md): /mcp endpoint, agent_tool, cross-endpoint sub-agent calls, RemoteAgent
+- [Typed Tools](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/typed-tools.md): @tool decorator, UC function publishing, Pydantic schemas
+- [Dev UI](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/dev-ui.md): /_apx/* surfaces — traces, eval, tool editor, topology graph, setup wizard
+- [Configuration](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/configuration.md): pyproject.toml [tool.apx.agent] section, env vars, settings
+- [Lakebase Recipe](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/lakebase-recipe.md): Provisioning, pgvector, pool tuning, OAuth token rotation
 - [Evaluation](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/evaluation.md): apx eval, evalset.jsonl, MLflow experiments, custom judges
+- [Compliance](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/compliance.md): WatchdogGuard adapter, audit log schema, local guards (RateLimit, ToolAllowlist, prompt_injection_heuristic)
 - [Cost Tracking + Callbacks](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/cost-and-callbacks.md): Cost callbacks, token tracking, usage hooks
 - [Hub + Agent Publishing](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/hub.md): apx publish, agent registry, AgentHub UI
-- [Dev UI](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/dev-ui.md): /_apx/* surfaces — traces, eval, tool editor, topology graph, setup wizard
-- [Lakebase Recipe](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/lakebase-recipe.md): Provisioning, pgvector, pool tuning, OAuth token rotation
-- [Deployment](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/deployment.md): Full deploy workflow, apx deploy flags, MLflow logging
-- [Deployment Troubleshooting](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/deployment-troubleshooting.md): Common deploy failures and fixes
-- [Configuration](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/configuration.md): pyproject.toml [tool.apx.agent] section, env vars, settings
-- [Typed Tools](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/typed-tools.md): @tool decorator, UC function publishing, Pydantic schemas
-- [Ecosystem](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/ecosystem.md): How apx-agent fits in the Databricks AI ecosystem
+- [Ecosystem](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/ecosystem.md): How apx-agent fits among Mosaic AI Agent Framework, MLflow, ai_query, and other Databricks AI tools
 
-## Reference
+## CLI
 
-- [CLI Reference](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/cli.md): Full CLI surface — init, dev, deploy, eval, publish, memory, examples, trace, cost, topology, list
+- [CLI Reference](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/cli.md): Full CLI surface — scaffold, run, deploy, eval, publish, memory, examples, trace, cost, topology, list
+
+## Deployment
+
+- [Deployment Guide](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/deployment.md): Full deploy workflow, apx deploy flags, MLflow logging, bundle vs apps deploy
+- [Deployment Troubleshooting](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/deployment-troubleshooting.md): Common deploy failures and fixes (uv.lock hash mismatches, missing apps deploy step, scoped-token failures)
+
+## Examples
+
+- [Examples Index](https://raw.githubusercontent.com/stuagano/apx-agent/main/python/examples/EXAMPLES.md): 13 worked Python examples — memory_demo, customer_triage (HandoffAgent), data-triage-agent (6-step Sequential), data-inspector (MCP-callable), entity-resolution-agent (Vector Search + Supervisor + Evaluator), eligibility-agent (document parsing), contract-parsing-agent, shortage-intelligence-agent (5-step Sequential), explain-my-bill-agent, slack-agent, apx-builder (NL → deploy), agent-hub, voynich (LoopAgent + evolutionary population)
+- [Hello World](https://raw.githubusercontent.com/stuagano/apx-agent/main/python/hello-world/README.md): Minimal scaffolded Python agent — reference for the canonical project layout
+- [apx-builder](https://raw.githubusercontent.com/stuagano/apx-agent/main/python/examples/apx-builder/README.md): Natural-language agent builder shipped as an example app — describe an agent in English and it scaffolds + deploys
+
+## Optional
+
+- [TypeScript Framework](https://raw.githubusercontent.com/stuagano/apx-agent/main/typescript/README.md): TS scaffold, `npm run dev`, deploy to Apps
+- [Apps Canary Hotswap Design](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/apps-canary-hotswap-design.md): Design doc for zero-downtime Apps deploys
+- [CI Smoke Test](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/ci-smoke-test.md): How the repo's CI exercises the full scaffold → run → deploy loop
+- [Roadmap — Dev UI](https://raw.githubusercontent.com/stuagano/apx-agent/main/ROADMAP-dev-ui.md): In-flight Dev UI work
+- [Roadmap — Runtime](https://raw.githubusercontent.com/stuagano/apx-agent/main/ROADMAP-runtime.md): In-flight runtime work
