@@ -936,6 +936,29 @@ def _is_inside_framework_repo(target: Path) -> bool:
         return False
 
 
+def _find_nearby_framework_python(start: Path) -> Path | None:
+    """Walk up from ``start`` looking for an apx-agent framework checkout.
+
+    Returns the framework's ``python/`` subdir if found — the directory the
+    user almost always wants to scaffold INSIDE, because the scaffolded
+    pyproject's editable ``path = ".."`` source only resolves there. Returns
+    ``None`` if no checkout is found anywhere on the path to the filesystem
+    root, in which case the scaffold falls through to the git+https install.
+    """
+    import tomllib
+    for candidate in [start.resolve(), *start.resolve().parents]:
+        py_pyproject = candidate / "python" / "pyproject.toml"
+        if not py_pyproject.is_file():
+            continue
+        try:
+            data = tomllib.loads(py_pyproject.read_text())
+        except Exception:
+            continue
+        if data.get("project", {}).get("name") == "apx-agent":
+            return candidate / "python"
+    return None
+
+
 def _scaffold_install_ref() -> str:
     """Git ref to pin in scaffolded pyprojects when installing apx-agent from
     GitHub. Uses the running version (``v0.2.3``) when it's a clean release,
@@ -1044,6 +1067,15 @@ def _scaffold_apps(
 )
 @click.option("--force", is_flag=True, help="Overwrite existing files.")
 @click.option(
+    "--here", is_flag=True,
+    help=(
+        "Stay in the current directory even if an apx-agent framework "
+        "checkout is detected nearby. By default the scaffold redirects "
+        "into the framework's python/ subdir so the editable install "
+        "resolves; use --here to override and emit a git+https install."
+    ),
+)
+@click.option(
     "--catalog", default=None,
     help="Catalog for the default DataAgent. Skips workspace auto-detection.",
 )
@@ -1057,7 +1089,7 @@ def _scaffold_apps(
          "catalog/schema. Falls back to $DATABRICKS_CONFIG_PROFILE.",
 )
 def scaffold(
-    name: str, directory: str, scaffold_target: str, force: bool,
+    name: str, directory: str, scaffold_target: str, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
 ) -> None:
     """Generate a new agent project at <NAME>.
@@ -1073,6 +1105,25 @@ def scaffold(
     ``apx run`` can answer a real question immediately.
     """
     target = Path(directory) / name
+
+    # Auto-redirect into the framework's python/ subdir when the user is
+    # standing in (or under) an apx-agent checkout but not at the right level.
+    # Without this, a scaffold at e.g. ~/apx-agent/MyAgent embeds an editable
+    # `path = ".."` that resolves to ~/apx-agent — which isn't a Python project
+    # — and `uv sync` fails with a confusing "not a Python project" error.
+    if not here and directory == ".":
+        framework_python = _find_nearby_framework_python(Path.cwd())
+        if framework_python is not None and framework_python != Path.cwd().resolve():
+            new_target = framework_python / name
+            click.echo(
+                f"apx-agent framework checkout detected at {framework_python.parent}.\n"
+                f"Scaffolding into python/ for the editable install:\n"
+                f"  {Path.cwd().resolve() / name}\n"
+                f"  → {new_target}\n"
+                f"(use --here to stay at the current location with a git+https install)\n",
+                err=True,
+            )
+            target = new_target
     if target.exists() and not force:
         if any(target.iterdir()):
             raise click.ClickException(
