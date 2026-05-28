@@ -441,7 +441,7 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
             setup_banner = (
                 '<div id="setup-banner" style="background:#1a1200;border-color:#5a3a00;color:#ffb84d">'
                 '<strong>👋 First time here?</strong> '
-                '<a href="/_apx/agent#setup" target="_top" style="color:#ffd080;text-decoration:underline">Open Setup</a> '
+                '<a href="/_apx/setup" target="_top" style="color:#ffd080;text-decoration:underline">Open Setup</a> '
                 'to connect your data and generate tools automatically.'
                 '</div>'
             )
@@ -648,7 +648,7 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   <!-- Chat (left) -->
   <div class="chat-panel">
     <div id="chat">
-      <div class="msg system">Chat with <strong>{agent_name}</strong> — tool changes hot-reload automatically</div>
+      <div class="msg system">Chat with <strong>{agent_name}</strong></div>
     </div>
     <form id="form" class="input-bar" autocomplete="off">
       <textarea id="input" rows="1" placeholder="Type a message…" required></textarea>
@@ -977,8 +977,6 @@ async function runEvalCase(i) {{
             const out = payload.response && payload.response.output;
             if (Array.isArray(out)) for (const it of out) if (it.type === 'message' && Array.isArray(it.content))
               for (const p of it.content) if (p.type === 'output_text' && p.text) text += p.text;
-          }} else if (payload.type === 'span.start') {{ renderSpanStart(payload); }}
-          else if (payload.type === 'span.end') {{ renderSpanEnd(payload); }}
         }} catch {{}}
       }}
     }}
@@ -1125,11 +1123,6 @@ function addMsg(role, text, streaming) {{
 const traceBody = document.getElementById('trace-body');
 const traceStatusEl = document.getElementById('trace-status');
 const traceLinkEl = document.getElementById('trace-link');
-const spanNodes = new Map();  // span_key → DOM node
-
-function spanKey(span) {{
-  return `${{span.type}}:${{span.name}}:${{span.start_time}}`;
-}}
 
 function escHtml(s) {{
   return String(s == null ? '' : s)
@@ -1163,65 +1156,6 @@ function extractMsg(value) {{
   return String(value).slice(0, 300);
 }}
 
-const SPAN_STYLE = {{
-  request:    {{ color: '#7986cb', label: 'Caller',          bubble: 'caller'      }},
-  llm:        {{ color: '#00bcd4', label: 'Agent asked',     bubble: 'llm-reply'   }},
-  tool:       {{ color: '#ffb300', label: 'Called tool',     bubble: 'tool-out'    }},
-  agent_call: {{ color: '#ab47bc', label: 'Called agent',    bubble: 'agent-reply' }},
-  response:   {{ color: '#4caf50', label: 'Agent responded', bubble: 'response'    }},
-  error:      {{ color: '#f44336', label: 'Error',           bubble: 'error-msg'   }},
-}};
-
-function renderSpanStart(span) {{
-  const style = SPAN_STYLE[span.type] || {{ color: '#888', label: span.type, bubble: 'caller' }};
-  const node = document.createElement('div');
-  node.className = 'span-step in-progress';
-  let title = style.label;
-  if (span.type === 'llm') {{
-    const model = String((span.metadata && span.metadata.model) || span.name || 'LLM').replace('databricks-', '');
-    title = `Agent asked ${{escHtml(model)}}`;
-  }} else if (span.type === 'tool') {{
-    title = `Called tool <em style="font-style:italic;color:#ddd">${{escHtml(span.name)}}</em>`;
-  }} else if (span.type === 'agent_call') {{
-    title = `Called agent <em style="font-style:italic;color:#ddd">${{escHtml(span.name)}}</em>`;
-  }}
-  const inputMsg = extractMsg(span.input);
-  let inputHtml = '';
-  if (inputMsg) {{
-    const cls = span.type === 'tool' ? 'tool-in' : (span.type === 'llm' ? 'agent-ask' : style.bubble);
-    inputHtml = `<div class="span-bubble ${{cls}}">${{escHtml(inputMsg)}}</div>`;
-  }}
-  node.innerHTML =
-    `<div class="step-line"></div>` +
-    `<div class="step-dot" style="background:${{style.color}}"></div>` +
-    `<div class="step-content">` +
-      `<div class="step-header">` +
-        `<span class="who" style="color:${{style.color}}">${{title}}</span>` +
-        `<span class="dur" data-role="dur"></span>` +
-      `</div>` +
-      `<div data-role="input">${{inputHtml}}</div>` +
-      `<div data-role="output"></div>` +
-    `</div>`;
-  traceBody.appendChild(node);
-  traceBody.scrollTop = traceBody.scrollHeight;
-  spanNodes.set(spanKey(span), node);
-}}
-
-function renderSpanEnd(span) {{
-  const node = spanNodes.get(spanKey(span));
-  if (!node) return;
-  node.classList.remove('in-progress');
-  const durEl = node.querySelector('[data-role="dur"]');
-  if (durEl && span.duration_ms != null) {{
-    durEl.textContent = `${{(span.duration_ms / 1000).toFixed(2)}}s`;
-  }}
-  const outEl = node.querySelector('[data-role="output"]');
-  const outputMsg = extractMsg(span.output);
-  if (outEl && outputMsg) {{
-    const style = SPAN_STYLE[span.type] || {{ bubble: 'caller' }};
-    outEl.innerHTML = `<div class="span-bubble ${{style.bubble}}">${{escHtml(outputMsg)}}</div>`;
-  }}
-}}
 
 function resetTrace() {{
   traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">Running…</div>';
@@ -1229,7 +1163,8 @@ function resetTrace() {{
   traceLinkEl.style.display = 'none';
 }}
 
-async function finalizeTrace(traceId, status) {{
+async function finalizeTrace(traceId, status, opts) {{
+  opts = opts || {{}};
   traceStatusEl.textContent = status === 'error' ? 'errored' : 'done';
   if (!traceId) {{
     // ResponsesAgent doesn't emit trace_id in the stream — fall back to the
@@ -1247,10 +1182,19 @@ async function finalizeTrace(traceId, status) {{
   }}
   traceLinkEl.href = `/_apx/traces/${{traceId}}`;
   traceLinkEl.style.display = 'inline';
-  // Load and render spans inline
+  // Load and render spans inline. ``mlflow.langchain.autolog()`` writes its
+  // spans as artifacts on a background thread, so the first fetch can race
+  // and return ``[]`` even when the trace exists. Retry once after 1.5s before
+  // declaring "no spans".
   try {{
-    const r = await fetch(`/_apx/traces/${{traceId}}?fmt=json`);
-    const data = await r.json();
+    let data;
+    for (let attempt = 0; attempt < 2; attempt++) {{
+      const r = await fetch(`/_apx/traces/${{traceId}}?fmt=json`);
+      data = await r.json();
+      if (data.spans && data.spans.length) break;
+      if (data.error) break;
+      await new Promise(res => setTimeout(res, 1500));
+    }}
     if (data.error || !data.spans || !data.spans.length) {{
       traceBody.innerHTML = `<div style="color:#555;font-size:12px;padding:8px 0">${{data.error || 'No spans.'}}</div>`;
       return;
@@ -1315,6 +1259,33 @@ async function finalizeTrace(traceId, status) {{
       return wrap;
     }}
     for (const root of roots) traceBody.appendChild(renderSpanNode(root, 0));
+
+    // Surface tool calls + results in the Events panel so it stops only
+    // showing the user/assistant "one side" of the conversation. Gated on
+    // ``opts.emitEvents`` so the page-load autoload (which fetches the most
+    // recent historical trace) doesn't pollute the events list before the
+    // user has even sent a message.
+    if (opts.emitEvents) {{
+      // Spans come back roughly in start order; preserve that for the
+      // events list so call/result interleave correctly across multi-tool runs.
+      const orderedSpans = [...data.spans].sort(
+        (a, b) => (a.start_time_ns || 0) - (b.start_time_ns || 0)
+      );
+      for (const s of orderedSpans) {{
+        if ((s.span_type || '').toUpperCase() !== 'TOOL') continue;
+        const args = s.inputs || {{}};
+        const isErr = (s.status || '').toUpperCase().includes('ERR');
+        const result = s.outputs;
+        const dur = s.duration_ms != null ? `${{s.duration_ms}}ms` : '';
+        addEvent('tool-call', s.name, fmt(args).slice(0, 60), {{ arguments: args }});
+        addEvent(
+          isErr ? 'tool-error' : 'tool-result',
+          s.name,
+          dur,
+          {{ result: result }}
+        );
+      }}
+    }}
   }} catch(e) {{
     traceBody.innerHTML = `<div style="color:#f87171;font-size:12px">${{escHtml(e.message)}}</div>`;
   }}
@@ -1438,6 +1409,12 @@ form.addEventListener('submit', async e => {{
               if (full) assistantDiv.textContent = full;
             }}
           }} else if (ptype === 'tool.trace') {{
+            // Intentional dormant hook: no current producer emits ``tool.trace``.
+            // Kept for a future server-side path that streams per-tool events so
+            // inline pills can render mid-conversation. Today the Events panel
+            // covers the same need by harvesting TOOL spans from the trace
+            // after the response completes (see ``finalizeTrace``). Don't
+            // delete in audit-chain sweeps.
             if (Array.isArray(payload.tools) && payload.tools.length) addToolPills(payload.tools);
           }} else if (ptype === 'error') {{
             traceStatus = 'error';
@@ -1454,7 +1431,7 @@ form.addEventListener('submit', async e => {{
   assistantDiv.classList.remove('streaming');
   addEvent('assistant', full.slice(0, 80) + (full.length > 80 ? '…' : ''), null, {{ content: full }});
   history.push({{ role: 'assistant', content: full }});
-  finalizeTrace(traceId, traceStatus);
+  finalizeTrace(traceId, traceStatus, {{ emitEvents: true }});
   sendBtn.disabled = false;
   inputEl.focus();
 }});
@@ -1470,6 +1447,10 @@ document.addEventListener('mousemove', e => {{
   rightPanel.style.width = w + 'px';
 }});
 document.addEventListener('mouseup', () => {{ resizing = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; }});
+
+// Auto-populate the Trace panel on page load with the most recent run, so
+// `reload → click Trace` shows context instead of an empty pane.
+finalizeTrace(null, 'done');
 
 inputEl.focus();
 </script>
