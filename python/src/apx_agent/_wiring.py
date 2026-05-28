@@ -201,6 +201,83 @@ def _schedule_registration(
     app.add_middleware(_RegisterOnceMiddleware)
 
 
+class _ResponsesStringInputAdapter:
+    """ASGI middleware that rewrites ``input: "<text>"`` on ``POST /responses``
+    to the list shape the underlying ``ResponsesAgentRequest`` expects.
+
+    The OpenAI Responses API allows both ``input: string`` and ``input: list``;
+    the upstream pydantic schema (in ``mlflow.genai.agent_server``) only
+    accepts the list form, so a curl-first user trying the simplest payload
+    hits a 422 with "Input should be a valid list" before their request ever
+    reaches the agent. This bridges the string form by wrapping it as
+    ``[{"role": "user", "content": "<text>"}]`` — the canonical "user said
+    this" envelope.
+
+    Implemented as pure ASGI (not FastAPI's ``@app.middleware("http")``)
+    because BaseHTTPMiddleware buffers responses in a way that breaks
+    streaming AND has a known interaction with body modification.
+
+    Only ``POST /responses`` is touched. Malformed JSON is forwarded
+    unchanged so the upstream handler returns its native 400/422 error.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if not (
+            scope.get("type") == "http"
+            and scope.get("method") == "POST"
+            and scope.get("path") == "/responses"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        import json as _json
+
+        # Buffer the full body (responses agents send a single small payload).
+        body = b""
+        more = True
+        while more:
+            event = await receive()
+            if event["type"] == "http.disconnect":
+                return
+            if event["type"] == "http.request":
+                body += event.get("body", b"") or b""
+                more = event.get("more_body", False)
+            else:
+                more = False
+
+        # Rewrite string ``input`` → user-message list. Best-effort: anything
+        # we don't understand passes through so the real handler can 422 it.
+        if body:
+            try:
+                payload = _json.loads(body)
+                if isinstance(payload, dict) and isinstance(payload.get("input"), str):
+                    payload["input"] = [
+                        {"role": "user", "content": payload["input"]}
+                    ]
+                    body = _json.dumps(payload).encode()
+            except Exception:
+                pass
+
+        sent = False
+
+        async def _replay() -> dict[str, Any]:
+            nonlocal sent
+            if sent:
+                return {"type": "http.disconnect"}
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, _replay, send)
+
+
+def _install_responses_input_adapter(app: FastAPI) -> None:
+    """Install the ``/responses`` string-input adapter as ASGI middleware."""
+    app.add_middleware(_ResponsesStringInputAdapter)
+
+
 def _mount_protocol_routes(app: FastAPI) -> None:
     """Mount discovery + health + MCP routes."""
     protocol_router = APIRouter()
@@ -466,6 +543,11 @@ def mount_mcp_endpoints(
     # Mount the route shells immediately. They read from app.state — which
     # gets populated in the lifespan startup event below.
     _mount_protocol_routes(app)
+
+    # Install the /responses string-input adapter so a curl-first user trying
+    # the simplest payload (`input: "<text>"`) doesn't hit a pydantic 400 on
+    # the upstream ResponsesAgentRequest schema.
+    _install_responses_input_adapter(app)
 
     # Track the in-flight MCP lifecycle so shutdown can close it cleanly.
     _state_key = "_apx_mount_state"
