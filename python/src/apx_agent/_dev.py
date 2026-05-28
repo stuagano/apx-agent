@@ -15,6 +15,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import logging
 import os
@@ -381,6 +382,90 @@ async def _ws_upload_agent_file(request: Request, local_path: "Path", content: s
             )
     except Exception:
         pass
+
+
+def _pick_workspace_defaults(ws: WorkspaceClient) -> "dict[str, str]":
+    """Best-effort: pick a sensible (DEMO_CATALOG, DEMO_SCHEMA, WAREHOUSE_ID)
+    for the Setup page when the user hasn't configured one yet.
+
+    Strategy:
+    - Catalog/schema: scan user-accessible catalogs and pick the first one
+      with a non-empty, non-system schema. The ``samples`` demo catalog is
+      kept as a fallback so a brand-new workspace still lands on something
+      readable, but any *real* user catalog wins over ``samples``.
+    - Warehouse: prefer a ``RUNNING`` one (no cold-start hit), else any
+      serverless one, else just the first warehouse.
+
+    All SDK calls are blocking — call this from a thread pool via
+    ``asyncio.to_thread``. Returns ``{}`` if the workspace can't be probed.
+    """
+    out: dict[str, str] = {}
+    skip_cat = {"system", "__databricks_internal"}
+    skip_sch = {"information_schema"}
+
+    try:
+        catalogs = list(ws.catalogs.list())
+    except Exception:
+        catalogs = []
+
+    samples_cat = next((c for c in catalogs if c.name == "samples"), None)
+
+    chosen_cat: str | None = None
+    chosen_sch: str | None = None
+    for cat in catalogs:
+        cname = cat.name or ""
+        if not cname or cname in skip_cat or cname == "samples":
+            continue
+        try:
+            schemas = list(ws.schemas.list(catalog_name=cname))
+        except Exception:
+            continue
+        for sch in schemas:
+            sname = sch.name or ""
+            if not sname or sname in skip_sch:
+                continue
+            chosen_cat, chosen_sch = cname, sname
+            break
+        if chosen_cat:
+            break
+
+    if not chosen_cat and samples_cat is not None:
+        chosen_cat = "samples"
+        try:
+            schemas = list(ws.schemas.list(catalog_name="samples"))
+            for sch in schemas:
+                if sch.name and sch.name not in skip_sch:
+                    chosen_sch = sch.name
+                    if sch.name == "nyctaxi":
+                        break
+        except Exception:
+            chosen_sch = "nyctaxi"
+
+    if chosen_cat:
+        out["DEMO_CATALOG"] = chosen_cat
+    if chosen_sch:
+        out["DEMO_SCHEMA"] = chosen_sch
+
+    try:
+        warehouses = list(ws.warehouses.list())
+    except Exception:
+        warehouses = []
+
+    def _running(w: Any) -> bool:
+        return getattr(getattr(w, "state", None), "value", str(getattr(w, "state", ""))) == "RUNNING"
+
+    def _serverless(w: Any) -> bool:
+        return bool(getattr(w, "enable_serverless_compute", False))
+
+    pick = next((w for w in warehouses if w.id and _running(w)), None)
+    if pick is None:
+        pick = next((w for w in warehouses if w.id and _serverless(w)), None)
+    if pick is None:
+        pick = next((w for w in warehouses if w.id), None)
+    if pick is not None and pick.id:
+        out["WAREHOUSE_ID"] = pick.id
+
+    return out
 
 
 def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
@@ -1086,6 +1171,24 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         env_path = _find_env_path()
         current = _read_env_file(env_path) if env_path and env_path.exists() else {}
         embed = request.query_params.get("embed") == "1"
+
+        # Backfill any missing catalog/schema/warehouse with a workspace probe so a
+        # fresh agent's Setup page lands pre-populated with the most relevant items
+        # from the user's workspace, rather than three "Loading…" dropdowns the
+        # user has to scan manually. .env values always win (user-curated wins).
+        if not (current.get("DEMO_CATALOG")
+                and current.get("DEMO_SCHEMA")
+                and current.get("WAREHOUSE_ID")):
+            try:
+                ws: WorkspaceClient = request.app.state.workspace_client
+                picked = await asyncio.to_thread(_pick_workspace_defaults, ws)
+                for k, v in picked.items():
+                    current.setdefault(k, v)
+            except Exception:
+                # Best-effort — the page still works with empty defaults, the user
+                # just picks manually like before. No crash on probe failure.
+                pass
+
         return HTMLResponse(_render_setup_ui(current, embed=embed))
 
     @router.get("/_apx/setup/catalogs", include_in_schema=False)
