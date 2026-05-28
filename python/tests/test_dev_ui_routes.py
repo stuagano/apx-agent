@@ -88,3 +88,114 @@ class TestLegacyRedirects:
             r = await ac.get(f"/_apx/{slug}", follow_redirects=False)
         assert r.status_code in (302, 307)
         assert r.headers["location"].startswith(target)
+
+
+# ---------------------------------------------------------------------------
+# _pick_workspace_defaults — the Setup page's auto-prefill source
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace
+
+from apx_agent._dev import _pick_workspace_defaults
+
+
+def _named(name: str, **extra) -> SimpleNamespace:
+    return SimpleNamespace(name=name, **extra)
+
+
+def _wh(wh_id: str, state: str, serverless: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=wh_id,
+        state=SimpleNamespace(value=state),
+        enable_serverless_compute=serverless,
+    )
+
+
+class _MockWs:
+    def __init__(self, *, catalogs, schemas_by_catalog, warehouses):
+        self._catalogs = catalogs
+        self._schemas = schemas_by_catalog
+        self._warehouses = warehouses
+        self.catalogs = SimpleNamespace(list=lambda: list(self._catalogs))
+        self.schemas = SimpleNamespace(
+            list=lambda catalog_name: list(self._schemas.get(catalog_name, []))
+        )
+        self.warehouses = SimpleNamespace(list=lambda: list(self._warehouses))
+
+
+class TestPickWorkspaceDefaults:
+    """Auto-prefill picks sensible defaults instead of forcing the user to
+    manually pick catalog + schema + warehouse on every fresh agent."""
+
+    def test_prefers_user_catalog_over_samples(self):
+        """A real user catalog wins over the samples demo when both exist."""
+        ws = _MockWs(
+            catalogs=[_named("samples"), _named("my_catalog"), _named("system")],
+            schemas_by_catalog={
+                "samples": [_named("nyctaxi")],
+                "my_catalog": [_named("information_schema"), _named("sales")],
+            },
+            warehouses=[_wh("wh_1", "RUNNING")],
+        )
+        out = _pick_workspace_defaults(ws)
+        assert out["DEMO_CATALOG"] == "my_catalog"
+        assert out["DEMO_SCHEMA"] == "sales"  # skipped information_schema
+
+    def test_falls_back_to_samples_when_no_user_catalogs(self):
+        """A brand-new workspace with only samples still pre-fills usefully."""
+        ws = _MockWs(
+            catalogs=[_named("samples"), _named("system")],
+            schemas_by_catalog={"samples": [_named("tpch"), _named("nyctaxi")]},
+            warehouses=[_wh("wh_1", "STOPPED")],
+        )
+        out = _pick_workspace_defaults(ws)
+        assert out["DEMO_CATALOG"] == "samples"
+        assert out["DEMO_SCHEMA"] == "nyctaxi"  # explicit nyctaxi preference inside samples
+
+    def test_skips_system_catalogs(self):
+        """``system`` and ``__databricks_internal`` must never be picked."""
+        ws = _MockWs(
+            catalogs=[_named("system"), _named("__databricks_internal"), _named("user_cat")],
+            schemas_by_catalog={"user_cat": [_named("default")]},
+            warehouses=[_wh("wh_1", "RUNNING")],
+        )
+        out = _pick_workspace_defaults(ws)
+        assert out["DEMO_CATALOG"] == "user_cat"
+
+    def test_warehouse_prefers_running_over_stopped(self):
+        """RUNNING avoids a 20-30s cold-start on the first query."""
+        ws = _MockWs(
+            catalogs=[],
+            schemas_by_catalog={},
+            warehouses=[
+                _wh("stopped_1", "STOPPED", serverless=True),
+                _wh("running_1", "RUNNING", serverless=False),
+            ],
+        )
+        out = _pick_workspace_defaults(ws)
+        assert out["WAREHOUSE_ID"] == "running_1"
+
+    def test_warehouse_prefers_serverless_when_none_running(self):
+        """Serverless beats classic when nothing is already running."""
+        ws = _MockWs(
+            catalogs=[],
+            schemas_by_catalog={},
+            warehouses=[
+                _wh("classic_1", "STOPPED", serverless=False),
+                _wh("serverless_1", "STOPPED", serverless=True),
+            ],
+        )
+        out = _pick_workspace_defaults(ws)
+        assert out["WAREHOUSE_ID"] == "serverless_1"
+
+    def test_returns_empty_when_workspace_unreachable(self):
+        """SDK errors must not crash the Setup page — fall back to empty."""
+        def _boom():
+            raise RuntimeError("boom")
+
+        broken = SimpleNamespace(
+            catalogs=SimpleNamespace(list=_boom),
+            warehouses=SimpleNamespace(list=_boom),
+        )
+        out = _pick_workspace_defaults(broken)
+        assert out == {}
