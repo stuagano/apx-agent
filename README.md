@@ -112,7 +112,9 @@ uv add "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@v0.
 
 Or grab the built wheel from the [Releases page](https://github.com/stuagano/apx-agent/releases).
 
-### Python (develop / scaffold)
+apx-agent is a dev kit — the loop is **scaffold → open `agent.py` in your IDE → `apx run`**. You're authoring against real Databricks (your OAuth token, your UC grants, real Genie spaces) with hot reload and the `/_apx/*` dev UI on `localhost`. Deployment is optional; ship to Databricks Apps only when you want to share.
+
+### Python
 
 ```bash
 git clone https://github.com/stuagano/apx-agent.git
@@ -120,9 +122,11 @@ cd apx-agent/python
 uv sync                                    # install framework
 uv run apx scaffold my-agent && cd my-agent
 uv sync                                    # install agent deps
-uv run apx run                             # local dev server on :8000 (chat + dev UI)
-uv run apx deploy                          # → Databricks Apps (the default target, auto-detected)
+$EDITOR agent.py                           # this is your agent — open it in your IDE
+uv run apx run --reload                    # FastAPI on :8000, hot reload, /_apx/* dev UI
 ```
+
+When you're ready to share: `uv run apx deploy` (Databricks Apps is the default target).
 
 ### TypeScript
 
@@ -132,9 +136,11 @@ cd apx-agent/typescript
 npm install && npm run build
 npx apx scaffold my-agent && cd my-agent
 npm install
-npx apx run
-npx apx deploy --target apps
+$EDITOR agent.ts                           # this is your agent — open it in your IDE
+npm run dev                                # local dev server with hot reload (apps scaffold)
 ```
+
+When you're ready to share: `npx apx deploy --target apps`.
 
 See [docs/getting-started.md](docs/getting-started.md) for the longer walkthrough.
 
