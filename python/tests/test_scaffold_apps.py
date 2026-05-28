@@ -252,3 +252,76 @@ def test_scaffold_apps_gitignore_includes_sidecar(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     gitignore = (tmp_path / "my_agent" / ".gitignore").read_text()
     assert ".apx-builder.json" in gitignore
+
+
+# ---------------------------------------------------------------------------
+# Test 8: framework-checkout auto-redirect (the "I ran apx scaffold at the
+# repo root" gotcha that otherwise produces a broken `path = ".."` install)
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_framework_checkout(root: Path) -> Path:
+    """Build a minimal fake apx-agent repo checkout at ``root``: an empty
+    ``python/`` subdir with a ``pyproject.toml`` that declares
+    ``[project].name = "apx-agent"`` — enough to trip the detection."""
+    (root / "python").mkdir(parents=True)
+    (root / "python" / "pyproject.toml").write_text(
+        '[project]\nname = "apx-agent"\nversion = "0.1.0"\n'
+    )
+    return root / "python"
+
+
+def test_scaffold_at_framework_repo_root_redirects_into_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Running ``apx scaffold X`` from the framework repo root auto-redirects
+    into ``python/X/`` so the editable ``path = ".."`` install resolves."""
+    framework_root = tmp_path / "fakeframework"
+    framework_python = _make_fake_framework_checkout(framework_root)
+
+    monkeypatch.chdir(framework_root)
+    runner = CliRunner()
+    result = runner.invoke(main, ["scaffold", "myagent"])
+
+    assert result.exit_code == 0, result.output
+    assert (framework_python / "myagent" / "pyproject.toml").exists()
+    assert not (framework_root / "myagent").exists()
+    assert "Scaffolding into python/" in result.output
+
+
+def test_scaffold_inside_python_does_not_redirect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The redirect must NOT fire when the user is already in the framework's
+    ``python/`` dir — the existing layout is correct and shouldn't move."""
+    framework_root = tmp_path / "fakeframework"
+    framework_python = _make_fake_framework_checkout(framework_root)
+
+    monkeypatch.chdir(framework_python)
+    runner = CliRunner()
+    result = runner.invoke(main, ["scaffold", "myagent"])
+
+    assert result.exit_code == 0, result.output
+    assert (framework_python / "myagent" / "pyproject.toml").exists()
+    assert "Scaffolding into python/" not in result.output
+
+
+def test_scaffold_here_overrides_auto_redirect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--here`` opts out of the redirect; the scaffold lands at cwd and
+    its pyproject uses a git+https install instead of the editable path."""
+    framework_root = tmp_path / "fakeframework"
+    framework_python = _make_fake_framework_checkout(framework_root)
+
+    monkeypatch.chdir(framework_root)
+    runner = CliRunner()
+    result = runner.invoke(main, ["scaffold", "myagent", "--here"])
+
+    assert result.exit_code == 0, result.output
+    assert (framework_root / "myagent" / "pyproject.toml").exists()
+    assert not (framework_python / "myagent").exists()
+
+    pyproject = (framework_root / "myagent" / "pyproject.toml").read_text()
+    assert "git+https://github.com/stuagano/apx-agent.git" in pyproject
+    assert 'path = ".."' not in pyproject
