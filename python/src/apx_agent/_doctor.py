@@ -198,7 +198,7 @@ def check_databricks_workspace(*, auth_ok: bool) -> Check:
     except Exception as e:
         msg = str(e)
         lower = msg.lower()
-        if "401" in msg or "invalid" in lower or "expired" in lower or "token" in lower:
+        if "401" in msg or "invalid" in lower or "expired" in lower:
             return Check(
                 "Workspace reachable",
                 Status.FAIL,
@@ -245,7 +245,11 @@ def check_project_layout(cwd: Path) -> Check:
 
     target = _detect_target(cwd)
     marker = "agent_server/" if target == "apps" else "agent.py"
-    if (cwd / "agent_server").is_dir() or (cwd / "agent.py").exists():
+    if target == "apps":
+        ok = (cwd / "agent_server").is_dir()
+    else:
+        ok = (cwd / "agent.py").exists()
+    if ok:
         return Check("Project layout", Status.OK, f"{target} layout detected", None)
     return Check(
         "Project layout",
@@ -260,6 +264,7 @@ def check_target(cwd: Path) -> Check:
         return Check("Target", Status.SKIP, "not in an apx project", None)
     from apx_agent.cli import _detect_target
 
+    # _detect_target only ever returns "apps" or "model-serving"; no failure mode to surface.
     return Check("Target", Status.OK, _detect_target(cwd), None)
 
 

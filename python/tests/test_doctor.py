@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import apx_agent._doctor as doctor
 from apx_agent._doctor import Check, Status, run_checks
 
 
@@ -20,11 +22,6 @@ def test_run_checks_returns_ordered_groups(tmp_path: Path):
     assert names == ["Environment", "Authentication", "Project"]
     for _group, checks in groups:
         assert all(isinstance(c, Check) for c in checks)
-
-
-import sys
-
-import apx_agent._doctor as doctor
 
 
 def test_python_version_ok(monkeypatch):
@@ -61,13 +58,20 @@ def test_databricks_cli_missing_is_warn(monkeypatch):
     assert "deploy" in c.detail
 
 
-def test_uvicorn_present():
-    # uvicorn is a dev/runtime dep installed in the test env.
+def test_uvicorn_present(monkeypatch):
+    monkeypatch.setattr(doctor.importlib, "import_module", lambda m: object())
     c = doctor.check_uvicorn()
-    assert c.status in (doctor.Status.OK, doctor.Status.WARN)
+    assert c.status is doctor.Status.OK
 
 
-from unittest.mock import MagicMock, patch
+def test_uvicorn_missing_is_warn(monkeypatch):
+    def boom(m):
+        raise ImportError("no module")
+
+    monkeypatch.setattr(doctor.importlib, "import_module", boom)
+    c = doctor.check_uvicorn()
+    assert c.status is doctor.Status.WARN
+    assert c.fix is not None
 
 
 def test_auth_ok(monkeypatch):
@@ -191,3 +195,58 @@ def test_databricks_yml_missing_in_project(tmp_path: Path):
 def test_databricks_yml_skip_outside_project(tmp_path: Path):
     c = doctor.check_databricks_yml(tmp_path)
     assert c.status is doctor.Status.SKIP
+
+
+def _make_langgraph_project(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
+    (tmp_path / "agent.py").write_text("# agent\n")
+    return tmp_path
+
+
+def test_extras_apps_installed(tmp_path, monkeypatch):
+    _make_apps_project(tmp_path)
+    monkeypatch.setattr(doctor.importlib, "import_module", lambda m: None)
+    c = doctor.check_extras(tmp_path)
+    assert c.status is doctor.Status.OK
+    assert "apps" in c.detail
+
+
+def test_extras_apps_missing(tmp_path, monkeypatch):
+    _make_apps_project(tmp_path)
+
+    def boom(m):
+        raise ImportError("no module")
+
+    monkeypatch.setattr(doctor.importlib, "import_module", boom)
+    c = doctor.check_extras(tmp_path)
+    assert c.status is doctor.Status.FAIL
+    assert "apps" in c.fix
+
+
+def test_extras_langgraph_missing(tmp_path, monkeypatch):
+    _make_langgraph_project(tmp_path)
+
+    def boom(m):
+        raise ImportError("no module")
+
+    monkeypatch.setattr(doctor.importlib, "import_module", boom)
+    c = doctor.check_extras(tmp_path)
+    assert c.status is doctor.Status.FAIL
+    assert "langgraph" in c.fix
+
+
+def test_apx_install_found(monkeypatch):
+    monkeypatch.setattr(doctor.importlib.metadata, "version", lambda _: "1.2.3")
+    c = doctor.check_apx_install()
+    assert c.status is doctor.Status.OK
+    assert "1.2.3" in c.detail
+
+
+def test_apx_install_not_found(monkeypatch):
+    def boom(_):
+        raise doctor.importlib.metadata.PackageNotFoundError("apx-agent")
+
+    monkeypatch.setattr(doctor.importlib.metadata, "version", boom)
+    c = doctor.check_apx_install()
+    assert c.status is doctor.Status.OK
+    assert "editable" in c.detail
