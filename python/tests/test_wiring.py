@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
-from apx_agent import LlmAgent, AgentConfig, AgentContext, create_app, setup_agent
+from apx_agent import Agent, LlmAgent, AgentConfig, AgentContext, create_app, setup_agent
 from apx_agent._wiring import (
     _install_responses_input_adapter,
     _mount_protocol_routes,
@@ -397,3 +397,39 @@ class TestResponsesStringInputAdapter:
             )
         assert r.status_code == 200
         assert r.json()["received"] == bad.decode("latin-1")
+
+
+# ---------------------------------------------------------------------------
+# apply_config_knobs — persona instruction overlay
+# ---------------------------------------------------------------------------
+
+
+def _cfg(**kw):
+    return AgentConfig(name="t", **kw)
+
+
+def test_instructions_compose_when_both_present():
+    agent = Agent(tools=[], instructions="GROUNDING")
+    apply_config_knobs(agent, _cfg(instructions="PERSONA"))
+    assert agent._instructions.index("PERSONA") < agent._instructions.index("GROUNDING")
+
+
+def test_instructions_fill_when_agent_empty():
+    agent = Agent(tools=[], instructions="")
+    apply_config_knobs(agent, _cfg(instructions="PERSONA"))
+    assert agent._instructions == "PERSONA"
+
+
+def test_plain_agent_no_envelope_instructions_unchanged():
+    agent = Agent(tools=[], instructions="GROUNDING")
+    apply_config_knobs(agent, _cfg(instructions=""))
+    assert agent._instructions == "GROUNDING"
+
+
+def test_instruction_overlay_is_idempotent():
+    agent = Agent(tools=[], instructions="GROUNDING")
+    cfg = _cfg(instructions="PERSONA")
+    apply_config_knobs(agent, cfg)
+    once = agent._instructions
+    apply_config_knobs(agent, cfg)
+    assert agent._instructions == once
