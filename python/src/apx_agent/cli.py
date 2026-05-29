@@ -1246,6 +1246,40 @@ def scaffold(
 # ---------------------------------------------------------------------------
 
 
+def _probe_import(module_spec: str) -> None:
+    """Import the ASGI module in-process to surface agent.py errors clearly.
+
+    `module_spec` is "module:variable"; we import the module half so a broken
+    `agent.py` produces a clean file+line message instead of a uvicorn
+    subprocess traceback. The CWD must already be on sys.path (the caller
+    ensures this for the real run via app_dir).
+    """
+    import importlib
+    import traceback
+
+    mod_name = module_spec.split(":", 1)[0]
+    cwd = str(Path.cwd())
+    added = cwd not in sys.path
+    if added:
+        sys.path.insert(0, cwd)
+    try:
+        importlib.import_module(mod_name)
+    except Exception as e:  # noqa: BLE001 — surface any import-time failure
+        tb = traceback.format_exc(limit=3).strip().splitlines()
+        tail = tb[-1] if tb else str(e)
+        raise click.ClickException(
+            _fix_msg(
+                f"Failed to import your agent module `{mod_name}`.",
+                f"{type(e).__name__}: {e}\n    {tail}",
+                "Fix the error in your agent code shown above, then re-run "
+                "`apx run`.",
+            )
+        ) from e
+    finally:
+        if added:
+            sys.path.remove(cwd)
+
+
 @main.command()
 @click.option(
     "--module",
@@ -1304,6 +1338,7 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
     # (unlike `python`/`uvicorn` invoked directly), so without this uvicorn
     # reports `Could not import module "app"`. app_dir also propagates to the
     # --reload subprocess, which a bare sys.path.insert here would not.
+    _probe_import(module)
     uvicorn.run(module, host=host, port=port, reload=reload, app_dir=str(Path.cwd()))
 
 

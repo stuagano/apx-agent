@@ -2479,7 +2479,8 @@ def test_run_passes_app_dir_to_uvicorn() -> None:
     runner = CliRunner()
     fake_uvicorn = MagicMock()
     with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
-            patch("apx_agent.cli._preflight_databricks_auth"):
+            patch("apx_agent.cli._preflight_databricks_auth"), \
+            patch("apx_agent.cli._probe_import"):
         result = runner.invoke(main, ["run"])
 
     assert result.exit_code == 0, result.output
@@ -2769,3 +2770,29 @@ def test_unknown_command_no_close_match():
     result = runner.invoke(main, ["zzzzzz"])
     assert result.exit_code != 0
     assert "No such command" in result.output or "zzzzzz" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `apx run` — pre-import probe (Task 8)
+# ---------------------------------------------------------------------------
+
+
+def test_run_probe_reports_broken_agent(tmp_path: Path, monkeypatch):
+    # A scaffolded-looking apps project whose agent module raises on import.
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
+    agent_server = tmp_path / "agent_server"
+    agent_server.mkdir()
+    (agent_server / "__init__.py").write_text("")
+    (agent_server / "start_server.py").write_text(
+        "import does_not_exist_xyz\napp = None\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    with patch("apx_agent.cli._preflight_databricks_auth"), patch(
+        "apx_agent.cli.autolog_if_env", create=True
+    ):
+        result = runner.invoke(main, ["run"])
+    assert result.exit_code != 0
+    out = result.output
+    assert "does_not_exist_xyz" in out or "start_server" in out
+    assert "apx doctor" in out
