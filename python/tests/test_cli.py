@@ -2663,3 +2663,55 @@ def test_scaffold_explicit_target_bakes_example_tool(tmp_path: Path) -> None:
     agent_py = (tmp_path / "ag" / "agent.py").read_text()
     assert "def sample_trips(" in agent_py
     assert "extra_tools=[sample_trips]" in agent_py
+
+
+# ---------------------------------------------------------------------------
+# `apx doctor`
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_runs_offline_and_reports(tmp_path: Path):
+    runner = CliRunner()
+    with patch("apx_agent._doctor.check_databricks_auth") as auth:
+        from apx_agent._doctor import Check, Status
+
+        auth.return_value = Check("Databricks auth", Status.OK, "ok", None)
+        result = runner.invoke(main, ["doctor", "--offline"])
+    assert "Environment" in result.output
+    assert "Authentication" in result.output
+    assert "Project" in result.output
+
+
+def test_doctor_exit_nonzero_on_fail():
+    runner = CliRunner()
+    from apx_agent._doctor import Check, Status
+
+    fail = Check("Python", Status.FAIL, "too old", "upgrade")
+    with patch("apx_agent._doctor.check_python_version", return_value=fail):
+        result = runner.invoke(main, ["doctor", "--offline"])
+    assert result.exit_code != 0
+    assert "upgrade" in result.output
+
+
+def test_doctor_json_flag():
+    runner = CliRunner()
+    result = runner.invoke(main, ["doctor", "--offline", "--json"])
+    assert result.exit_code in (0, 1)
+    payload = json.loads(result.output)
+    assert "Environment" in payload
+    assert isinstance(payload["Environment"], list)
+
+
+def test_doctor_online_invokes_live_check():
+    runner = CliRunner()
+    from apx_agent._doctor import Check, Status
+
+    with patch(
+        "apx_agent._doctor.check_databricks_workspace"
+    ) as ws, patch(
+        "apx_agent._doctor.check_databricks_auth",
+        return_value=Check("Databricks auth", Status.OK, "ok", None),
+    ):
+        ws.return_value = Check("Workspace reachable", Status.OK, "ok", None)
+        runner.invoke(main, ["doctor"])
+    assert ws.called

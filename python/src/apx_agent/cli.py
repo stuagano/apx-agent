@@ -24,6 +24,7 @@ ergonomics. Implementation should stay narrow.
 
 from __future__ import annotations
 
+import difflib
 import importlib
 import importlib.metadata
 import json
@@ -36,6 +37,8 @@ from pathlib import Path
 from typing import Any
 
 import click
+
+from . import _doctor as _doctor_mod
 
 logger = logging.getLogger(__name__)
 
@@ -386,6 +389,67 @@ def version() -> None:
     except importlib.metadata.PackageNotFoundError:
         v = "dev (editable install)"
     click.echo(v)
+
+
+# ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+
+_GLYPH = {
+    _doctor_mod.Status.OK: "✓",
+    _doctor_mod.Status.WARN: "⚠",
+    _doctor_mod.Status.FAIL: "✗",
+    _doctor_mod.Status.SKIP: "-",
+}
+
+
+@main.command()
+@click.option("--offline", is_flag=True, help="Skip the live workspace check.")
+@click.option("--json", "as_json", is_flag=True, help="Emit checks as JSON.")
+def doctor(offline: bool, as_json: bool) -> None:
+    """Diagnose the apx environment: tools, auth, and project layout.
+
+    Runs a live workspace round-trip by default; pass --offline to skip it.
+    Exits non-zero if any check fails.
+    """
+    groups = _doctor_mod.run_checks(Path.cwd(), online=not offline)
+    fails = sum(
+        1 for _g, cs in groups for c in cs if c.status is _doctor_mod.Status.FAIL
+    )
+    warns = sum(
+        1 for _g, cs in groups for c in cs if c.status is _doctor_mod.Status.WARN
+    )
+
+    if as_json:
+        payload = {
+            group: [
+                {
+                    "name": c.name,
+                    "status": c.status.value,
+                    "detail": c.detail,
+                    "fix": c.fix,
+                }
+                for c in checks
+            ]
+            for group, checks in groups
+        }
+        click.echo(json.dumps(payload, indent=2))
+        raise SystemExit(1 if fails else 0)
+
+    for group, checks in groups:
+        click.echo(group)
+        for c in checks:
+            click.echo(f"  {_GLYPH[c.status]} {c.name}: {c.detail}")
+            if c.fix and c.status in (_doctor_mod.Status.FAIL, _doctor_mod.Status.WARN):
+                click.echo(f"      Fix: {c.fix}")
+    click.echo("")
+    if fails:
+        click.echo(
+            f"{fails} failed, {warns} warning(s). "
+            "Fix the ✗ items, then re-run `apx doctor`."
+        )
+        raise SystemExit(1)
+    click.echo(f"All clear ({warns} warning(s)).")
 
 
 # ---------------------------------------------------------------------------
