@@ -407,8 +407,21 @@ function writeAll(
 // Commander registration
 // ---------------------------------------------------------------------------
 
+// The project name is substituted into databricks.yml (bundle/resource name)
+// and package.json ("name"), and used as a directory segment. Restrict it to a
+// safe charset so the generated files stay valid and the path cannot escape the
+// target dir. Must start alphanumeric; allows hyphen/underscore/dot internally;
+// rejects path separators (M/L14 — robustness, not a security boundary).
+const PROJECT_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+
 const ScaffoldOptionsSchema = z.object({
-  name: z.string().min(1, 'project name is required'),
+  name: z
+    .string()
+    .min(1, 'project name is required')
+    .regex(
+      PROJECT_NAME_RE,
+      'project name must start and end with a letter or digit and contain only letters, digits, hyphens, underscores, or dots (no path separators)',
+    ),
   dir: z.string().min(1).default('.'),
   target: z.enum(['model-serving', 'apps']).default('model-serving'),
   force: z.boolean().default(false),

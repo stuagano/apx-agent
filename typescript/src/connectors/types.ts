@@ -251,6 +251,37 @@ export interface SqlParam {
   type: 'STRING' | 'INT' | 'FLOAT' | 'BOOLEAN';
 }
 
+// ---------------------------------------------------------------------------
+// SQL identifier safety
+// ---------------------------------------------------------------------------
+
+/**
+ * Strict identifier pattern: a leading letter or underscore followed by
+ * letters, digits, or underscores. No dots (table names are unqualified and
+ * columns are bare), no separators, no quoting characters — so the value can
+ * never break out of its backtick-quoted context.
+ */
+const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Validate a SQL identifier (table name, column name, or value-map key) and
+ * return it backtick-quoted for safe interpolation.
+ *
+ * The SQL Statement Execution API parameterizes *values* only — identifiers
+ * are interpolated into the statement text, so every identifier that derives
+ * from tool arguments or a request body MUST pass through here. Rejects
+ * anything outside {@link IDENTIFIER_RE} (including `*`, dotted names, and
+ * whitespace) to prevent SQL injection via identifier position.
+ */
+export function quoteIdent(name: string, label = 'identifier'): string {
+  if (typeof name !== 'string' || !IDENTIFIER_RE.test(name)) {
+    throw new Error(
+      `Invalid ${label}: must match ${IDENTIFIER_RE.source} (got ${JSON.stringify(name)})`,
+    );
+  }
+  return `\`${name}\``;
+}
+
 export function buildSqlParams(filters: Record<string, unknown>): {
   clause: string;
   params: SqlParam[];
@@ -268,7 +299,12 @@ export function buildSqlParams(filters: Record<string, unknown>): {
     return { name: key, value: String(value), type };
   });
 
-  const clause = entries.map(([key]) => `${key} = :${key}`).join(' AND ');
+  // The left-hand identifier is interpolated raw — validate and backtick-quote
+  // it. The right-hand `:name` is a parameter marker (value-bound by the API),
+  // so the param `name` itself stays the unquoted key.
+  const clause = entries
+    .map(([key]) => `${quoteIdent(key, 'filter key')} = :${key}`)
+    .join(' AND ');
   return { clause, params };
 }
 
