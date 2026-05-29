@@ -65,3 +65,81 @@ def test_uvicorn_present():
     # uvicorn is a dev/runtime dep installed in the test env.
     c = doctor.check_uvicorn()
     assert c.status in (doctor.Status.OK, doctor.Status.WARN)
+
+
+from unittest.mock import MagicMock, patch
+
+
+def test_auth_ok(monkeypatch):
+    with patch("databricks.sdk.core.Config", return_value=object()):
+        c = doctor.check_databricks_auth()
+    assert c.status is doctor.Status.OK
+
+
+def test_auth_no_profiles_first_timer(monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("no creds")
+
+    with patch("databricks.sdk.core.Config", side_effect=boom), patch(
+        "apx_agent.cli._databrickscfg_profiles", return_value=[]
+    ):
+        c = doctor.check_databricks_auth()
+    assert c.status is doctor.Status.FAIL
+    assert "auth login" in c.fix
+
+
+def test_auth_ambiguous_profiles(monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("ambiguous")
+
+    with patch("databricks.sdk.core.Config", side_effect=boom), patch(
+        "apx_agent.cli._databrickscfg_profiles", return_value=["DEFAULT", "prod"]
+    ):
+        c = doctor.check_databricks_auth()
+    assert c.status is doctor.Status.FAIL
+    assert "DATABRICKS_CONFIG_PROFILE" in c.fix
+    assert "prod" in c.fix
+
+
+def test_workspace_skipped_when_auth_failed():
+    c = doctor.check_databricks_workspace(auth_ok=False)
+    assert c.status is doctor.Status.SKIP
+
+
+def test_workspace_ok():
+    me = MagicMock()
+    me.user_name = "alice@example.com"
+    client = MagicMock()
+    client.current_user.me.return_value = me
+    client.config.host = "https://x.cloud.databricks.com"
+    with patch("databricks.sdk.WorkspaceClient", return_value=client):
+        c = doctor.check_databricks_workspace(auth_ok=True)
+    assert c.status is doctor.Status.OK
+    assert "alice@example.com" in c.detail
+
+
+def test_workspace_expired_token():
+    client = MagicMock()
+    client.current_user.me.side_effect = Exception("401 invalid access token")
+    with patch("databricks.sdk.WorkspaceClient", return_value=client):
+        c = doctor.check_databricks_workspace(auth_ok=True)
+    assert c.status is doctor.Status.FAIL
+    assert "auth login" in c.fix
+
+
+def test_workspace_unreachable():
+    client = MagicMock()
+    client.current_user.me.side_effect = Exception("Name or service not known")
+    with patch("databricks.sdk.WorkspaceClient", return_value=client):
+        c = doctor.check_databricks_workspace(auth_ok=True)
+    assert c.status is doctor.Status.FAIL
+    assert "host" in c.fix.lower()
+
+
+def test_workspace_forbidden():
+    client = MagicMock()
+    client.current_user.me.side_effect = Exception("403 PERMISSION_DENIED")
+    with patch("databricks.sdk.WorkspaceClient", return_value=client):
+        c = doctor.check_databricks_workspace(auth_ok=True)
+    assert c.status is doctor.Status.FAIL
+    assert "permission" in c.detail.lower() or "403" in c.detail
