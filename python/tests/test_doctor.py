@@ -250,3 +250,19 @@ def test_apx_install_not_found(monkeypatch):
     c = doctor.check_apx_install()
     assert c.status is doctor.Status.OK
     assert "editable" in c.detail
+
+
+def test_auth_sdk_not_importable(monkeypatch):
+    """A broken/minimal install where databricks-sdk can't be imported FAILs
+    fast with a clear message, rather than passing through to a deep traceback
+    later (intentional hardening — databricks-sdk is a hard dependency)."""
+    import sys
+    import types
+
+    # A stand-in module without `Config` makes `from databricks.sdk.core import
+    # Config` raise ImportError, exercising the SDK-not-importable branch.
+    fake = types.ModuleType("databricks.sdk.core")
+    monkeypatch.setitem(sys.modules, "databricks.sdk.core", fake)
+    c = doctor.check_databricks_auth()
+    assert c.status is doctor.Status.FAIL
+    assert "databricks-sdk not importable" in c.detail
