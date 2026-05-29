@@ -1,5 +1,6 @@
+import pytest
 from pydantic import BaseModel
-from apx_agent._template import Template, TemplateInfo
+from apx_agent._template import Template, TemplateInfo, TemplateRegistry, template
 
 
 class _DummySpec(BaseModel):
@@ -34,10 +35,6 @@ def test_incomplete_class_does_not_conform_to_protocol():
     assert not isinstance(_NoBuild(), Template)
 
 
-import pytest
-from apx_agent._template import TemplateRegistry, template
-
-
 def _fresh_registry():
     return TemplateRegistry()
 
@@ -63,8 +60,21 @@ def test_list_returns_template_info():
 def test_unknown_name_raises_listing_available():
     reg = _fresh_registry()
     reg.register(_DummyTemplate)
-    with pytest.raises(ValueError, match="dummy"):
+    with pytest.raises(ValueError, match="Available:.*dummy"):
         reg.get("nope")
+
+
+def test_register_rejects_non_conforming_class():
+    reg = _fresh_registry()
+
+    class _NoBuildTemplate:
+        name = "broken"
+        title = "Broken"
+        description = "missing build"
+        Spec = _DummySpec
+
+    with pytest.raises(ValueError, match="Template protocol"):
+        reg.register(_NoBuildTemplate)
 
 
 def test_duplicate_registration_raises():

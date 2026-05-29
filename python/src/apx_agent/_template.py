@@ -13,10 +13,13 @@ entry-point group.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -48,11 +51,6 @@ class TemplateInfo:
         )
 
 
-import logging
-
-logger = logging.getLogger(__name__)
-
-
 class TemplateRegistry:
     """Name → Template registry. Built-ins via @template; third-party via entry points."""
 
@@ -64,6 +62,8 @@ class TemplateRegistry:
 
     def register(self, tmpl_cls: type[Template]) -> type[Template]:
         inst = tmpl_cls()
+        if not isinstance(inst, Template):
+            raise ValueError(f"{tmpl_cls!r} does not implement the Template protocol.")
         name = inst.name
         if name in self._templates:
             raise ValueError(
@@ -84,7 +84,7 @@ class TemplateRegistry:
         self._ensure_discovered()
         return [TemplateInfo.from_template(t) for t in self._templates.values()]
 
-    def build(self, name: str, spec: "dict | BaseModel", *, ws: Any = None) -> Any:
+    def build(self, name: str, spec: dict | BaseModel, *, ws: Any | None = None) -> Any:
         tmpl = self.get(name)
         validated = spec if isinstance(spec, BaseModel) else tmpl.Spec.model_validate(spec)
         return tmpl.build(validated, ws=ws)
