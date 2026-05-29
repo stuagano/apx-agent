@@ -370,7 +370,7 @@ class _ApxGroup(click.Group):
                 cmd_name, self.list_commands(ctx), n=1
             )
             hint = f" Did you mean `{matches[0]}`?" if matches else ""
-            raise click.UsageError(f"No such command '{cmd_name}'.{hint}")
+            raise click.UsageError(f"No such command '{cmd_name}'.{hint}") from None
 
 
 @click.group(cls=_ApxGroup)
@@ -437,7 +437,7 @@ def doctor(offline: bool, as_json: bool) -> None:
             for group, checks in groups
         }
         click.echo(json.dumps(payload, indent=2))
-        raise SystemExit(1 if fails else 0)
+        sys.exit(1 if fails else 0)
 
     for group, checks in groups:
         click.echo(group)
@@ -451,7 +451,7 @@ def doctor(offline: bool, as_json: bool) -> None:
             f"{fails} failed, {warns} warning(s). "
             "Fix the ✗ items, then re-run `apx doctor`."
         )
-        raise SystemExit(1)
+        sys.exit(1)
     click.echo(f"All clear ({warns} warning(s)).")
 
 

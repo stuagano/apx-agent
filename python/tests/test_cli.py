@@ -2695,7 +2695,11 @@ def test_doctor_exit_nonzero_on_fail():
 
 def test_doctor_json_flag():
     runner = CliRunner()
-    result = runner.invoke(main, ["doctor", "--offline", "--json"])
+    from apx_agent._doctor import Check, Status
+
+    with patch("apx_agent._doctor.check_databricks_auth",
+               return_value=Check("Databricks auth", Status.OK, "ok", None)):
+        result = runner.invoke(main, ["doctor", "--offline", "--json"])
     assert result.exit_code in (0, 1)
     payload = json.loads(result.output)
     assert "Environment" in payload
