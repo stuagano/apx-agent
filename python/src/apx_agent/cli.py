@@ -1233,6 +1233,7 @@ def scaffold(
     click.echo()
     click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")
     click.echo(f"Next: cd {name} && uv sync && uv run apx run    # serve locally")
+    click.echo("Tip: run `apx doctor` to check your environment before deploying.")
     if scaffold_target == "apps":
         click.echo(f"      uv run apx deploy                        # → Databricks Apps")
     else:
@@ -1253,11 +1254,15 @@ def _probe_import(module_spec: str) -> None:
     `agent.py` produces a clean file+line message instead of a uvicorn
     subprocess traceback. The CWD must already be on sys.path (the caller
     ensures this for the real run via app_dir).
+
+    Under --reload uvicorn re-imports in a child process, so module-level code
+    runs in both the probe and the child; this is fine for the framework's
+    lifespan/AgentServer pattern which defers connections out of import time.
     """
     import importlib
     import traceback
 
-    mod_name = module_spec.split(":", 1)[0]
+    mod_name = _parse_module_spec(module_spec)[0]
     cwd = str(Path.cwd())
     added = cwd not in sys.path
     if added:
@@ -1265,12 +1270,18 @@ def _probe_import(module_spec: str) -> None:
     try:
         importlib.import_module(mod_name)
     except Exception as e:  # noqa: BLE001 — surface any import-time failure
-        tb = traceback.format_exc(limit=3).strip().splitlines()
-        tail = tb[-1] if tb else str(e)
+        tb = traceback.format_exc(limit=5).splitlines()
+        file_frame = next(
+            (line for line in reversed(tb) if line.strip().startswith('File "')),
+            None,
+        )
+        detail = f"{type(e).__name__}: {e}"
+        if file_frame:
+            detail = f"{file_frame.strip()}\n    {detail}"
         raise click.ClickException(
             _fix_msg(
                 f"Failed to import your agent module `{mod_name}`.",
-                f"{type(e).__name__}: {e}\n    {tail}",
+                detail,
                 "Fix the error in your agent code shown above, then re-run "
                 "`apx run`.",
             )

@@ -2805,10 +2805,12 @@ def test_run_probe_reports_broken_agent(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()
     with patch("apx_agent.cli._preflight_databricks_auth"), patch(
-        "apx_agent.cli.autolog_if_env", create=True
+        "apx_agent._mlflow_tracing.autolog_if_env"
     ):
         result = runner.invoke(main, ["run"])
     assert result.exit_code != 0
     out = result.output
     assert "does_not_exist_xyz" in out or "start_server" in out
+    # Load-bearing: distinguishes the probe's structured error from a raw
+    # uvicorn traceback.
     assert "apx doctor" in out
