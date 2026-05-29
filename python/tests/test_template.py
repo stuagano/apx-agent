@@ -26,3 +26,9 @@ def test_template_info_carries_catalog_fields():
 
 def test_dummy_conforms_to_protocol():
     assert isinstance(_DummyTemplate(), Template)
+
+
+def test_incomplete_class_does_not_conform_to_protocol():
+    class _NoBuild:
+        name = "x"; title = "x"; description = "x"; Spec = BaseModel
+    assert not isinstance(_NoBuild(), Template)

@@ -39,7 +39,7 @@ class TemplateInfo:
     spec_schema: dict[str, Any]
 
     @classmethod
-    def from_template(cls, tmpl: Template) -> "TemplateInfo":
+    def from_template(cls, tmpl: Template) -> TemplateInfo:
         return cls(
             name=tmpl.name,
             title=tmpl.title,
