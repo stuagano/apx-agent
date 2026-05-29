@@ -23,8 +23,9 @@ wrong and how to fix it," shared between `doctor` and inline preflights so they
 never drift.
 
 Non-goals: hardening the repo-contributor path (`git clone` + `uv sync` from
-`python/`); unrelated refactoring. The default `apx doctor` run stays
-offline/fast — the single live workspace round-trip is opt-in via `--online`.
+`python/`); unrelated refactoring. By default `apx doctor` makes one live
+workspace round-trip to verify auth actually works; `--offline` skips it for a
+fast, network-free run.
 
 ## Architecture
 
@@ -74,10 +75,11 @@ plus the already-present `databricks.sdk`.
 - `databricks_auth` — construct `databricks.sdk.core.Config()` (no live call).
   On failure: FAIL with the existing first-timer-vs-ambiguous-profile guidance
   derived from `_databrickscfg_profiles()`. Always runs (offline, fast).
-- `databricks_workspace` — **online** check, runs only with `--online`. Calls
-  `WorkspaceClient().current_user.me()` (live, ~5s timeout) to confirm the
-  resolved token actually authenticates against a reachable workspace.
-  - SKIP when `--online` is not passed (the default doctor run).
+- `databricks_workspace` — **online** check, runs by default (skipped with
+  `--offline`). Calls `WorkspaceClient().current_user.me()` (live, ~5s
+  timeout) to confirm the resolved token actually authenticates against a
+  reachable workspace.
+  - SKIP when `--offline` is passed.
   - SKIP if `databricks_auth` already FAILed (nothing to live-test).
   - FAIL with targeted guidance keyed off the error: expired/invalid token
     (→ `databricks auth login` again), host unreachable / DNS / TLS
@@ -124,9 +126,9 @@ Project (./my-agent)
 
 - Exit code non-zero iff any `FAIL` (CI/script usable). WARN does not fail.
 - `--json` flag emits the structured checks for machine consumption.
-- `--online` flag adds the live `databricks_workspace` check (one real
-  workspace round-trip). Off by default so the bare `apx doctor` stays fast
-  and network-free; pass `--online` to verify the token actually works.
+- The live `databricks_workspace` check (one real workspace round-trip) runs
+  by default. Pass `--offline` to skip it when you want a fast, network-free
+  run (CI, on a plane, etc.); the rest of the checks are unaffected.
 
 ## Inline integration
 
@@ -177,10 +179,11 @@ same template), so inline errors and `doctor` output read identically.
   pass and fail branches for `python_version`, `uv`, `databricks_cli`,
   `databricks_auth`, `project_layout`, `extras`, `uvicorn`, `databricks_yml`.
 - `databricks_workspace` (online): mock `WorkspaceClient` to assert the
-  SKIP-without-`--online`, SKIP-when-auth-failed, success, and each
+  SKIP-with-`--offline`, SKIP-when-auth-failed, success, and each
   error-class (expired token / unreachable / 403) branch — no real network.
 - `apx doctor` integration: exit code (0 vs non-zero), grouped text output,
-  `--json` shape, and that `--online` invokes the live check.
+  `--json` shape, that the live check runs by default, and that `--offline`
+  skips it.
 - Entry-level: unknown command emits a "did you mean" suggestion.
 - `run` pre-import probe: a deliberately-broken `agent.py` produces the
   friendly file+line message, not a raw traceback.
