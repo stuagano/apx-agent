@@ -358,7 +358,22 @@ def _resolve_version() -> str:
         return "dev"
 
 
-@click.group()
+class _ApxGroup(click.Group):
+    """click.Group that suggests the closest command on a typo."""
+
+    def resolve_command(self, ctx, args):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            cmd_name = args[0] if args else ""
+            matches = difflib.get_close_matches(
+                cmd_name, self.list_commands(ctx), n=1
+            )
+            hint = f" Did you mean `{matches[0]}`?" if matches else ""
+            raise click.UsageError(f"No such command '{cmd_name}'.{hint}")
+
+
+@click.group(cls=_ApxGroup)
 @click.version_option(_resolve_version(), package_name="apx-agent", prog_name="apx")
 def main() -> None:
     """apx — declarative agents on Databricks. See `apx --help` for commands."""

@@ -2745,3 +2745,23 @@ def test_preflight_auth_uses_check(monkeypatch):
 
             _preflight_databricks_auth()
     assert "login here" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# "Did you mean" typo suggestions
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_command_suggests_closest():
+    runner = CliRunner()
+    result = runner.invoke(main, ["deploi"])  # typo of deploy
+    assert result.exit_code != 0
+    assert "deploy" in result.output
+    assert "did you mean" in result.output.lower()
+
+
+def test_unknown_command_no_close_match():
+    runner = CliRunner()
+    result = runner.invoke(main, ["zzzzzz"])
+    assert result.exit_code != 0
+    assert "No such command" in result.output or "zzzzzz" in result.output
