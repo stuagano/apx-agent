@@ -101,3 +101,40 @@ def test_decorator_registers_on_module_registry():
         assert template_registry.get("decorated_test").name == "decorated_test"
     finally:
         template_registry._templates.pop("decorated_test", None)
+
+
+class _GoodEP:
+    name = "good"
+    def load(self):
+        class _GoodTemplate:
+            name = "good_ep"
+            title = "Good EP"
+            description = "loaded via entry point"
+            Spec = _DummySpec
+            def build(self, spec, *, ws=None):
+                return spec
+        return _GoodTemplate
+
+
+class _BadEP:
+    name = "bad"
+    def load(self):
+        raise ImportError("boom")
+
+
+def test_entry_point_discovery_loads_good_skips_bad(monkeypatch):
+    import apx_agent._template as mod
+
+    def fake_entry_points(*, group):
+        assert group == "apx_agent.templates"
+        return [_GoodEP(), _BadEP()]
+
+    monkeypatch.setattr(mod, "entry_points", fake_entry_points, raising=False)
+    monkeypatch.setattr(
+        "importlib.metadata.entry_points", fake_entry_points, raising=True
+    )
+
+    reg = mod.TemplateRegistry()
+    infos = {i.name for i in reg.list()}  # triggers discovery
+    assert "good_ep" in infos          # good one registered
+    # bad one skipped without raising — list() returned normally
