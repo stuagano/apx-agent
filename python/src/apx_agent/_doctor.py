@@ -12,6 +12,7 @@ from __future__ import annotations
 import enum
 import importlib
 import importlib.metadata
+import os
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MIN_PYTHON = (3, 11)
+
+# The internal Databricks PyPI proxy. Unreachable for external users and for
+# deployed Apps/serving endpoints, so a uv.lock pinned to it — or an index env
+# var pointed at it (which re-poisons the lock on the next `uv sync`) — breaks
+# fresh installs and deploys. Mirrors cli._sanitize_uv_lock and the
+# scripts/check-uv-lock-registry.sh CI guard.
+_PYPI_PROXY_HOST = "pypi-proxy.dev.databricks.com"
+_INDEX_ENV_VARS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "PIP_INDEX_URL")
 
 
 class Status(enum.Enum):
@@ -48,6 +57,7 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
         check_python_version(),
         check_apx_install(),
         check_uv(),
+        check_pypi_index(cwd),
         check_databricks_cli(),
         check_uvicorn(),
     ]
@@ -104,6 +114,47 @@ def check_uv() -> Check:
         "not found — used by `uv sync` and the scaffold dev loop",
         "Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh",
     )
+
+
+def check_pypi_index(cwd: Path) -> Check:
+    """Flag the internal Databricks PyPI proxy in uv.lock or an index env var.
+
+    A `uv.lock` pinned to ``pypi-proxy.dev.databricks.com`` fails ``uv sync``
+    for external users and deployed Apps (the blocking case). Absent that, an
+    index env var pointed at the proxy silently re-records it on the next
+    ``uv sync`` (the about-to-break case). See ``cli._sanitize_uv_lock`` and the
+    ``scripts/check-uv-lock-registry.sh`` CI guard.
+    """
+    lock = cwd / "uv.lock"
+    try:
+        if lock.exists() and _PYPI_PROXY_HOST in lock.read_text():
+            return Check(
+                "PyPI index",
+                Status.FAIL,
+                f"uv.lock pins packages to the internal proxy "
+                f"({_PYPI_PROXY_HOST}) — unreachable for external users and "
+                "deployed Apps, so `uv sync`/deploy will fail off the corp network",
+                "Unset the proxy index env var, then `uv lock` to re-resolve "
+                "from public PyPI (`apx deploy` also sanitizes the lock before "
+                "bundling).",
+            )
+    except OSError:
+        pass
+
+    leaked = next(
+        (v for v in _INDEX_ENV_VARS if _PYPI_PROXY_HOST in os.environ.get(v, "")),
+        None,
+    )
+    if leaked:
+        return Check(
+            "PyPI index",
+            Status.WARN,
+            f"{leaked} points at the internal proxy ({_PYPI_PROXY_HOST}) — "
+            "`uv sync` will re-poison uv.lock, breaking external installs",
+            f"unset {leaked}  (or point it at https://pypi.org/simple).",
+        )
+
+    return Check("PyPI index", Status.OK, "public PyPI", None)
 
 
 def check_databricks_cli() -> Check:
