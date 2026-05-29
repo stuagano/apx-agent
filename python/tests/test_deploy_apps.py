@@ -167,6 +167,11 @@ def _install_subprocess_mock(
         return _FakeProc(0, stdout="", stderr="")
 
     monkeypatch.setattr("apx_agent.cli._run_databricks_cmd", fake)
+    # The Databricks-CLI presence preflight (`shutil.which("databricks")`) is
+    # exercised separately in test_deploy_blocks_when_cli_missing; here we
+    # simulate the CLI being installed so these tests are deterministic in CI,
+    # which has no `databricks` binary on PATH.
+    monkeypatch.setattr("apx_agent.cli._preflight_databricks_cli", lambda: None)
     # Make sleeps a no-op so the polling tests run fast.
     monkeypatch.setattr("apx_agent.cli.time.sleep", lambda *_a, **_k: None) \
         if False else None  # noqa: SIM114 — sleep is imported inside _poll_app_ready
@@ -599,6 +604,9 @@ def test_profile_is_passed_through(
         return _FakeProc(0, stdout="ok\n", stderr="")
 
     monkeypatch.setattr("apx_agent.cli._run_databricks_cmd", fake)
+    # Simulate the Databricks CLI being installed (CI has no `databricks`
+    # binary); the presence preflight is covered by test_deploy_blocks_when_cli_missing.
+    monkeypatch.setattr("apx_agent.cli._preflight_databricks_cli", lambda: None)
     runner = CliRunner()
     result = runner.invoke(main, [
         "deploy", "--target", "apps", "--profile", "demo-profile",

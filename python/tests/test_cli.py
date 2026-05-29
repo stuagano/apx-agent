@@ -2543,8 +2543,12 @@ def test_run_friendly_error_when_auth_unresolved() -> None:
     runner = CliRunner()
     fake_uvicorn = MagicMock()
     fake_config = MagicMock(side_effect=ValueError("ambiguous profile"))
+    # Pin the configured-profiles lookup so the "pick a profile" guidance fires
+    # deterministically: it depends on ~/.databrickscfg, which CI lacks (there
+    # the doctor check falls back to the `databricks auth login` branch).
     with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
-            patch("databricks.sdk.core.Config", fake_config):
+            patch("databricks.sdk.core.Config", fake_config), \
+            patch("apx_agent.cli._databrickscfg_profiles", return_value=["DEFAULT", "prod"]):
         result = runner.invoke(main, ["run"])
 
     assert result.exit_code != 0
