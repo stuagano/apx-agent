@@ -144,6 +144,11 @@ When you're ready to share: `npx apx deploy --target apps`.
 
 See [docs/getting-started.md](docs/getting-started.md) for the longer walkthrough.
 
+> **Something not working?** Run `apx doctor` — it checks your Python, uv,
+> Databricks CLI, authentication (including a live workspace round-trip), and
+> project layout, and prints exactly what to fix. Add `--offline` to skip the
+> network check.
+
 ## Workflow patterns
 
 | Pattern | When |

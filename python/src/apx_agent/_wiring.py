@@ -44,6 +44,43 @@ from ._models import (
 logger = logging.getLogger(__name__)
 
 
+def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
+    """Apply ``[tool.apx.agent]`` config values onto the live agent instance.
+
+    This is the **shared config→instance seam** that both serve paths must run:
+
+      * ``apx run`` / Apps target — via ``setup_agent`` (this module).
+      * model-serving deploy — via ``apx deploy`` calling this right before
+        ``log_agent``, because MLflow captures the agent *at log time*; nothing
+        re-applies config inside the logged model's per-request compile.
+
+    Keeping both paths on one helper is what prevents cross-target drift (a
+    knob that works under ``apx run`` but silently no-ops on a deploy). Future
+    declarative features that likewise need to land on the instance before it
+    is captured — tools merge, memory attach, guard attach — should extend this
+    same function rather than re-implementing the merge at one call site.
+
+    Semantics for the generation knobs: the compile path (``_compile.py``) reads
+    ``temperature`` / ``max_tokens`` / ``max_iterations`` off the instance, not
+    off config. Constructor wins — only copy when the instance left the attr at
+    ``None``. Uses ``is None`` (not a truthy check) so a deliberate
+    ``temperature=0.0`` / ``max_iterations=0`` isn't clobbered, and ``hasattr``
+    guards composition agents (e.g. ``SequentialAgent``) that don't define
+    every knob. Idempotent: a second call sees a non-``None`` attr and no-ops.
+    """
+    for attr, config_value in (
+        ("_temperature", config.temperature),
+        ("_max_tokens", config.max_tokens),
+        ("_max_iterations", config.max_iterations),
+    ):
+        if (
+            config_value is not None
+            and hasattr(agent, attr)
+            and getattr(agent, attr) is None
+        ):
+            setattr(agent, attr, config_value)
+
+
 def _resolve_env_var(value: str) -> str:
     """Resolve a ``$VAR`` or ``${VAR}`` reference to its environment value.
 
@@ -96,6 +133,9 @@ async def setup_agent(
             if resolved not in existing:
                 sub_agent_urls.append(resolved)
                 existing.add(resolved)
+
+    # Merge config-declared knobs from [tool.apx.agent] onto the agent instance.
+    apply_config_knobs(agent, config)
 
     tools = agent.collect_tools()
     tools += await agent.fetch_remote_tools()

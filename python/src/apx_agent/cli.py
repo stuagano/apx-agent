@@ -24,6 +24,7 @@ ergonomics. Implementation should stay narrow.
 
 from __future__ import annotations
 
+import difflib
 import importlib
 import importlib.metadata
 import json
@@ -37,7 +38,18 @@ from typing import Any
 
 import click
 
+from . import _doctor as _doctor_mod
+
 logger = logging.getLogger(__name__)
+
+
+def _fix_msg(title: str, detail: str, fix: str | None) -> str:
+    """Consistent error body for hardened CLI failures."""
+    parts = [title, detail]
+    if fix:
+        parts.append(f"\nFix:\n    {fix}")
+    parts.append("\nRun `apx doctor` for a full check.")
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -173,44 +185,23 @@ def _databrickscfg_profiles() -> list[str]:
 
 
 def _preflight_databricks_auth() -> None:
-    """Fail `apx run` with dev-time guidance when Databricks auth is unresolved.
+    """Fail `apx run`/`deploy` with dev-time guidance when auth is unresolved.
 
-    The scaffolded agent connects to a workspace during app startup, so an
-    unresolved/ambiguous profile otherwise surfaces as a deep SDK traceback
-    inside uvicorn's startup. This converts it into one clear line. Dev-time
-    only — the deployed runtime keeps the raw error, the right signal in an ops
-    context with no ~/.databrickscfg.
+    Delegates to the doctor auth check so inline errors and `apx doctor` share
+    one source of truth.
     """
-    try:
-        from databricks.sdk.core import Config
-    except Exception:
-        return  # SDK not importable in some minimal setups; let it fail later.
-    try:
-        Config()
-    except Exception as e:
-        profiles = _databrickscfg_profiles()
-        if profiles:
-            # Has profiles but couldn't pick one (unset, or ambiguous hosts).
-            guidance = (
-                "Pick the profile to use:\n"
-                "    DATABRICKS_CONFIG_PROFILE=<name> apx run\n"
-                f"Configured profiles: {', '.join(profiles)}."
-            )
-        else:
-            # First-timer: no ~/.databrickscfg profiles at all — log in first.
-            guidance = (
-                "No Databricks profiles found (~/.databrickscfg is missing or "
-                "empty). Log in first:\n"
-                "    databricks auth login --host https://<your-workspace>.cloud.databricks.com\n"
-                "  (or `databricks configure --token` for a personal access token)\n"
-                "then re-run `apx run`. If you create a named profile, select it "
-                "with DATABRICKS_CONFIG_PROFILE=<name>."
-            )
+    from . import _doctor as _d
+
+    result = _d.check_databricks_auth()
+    if result.status is _d.Status.FAIL:
         raise click.ClickException(
-            "Could not resolve Databricks authentication. This agent connects to "
-            "a workspace at startup, so `apx run` needs working credentials.\n\n"
-            f"{guidance}\n\nUnderlying error: {e}"
-        ) from e
+            _fix_msg(
+                "Could not resolve Databricks authentication. This agent "
+                "connects to a workspace at startup.",
+                result.detail,
+                result.fix,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +358,22 @@ def _resolve_version() -> str:
         return "dev"
 
 
-@click.group()
+class _ApxGroup(click.Group):
+    """click.Group that suggests the closest command on a typo."""
+
+    def resolve_command(self, ctx, args):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            cmd_name = args[0] if args else ""
+            matches = difflib.get_close_matches(
+                cmd_name, self.list_commands(ctx), n=1
+            )
+            hint = f" Did you mean `{matches[0]}`?" if matches else ""
+            raise click.UsageError(f"No such command '{cmd_name}'.{hint}") from None
+
+
+@click.group(cls=_ApxGroup)
 @click.version_option(_resolve_version(), package_name="apx-agent", prog_name="apx")
 def main() -> None:
     """apx — declarative agents on Databricks. See `apx --help` for commands."""
@@ -386,6 +392,67 @@ def version() -> None:
     except importlib.metadata.PackageNotFoundError:
         v = "dev (editable install)"
     click.echo(v)
+
+
+# ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+
+_GLYPH = {
+    _doctor_mod.Status.OK: "✓",
+    _doctor_mod.Status.WARN: "⚠",
+    _doctor_mod.Status.FAIL: "✗",
+    _doctor_mod.Status.SKIP: "-",
+}
+
+
+@main.command()
+@click.option("--offline", is_flag=True, help="Skip the live workspace check.")
+@click.option("--json", "as_json", is_flag=True, help="Emit checks as JSON.")
+def doctor(offline: bool, as_json: bool) -> None:
+    """Diagnose the apx environment: tools, auth, and project layout.
+
+    Runs a live workspace round-trip by default; pass --offline to skip it.
+    Exits non-zero if any check fails.
+    """
+    groups = _doctor_mod.run_checks(Path.cwd(), online=not offline)
+    fails = sum(
+        1 for _g, cs in groups for c in cs if c.status is _doctor_mod.Status.FAIL
+    )
+    warns = sum(
+        1 for _g, cs in groups for c in cs if c.status is _doctor_mod.Status.WARN
+    )
+
+    if as_json:
+        payload = {
+            group: [
+                {
+                    "name": c.name,
+                    "status": c.status.value,
+                    "detail": c.detail,
+                    "fix": c.fix,
+                }
+                for c in checks
+            ]
+            for group, checks in groups
+        }
+        click.echo(json.dumps(payload, indent=2))
+        sys.exit(1 if fails else 0)
+
+    for group, checks in groups:
+        click.echo(group)
+        for c in checks:
+            click.echo(f"  {_GLYPH[c.status]} {c.name}: {c.detail}")
+            if c.fix and c.status in (_doctor_mod.Status.FAIL, _doctor_mod.Status.WARN):
+                click.echo(f"      Fix: {c.fix}")
+    click.echo("")
+    if fails:
+        click.echo(
+            f"{fails} failed, {warns} warning(s). "
+            "Fix the ✗ items, then re-run `apx doctor`."
+        )
+        sys.exit(1)
+    click.echo(f"All clear ({warns} warning(s)).")
 
 
 # ---------------------------------------------------------------------------
@@ -1166,6 +1233,7 @@ def scaffold(
     click.echo()
     click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")
     click.echo(f"Next: cd {name} && uv sync && uv run apx run    # serve locally")
+    click.echo("Tip: run `apx doctor` to check your environment before deploying.")
     if scaffold_target == "apps":
         click.echo(f"      uv run apx deploy                        # → Databricks Apps")
     else:
@@ -1177,6 +1245,50 @@ def scaffold(
 # ---------------------------------------------------------------------------
 # run
 # ---------------------------------------------------------------------------
+
+
+def _probe_import(module_spec: str) -> None:
+    """Import the ASGI module in-process to surface agent.py errors clearly.
+
+    `module_spec` is "module:variable"; we import the module half so a broken
+    `agent.py` produces a clean file+line message instead of a uvicorn
+    subprocess traceback. The CWD must already be on sys.path (the caller
+    ensures this for the real run via app_dir).
+
+    Under --reload uvicorn re-imports in a child process, so module-level code
+    runs in both the probe and the child; this is fine for the framework's
+    lifespan/AgentServer pattern which defers connections out of import time.
+    """
+    import importlib
+    import traceback
+
+    mod_name = _parse_module_spec(module_spec)[0]
+    cwd = str(Path.cwd())
+    added = cwd not in sys.path
+    if added:
+        sys.path.insert(0, cwd)
+    try:
+        importlib.import_module(mod_name)
+    except Exception as e:  # noqa: BLE001 — surface any import-time failure
+        tb = traceback.format_exc(limit=5).splitlines()
+        file_frame = next(
+            (line for line in reversed(tb) if line.strip().startswith('File "')),
+            None,
+        )
+        detail = f"{type(e).__name__}: {e}"
+        if file_frame:
+            detail = f"{file_frame.strip()}\n    {detail}"
+        raise click.ClickException(
+            _fix_msg(
+                f"Failed to import your agent module `{mod_name}`.",
+                detail,
+                "Fix the error in your agent code shown above, then re-run "
+                "`apx run`.",
+            )
+        ) from e
+    finally:
+        if added:
+            sys.path.remove(cwd)
 
 
 @main.command()
@@ -1237,6 +1349,7 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
     # (unlike `python`/`uvicorn` invoked directly), so without this uvicorn
     # reports `Could not import module "app"`. app_dir also propagates to the
     # --reload subprocess, which a bare sys.path.insert here would not.
+    _probe_import(module)
     uvicorn.run(module, host=host, port=port, reload=reload, app_dir=str(Path.cwd()))
 
 
@@ -1667,6 +1780,25 @@ def deploy(
         click.echo("# sanitized uv.lock → public PyPI for the logged model", err=True)
 
     # 2. Log + register
+    #
+    # Apply [tool.apx.agent] knobs onto the agent instance BEFORE log_agent.
+    # MLflow captures the agent at log time, so the deploy path can't rely on
+    # setup_agent (which only runs under `apx run` / the Apps target) to merge
+    # config — without this, config knobs are a silent no-op on model serving.
+    # Same shared seam as setup_agent; constructor still wins.
+    from ._models import AgentConfig
+    from ._wiring import apply_config_knobs
+
+    knob_fields = {
+        k: v for k, v in config.items() if k in AgentConfig.model_fields
+    }
+    # AgentConfig.name is the only required field; the deploy dict may omit it
+    # (name can come from --name). apply_config_knobs ignores name, so any
+    # non-None value satisfies the constructor — reuse the already-resolved one.
+    knob_fields.setdefault("name", effective_agent_name)
+    deploy_config = AgentConfig(**knob_fields)
+    apply_config_knobs(agent, deploy_config)
+
     if effective_experiment:
         mlflow.set_experiment(effective_experiment)
     with _EnvVarGuard(capture=effective_capture), mlflow.start_run():
@@ -2255,6 +2387,21 @@ def _ensure_experiment_id(
     return None
 
 
+def _preflight_databricks_cli() -> None:
+    """Block deploy early if the Databricks CLI isn't installed."""
+    from . import _doctor as _d
+
+    result = _d.check_databricks_cli()
+    if result.status is not _d.Status.OK:
+        raise click.ClickException(
+            _fix_msg(
+                "`apx deploy` needs the Databricks CLI.",
+                result.detail,
+                result.fix,
+            )
+        )
+
+
 def _preflight_apps(cwd: Path) -> None:
     """Verify the cwd looks like a scaffolded Apps project.
 
@@ -2520,6 +2667,7 @@ def _deploy_apps_impl(
         f"profile={profile or '<default>'})")
 
     # 1. Pre-flight
+    _preflight_databricks_cli()
     _preflight_apps(cwd)
     _validate_responses_agent_compiler()
     doc = _read_databricks_yml(cwd)

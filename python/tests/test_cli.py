@@ -2479,7 +2479,8 @@ def test_run_passes_app_dir_to_uvicorn() -> None:
     runner = CliRunner()
     fake_uvicorn = MagicMock()
     with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
-            patch("apx_agent.cli._preflight_databricks_auth"):
+            patch("apx_agent.cli._preflight_databricks_auth"), \
+            patch("apx_agent.cli._probe_import"):
         result = runner.invoke(main, ["run"])
 
     assert result.exit_code == 0, result.output
@@ -2542,8 +2543,12 @@ def test_run_friendly_error_when_auth_unresolved() -> None:
     runner = CliRunner()
     fake_uvicorn = MagicMock()
     fake_config = MagicMock(side_effect=ValueError("ambiguous profile"))
+    # Pin the configured-profiles lookup so the "pick a profile" guidance fires
+    # deterministically: it depends on ~/.databrickscfg, which CI lacks (there
+    # the doctor check falls back to the `databricks auth login` branch).
     with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
-            patch("databricks.sdk.core.Config", fake_config):
+            patch("databricks.sdk.core.Config", fake_config), \
+            patch("apx_agent.cli._databrickscfg_profiles", return_value=["DEFAULT", "prod"]):
         result = runner.invoke(main, ["run"])
 
     assert result.exit_code != 0
@@ -2663,3 +2668,153 @@ def test_scaffold_explicit_target_bakes_example_tool(tmp_path: Path) -> None:
     agent_py = (tmp_path / "ag" / "agent.py").read_text()
     assert "def sample_trips(" in agent_py
     assert "extra_tools=[sample_trips]" in agent_py
+
+
+# ---------------------------------------------------------------------------
+# `apx doctor`
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_runs_offline_and_reports(tmp_path: Path):
+    runner = CliRunner()
+    with patch("apx_agent._doctor.check_databricks_auth") as auth:
+        from apx_agent._doctor import Check, Status
+
+        auth.return_value = Check("Databricks auth", Status.OK, "ok", None)
+        result = runner.invoke(main, ["doctor", "--offline"])
+    assert "Environment" in result.output
+    assert "Authentication" in result.output
+    assert "Project" in result.output
+
+
+def test_doctor_exit_nonzero_on_fail():
+    runner = CliRunner()
+    from apx_agent._doctor import Check, Status
+
+    fail = Check("Python", Status.FAIL, "too old", "upgrade")
+    with patch("apx_agent._doctor.check_python_version", return_value=fail):
+        result = runner.invoke(main, ["doctor", "--offline"])
+    assert result.exit_code != 0
+    assert "upgrade" in result.output
+
+
+def test_doctor_json_flag():
+    runner = CliRunner()
+    from apx_agent._doctor import Check, Status
+
+    with patch("apx_agent._doctor.check_databricks_auth",
+               return_value=Check("Databricks auth", Status.OK, "ok", None)):
+        result = runner.invoke(main, ["doctor", "--offline", "--json"])
+    assert result.exit_code in (0, 1)
+    payload = json.loads(result.output)
+    assert "Environment" in payload
+    assert isinstance(payload["Environment"], list)
+
+
+def test_doctor_online_invokes_live_check():
+    runner = CliRunner()
+    from apx_agent._doctor import Check, Status
+
+    with patch(
+        "apx_agent._doctor.check_databricks_workspace"
+    ) as ws, patch(
+        "apx_agent._doctor.check_databricks_auth",
+        return_value=Check("Databricks auth", Status.OK, "ok", None),
+    ):
+        ws.return_value = Check("Workspace reachable", Status.OK, "ok", None)
+        runner.invoke(main, ["doctor"])
+    assert ws.called
+
+
+# ---------------------------------------------------------------------------
+# `_fix_msg` helper + refactored `_preflight_databricks_auth`
+# ---------------------------------------------------------------------------
+
+
+def test_fix_msg_format():
+    from apx_agent.cli import _fix_msg
+
+    msg = _fix_msg("Title", "what happened", "do this")
+    assert "Title" in msg
+    assert "what happened" in msg
+    assert "Fix:" in msg
+    assert "do this" in msg
+    assert "apx doctor" in msg
+
+
+def test_preflight_auth_uses_check(monkeypatch):
+    import click as _click
+
+    from apx_agent._doctor import Check, Status
+
+    fail = Check("Databricks auth", Status.FAIL, "no profiles", "login here")
+    with patch("apx_agent._doctor.check_databricks_auth", return_value=fail):
+        with pytest.raises(_click.ClickException) as exc:
+            from apx_agent.cli import _preflight_databricks_auth
+
+            _preflight_databricks_auth()
+    assert "login here" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# "Did you mean" typo suggestions
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_command_suggests_closest():
+    runner = CliRunner()
+    result = runner.invoke(main, ["deploi"])  # typo of deploy
+    assert result.exit_code != 0
+    assert "deploy" in result.output
+    assert "did you mean" in result.output.lower()
+
+
+def test_unknown_command_no_close_match():
+    runner = CliRunner()
+    result = runner.invoke(main, ["zzzzzz"])
+    assert result.exit_code != 0
+    assert "No such command" in result.output or "zzzzzz" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `apx scaffold` — next-steps footer (Task 10)
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(main, ["scaffold", "my-agent"])
+    assert result.exit_code == 0
+    out = result.output
+    assert "cd my-agent" in out
+    assert "uv sync" in out
+    assert "apx run" in out
+
+
+# ---------------------------------------------------------------------------
+# `apx run` — pre-import probe (Task 8)
+# ---------------------------------------------------------------------------
+
+
+def test_run_probe_reports_broken_agent(tmp_path: Path, monkeypatch):
+    # A scaffolded-looking apps project whose agent module raises on import.
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
+    agent_server = tmp_path / "agent_server"
+    agent_server.mkdir()
+    (agent_server / "__init__.py").write_text("")
+    (agent_server / "start_server.py").write_text(
+        "import does_not_exist_xyz\napp = None\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    with patch("apx_agent.cli._preflight_databricks_auth"), patch(
+        "apx_agent._mlflow_tracing.autolog_if_env"
+    ):
+        result = runner.invoke(main, ["run"])
+    assert result.exit_code != 0
+    out = result.output
+    assert "does_not_exist_xyz" in out or "start_server" in out
+    # Load-bearing: distinguishes the probe's structured error from a raw
+    # uvicorn traceback.
+    assert "apx doctor" in out
