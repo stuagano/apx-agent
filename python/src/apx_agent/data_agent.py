@@ -145,15 +145,27 @@ class DataAgent(LlmAgent):
 
 @template
 class DataTemplate:
-    """Reference Template: 'talk to my governed Unity Catalog schema.'"""
+    """Talks to a governed Unity Catalog schema (SQL + UC functions, optional
+    Genie / Vector Search) — the reference Template implementation.
+
+    The Spec covers only role/skill inputs. Persona (``model``, instruction
+    tone, generation knobs) is layered later from ``[tool.apx.agent]`` via
+    ``apply_config_knobs``; ``name``/``instructions``/``extra_tools`` from the
+    direct ``DataAgent`` constructor are intentionally out of the Spec for now.
+    """
 
     name = "data"
     title = "Data Analyst"
     description = "Talks to a governed Unity Catalog schema (SQL + UC functions, optional Genie/Vector Search)."
 
     class Spec(BaseModel):
+        """Spec for DataTemplate. In config dicts use the key ``schema`` (the
+        field is stored as ``schema_name`` to avoid shadowing Pydantic's
+        BaseModel.schema(); access it as ``spec.schema_name`` in code)."""
+
         model_config = ConfigDict(populate_by_name=True)
         catalog: str
+        # Access as spec.schema_name in code; 'schema' alias is for config dicts only.
         schema_name: str = Field(alias="schema")
         warehouse_id: str | None = None
         genie_space: str | None = None

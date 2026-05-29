@@ -313,6 +313,12 @@ __all__ = [
     "SequentialAgent",
     "RemoteDatabricksAgent",
     "agent_tool",
+    # Template protocol + registry
+    "Template",
+    "TemplateInfo",
+    "TemplateRegistry",
+    "template",
+    "template_registry",
     # Models
     "AgentCard",
     "AgentConfig",
@@ -528,10 +534,4 @@ __all__ = [
     "output_summary",
     # Bootstrap
     "init_apps_experiment",
-    # Template protocol + registry
-    "Template",
-    "TemplateInfo",
-    "TemplateRegistry",
-    "template",
-    "template_registry",
 ]
