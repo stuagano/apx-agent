@@ -1191,6 +1191,11 @@ def scaffold(
                 err=True,
             )
             target = new_target
+
+    # ``name`` may be a path (e.g. "examples/my-agent"); the project/agent name
+    # baked into the templates must be the bare directory name, or it produces
+    # an invalid PEP 508 ``[project].name`` that breaks ``uv sync``.
+    project_name = Path(name).name
     if target.exists() and not force:
         if any(target.iterdir()):
             raise click.ClickException(
@@ -1226,9 +1231,9 @@ def scaffold(
             )
 
     if scaffold_target == "apps":
-        _scaffold_apps(target, name, force, catalog, schema, table)
+        _scaffold_apps(target, project_name, force, catalog, schema, table)
     else:
-        _scaffold_model_serving(target, name, force, catalog, schema, table)
+        _scaffold_model_serving(target, project_name, force, catalog, schema, table)
 
     click.echo()
     click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")

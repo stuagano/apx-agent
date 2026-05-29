@@ -125,14 +125,24 @@ async function main(): Promise<void> {
 }
 
 // Only run when invoked as a script (not when imported by the test suite).
-// Compare `import.meta.url` to the file:// form of `process.argv[1]`. This is
-// the standard "is this the entry point?" pattern for ESM modules.
+// Compare `import.meta.url` to the file:// form of `process.argv[1]`. The
+// argv path must be symlink-resolved first: when the CLI is installed or
+// `npm link`-ed, argv[1] is the bin symlink (e.g. /usr/local/bin/apx) while
+// import.meta.url already points at the real dist file, so an unresolved
+// compare would be false and `main()` would silently never run.
 const entryArg = process.argv[1];
 let isDirect = false;
 if (entryArg) {
   try {
     const { pathToFileURL } = await import('node:url');
-    isDirect = import.meta.url === pathToFileURL(entryArg).href;
+    const { realpathSync } = await import('node:fs');
+    let resolvedArg = entryArg;
+    try {
+      resolvedArg = realpathSync(entryArg);
+    } catch {
+      // fall back to the raw arg if it can't be resolved
+    }
+    isDirect = import.meta.url === pathToFileURL(resolvedArg).href;
   } catch {
     isDirect = false;
   }
