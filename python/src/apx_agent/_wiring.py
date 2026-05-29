@@ -68,6 +68,16 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
     ``temperature=0.0`` / ``max_iterations=0`` isn't clobbered, and ``hasattr``
     guards composition agents (e.g. ``SequentialAgent``) that don't define
     every knob. Idempotent: a second call sees a non-``None`` attr and no-ops.
+
+    Semantics for instructions: this ALSO overlays ``config.instructions`` onto
+    ``agent._instructions`` via ``compose_instructions`` (persona above
+    grounding). Unlike the generation knobs' constructor-wins *fill*, this is
+    *compose* — when both the template-set grounding and the envelope persona
+    are present, both are kept (overlay first, grounding below). When only one
+    side is non-empty, that side is used verbatim (fill). A whitespace-only
+    ``config.instructions`` is treated as empty (no-op). Idempotent per instance
+    via the ``_persona_overlaid`` sentinel: a second call leaves instructions
+    untouched.
     """
     for attr, config_value in (
         ("_temperature", config.temperature),
@@ -86,7 +96,7 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
     # envelope may carry persona instructions. Compose (overlay above grounding)
     # when both are present; otherwise fill. Idempotent via a sentinel so a
     # second call (e.g. mount_mcp_endpoints re-running setup_agent) is a no-op.
-    if config.instructions and hasattr(agent, "_instructions"):
+    if config.instructions.strip() and hasattr(agent, "_instructions"):
         if not getattr(agent, "_persona_overlaid", False):
             agent._instructions = compose_instructions(
                 base=agent._instructions, overlay=config.instructions

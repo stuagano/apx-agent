@@ -433,3 +433,11 @@ def test_instruction_overlay_is_idempotent():
     once = agent._instructions
     apply_config_knobs(agent, cfg)
     assert agent._instructions == once
+
+
+def test_whitespace_only_config_instructions_does_not_block_later_overlay():
+    agent = Agent(tools=[], instructions="GROUNDING")
+    apply_config_knobs(agent, _cfg(instructions="   "))
+    assert agent._instructions == "GROUNDING"  # treated as empty, no-op
+    apply_config_knobs(agent, _cfg(instructions="PERSONA"))  # real overlay still applies
+    assert "PERSONA" in agent._instructions and "GROUNDING" in agent._instructions
