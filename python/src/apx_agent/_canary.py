@@ -45,6 +45,7 @@ match the convention.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -244,6 +245,23 @@ def deploy_canary(
         workload_size=workload_size,
     ))
 
+    # No existing served entities to canary against (newly-created or empty
+    # endpoint): there is nothing to split traffic *with*, and Model Serving
+    # rejects a TrafficConfig that doesn't sum to 100. Route 100% to the new
+    # entity — it is the only thing serving.
+    if not seen:
+        routes_only = [Route(served_entity_name=new_entity_name, traffic_percentage=100)]
+        ws.serving_endpoints.update_config(
+            name=endpoint,
+            served_entities=served_inputs,
+            traffic_config=TrafficConfig(routes=routes_only),
+        )
+        logger.info(
+            "deploy_canary: no existing served entities on %s — routing 100%% to %s",
+            endpoint, new_entity_name,
+        )
+        return get_canary_config(endpoint, ws=ws)
+
     # Redistribute traffic — existing entities share (100 - canary_traffic_pct),
     # weighted by their current allocation; canary gets canary_traffic_pct.
     remaining = 100 - canary_traffic_pct
@@ -392,14 +410,30 @@ def analyze_canary(
             "analyze_canary requires mlflow. Install with: pip install 'apx-agent[eval]'"
         ) from e
 
+    # Bound the query to the lookback window so stale traffic can't mask a
+    # regression. MLflow trace search uses a millisecond ``timestamp_ms``.
+    start_time_ms = int((time.time() - lookback_hours * 3600) * 1000)
+    filter_string = f"timestamp_ms > {start_time_ms}"
+
     try:
+        # include_spans=False keeps this a metadata-only read so it works even
+        # when blob storage is unreachable (private-link / FEVM workspaces
+        # where *.storage.cloud.databricks.com is blocked). We only read
+        # trace-level tags / status / latency below, never span data.
         traces_raw = mlflow.search_traces(  # type: ignore[attr-defined]
             experiment_names=[experiment],
+            filter_string=filter_string,
             max_results=max_traces,
+            include_spans=False,
         )
     except Exception as e:
-        logger.warning("analyze_canary: search_traces failed: %s", e)
-        return CanaryReport(endpoint=endpoint, lookback_hours=lookback_hours)
+        # Do NOT swallow this into a clean empty report — an empty canary
+        # report reads as "no errors observed" and could greenlight
+        # promoting a bad model. Surface the failure so the operator knows
+        # the analysis did not run (e.g. blocked blob storage, bad token).
+        raise RuntimeError(
+            f"analyze_canary: search_traces failed for experiment {experiment!r}: {e}"
+        ) from e
 
     if hasattr(traces_raw, "to_dict"):
         try:

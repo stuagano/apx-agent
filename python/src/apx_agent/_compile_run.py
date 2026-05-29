@@ -117,7 +117,9 @@ def _to_langchain(messages: list[Message], system_prompt: str = "") -> list[Any]
         elif m.role == "assistant":
             out.append(AIMessage(content=m.content or ""))
         elif m.role == "tool":
-            out.append(ToolMessage(content=m.content or "", tool_call_id=""))
+            out.append(
+                ToolMessage(content=m.content or "", tool_call_id=m.tool_call_id or "")
+            )
         else:
             out.append(HumanMessage(content=m.content or ""))
     return out
@@ -164,9 +166,11 @@ async def run_via_compile(
             wires this as ``system_prompt`` during compile, so we only inject
             it into the message list when caller explicitly passes one
             (e.g. SequentialAgent's prepended instructions).
-        **_kwargs: Ignored. Kept for signature compatibility with
-            ``run_via_sdk`` (temperature, max_tokens, max_iterations are
-            encoded at compile time or in the model itself).
+        **_kwargs: Ignored here. Kept for signature compatibility with
+            ``run_via_sdk``. Generation knobs (``temperature``, ``max_tokens``,
+            ``max_iterations``) are read off the ``LlmAgent`` itself during
+            ``compile_to_langgraph`` — see ``_compile._compile_llm_agent`` —
+            not passed through this call.
 
     Returns:
         The final assistant text.
@@ -178,7 +182,12 @@ async def run_via_compile(
 
     compiled = compile_to_langgraph(agent, ws=ws, model=model)
     lc_messages = _to_langchain(input_messages, system_prompt=instructions)
-    result = compiled.invoke({"messages": lc_messages})
+
+    # Use the async graph API so the multi-step LLM + tool loop runs without
+    # blocking the event loop (H1). Compiled LangGraph graphs always expose
+    # ``ainvoke``; tool execution is already offloaded off-loop inside
+    # ``_compile._make_langchain_tool``, so we never touch the sync ``invoke``.
+    result = await compiled.ainvoke({"messages": lc_messages})
     return _final_text(result.get("messages", []))
 
 
@@ -205,9 +214,11 @@ async def stream_via_compile(
     compiled = compile_to_langgraph(agent, ws=ws, model=model)
     lc_messages = _to_langchain(input_messages, system_prompt=instructions)
 
-    for chunk in compiled.stream({"messages": lc_messages}, stream_mode="updates"):
+    def _texts_from_chunk(chunk: Any) -> list[str]:
+        """Extract user-visible text deltas from one stream_mode='updates' chunk."""
+        texts: list[str] = []
         if not isinstance(chunk, dict):
-            continue
+            return texts
         for _node_name, node_output in chunk.items():
             if not isinstance(node_output, dict):
                 continue
@@ -218,7 +229,16 @@ async def stream_via_compile(
                     continue  # internal step, not user-visible text
                 text = msg.content if isinstance(msg.content, str) else str(msg.content)
                 if text:
-                    yield text
+                    texts.append(text)
+        return texts
+
+    # Stream via the async graph API so the event loop is never blocked (H1).
+    # Compiled LangGraph graphs always expose ``astream``; tool execution is
+    # already offloaded off-loop inside ``_compile``, so the sync ``stream`` is
+    # never needed.
+    async for chunk in compiled.astream({"messages": lc_messages}, stream_mode="updates"):
+        for text in _texts_from_chunk(chunk):
+            yield text
 
 
 def _get_model(request: "Request") -> str:

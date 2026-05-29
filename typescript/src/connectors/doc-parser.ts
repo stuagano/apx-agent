@@ -11,9 +11,39 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { posix as posixPath } from 'node:path';
 import { z } from 'zod';
 import { defineTool, type AgentTool } from '../agent/tools.js';
 import { resolveHost, resolveToken, type ConnectorConfig } from '../connectors/types.js';
+
+// ---------------------------------------------------------------------------
+// Filename safety
+// ---------------------------------------------------------------------------
+
+/**
+ * Safe basename: letters, digits, dot, underscore, hyphen, space. No path
+ * separators (`/` or `\`), no `..`/`.` traversal segments — so the value can
+ * never escape the configured volume directory when concatenated into the
+ * Files API path.
+ */
+const SAFE_FILENAME_RE = /^[A-Za-z0-9 ._-]+$/;
+
+function assertSafeFilename(filename: string): void {
+  if (
+    typeof filename !== 'string' ||
+    filename.length === 0 ||
+    filename === '.' ||
+    filename === '..' ||
+    filename.includes('/') ||
+    filename.includes('\\') ||
+    !SAFE_FILENAME_RE.test(filename)
+  ) {
+    throw new Error(
+      `Invalid filename: must be a bare basename matching ${SAFE_FILENAME_RE.source} ` +
+        `with no path separators or traversal segments (got ${JSON.stringify(filename)})`,
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,9 +123,18 @@ export function createDocUploadTool(config: ConnectorConfig): AgentTool {
       const token = await resolveToken();
       const docId = randomUUID();
 
+      // Reject path separators / traversal before building the remote path.
+      assertSafeFilename(filename);
+
       // Strip trailing slash from volumePath, then build path
       const base = volumePath.replace(/\/$/, '');
       const remotePath = `${base}/${docId}_${filename}`;
+
+      // Belt-and-suspenders: normalize and assert the result stays under base.
+      const normalized = posixPath.normalize(remotePath);
+      if (normalized !== remotePath || !normalized.startsWith(`${base}/`)) {
+        throw new Error(`Resolved upload path escapes the configured volume: ${normalized}`);
+      }
 
       const url = `${host}/api/2.0/fs/files${remotePath}`;
 

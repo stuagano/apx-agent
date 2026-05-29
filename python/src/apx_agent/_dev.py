@@ -22,7 +22,7 @@ import os
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from ._models import AgentContext, AgentTool
@@ -51,7 +51,7 @@ from ._ui_setup import (
     _write_env_file,
     _render_setup_ui,
 )
-from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes
+from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes, _validate_probe_url
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
 
 logger = logging.getLogger(__name__)
@@ -275,13 +275,97 @@ def _parse_judge_output(text: str) -> tuple[str, str]:
                 reason = stripped
                 break
 
-    # If we never saw a VERDICT line, infer from the text body.
-    if verdict == "FAIL" and "VERDICT:" not in text.upper():
-        upper = text.upper()
-        if "PASS" in upper and "FAIL" not in upper:
-            verdict = "PASS"
+    # No VERDICT line at all → keep FAIL. An eval harness must fail closed on
+    # unclear judge output (the docstring's "fall back to FAIL" contract); the
+    # previous substring inference flipped "passable"/"would pass"/"COMPASSIONATE"
+    # to PASS, the worst direction for an eval (audit M4).
 
     return verdict, reason or "(no reason provided)"
+
+
+# ---------------------------------------------------------------------------
+# Dev-UI write authorization (audit H17/H18)
+#
+# The dev router hosts code-write/RCE-equivalent endpoints (POST /_apx/edit,
+# /_apx/tools/new, /_apx/tools/suggest, /_apx/replay/*, save_setup, env writes,
+# DELETE /_apx/tools/{name}) and an SSRF probe (/_apx/setup/probe-json). Those
+# write/probe endpoints must not be reachable by every authorized App viewer.
+#
+# Posture:
+#   * Local ``apx run`` (no DATABRICKS_APP_PORT) → writes allowed (the dev loop).
+#   * Deployed Databricks App (DATABRICKS_APP_PORT set):
+#       - APX_DEV_UI_TOKEN unset  → writes DENIED (safe default).
+#       - APX_DEV_UI_TOKEN set    → require a matching ``X-APX-Dev-Token`` header
+#                                   (or ``token`` query param); 403 otherwise.
+#
+# A dedicated header is used rather than Authorization/Bearer so it never
+# collides with the platform's ``Authorization`` / ``X-Forwarded-Access-Token``.
+# The guard is attached once at the router level and only enforces on
+# state-changing methods plus the SSRF probe, so read GETs stay open.
+# ---------------------------------------------------------------------------
+
+_DEV_TOKEN_HEADER = "x-apx-dev-token"
+_DEV_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _is_deployed_app() -> bool:
+    """True when running inside a deployed Databricks App.
+
+    Env-only (``DATABRICKS_APP_PORT``) deliberately — a local ``apx run`` that
+    happens to sit behind a proxy must not be locked out, so the X-Forwarded-*
+    heuristic used elsewhere is not consulted here.
+    """
+    return bool(os.environ.get("DATABRICKS_APP_PORT"))
+
+
+def _enforce_dev_write_auth(request: Request) -> None:
+    """Authorize a dev-UI write/probe request, or raise 403.
+
+    See the module-level posture comment for the full decision table.
+    """
+    import hmac
+
+    token = os.environ.get("APX_DEV_UI_TOKEN", "").strip()
+
+    if not token:
+        # No token configured. Allow locally; deny on a deployed App so the
+        # code-write/probe surface is never open to authorized App viewers.
+        if _is_deployed_app():
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Dev-UI write endpoints are disabled on deployed Apps. "
+                    "Set the APX_DEV_UI_TOKEN env var and send it as the "
+                    "X-APX-Dev-Token header to enable them."
+                ),
+            )
+        return
+
+    supplied = request.headers.get(_DEV_TOKEN_HEADER) or request.query_params.get("token") or ""
+    if not (supplied and hmac.compare_digest(supplied, token)):
+        raise HTTPException(
+            status_code=403,
+            detail="Missing or invalid X-APX-Dev-Token for dev-UI write endpoint.",
+        )
+
+
+async def _dev_write_guard(request: Request) -> None:
+    """Router-level dependency: gate state-changing methods + the SSRF probe.
+
+    Attached at router construction so it covers every current and future
+    write route (edit, tools/new, tools/suggest, replay/*, setup writes,
+    DELETE tools) without per-route annotations that could miss one. Read GETs
+    (chat, traces, topology, probe/checks, setup/catalogs, …) fall through.
+    """
+    # Two side-effecting GETs need gating too: the SSRF probe and
+    # /_apx/deploy/stream, which spawns ``apx deploy`` as a subprocess
+    # (privileged, state-changing — same threat class as the write endpoints).
+    path = request.url.path
+    is_side_effecting_get = path.endswith("/setup/probe-json") or path.endswith(
+        "/deploy/stream"
+    )
+    if request.method in _DEV_WRITE_METHODS or is_side_effecting_get:
+        _enforce_dev_write_auth(request)
 
 
 def inject_create_tool_meta(ctx: AgentContext) -> None:
@@ -472,7 +556,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     """Build the /_apx/* dev UI routes."""
     from fastapi.responses import RedirectResponse
 
-    router = APIRouter()
+    # Router-level guard: enforces auth on write methods + the SSRF probe.
+    # See _dev_write_guard / _enforce_dev_write_auth for the posture (H17/H18).
+    router = APIRouter(dependencies=[Depends(_dev_write_guard)])
 
     @router.get("/", include_in_schema=False)
     async def root_redirect() -> RedirectResponse:
@@ -1560,9 +1646,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if not url:
             return JSONResponse({"error": "url parameter required"}, status_code=400)
 
+        # SSRF guard: restrict scheme to http/https and reject hosts resolving
+        # to private/loopback/link-local/metadata IPs. follow_redirects=False
+        # so a public host can't 302 into the internal network (audit H18).
+        reason = _validate_probe_url(url)
+        if reason is not None:
+            return JSONResponse({"error": reason, "url": url}, status_code=400)
+
         t0 = _time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
                 r = await client.get(url)
             latency = int((_time.monotonic() - t0) * 1000)
             return JSONResponse({"status": r.status_code, "latency_ms": latency, "url": url})

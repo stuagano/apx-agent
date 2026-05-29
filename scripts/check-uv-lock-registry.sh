@@ -14,14 +14,19 @@ cd "$ROOT"
 FIX=0
 [ "${1:-}" = "--fix" ] && FIX=1
 
-PROXY="https://pypi-proxy.dev.databricks.com/simple"
-PUBLIC="https://pypi.org/simple"
+# Match on the host (not the full URL) so the detector and the fixer cover the
+# same surface: a scheme (http vs https), trailing-slash, or sub-path variant of
+# the proxy host must both trip CI red AND be rewritten by --fix. The package
+# download URLs are on files.pythonhosted.org, so host replacement never touches
+# them.
+PROXY_HOST="pypi-proxy.dev.databricks.com"
+PUBLIC_HOST="pypi.org"
 
 bad=""
 for f in $(git ls-files '*uv.lock'); do
-  if grep -q "pypi-proxy.dev.databricks.com" "$f" 2>/dev/null; then
+  if grep -q "$PROXY_HOST" "$f" 2>/dev/null; then
     if [ "$FIX" = "1" ]; then
-      perl -i -pe "s{\Q${PROXY}\E}{${PUBLIC}}g" "$f"
+      perl -i -pe "s{\Q${PROXY_HOST}\E}{${PUBLIC_HOST}}g" "$f"
       echo "fixed: $f"
     else
       bad="$bad $f"

@@ -182,5 +182,8 @@ async def _stream_chunks(
             yield f"data: {payload}\n\n"
     except Exception as exc:
         logger.exception("Error during /invocations stream")
+        # Stay within the data-only SSE contract (see module docstring): emit
+        # the error as a ``data:`` frame rather than a named ``event: error``
+        # frame, so consumers parsing only ``data:`` lines still observe it.
         err = json.dumps({"error": type(exc).__name__, "message": str(exc)})
-        yield f"event: error\ndata: {err}\n\n"
+        yield f"data: {err}\n\n"

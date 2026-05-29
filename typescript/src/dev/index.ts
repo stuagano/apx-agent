@@ -24,6 +24,60 @@ export interface DevUIConfig {
 }
 
 // ---------------------------------------------------------------------------
+// SSRF guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Return true if `hostname` (as produced by the WHATWG `URL` parser, which
+ * already normalizes decimal/octal/hex IPv4 forms to dotted-decimal) points
+ * at a private, loopback, link-local, or cloud-metadata address that the probe
+ * must not reach.
+ */
+function isBlockedHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+
+  // Bracketed IPv6 literal, e.g. "[::1]" or "[::ffff:127.0.0.1]".
+  if (host.startsWith('[') && host.endsWith(']')) {
+    const v6 = host.slice(1, -1);
+    // Loopback, unspecified, IPv4-mapped/compat, unique-local (fc00::/7),
+    // link-local (fe80::/10).
+    if (
+      v6 === '::1' ||
+      v6 === '::' ||
+      v6.startsWith('::ffff:') ||
+      v6.startsWith('::') ||
+      /^f[cd][0-9a-f]{2}:/.test(v6) ||
+      /^fe[89ab][0-9a-f]:/.test(v6)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  // IPv4 dotted-decimal range checks (covers the decimal/octal/hex encodings
+  // the URL parser collapses into this form).
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 127) return true; // loopback 127.0.0.0/8
+    if (a === 10) return true; // RFC1918 10.0.0.0/8
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+    if (a === 169 && b === 254) return true; // link-local / metadata 169.254.0.0/16
+    if (a === 0) return true; // 0.0.0.0/8
+    return false;
+  }
+
+  // Non-numeric hostnames: block localhost outright. (DNS resolution and
+  // rebinding are out of scope — see probe handler note.)
+  if (host === 'localhost' || host === 'localhost.localdomain' || host.endsWith('.localhost')) {
+    return true;
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Plugin factory
 // ---------------------------------------------------------------------------
 
@@ -81,24 +135,42 @@ export function createDevPlugin(config: DevUIConfig, agentExports: () => AgentEx
           res.status(400).json({ error: 'Only http/https URLs allowed' });
           return;
         }
-        const host = parsed.hostname.toLowerCase();
-        if (
-          host === 'localhost' ||
-          host.startsWith('127.') ||
-          host.startsWith('10.') ||
-          host.startsWith('192.168.') ||
-          host === '169.254.169.254' ||
-          host.startsWith('0.') ||
-          host === '[::1]' ||
-          /^172\.(1[6-9]|2\d|3[01])\./.test(host)
-        ) {
+        if (isBlockedHost(parsed.hostname)) {
           res.status(403).json({ error: 'Private/internal addresses not allowed' });
           return;
         }
 
+        // Follow redirects manually so each hop's host is re-validated — a
+        // public URL that 30x-redirects to a private/metadata address would
+        // otherwise bypass the initial check. (DNS resolution and rebinding
+        // remain out of scope.)
+        const MAX_REDIRECTS = 5;
         try {
           const start = Date.now();
-          const response = await fetch(targetUrl);
+          let currentUrl = parsed.toString();
+          let response: globalThis.Response;
+          for (let hop = 0; ; hop++) {
+            response = await fetch(currentUrl, { redirect: 'manual' });
+            const isRedirect = response.status >= 300 && response.status < 400 && response.headers.has('location');
+            if (!isRedirect) break;
+            if (hop >= MAX_REDIRECTS) {
+              res.status(400).json({ error: 'Too many redirects' });
+              return;
+            }
+            const location = response.headers.get('location') as string;
+            let next: URL;
+            try {
+              next = new URL(location, currentUrl);
+            } catch {
+              res.status(400).json({ error: 'Invalid redirect target' });
+              return;
+            }
+            if (!['http:', 'https:'].includes(next.protocol) || isBlockedHost(next.hostname)) {
+              res.status(403).json({ error: 'Redirect to private/internal address blocked' });
+              return;
+            }
+            currentUrl = next.toString();
+          }
           res.json({
             url: targetUrl,
             status: response.status,

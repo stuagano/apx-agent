@@ -175,6 +175,13 @@ class TestProbeChecks:
         env_path = tmp_path / "test.env"
         env_path.write_text("MISSING_VAR=somevalue\n")
         monkeypatch.delenv("MISSING_VAR", raising=False)
+        # H9 added _check_mlflow_read to the probe. If MLFLOW_EXPERIMENT_ID
+        # leaks from the ambient environment that check attempts a real span
+        # read and can return "fail", flipping overall to "fail". Pin the
+        # MLflow env so mlflow_read skips and mlflow_config warns — leaving
+        # env_vars + mlflow_config as the only non-skip results (both warn).
+        monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
 
         with _patch_workspace_ok(), _patch_model_ok(), \
              patch("apx_agent._ui_probe._find_env_path", return_value=env_path), \
