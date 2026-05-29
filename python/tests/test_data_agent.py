@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from apx_agent import Agent, DataAgent, LlmAgent
+from apx_agent import Agent, DataAgent, DataTemplate, LlmAgent, template_registry
 from apx_agent._resources import collect_resource_specs
 
 
@@ -116,3 +116,27 @@ class TestTopology:
 
         # Recognized as its own type (not falling back to the generic "Agent").
         assert _agent_class_to_node_type(DataAgent("main", "sales")) == "DataAgent"
+
+
+class TestDataTemplate:
+    def test_registered_in_global_registry(self):
+        assert template_registry.get("data").name == "data"
+
+    def test_build_returns_dataagent_equivalent_to_constructor(self):
+        ws = _ws_with_schema({"orders": ["id(INT)", "total(DOUBLE)"]})
+        spec = DataTemplate.Spec(catalog="main", schema="sales")
+        built = DataTemplate().build(spec, ws=ws)
+        direct = DataAgent("main", "sales", ws=ws)
+        assert type(built) is DataAgent
+        assert built._instructions == direct._instructions
+        assert [t.__name__ for t in built._tool_fns] == [t.__name__ for t in direct._tool_fns]
+
+    def test_build_from_dict_via_registry_alias(self):
+        agent = template_registry.build("data", {"catalog": "main", "schema": "sales"})
+        assert type(agent) is DataAgent
+        assert agent.schema == "sales"
+
+    def test_topology_node_type_still_dataagent_for_built(self):
+        from apx_agent._topology import _agent_class_to_node_type
+        agent = DataTemplate().build(DataTemplate.Spec(catalog="main", schema="sales"))
+        assert _agent_class_to_node_type(agent) == "DataAgent"

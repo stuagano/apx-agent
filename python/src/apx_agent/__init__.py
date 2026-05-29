@@ -20,7 +20,10 @@ Agent = LlmAgent
 from ._agent_tool import agent_tool
 
 # DataAgent — LlmAgent specialized for governed UC data access
-from .data_agent import DataAgent
+from .data_agent import DataAgent, DataTemplate
+
+# Template protocol, registry, and decorator
+from ._template import Template, TemplateInfo, TemplateRegistry, template, template_registry
 
 # Models
 from ._models import (
@@ -300,6 +303,7 @@ __all__ = [
     "Agent",
     "BaseAgent",
     "DataAgent",
+    "DataTemplate",
     "HandoffAgent",
     "KeywordRouter",
     "LlmAgent",
@@ -524,4 +528,10 @@ __all__ = [
     "output_summary",
     # Bootstrap
     "init_apps_experiment",
+    # Template protocol + registry
+    "Template",
+    "TemplateInfo",
+    "TemplateRegistry",
+    "template",
+    "template_registry",
 ]
