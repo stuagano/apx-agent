@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 import yaml
 from click.testing import CliRunner
+from unittest.mock import patch
 
 from apx_agent.cli import main
 
@@ -604,3 +605,30 @@ def test_profile_is_passed_through(
     ])
     assert result.exit_code == 0, result.output
     assert all(p == "demo-profile" for p in seen_profiles), seen_profiles
+
+
+# ---------------------------------------------------------------------------
+# Databricks CLI preflight (Task 9)
+# ---------------------------------------------------------------------------
+
+
+def test_deploy_blocks_when_cli_missing(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from apx_agent._doctor import Check, Status
+    from apx_agent.cli import main
+
+    # apps-looking project
+    (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
+    (tmp_path / "agent_server").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    warn = Check("Databricks CLI", Status.WARN, "not found", "install it")
+    with patch("apx_agent._doctor.check_databricks_cli", return_value=warn), patch(
+        "apx_agent.cli._preflight_databricks_auth"
+    ):
+        result = CliRunner().invoke(main, ["deploy", "--target", "apps"])
+    assert result.exit_code != 0
+    assert "Databricks CLI" in result.output
+    assert "install it" in result.output

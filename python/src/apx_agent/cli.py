@@ -2357,6 +2357,21 @@ def _ensure_experiment_id(
     return None
 
 
+def _preflight_databricks_cli() -> None:
+    """Block deploy early if the Databricks CLI isn't installed."""
+    from . import _doctor as _d
+
+    result = _d.check_databricks_cli()
+    if result.status is not _d.Status.OK:
+        raise click.ClickException(
+            _fix_msg(
+                "`apx deploy` needs the Databricks CLI.",
+                result.detail,
+                result.fix,
+            )
+        )
+
+
 def _preflight_apps(cwd: Path) -> None:
     """Verify the cwd looks like a scaffolded Apps project.
 
@@ -2622,6 +2637,7 @@ def _deploy_apps_impl(
         f"profile={profile or '<default>'})")
 
     # 1. Pre-flight
+    _preflight_databricks_cli()
     _preflight_apps(cwd)
     _validate_responses_agent_compiler()
     doc = _read_databricks_yml(cwd)
