@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -338,18 +339,29 @@ def analyze_canary_app(
             "Install with: pip install 'apx-agent[eval]'"
         ) from e
 
+    # Bound the query to the lookback window so stale traffic can't mask a
+    # regression. MLflow trace search uses a millisecond ``timestamp_ms``.
+    start_time_ms = int((time.time() - lookback_hours * 3600) * 1000)
+    filter_string = f"timestamp_ms > {start_time_ms}"
+
     try:
+        # include_spans=False keeps this a metadata-only read so it works even
+        # when blob storage is unreachable (private-link / FEVM workspaces).
+        # We only read trace-level tags / status / latency below.
         traces_raw = mlflow.search_traces(  # type: ignore[attr-defined]
             experiment_names=[experiment],
+            filter_string=filter_string,
             max_results=max_traces,
+            include_spans=False,
         )
     except Exception as e:
-        logger.warning("analyze_canary_app: search_traces failed: %s", e)
-        return AppsCanaryReport(
-            prod_app_name=prod_app_name,
-            canary_app_name=canary_app_name,
-            lookback_hours=lookback_hours,
-        )
+        # Do NOT swallow into a clean empty report — that reads as "no errors
+        # observed" and could greenlight promoting a bad App. Surface the
+        # failure so the operator knows the analysis did not run.
+        raise RuntimeError(
+            f"analyze_canary_app: search_traces failed for experiment "
+            f"{experiment!r}: {e}"
+        ) from e
 
     if hasattr(traces_raw, "to_dict"):
         try:
@@ -529,6 +541,11 @@ def promote_canary_app(
     By default tears down the canary target after a successful prod
     deploy. Pass ``keep_canary=True`` to leave it in place (useful
     when you want both URLs serving in parallel for a soak period).
+
+    Raises:
+        RuntimeError: if the prod ``bundle deploy`` / ``bundle run`` fails
+            or prod cannot be verified as serving. In that case the canary
+            target is left intact so it remains a viable rollback target.
     """
     deploy_proc = run_cmd(["bundle", "deploy", "--target", prod_target], profile=profile)
     if getattr(deploy_proc, "returncode", 0) != 0:
@@ -542,8 +559,21 @@ def promote_canary_app(
     )
     if getattr(run_proc, "returncode", 0) != 0:
         logger.warning(
-            "bundle run for prod returned %s (continuing): %s",
+            "bundle run for prod returned %s: %s",
             run_proc.returncode, getattr(run_proc, "stderr", ""),
+        )
+
+    # Verify prod actually came up serving the promoted deployment BEFORE we
+    # tear down the canary. A nonzero ``bundle run`` is sometimes benign (the
+    # App was already running), but if prod genuinely failed to come up and we
+    # delete the canary, the operator has neither working prod nor a rollback
+    # target. So we confirm prod health and refuse to tear down otherwise.
+    if not _prod_is_serving(base_app_name=base_app_name, run_cmd=run_cmd, profile=profile):
+        raise RuntimeError(
+            f"prod App {base_app_name!r} is not serving after deploy to "
+            f"target {prod_target!r}; leaving the canary in place as a "
+            "rollback target. Inspect the prod App and re-run promote once "
+            "prod is healthy (or roll back to the canary)."
         )
 
     removed = False
@@ -587,6 +617,59 @@ def rollback_canary_app(
         prod_target=prod_target,
         keep_canary=False,
     )
+
+
+def _prod_is_serving(
+    *,
+    base_app_name: str,
+    run_cmd: RunCmd,
+    profile: str | None,
+) -> bool:
+    """Return True iff ``apps get`` shows prod RUNNING with a SUCCEEDED deploy.
+
+    Reads ``databricks apps get <name>`` and checks the App is RUNNING and
+    its active deployment SUCCEEDED — the same signals the deployment
+    runbook polls before declaring a deploy live. Treats an
+    unparseable / failed ``apps get`` as "not serving" so we err on the
+    side of keeping the rollback target.
+    """
+    import json as _json
+
+    get_proc = run_cmd(["apps", "get", base_app_name], profile=profile)
+    if getattr(get_proc, "returncode", 0) != 0:
+        logger.warning(
+            "apps get %s returned %s while verifying prod health: %s",
+            base_app_name, getattr(get_proc, "returncode", "?"),
+            getattr(get_proc, "stderr", ""),
+        )
+        return False
+    try:
+        payload = _json.loads(getattr(get_proc, "stdout", "") or "{}")
+    except Exception as e:
+        logger.warning("could not parse apps get %s output: %s", base_app_name, e)
+        return False
+
+    app_state = str(((payload.get("app_status") or {}).get("state")) or "").upper()
+    compute_state = str(((payload.get("compute_status") or {}).get("state")) or "").upper()
+    deploy_state = str(
+        (((payload.get("active_deployment") or {}).get("status") or {}).get("state"))
+        or ""
+    ).upper()
+
+    # The App must be up: RUNNING app status (or ACTIVE compute as a fallback
+    # signal). When the payload carries an active deployment, it must have
+    # SUCCEEDED — a FAILED / IN_PROGRESS deployment means prod did not come up.
+    app_up = app_state == "RUNNING" or compute_state == "ACTIVE"
+    deploy_ok = deploy_state in ("", "SUCCEEDED")  # absent → don't over-constrain
+    serving = app_up and deploy_ok
+    if not serving:
+        logger.warning(
+            "prod App %s not serving: app_status=%s compute_status=%s "
+            "active_deployment=%s",
+            base_app_name, app_state or "unknown",
+            compute_state or "unknown", deploy_state or "unknown",
+        )
+    return serving
 
 
 def _teardown_canary(

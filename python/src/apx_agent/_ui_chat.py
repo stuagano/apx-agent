@@ -275,7 +275,7 @@ def _render_eval_landing(
 <script>
 let rows = {cases_json};
 
-function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }}
 
 function render() {{
   const el = document.getElementById('cases');
@@ -846,7 +846,7 @@ function switchTab(name, btn) {{
 let evalRows = [];
 let evalLoaded = false;
 
-function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }}
 
 function renderEval() {{
   const el = document.getElementById('eval-cases');
@@ -977,6 +977,7 @@ async function runEvalCase(i) {{
             const out = payload.response && payload.response.output;
             if (Array.isArray(out)) for (const it of out) if (it.type === 'message' && Array.isArray(it.content))
               for (const p of it.content) if (p.type === 'output_text' && p.text) text += p.text;
+          }}
         }} catch {{}}
       }}
     }}

@@ -249,11 +249,11 @@ def mine_examples(
             score: float | None = None
             if score_fn is not None:
                 score = _maybe_await(score_fn(turn))
-            if (
-                min_score is not None
-                and score is not None
-                and score < min_score
-            ):
+            # When a quality floor is requested, drop unscored turns too —
+            # mirrors the store-side ``score >= min_score`` predicate, which
+            # excludes NULL scores. Letting unscored turns through here would
+            # write rows the store-side filter would never surface.
+            if min_score is not None and (score is None or score < min_score):
                 continue
 
             tags: tuple[str, ...] = (

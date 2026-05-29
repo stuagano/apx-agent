@@ -9,8 +9,9 @@ Covers:
     ones (by object identity).
   - DeltaSessionStore happy paths: get on missing returns None, put issues
     a MERGE, get parses JSON columns, delete issues DELETE.
-  - DeltaSessionStore failure modes log-and-degrade: get returns None on
-    SQL exception, malformed JSON returns empty session.
+  - DeltaSessionStore failure modes: get raises StoreError on SQL
+    exception (a backend failure is not a missing session), malformed
+    JSON returns empty session.
   - DeltaSessionStore validates the three-part table path.
 """
 
@@ -28,6 +29,7 @@ from apx_agent import (
     append_turn,
     load_or_create_session,
 )
+from apx_agent._session import StoreError
 
 
 # ===========================================================================
@@ -181,10 +183,13 @@ def test_delta_get_parses_history_and_state_json() -> None:
     assert s.updated_at == 1700000100.0
 
 
-def test_delta_get_returns_none_on_sql_exception() -> None:
+def test_delta_get_raises_store_error_on_sql_exception() -> None:
+    """A backend failure (not a missing session) raises StoreError so callers
+    don't mistake an errored read for an empty conversation and clobber it."""
     store = DeltaSessionStore(table_path="main.x.sessions", ws=MagicMock(), auto_create=False)
     with patch("apx_agent._session_delta.run_sql", side_effect=RuntimeError("boom")):
-        assert store.get("x") is None
+        with pytest.raises(StoreError):
+            store.get("x")
 
 
 def test_delta_get_handles_malformed_json() -> None:

@@ -629,6 +629,109 @@ async def _check_agent_source() -> dict[str, Any]:
     }
 
 
+async def _check_mlflow_read() -> dict[str, Any]:
+    """Exercise the trace-READ path *including span/blob fetch* so silent
+    read-side degradation surfaces.
+
+    ``_check_mlflow_export`` only inspects the export/write-error log, so a
+    blocked blob-storage backend (FEVM / private-link) that breaks *reads*
+    would otherwise leave the probe reporting "ok" while the canary/eval/trace
+    panels silently degrade (audit H9).
+
+    The degradation the canary/eval siblings hit is the *span* read: a
+    metadata-only ``include_spans=False`` read sidesteps blob storage entirely
+    (that's exactly why the Trace list keeps working when egress is blocked),
+    so it cannot detect this failure. So this check reads in two stages:
+
+      1. metadata-only read to confirm tracking is reachable and grab a
+         trace_id (empty → ``skip``, absence is not failure);
+      2. a span read on that trace (``include_spans=True``), which forces the
+         blob fetch the siblings rely on. If stage 1 succeeds but stage 2
+         raises, that is the blocked-blob signature → ``fail``.
+    """
+    experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+    try:
+        from mlflow.tracking import MlflowClient as _MlflowClient
+    except ImportError:
+        return {
+            "name": "mlflow_read",
+            "status": "skip",
+            "message": "mlflow not installed",
+            "hint": "",
+        }
+    if not experiment_id:
+        return {
+            "name": "mlflow_read",
+            "status": "skip",
+            "message": "MLFLOW_EXPERIMENT_ID not set — read path not exercised",
+            "hint": "Set MLFLOW_EXPERIMENT_ID to verify trace reads work.",
+        }
+
+    def _read() -> tuple[str, bool]:
+        client = _MlflowClient()
+        # Stage 1: metadata-only — works even when blob storage is blocked.
+        metas = list(
+            client.search_traces(
+                experiment_ids=[experiment_id],
+                max_results=1,
+                include_spans=False,
+            )
+        )
+        if not metas:
+            return ("", False)  # no traces — absence, not failure
+        trace_id = metas[0].info.trace_id
+        # Stage 2: span read — forces the blob fetch the canary/eval reads
+        # depend on. On a blob-blocked workspace this raises (the degradation
+        # H9 is about); the metadata read above already succeeded.
+        full = client.search_traces(
+            experiment_ids=[experiment_id],
+            max_results=1,
+            include_spans=True,
+        )
+        full_list = list(full)
+        has_spans = bool(full_list and getattr(full_list[0], "data", None) is not None)
+        return (trace_id, has_spans)
+
+    try:
+        trace_id, _ = await asyncio.wait_for(
+            asyncio.to_thread(_read), timeout=_CHECK_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        return {
+            "name": "mlflow_read",
+            "status": "warn",
+            "message": f"Trace read timed out after {_CHECK_TIMEOUT_S}s",
+            "hint": "Workspace may be slow or the trace backend may be degraded.",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "name": "mlflow_read",
+            "status": "fail",
+            "message": f"Trace span read failed: {str(exc)[:160]}",
+            "hint": (
+                "Trace metadata reads but span/blob fetch failed. On "
+                "FEVM/private-link workspaces this signals blocked egress to "
+                "*.storage.cloud.databricks.com — canary/eval/trace panels "
+                "silently return empty results while this is broken (pass "
+                "include_spans=False on metadata-only reads)."
+            ),
+        }
+
+    if not trace_id:
+        return {
+            "name": "mlflow_read",
+            "status": "skip",
+            "message": "No traces recorded yet — span read path not exercised",
+            "hint": "Run the agent once, then re-run to verify span reads work.",
+        }
+    return {
+        "name": "mlflow_read",
+        "status": "ok",
+        "message": "Trace read path reachable (metadata + spans)",
+        "hint": "",
+    }
+
+
 async def _run_probe_checks(
     ctx: AgentContext | None,
     *,
@@ -638,7 +741,7 @@ async def _run_probe_checks(
     """Run every health check in parallel and assemble a single response."""
     (
         workspace, model, env_vars, sub_agents,
-        mlflow_cfg, mlflow_exp, resources, obo, session, agent_src,
+        mlflow_cfg, mlflow_exp, mlflow_read, resources, obo, session, agent_src,
     ) = await asyncio.gather(
         _check_workspace_auth(),
         _check_model(ctx),
@@ -646,6 +749,7 @@ async def _run_probe_checks(
         _gather_sub_agent_checks(ctx),
         _check_mlflow_config(),
         _check_mlflow_export(),
+        _check_mlflow_read(),
         _check_resources(ctx),
         _check_obo(headers),
         _check_session_store(session_store),
@@ -653,7 +757,7 @@ async def _run_probe_checks(
     )
     checks: list[dict[str, Any]] = [  # type: ignore[list-item]
         workspace, model, env_vars, *sub_agents,
-        mlflow_cfg, mlflow_exp, resources, obo, session, agent_src,
+        mlflow_cfg, mlflow_exp, mlflow_read, resources, obo, session, agent_src,
     ]
     counts = {"ok": 0, "warn": 0, "fail": 0, "skip": 0}
     for c in checks:
@@ -901,6 +1005,10 @@ def _render_probe_ui(
 (async () => {{
   const list = document.getElementById('checks-list');
   const dot = (s) => ({{ok:'#4ade80', warn:'#facc15', fail:'#f87171', skip:'#444'}})[s] || '#888';
+  // Escape so server/remote-controlled check name/message/hint can't inject HTML.
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   try {{
     const r = await fetch('/_apx/probe/checks');
     const data = await r.json();
@@ -912,14 +1020,14 @@ def _render_probe_ui(
       <div class="check-row">
         <span class="check-dot" style="background:${{dot(c.status)}}"></span>
         <div class="check-body">
-          <div class="check-name">${{c.name}}</div>
-          <div class="check-msg">${{c.message || ''}}</div>
-          ${{c.hint ? `<div class="check-hint">${{c.hint}}</div>` : ''}}
+          <div class="check-name">${{esc(c.name)}}</div>
+          <div class="check-msg">${{esc(c.message || '')}}</div>
+          ${{c.hint ? `<div class="check-hint">${{esc(c.hint)}}</div>` : ''}}
         </div>
-        <span class="check-status check-status-${{c.status}}">${{c.status}}</span>
+        <span class="check-status check-status-${{esc(c.status)}}">${{esc(c.status)}}</span>
       </div>`).join('');
   }} catch (e) {{
-    list.innerHTML = `<p class="vs-error">Failed to load checks: ${{e.message}}</p>`;
+    list.innerHTML = `<p class="vs-error">Failed to load checks: ${{esc(e.message)}}</p>`;
   }}
 }})();
 </script>
@@ -928,15 +1036,71 @@ def _render_probe_ui(
 </html>"""
 
 
+def _validate_probe_url(url: str) -> str | None:
+    """SSRF guard for the dev-UI probe.
+
+    Restricts the scheme to http/https and rejects any URL whose host resolves
+    to a private / loopback / link-local / reserved / multicast address. This
+    blocks cloud instance-metadata (``169.254.169.254``), private-link
+    services, and decimal/octal/hex IP encodings (``http://2130706433/``) that
+    a string-prefix blocklist would miss. Callers pair this with
+    ``follow_redirects=False`` so a public host can't 302 to an internal one.
+
+    Returns ``None`` when the URL is safe, or a human-readable reason string
+    when it must be rejected.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "Could not parse URL"
+    if parsed.scheme not in ("http", "https"):
+        return f"Scheme {parsed.scheme!r} not allowed (use http or https)"
+    host = parsed.hostname
+    if not host:
+        return "URL has no host"
+
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or 0, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        return f"Could not resolve host: {exc}"
+
+    for info in infos:
+        sockaddr = info[4]
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            return f"Could not parse resolved address {sockaddr[0]!r}"
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return f"Host resolves to a blocked address ({ip})"
+    return None
+
+
 async def _run_probe(url: str) -> dict[str, Any]:
     """Make an outbound GET request and return connectivity diagnostics."""
     import time
     import ssl
     import httpx
 
+    reason = _validate_probe_url(url)
+    if reason is not None:
+        return {"url": url, "error": "BlockedURL", "detail": reason}
+
     start = time.monotonic()
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+        # follow_redirects=False: a public host could otherwise 302 to an
+        # internal address that _validate_probe_url already rejected.
+        async with httpx.AsyncClient(follow_redirects=False, timeout=10.0) as client:
             resp = await client.get(url)
         latency_ms = round((time.monotonic() - start) * 1000)
         return {

@@ -121,6 +121,18 @@ async def setup_agent(
 
     # Merge sub_agents from config
     if config.sub_agents:
+        if not hasattr(agent, "_sub_agent_urls"):
+            # Only LlmAgent defines _sub_agent_urls; on a composition root
+            # getattr(..., []) would return a throwaway list, silently dropping
+            # config-declared sub_agents from the A2A/MCP discovery surface
+            # (audit M7). Warn loudly instead of failing silently.
+            logger.warning(
+                "config sub_agents %s set on a %s root, which does not support "
+                "sub-agent merging (only LlmAgent does) — these are ignored. "
+                "Declare sub_agents on a leaf LlmAgent instead.",
+                config.sub_agents,
+                type(agent).__name__,
+            )
         sub_agent_urls: list[str] = getattr(agent, "_sub_agent_urls", [])
         existing = set(sub_agent_urls)
         for raw_url in config.sub_agents:
@@ -594,6 +606,19 @@ def mount_mcp_endpoints(
 
     @app.on_event("startup")
     async def _apx_mount_startup() -> None:  # type: ignore[misc]
+        # MLflow auto-tracing. This is the apps-target path (the AgentServer app
+        # is not created via create_app, so create_app's lifespan never runs
+        # here). Under ``apx run --reload`` the worker subprocess re-imports the
+        # module and re-runs this startup, but never re-runs cli run()'s body —
+        # so autolog must be (re)applied in-process here or per-tool/per-LLM
+        # spans stop emitting under --reload (audit M5).
+        try:
+            from ._mlflow_tracing import autolog_if_env
+
+            autolog_if_env()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("MLflow autolog setup skipped: %s", exc)
+
         ctx = await setup_agent(app, agent, config, pyproject_path=pyproject_path)
         if ctx is None:
             logger.info("mount_mcp_endpoints: no agent config — /mcp will 503")

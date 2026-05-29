@@ -114,6 +114,28 @@ def _resolve_ws_for_request(
 # ---------------------------------------------------------------------------
 
 
+def _coerce_tool_args(arguments: Any) -> dict[str, Any]:
+    """Coerce a tool-call ``arguments`` value to the dict langchain requires.
+
+    ``ChatAgentMessage`` tool calls carry ``arguments`` as a JSON string on the
+    wire (and so does anything round-tripped through ``session.history``);
+    langchain ``AIMessage.tool_calls[*].args`` validates as a dict and raises on
+    a string. Parse JSON strings; fall back to an empty dict for unparseable or
+    non-dict values rather than crashing the whole conversion.
+    """
+    import json
+
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str) and arguments.strip():
+        try:
+            parsed = json.loads(arguments)
+        except (ValueError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 def _to_langchain_messages(messages: list["ChatAgentMessage"]) -> list[Any]:
     """Convert MLflow ChatAgentMessage list to langchain BaseMessage list."""
     from langchain_core.messages import (
@@ -132,11 +154,23 @@ def _to_langchain_messages(messages: list["ChatAgentMessage"]) -> list[Any]:
         elif m.role == "assistant":
             tool_calls = []
             for tc in m.tool_calls or []:
-                fn = (tc or {}).get("function", {}) if isinstance(tc, dict) else {}
+                # ``tc`` may be a pydantic ToolCall (m.tool_calls path) or a
+                # plain dict (history-prepend path). Normalize to a dict so we
+                # don't silently drop name/args/id — which would orphan the
+                # following ToolMessage (Databricks-Claude rejects a tool_result
+                # whose tool_call_id matches no AIMessage tool call).
+                tc_d = tc.model_dump() if hasattr(tc, "model_dump") else tc
+                if not isinstance(tc_d, dict):
+                    tc_d = {}
+                fn = tc_d.get("function", {})
+                if not isinstance(fn, dict):
+                    fn = {}
                 tool_calls.append({
                     "name": fn.get("name", ""),
-                    "args": fn.get("arguments", {}),
-                    "id": tc.get("id", "") if isinstance(tc, dict) else "",
+                    # langchain validates args as a dict and raises on a JSON
+                    # string (the wire shape persisted to session history).
+                    "args": _coerce_tool_args(fn.get("arguments", {})),
+                    "id": tc_d.get("id", ""),
                 })
             out.append(AIMessage(content=m.content or "", tool_calls=tool_calls))
         elif m.role == "tool":
@@ -266,6 +300,13 @@ def chat_agent_for(
             session_id = custom_inputs.get("session_id")
             if not session_id:
                 return None
+            # Intentionally NOT wrapped in try/except: a real backend read
+            # failure must propagate, not silently degrade into a fresh empty
+            # session. ``load_or_create_session`` only creates-and-persists an
+            # empty session when the store confirms the row is *missing*
+            # (store returns None); infra errors raise from ``get()`` and bubble
+            # up here so we never clobber durable history with [] on a transient
+            # read fault. See audit H19.
             return load_or_create_session(self._session_store, session_id)
 
         def _persist_turn(
@@ -364,6 +405,23 @@ def chat_agent_for(
             context: ChatContext | None = None,
             custom_inputs: dict[str, Any] | None = None,
         ) -> Generator[ChatAgentChunk, None, None]:
+            session = self._load_session(custom_inputs)
+            # If a session exists, prepend its history so the LLM sees prior
+            # turns — mirrors ``predict`` and the TS ``predictStream``.
+            prepended_messages: list[ChatAgentMessage] = list(messages)
+            if session is not None and session.history:
+                history_msgs = [
+                    ChatAgentMessage(
+                        role=m.get("role", "user"),
+                        content=m.get("content", ""),
+                        id=m.get("id"),
+                        tool_calls=m.get("tool_calls"),
+                        tool_call_id=m.get("tool_call_id"),
+                    )
+                    for m in session.history
+                ]
+                prepended_messages = history_msgs + prepended_messages
+
             user_token_provided = bool(
                 custom_inputs and custom_inputs.get("user_token")
             )
@@ -371,12 +429,13 @@ def chat_agent_for(
             with safe_span(
                 "ApxChatAgent.predict_stream",
                 span_type="AGENT",
-                inputs={"messages": [m.model_dump() for m in messages]},
+                inputs={"messages": [m.model_dump() for m in prepended_messages]},
                 attributes={
                     AuditAttrs.OPERATION: "predict_stream",
                     AuditAttrs.MODEL_ENDPOINT: effective_model,
-                    AuditAttrs.MODEL_INPUT_MESSAGES: len(messages),
+                    AuditAttrs.MODEL_INPUT_MESSAGES: len(prepended_messages),
                     AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
+                    AuditAttrs.SESSION_ID: (session.session_id if session else ""),
                     AuditAttrs.MODEL_STREAMING: True,
                 },
             ) as span:
@@ -384,8 +443,9 @@ def chat_agent_for(
                 graph = compile_to_langgraph(
                     self._agent, ws=ws, model=effective_model
                 )
-                lc_input = _to_langchain_messages(messages)
+                lc_input = _to_langchain_messages(prepended_messages)
                 emitted = 0
+                new_messages: list[ChatAgentMessage] = []
 
                 # stream_mode="updates" yields {node_name: {"messages": [...new...]}}
                 # per node completion — same pattern Rand's shortage_intel uses.
@@ -400,12 +460,22 @@ def chat_agent_for(
                         for msg in node_output.get("messages", []) or []:
                             delta = _from_langchain_message(msg, emitted)
                             emitted += 1
+                            new_messages.append(delta)
                             yield ChatAgentChunk(delta=delta)
                 if span is not None:
                     try:
                         span.set_attribute("apx.chunks_emitted", emitted)
                     except Exception:  # pragma: no cover
                         pass
+
+                # Persist the inbound turn + the new messages — mirrors
+                # ``predict`` so streaming multi-turn conversations remember
+                # prior turns instead of forgetting them.
+                self._persist_turn(
+                    session,
+                    input_messages=messages,
+                    new_messages=new_messages,
+                )
 
     return _ApxChatAgent(agent, model, session_store=session_store)
 

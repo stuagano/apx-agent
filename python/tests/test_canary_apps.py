@@ -409,12 +409,19 @@ def test_analyze_canary_app_handles_search_traces_exception(
     mlflow_stub.search_traces = _raise  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "mlflow", mlflow_stub)
 
-    report = analyze_canary_app(
-        prod_app_name="my-app", canary_app_name="my-app-canary-x",
-        experiment="exp", lookback_hours=1,
-    )
-    # Empty report — no apps, doesn't raise.
-    assert report.apps == ()
+    # A read failure must NOT collapse into a clean empty report (which reads
+    # as "no errors observed" and could greenlight promoting a bad App). The
+    # failure is surfaced as a RuntimeError that names the experiment and
+    # chains the original cause.
+    with pytest.raises(RuntimeError, match="search_traces failed") as exc_info:
+        analyze_canary_app(
+            prod_app_name="my-app", canary_app_name="my-app-canary-x",
+            experiment="exp", lookback_hours=1,
+        )
+
+    assert "exp" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert "transient" in str(exc_info.value.__cause__)
 
 
 # ---------------------------------------------------------------------------

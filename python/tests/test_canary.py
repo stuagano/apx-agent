@@ -400,12 +400,19 @@ def test_analyze_canary_unknown_version_when_attribute_missing() -> None:
 
 
 def test_analyze_canary_returns_empty_report_when_search_traces_fails() -> None:
+    # A blocked-blob / bad-token read must NOT collapse into a clean empty
+    # report (which reads as "no errors observed" and could greenlight a bad
+    # model). The failure is surfaced as a RuntimeError that names the
+    # experiment and chains the original cause.
     with patch("mlflow.search_traces", side_effect=RuntimeError("backend down")):
-        report = analyze_canary(
-            endpoint="triage", experiment="/x", ws=MagicMock(),
-        )
+        with pytest.raises(RuntimeError, match="search_traces failed") as exc_info:
+            analyze_canary(
+                endpoint="triage", experiment="/x", ws=MagicMock(),
+            )
 
-    assert report.versions == ()
+    assert "/x" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert "backend down" in str(exc_info.value.__cause__)
 
 
 # ---------------------------------------------------------------------------

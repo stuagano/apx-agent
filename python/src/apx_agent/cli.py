@@ -1439,13 +1439,16 @@ def eval_cmd(
     data: Any
     path = Path(evalset)
     suffix = path.suffix.lower()
-    if suffix == ".jsonl":
-        data = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    elif suffix == ".json":
-        data = json.loads(path.read_text())
-    else:
-        # Forward path verbatim — mlflow handles CSV / Parquet / etc.
-        data = evalset
+    try:
+        if suffix == ".jsonl":
+            data = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        elif suffix == ".json":
+            data = json.loads(path.read_text())
+        else:
+            # Forward path verbatim — mlflow handles CSV / Parquet / etc.
+            data = evalset
+    except json.JSONDecodeError as e:
+        raise click.ClickException(f"Failed to parse evalset {evalset}: {e}") from e
 
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
 
@@ -3037,9 +3040,10 @@ def info(module: str, fmt: str) -> None:
     tools_info: list[dict[str, Any]] = []
     for fn in tool_fns:
         meta = get_tool_metadata(fn)
+        doc_lines = (fn.__doc__ or "").strip().splitlines()
         tools_info.append({
             "name": fn.__name__,
-            "doc": (fn.__doc__ or "").strip().splitlines()[0] if fn.__doc__ else "",
+            "doc": doc_lines[0] if doc_lines else "",
             "uc_name": meta.uc_name if meta else None,
             "grants": list(meta.grants) if meta else [],
             "resources": [
@@ -3496,7 +3500,8 @@ def test_cmd(
                 None,
             )
             text = getattr(assistant, "content", "") if assistant else ""
-            preview = (text or "").strip().splitlines()[0] if text else "(empty)"
+            preview_lines = (text or "").strip().splitlines()
+            preview = preview_lines[0] if preview_lines else "(empty)"
             click.echo(f"    ok  ({elapsed_ms} ms)  {preview[:120]}")
         except Exception as e:
             failures += 1
@@ -3809,12 +3814,15 @@ def eval_chain_cmd(
     # Load the evalset same way apx eval does
     data: Any
     path = Path(evalset)
-    if path.suffix.lower() == ".jsonl":
-        data = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    elif path.suffix.lower() == ".json":
-        data = json.loads(path.read_text())
-    else:
-        data = evalset
+    try:
+        if path.suffix.lower() == ".jsonl":
+            data = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        elif path.suffix.lower() == ".json":
+            data = json.loads(path.read_text())
+        else:
+            data = evalset
+    except json.JSONDecodeError as e:
+        raise click.ClickException(f"Failed to parse evalset {evalset}: {e}") from e
 
     from apx_agent import evaluate_chain
 
@@ -4319,10 +4327,17 @@ def watchdog_violations(
         raise click.UsageError(
             f"Pass --table catalog.schema.table or set {_ENV_VIOLATIONS_TABLE}."
         )
-    if table.count(".") != 2:
+    import re
+
+    parts = table.split(".")
+    if len(parts) != 3 or not all(re.fullmatch(r"[A-Za-z0-9_]+", p) for p in parts):
         raise click.UsageError(
-            f"--table must be a three-part UC name; got {table!r}"
+            "--table must be a three-part UC name (catalog.schema.table) "
+            f"of bare identifiers [A-Za-z0-9_]; got {table!r}"
         )
+    # Backtick-quote each identifier part so it can never break out of the
+    # FROM clause even though the parts are already allowlist-validated.
+    quoted_table = ".".join(f"`{p}`" for p in parts)
 
     from databricks.sdk import WorkspaceClient
 
@@ -4338,7 +4353,7 @@ def watchdog_violations(
     sql = (
         f"SELECT ts, agent_name, operation, action, reason, "
         f"  policy_id, domain, context, metadata "
-        f"FROM {table} "
+        f"FROM {quoted_table} "
         f"WHERE {' AND '.join(where_parts)} "
         f"ORDER BY ts DESC "
         f"LIMIT {limit}"

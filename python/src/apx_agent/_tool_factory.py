@@ -8,17 +8,25 @@ short and the conventions can't drift apart.
 
 It is public so you can write your own governed tool in a few lines::
 
-    from apx_agent import build_tool, ResourceSpec, Dependencies
+    from apx_agent import build_tool, run_sql, ResourceSpec, Dependencies
 
     def lookup_tool(table: str):
         async def _run(id: str, ws: Dependencies.Workspace) -> list[dict]:
-            return run_sql(ws, f"SELECT * FROM {table} WHERE id = '{id}'")
+            # Bind the LLM-controlled value; never f-string it into SQL.
+            return run_sql(
+                ws,
+                f"SELECT * FROM {table} WHERE id = :id",
+                parameters=[{"name": "id", "value": id, "type": "STRING"}],
+            )
         return build_tool(
             _run,
             name="lookup",
             description=f"Look up a row in {table} by id.",
             resources=[ResourceSpec("uc_table", table)],
         )
+
+``table`` is a SQL identifier and cannot be bound as a parameter; only
+supply it from a trusted allowlist, never from LLM/user input.
 """
 
 from __future__ import annotations

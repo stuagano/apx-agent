@@ -32,7 +32,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from ._session import Session
+from ._session import Session, StoreError
 from ._sql import run_sql
 
 if TYPE_CHECKING:
@@ -42,8 +42,14 @@ logger = logging.getLogger(__name__)
 
 
 def _sql_str(value: str) -> str:
-    """SQL-escape a string literal — single quotes doubled."""
-    return "'" + value.replace("'", "''") + "'"
+    """SQL-escape a string literal — backslashes then single quotes doubled.
+
+    Spark SQL treats backslash as an escape character by default, so a
+    value ending in or containing a backslash (Windows paths, regex, JSON)
+    would otherwise break out of the literal. Escape backslashes first,
+    then double single quotes.
+    """
+    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
 
 
 class DeltaSessionStore:
@@ -119,10 +125,13 @@ class DeltaSessionStore:
             rows = run_sql(self.ws, sql, warehouse_id=self.warehouse_id)
         except Exception as e:
             logger.warning(
-                "DeltaSessionStore.get(%s) failed: %s — returning None.",
+                "DeltaSessionStore.get(%s) failed: %s — raising StoreError "
+                "(read failure is not a missing session).",
                 session_id, e,
             )
-            return None
+            raise StoreError(
+                f"DeltaSessionStore.get({session_id!r}) failed: {e}"
+            ) from e
         if not rows:
             return None
         row = rows[0]

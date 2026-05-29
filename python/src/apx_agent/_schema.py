@@ -24,15 +24,20 @@ def introspect_schema(
     """
     if not (ws and catalog and schema):
         return {}
+    from databricks.sdk.service.sql import StatementParameterListItem
+
     try:
         resp = ws.statement_execution.execute_statement(
             warehouse_id=warehouse_id,
             statement=(
                 "SELECT table_name, column_name, data_type "
                 "FROM information_schema.columns "
-                f"WHERE table_schema = '{schema}' "
+                "WHERE table_schema = :schema "
                 "ORDER BY table_name, ordinal_position"
             ),
+            parameters=[
+                StatementParameterListItem(name="schema", value=schema, type="STRING")
+            ],
             catalog=catalog,
             schema=schema,
         )

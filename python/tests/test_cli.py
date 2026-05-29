@@ -574,7 +574,8 @@ def test_watchdog_violations_falls_back_to_env_var(monkeypatch: pytest.MonkeyPat
         result = runner.invoke(main, ["watchdog", "violations"])
 
     assert result.exit_code == 0, result.output
-    assert "main.watchdog.violations" in mock_sql.call_args.args[1]
+    # The table identifier is now validated per-part and backtick-quoted (audit M2).
+    assert "`main`.`watchdog`.`violations`" in mock_sql.call_args.args[1]
 
 
 def test_watchdog_violations_filters_by_agent_and_hours() -> None:

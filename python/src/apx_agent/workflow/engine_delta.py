@@ -134,6 +134,12 @@ class DeltaEngine(WorkflowEngine):
     ) -> T:
         await self._bootstrap()
 
+        # Validate the identifier-like values before they reach inline SQL via
+        # _lookup_step / _persist_step — mirrors the _safe_name guard on
+        # start_run / finish_run so the injection barrier is symmetric.
+        _safe_name(run_id, "run_id")
+        _safe_name(step_key, "step_key")
+
         cached = await self._lookup_step(run_id, step_key)
         if cached is not None:
             if cached.status == "completed":

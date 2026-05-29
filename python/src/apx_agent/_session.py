@@ -33,6 +33,23 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class StoreError(Exception):
+    """Raised when a session store's backend fails (not a missing session).
+
+    Distinguishes infrastructure failure (a read-replica blip, an expired
+    token, a connection error) from a confirmed-missing session. A store's
+    ``get()`` returns ``None`` only when the session genuinely does not
+    exist; on backend failure it raises ``StoreError`` so callers do not
+    mistake an errored read for an empty conversation and clobber durable
+    history on the next persist.
+    """
+
+
+# ---------------------------------------------------------------------------
 # Session type
 # ---------------------------------------------------------------------------
 
@@ -77,7 +94,13 @@ class SessionStore(Protocol):
     """
 
     def get(self, session_id: str) -> Session | None:
-        """Return the session with ``session_id``, or ``None`` if missing."""
+        """Return the session with ``session_id``, or ``None`` if missing.
+
+        ``None`` means the session is confirmed absent. On a backend
+        failure (read-replica blip, expired token, connection error) the
+        store raises :class:`StoreError` rather than returning ``None``, so
+        callers never mistake an errored read for a missing session.
+        """
         ...
 
     def put(self, session: Session) -> None:
@@ -130,7 +153,14 @@ class InMemorySessionStore:
 
 
 def load_or_create_session(store: SessionStore, session_id: str) -> Session:
-    """Return the stored session, creating an empty one if absent."""
+    """Return the stored session, creating an empty one if absent.
+
+    Only creates-and-persists a new session when ``get`` confirms the
+    session is missing (returns ``None``). A backend failure raises
+    :class:`StoreError` from ``get``, which propagates here intentionally:
+    creating an empty session after an errored read would clobber durable
+    history on the next persist.
+    """
     existing = store.get(session_id)
     if existing is not None:
         return existing

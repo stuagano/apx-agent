@@ -42,6 +42,51 @@ from ._models import AgentCard, AgentTool, A2ASkill, Message
 logger = logging.getLogger(__name__)
 
 
+# Host suffixes whose origins are trusted to receive a forwarded OBO token,
+# even when they differ from the configured ``card_url`` origin. Covers the
+# ``from_app_name`` case where the card is fetched from the workspace host but
+# ``card.url`` points at the app's own ``*.databricksapps.com`` address.
+_TRUSTED_HOST_SUFFIXES = (".databricksapps.com",)
+
+
+def _default_port(scheme: str) -> int:
+    return 443 if scheme == "https" else 80
+
+
+def _trusted_origin(candidate: str, configured: str) -> bool:
+    """True if ``candidate``'s origin is safe to forward credentials to.
+
+    Safe means the origin matches the operator-supplied ``configured`` origin
+    (same scheme + host + port), or its host falls under a trusted Databricks
+    Apps suffix. A scheme downgrade (https → http) or alternate port of the same
+    host is treated as untrusted.
+    """
+    try:
+        c = urlparse(candidate if "://" in candidate else f"https://{candidate}")
+        ref = urlparse(configured if "://" in configured else f"https://{configured}")
+    except Exception:
+        return False
+    if not c.hostname:
+        return False
+
+    same_origin = (
+        c.scheme == ref.scheme
+        and c.hostname == ref.hostname
+        and (c.port or _default_port(c.scheme)) == (ref.port or _default_port(ref.scheme))
+    )
+    if same_origin:
+        return True
+
+    # Trusted Databricks Apps host, but only over https (never accept a downgrade).
+    if c.scheme == "https" and any(
+        c.hostname == suffix.lstrip(".") or c.hostname.endswith(suffix)
+        for suffix in _TRUSTED_HOST_SUFFIXES
+    ):
+        return True
+
+    return False
+
+
 def _url_to_app_name(url: str) -> str | None:
     """Extract Databricks App name from URL.
 
@@ -180,9 +225,23 @@ class RemoteDatabricksAgent(BaseAgent):
             ],
         )
 
-        # Update base URL from card if provided
+        # Update base URL from card only when the card's origin is trusted
+        # (matches the configured card_url origin or a Databricks Apps host).
+        # A malicious card could otherwise redirect the forwarded OBO token to
+        # an arbitrary host, so an untrusted card.url is ignored.
         if self._card.url:
-            self._base_url = self._card.url.rstrip("/")
+            candidate = self._card.url.rstrip("/")
+            if _trusted_origin(candidate, self._card_url):
+                self._base_url = candidate
+            else:
+                logger.warning(
+                    "Ignoring card.url %s for %s: origin differs from configured "
+                    "card_url %s and is not a trusted host; keeping %s",
+                    candidate,
+                    self._card.name,
+                    self._card_url,
+                    self._base_url,
+                )
 
         # Try to infer app name if not already set
         if not self._app_name:
@@ -290,9 +349,24 @@ class RemoteDatabricksAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _obo_headers(self, request: Request) -> dict[str, str]:
-        """Extract OBO-relevant headers from the incoming request."""
+        """Extract OBO-relevant headers from the incoming request.
+
+        Credential headers (the user's OBO token) are only forwarded when the
+        outbound ``_base_url`` is a trusted origin relative to the operator-
+        supplied ``card_url``. This is defense-in-depth against a base URL that
+        was redirected to an untrusted host.
+        """
         headers = dict(self._extra_headers)
+        forward_credentials = _trusted_origin(self._base_url, self._card_url)
+        if not forward_credentials:
+            logger.warning(
+                "Not forwarding OBO credentials to untrusted base_url %s (configured card_url %s)",
+                self._base_url,
+                self._card_url,
+            )
         for key in ("Authorization", "X-Forwarded-Access-Token", "X-Forwarded-Host"):
+            if not forward_credentials and key in ("Authorization", "X-Forwarded-Access-Token"):
+                continue
             value = request.headers.get(key, "")
             if value:
                 headers[key] = value
