@@ -129,7 +129,6 @@ def test_entry_point_discovery_loads_good_skips_bad(monkeypatch):
         assert group == "apx_agent.templates"
         return [_GoodEP(), _BadEP()]
 
-    monkeypatch.setattr(mod, "entry_points", fake_entry_points, raising=False)
     monkeypatch.setattr(
         "importlib.metadata.entry_points", fake_entry_points, raising=True
     )
@@ -137,4 +136,5 @@ def test_entry_point_discovery_loads_good_skips_bad(monkeypatch):
     reg = mod.TemplateRegistry()
     infos = {i.name for i in reg.list()}  # triggers discovery
     assert "good_ep" in infos          # good one registered
+    assert infos == {"good_ep"}  # bad EP skipped, not registered
     # bad one skipped without raising — list() returned normally
