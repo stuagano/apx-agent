@@ -2773,6 +2773,22 @@ def test_unknown_command_no_close_match():
 
 
 # ---------------------------------------------------------------------------
+# `apx scaffold` — next-steps footer (Task 10)
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(main, ["scaffold", "my-agent"])
+    assert result.exit_code == 0
+    out = result.output
+    assert "cd my-agent" in out
+    assert "uv sync" in out
+    assert "apx run" in out
+
+
+# ---------------------------------------------------------------------------
 # `apx run` — pre-import probe (Task 8)
 # ---------------------------------------------------------------------------
 
