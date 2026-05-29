@@ -510,7 +510,21 @@ def create_app(
         except Exception as exc:  # pragma: no cover — defensive
             logger.debug("MLflow autolog setup skipped: %s", exc)
 
-        app.state.workspace_client = _make_workspace_client()
+        # Best-effort: a freshly scaffolded agent run locally with `apx run`
+        # has no Databricks credentials configured yet. Don't let that crash
+        # startup — boot the server (so the dev UI loads) and surface a clear
+        # error only when a tool actually needs the client.
+        try:
+            app.state.workspace_client = _make_workspace_client()
+        except Exception as exc:
+            logger.warning(
+                "No Databricks credentials resolved — workspace client unavailable. "
+                "The server will start, but tool calls that hit Databricks will fail "
+                "until you configure auth (https://docs.databricks.com/dev-tools/auth). "
+                "Cause: %s",
+                exc,
+            )
+            app.state.workspace_client = None
         app.state.session_store = session_store
 
         ctx = await setup_agent(
