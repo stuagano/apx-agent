@@ -188,10 +188,31 @@ def assemble_context(
     return separator.join(blocks)
 
 
+# ---------------------------------------------------------------------------
+# Persona overlay
+# ---------------------------------------------------------------------------
+
+
+def compose_instructions(*, base: str | None, overlay: str | None) -> str:
+    """Compose a persona ``overlay`` above a grounded ``base`` system prompt.
+
+    Used when a template produced grounded instructions (``base``) AND the
+    config envelope supplied persona instructions (``overlay``). The overlay
+    goes first so tone/role framing precedes the concrete grounding. When only
+    one side is non-empty, that side is returned verbatim (fill semantics).
+    """
+    base_s = (base or "").strip()
+    overlay_s = (overlay or "").strip()
+    if base_s and overlay_s:
+        return f"{overlay_s}\n\n---\n\n{base_s}"
+    return overlay_s or base_s
+
+
 __all__ = [
     "DEFAULT_EXAMPLE_HEADER",
     "DEFAULT_MEMORY_HEADER",
     "assemble_context",
     "assemble_example_context",
     "assemble_memory_context",
+    "compose_instructions",
 ]
