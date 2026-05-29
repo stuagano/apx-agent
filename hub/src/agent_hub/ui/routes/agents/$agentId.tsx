@@ -20,6 +20,15 @@ export const Route = createFileRoute("/agents/$agentId")({
   component: AgentDetail,
 });
 
+function safeHost(url: string): string {
+  // Guard new URL() — a malformed agent.url must not throw and blank the view.
+  try {
+    return new URL(url).hostname.split("-7474")[0];
+  } catch {
+    return url;
+  }
+}
+
 function StatusBadge({ status }: { status: string }) {
   const config: Record<string, { label: string; icon: typeof CheckCircle2; className: string }> = {
     live: { label: "Live", icon: CheckCircle2, className: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20" },
@@ -182,7 +191,7 @@ function AgentDetail() {
                     className="inline-flex items-center gap-1.5 hover:text-foreground transition-colors"
                   >
                     <Globe size={14} />
-                    {new URL(agent.url).hostname.split("-7474")[0]}
+                    {safeHost(agent.url)}
                     <ExternalLink size={12} />
                   </a>
                 )}
