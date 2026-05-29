@@ -138,3 +138,15 @@ def test_entry_point_discovery_loads_good_skips_bad(monkeypatch):
     assert "good_ep" in infos          # good one registered
     assert infos == {"good_ep"}  # bad EP skipped, not registered
     # bad one skipped without raising — list() returned normally
+
+
+def test_public_exports_and_data_template_registered():
+    import apx_agent
+
+    assert hasattr(apx_agent, "Template")
+    assert hasattr(apx_agent, "TemplateInfo")
+    assert hasattr(apx_agent, "template")
+    assert hasattr(apx_agent, "template_registry")
+    assert hasattr(apx_agent, "DataTemplate")
+    # importing the package registers the built-in DataTemplate
+    assert "data" in {i.name for i in apx_agent.template_registry.list()}
