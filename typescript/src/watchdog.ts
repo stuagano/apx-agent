@@ -557,7 +557,11 @@ export async function setUcTagsForAgent<Agent>(
 // ---------------------------------------------------------------------------
 
 function sqlStrLiteral(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
+  // Escape backslashes before single quotes (Spark SQL treats backslash as an
+  // escape character by default). Mirrors engine-delta.ts / memory-lakebase.ts;
+  // a trailing backslash would otherwise escape the closing quote and break out
+  // of the literal. Injected fields originate from the MCP transport response.
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
 }
 
 /** SQL executor callable — wraps the Statements API or any equivalent. */

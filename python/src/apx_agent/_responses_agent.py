@@ -203,6 +203,36 @@ def _responses_input_to_langchain(input_items: list[Any]) -> list[Any]:
 
     out: list[Any] = []
     for item in input_items:
+        d = _input_item_dict(item)
+        item_type = d.get("type")
+
+        # Function-call echo items carry no ``role``; map them to an assistant
+        # AIMessage with reconstructed tool_calls so the following
+        # function_call_output (ToolMessage) isn't orphaned.
+        if item_type == "function_call":
+            call_id = str(d.get("call_id") or d.get("id") or "")
+            out.append(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": d.get("name", ""),
+                            "args": _coerce_args(d.get("arguments")),
+                            "id": call_id,
+                        }
+                    ],
+                )
+            )
+            continue
+        if item_type == "function_call_output":
+            out.append(
+                ToolMessage(
+                    content=_function_call_output_text(d),
+                    tool_call_id=str(d.get("call_id") or d.get("tool_call_id") or ""),
+                )
+            )
+            continue
+
         role = _input_item_role(item)
         content = _input_item_content(item)
         if role == "system":
@@ -210,7 +240,6 @@ def _responses_input_to_langchain(input_items: list[Any]) -> list[Any]:
         elif role == "assistant":
             out.append(AIMessage(content=content))
         elif role == "tool":
-            d = item.model_dump() if hasattr(item, "model_dump") else dict(item)
             out.append(
                 ToolMessage(
                     content=content,
@@ -221,6 +250,25 @@ def _responses_input_to_langchain(input_items: list[Any]) -> list[Any]:
             # Default to user — Responses input is human turns by convention.
             out.append(HumanMessage(content=content))
     return out
+
+
+def _input_item_dict(item: Any) -> dict[str, Any]:
+    """Normalize a Responses input item (pydantic model or dict) to a dict."""
+    if hasattr(item, "model_dump"):
+        return item.model_dump()
+    if isinstance(item, dict):
+        return item
+    return {}
+
+
+def _function_call_output_text(d: dict[str, Any]) -> str:
+    """Best-effort plain text from a function_call_output item's ``output``."""
+    output = d.get("output")
+    if isinstance(output, str):
+        return output
+    if output is None:
+        return ""
+    return str(output)
 
 
 def _langchain_to_output_item(msg: Any, idx: int) -> dict[str, Any]:
@@ -366,7 +414,14 @@ def _history_to_langchain(history: list[dict[str, Any]]) -> list[Any]:
         if role == "system":
             out.append(SystemMessage(content=content))
         elif role == "assistant":
-            out.append(AIMessage(content=content))
+            # Reconstruct tool_calls onto the AIMessage so a following
+            # ToolMessage isn't orphaned (Databricks-Claude rejects a
+            # tool_result whose tool_call_id matches no AIMessage tool call).
+            # History stamps function calls as OpenAI-shaped tool_calls — see
+            # ``_item_to_history_dict`` — mirror ``_chat_agent._to_langchain_messages``.
+            out.append(
+                AIMessage(content=content, tool_calls=_history_tool_calls(m))
+            )
         elif role == "tool":
             out.append(
                 ToolMessage(
@@ -377,6 +432,49 @@ def _history_to_langchain(history: list[dict[str, Any]]) -> list[Any]:
         else:
             out.append(HumanMessage(content=content))
     return out
+
+
+def _history_tool_calls(m: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract langchain-shaped tool_calls from a stored assistant history dict.
+
+    History stores tool calls in the OpenAI wire shape (``{"id", "type",
+    "function": {"name", "arguments"}}``); langchain ``AIMessage`` wants
+    ``{"name", "args", "id"}``. Mirrors ``_chat_agent._to_langchain_messages``.
+    """
+    tool_calls: list[dict[str, Any]] = []
+    for tc in m.get("tool_calls") or []:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function", {}) if isinstance(tc.get("function"), dict) else {}
+        tool_calls.append(
+            {
+                "name": fn.get("name", ""),
+                "args": _coerce_args(fn.get("arguments")),
+                "id": tc.get("id", ""),
+            }
+        )
+    return tool_calls
+
+
+def _coerce_args(arguments: Any) -> dict[str, Any]:
+    """Coerce a tool-call ``arguments`` value to the dict langchain requires.
+
+    The Responses contract carries function-call ``arguments`` as a JSON
+    string; langchain ``AIMessage.tool_calls[*].args`` validates as a dict and
+    raises on a string. Parse JSON strings; fall back to an empty dict for
+    unparseable / non-dict values rather than crashing the whole conversion.
+    """
+    import json
+
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str) and arguments.strip():
+        try:
+            parsed = json.loads(arguments)
+        except (ValueError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def _persist_session(

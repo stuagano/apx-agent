@@ -294,11 +294,21 @@ def test_update_misses() -> None:
 
 
 def test_delete_emits_correct_sql() -> None:
-    sql = RecordingSqlExecutor()
+    # delete() existence-checks first (SELECT), then DELETEs only on a hit.
+    # Seed a matching row so the existence check finds it and returns True.
+    sql = RecordingSqlExecutor(patterns=[(r"^SELECT", [_canned_row()])])
     store = DeltaExampleStore(run_sql=sql)
     assert store.delete("e1") is True
     del_sql = [c for c in sql.calls if c.startswith("DELETE FROM")][0]
     assert "WHERE id = 'e1'" in del_sql
+
+
+def test_delete_returns_false_on_miss() -> None:
+    # No matching row → existence check misses → no DELETE emitted, False.
+    sql = RecordingSqlExecutor(patterns=[(r"^SELECT", [])])
+    store = DeltaExampleStore(run_sql=sql)
+    assert store.delete("missing") is False
+    assert not any(c.startswith("DELETE FROM") for c in sql.calls)
 
 
 def test_delete_returns_false_on_error() -> None:

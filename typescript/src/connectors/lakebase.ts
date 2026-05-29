@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '../agent/tools.js';
-import { resolveHost, resolveToken, buildSqlParams, type ConnectorConfig, type SqlParam } from '../connectors/types.js';
+import { resolveHost, resolveToken, buildSqlParams, quoteIdent, type ConnectorConfig, type SqlParam } from '../connectors/types.js';
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -123,8 +123,12 @@ export function createLakebaseQueryTool(config: ConnectorConfig) {
     }),
     handler: async ({ table, columns, filters, limit }) => {
       const token = await resolveToken();
-      const fqn = `${catalog}.${schema}.${table}`;
-      const cols = columns && columns.length > 0 ? columns.join(', ') : '*';
+      // catalog/schema come from trusted config; `table` is caller-controlled
+      // and must be validated/backtick-quoted before interpolation.
+      const fqn = `${quoteIdent(catalog, 'catalog')}.${quoteIdent(schema, 'schema')}.${quoteIdent(table, 'table')}`;
+      const cols = columns && columns.length > 0
+        ? columns.map((c) => quoteIdent(c, 'column')).join(', ')
+        : '*';
       const effectiveLimit = limit ?? 100;
 
       const { clause, params } = filters && Object.keys(filters).length > 0
@@ -159,7 +163,9 @@ export function createLakebaseMutateTool(config: ConnectorConfig) {
     }),
     handler: async ({ table, operation, values, filters }) => {
       const token = await resolveToken();
-      const fqn = `${catalog}.${schema}.${table}`;
+      // catalog/schema come from trusted config; `table` is caller-controlled
+      // and must be validated/backtick-quoted before interpolation.
+      const fqn = `${quoteIdent(catalog, 'catalog')}.${quoteIdent(schema, 'schema')}.${quoteIdent(table, 'table')}`;
 
       let statement: string;
       let params: SqlParam[] = [];
@@ -168,7 +174,8 @@ export function createLakebaseMutateTool(config: ConnectorConfig) {
         if (!values || Object.keys(values).length === 0) {
           throw new Error('INSERT requires values');
         }
-        const cols = Object.keys(values).join(', ');
+        // Column names are interpolated as identifiers — validate/quote them.
+        const cols = Object.keys(values).map((k) => quoteIdent(k, 'column')).join(', ');
         const placeholders = Object.keys(values).map((k) => `:${k}`).join(', ');
         const { params: insertParams } = buildSqlParams(values as Record<string, unknown>);
         params = insertParams;
@@ -181,8 +188,10 @@ export function createLakebaseMutateTool(config: ConnectorConfig) {
           throw new Error('UPDATE requires filters to avoid updating all rows');
         }
 
-        // Prefix set params with "set_" to avoid collisions with filter params
-        const setCols = Object.keys(values).map((k) => `${k} = :set_${k}`).join(', ');
+        // Prefix set params with "set_" to avoid collisions with filter params.
+        // The left-hand column is an identifier — validate/quote it; the
+        // `:set_<k>` marker is a value-bound parameter.
+        const setCols = Object.keys(values).map((k) => `${quoteIdent(k, 'column')} = :set_${k}`).join(', ');
         const setPrefixed: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(values)) {
           setPrefixed[`set_${k}`] = v;

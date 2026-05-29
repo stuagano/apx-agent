@@ -93,12 +93,18 @@ class Hypothesis:
     flagged_for_review: bool           = False
 
     def composite_fitness(self) -> float:
+        # `fitness_perplexity` is not yet wired (no local proxy or sub-agent
+        # populates it), so it is excluded from the weighted sum. The remaining
+        # four signals are renormalized to sum to 1.0 — preserving their
+        # original proportions (the old 0.25/0.30/0.15/0.05 weights divided by
+        # 0.75) — so a strong candidate can reach the 0.85 escalation gate.
+        # Re-add the 0.25 perplexity term and revert these weights once
+        # `fitness_perplexity` is populated.
         return (
-            0.25 * self.fitness_statistical
-            + 0.25 * self.fitness_perplexity
-            + 0.30 * self.fitness_semantic
-            + 0.15 * self.fitness_consistency
-            + 0.05 * self.fitness_adversarial
+            0.3333 * self.fitness_statistical
+            + 0.4000 * self.fitness_semantic
+            + 0.2000 * self.fitness_consistency
+            + 0.0667 * self.fitness_adversarial
         )
 
     def to_dict(self) -> dict:

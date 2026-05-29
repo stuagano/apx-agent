@@ -179,7 +179,9 @@ class TestMineExamples:
         [ex] = example_store.list(ExampleFilter(agent_id="a"))
         assert ex.input == "good"
 
-    def test_min_score_keeps_none_scored(self) -> None:
+    def test_min_score_drops_none_scored(self) -> None:
+        # Audit M16: when a quality floor is set, unscored turns are dropped
+        # too (mirrors the store-side ``score >= min_score`` predicate).
         session_store = InMemorySessionStore()
         example_store = InMemoryExampleStore()
         _seed(
@@ -197,7 +199,10 @@ class TestMineExamples:
             score_fn=lambda _t: None,
             min_score=0.9,
         )
-        assert result.examples_added == 1
+        assert result.examples_added == 0
+        from apx_agent._example import ExampleFilter
+
+        assert example_store.list(ExampleFilter(agent_id="a")) == []
 
     def test_limit_caps_examples(self) -> None:
         session_store = InMemorySessionStore()

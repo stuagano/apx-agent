@@ -16,7 +16,14 @@ from databricks.sdk.service.iam import User as UserOut
 from fastapi import APIRouter, HTTPException, Request
 
 from apx_agent import Dependencies
-from .models import AgentCard, AgentTool, InvokeRequest, RegisterRequest, VersionOut
+from .models import (
+    AgentCard,
+    AgentTool,
+    InvokeRequest,
+    RegisterRequest,
+    VersionOut,
+    is_trusted_agent_url,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -166,8 +173,13 @@ def me(user_ws: Dependencies.UserClient):
 
 
 @router.post("/agents/register", response_model=AgentCard, operation_id="registerAgent")
-async def register_agent(req: RegisterRequest):
-    """Register an agent by URL. Crawls /.well-known/agent.json to populate the card."""
+async def register_agent(req: RegisterRequest, user_ws: Dependencies.UserClient):
+    """Register an agent by URL. Crawls /.well-known/agent.json to populate the card.
+
+    Requires an authenticated caller (Dependencies.UserClient binds the request
+    to the user's OBO identity). ``req.url`` is validated as an HTTP(S) URL and
+    checked against the trusted-host allowlist in ``RegisterRequest``.
+    """
     a2a = await _crawl_agent(req.url)
     if not a2a:
         raise HTTPException(
@@ -269,6 +281,15 @@ async def invoke_agent(agent_id: str, req: InvokeRequest, request: Request):
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     if not agent.url:
         raise HTTPException(status_code=400, detail="Agent has no URL")
+
+    # Authoritative trust gate: never forward the caller's OBO token to a host
+    # outside the allowlist. Enforced here (not only at registration) because
+    # seed / EXAMPLE_AGENT_URL / AGENT_HUB_AGENT_URLS agents bypass register.
+    if not is_trusted_agent_url(agent.url):
+        raise HTTPException(
+            status_code=403,
+            detail="Agent URL host is not on the trusted allowlist; refusing to forward credentials",
+        )
 
     token = request.headers.get("X-Forwarded-Access-Token")
     auth_headers = {"Authorization": f"Bearer {token}"} if token else {}

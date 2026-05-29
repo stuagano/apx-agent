@@ -1285,6 +1285,13 @@ async function refreshPreview(source) {{
   }} catch (e) {{ /* silent */ }}
 }}
 
+// Escape untrusted tool metadata before injecting into innerHTML (escapes " and ' too).
+function escHtml(s) {{
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}}
+
 function renderSchemas(schemas) {{
   const el = document.getElementById('schema-list');
   if (!schemas.length) {{
@@ -1292,18 +1299,18 @@ function renderSchemas(schemas) {{
     return;
   }}
   el.innerHTML = schemas.map(s => {{
-    if (s._error) return `<p class="schema-error">${{s._error}}</p>`;
+    if (s._error) return `<p class="schema-error">${{escHtml(s._error)}}</p>`;
     const props = s.parameters?.properties ?? {{}};
     const paramHtml = Object.keys(props).length
       ? Object.entries(props).map(([k, v]) =>
-          `<div class="param-row"><span class="param-name">${{k}}</span>`
-          + `<span class="param-type">${{v.type}}</span>`
-          + (v.description ? `<span class="param-desc">— ${{v.description}}</span>` : '')
+          `<div class="param-row"><span class="param-name">${{escHtml(k)}}</span>`
+          + `<span class="param-type">${{escHtml(v.type)}}</span>`
+          + (v.description ? `<span class="param-desc">— ${{escHtml(v.description)}}</span>` : '')
           + `</div>`).join('')
       : '<span class="no-params">No parameters</span>';
     return `<div class="tool-card">
-      <div class="tool-name">${{s.name}}</div>
-      <div class="tool-desc">${{s.description || '<em style="color:#333">No description</em>'}}</div>
+      <div class="tool-name">${{escHtml(s.name)}}</div>
+      <div class="tool-desc">${{s.description ? escHtml(s.description) : '<em style="color:#333">No description</em>'}}</div>
       <div class="tool-params">${{paramHtml}}</div>
     </div>`;
   }}).join('');

@@ -35,6 +35,7 @@ import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any, Iterable
 
@@ -53,6 +54,14 @@ class RateLimit:
     tokens. Per-principal — the key extractor pulls a principal string
     from the tool arguments (defaults to ``None`` for a single global
     bucket). When the bucket runs dry, raises ``PermissionError``.
+
+    Per-principal bucket state is bounded so a request-derived
+    ``principal_key`` (e.g. a per-user or per-session id) cannot grow the
+    in-memory state without limit. Buckets idle for longer than
+    ``idle_ttl`` seconds are evicted, and the total number of live buckets
+    is capped at ``max_principals`` (least-recently-used eviction). Eviction
+    is safe: a bucket idle past ``idle_ttl`` has refilled to full, so a
+    re-created bucket starts in the identical (full) state.
 
     Thread-safe: a lock guards the per-principal state.
 
@@ -73,31 +82,58 @@ class RateLimit:
         burst: int | None = None,
         principal_key: Callable[[str, dict[str, Any]], Any] | None = None,
         message: str | None = None,
+        max_principals: int = 10_000,
+        idle_ttl: float = 3600.0,
     ) -> None:
         if per_minute <= 0:
             raise ValueError(f"per_minute must be positive; got {per_minute!r}")
+        if max_principals <= 0:
+            raise ValueError(f"max_principals must be positive; got {max_principals!r}")
+        if idle_ttl <= 0:
+            raise ValueError(f"idle_ttl must be positive; got {idle_ttl!r}")
         self.per_minute = per_minute
         self.burst = burst if burst is not None else per_minute
         self.principal_key = principal_key
         self.message = message or f"Rate limit exceeded: {per_minute}/min."
-        self._tokens: dict[Any, float] = {}
-        self._last_refill: dict[Any, float] = {}
+        self.max_principals = max_principals
+        self.idle_ttl = idle_ttl
+        # principal -> (tokens, last_refill). OrderedDict gives O(1) LRU
+        # eviction; most-recently-touched buckets sit at the end.
+        self._buckets: "OrderedDict[Any, tuple[float, float]]" = OrderedDict()
         self._lock = threading.Lock()
+
+    def _evict_idle(self, now: float) -> None:
+        """Drop buckets untouched for longer than ``idle_ttl``.
+
+        Caller must hold ``self._lock``. Buckets are ordered oldest-first,
+        so we can stop scanning at the first non-idle entry.
+        """
+        cutoff = now - self.idle_ttl
+        while self._buckets:
+            principal, (_tokens, last_refill) = next(iter(self._buckets.items()))
+            if last_refill > cutoff:
+                break
+            self._buckets.popitem(last=False)
 
     def _take_token(self, principal: Any) -> bool:
         """Return True if a token was available; False if rate-limited."""
         now = time.monotonic()
         rate = self.per_minute / 60.0
         with self._lock:
-            last = self._last_refill.get(principal, now)
-            tokens = self._tokens.get(principal, float(self.burst))
+            self._evict_idle(now)
+            tokens, last = self._buckets.get(principal, (float(self.burst), now))
             tokens = min(self.burst, tokens + (now - last) * rate)
-            self._last_refill[principal] = now
-            if tokens >= 1.0:
-                self._tokens[principal] = tokens - 1.0
-                return True
-            self._tokens[principal] = tokens
-            return False
+            took = tokens >= 1.0
+            if took:
+                tokens -= 1.0
+            # Re-insert at the end so this principal is treated as most
+            # recently used for LRU eviction.
+            self._buckets[principal] = (tokens, now)
+            self._buckets.move_to_end(principal)
+            # Cap total live buckets; evict least-recently-used first.
+            while len(self._buckets) > self.max_principals:
+                self._buckets.popitem(last=False)
+            return took
 
     def __call__(self, name: str, args: dict[str, Any]) -> None:
         principal = (

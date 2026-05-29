@@ -112,6 +112,11 @@ def seed_population():
         from apx_agent.workflow import CipherType, SourceLanguage, Hypothesis
         import uuid, random
         alphabet = list("abcdefghijklmnopqrstuvwxyz")
+        cipher_types = [
+            CipherType.SUBSTITUTION, CipherType.TRANSPOSITION,
+            CipherType.POLYALPHABETIC, CipherType.NULL_BEARING,
+            CipherType.COMPOSITE, CipherType.STEGANOGRAPHIC,
+        ]
         seed_hypotheses = []
         for i in range(min(args.n, 500)):
             shuffled = alphabet[:]
@@ -119,8 +124,7 @@ def seed_population():
             seed_hypotheses.append(Hypothesis(
                 id=str(uuid.uuid4())[:8],
                 generation=0,
-                cipher_type=list(CipherType.__dict__.values())[i % 6]
-                            if hasattr(CipherType, '__dict__') else "substitution",
+                cipher_type=cipher_types[i % 6],
                 source_language=["latin","hebrew","arabic","italian","occitan","catalan"][i % 6],
                 symbol_map={c: shuffled[j % 26] for j, c in enumerate("oainshe")},
                 null_chars=["q"] if i % 3 == 0 else [],

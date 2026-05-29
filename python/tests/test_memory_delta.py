@@ -395,11 +395,21 @@ def test_update_without_content_does_not_reembed() -> None:
 
 
 def test_delete_emits_delete_sql() -> None:
-    sql = RecordingSqlExecutor()
+    # delete() existence-checks first (SELECT), then DELETEs only on a hit.
+    # Seed a matching row so the existence check finds it and returns True.
+    sql = RecordingSqlExecutor(patterns=[(r"^SELECT", [_canned_row()])])
     store = DeltaMemoryStore(run_sql=sql)
     assert store.delete("m1") is True
     delete_sql = [c for c in sql.calls if c.startswith("DELETE FROM")][0]
     assert "WHERE id = 'm1'" in delete_sql
+
+
+def test_delete_returns_false_on_miss() -> None:
+    # No matching row → existence check misses → no DELETE emitted, False.
+    sql = RecordingSqlExecutor(patterns=[(r"^SELECT", [])])
+    store = DeltaMemoryStore(run_sql=sql)
+    assert store.delete("missing") is False
+    assert not any(c.startswith("DELETE FROM") for c in sql.calls)
 
 
 def test_delete_returns_false_on_error() -> None:
@@ -439,10 +449,14 @@ def test_list_emits_all_filter_clauses() -> None:
     assert "LIMIT 42" in select
 
 
-def test_list_returns_empty_on_sql_failure() -> None:
+def test_list_raises_on_sql_failure() -> None:
+    # H21: a swallowed error here would read as "no memories found" to the
+    # recall tool. list() lets infra failures propagate; [] is reserved for a
+    # genuinely empty result set.
     sql = RecordingSqlExecutor(patterns=[(r"^SELECT", RuntimeError)])
     store = DeltaMemoryStore(run_sql=sql)
-    assert store.list(MemoryFilter(principal_id="u1")) == []
+    with pytest.raises(RuntimeError):
+        store.list(MemoryFilter(principal_id="u1"))
 
 
 # ---------------------------------------------------------------------------

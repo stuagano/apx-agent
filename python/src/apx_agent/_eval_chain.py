@@ -139,13 +139,19 @@ def _collect_chain_cases(
     import mlflow
 
     try:
+        # This path needs span data (sub-agent / tool attributes live on
+        # child spans), so include_spans stays default-True. We must NOT
+        # swallow a read failure into an empty list — that reads as "no
+        # sub-agents fired" and silently produces a wrong coverage report.
         traces_raw = mlflow.search_traces(  # type: ignore[attr-defined]
             experiment_names=[experiment],
             max_results=lookback_traces,
         )
     except Exception as e:
-        logger.warning("evaluate_chain: search_traces failed: %s", e)
-        return []
+        raise RuntimeError(
+            f"evaluate_chain: search_traces failed for experiment "
+            f"{experiment!r}: {e}"
+        ) from e
 
     # Normalise to a list of dicts the inspector can walk
     if hasattr(traces_raw, "to_dict"):
@@ -156,12 +162,27 @@ def _collect_chain_cases(
     else:
         traces_iter = traces_raw or []
 
+    traces_list = list(traces_iter or [])
+
     # Map evalset entries → their request text so we can pair by content.
     requests = _request_texts_from_evalset(evalset)
 
+    # If the evalset is larger than the trace page we fetched, correlation
+    # can only ever cover a prefix — warn rather than silently undercount.
+    if len(requests) > len(traces_list):
+        logger.warning(
+            "evaluate_chain: %d evalset rows but only %d traces fetched "
+            "(lookback_traces=%d) — coverage may be incomplete; raise "
+            "lookback_traces to cover the full evalset.",
+            len(requests), len(traces_list), lookback_traces,
+        )
+
+    # Consume each trace at most once so duplicate request strings don't all
+    # re-match the same first trace (which double-counted sub-agent coverage).
+    consumed: set[int] = set()
     cases: list[ChainCaseResult] = []
     for req in requests:
-        case = _build_case_from_trace(req, traces_iter)
+        case = _build_case_from_trace(req, traces_list, consumed)
         if case is not None:
             cases.append(case)
     return cases
@@ -200,17 +221,26 @@ def _request_texts_from_evalset(evalset: Any) -> list[str]:
 
 def _build_case_from_trace(
     request_text: str,
-    traces: Any,
+    traces: list[Any],
+    consumed: set[int],
 ) -> ChainCaseResult | None:
-    """Match a request to a trace and pull the chain-relevant fields off it."""
-    for t in traces or []:
+    """Match a request to an as-yet-unconsumed trace and pull its fields.
+
+    Records the matched trace index in ``consumed`` so it can't be matched
+    again — duplicate request strings then bind to distinct traces instead
+    of all re-matching the first one (which double-counted coverage).
+    """
+    for idx, t in enumerate(traces or []):
+        if idx in consumed:
+            continue
         # Both dict and Trace-object access patterns
         attrs = _trace_attrs(t)
         spans = _trace_spans(t)
-        # Match by the predict span's input — a fuzzy contains check on
-        # the first user message content.
+        # Match on the structured first user message — not a substring of
+        # the stringified inputs (which collided across requests).
         if not _trace_matches_request(t, spans, request_text):
             continue
+        consumed.add(idx)
         # Pull sub-agent + tool names off all child spans
         sub_agents: list[str] = []
         tool_calls: list[str] = []
@@ -255,14 +285,62 @@ def _trace_spans(t: Any) -> list[Any]:
 
 
 def _trace_matches_request(t: Any, spans: list[Any], request_text: str) -> bool:
-    """Best-effort match: look for the request text in the root span's inputs."""
+    """Match on the root span's first user message, exactly.
+
+    The earlier version did a substring check on the *stringified* inputs,
+    which collided whenever one request string was a substring of another
+    (or of serialized history). Here we pull the first user message out of
+    the root span's structured inputs and compare it to the request text,
+    falling back to a substring check only when the structured shape is
+    unavailable.
+    """
     if not spans:
         return False
     root = spans[0]
     inputs = getattr(root, "inputs", None)
     if inputs is None:
         return False
+    first_user = _first_user_message(inputs)
+    if first_user is not None:
+        return first_user.strip() == request_text.strip()
+    # Structured shape unavailable — fall back to the loose substring check.
     return request_text in str(inputs)
+
+
+def _first_user_message(inputs: Any) -> str | None:
+    """Extract the first user message's text from a span's structured inputs.
+
+    Handles the common shapes: ``{"messages": [{"role": "user", ...}]}``,
+    a bare list of message dicts, and message objects with ``.role`` /
+    ``.content`` attributes. Returns ``None`` when no structured user
+    message can be located (caller falls back to a substring match).
+    """
+    messages: Any = None
+    if isinstance(inputs, dict):
+        messages = inputs.get("messages")
+        if messages is None and "role" in inputs:
+            messages = [inputs]
+    elif isinstance(inputs, list):
+        messages = inputs
+    if not isinstance(messages, list):
+        return None
+    for m in messages:
+        role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+        if role == "user":
+            content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+            if content is None:
+                return None
+            if isinstance(content, str):
+                return content
+            # Content may be a list of parts (e.g. [{"type": "text", "text": ...}]).
+            if isinstance(content, list):
+                texts = [
+                    p.get("text", "") if isinstance(p, dict) else str(p)
+                    for p in content
+                ]
+                return "".join(texts)
+            return str(content)
+    return None
 
 
 def _trace_id(t: Any) -> str | None:

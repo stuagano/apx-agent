@@ -326,7 +326,9 @@ describe('DeltaMemoryStore.get / update / delete', () => {
   });
 
   it('delete returns true on success and emits DELETE FROM', async () => {
-    const { execFn, queryFn, execs } = captureSql();
+    // M26: delete() now existence-checks first (True on hit, False on miss),
+    // so the SELECT must return the row before delete reports success.
+    const { execFn, queryFn, execs } = captureSql({ selectRows: [makeRow({ id: 'mem_1' })] });
     const store = new DeltaMemoryStore({
       querySql: queryFn,
       execSql: execFn,

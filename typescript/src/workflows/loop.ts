@@ -93,16 +93,24 @@ export class LoopAgent implements Runnable {
       nextIter = iter + 1;
     }
 
-    for (let i = nextIter; i < this.maxIterations; i++) {
-      result = await this.engine.step<string>(runId, `iter-${i}`, () =>
-        this.agent.run(context),
-      );
+    try {
+      for (let i = nextIter; i < this.maxIterations; i++) {
+        result = await this.engine.step<string>(runId, `iter-${i}`, () =>
+          this.agent.run(context),
+        );
 
-      if (this.stopWhen?.(result, i)) {
-        break;
+        if (this.stopWhen?.(result, i)) {
+          break;
+        }
+
+        context = [...context, { role: 'assistant', content: result }];
       }
-
-      context = [...context, { role: 'assistant', content: result }];
+    } catch (e) {
+      // A thrown iteration would otherwise leave the run stuck in 'running',
+      // indistinguishable from in-flight in listRuns/getRun. Mark it failed
+      // before re-throwing so monitoring/resume stays accurate. (M28)
+      await this.engine.finishRun(runId, 'failed', e instanceof Error ? e.message : String(e));
+      throw e;
     }
 
     await this.engine.finishRun(runId, 'completed', result);

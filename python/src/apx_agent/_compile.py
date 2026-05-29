@@ -213,16 +213,32 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _build_chat_databricks(endpoint: str) -> Any:
+def _build_chat_databricks(
+    endpoint: str,
+    *,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> Any:
     """Build the ChatDatabricks for an agent's compile path.
 
     Delegates to the public ``get_llm`` factory, which routes by endpoint
     prefix and applies provider-specific quirk defenses (e.g., stripping
     ``temperature``/``top_p`` for GPT-5 family endpoints). See
     ``apx_agent._llm`` for the full provider-compat rationale.
+
+    ``temperature``/``max_tokens`` are forwarded to the underlying client only
+    when set, so ``LlmAgent`` generation knobs take effect. Endpoints that
+    reject a knob (e.g. the GPT-5 reasoning family strips ``temperature``)
+    still drop it defensively inside ``get_llm``.
     """
     from ._llm import get_llm
-    return get_llm(endpoint)
+
+    kwargs: dict[str, Any] = {}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return get_llm(endpoint, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -237,18 +253,32 @@ def _compile_llm_agent(agent: LlmAgent, ctx: CompileContext) -> Any:
     from ._callbacks import build_callback_handler
 
     tools = [_make_langchain_tool(fn, ctx) for fn in agent._tool_fns]
-    llm = _build_chat_databricks(ctx.model)
+    llm = _build_chat_databricks(
+        ctx.model,
+        temperature=getattr(agent, "_temperature", None),
+        max_tokens=getattr(agent, "_max_tokens", None),
+    )
     runnable = create_agent(
         model=llm,
         tools=tools,
         system_prompt=agent._instructions or None,
     )
+    config: dict[str, Any] = {}
     handler = build_callback_handler(agent)
     if handler is not None:
         # LangChain's with_config propagates callbacks to every chain hop
         # inside the agent (LLM calls + tool calls), which is exactly the
         # surface our hooks want to observe.
-        runnable = runnable.with_config(callbacks=[handler])
+        config["callbacks"] = [handler]
+    max_iter = getattr(agent, "_max_iterations", None)
+    if max_iter:
+        # Each agent round is one LLM superstep plus (optionally) a tool
+        # superstep; allow two graph supersteps per requested iteration so a
+        # tool-calling turn isn't cut off mid-round, plus a small margin for
+        # the terminal answer hop.
+        config["recursion_limit"] = max_iter * 2 + 1
+    if config:
+        runnable = runnable.with_config(**config)
     return runnable
 
 

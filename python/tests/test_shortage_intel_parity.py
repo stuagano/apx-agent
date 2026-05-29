@@ -70,7 +70,9 @@ def _stub_chat_databricks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         _compile,
         "_build_chat_databricks",
-        lambda endpoint: MagicMock(name=f"fake_chat:{endpoint}"),
+        lambda endpoint, *, temperature=None, max_tokens=None: MagicMock(
+            name=f"fake_chat:{endpoint}"
+        ),
     )
 
 

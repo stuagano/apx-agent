@@ -39,7 +39,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from ._session import Session
+from ._session import Session, StoreError
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
@@ -153,10 +153,13 @@ class LakebaseSessionStore:
                 row = conn.execute(sql, {"sid": session_id}).mappings().first()
         except Exception as e:
             logger.warning(
-                "LakebaseSessionStore.get(%s) failed: %s — returning None.",
+                "LakebaseSessionStore.get(%s) failed: %s — raising StoreError "
+                "(read failure is not a missing session).",
                 session_id, e,
             )
-            return None
+            raise StoreError(
+                f"LakebaseSessionStore.get({session_id!r}) failed: {e}"
+            ) from e
         if row is None:
             return None
         try:

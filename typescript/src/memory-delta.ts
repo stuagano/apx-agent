@@ -188,6 +188,12 @@ export class DeltaMemoryStore implements MemoryStore {
       autoCreate: opts.autoCreate,
       indexName: opts.indexName,
     });
+    // Fail fast when a Vector Search delegate is provided without an index
+    // name; otherwise recall would silently fall through to the client-side
+    // cosine path. Mirrors the Python store's ValueError. (M29)
+    if (opts.vectorSearch !== undefined && !opts.indexName) {
+      throw new Error('indexName is required when vectorSearch is provided');
+    }
     this.tableName = opts.tableName ?? 'apx_memories';
     this.querySql = opts.querySql;
     this.execSql = opts.execSql;
@@ -322,6 +328,10 @@ export class DeltaMemoryStore implements MemoryStore {
 
   async delete(id: string): Promise<boolean> {
     await this.ensureTable();
+    // Read the row first so a miss returns false (protocol: True on hit,
+    // False on miss). Mirrors LakebaseMemoryStore.delete. (M26)
+    const existed = (await this.get(id)) !== null;
+    if (!existed) return false;
     const sql = `DELETE FROM ${this.tableName} WHERE id = ${sqlStr(id)}`;
     try {
       await this.execSql(sql);
@@ -372,6 +382,15 @@ export class DeltaMemoryStore implements MemoryStore {
       if (opts.namespace !== undefined) {
         filters.namespace = opts.namespace;
       }
+      // `tags` / `minImportance` are post-filtered below rather than pushed
+      // into the backend filter dict: array-intersection and range semantics
+      // vary across Vector Search backends, whereas post-filtering guarantees
+      // parity with the SQL / Lakebase paths. Over-fetch so the post-filter
+      // still yields up to k. (M27)
+      const postFilter =
+        (opts.tags !== undefined && opts.tags.length > 0) ||
+        opts.minImportance !== undefined;
+      const numResults = postFilter ? k * 4 : k;
       const ssOpts: {
         indexName: string;
         queryVector?: number[];
@@ -382,7 +401,7 @@ export class DeltaMemoryStore implements MemoryStore {
       } = {
         indexName: this.indexName,
         columns: ['id', 'principal_id', 'namespace', 'content', 'tags', 'importance', 'metadata', 'created_at', 'updated_at'],
-        numResults: k,
+        numResults,
         filters,
       };
       if (this.embeddingFn) {
@@ -392,13 +411,22 @@ export class DeltaMemoryStore implements MemoryStore {
         ssOpts.queryText = opts.query;
       }
       const result = await this.vectorSearch.similaritySearch(ssOpts);
-      return (result.rows ?? []).map((row) => {
+      const tagSet = opts.tags && opts.tags.length > 0 ? new Set(opts.tags) : null;
+      const out: RecallResult[] = [];
+      for (const row of result.rows ?? []) {
+        const memory = rowToMemory(row);
+        // Post-filter to match SQL/Lakebase semantics. (M27)
+        if (tagSet !== null && !memory.tags.some((t) => tagSet.has(t))) {
+          continue;
+        }
+        if (opts.minImportance !== undefined && memory.importance < opts.minImportance) {
+          continue;
+        }
         const scoreRaw = row._score ?? row.score ?? 0;
-        return {
-          memory: rowToMemory(row),
-          score: Number(scoreRaw),
-        };
-      });
+        out.push({ memory, score: Number(scoreRaw) });
+        if (out.length >= k) break;
+      }
+      return out;
     }
 
     // Branch 3 + 4: list candidates via SQL.

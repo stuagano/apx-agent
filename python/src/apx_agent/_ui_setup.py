@@ -61,6 +61,7 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
     and posts an ``apx:tool-created`` message to the parent window whenever a
     tool is created — so the host page can surface it and refresh.
     """
+    import html as _html
     import json as _json
     nav = "" if embed else _apx_nav_html("setup")
     overlay = "" if embed else _deploy_overlay_html()
@@ -68,6 +69,11 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
     cur_catalog = current.get("DEMO_CATALOG", "")
     cur_schema = current.get("DEMO_SCHEMA", "")
     cur_wh = current.get("WAREHOUSE_ID", "")
+    # HTML-escaped variants for the current-tag labels (the raw values are
+    # still passed to JS via json.dumps below, which is safe for that context).
+    cur_catalog_html = _html.escape(cur_catalog)
+    cur_schema_html = _html.escape(cur_schema)
+    cur_wh_html = _html.escape(cur_wh)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -187,15 +193,15 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
   <div class="section">
     <div class="section-title">Data Source</div>
     <div class="field">
-      <label>Catalog {('<span class="current-tag">' + cur_catalog + '</span>') if cur_catalog else ''}</label>
+      <label>Catalog {('<span class="current-tag">' + cur_catalog_html + '</span>') if cur_catalog else ''}</label>
       <select id="sel-catalog"><option value="">Loading…</option></select>
     </div>
     <div class="field">
-      <label>Schema {('<span class="current-tag">' + cur_schema + '</span>') if cur_schema else ''}</label>
+      <label>Schema {('<span class="current-tag">' + cur_schema_html + '</span>') if cur_schema else ''}</label>
       <select id="sel-schema" disabled><option value="">Select a catalog first</option></select>
     </div>
     <div class="field">
-      <label>SQL Warehouse {('<span class="current-tag">' + cur_wh + '</span>') if cur_wh else ''}</label>
+      <label>SQL Warehouse {('<span class="current-tag">' + cur_wh_html + '</span>') if cur_wh else ''}</label>
       <select id="sel-warehouse"><option value="">Loading…</option></select>
     </div>
   </div>
@@ -376,6 +382,13 @@ const CUR_CATALOG = {_json.dumps(cur_catalog)};
 const CUR_SCHEMA  = {_json.dumps(cur_schema)};
 const CUR_WH      = {_json.dumps(cur_wh)};
 
+// Escape for HTML text + double-quoted attribute contexts (escapes " too).
+function escHtml(s) {{
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}}
+
 async function loadCatalogs() {{
   const r = await fetch('/_apx/setup/catalogs');
   const d = await r.json();
@@ -490,21 +503,24 @@ async function loadTools() {{
     }}
     palette.innerHTML = tools.map(t => {{
       const params = (t.params||[]).map(p =>
-        `<span class="tcard-param">${{p.name}}: ${{p.type}}</span>`).join('');
-      return `<div class="tcard" data-name="${{t.name}}">
+        `<span class="tcard-param">${{escHtml(p.name)}}: ${{escHtml(p.type)}}</span>`).join('');
+      const nm = escHtml(t.name);
+      return `<div class="tcard" data-name="${{nm}}">
         <div class="tcard-header">
-          <span class="tcard-name" title="${{t.name}}">${{t.name}}</span>
+          <span class="tcard-name" title="${{nm}}">${{nm}}</span>
           <a href="/_apx/edit" class="tcard-btn" title="Open in editor"
              style="text-decoration:none;font-size:10px">Edit</a>
-          <button class="tcard-btn tcard-del" onclick="deleteTool('${{t.name}}')"
+          <button class="tcard-btn tcard-del" data-del-name="${{nm}}"
                   title="Delete tool">✕</button>
         </div>
-        ${{t.description ? `<div class="tcard-desc" title="${{t.description}}">${{t.description}}</div>` : ''}}
+        ${{t.description ? `<div class="tcard-desc" title="${{escHtml(t.description)}}">${{escHtml(t.description)}}</div>` : ''}}
         <div class="tcard-params">${{params}}</div>
       </div>`;
     }}).join('');
+    palette.querySelectorAll('.tcard-del').forEach(btn =>
+      btn.addEventListener('click', () => deleteTool(btn.dataset.delName)));
   }} catch(e) {{
-    palette.innerHTML = `<div style="color:#f87171;font-size:12px;grid-column:1/-1">${{e.message}}</div>`;
+    palette.innerHTML = `<div style="color:#f87171;font-size:12px;grid-column:1/-1">${{escHtml(e.message)}}</div>`;
   }}
 }}
 
@@ -1451,7 +1467,11 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
     tableCards.innerHTML = '<p style="color:#555">Loading tables… <span class="spinner"></span></p>';
     try {{
       const r = await fetch(`/_apx/wizard/tables?catalog=${{encodeURIComponent(state.catalog)}}&schema=${{encodeURIComponent(state.schema)}}`);
-      const tables = await r.json();
+      const data = await r.json();
+      // Endpoint returns {{tables:[...], warehouse_id}}; older code read the
+      // object as if it were the array, so the list was always "No tables found".
+      if (data.error) throw new Error(data.error);
+      const tables = data.tables || [];
       state.tables = tables;
       if (!tables.length) {{
         tableCards.innerHTML = '<p style="color:#666">No tables found in this schema.</p>';

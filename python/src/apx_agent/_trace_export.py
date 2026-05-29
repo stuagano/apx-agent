@@ -69,7 +69,11 @@ class ExportResult:
 def _escape_sql(value: str | None) -> str:
     if value is None:
         return "NULL"
-    return "'" + value.replace("'", "''") + "'"
+    # Spark SQL treats backslash as an escape character by default, so a
+    # value ending in a backslash (or containing ``\'``) would otherwise
+    # break out of the string literal. Escape backslashes *before* quotes.
+    escaped = value.replace("\\", "\\\\").replace("'", "''")
+    return "'" + escaped + "'"
 
 
 def _normalise_trace(trace: Any) -> dict[str, Any] | None:
@@ -110,9 +114,14 @@ def _normalise_trace(trace: Any) -> dict[str, Any] | None:
     if not trace_id:
         return None
     spans = list(getattr(data, "spans", None) or [])
-    root_attrs: dict[str, Any] = {}
-    if spans:
-        root_attrs = dict(getattr(spans[0], "attributes", {}) or {})
+    if not spans:
+        # No spans means the trace's payload (artifact download) didn't come
+        # through — e.g. a private-link workspace where blob storage is
+        # blocked. A tags-only row is not a real export; skip it so the
+        # caller counts it under ``skipped`` rather than ``rows_written``.
+        return None
+    root = _root_span(spans)
+    root_attrs = dict(getattr(root, "attributes", {}) or {})
     tags = dict(getattr(info, "tags", {}) or {})
     attrs = {**tags, **root_attrs}  # span attrs take precedence
     return {
@@ -131,6 +140,24 @@ def _normalise_trace(trace: Any) -> dict[str, Any] | None:
         "watchdog_policy_id": attrs.get("apx.watchdog.policy_id"),
         "tags": json.dumps({k: v for k, v in attrs.items() if k.startswith("apx.")}, default=str),
     }
+
+
+def _root_span(spans: list[Any]) -> Any:
+    """Return the root span — the one with no parent — falling back to spans[0].
+
+    Span ordering in a Trace is not guaranteed, so reading ``spans[0]`` can
+    pull apx.* attributes off a child span. The root is the span whose
+    parent id is absent; if none can be identified (older span shapes that
+    don't expose a parent attribute), fall back to the first span.
+    """
+    for span in spans:
+        parent = (
+            getattr(span, "parent_id", None)
+            or getattr(span, "parent_span_id", None)
+        )
+        if not parent:
+            return span
+    return spans[0]
 
 
 def _coerce_int(value: Any) -> int | None:
@@ -249,7 +276,12 @@ def export_traces(
         return ExportResult(target_table=target_table, traces_pulled=skipped, rows_written=0, skipped=skipped)
 
     # Build a single MERGE statement so concurrent exports don't double-write.
-    # Source is a VALUES clause inline; trace_id is the merge key.
+    # Source is a VALUES clause inline; trace_id is the merge key. Every
+    # string value (notably the request-controlled ``session_id``) is run
+    # through ``_escape_sql``, which now escapes backslashes *and* quotes so
+    # a backslash- or quote-bearing value can't break out of the literal.
+    # Numeric / boolean columns are coerced to int/bool above (never
+    # attacker strings) so they stay inline as typed literals.
     now = time.time()
     value_tuples = []
     for r in rows:

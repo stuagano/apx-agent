@@ -107,7 +107,7 @@ describe('resolveHost', () => {
 describe('buildSqlParams', () => {
   it('builds parameterized WHERE clause from filters', () => {
     const { clause, params } = buildSqlParams({ name: 'Alice', age: 30 });
-    expect(clause).toBe('name = :name AND age = :age');
+    expect(clause).toBe('`name` = :name AND `age` = :age');
     expect(params).toEqual([
       { name: 'name', value: 'Alice', type: 'STRING' },
       { name: 'age', value: '30', type: 'INT' },

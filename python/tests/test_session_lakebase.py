@@ -11,7 +11,8 @@ Covers:
   - delete removes the row
   - JSON round-trip for history and state
   - updated_at refreshed on put
-  - get returns None gracefully when underlying SQL raises
+  - get raises StoreError when underlying SQL raises (a backend failure
+    is not a missing session)
   - get returns empty session when JSON columns are malformed
   - auto_create runs CREATE TABLE IF NOT EXISTS exactly once
 """
@@ -29,6 +30,7 @@ pytest.importorskip("sqlalchemy")
 from sqlalchemy import create_engine  # noqa: E402
 
 from apx_agent import LakebaseSessionStore, Session  # noqa: E402
+from apx_agent._session import StoreError  # noqa: E402
 
 
 def _store() -> LakebaseSessionStore:
@@ -117,7 +119,7 @@ def test_apostrophes_and_unicode_round_trip() -> None:
 # ===========================================================================
 
 
-def test_get_returns_none_on_sql_exception() -> None:
+def test_get_raises_store_error_on_sql_exception() -> None:
     store = _store()
     # Drop the table so the SELECT fails
     with store.engine.begin() as conn:
@@ -127,7 +129,10 @@ def test_get_returns_none_on_sql_exception() -> None:
     # exercises the get-on-broken-table case.
     store._created = True
     store._auto_create = False
-    assert store.get("anything") is None
+    # A backend failure is not a missing session: raise StoreError so callers
+    # don't mistake an errored read for an empty conversation and clobber it.
+    with pytest.raises(StoreError):
+        store.get("anything")
 
 
 def test_get_handles_malformed_json() -> None:
@@ -180,5 +185,8 @@ def test_auto_create_runs_once() -> None:
 def test_no_auto_create_when_disabled() -> None:
     engine = create_engine("sqlite:///:memory:")
     store = LakebaseSessionStore(engine=engine, table_name="apx_sessions", auto_create=False)
-    # Without auto_create, get on a fresh engine should fail and return None
-    assert store.get("anything") is None
+    # Without auto_create, get on a fresh engine hits a missing table. That's a
+    # backend failure, not a missing session, so it raises StoreError rather
+    # than returning None (callers must not treat it as an empty conversation).
+    with pytest.raises(StoreError):
+        store.get("anything")

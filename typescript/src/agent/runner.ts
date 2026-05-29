@@ -197,6 +197,94 @@ async function chatCompletionsStream(
 }
 
 // ---------------------------------------------------------------------------
+// SSE streaming parser
+// ---------------------------------------------------------------------------
+
+/** A streaming chat-completion delta (OpenAI / FMAPI `stream: true` format). */
+interface StreamDelta {
+  content?: string;
+  tool_calls?: Array<{
+    index: number;
+    id?: string;
+    type?: 'function';
+    function?: { name?: string; arguments?: string };
+  }>;
+}
+
+interface StreamChunk {
+  choices?: Array<{ delta?: StreamDelta; finish_reason?: string | null }>;
+}
+
+/**
+ * Consume an SSE `chat/completions` stream, yielding the assistant content
+ * delta for each chunk as it arrives. Tool-call fragments are assembled into
+ * `acc` by their `index` (id/name captured when first seen, `arguments`
+ * concatenated across chunks) so the caller can dispatch them once the stream
+ * completes.
+ */
+async function* parseSseStream(
+  res: Response,
+  acc: ToolCall[],
+): AsyncGenerator<string> {
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const byIndex = new Map<number, ToolCall>();
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE events are separated by blank lines; process complete lines.
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).replace(/\r$/, '');
+        buffer = buffer.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (data === '' || data === '[DONE]') continue;
+
+        let chunk: StreamChunk;
+        try {
+          chunk = JSON.parse(data) as StreamChunk;
+        } catch {
+          continue; // ignore malformed fragments
+        }
+
+        const delta = chunk.choices?.[0]?.delta;
+        if (!delta) continue;
+
+        if (typeof delta.content === 'string' && delta.content.length > 0) {
+          yield delta.content;
+        }
+
+        for (const tcDelta of delta.tool_calls ?? []) {
+          let tc = byIndex.get(tcDelta.index);
+          if (!tc) {
+            tc = { id: tcDelta.id ?? '', type: 'function', function: { name: '', arguments: '' } };
+            byIndex.set(tcDelta.index, tc);
+          }
+          if (tcDelta.id) tc.id = tcDelta.id;
+          if (tcDelta.function?.name) tc.function.name += tcDelta.function.name;
+          if (tcDelta.function?.arguments) tc.function.arguments += tcDelta.function.arguments;
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  // Surface assembled tool calls in index order.
+  for (const idx of [...byIndex.keys()].sort((a, b) => a - b)) {
+    acc.push(byIndex.get(idx)!);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tool adapters
 // ---------------------------------------------------------------------------
 
@@ -385,7 +473,15 @@ export async function runViaSDK(params: RunParams): Promise<string> {
   return last?.content ?? '[Max tool-calling turns exceeded]';
 }
 
-/** Stream the agent loop, yielding text chunks. */
+/**
+ * Stream the agent loop, yielding incremental text deltas.
+ *
+ * Every turn is requested with `stream: true` and parsed via SSE: content
+ * deltas are yielded to the caller as they arrive. If a turn assembles
+ * tool calls, they are executed and the loop continues; otherwise the stream
+ * is complete. This actually streams incrementally — it does not buffer the
+ * whole response and emit it as one chunk.
+ */
 export async function* streamViaSDK(params: RunParams): AsyncGenerator<string> {
   const token = await resolveToken(params.oboHeaders);
   const toolMap = new Map(params.tools.map((t) => [t.name, t]));
@@ -411,30 +507,35 @@ export async function* streamViaSDK(params: RunParams): AsyncGenerator<string> {
   const maxTurns = params.maxTurns ?? 10;
 
   for (let turn = 0; turn < maxTurns; turn++) {
-    // Use non-streaming for tool-calling turns, stream only the final turn
-    const response = await chatCompletions(
+    const res = await chatCompletionsStream(
       params.model,
       messages,
       token,
       toolDefs.length > 0 ? toolDefs : undefined,
     );
 
-    const choice = response.choices?.[0];
-    if (!choice) return;
+    // Stream this turn: yield content deltas, assemble any tool calls.
+    const toolCalls: ToolCall[] = [];
+    let content = '';
+    for await (const piece of parseSseStream(res, toolCalls)) {
+      content += piece;
+      yield piece;
+    }
 
-    const assistantMsg = choice.message;
+    const assistantMsg: ChatMessage = {
+      role: 'assistant',
+      content: content || null,
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    };
     messages.push(assistantMsg);
 
-    if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
-      // Final response — yield the text
-      if (assistantMsg.content) {
-        yield assistantMsg.content;
-      }
+    if (toolCalls.length === 0) {
+      // Final response — content already yielded incrementally above.
       return;
     }
 
     // Execute tool calls (same as runViaSDK)
-    for (const tc of assistantMsg.tool_calls) {
+    for (const tc of toolCalls) {
       let result: string;
       const tool = toolMap.get(tc.function.name);
       const subAgentUrl = subAgentMap.get(tc.function.name);

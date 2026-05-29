@@ -104,7 +104,7 @@ describe('createLakebaseQueryTool', () => {
 
     const [, opts] = mockFetch.mock.calls[0];
     const body = JSON.parse(opts.body);
-    expect(body.statement).toBe('SELECT * FROM main.kg.experts LIMIT 100');
+    expect(body.statement).toBe('SELECT * FROM `main`.`kg`.`experts` LIMIT 100');
     expect(body.parameters).toBeUndefined();
   });
 
@@ -118,7 +118,7 @@ describe('createLakebaseQueryTool', () => {
 
     const [, opts] = mockFetch.mock.calls[0];
     const body = JSON.parse(opts.body);
-    expect(body.statement).toBe('SELECT id, name FROM main.kg.experts LIMIT 100');
+    expect(body.statement).toBe('SELECT `id`, `name` FROM `main`.`kg`.`experts` LIMIT 100');
   });
 
   it('builds SELECT with WHERE clause from filters', async () => {
@@ -131,7 +131,7 @@ describe('createLakebaseQueryTool', () => {
 
     const [, opts] = mockFetch.mock.calls[0];
     const body = JSON.parse(opts.body);
-    expect(body.statement).toContain('WHERE status = :status');
+    expect(body.statement).toContain('WHERE `status` = :status');
     expect(body.parameters).toEqual([{ name: 'status', value: 'active', type: 'STRING' }]);
   });
 
@@ -263,8 +263,8 @@ describe('createLakebaseMutateTool', () => {
 
     const [, opts] = mockFetch.mock.calls[0];
     const body = JSON.parse(opts.body);
-    expect(body.statement).toContain('INSERT INTO main.kg.experts');
-    expect(body.statement).toContain('(name, score)');
+    expect(body.statement).toContain('INSERT INTO `main`.`kg`.`experts`');
+    expect(body.statement).toContain('(`name`, `score`)');
     expect(body.statement).toContain('(:name, :score)');
   });
 
@@ -282,7 +282,7 @@ describe('createLakebaseMutateTool', () => {
 
     const [, opts] = mockFetch.mock.calls[0];
     const body = JSON.parse(opts.body);
-    expect(body.statement).toContain('UPDATE main.kg.experts SET status = :set_status WHERE id = :id');
+    expect(body.statement).toContain('UPDATE `main`.`kg`.`experts` SET `status` = :set_status WHERE `id` = :id');
     const paramNames = body.parameters.map((p: { name: string }) => p.name);
     expect(paramNames).toContain('set_status');
     expect(paramNames).toContain('id');
@@ -301,7 +301,7 @@ describe('createLakebaseMutateTool', () => {
 
     const [, opts] = mockFetch.mock.calls[0];
     const body = JSON.parse(opts.body);
-    expect(body.statement).toBe('DELETE FROM main.kg.experts WHERE id = :id');
+    expect(body.statement).toBe('DELETE FROM `main`.`kg`.`experts` WHERE `id` = :id');
   });
 
   it('returns success and statement_id', async () => {

@@ -138,6 +138,33 @@ class WatchdogDecision:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+# The canonical set of decision actions the runtime knows how to honor.
+# Anything outside this set is malformed and must NOT be silently treated
+# as a pass-through — see ``_normalise_action``.
+_CANONICAL_ACTIONS = frozenset({"allow", "reject", "redact"})
+
+
+def _normalise_action(raw: Any) -> str:
+    """Coerce a transport-supplied action into a canonical action string.
+
+    Normalizes case and surrounding whitespace (so ``"Reject"``,
+    ``" REJECT "``, etc. all map to ``"reject"``). Any value that is not
+    one of :data:`_CANONICAL_ACTIONS` after normalization — including
+    ``None``, non-strings, or out-of-contract synonyms like ``"block"`` —
+    is treated as ``"reject"`` so a malformed or compromised transport
+    response **fails closed** (blocks) rather than fails open (allows).
+    """
+    if isinstance(raw, str):
+        candidate = raw.strip().lower()
+        if candidate in _CANONICAL_ACTIONS:
+            return candidate
+    logger.warning(
+        "Watchdog returned non-canonical action %r — failing closed (reject).",
+        raw,
+    )
+    return "reject"
+
+
 # Transport callable shape: receives a request dict, returns a dict the
 # WatchdogClient parses into a WatchdogDecision. Plugged in by callers
 # once the watchdog-side wire protocol is pinned down.
@@ -222,7 +249,7 @@ class WatchdogClient:
             logger.warning("Watchdog transport returned %s, expected dict — allowing.", type(response))
             return WatchdogDecision(action="allow")
         return WatchdogDecision(
-            action=str(response.get("action", "allow")),
+            action=_normalise_action(response.get("action", "allow")),
             reason=response.get("reason"),
             policy_id=response.get("policy_id"),
             domain=response.get("domain"),
