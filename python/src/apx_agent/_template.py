@@ -46,3 +46,73 @@ class TemplateInfo:
             description=tmpl.description,
             spec_schema=tmpl.Spec.model_json_schema(),
         )
+
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class TemplateRegistry:
+    """Name → Template registry. Built-ins via @template; third-party via entry points."""
+
+    ENTRY_POINT_GROUP: ClassVar[str] = "apx_agent.templates"
+
+    def __init__(self) -> None:
+        self._templates: dict[str, Template] = {}
+        self._discovered = False
+
+    def register(self, tmpl_cls: type[Template]) -> type[Template]:
+        inst = tmpl_cls()
+        name = inst.name
+        if name in self._templates:
+            raise ValueError(
+                f"Template {name!r} already registered "
+                f"(by {type(self._templates[name]).__module__})."
+            )
+        self._templates[name] = inst
+        return tmpl_cls
+
+    def get(self, name: str) -> Template:
+        self._ensure_discovered()
+        if name not in self._templates:
+            available = ", ".join(sorted(self._templates)) or "(none)"
+            raise ValueError(f"Unknown template {name!r}. Available: {available}.")
+        return self._templates[name]
+
+    def list(self) -> list[TemplateInfo]:
+        self._ensure_discovered()
+        return [TemplateInfo.from_template(t) for t in self._templates.values()]
+
+    def build(self, name: str, spec: "dict | BaseModel", *, ws: Any = None) -> Any:
+        tmpl = self.get(name)
+        validated = spec if isinstance(spec, BaseModel) else tmpl.Spec.model_validate(spec)
+        return tmpl.build(validated, ws=ws)
+
+    def _ensure_discovered(self) -> None:
+        if self._discovered:
+            return
+        self._discovered = True  # set first so a failure doesn't retry-loop
+        self._load_entry_points()
+
+    def _load_entry_points(self) -> None:
+        from importlib.metadata import entry_points
+
+        try:
+            eps = entry_points(group=self.ENTRY_POINT_GROUP)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Template entry-point discovery failed: %s", e)
+            return
+        for ep in eps:
+            try:
+                self.register(ep.load())
+            except Exception as e:
+                logger.warning("Skipping bad template entry point %r: %s", ep.name, e)
+
+
+template_registry = TemplateRegistry()
+
+
+def template(tmpl_cls: type[Template]) -> type[Template]:
+    """Decorator: register a Template class on the module-level registry."""
+    return template_registry.register(tmpl_cls)
