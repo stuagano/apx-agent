@@ -2715,3 +2715,33 @@ def test_doctor_online_invokes_live_check():
         ws.return_value = Check("Workspace reachable", Status.OK, "ok", None)
         runner.invoke(main, ["doctor"])
     assert ws.called
+
+
+# ---------------------------------------------------------------------------
+# `_fix_msg` helper + refactored `_preflight_databricks_auth`
+# ---------------------------------------------------------------------------
+
+
+def test_fix_msg_format():
+    from apx_agent.cli import _fix_msg
+
+    msg = _fix_msg("Title", "what happened", "do this")
+    assert "Title" in msg
+    assert "what happened" in msg
+    assert "Fix:" in msg
+    assert "do this" in msg
+    assert "apx doctor" in msg
+
+
+def test_preflight_auth_uses_check(monkeypatch):
+    import click as _click
+
+    from apx_agent._doctor import Check, Status
+
+    fail = Check("Databricks auth", Status.FAIL, "no profiles", "login here")
+    with patch("apx_agent._doctor.check_databricks_auth", return_value=fail):
+        with pytest.raises(_click.ClickException) as exc:
+            from apx_agent.cli import _preflight_databricks_auth
+
+            _preflight_databricks_auth()
+    assert "login here" in str(exc.value)

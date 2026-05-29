@@ -43,6 +43,15 @@ from . import _doctor as _doctor_mod
 logger = logging.getLogger(__name__)
 
 
+def _fix_msg(title: str, detail: str, fix: str | None) -> str:
+    """Consistent error body for hardened CLI failures."""
+    parts = [title, detail]
+    if fix:
+        parts.append(f"\nFix:\n    {fix}")
+    parts.append("\nRun `apx doctor` for a full check.")
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Agent loader
 # ---------------------------------------------------------------------------
@@ -176,44 +185,23 @@ def _databrickscfg_profiles() -> list[str]:
 
 
 def _preflight_databricks_auth() -> None:
-    """Fail `apx run` with dev-time guidance when Databricks auth is unresolved.
+    """Fail `apx run`/`deploy` with dev-time guidance when auth is unresolved.
 
-    The scaffolded agent connects to a workspace during app startup, so an
-    unresolved/ambiguous profile otherwise surfaces as a deep SDK traceback
-    inside uvicorn's startup. This converts it into one clear line. Dev-time
-    only — the deployed runtime keeps the raw error, the right signal in an ops
-    context with no ~/.databrickscfg.
+    Delegates to the doctor auth check so inline errors and `apx doctor` share
+    one source of truth.
     """
-    try:
-        from databricks.sdk.core import Config
-    except Exception:
-        return  # SDK not importable in some minimal setups; let it fail later.
-    try:
-        Config()
-    except Exception as e:
-        profiles = _databrickscfg_profiles()
-        if profiles:
-            # Has profiles but couldn't pick one (unset, or ambiguous hosts).
-            guidance = (
-                "Pick the profile to use:\n"
-                "    DATABRICKS_CONFIG_PROFILE=<name> apx run\n"
-                f"Configured profiles: {', '.join(profiles)}."
-            )
-        else:
-            # First-timer: no ~/.databrickscfg profiles at all — log in first.
-            guidance = (
-                "No Databricks profiles found (~/.databrickscfg is missing or "
-                "empty). Log in first:\n"
-                "    databricks auth login --host https://<your-workspace>.cloud.databricks.com\n"
-                "  (or `databricks configure --token` for a personal access token)\n"
-                "then re-run `apx run`. If you create a named profile, select it "
-                "with DATABRICKS_CONFIG_PROFILE=<name>."
-            )
+    from . import _doctor as _d
+
+    result = _d.check_databricks_auth()
+    if result.status is _d.Status.FAIL:
         raise click.ClickException(
-            "Could not resolve Databricks authentication. This agent connects to "
-            "a workspace at startup, so `apx run` needs working credentials.\n\n"
-            f"{guidance}\n\nUnderlying error: {e}"
-        ) from e
+            _fix_msg(
+                "Could not resolve Databricks authentication. This agent "
+                "connects to a workspace at startup.",
+                result.detail,
+                result.fix,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
