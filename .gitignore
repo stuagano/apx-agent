@@ -60,3 +60,6 @@ package-lock.json
 # direnv per-shell env (personal — pins gh account for git push)
 .envrc
 .envrc.local
+
+# Personal/internal use-case writeup (not for the public repo)
+docs/Built on APX-Agent UseCase.md

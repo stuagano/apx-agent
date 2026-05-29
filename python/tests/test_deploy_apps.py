@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 import yaml
 from click.testing import CliRunner
+from unittest.mock import patch
 
 from apx_agent.cli import main
 
@@ -166,6 +167,11 @@ def _install_subprocess_mock(
         return _FakeProc(0, stdout="", stderr="")
 
     monkeypatch.setattr("apx_agent.cli._run_databricks_cmd", fake)
+    # The Databricks-CLI presence preflight (`shutil.which("databricks")`) is
+    # exercised separately in test_deploy_blocks_when_cli_missing; here we
+    # simulate the CLI being installed so these tests are deterministic in CI,
+    # which has no `databricks` binary on PATH.
+    monkeypatch.setattr("apx_agent.cli._preflight_databricks_cli", lambda: None)
     # Make sleeps a no-op so the polling tests run fast.
     monkeypatch.setattr("apx_agent.cli.time.sleep", lambda *_a, **_k: None) \
         if False else None  # noqa: SIM114 — sleep is imported inside _poll_app_ready
@@ -598,9 +604,39 @@ def test_profile_is_passed_through(
         return _FakeProc(0, stdout="ok\n", stderr="")
 
     monkeypatch.setattr("apx_agent.cli._run_databricks_cmd", fake)
+    # Simulate the Databricks CLI being installed (CI has no `databricks`
+    # binary); the presence preflight is covered by test_deploy_blocks_when_cli_missing.
+    monkeypatch.setattr("apx_agent.cli._preflight_databricks_cli", lambda: None)
     runner = CliRunner()
     result = runner.invoke(main, [
         "deploy", "--target", "apps", "--profile", "demo-profile",
     ])
     assert result.exit_code == 0, result.output
     assert all(p == "demo-profile" for p in seen_profiles), seen_profiles
+
+
+# ---------------------------------------------------------------------------
+# Databricks CLI preflight (Task 9)
+# ---------------------------------------------------------------------------
+
+
+def test_deploy_blocks_when_cli_missing(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from apx_agent._doctor import Check, Status
+    from apx_agent.cli import main
+
+    # apps-looking project
+    (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
+    (tmp_path / "agent_server").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    warn = Check("Databricks CLI", Status.WARN, "not found", "install it")
+    with patch("apx_agent._doctor.check_databricks_cli", return_value=warn), patch(
+        "apx_agent.cli._preflight_databricks_auth"
+    ):
+        result = CliRunner().invoke(main, ["deploy", "--target", "apps"])
+    assert result.exit_code != 0
+    assert "Databricks CLI" in result.output
+    assert "install it" in result.output

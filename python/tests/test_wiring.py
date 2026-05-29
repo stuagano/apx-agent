@@ -10,7 +10,11 @@ from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
 from apx_agent import LlmAgent, AgentConfig, AgentContext, create_app, setup_agent
-from apx_agent._wiring import _install_responses_input_adapter, _mount_protocol_routes
+from apx_agent._wiring import (
+    _install_responses_input_adapter,
+    _mount_protocol_routes,
+    apply_config_knobs,
+)
 
 from .conftest import get_weather, query_genie
 
@@ -88,6 +92,109 @@ class TestSetupAgent:
         with patch.dict("os.environ", {}, clear=True):
             ctx = await setup_agent(app, agent, config)
         # Should not crash, just skip
+
+    @pytest.mark.asyncio
+    async def test_config_generation_knobs_applied_when_constructor_unset(self):
+        # The compile path reads temperature/max_tokens/max_iterations off the
+        # instance; config must be merged onto it during setup.
+        app = FastAPI()
+        agent = LlmAgent(tools=[get_weather])  # all knobs default to None
+        config = AgentConfig(
+            name="test", temperature=0.7, max_tokens=512, max_iterations=10
+        )
+
+        await setup_agent(app, agent, config)
+        assert agent._temperature == 0.7
+        assert agent._max_tokens == 512
+        # max_iterations default (10) applies when constructor left it None
+        assert agent._max_iterations == 10
+
+    @pytest.mark.asyncio
+    async def test_constructor_generation_knobs_win_over_config(self):
+        app = FastAPI()
+        agent = LlmAgent(
+            tools=[get_weather],
+            temperature=0.0,  # deliberate 0.0 must not be clobbered
+            max_tokens=256,
+            max_iterations=5,
+        )
+        config = AgentConfig(
+            name="test", temperature=0.9, max_tokens=1024, max_iterations=10
+        )
+
+        await setup_agent(app, agent, config)
+        assert agent._temperature == 0.0
+        assert agent._max_tokens == 256
+        assert agent._max_iterations == 5
+
+
+# ---------------------------------------------------------------------------
+# apply_config_knobs — shared seam used by both setup_agent AND apx deploy
+# (model-serving). The deploy path calls this directly before log_agent, so
+# these tests cover the deploy-path application without standing up the CLI.
+# ---------------------------------------------------------------------------
+
+
+class TestApplyConfigKnobs:
+    def test_deploy_path_applies_knobs_when_constructor_unset(self):
+        # Mirror the deploy call site: build an AgentConfig from a
+        # [tool.apx.agent] dict (filtered to known fields), then apply.
+        agent = LlmAgent(tools=[get_weather])  # all knobs default to None
+        cfg_dict = {
+            "name": "deployed-agent",
+            "temperature": 0.3,
+            "max_tokens": 800,
+            "max_iterations": 10,
+            "unknown_field": "ignored",
+        }
+        config = AgentConfig(
+            **{k: v for k, v in cfg_dict.items() if k in AgentConfig.model_fields}
+        )
+
+        apply_config_knobs(agent, config)
+        assert agent._temperature == 0.3
+        assert agent._max_tokens == 800
+        assert agent._max_iterations == 10
+
+    def test_deploy_path_constructor_wins(self):
+        agent = LlmAgent(
+            tools=[get_weather],
+            temperature=0.0,  # deliberate 0.0 must survive
+            max_tokens=128,
+            max_iterations=3,
+        )
+        config = AgentConfig(
+            name="deployed-agent",
+            temperature=0.9,
+            max_tokens=4096,
+            max_iterations=10,
+        )
+
+        apply_config_knobs(agent, config)
+        assert agent._temperature == 0.0
+        assert agent._max_tokens == 128
+        assert agent._max_iterations == 3
+
+    def test_composition_agent_without_knob_attrs_is_safe(self):
+        # SequentialAgent-style roots don't define _temperature/_max_tokens;
+        # the hasattr guard must skip them rather than crash.
+        from apx_agent import SequentialAgent
+
+        inner = LlmAgent(tools=[get_weather])
+        root = SequentialAgent(agents=[inner])
+        config = AgentConfig(name="seq", temperature=0.5, max_tokens=200)
+
+        apply_config_knobs(root, config)  # must not raise
+        assert not hasattr(root, "_temperature")
+
+    def test_idempotent(self):
+        agent = LlmAgent(tools=[get_weather])
+        config = AgentConfig(name="x", temperature=0.4, max_iterations=10)
+
+        apply_config_knobs(agent, config)
+        apply_config_knobs(agent, config)  # second call no-ops
+        assert agent._temperature == 0.4
+        assert agent._max_iterations == 10
 
 
 # ---------------------------------------------------------------------------

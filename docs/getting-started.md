@@ -164,3 +164,19 @@ No new deployment, no URL change.
 | Write and publish UC function tools | [governed-primitives.md](governed-primitives.md) |
 | Add compliance guards | [compliance.md](compliance.md) |
 | Full CLI reference | [cli.md](cli.md) |
+
+---
+
+## Troubleshooting
+
+Run `apx doctor` at any point to diagnose your environment:
+
+```bash
+apx doctor            # full check incl. a live workspace round-trip
+apx doctor --offline  # skip the network check (CI / offline)
+apx doctor --json     # machine-readable output
+```
+
+It reports your Python version, `uv`, the Databricks CLI, authentication, and
+your project layout, with a `Fix:` line for anything wrong. The exit code is
+non-zero if any check fails, so it is safe to use in CI preflights.
