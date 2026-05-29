@@ -143,3 +143,51 @@ def test_workspace_forbidden():
         c = doctor.check_databricks_workspace(auth_ok=True)
     assert c.status is doctor.Status.FAIL
     assert "permission" in c.detail.lower() or "403" in c.detail
+
+
+def _make_apps_project(tmp_path: Path) -> Path:
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.apx.agent]\nname='x'\n"
+    )
+    (tmp_path / "agent_server").mkdir()
+    (tmp_path / "agent_server" / "start_server.py").write_text("# app\n")
+    (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
+    return tmp_path
+
+
+def test_project_layout_missing(tmp_path: Path):
+    c = doctor.check_project_layout(tmp_path)
+    assert c.status is doctor.Status.SKIP
+    assert "scaffold" in (c.fix or "")
+
+
+def test_project_layout_apps(tmp_path: Path):
+    _make_apps_project(tmp_path)
+    c = doctor.check_project_layout(tmp_path)
+    assert c.status is doctor.Status.OK
+
+
+def test_target_apps(tmp_path: Path):
+    _make_apps_project(tmp_path)
+    c = doctor.check_target(tmp_path)
+    assert c.status is doctor.Status.OK
+    assert "apps" in c.detail
+
+
+def test_databricks_yml_present(tmp_path: Path):
+    _make_apps_project(tmp_path)
+    c = doctor.check_databricks_yml(tmp_path)
+    assert c.status is doctor.Status.OK
+
+
+def test_databricks_yml_missing_in_project(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
+    (tmp_path / "agent.py").write_text("# agent\n")
+    c = doctor.check_databricks_yml(tmp_path)
+    assert c.status is doctor.Status.WARN
+    assert c.fix is not None
+
+
+def test_databricks_yml_skip_outside_project(tmp_path: Path):
+    c = doctor.check_databricks_yml(tmp_path)
+    assert c.status is doctor.Status.SKIP
