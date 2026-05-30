@@ -31,6 +31,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from starlette.responses import Response
 
 from ._agents import BaseAgent
+from ._prompt_assembly import compose_instructions
 from ._defaults import _make_workspace_client
 from ._inspection import _load_agent_config
 from ._mcp import _build_mcp_components
@@ -67,6 +68,16 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
     ``temperature=0.0`` / ``max_iterations=0`` isn't clobbered, and ``hasattr``
     guards composition agents (e.g. ``SequentialAgent``) that don't define
     every knob. Idempotent: a second call sees a non-``None`` attr and no-ops.
+
+    Semantics for instructions: this ALSO overlays ``config.instructions`` onto
+    ``agent._instructions`` via ``compose_instructions`` (persona above
+    grounding). Unlike the generation knobs' constructor-wins *fill*, this is
+    *compose* — when both the template-set grounding and the envelope persona
+    are present, both are kept (overlay first, grounding below). When only one
+    side is non-empty, that side is used verbatim (fill). A whitespace-only
+    ``config.instructions`` is treated as empty (no-op). Idempotent per instance
+    via the ``_persona_overlaid`` sentinel: a second call leaves instructions
+    untouched.
     """
     for attr, config_value in (
         ("_temperature", config.temperature),
@@ -79,6 +90,36 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
             and getattr(agent, attr) is None
         ):
             setattr(agent, attr, config_value)
+
+    # Persona instruction overlay. The compile path reads ``agent._instructions``
+    # as the system prompt. A template may have set grounded instructions; the
+    # envelope may carry persona instructions. Compose (overlay above grounding)
+    # when both are present; otherwise fill. Idempotent via a sentinel so a
+    # second call (e.g. mount_mcp_endpoints re-running setup_agent) is a no-op.
+    if config.instructions.strip():
+        if hasattr(agent, "_instructions"):
+            if not getattr(agent, "_persona_overlaid", False):
+                # getattr/setattr (not direct attr access) because the param is
+                # typed BaseAgent; _instructions/_persona_overlaid are LlmAgent
+                # state — same pattern as the generation-knob loop above.
+                setattr(
+                    agent,
+                    "_instructions",
+                    compose_instructions(
+                        base=getattr(agent, "_instructions"),
+                        overlay=config.instructions,
+                    ),
+                )
+                setattr(agent, "_persona_overlaid", True)
+        else:
+            # Composition roots (SequentialAgent/RouterAgent/...) hold no system
+            # prompt of their own — instructions live on inner leaves — so the
+            # persona overlay has nowhere to land. Skipping is intentional.
+            logger.debug(
+                "Skipping persona instruction overlay: %s is a composition root "
+                "without its own system prompt.",
+                type(agent).__name__,
+            )
 
 
 def _resolve_env_var(value: str) -> str:

@@ -1,0 +1,152 @@
+import pytest
+from pydantic import BaseModel
+from apx_agent._template import Template, TemplateInfo, TemplateRegistry, template
+
+
+class _DummySpec(BaseModel):
+    x: int = 1
+
+
+class _DummyTemplate:
+    name = "dummy"
+    title = "Dummy"
+    description = "A dummy template."
+    Spec = _DummySpec
+
+    def build(self, spec, *, ws=None):
+        return ("agent", spec)
+
+
+def test_template_info_carries_catalog_fields():
+    info = TemplateInfo.from_template(_DummyTemplate())
+    assert info.name == "dummy"
+    assert info.title == "Dummy"
+    assert info.description == "A dummy template."
+    assert info.spec_schema["properties"]["x"]["default"] == 1
+
+
+def test_dummy_conforms_to_protocol():
+    assert isinstance(_DummyTemplate(), Template)
+
+
+def test_incomplete_class_does_not_conform_to_protocol():
+    class _NoBuild:
+        name = "x"; title = "x"; description = "x"; Spec = BaseModel
+    assert not isinstance(_NoBuild(), Template)
+
+
+def _fresh_registry():
+    return TemplateRegistry()
+
+
+def test_register_get_build_with_dict_and_instance():
+    reg = _fresh_registry()
+    reg.register(_DummyTemplate)
+    assert reg.get("dummy").name == "dummy"
+    out_kind, spec = reg.build("dummy", {"x": 7})
+    assert out_kind == "agent" and spec.x == 7
+    out_kind, spec2 = reg.build("dummy", _DummySpec(x=9))
+    assert spec2.x == 9
+
+
+def test_list_returns_template_info():
+    reg = _fresh_registry()
+    reg.register(_DummyTemplate)
+    infos = reg.list()
+    assert [i.name for i in infos] == ["dummy"]
+    assert infos[0].spec_schema["properties"]["x"]["default"] == 1
+
+
+def test_unknown_name_raises_listing_available():
+    reg = _fresh_registry()
+    reg.register(_DummyTemplate)
+    with pytest.raises(ValueError, match="Available:.*dummy"):
+        reg.get("nope")
+
+
+def test_register_rejects_non_conforming_class():
+    reg = _fresh_registry()
+
+    class _NoBuildTemplate:
+        name = "broken"
+        title = "Broken"
+        description = "missing build"
+        Spec = _DummySpec
+
+    with pytest.raises(ValueError, match="Template protocol"):
+        reg.register(_NoBuildTemplate)
+
+
+def test_duplicate_registration_raises():
+    reg = _fresh_registry()
+    reg.register(_DummyTemplate)
+    with pytest.raises(ValueError, match="already registered"):
+        reg.register(_DummyTemplate)
+
+
+def test_decorator_registers_on_module_registry():
+    from apx_agent._template import template_registry
+
+    @template
+    class _DecoratedTemplate:
+        name = "decorated_test"
+        title = "Decorated"
+        description = "via decorator"
+        Spec = _DummySpec
+
+        def build(self, spec, *, ws=None):
+            return spec
+
+    try:
+        assert template_registry.get("decorated_test").name == "decorated_test"
+    finally:
+        template_registry._templates.pop("decorated_test", None)
+
+
+class _GoodEP:
+    name = "good"
+    def load(self):
+        class _GoodTemplate:
+            name = "good_ep"
+            title = "Good EP"
+            description = "loaded via entry point"
+            Spec = _DummySpec
+            def build(self, spec, *, ws=None):
+                return spec
+        return _GoodTemplate
+
+
+class _BadEP:
+    name = "bad"
+    def load(self):
+        raise ImportError("boom")
+
+
+def test_entry_point_discovery_loads_good_skips_bad(monkeypatch):
+    import apx_agent._template as mod
+
+    def fake_entry_points(*, group):
+        assert group == "apx_agent.templates"
+        return [_GoodEP(), _BadEP()]
+
+    monkeypatch.setattr(
+        "importlib.metadata.entry_points", fake_entry_points, raising=True
+    )
+
+    reg = mod.TemplateRegistry()
+    infos = {i.name for i in reg.list()}  # triggers discovery
+    assert "good_ep" in infos          # good one registered
+    assert infos == {"good_ep"}  # bad EP skipped, not registered
+    # bad one skipped without raising — list() returned normally
+
+
+def test_public_exports_and_data_template_registered():
+    import apx_agent
+
+    assert hasattr(apx_agent, "Template")
+    assert hasattr(apx_agent, "TemplateInfo")
+    assert hasattr(apx_agent, "template")
+    assert hasattr(apx_agent, "template_registry")
+    assert hasattr(apx_agent, "DataTemplate")
+    # importing the package registers the built-in DataTemplate
+    assert "data" in {i.name for i in apx_agent.template_registry.list()}
