@@ -99,10 +99,18 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
     if config.instructions.strip():
         if hasattr(agent, "_instructions"):
             if not getattr(agent, "_persona_overlaid", False):
-                agent._instructions = compose_instructions(
-                    base=agent._instructions, overlay=config.instructions
+                # getattr/setattr (not direct attr access) because the param is
+                # typed BaseAgent; _instructions/_persona_overlaid are LlmAgent
+                # state — same pattern as the generation-knob loop above.
+                setattr(
+                    agent,
+                    "_instructions",
+                    compose_instructions(
+                        base=getattr(agent, "_instructions"),
+                        overlay=config.instructions,
+                    ),
                 )
-                agent._persona_overlaid = True
+                setattr(agent, "_persona_overlaid", True)
         else:
             # Composition roots (SequentialAgent/RouterAgent/...) hold no system
             # prompt of their own — instructions live on inner leaves — so the

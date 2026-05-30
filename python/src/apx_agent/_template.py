@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -60,7 +60,11 @@ class TemplateRegistry:
         self._templates: dict[str, Template] = {}
         self._discovered = False
 
-    def register(self, tmpl_cls: type[Template]) -> type[Template]:
+    def register(self, tmpl_cls: type) -> type:
+        # Typed as ``type`` (not ``type[Template]``) because a Protocol with a
+        # mutable ``ClassVar`` (``Spec``) is invariant — concrete templates like
+        # ``DataTemplate`` would fail a static ``type[Template]`` check. The
+        # runtime ``isinstance`` below is the real conformance gate.
         inst = tmpl_cls()
         if not isinstance(inst, Template):
             raise ValueError(f"{tmpl_cls!r} does not implement the Template protocol.")
@@ -113,6 +117,14 @@ class TemplateRegistry:
 template_registry = TemplateRegistry()
 
 
-def template(tmpl_cls: type[Template]) -> type[Template]:
-    """Decorator: register a Template class on the module-level registry."""
-    return template_registry.register(tmpl_cls)
+_T = TypeVar("_T")
+
+
+def template(tmpl_cls: type[_T]) -> type[_T]:
+    """Decorator: register a Template class on the module-level registry.
+
+    Generic passthrough so the decorated class keeps its concrete type; runtime
+    conformance is enforced by ``register`` (see its note).
+    """
+    template_registry.register(tmpl_cls)
+    return tmpl_cls
