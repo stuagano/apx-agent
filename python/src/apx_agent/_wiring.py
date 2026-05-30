@@ -96,12 +96,22 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
     # envelope may carry persona instructions. Compose (overlay above grounding)
     # when both are present; otherwise fill. Idempotent via a sentinel so a
     # second call (e.g. mount_mcp_endpoints re-running setup_agent) is a no-op.
-    if config.instructions.strip() and hasattr(agent, "_instructions"):
-        if not getattr(agent, "_persona_overlaid", False):
-            agent._instructions = compose_instructions(
-                base=agent._instructions, overlay=config.instructions
+    if config.instructions.strip():
+        if hasattr(agent, "_instructions"):
+            if not getattr(agent, "_persona_overlaid", False):
+                agent._instructions = compose_instructions(
+                    base=agent._instructions, overlay=config.instructions
+                )
+                agent._persona_overlaid = True
+        else:
+            # Composition roots (SequentialAgent/RouterAgent/...) hold no system
+            # prompt of their own — instructions live on inner leaves — so the
+            # persona overlay has nowhere to land. Skipping is intentional.
+            logger.debug(
+                "Skipping persona instruction overlay: %s is a composition root "
+                "without its own system prompt.",
+                type(agent).__name__,
             )
-            agent._persona_overlaid = True
 
 
 def _resolve_env_var(value: str) -> str:
