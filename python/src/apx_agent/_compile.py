@@ -53,6 +53,7 @@ from ._agents import (
     SequentialAgent,
 )
 from ._defaults import (
+    _get_principal,
     _get_request,
     _get_sql_runner,
     _get_user_client,
@@ -101,6 +102,7 @@ def _make_dep_resolvers(ctx: CompileContext) -> dict[Any, Any]:
         _get_user_client: ctx.ws,
         get_databricks_headers: ctx.headers,
         _get_sql_runner: (lambda q: run_sql(ctx.ws, q)),
+        _get_principal: (ctx.headers.user_id if ctx.headers else None),  # E3b
         # _get_request intentionally omitted: no FastAPI Request inside a
         # compiled graph. Tools needing the raw request can't be compiled
         # without lifting them; we fail loudly if encountered.
