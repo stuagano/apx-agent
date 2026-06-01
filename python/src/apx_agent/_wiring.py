@@ -323,7 +323,7 @@ def _resolve_env_var(value: str) -> str:
 
 async def setup_agent(
     app: FastAPI,
-    agent: BaseAgent,
+    agent: "BaseAgent | None",
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
 ) -> AgentContext | None:
@@ -346,6 +346,14 @@ async def setup_agent(
         logger.info("No agent config found — agent protocol disabled")
         app.state.agent_context = None
         return None
+
+    # E3a: resolve from template if no agent was passed in.
+    if agent is None:
+        agent = resolve_agent(
+            None,
+            config,
+            ws=getattr(app.state, "workspace_client", None),
+        )
 
     # Merge sub_agents from config
     if config.sub_agents:
@@ -697,7 +705,7 @@ async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
 
 
 def create_app(
-    agent: BaseAgent,
+    agent: "BaseAgent | None" = None,
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
     session_store: Any | None = None,
@@ -766,7 +774,7 @@ def create_app(
             try:
                 from ._invocations import mount_invocations_route
 
-                mount_invocations_route(app, agent, ctx.config, session_store=session_store)
+                mount_invocations_route(app, ctx.agent, ctx.config, session_store=session_store)
             except Exception as exc:
                 logger.warning("Skipping /invocations mount: %s", exc)
 
