@@ -495,6 +495,15 @@ name = "{name}"
 description = "An apx-agent."
 model = "databricks-claude-sonnet-4-6"
 instructions = "You are a helpful assistant."
+
+# Optional: declare resource tools as data (no code needed). `type` selects a
+# platform factory; remaining keys are its arguments. See docs/configuration.md
+# for the full type list and the APX_TOOLS_* trust controls.
+# [[tool.apx.tools]]
+# type = "genie"
+# space_id = "$GENIE_SPACE_ID"
+# name = "ask_data"
+# description = "Answer questions from a Genie space."
 '''
 
 
@@ -596,6 +605,15 @@ instructions = "You are a helpful assistant."
 # ``agent.py``. ``agent_server/start_server.py`` is framework boilerplate
 # that imports + wraps it for the Databricks Apps runtime.
 module = "agent:agent"
+
+# Optional: declare resource tools as data (no code needed). `type` selects a
+# platform factory; remaining keys are its arguments. See docs/configuration.md
+# for the full type list and the APX_TOOLS_* trust controls.
+# [[tool.apx.tools]]
+# type = "genie"
+# space_id = "$GENIE_SPACE_ID"
+# name = "ask_data"
+# description = "Answer questions from a Genie space."
 '''
 
 

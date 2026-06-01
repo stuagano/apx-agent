@@ -212,6 +212,7 @@ See [docs/cli.md](docs/cli.md) for the full surface.
 
 | Topic | Doc |
 |---|---|
+| Configuration — `pyproject.toml`, `[[tool.apx.tools]]` declarative tools | [docs/configuration.md](docs/configuration.md) |
 | Apps vs Model Serving — when to pick which | [docs/apps-vs-model-serving.md](docs/apps-vs-model-serving.md) |
 | Governed primitives + UC function authoring | [docs/governed-primitives.md](docs/governed-primitives.md) |
 | Identity passthrough + OBO mechanics | [docs/identity-passthrough.md](docs/identity-passthrough.md) |
