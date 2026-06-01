@@ -251,11 +251,20 @@ def resolve_agent(
 
     Runs BEFORE ``finalize_agent`` (which then layers knobs/persona/tools/guards).
 
+    **Resolution order (precedence):** ``config.template`` is checked FIRST — when
+    both a ``template`` field and a ``module_spec`` are present, the template wins
+    and the module import is never attempted.
+
     1. ``config.template`` set → ``template_registry.build(name, spec, ws=ws)``.
        ``name`` key selects the template; other keys form the spec dict.
     2. else → import ``module_spec`` (``module:variable``) via ``importlib``
        (NOT ``cli._load_agent`` — that would create a ``cli → _wiring`` cycle).
     3. neither → ``TemplateConfigError`` with a clear message.
+
+    Note: this function is only called on the CLI/deploy paths.  On the serve path
+    (``create_app``), an explicit ``agent=`` argument passed by the caller skips
+    ``resolve_agent`` entirely (see the ``if agent is None`` guard), so a
+    ``create_app(agent=my_agent)`` call always wins over any template config.
     """
     import importlib
     import sys as _sys
