@@ -128,3 +128,58 @@ The `template` inline-table selects a registered template by `name` and passes t
 **Precedence when both `template` and a code agent are present:** on the CLI and deploy paths (`apx info`, `apx lint`, `apx eval`, `apx deploy`), `template` wins — `resolve_agent` checks `config.template` before falling through to the module import. On the serve path, an explicit `create_app(agent=...)` wins because `resolve_agent` is skipped entirely when a pre-built agent is supplied. The practical consequence: a project with both a `template` field and an `agent.py` will get the template agent from `apx deploy`/`apx info` but the code agent from `apx run` (if `app.py` imports it) — a silent divergence. For a clean setup, use *either* a `template` *or* a code `agent.py`, not both.
 
 **Cross-repo templates:** Third-party templates register via the `apx_agent.templates` Python entry-point group — they appear in the registry after `pip install`. See the E1 spec and the `Template` protocol for authoring a template.
+
+## Declarative memory — `[tool.apx.agent.memory]`
+
+> Python only. Declares a memory backend auto-attached on all runtimes (serve, log/deploy, `apx info`). Memory tools are additive over code-wired tools; code-wired tools win on name collision.
+
+```toml
+[tool.apx.agent]
+name = "sales-coworker"
+model = "databricks-claude-sonnet-4-6"
+
+# in-memory (dev / tests)
+[tool.apx.agent.memory]
+type = "inmemory"
+
+# or Lakebase (production):
+# [tool.apx.agent.memory]
+# type = "lakebase"
+# instance_name = "coworker-lakebase"
+# database = "agentdb"
+# embedding_model = "databricks-bge-large-en"
+# embedding_dim = 1024
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `type` | `"inmemory" \| "delta" \| "lakebase"` | `"inmemory"` | Backend type |
+| `embedding_model` | `str` | absent | Databricks serving-endpoint name for embeddings |
+| `embedding_dim` | `int` | absent | Embedding dimensionality (required for lakebase) |
+| `table_name` | `str` | absent | UC table (delta) or plain name (lakebase) |
+| `instance_name` | `str` | absent | Lakebase instance name |
+| `database` | `str` | absent | Postgres database name |
+| `host` | `str` | absent | Lakebase host; supports `$ENV_VAR` |
+| `auto_create` | `bool` | `true` | Create table on first use |
+| `ensure_extension` | `bool` | `true` | Run `CREATE EXTENSION IF NOT EXISTS vector` |
+| `namespace_default` | `str` | `"default"` | Default namespace for memory tools |
+| `tool_prefix` | `str` | `""` | Prefix for tool names (`"mem_"` → `"mem_recall"`) |
+| `include` | `list[str]` | all | Subset: `["recall"]`, `["recall","remember"]`, … |
+| `validate_at_boot` | `bool` | `true` | Connectivity check at startup; `false` for offline |
+
+**Principal isolation:** Memory is scoped per OBO user (`X-Forwarded-User`). User A's memories are invisible to User B. No-principal requests (local dev without headers) return `NO_PRINCIPAL` without writing.
+
+**Credential API:** Lakebase uses `ws.database.generate_database_credential` (the `DatabaseAPI`, not `PostgresAPI`).
+
+An `[tool.apx.agent.example]` table (same fields, plus `agent_id`) declares a coworker-scoped few-shot example store — isolated by `agent_id` (defaults to the agent `name`), not per-user.
+
+## Declarative session — `[tool.apx.agent.session]`
+
+```toml
+[tool.apx.agent.session]
+type = "inmemory"
+# or delta: type="delta", table_name="main.coworker.apx_sessions"
+# or lakebase: type="lakebase", instance_name="...", database="..."
+```
+
+**Precedence:** An explicit `create_app(session_store=X)` arg wins over config session (code is more specific intent). Config session is the fallback (e.g. template-only projects). `DeltaSessionStore` takes a three-part UC `table_path`; the wiring maps `table_name` → `table_path` automatically.
