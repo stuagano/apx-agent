@@ -1120,3 +1120,76 @@ class TestMemoryBackendConfig:
         from apx_agent._models import MemoryBackendConfig
         cfg = MemoryBackendConfig(type="lakebase", validate_at_boot=False)
         assert cfg.validate_at_boot is False
+
+
+# ---------------------------------------------------------------------------
+# E3b Task 1.5 — finalize_agent ws param + attach_declared_memory + resolve_session_store
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryWiringIntegration:
+    def test_finalize_agent_accepts_ws_param(self):
+        from apx_agent import Agent, AgentConfig
+        from apx_agent._wiring import finalize_agent
+        agent = Agent(tools=[])
+        cfg = AgentConfig(name="t")
+        finalize_agent(agent, cfg, ws=None)  # must not raise
+
+    def test_finalize_attaches_inmemory_memory_tools(self, tmp_path):
+        from apx_agent import Agent
+        from apx_agent._wiring import finalize_agent
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "mem-test"
+            [tool.apx.agent.memory]
+            type = "inmemory"
+        """))
+        agent = Agent(tools=[])
+        finalize_agent(agent, pyproject_path=str(pp), ws=None)
+        names = {fn.__name__ for fn in agent._tool_fns}
+        assert "recall" in names and "remember" in names
+
+    def test_finalize_memory_idempotent(self, tmp_path):
+        from apx_agent import Agent
+        from apx_agent._wiring import finalize_agent
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "t"
+            [tool.apx.agent.memory]
+            type = "inmemory"
+        """))
+        agent = Agent(tools=[])
+        finalize_agent(agent, pyproject_path=str(pp), ws=None)
+        finalize_agent(agent, pyproject_path=str(pp), ws=None)
+        assert len([fn for fn in agent._tool_fns if fn.__name__ == "recall"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_setup_agent_memory_tools_appear_in_card(self, tmp_path):
+        from fastapi import FastAPI
+        from apx_agent import Agent
+        from apx_agent._wiring import setup_agent
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "card-test"
+            model = "databricks-claude-sonnet-4-6"
+            [tool.apx.agent.memory]
+            type = "inmemory"
+        """))
+        app = FastAPI()
+        app.state.workspace_client = None
+        agent = Agent(tools=[])
+        ctx = await setup_agent(app, agent, pyproject_path=str(pp))
+        assert ctx is not None
+        skill_names = {s.name for s in ctx.card.skills}
+        assert "recall" in skill_names, "memory tools must attach BEFORE collect_tools() card snapshot"
+
+    def test_resolve_session_override_wins_in_create_app(self):
+        from apx_agent._memory_wiring import resolve_session_store
+        from apx_agent._models import AgentConfig, SessionBackendConfig
+        from unittest.mock import MagicMock
+        explicit = MagicMock()
+        cfg = AgentConfig(name="t", session=SessionBackendConfig(type="inmemory"))
+        assert resolve_session_store(cfg, ws=None, override=explicit) is explicit

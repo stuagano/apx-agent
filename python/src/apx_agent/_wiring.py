@@ -182,6 +182,7 @@ def finalize_agent(
     agent: BaseAgent,
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
+    ws: Any | None = None,
 ) -> None:
     """Apply all config→instance steps before the agent is served or logged.
 
@@ -214,6 +215,15 @@ def finalize_agent(
     from ._tool_config import merge_config_tools  # noqa: PLC0415
 
     merge_config_tools(agent, pyproject_path=pyproject_path)
+
+    # E3b: attach config-declared memory/example tools AFTER the tool merge so
+    # code-wired tools' names are already in the existing set (collision guard).
+    # Must run BEFORE agent.collect_tools() (the A2A card snapshot in setup_agent)
+    # so memory tools appear in the card. attach_declared_memory is idempotent.
+    if config is not None:
+        from ._memory_wiring import attach_declared_memory  # noqa: PLC0415
+
+        attach_declared_memory(agent, config, ws=ws)
 
 
 class TemplateConfigError(ValueError):
@@ -391,9 +401,15 @@ async def setup_agent(
                 sub_agent_urls.append(resolved)
                 existing.add(resolved)
 
-    # Apply knobs + persona overlay + config-tool merge BEFORE the card snapshot
-    # (collect_tools below) so declared tools are both callable and advertised.
-    finalize_agent(agent, config, pyproject_path=pyproject_path)
+    # Apply knobs + persona overlay + config-tool merge + memory attach BEFORE
+    # the card snapshot (collect_tools below) so all declared tools are both
+    # callable and advertised. ws is set by the lifespan before setup_agent runs.
+    finalize_agent(
+        agent,
+        config,
+        pyproject_path=pyproject_path,
+        ws=getattr(app.state, "workspace_client", None),
+    )
 
     tools = agent.collect_tools()
     tools += await agent.fetch_remote_tools()
@@ -782,8 +798,18 @@ def create_app(
         if ctx is not None:
             try:
                 from ._invocations import mount_invocations_route
+                from ._memory_wiring import resolve_session_store  # noqa: PLC0415
 
-                mount_invocations_route(app, ctx.agent, ctx.config, session_store=session_store)
+                mount_invocations_route(
+                    app,
+                    ctx.agent,
+                    ctx.config,
+                    session_store=resolve_session_store(
+                        ctx.config,
+                        ws=app.state.workspace_client,
+                        override=session_store,
+                    ),
+                )
             except Exception as exc:
                 logger.warning("Skipping /invocations mount: %s", exc)
 
