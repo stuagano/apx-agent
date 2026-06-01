@@ -200,3 +200,176 @@ class TestCrossPrincipalIsolation:
             f"Alice's dep-path memory visible to Bob: {bob_result!r}. "
             "GATE FAILS — dep-principal isolation broken."
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 1.4 — attach_declared_memory + resolve_session_store
+# ---------------------------------------------------------------------------
+import textwrap  # noqa: E402
+import pytest  # noqa: E402
+
+from unittest.mock import patch  # noqa: E402
+
+from apx_agent import Agent  # noqa: E402
+from apx_agent._models import AgentConfig, MemoryBackendConfig, SessionBackendConfig  # noqa: E402
+
+
+class TestAttachDeclaredMemory:
+    def _minimal_config(self, **kw) -> AgentConfig:
+        return AgentConfig(name="t", memory=MemoryBackendConfig(**kw))
+
+    def test_inmemory_type_attaches_recall_remember_forget(self):
+        from apx_agent._memory_wiring import attach_declared_memory
+
+        agent = Agent(tools=[])
+        cfg = self._minimal_config(type="inmemory")
+        attach_declared_memory(agent, cfg, ws=None)
+        names = {fn.__name__ for fn in agent._tool_fns}
+        assert "recall" in names
+        assert "remember" in names
+        assert "forget" in names
+
+    def test_tools_appear_in_collect_tools_after_attach(self):
+        from apx_agent._memory_wiring import attach_declared_memory
+
+        agent = Agent(tools=[])
+        cfg = self._minimal_config(type="inmemory")
+        attach_declared_memory(agent, cfg, ws=None)
+        tool_names = {t.name for t in agent.collect_tools()}
+        assert "recall" in tool_names
+
+    def test_idempotent_double_attach(self):
+        from apx_agent._memory_wiring import attach_declared_memory
+
+        agent = Agent(tools=[])
+        cfg = self._minimal_config(type="inmemory")
+        attach_declared_memory(agent, cfg, ws=None)
+        attach_declared_memory(agent, cfg, ws=None)
+        # Must not double-register: only one recall
+        names = [fn.__name__ for fn in agent._tool_fns if fn.__name__ == "recall"]
+        assert len(names) == 1
+
+    def test_code_wired_recall_wins_over_declared(self, caplog):
+        from apx_agent._memory_wiring import attach_declared_memory
+        from apx_agent._memory_tools import make_memory_tools
+
+        store = InMemoryMemoryStore()
+        code_tools = make_memory_tools(store=store, principal_id_resolver=lambda: "alice")
+        agent = Agent(tools=code_tools)
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            cfg = self._minimal_config(type="inmemory")
+            attach_declared_memory(agent, cfg, ws=None)
+
+        # Code-wired recall kept; declared recall skipped; a warning was issued.
+        names = [fn.__name__ for fn in agent._tool_fns if fn.__name__ == "recall"]
+        assert len(names) == 1
+        assert "recall" in caplog.text or "keeping" in caplog.text.lower()
+
+    def test_tool_prefix_applied(self):
+        from apx_agent._memory_wiring import attach_declared_memory
+
+        agent = Agent(tools=[])
+        cfg = self._minimal_config(type="inmemory", tool_prefix="mem_")
+        attach_declared_memory(agent, cfg, ws=None)
+        names = {fn.__name__ for fn in agent._tool_fns}
+        assert "mem_recall" in names
+        assert "recall" not in names
+
+    def test_include_subset(self):
+        from apx_agent._memory_wiring import attach_declared_memory
+
+        agent = Agent(tools=[])
+        cfg = self._minimal_config(type="inmemory", include=["recall"])
+        attach_declared_memory(agent, cfg, ws=None)
+        names = {fn.__name__ for fn in agent._tool_fns}
+        assert "recall" in names
+        assert "remember" not in names
+
+    def test_no_memory_config_is_noop(self):
+        from apx_agent._memory_wiring import attach_declared_memory
+
+        agent = Agent(tools=[])
+        cfg = AgentConfig(name="t")  # no memory
+        attach_declared_memory(agent, cfg, ws=None)
+        assert agent._tool_fns == []
+
+    def test_lakebase_type_requires_ws_or_warns(self, caplog):
+        """lakebase with ws=None logs a warning and skips (no crash)."""
+        from apx_agent._memory_wiring import attach_declared_memory
+        import logging
+
+        agent = Agent(tools=[])
+        cfg = self._minimal_config(
+            type="lakebase",
+            instance_name="inst",
+            database="db",
+            embedding_model="bge",
+            embedding_dim=4,
+        )
+        with caplog.at_level(logging.WARNING):
+            attach_declared_memory(agent, cfg, ws=None)
+
+        # With ws=None, lakebase must skip and warn (not crash).
+        assert agent._tool_fns == []
+        assert "ws" in caplog.text.lower() or "lakebase" in caplog.text.lower() or "skip" in caplog.text.lower()
+
+    def test_lakebase_missing_field_with_ws_warns_and_skips(self, caplog):
+        """ws IS set but a required field is missing → build failed (not 'requires ws')."""
+        from apx_agent._memory_wiring import attach_declared_memory
+        import logging
+
+        agent = Agent(tools=[])
+        # ws IS provided, but instance_name is missing → _build_memory_store raises ValueError
+        cfg = self._minimal_config(
+            type="lakebase", database="db", embedding_model="bge", embedding_dim=4
+        )  # no instance_name
+        with caplog.at_level(logging.WARNING):
+            attach_declared_memory(agent, cfg, ws=MagicMock())
+        assert agent._tool_fns == []  # skipped, no crash
+        assert "build failed" in caplog.text.lower() or "instance_name" in caplog.text.lower()
+        # and NOT the misleading ws=None message (ws was provided):
+        assert "ws=None at this point" not in caplog.text
+
+
+class TestResolveSessionStore:
+    def test_override_wins_over_config(self):
+        from apx_agent._memory_wiring import resolve_session_store
+        from apx_agent._models import AgentConfig, SessionBackendConfig
+
+        explicit = MagicMock()
+        cfg = AgentConfig(name="t", session=SessionBackendConfig(type="inmemory"))
+        result = resolve_session_store(cfg, ws=None, override=explicit)
+        assert result is explicit
+
+    def test_inmemory_config_returns_session_store(self):
+        from apx_agent._memory_wiring import resolve_session_store
+        from apx_agent._session import InMemorySessionStore
+        from apx_agent._models import AgentConfig, SessionBackendConfig
+
+        cfg = AgentConfig(name="t", session=SessionBackendConfig(type="inmemory"))
+        result = resolve_session_store(cfg, ws=None, override=None)
+        assert result is not None
+        assert isinstance(result, InMemorySessionStore)
+
+    def test_no_session_config_returns_none(self):
+        from apx_agent._memory_wiring import resolve_session_store
+        from apx_agent._models import AgentConfig
+
+        cfg = AgentConfig(name="t")
+        result = resolve_session_store(cfg, ws=None, override=None)
+        assert result is None
+
+    def test_lakebase_session_with_no_ws_returns_none_with_warning(self, caplog):
+        from apx_agent._memory_wiring import resolve_session_store
+        from apx_agent._models import AgentConfig, SessionBackendConfig
+        import logging
+
+        cfg = AgentConfig(name="t", session=SessionBackendConfig(
+            type="lakebase", instance_name="inst", database="db"
+        ))
+        with caplog.at_level(logging.WARNING):
+            result = resolve_session_store(cfg, ws=None, override=None)
+        assert result is None
+        assert "ws" in caplog.text.lower() or "lakebase" in caplog.text.lower()
