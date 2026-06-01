@@ -192,6 +192,18 @@ class LlmAgent(BaseAgent):
     def get_tool_routers(self) -> list[APIRouter]:
         return [self.build_router()]
 
+    def _register_tool(self, fn: _ToolFn) -> None:
+        """Append a tool post-construction, keeping _tool_fns and _analyzed in sync.
+
+        Run-time compile reads _tool_fns; collect_tools()/build_router() read
+        _analyzed. Both must grow together or a tool added after __init__ is
+        invisible to the A2A card / MCP surface / per-tool routes.
+        """
+        self._tool_fns.append(fn)
+        plain_params, dep_names = _inspect_tool_fn(fn)
+        input_model = _make_input_model(fn, plain_params)
+        self._analyzed.append((fn, plain_params, dep_names, input_model))
+
     def collect_tools(self) -> list[AgentTool]:
         return [
             AgentTool(
