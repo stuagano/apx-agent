@@ -947,3 +947,56 @@ class TestPersonaOverTemplate:
         grounding = getattr(agent, "_instructions", "")
         finalize_agent(agent, config)
         assert getattr(agent, "_instructions", "") == grounding
+
+
+# ---------------------------------------------------------------------------
+# E3a Task 4 — wire resolve_agent into the serve path
+# ---------------------------------------------------------------------------
+
+
+class TestServePath:
+    @pytest.mark.asyncio
+    async def test_setup_agent_with_none_agent_builds_from_template(self, tmp_path):
+        from fastapi import FastAPI
+        from apx_agent._wiring import setup_agent
+        from apx_agent.data_agent import DataAgent
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "sales-coworker"
+            model = "databricks-claude-sonnet-4-6"
+            template = { name = "data", catalog = "main", schema = "sales" }
+        """))
+        app = FastAPI()
+        app.state.workspace_client = None  # lifespan sets this before setup_agent
+        ctx = await setup_agent(app, None, pyproject_path=str(pp))
+        assert ctx is not None
+        assert isinstance(ctx.agent, DataAgent)
+        skill_names = [s.name for s in ctx.card.skills]
+        assert "run_sql" in skill_names
+
+    @pytest.mark.asyncio
+    async def test_setup_agent_explicit_agent_wins_over_template(self, tmp_path):
+        from fastapi import FastAPI
+        from apx_agent import Agent
+        from apx_agent._wiring import setup_agent
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "t"
+            template = { name = "data", catalog = "main", schema = "sales" }
+        """))
+        explicit_agent = Agent(tools=[])
+        app = FastAPI()
+        app.state.workspace_client = None
+        ctx = await setup_agent(app, explicit_agent, pyproject_path=str(pp))
+        assert ctx is not None
+        assert ctx.agent is explicit_agent
+
+    @pytest.mark.asyncio
+    async def test_setup_agent_none_agent_no_config_returns_none(self):
+        from fastapi import FastAPI
+        from apx_agent._wiring import setup_agent
+        app = FastAPI()
+        ctx = await setup_agent(app, None, pyproject_path="/nonexistent/pyproject.toml")
+        assert ctx is None

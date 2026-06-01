@@ -130,16 +130,18 @@ def _load_agent(module_spec: str) -> Any:
 
 
 def _load_finalized_agent(module_spec: str) -> Any:
-    """Load an agent and apply config knobs + [[tool.apx.tools]] (finalize).
+    """Resolve + finalize an agent for CLI commands.
 
-    Use at every CLI entry point that reads the agent's tools/resources or
-    captures it for execution. The model-serving deploy path is the one
-    caller that intentionally uses _load_agent directly — it defers
-    finalization to log_agent.
+    Loads [tool.apx.agent] config first, then resolve_agent so template-only
+    projects (no agent.py) work via apx info / lint / eval / run. Falls back
+    to module-import for code-defined agents.
     """
-    from ._wiring import finalize_agent
-    agent = _load_agent(module_spec)
-    finalize_agent(agent, pyproject_path=None)
+    from ._wiring import finalize_agent, resolve_agent, _ws_for_template
+    from ._inspection import _load_agent_config
+
+    config = _load_agent_config(pyproject_path=None)
+    agent = resolve_agent(module_spec, config, ws=_ws_for_template(config))
+    finalize_agent(agent, config, pyproject_path=None)
     return agent
 
 
@@ -1786,10 +1788,12 @@ def deploy(
         for name in suspicious:
             click.echo(f"#   - {name}", err=True)
 
-    # Bare _load_agent (not _load_finalized_agent): the model-serving deploy
-    # path defers finalization to log_agent, which calls finalize_agent at log
-    # time so the captured model has the merged tools/knobs.
-    agent = _load_agent(effective_module)
+    # E3a: resolve_agent handles both template-only and module-defined agents.
+    # Model-serving deploy still defers finalization to log_agent.
+    from ._wiring import resolve_agent as _resolve_agent, _ws_for_template as _deploy_ws
+    from ._inspection import _load_agent_config as _load_cfg
+    _deploy_config = _load_cfg(pyproject_path=None)
+    agent = _resolve_agent(effective_module, _deploy_config, ws=_deploy_ws(_deploy_config))
     config = _read_apx_agent_config()
     effective_experiment = experiment or config.get("experiment")
     effective_agent_name = (

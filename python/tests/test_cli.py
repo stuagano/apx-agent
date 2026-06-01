@@ -3012,3 +3012,32 @@ def test_lint_sees_config_declared_tools(
         f"but lint findings were: {findings}. "
         "apx lint may not be running _iter_tool_fns over [[tool.apx.tools]] tools."
     )
+
+
+# ---------------------------------------------------------------------------
+# E3a Task 4 — template config flows through CLI (_load_finalized_agent)
+# ---------------------------------------------------------------------------
+
+
+def test_apx_info_with_template_config(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from apx_agent.cli import main
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.apx.agent]
+        name = "sales-coworker"
+        model = "databricks-claude-sonnet-4-6"
+        template = { name = "data", catalog = "main", schema = "sales" }
+    """))
+    # _load_agent_config discovers pyproject.toml from __main__.__file__ first.
+    # In pytest, __main__.__file__ is the pytest runner (inside python/.venv/),
+    # so _find_pyproject walks up to the repo's own pyproject.toml instead of
+    # tmp_path. Patch __main__.__file__ to a sentinel in tmp_path so the walk
+    # starts from there and finds the test's pyproject.toml.
+    import sys
+    main_mod = sys.modules.get("__main__")
+    sentinel = str(tmp_path / "fake_entrypoint.py")
+    monkeypatch.setattr(main_mod, "__file__", sentinel, raising=False)
+    res = CliRunner().invoke(main, ["info", "--module", "nonexistent:agent"])
+    assert res.exit_code == 0, res.output
+    assert "run_sql" in res.output
