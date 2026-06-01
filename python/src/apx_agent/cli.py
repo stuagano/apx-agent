@@ -3021,6 +3021,12 @@ def info(module: str, fmt: str) -> None:
 
     agent = _load_agent(module)
 
+    from ._wiring import finalize_agent
+
+    # Finalize so `apx info` reports the same tools/resources the serve and
+    # deploy paths will — config-declared [[tool.apx.tools]] included.
+    finalize_agent(agent, pyproject_path=None)  # reads cwd pyproject.toml
+
     # Walk the whole tree — HandoffAgent / SequentialAgent / etc. have no
     # _tool_fns of their own; the tools live on nested LlmAgents.
     tool_fns = list(_iter_tool_fns(agent))
