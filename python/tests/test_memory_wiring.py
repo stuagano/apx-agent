@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from typing import Annotated, Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from fastapi.params import Depends
+
+import pytest
 
 from apx_agent._defaults import _get_principal
 from apx_agent._tool import tool
@@ -427,4 +429,178 @@ class TestEndToEndIsolation:
         assert "alice e2e memory" not in bob_result, (
             "Bob must NOT see Alice's memory — isolation breach in the config-declared "
             "_use_dep_principal path"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 1.8 — REAL-SEAM isolation test: custom_inputs.user_id → predict →
+#             compile_to_langgraph(headers=) → _get_principal → memory
+# ---------------------------------------------------------------------------
+#
+# This test guards the model-serving seam where identity comes from
+# custom_inputs["user_id"], NOT a hand-built CompileContext(headers=MagicMock).
+# It MUST fail on current code (predict omits headers= → principal=None → memory
+# never stores/recalls).  After the fix it MUST pass.
+#
+# Strategy: spy on compile_to_langgraph and capture the kwargs predict passes.
+# Return a minimal fake graph so predict runs to completion without a live LLM.
+# Confirm (a) headers kwarg is present and (b) headers.user_id matches the
+# custom_inputs value.  This directly covers the broken seam.
+
+pytest.importorskip("langgraph")
+pytest.importorskip("langchain_core")
+pytest.importorskip("mlflow")
+
+
+class TestPredictSeamPrincipalThreading:
+    """CRITICAL regression guard: predict must thread custom_inputs.user_id as
+    headers= into compile_to_langgraph so config-declared memory tools get a
+    non-None principal at request time.
+
+    Fails-before: predict passes no headers kwarg → captured headers is None.
+    Passes-after: predict builds DatabricksAppsHeaders(user_id="alice") and
+    passes it through.
+    """
+
+    def _make_fake_graph(self):
+        from langchain_core.messages import AIMessage
+        graph = MagicMock(name="fake_graph")
+
+        def _invoke(state):
+            return {"messages": [*state["messages"], AIMessage(content="ok")]}
+
+        def _stream(state, stream_mode="updates"):
+            yield {"node": {"messages": [AIMessage(content="ok")]}}
+
+        graph.invoke.side_effect = _invoke
+        graph.stream.side_effect = _stream
+        return graph
+
+    def test_predict_threads_user_id_as_headers_into_compile(self, tmp_path):
+        """SEAM TEST: custom_inputs['user_id'] must reach compile_to_langgraph
+        as headers=<DatabricksAppsHeaders with user_id set>.
+
+        FAILS-BEFORE the fix (captured_headers is None → seam is broken).
+        PASSES-AFTER the fix (captured_headers.user_id == 'alice').
+        """
+        from mlflow.types.agent import ChatAgentMessage
+        from apx_agent import Agent, chat_agent_for
+        from apx_agent._wiring import finalize_agent
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.apx.agent]\nname = 'seam-test'\nmodel = 'ep'\n"
+            "[tool.apx.agent.memory]\ntype = 'inmemory'\n"
+        )
+        agent = Agent(tools=[])
+        finalize_agent(agent, pyproject_path=str(tmp_path / "pyproject.toml"), ws=None)
+        wrapped = chat_agent_for(agent, model="ep")
+        fake_graph = self._make_fake_graph()
+
+        captured: dict[str, Any] = {}
+
+        def _spy_compile(agent_arg, *, ws, model, headers=None):
+            captured["headers"] = headers
+            return fake_graph
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._chat_agent.compile_to_langgraph",
+            side_effect=_spy_compile,
+        ):
+            wrapped.predict(
+                messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
+                custom_inputs={"user_id": "alice"},
+            )
+
+        headers = captured.get("headers")
+        assert headers is not None, (
+            "SEAM BROKEN: predict did not pass headers= to compile_to_langgraph. "
+            "Memory tools will always get principal=None in production. "
+            "Fix: build DatabricksAppsHeaders from obo and pass headers= to compile."
+        )
+        assert headers.user_id == "alice", (
+            f"headers.user_id should be 'alice' (from custom_inputs) but got {headers.user_id!r}"
+        )
+
+    def test_predict_stream_threads_user_id_as_headers_into_compile(self, tmp_path):
+        """Same seam guard for predict_stream."""
+        from mlflow.types.agent import ChatAgentMessage
+        from apx_agent import Agent, chat_agent_for
+        from apx_agent._wiring import finalize_agent
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.apx.agent]\nname = 'seam-test-stream'\nmodel = 'ep'\n"
+            "[tool.apx.agent.memory]\ntype = 'inmemory'\n"
+        )
+        agent = Agent(tools=[])
+        finalize_agent(agent, pyproject_path=str(tmp_path / "pyproject.toml"), ws=None)
+        wrapped = chat_agent_for(agent, model="ep")
+        fake_graph = self._make_fake_graph()
+
+        captured: dict[str, Any] = {}
+
+        def _spy_compile(agent_arg, *, ws, model, headers=None):
+            captured["headers"] = headers
+            return fake_graph
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._chat_agent.compile_to_langgraph",
+            side_effect=_spy_compile,
+        ):
+            list(wrapped.predict_stream(
+                messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
+                custom_inputs={"user_id": "alice"},
+            ))
+
+        headers = captured.get("headers")
+        assert headers is not None, (
+            "SEAM BROKEN (stream): predict_stream did not pass headers= to compile_to_langgraph. "
+            "Fix: mirror the predict fix in predict_stream."
+        )
+        assert headers.user_id == "alice", (
+            f"predict_stream: headers.user_id should be 'alice' but got {headers.user_id!r}"
+        )
+
+    def test_predict_headers_none_when_no_user_id(self, tmp_path):
+        """When custom_inputs has no user_id, headers= must be None (not an all-None
+        DatabricksAppsHeaders that would change existing tools' None check)."""
+        from mlflow.types.agent import ChatAgentMessage
+        from apx_agent import Agent, chat_agent_for
+        from apx_agent._wiring import finalize_agent
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.apx.agent]\nname = 'no-uid'\nmodel = 'ep'\n"
+        )
+        agent = Agent(tools=[])
+        finalize_agent(agent, pyproject_path=str(tmp_path / "pyproject.toml"), ws=None)
+        wrapped = chat_agent_for(agent, model="ep")
+        fake_graph = self._make_fake_graph()
+
+        captured: dict[str, Any] = {}
+
+        def _spy_compile(agent_arg, *, ws, model, headers=None):
+            captured["headers"] = headers
+            return fake_graph
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._chat_agent.compile_to_langgraph",
+            side_effect=_spy_compile,
+        ):
+            wrapped.predict(
+                messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
+                custom_inputs=None,
+            )
+
+        # With no user_id, headers should be None (principal stays None = NO_PRINCIPAL)
+        assert captured.get("headers") is None, (
+            "No user_id in custom_inputs → headers must be None to preserve "
+            "the existing null-principal behavior"
         )

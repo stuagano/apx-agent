@@ -165,9 +165,14 @@ type = "inmemory"
 | `namespace_default` | `str` | `"default"` | Default namespace for memory tools |
 | `tool_prefix` | `str` | `""` | Prefix for tool names (`"mem_"` → `"mem_recall"`) |
 | `include` | `list[str]` | all | Subset: `["recall"]`, `["recall","remember"]`, … |
-| `validate_at_boot` | `bool` | `true` | Connectivity check at startup; `false` for offline |
+| `validate_at_boot` | `bool` | `true` | Reserved — boot-time connectivity validation is not yet implemented; field is accepted but has no effect |
 
 **Principal isolation:** Memory is scoped per OBO user (`X-Forwarded-User`). User A's memories are invisible to User B. No-principal requests (local dev without headers) return `NO_PRINCIPAL` without writing.
+
+**Deployment caveat — where `user_id` comes from:** Per-user memory only activates when the request carries a resolvable `user_id` (the principal). How that is supplied differs by serving surface:
+
+- **Databricks Apps** (FastAPI `/invocations`): the `user_id` is bridged automatically from the `X-Forwarded-User` header injected by the Apps proxy. Memory activates with no caller action.
+- **Pure Model Serving** (pyfunc served via `databricks.agents.deploy`, not routed through `/invocations`): the serving proxy does **not** inject `user_id`. The caller MUST pass it explicitly via `custom_inputs={"user_id": "<principal>", ...}` for per-user memory to activate. Without it, `recall`/`remember` return `NO_PRINCIPAL` and memory is inert (fail-closed — no cross-user leakage, but nothing is stored or recalled).
 
 **Credential API:** Lakebase uses `ws.database.generate_database_credential` (the `DatabaseAPI`, not `PostgresAPI`).
 
