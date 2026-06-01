@@ -186,3 +186,11 @@ def test_composition_root_warns_and_skips(tmp_path, caplog):
         merge_config_tools(agent, pyproject_path=pp)
     assert "composition root" in caplog.text
     assert not hasattr(agent, "_tool_fns")
+
+
+def test_public_exports():
+    import apx_agent
+    assert hasattr(apx_agent, "ToolConfigError")
+    assert hasattr(apx_agent, "finalize_agent")
+    assert hasattr(apx_agent, "merge_config_tools")
+    assert hasattr(apx_agent, "load_config_tools")
