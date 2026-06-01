@@ -10,14 +10,56 @@ validation surface — a bad/missing kwarg surfaces as a wrapped ToolConfigError
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Callable
+from urllib.parse import urlparse
 
-# Reserved for later tasks: T2 (skip-with-warning) and T4 (merge_config_tools).
 logger = logging.getLogger(__name__)
 
 
 class ToolConfigError(ValueError):
     """A [[tool.apx.tools]] table could not be turned into a tool."""
+
+
+# Factory types whose construction touches the network (host-gated + skippable).
+_IO_TYPES = {"openapi", "mcp_tool", "mcp_toolkit"}
+# Which kwarg carries the host-bearing URL, per IO type.
+_HOST_KEY: dict[str, str] = {
+    "openapi": "spec",
+    "mcp_tool": "server_url",
+    "mcp_toolkit": "server_url",
+}
+
+
+def _resolve_env_deep(value: Any) -> Any:
+    """Recursively resolve ``$VAR`` / ``${VAR}`` references in string leaves."""
+    if isinstance(value, str):
+        # Lazy local import to avoid a top-level cycle if _wiring ever imports us.
+        from ._wiring import _resolve_env_var  # noqa: PLC0415
+
+        return _resolve_env_var(value)
+    if isinstance(value, list):
+        return [_resolve_env_deep(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _resolve_env_deep(v) for k, v in value.items()}
+    return value
+
+
+def _check_allowlist(index: int, type_: str, kwargs: dict[str, Any]) -> None:
+    """Raise ToolConfigError if the tool's host is not in APX_TOOLS_ALLOWED_HOSTS."""
+    allowed_raw = os.environ.get("APX_TOOLS_ALLOWED_HOSTS", "").strip()
+    if not allowed_raw or type_ not in _IO_TYPES:
+        return  # unset → trusted default; or non-network type → no restriction
+    hosts = {h.strip() for h in allowed_raw.split(",") if h.strip()}
+    url = kwargs.get(_HOST_KEY[type_], "") or ""
+    if not url:
+        return  # no URL to check; factory will raise TypeError for the missing kwarg
+    host = urlparse(url).hostname or ""
+    if host not in hosts:
+        raise ToolConfigError(
+            f"tool #{index} (type={type_}): host {host!r} is not in "
+            f"APX_TOOLS_ALLOWED_HOSTS ({sorted(hosts)})."
+        )
 
 
 def _registry() -> dict[str, Callable[..., Any]]:
@@ -69,7 +111,7 @@ def _registry() -> dict[str, Callable[..., Any]]:
 def _build_one(
     index: int, table: dict[str, Any], registry: dict[str, Callable[..., Any]]
 ) -> list[Callable[..., Any]]:
-    kwargs = dict(table)
+    kwargs: dict[str, Any] = _resolve_env_deep(dict(table))
     type_ = kwargs.pop("type", None)
     if type_ is None:
         raise ToolConfigError(f"tool #{index}: missing 'type' key.")
@@ -78,12 +120,27 @@ def _build_one(
         raise ToolConfigError(
             f"tool #{index}: unknown type {type_!r}; known: {sorted(registry)}."
         )
+    _check_allowlist(index, type_, kwargs)
     try:
         result = factory(**kwargs)
     except ToolConfigError:
         raise
     except TypeError as e:
+        # Bad/missing kwarg — always a hard config error.
         raise ToolConfigError(f"tool #{index} (type={type_}): {e}") from e
+    except Exception as e:
+        # Factory-time runtime failure (network/live discovery). Only I/O types
+        # reach here; pure-data factories don't fail for connectivity reasons.
+        strict = os.environ.get("APX_TOOLS_STRICT", "").strip().lower() in ("1", "true", "yes")
+        if strict:
+            raise ToolConfigError(f"tool #{index} (type={type_}): {e}") from e
+        logger.warning(
+            "Skipping tool #%d (type=%s): factory failed at load time: %s",
+            index,
+            type_,
+            e,
+        )
+        return []
     return result if isinstance(result, list) else [result]
 
 
