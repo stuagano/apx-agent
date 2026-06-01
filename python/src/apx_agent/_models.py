@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
 from fastapi import Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -91,6 +91,71 @@ class GuardrailsConfig(BaseModel):
     ingestion time."""
 
 
+StoreType = Literal["inmemory", "delta", "lakebase"]
+
+
+class MemoryBackendConfig(BaseModel):
+    """Declarative memory backend — maps to ``[tool.apx.agent.memory]``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: StoreType = "inmemory"
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
+    table_name: str | None = None
+    index_name: str | None = None
+    auto_create: bool = True
+    instance_name: str | None = None
+    database: str | None = None
+    host: str | None = None
+    ensure_extension: bool = True
+    namespace_default: str = "default"
+    tool_prefix: str = ""
+    include: list[str] | None = None
+    validate_at_boot: bool = True
+
+
+class ExampleBackendConfig(BaseModel):
+    """Declarative example backend — maps to ``[tool.apx.agent.example]``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: StoreType = "inmemory"
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
+    table_name: str | None = None
+    index_name: str | None = None
+    auto_create: bool = True
+    instance_name: str | None = None
+    database: str | None = None
+    host: str | None = None
+    ensure_extension: bool = True
+    agent_id: str | None = None
+    """Partition key for example rows — defaults to ``config.name`` at attach time."""
+    tool_prefix: str = ""
+    include: list[str] | None = None
+    validate_at_boot: bool = True
+
+
+class SessionBackendConfig(BaseModel):
+    """Declarative session backend — maps to ``[tool.apx.agent.session]``.
+
+    DeltaSessionStore takes ``table_path`` (not ``table_name``); the wiring maps
+    ``table_name`` → ``table_path`` when building a delta session store.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: StoreType = "inmemory"
+    table_name: str | None = None
+    auto_create: bool = True
+    instance_name: str | None = None
+    database: str | None = None
+    host: str | None = None
+    warehouse_id: str | None = None
+    validate_at_boot: bool = True
+
+
 class AgentConfig(BaseModel):
     """Agent configuration — loaded from [tool.apx.agent] in pyproject.toml or constructed directly."""
 
@@ -119,6 +184,14 @@ class AgentConfig(BaseModel):
     afterward via ``finalize_agent`` as usual — template builds the leaf, persona
     overlays.
     """
+    memory: MemoryBackendConfig | None = None
+    """Declarative memory backend — see ``[tool.apx.agent.memory]``."""
+
+    example: ExampleBackendConfig | None = None
+    """Declarative example backend — see ``[tool.apx.agent.example]``."""
+
+    session: SessionBackendConfig | None = None
+    """Declarative session backend — see ``[tool.apx.agent.session]``."""
 
 
 class AgentTool(BaseModel):

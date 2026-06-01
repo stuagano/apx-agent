@@ -1014,3 +1014,109 @@ def test_public_exports_resolve_agent_and_template_config_error():
     assert issubclass(TemplateConfigError, ValueError)
     # template is the public surface — verify it's a field on AgentConfig.
     assert "template" in apx_agent.AgentConfig.model_fields
+
+
+# ---------------------------------------------------------------------------
+# E3b Task 1.1 — MemoryBackendConfig, ExampleBackendConfig, SessionBackendConfig
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryBackendConfig:
+    def test_inmemory_type_defaults(self):
+        from apx_agent._models import MemoryBackendConfig
+        cfg = MemoryBackendConfig(type="inmemory")
+        assert cfg.type == "inmemory"
+        assert cfg.namespace_default == "default"
+        assert cfg.tool_prefix == ""
+        assert cfg.include is None
+        assert cfg.auto_create is True
+
+    def test_lakebase_type_accepts_minimal(self):
+        from apx_agent._models import MemoryBackendConfig
+        cfg = MemoryBackendConfig(type="lakebase")
+        assert cfg.type == "lakebase"
+
+    def test_extra_key_forbidden(self):
+        from pydantic import ValidationError
+        from apx_agent._models import MemoryBackendConfig
+        with pytest.raises(ValidationError, match="unknown_key"):
+            MemoryBackendConfig(type="inmemory", unknown_key="oops")
+
+    def test_unknown_type_forbidden(self):
+        from pydantic import ValidationError
+        from apx_agent._models import MemoryBackendConfig
+        with pytest.raises(ValidationError):
+            MemoryBackendConfig(type="s3bucket")
+
+    def test_agent_config_memory_field_loads_from_toml(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "mem-agent"
+            model = "databricks-claude-sonnet-4-6"
+
+            [tool.apx.agent.memory]
+            type = "lakebase"
+            instance_name = "coworker-lakebase"
+            database = "agentdb"
+            table_name = "apx_memories"
+            embedding_model = "databricks-bge-large-en"
+            embedding_dim = 1024
+        """))
+        config = _load_agent_config(pyproject_path=str(pp))
+        assert config is not None
+        assert config.memory is not None
+        assert config.memory.type == "lakebase"
+        assert config.memory.instance_name == "coworker-lakebase"
+        assert config.memory.embedding_dim == 1024
+
+    def test_agent_config_session_field_loads_from_toml(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "sess-agent"
+
+            [tool.apx.agent.session]
+            type = "inmemory"
+        """))
+        config = _load_agent_config(pyproject_path=str(pp))
+        assert config is not None
+        assert config.session is not None
+        assert config.session.type == "inmemory"
+
+    def test_agent_config_example_field_loads_from_toml(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "ex-agent"
+
+            [tool.apx.agent.example]
+            type = "delta"
+            table_name = "main.coworker.apx_examples"
+            embedding_model = "databricks-bge-large-en"
+            embedding_dim = 1024
+        """))
+        config = _load_agent_config(pyproject_path=str(pp))
+        assert config is not None
+        assert config.example is not None
+        assert config.example.type == "delta"
+        assert config.example.agent_id is None
+
+    def test_absent_memory_gives_none(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text('[tool.apx.agent]\nname = "no-mem"\n')
+        config = _load_agent_config(pyproject_path=str(pp))
+        assert config is not None
+        assert config.memory is None
+        assert config.session is None
+        assert config.example is None
+
+    def test_validate_at_boot_default_true(self):
+        from apx_agent._models import MemoryBackendConfig
+        cfg = MemoryBackendConfig(type="lakebase")
+        assert cfg.validate_at_boot is True
+
+    def test_validate_at_boot_opt_out(self):
+        from apx_agent._models import MemoryBackendConfig
+        cfg = MemoryBackendConfig(type="lakebase", validate_at_boot=False)
+        assert cfg.validate_at_boot is False
