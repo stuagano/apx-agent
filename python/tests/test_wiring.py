@@ -129,6 +129,26 @@ class TestSetupAgent:
         assert agent._max_tokens == 256
         assert agent._max_iterations == 5
 
+    @pytest.mark.asyncio
+    async def test_setup_agent_serves_config_tools_in_card(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "t"
+            model = "databricks-claude-sonnet-4-6"
+            [[tool.apx.tools]]
+            type = "genie"
+            space_id = "01ef"
+            name = "ask_sales"
+        """))
+        app = FastAPI()
+        agent = Agent(tools=[])
+        ctx = await setup_agent(app, agent, pyproject_path=str(pp))
+        # The A2A card snapshot must include the config tool (proves the merge ran
+        # before the card was frozen).
+        skill_names = [s.name for s in ctx.card.skills]
+        assert "ask_sales" in skill_names
+
 
 # ---------------------------------------------------------------------------
 # apply_config_knobs — shared seam used by both setup_agent AND apx deploy
