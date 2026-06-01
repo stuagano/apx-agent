@@ -10,7 +10,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
+from pydantic import ValidationError
+
 from apx_agent import Agent, LlmAgent, AgentConfig, AgentContext, create_app, setup_agent
+from apx_agent._models import GuardrailsConfig
+from apx_agent._inspection import _load_agent_config
 from apx_agent._wiring import (
     _install_responses_input_adapter,
     _mount_protocol_routes,
@@ -500,3 +504,76 @@ def test_finalize_is_idempotent(tmp_path):
     finalize_agent(agent, config=cfg, pyproject_path=str(pp))
     assert [t.name for t in agent.collect_tools()].count("ask_sales") == 1
     assert agent._instructions.count("PERSONA") == 1
+
+
+# ---------------------------------------------------------------------------
+# GuardrailsConfig + AgentConfig.guardrails (E3c Task 1)
+# ---------------------------------------------------------------------------
+
+
+class TestGuardrailsConfig:
+    def test_defaults_are_empty(self):
+        gc = GuardrailsConfig()
+        assert gc.blocked_tools == []
+        assert gc.allowed_tools is None
+        assert gc.rate_limit is None
+        assert gc.rate_limit_burst is None
+        assert gc.injection_detection is False
+
+    def test_agent_config_has_guardrails_field_defaulting_to_empty(self):
+        cfg = AgentConfig(name="t")
+        assert isinstance(cfg.guardrails, GuardrailsConfig)
+        assert cfg.guardrails.blocked_tools == []
+
+    def test_guardrails_loads_from_toml_subtable(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "guarded"
+            model = "databricks-claude-sonnet-4-6"
+
+            [tool.apx.agent.guardrails]
+            blocked_tools = ["delete_account", "issue_refund"]
+            allowed_tools = ["classify_intent"]
+            rate_limit = 60
+            rate_limit_burst = 10
+            injection_detection = true
+        """))
+        config = _load_agent_config(pyproject_path=str(pp))
+        assert config is not None
+        assert config.guardrails.blocked_tools == ["delete_account", "issue_refund"]
+        assert config.guardrails.allowed_tools == ["classify_intent"]
+        assert config.guardrails.rate_limit == 60
+        assert config.guardrails.rate_limit_burst == 10
+        assert config.guardrails.injection_detection is True
+
+    def test_unknown_guardrails_key_raises_at_load(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "guarded"
+
+            [tool.apx.agent.guardrails]
+            rate_limt = 60
+        """))
+        with pytest.raises(ValidationError, match="rate_limt"):
+            _load_agent_config(pyproject_path=str(pp))
+
+    def test_blocked_tools_wrong_type_raises(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "guarded"
+
+            [tool.apx.agent.guardrails]
+            blocked_tools = "delete_account"
+        """))
+        with pytest.raises(ValidationError):
+            _load_agent_config(pyproject_path=str(pp))
+
+    def test_absent_guardrails_subtable_gives_default(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text('[tool.apx.agent]\nname = "minimal"\n')
+        config = _load_agent_config(pyproject_path=str(pp))
+        assert config is not None
+        assert config.guardrails == GuardrailsConfig()
