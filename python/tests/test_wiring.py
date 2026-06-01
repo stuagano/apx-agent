@@ -1000,3 +1000,17 @@ class TestServePath:
         app = FastAPI()
         ctx = await setup_agent(app, None, pyproject_path="/nonexistent/pyproject.toml")
         assert ctx is None
+
+
+# ---------------------------------------------------------------------------
+# E3a Task 5 — public surface / export check
+# ---------------------------------------------------------------------------
+
+
+def test_public_exports_resolve_agent_and_template_config_error():
+    import apx_agent
+    from apx_agent._wiring import TemplateConfigError, resolve_agent
+    assert callable(resolve_agent)
+    assert issubclass(TemplateConfigError, ValueError)
+    # template is the public surface — verify it's a field on AgentConfig.
+    assert "template" in apx_agent.AgentConfig.model_fields
