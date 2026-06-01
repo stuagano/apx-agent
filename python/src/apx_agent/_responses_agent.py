@@ -128,26 +128,65 @@ def _resolve_ws_for_request(
     available (i.e. when actually running inside an Apps invoke). Falls back
     to custom_inputs-only resolution when no Apps context is active (tests).
     """
-    from ._defaults import _make_workspace_client
+    ws, _ = _resolve_ws_and_headers_for_request(custom_inputs)
+    return ws
+
+
+def _resolve_ws_and_headers_for_request(
+    custom_inputs: dict[str, Any] | None,
+) -> "tuple[WorkspaceClient, Any]":
+    """Resolve both the per-request WorkspaceClient and DatabricksAppsHeaders
+    from a single :func:`extract_obo_headers` call.
+
+    For the Apps runtime (this module), identity can come from both
+    ``custom_inputs`` (beats) and ``X-Forwarded-User`` HTTP headers injected by
+    the Apps proxy. Both sources are normalized by ``extract_obo_headers`` in
+    precedence order so ws-identity and memory-principal are always consistent.
+
+    Returns:
+        ``(ws, headers)`` where ``headers`` is a :class:`DatabricksAppsHeaders`
+        instance when a ``user_id`` is resolvable, else ``None``.
+    """
+    from pydantic import SecretStr
+
+    from ._defaults import DatabricksAppsHeaders, _make_workspace_client
     from ._obo import extract_obo_headers
 
-    headers: dict[str, str] = {}
+    http_headers: dict[str, str] = {}
     getter = _maybe_import_request_headers()
     if getter is not None:
         try:
-            headers = getter() or {}
+            http_headers = getter() or {}
         except Exception:
             # Apps context not initialized (test path, or invoked outside the
             # server). Quiet best-effort — drop to custom_inputs-only.
-            headers = {}
+            http_headers = {}
 
-    obo = extract_obo_headers(custom_inputs=custom_inputs, headers=headers)
+    obo = extract_obo_headers(custom_inputs=custom_inputs, headers=http_headers)
+
     if obo.get("user_token"):
-        return _make_workspace_client(
+        ws = _make_workspace_client(
             token=obo["user_token"],
             host=obo.get("workspace_host"),
         )
-    return _make_workspace_client()
+    else:
+        ws = _make_workspace_client()
+
+    # Build headers only when we have a user_id so that requests without
+    # identity continue to see headers=None (principal=None → NO_PRINCIPAL).
+    req_headers: Any = None
+    if obo.get("user_id"):
+        token_raw = obo.get("user_token")
+        req_headers = DatabricksAppsHeaders(
+            host=obo.get("workspace_host"),
+            user_name=None,
+            user_id=obo.get("user_id"),
+            user_email=obo.get("user_email"),
+            request_id=None,
+            token=SecretStr(token_raw) if token_raw else None,
+        )
+
+    return ws, req_headers
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +666,7 @@ def compile_to_responses_agent(
                 AuditAttrs.MODEL_STREAMING: False,
             },
         ) as span:
-            ws = _resolve_ws_for_request(custom_inputs)
+            ws, req_headers = _resolve_ws_and_headers_for_request(custom_inputs)
 
             # Prepend session history (if any)
             lc_history = (
@@ -641,7 +680,9 @@ def compile_to_responses_agent(
                 span_type="CHAIN",
                 attributes={AuditAttrs.MODEL_ENDPOINT: effective_model},
             ):
-                graph = compile_to_langgraph(_agent, ws=ws, model=effective_model)
+                graph = compile_to_langgraph(
+                    _agent, ws=ws, model=effective_model, headers=req_headers
+                )
 
             input_count = len(graph_input)
             with safe_span("graph.invoke", span_type="CHAIN"):
@@ -704,7 +745,7 @@ def compile_to_responses_agent(
                 AuditAttrs.MODEL_STREAMING: True,
             },
         ):
-            ws = _resolve_ws_for_request(custom_inputs)
+            ws, req_headers = _resolve_ws_and_headers_for_request(custom_inputs)
 
             lc_history = (
                 _history_to_langchain(session.history) if session is not None else []
@@ -712,7 +753,9 @@ def compile_to_responses_agent(
             lc_input = _responses_input_to_langchain(list(request.input))
             graph_input = lc_history + lc_input
 
-            graph = compile_to_langgraph(_agent, ws=ws, model=effective_model)
+            graph = compile_to_langgraph(
+                _agent, ws=ws, model=effective_model, headers=req_headers
+            )
 
             output_items: list[dict[str, Any]] = []
             output_index = 0

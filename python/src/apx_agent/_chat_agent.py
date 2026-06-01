@@ -69,44 +69,52 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _resolve_ws_for_request(
+def _resolve_ws_and_headers(
     custom_inputs: dict[str, Any] | None,
-    *,
-    headers: Any = None,
-) -> "WorkspaceClient":
-    """Build the per-request WorkspaceClient.
+) -> tuple[Any, Any]:
+    """Resolve the per-request WorkspaceClient AND DatabricksAppsHeaders from
+    a single :func:`extract_obo_headers` call, so ws-identity and
+    memory-principal always come from the same source.
 
-    Delegates to :func:`apx_agent._obo.extract_obo_headers` for the
-    normalization so the Model Serving and Apps runtimes share a single source
-    of truth for OBO resolution.
-
-    Args:
-        custom_inputs: ``custom_inputs`` from the request payload. The
-            authoritative source: a caller-supplied ``user_token`` here wins
-            over a header-injected one.
-        headers: Optional per-request HTTP headers (a mapping or starlette
-            ``Headers``). Used as the fallback source for OBO context when
-            the SDK is invoked from a FastAPI route directly (e.g. the Apps
-            runtime). Default: ``None``.
-
-    Resolution order:
-      1. If a ``user_token`` is found (custom_inputs first, headers second) →
-         OBO (user-scope) ``WorkspaceClient(token=..., host=...)``.
-      2. Else fall back to ``_make_workspace_client()`` (app SP via
-         oauth-m2m if the env vars are set, else CLI auto-detect for local
-         dev).
+    Returns:
+        ``(ws, headers)`` where ``headers`` is a :class:`DatabricksAppsHeaders`
+        instance when ``custom_inputs`` carries a ``user_id``, else ``None``.
+        Keeping ``headers=None`` when there is no identity preserves the
+        existing null-principal behaviour for requests without a user context.
     """
-    from ._defaults import _make_workspace_client
+    from pydantic import SecretStr
+
+    from ._defaults import DatabricksAppsHeaders, _make_workspace_client
     from ._obo import extract_obo_headers
 
-    obo = extract_obo_headers(custom_inputs=custom_inputs, headers=headers)
+    # Model Serving has no HTTP-header source for identity — custom_inputs only.
+    obo = extract_obo_headers(custom_inputs=custom_inputs)
+
+    # Build the per-request WorkspaceClient (same logic as _resolve_ws_for_request).
     if obo.get("user_token"):
-        return _make_workspace_client(
+        ws = _make_workspace_client(
             token=obo["user_token"],
             host=obo.get("workspace_host"),
         )
+    else:
+        ws = _make_workspace_client()
 
-    return _make_workspace_client()
+    # Build headers only when we have a user_id to avoid replacing None with an
+    # all-None DatabricksAppsHeaders (which would change the compile-context
+    # semantics for tools that check ``if ctx.headers``).
+    headers: Any = None
+    if obo.get("user_id"):
+        token_raw = obo.get("user_token")
+        headers = DatabricksAppsHeaders(
+            host=obo.get("workspace_host"),
+            user_name=None,
+            user_id=obo.get("user_id"),
+            user_email=obo.get("user_email"),
+            request_id=None,
+            token=SecretStr(token_raw) if token_raw else None,
+        )
+
+    return ws, headers
 
 
 # ---------------------------------------------------------------------------
@@ -364,13 +372,14 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: False,
                 },
             ) as span:
-                ws = _resolve_ws_for_request(custom_inputs)
+                ws, req_headers = _resolve_ws_and_headers(custom_inputs)
                 with safe_span(
                     "compile_to_langgraph", span_type="CHAIN",
                     attributes={AuditAttrs.MODEL_ENDPOINT: effective_model},
                 ):
                     graph = compile_to_langgraph(
-                        self._agent, ws=ws, model=effective_model
+                        self._agent, ws=ws, model=effective_model,
+                        headers=req_headers,
                     )
 
                 lc_input = _to_langchain_messages(prepended_messages)
@@ -439,9 +448,10 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: True,
                 },
             ) as span:
-                ws = _resolve_ws_for_request(custom_inputs)
+                ws, req_headers = _resolve_ws_and_headers(custom_inputs)
                 graph = compile_to_langgraph(
-                    self._agent, ws=ws, model=effective_model
+                    self._agent, ws=ws, model=effective_model,
+                    headers=req_headers,
                 )
                 lc_input = _to_langchain_messages(prepended_messages)
                 emitted = 0
