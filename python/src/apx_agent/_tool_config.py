@@ -145,8 +145,28 @@ def _build_one(
     return result if isinstance(result, list) else [result]
 
 
+def _find_pyproject_upward(start: Path) -> Path | None:
+    """Nearest pyproject.toml walking up from *start*; None if absent.
+
+    Intentionally cwd-only — unlike ``_load_agent_config`` (which tries
+    ``__main__.__file__`` first), tools discovery must NOT consult ``__main__``:
+    under pytest/notebooks it resolves to the interpreter/repo, not the user's
+    project, which would surface the wrong pyproject (and break chdir tests).
+    """
+    for directory in [start, *start.parents]:
+        candidate = directory / "pyproject.toml"
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _read_tools_section(pyproject_path: str | None) -> list[dict[str, Any]]:
-    path = Path(pyproject_path) if pyproject_path else Path.cwd() / "pyproject.toml"
+    if pyproject_path:
+        path: Path | None = Path(pyproject_path)
+    else:
+        path = _find_pyproject_upward(Path.cwd())
+    if path is None:
+        return []
     if not path.exists():
         return []
     try:
@@ -169,13 +189,28 @@ def _read_tools_section(pyproject_path: str | None) -> list[dict[str, Any]]:
 def merge_config_tools(agent: Any, pyproject_path: str | None = None) -> None:
     """Load [[tool.apx.tools]] and append the callables to the agent.
 
-    Dedup by __name__ (code-wired tools win — config is additive), which also
-    makes this idempotent (a second call sees the config tools already present).
+    Dedup by __name__ (code-wired tools win — config is additive).
+    An idempotency sentinel (``_apx_config_tools_merged``) ensures the I/O
+    factories inside ``load_config_tools`` are only invoked once per agent
+    instance, even when ``finalize_agent`` is called repeatedly.
     Composition roots without ``_register_tool`` are warned + skipped.
+
+    Single-project assumption: once the sentinel is set, a later call with a
+    *different* ``pyproject_path`` on the same agent is silently skipped. This
+    is fine today (an Agent instance is bound to one project context); revisit
+    if agents are ever pooled/reconfigured across projects.
     """
+    # 1. Sentinel check — skip everything (including I/O factories) on repeat calls.
+    if getattr(agent, "_apx_config_tools_merged", False):
+        return
+
+    # 2. Short-circuit when there are no tables to process (don't set sentinel —
+    #    a later call with a valid pyproject should still be allowed to merge).
     tables = _read_tools_section(pyproject_path)
     if not tables:
         return
+
+    # 3. Composition-root guard.
     register = getattr(agent, "_register_tool", None)
     existing = {getattr(fn, "__name__", None) for fn in getattr(agent, "_tool_fns", [])}
     if register is None:
@@ -185,6 +220,8 @@ def merge_config_tools(agent: Any, pyproject_path: str | None = None) -> None:
             type(agent).__name__,
         )
         return
+
+    # 4. Build tools and register (skipping name-collisions).
     for fn in load_config_tools(tables):
         nm = getattr(fn, "__name__", None)
         if nm in existing:
@@ -197,6 +234,9 @@ def merge_config_tools(agent: Any, pyproject_path: str | None = None) -> None:
         register(fn)
         if nm:
             existing.add(nm)
+
+    # 5. Mark as merged so repeat calls skip the I/O factories entirely.
+    setattr(agent, "_apx_config_tools_merged", True)
 
 
 def load_config_tools(raw_tables: list[dict[str, Any]]) -> list[Callable[..., Any]]:

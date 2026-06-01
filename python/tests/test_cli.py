@@ -2944,3 +2944,71 @@ def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
         f"genie_space not in resource specs after finalize; got: {kinds}. "
         "finalize_agent was not called before _auto_update_databricks_yml."
     )
+
+
+# ---------------------------------------------------------------------------
+# Change 3 (T11): apx lint now covers [[tool.apx.tools]] config-declared tools
+# ---------------------------------------------------------------------------
+
+
+def test_lint_sees_config_declared_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Characterization: apx lint (via _load_finalized_agent) must run
+    ``_iter_tool_fns`` over config-declared tools so L002 fires for a
+    docstring-less config tool.
+
+    Strategy: monkeypatch ``apx_agent._tool_config._registry`` to inject a
+    factory that returns a callable with NO docstring.  The factory name must
+    stay "genie" (matches the [[tool.apx.tools]] table).  The tool callable is
+    named "undocumented_config_tool" so the L002 finding has a stable location.
+    We use ``--format json`` for a machine-readable assertion.
+    """
+    import apx_agent._tool_config as _tc
+
+    module_name = "lint_config_tools_test_agent"
+
+    # Agent has instructions so L001 doesn't fire, giving us a clean L002-only signal.
+    (tmp_path / f"{module_name}.py").write_text(textwrap.dedent("""
+        from apx_agent import Agent
+        agent = Agent(instructions="I help with data.", tools=[])
+    """))
+
+    # [[tool.apx.tools]] declares one "genie" table; the monkeypatched registry
+    # maps "genie" → factory that returns a docstring-less callable.
+    # The factory ignores the 'name' kwarg and the tool's __name__ comes from
+    # the closure definition (config_tool_no_doc).
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.apx.agent]
+        name = "lint-test"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "lint-space-01"
+    """))
+
+    monkeypatch.chdir(tmp_path)
+
+    def config_tool_no_doc(question: str) -> str:
+        # Deliberately no docstring — triggers L002.
+        return question
+
+    def _fake_registry() -> dict:
+        return {"genie": lambda **kw: config_tool_no_doc}
+
+    monkeypatch.setattr(_tc, "_registry", _fake_registry)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["lint", "--module", f"{module_name}:agent", "--format", "json"]
+    )
+    sys.modules.pop(module_name, None)
+
+    assert result.exit_code == 0, result.output  # L002 is WARNING, not ERROR
+    findings = json.loads(result.output)
+    # L002 fires for the config-declared tool — proves lint sees [[tool.apx.tools]] tools.
+    l002_locations = [f["location"] for f in findings if f["code"] == "L002"]
+    assert "tool:config_tool_no_doc" in l002_locations, (
+        f"Expected L002 for 'config_tool_no_doc' in config tools, "
+        f"but lint findings were: {findings}. "
+        "apx lint may not be running _iter_tool_fns over [[tool.apx.tools]] tools."
+    )

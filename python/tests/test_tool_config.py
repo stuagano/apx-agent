@@ -194,3 +194,70 @@ def test_public_exports():
     assert hasattr(apx_agent, "finalize_agent")
     assert hasattr(apx_agent, "merge_config_tools")
     assert hasattr(apx_agent, "load_config_tools")
+
+
+# ---------------------------------------------------------------------------
+# Change 1: cwd walk-up discovery
+# ---------------------------------------------------------------------------
+
+
+def test_walk_up_finds_pyproject_from_subdir(tmp_path, monkeypatch):
+    """merge_config_tools(pyproject_path=None) must walk up from cwd so a
+    subdir of the project root can still find [[tool.apx.tools]]."""
+    _write_pyproject(tmp_path, """
+        [tool.apx.agent]
+        name = "t"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "01ef"
+        name = "ask_sales"
+    """)
+    subdir = tmp_path / "src" / "mypackage"
+    subdir.mkdir(parents=True)
+    monkeypatch.chdir(subdir)
+
+    agent = Agent(tools=[])
+    merge_config_tools(agent, pyproject_path=None)
+    assert "ask_sales" in [t.name for t in agent.collect_tools()]
+
+
+# ---------------------------------------------------------------------------
+# Change 2: idempotency sentinel skips I/O factories on repeat calls
+# ---------------------------------------------------------------------------
+
+
+def test_factory_called_only_once_on_repeat_merge(tmp_path, monkeypatch):
+    """merge_config_tools must set a sentinel after the first merge so a
+    second call returns immediately — never invoking load_config_tools again."""
+    import apx_agent._tool_config as mod
+
+    call_count = [0]
+
+    def counting_factory(**kw):
+        call_count[0] += 1
+
+        def ask_sales_sentinel(q: str) -> str:
+            """Counted factory tool."""
+            return q
+
+        return ask_sales_sentinel
+
+    monkeypatch.setattr(mod, "_registry", lambda: {"genie": counting_factory})
+
+    pp = _write_pyproject(tmp_path, """
+        [tool.apx.agent]
+        name = "t"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "01ef"
+        name = "ask_sales_sentinel"
+    """)
+
+    agent = Agent(tools=[])
+    merge_config_tools(agent, pyproject_path=pp)
+    merge_config_tools(agent, pyproject_path=pp)  # second call — must be a no-op
+
+    assert call_count[0] == 1, (
+        f"Factory was called {call_count[0]} times; expected 1 — "
+        "second merge_config_tools call did not skip via sentinel."
+    )
