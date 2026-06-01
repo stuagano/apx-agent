@@ -899,3 +899,51 @@ class TestResolveAgent:
         from apx_agent._wiring import resolve_agent, TemplateConfigError
         with pytest.raises(TemplateConfigError, match="[Nn]o agent"):
             resolve_agent(None, None, ws=None)
+
+
+class TestPersonaOverTemplate:
+    def test_resolve_then_finalize_composes_persona_over_grounding(self):
+        """Grounded instructions from template + persona from config → both present."""
+        from apx_agent import AgentConfig
+        from apx_agent._wiring import finalize_agent, resolve_agent
+        from apx_agent.data_agent import DataAgent
+        config = AgentConfig(
+            name="t",
+            instructions="Be concise and professional.",
+            template={"name": "data", "catalog": "main", "schema": "sales"},
+        )
+        agent = resolve_agent(None, config, ws=None)
+        assert isinstance(agent, DataAgent)
+        grounding_before = getattr(agent, "_instructions", "")
+        finalize_agent(agent, config)
+        composed = getattr(agent, "_instructions", "")
+        assert "Be concise and professional." in composed
+        assert len(composed) >= len(grounding_before)
+
+    def test_persona_compose_is_idempotent(self):
+        """Second finalize_agent call must not double-compose the persona."""
+        from apx_agent import AgentConfig
+        from apx_agent._wiring import finalize_agent, resolve_agent
+        config = AgentConfig(
+            name="t",
+            instructions="Be concise.",
+            template={"name": "data", "catalog": "main", "schema": "sales"},
+        )
+        agent = resolve_agent(None, config, ws=None)
+        finalize_agent(agent, config)
+        instructions_after_first = getattr(agent, "_instructions", "")
+        finalize_agent(agent, config)  # idempotent
+        assert getattr(agent, "_instructions", "") == instructions_after_first
+
+    def test_template_only_no_persona_uses_grounding_verbatim(self):
+        """No envelope instructions → template grounding used unchanged."""
+        from apx_agent import AgentConfig
+        from apx_agent._wiring import finalize_agent, resolve_agent
+        config = AgentConfig(
+            name="t",
+            template={"name": "data", "catalog": "main", "schema": "sales"},
+        )
+        agent = resolve_agent(None, config, ws=None)
+        grounding = getattr(agent, "_instructions", "")
+        finalize_agent(agent, config)
+        assert getattr(agent, "_instructions", "") == grounding
