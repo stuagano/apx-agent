@@ -373,3 +373,58 @@ class TestResolveSessionStore:
             result = resolve_session_store(cfg, ws=None, override=None)
         assert result is None
         assert "ws" in caplog.text.lower() or "lakebase" in caplog.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 1.6 — Spec §6 MANDATORY end-to-end isolation through the
+#             config-declared finalize_agent path
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndIsolation:
+    """Spec §6 MANDATORY isolation — through the config-declared finalize_agent path."""
+
+    @pytest.fixture
+    def agent_with_memory(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "isolation-test"
+            model = "databricks-meta-llama-3-3-70b-instruct"
+            [tool.apx.agent.memory]
+            type = "inmemory"
+        """))
+        from apx_agent import Agent
+        from apx_agent._wiring import finalize_agent
+        agent = Agent(tools=[])
+        finalize_agent(agent, pyproject_path=str(tmp_path / "pyproject.toml"), ws=None)
+        names = {fn.__name__ for fn in agent._tool_fns}
+        assert "recall" in names and "remember" in names
+        return agent
+
+    def test_config_memory_isolates_alice_from_bob_end_to_end(self, agent_with_memory):
+        from apx_agent._compile import _make_langchain_tool, CompileContext
+
+        def _ctx(user_id: str):
+            ws = MagicMock()
+            headers = MagicMock()
+            headers.user_id = user_id
+            headers.token = None
+            return CompileContext(ws=ws, model="m", headers=headers)
+
+        agent = agent_with_memory
+        recall_fn = next(fn for fn in agent._tool_fns if fn.__name__ == "recall")
+        remember_fn = next(fn for fn in agent._tool_fns if fn.__name__ == "remember")
+
+        lt_remember_alice = _make_langchain_tool(remember_fn, _ctx("alice"))
+        lt_recall_alice = _make_langchain_tool(recall_fn, _ctx("alice"))
+        lt_recall_bob = _make_langchain_tool(recall_fn, _ctx("bob"))
+
+        lt_remember_alice.run({"content": "alice e2e memory"})
+        alice_result = lt_recall_alice.run({"query": "e2e memory"})
+        bob_result = lt_recall_bob.run({"query": "e2e memory"})
+
+        assert "alice e2e memory" in alice_result, "Alice must recall her own memory end-to-end"
+        assert "alice e2e memory" not in bob_result, (
+            "Bob must NOT see Alice's memory — isolation breach in the config-declared "
+            "_use_dep_principal path"
+        )
