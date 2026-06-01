@@ -216,6 +216,99 @@ def finalize_agent(
     merge_config_tools(agent, pyproject_path=pyproject_path)
 
 
+class TemplateConfigError(ValueError):
+    """Raised when an agent cannot be resolved from the given template config or module."""
+
+
+def _ws_for_template(config: "AgentConfig | None") -> Any:
+    """Return a WorkspaceClient for template resolution, or None.
+
+    Only attempts construction when config has a template field (template.build
+    may need ws for live schema introspection). Degrades gracefully on failure —
+    DataTemplate.build(spec, ws=None) still returns a working agent.
+    """
+    if config is None or config.template is None:
+        return None
+    try:
+        return _make_workspace_client()
+    except Exception as e:
+        logger.warning(
+            "Could not build workspace client for template resolution: %s. "
+            "Template will build with ws=None (graceful degradation — "
+            "grounded instructions require live introspection).",
+            e,
+        )
+        return None
+
+
+def resolve_agent(
+    module_spec: str | None,
+    config: "AgentConfig | None",
+    *,
+    ws: Any | None = None,
+) -> "BaseAgent":
+    """Resolve a ``BaseAgent`` from either a template config or a module import.
+
+    Runs BEFORE ``finalize_agent`` (which then layers knobs/persona/tools/guards).
+
+    1. ``config.template`` set → ``template_registry.build(name, spec, ws=ws)``.
+       ``name`` key selects the template; other keys form the spec dict.
+    2. else → import ``module_spec`` (``module:variable``) via ``importlib``
+       (NOT ``cli._load_agent`` — that would create a ``cli → _wiring`` cycle).
+    3. neither → ``TemplateConfigError`` with a clear message.
+    """
+    import importlib
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    from ._template import template_registry
+
+    template_dict: dict[str, Any] | None = None
+    if config is not None and config.template is not None:
+        template_dict = config.template
+
+    if template_dict is not None:
+        tname = template_dict.get("name")
+        if not tname:
+            raise TemplateConfigError(
+                "AgentConfig.template must include a 'name' key to select the template. "
+                f"Got: {template_dict!r}"
+            )
+        spec = {k: v for k, v in template_dict.items() if k != "name"}
+        return template_registry.build(tname, spec, ws=ws)
+
+    if not module_spec:
+        raise TemplateConfigError(
+            "No agent to resolve: config has no 'template' field and no module_spec "
+            "was provided. Either add 'template = { name = \"...\", ... }' to "
+            "[tool.apx.agent] or pass a 'module:variable' module_spec."
+        )
+    if ":" not in module_spec:
+        raise TemplateConfigError(
+            f"module_spec must be 'module:variable', got {module_spec!r}."
+        )
+    mod_path, _, var_name = module_spec.partition(":")
+    if not mod_path or not var_name:
+        raise TemplateConfigError(
+            f"Both module and variable must be non-empty in module_spec, got {module_spec!r}."
+        )
+    cwd = str(_Path.cwd())
+    if cwd not in _sys.path:
+        _sys.path.insert(0, cwd)
+    try:
+        mod = importlib.import_module(mod_path)
+    except ImportError as e:
+        raise TemplateConfigError(
+            f"Failed to import {mod_path!r}: {e}. "
+            "Make sure the module is on PYTHONPATH or in the current directory."
+        ) from e
+    if not hasattr(mod, var_name):
+        raise TemplateConfigError(
+            f"Module {mod_path!r} has no attribute {var_name!r}."
+        )
+    return getattr(mod, var_name)
+
+
 def _resolve_env_var(value: str) -> str:
     """Resolve a ``$VAR`` or ``${VAR}`` reference to its environment value.
 

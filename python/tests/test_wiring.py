@@ -839,3 +839,63 @@ class TestTemplateField:
         config = _load_agent_config(pyproject_path=str(pp))
         assert config is not None
         assert config.template is None
+
+
+class TestResolveAgent:
+    def test_template_config_builds_data_agent(self):
+        from apx_agent import AgentConfig
+        from apx_agent._wiring import resolve_agent
+        from apx_agent.data_agent import DataAgent
+        config = AgentConfig(name="t", template={"name": "data", "catalog": "main", "schema": "sales"})
+        agent = resolve_agent(None, config, ws=None)
+        assert isinstance(agent, DataAgent)
+        tool_names = [fn.__name__ for fn in agent._tool_fns]
+        assert "run_sql" in tool_names
+
+    def test_template_spec_validation_error_propagates(self):
+        # template_registry.build validates the spec via DataTemplate.Spec.model_validate;
+        # a missing required field (catalog) must raise, not silently build a broken agent.
+        from pydantic import ValidationError
+        from apx_agent import AgentConfig
+        from apx_agent._wiring import resolve_agent
+        config = AgentConfig(name="t", template={"name": "data"})  # missing required catalog/schema
+        with pytest.raises(ValidationError, match="catalog"):
+            resolve_agent(None, config, ws=None)
+
+    def test_no_template_with_module_spec_imports_agent(self, tmp_path, monkeypatch):
+        from apx_agent import AgentConfig, LlmAgent
+        from apx_agent._wiring import resolve_agent
+        import sys
+        agent_file = tmp_path / "my_agent.py"
+        agent_file.write_text("from apx_agent import Agent\nmy_var = Agent(tools=[])\n")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        config = AgentConfig(name="t")
+        agent = resolve_agent("my_agent:my_var", config, ws=None)
+        assert isinstance(agent, LlmAgent)
+        sys.modules.pop("my_agent", None)
+
+    def test_neither_template_nor_module_raises_template_config_error(self):
+        from apx_agent import AgentConfig
+        from apx_agent._wiring import resolve_agent, TemplateConfigError
+        config = AgentConfig(name="t")
+        with pytest.raises(TemplateConfigError, match="[Nn]o agent"):
+            resolve_agent(None, config, ws=None)
+
+    def test_unknown_template_name_raises_listing_available(self):
+        from apx_agent import AgentConfig
+        from apx_agent._wiring import resolve_agent
+        config = AgentConfig(name="t", template={"name": "does_not_exist", "catalog": "c"})
+        with pytest.raises(ValueError, match="does_not_exist"):
+            resolve_agent(None, config, ws=None)
+
+    def test_missing_name_key_in_template_raises_clearly(self):
+        from apx_agent import AgentConfig
+        from apx_agent._wiring import resolve_agent, TemplateConfigError
+        config = AgentConfig(name="t", template={"catalog": "main", "schema": "sales"})
+        with pytest.raises(TemplateConfigError, match="name"):
+            resolve_agent(None, config, ws=None)
+
+    def test_no_template_no_module_none_config_raises(self):
+        from apx_agent._wiring import resolve_agent, TemplateConfigError
+        with pytest.raises(TemplateConfigError, match="[Nn]o agent"):
+            resolve_agent(None, None, ws=None)
