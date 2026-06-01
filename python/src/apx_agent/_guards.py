@@ -37,7 +37,10 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
+
+if TYPE_CHECKING:
+    from ._models import GuardrailsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -377,3 +380,58 @@ def compose(*callbacks: Callable[..., Any]) -> Callable[..., Any]:
         return result
 
     return _composed
+
+
+# ---------------------------------------------------------------------------
+# Declarative config builder (E3c)
+# ---------------------------------------------------------------------------
+
+
+def build_config_guards(
+    cfg: "GuardrailsConfig",
+) -> tuple[list[Any], Any]:
+    """Translate a ``GuardrailsConfig`` into built-in guard callables.
+
+    Returns ``(input_guardrails, before_tool_gate)`` where:
+
+    - ``input_guardrails`` is a list of ``(messages) -> str | None`` callables
+      to *append* to ``LlmAgent._input_guardrails``.
+    - ``before_tool_gate`` is a single composed callable (or ``None``) to
+      merge with any existing ``LlmAgent._before_tool`` hook via ``compose``.
+
+    Composition order for ``before_tool_gate`` (first raise wins):
+    1. ``ToolDenylist`` — blocked tools are rejected before consuming a
+       rate-limit token.
+    2. ``ToolAllowlist`` — tools not on the allow list are rejected next.
+    3. ``RateLimit`` — rate limit is checked last (so blocked calls don't
+       burn tokens).
+
+    ``input_guardrails`` order: injection heuristic only (code-defined guards
+    run first when merged by the caller).
+
+    This function raises ``ValueError`` immediately (at build time) when
+    ``rate_limit <= 0``, propagated from ``RateLimit.__init__``.
+    """
+    input_guards: list[Any] = []
+    tool_gates: list[Any] = []
+
+    if cfg.injection_detection:
+        input_guards.append(prompt_injection_heuristic())
+
+    # Intentional asymmetry: blocked_tools is ``list[str]`` defaulting to ``[]``,
+    # so an empty denylist is a no-op (truthiness check). allowed_tools is
+    # ``list[str] | None``, so an empty allowlist (``[]``) is a real,
+    # intended block-all state distinct from "absent" (``None``) — hence the
+    # ``is not None`` check. Do not "simplify" this to matching truthiness.
+    if cfg.blocked_tools:
+        tool_gates.append(ToolDenylist(cfg.blocked_tools))
+    if cfg.allowed_tools is not None:
+        tool_gates.append(ToolAllowlist(cfg.allowed_tools))
+    if cfg.rate_limit is not None:
+        kw: dict[str, Any] = {"per_minute": cfg.rate_limit}
+        if cfg.rate_limit_burst is not None:
+            kw["burst"] = cfg.rate_limit_burst
+        tool_gates.append(RateLimit(**kw))
+
+    before_tool = compose(*tool_gates) if tool_gates else None
+    return input_guards, before_tool
