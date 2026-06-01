@@ -2819,3 +2819,38 @@ def test_run_probe_reports_broken_agent(tmp_path: Path, monkeypatch):
     # Load-bearing: distinguishes the probe's structured error from a raw
     # uvicorn traceback.
     assert "apx doctor" in out
+
+
+# ---------------------------------------------------------------------------
+# `apx info` — config-declared tools (E2 declarative tools, Task 7)
+# ---------------------------------------------------------------------------
+
+
+def test_apx_info_lists_config_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """apx info should list [[tool.apx.tools]] declared in pyproject.toml."""
+    # Write a minimal agent with NO inline tools so we can verify that the
+    # genie tool comes exclusively from the config.
+    (tmp_path / "info_config_tools_agent.py").write_text(textwrap.dedent("""
+        from apx_agent import Agent
+        agent = Agent(tools=[])
+    """))
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.apx.agent]
+        name = "t"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "01ef"
+        name = "ask_sales"
+    """))
+    monkeypatch.chdir(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["info", "--module", "info_config_tools_agent:agent"]
+    )
+    sys.modules.pop("info_config_tools_agent", None)
+
+    assert result.exit_code == 0, result.output
+    assert "ask_sales" in result.output
