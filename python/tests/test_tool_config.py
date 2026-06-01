@@ -1,7 +1,13 @@
 import os
+import textwrap
 
 import pytest
-from apx_agent._tool_config import ToolConfigError, load_config_tools
+from apx_agent import Agent
+from apx_agent._tool_config import (
+    ToolConfigError,
+    load_config_tools,
+    merge_config_tools,
+)
 
 
 def test_dispatches_single_tool_by_keyword():
@@ -99,3 +105,84 @@ def test_io_factory_failure_raises_in_strict_mode(monkeypatch):
     monkeypatch.setenv("APX_TOOLS_STRICT", "1")
     with pytest.raises(ToolConfigError, match="server down"):
         load_config_tools([{"type": "mcp_toolkit", "server_url": "https://x/mcp"}])
+
+
+def _write_pyproject(tmp_path, body: str):
+    p = tmp_path / "pyproject.toml"
+    p.write_text(textwrap.dedent(body))
+    return str(p)
+
+
+def test_merge_appends_config_tools_to_agent(tmp_path):
+    pp = _write_pyproject(tmp_path, """
+        [tool.apx.agent]
+        name = "t"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "01ef"
+        name = "ask_sales"
+    """)
+    agent = Agent(tools=[])
+    merge_config_tools(agent, pyproject_path=pp)
+    assert "ask_sales" in [t.name for t in agent.collect_tools()]
+
+
+def test_merge_is_idempotent(tmp_path):
+    pp = _write_pyproject(tmp_path, """
+        [tool.apx.agent]
+        name = "t"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "01ef"
+        name = "ask_sales"
+    """)
+    agent = Agent(tools=[])
+    merge_config_tools(agent, pyproject_path=pp)
+    merge_config_tools(agent, pyproject_path=pp)  # second call
+    assert [t.name for t in agent.collect_tools()].count("ask_sales") == 1
+
+
+def test_code_wired_tool_wins_on_name_collision(tmp_path, caplog):
+    pp = _write_pyproject(tmp_path, """
+        [tool.apx.agent]
+        name = "t"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "01ef"
+        name = "ask_sales"
+    """)
+    def ask_sales(q: str) -> str:
+        """Code-wired."""
+        return q
+    agent = Agent(tools=[ask_sales])
+    import logging
+    with caplog.at_level(logging.WARNING, logger="apx_agent._tool_config"):
+        merge_config_tools(agent, pyproject_path=pp)
+    assert "already wires a tool with that name" in caplog.text
+    # only one ask_sales, and it's the code-wired callable
+    assert agent._tool_fns.count(ask_sales) == 1
+    assert [t.name for t in agent.collect_tools()].count("ask_sales") == 1
+
+
+def test_no_tools_section_is_noop(tmp_path):
+    pp = _write_pyproject(tmp_path, '[tool.apx.agent]\nname = "t"\n')
+    agent = Agent(tools=[])
+    merge_config_tools(agent, pyproject_path=pp)  # no [[tool.apx.tools]]
+    assert agent.collect_tools() == []
+
+
+def test_composition_root_warns_and_skips(tmp_path, caplog):
+    import logging
+    pp = _write_pyproject(tmp_path, """
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "01ef"
+        name = "ask_sales"
+    """)
+    class FakeRoot:
+        pass  # no _register_tool, no _tool_fns
+    agent = FakeRoot()
+    with caplog.at_level(logging.WARNING, logger="apx_agent._tool_config"):
+        merge_config_tools(agent, pyproject_path=pp)
+    assert "composition root" in caplog.text
+    assert not hasattr(agent, "_tool_fns")

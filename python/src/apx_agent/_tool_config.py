@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -142,6 +143,60 @@ def _build_one(
         )
         return []
     return result if isinstance(result, list) else [result]
+
+
+def _read_tools_section(pyproject_path: str | None) -> list[dict[str, Any]]:
+    path = Path(pyproject_path) if pyproject_path else Path.cwd() / "pyproject.toml"
+    if not path.exists():
+        return []
+    try:
+        import tomllib
+    except ImportError:  # pragma: no cover - py<3.11
+        import tomli as tomllib  # type: ignore[no-redef]
+    try:
+        data = tomllib.loads(path.read_text())
+    except Exception as e:
+        logger.warning(
+            "Failed to parse %s — [[tool.apx.tools]] will be empty: %s",
+            path,
+            e,
+        )
+        return []
+    tables = (((data.get("tool") or {}).get("apx") or {}).get("tools")) or []
+    return tables if isinstance(tables, list) else []
+
+
+def merge_config_tools(agent: Any, pyproject_path: str | None = None) -> None:
+    """Load [[tool.apx.tools]] and append the callables to the agent.
+
+    Dedup by __name__ (code-wired tools win — config is additive), which also
+    makes this idempotent (a second call sees the config tools already present).
+    Composition roots without ``_register_tool`` are warned + skipped.
+    """
+    tables = _read_tools_section(pyproject_path)
+    if not tables:
+        return
+    register = getattr(agent, "_register_tool", None)
+    existing = {getattr(fn, "__name__", None) for fn in getattr(agent, "_tool_fns", [])}
+    if register is None:
+        logger.warning(
+            "[[tool.apx.tools]] declared but %s is a composition root with no "
+            "_tool_fns to attach them to — skipping. Put tools on a leaf LlmAgent.",
+            type(agent).__name__,
+        )
+        return
+    for fn in load_config_tools(tables):
+        nm = getattr(fn, "__name__", None)
+        if nm in existing:
+            logger.warning(
+                "[[tool.apx.tools]] declares %r but the agent already wires a "
+                "tool with that name — keeping the existing one, ignoring config.",
+                nm,
+            )
+            continue
+        register(fn)
+        if nm:
+            existing.add(nm)
 
 
 def load_config_tools(raw_tables: list[dict[str, Any]]) -> list[Callable[..., Any]]:
