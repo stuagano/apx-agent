@@ -796,3 +796,46 @@ class TestGuardrailsIntegration:
         from apx_agent import GuardrailsConfig
         gc = GuardrailsConfig(blocked_tools=["x"])
         assert gc.blocked_tools == ["x"]
+
+
+class TestTemplateField:
+    def test_template_field_absent_defaults_to_none(self):
+        cfg = AgentConfig(name="t")
+        assert cfg.template is None
+
+    def test_template_field_accepts_dict(self):
+        cfg = AgentConfig(name="t", template={"name": "data", "catalog": "main", "schema": "sales"})
+        assert cfg.template["name"] == "data"
+        assert cfg.template["catalog"] == "main"
+        assert cfg.template["schema"] == "sales"
+
+    def test_template_loads_from_toml_inline_table(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "sales-coworker"
+            model = "databricks-claude-sonnet-4-6"
+            template = { name = "data", catalog = "main", schema = "sales" }
+        """))
+        config = _load_agent_config(pyproject_path=str(pp))
+        assert config is not None
+        assert config.template == {"name": "data", "catalog": "main", "schema": "sales"}
+
+    def test_template_schema_alias_passes_through_unmodified(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "t"
+            template = { name = "data", catalog = "main", schema = "sales" }
+        """))
+        config = _load_agent_config(pyproject_path=str(pp))
+        assert config is not None
+        assert "schema" in config.template   # key preserved, not renamed
+        assert config.template["schema"] == "sales"
+
+    def test_template_absent_from_toml_gives_none(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text('[tool.apx.agent]\nname = "minimal"\n')
+        config = _load_agent_config(pyproject_path=str(pp))
+        assert config is not None
+        assert config.template is None

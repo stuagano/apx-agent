@@ -108,6 +108,17 @@ class AgentConfig(BaseModel):
     api_prefix: str = "/api"  # route prefix for tool endpoints
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     """Built-in guard configuration — see ``[tool.apx.agent.guardrails]``."""
+    template: dict[str, Any] | None = None
+    """Template-as-config: ``{ name = "data", catalog = "main", schema = "sales" }``.
+
+    When set, ``resolve_agent`` builds the leaf agent from the named template
+    via ``template_registry.build(name, spec, ws=ws)`` rather than importing a
+    Python module. The ``name`` key selects the template; all other keys become
+    the spec dict passed to the template's ``Spec.model_validate``. The
+    ``[tool.apx.agent]`` envelope (instructions, model, knobs) is layered on top
+    afterward via ``finalize_agent`` as usual — template builds the leaf, persona
+    overlays.
+    """
 
 
 class AgentTool(BaseModel):
