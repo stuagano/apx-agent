@@ -122,6 +122,62 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
             )
 
 
+def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
+    """Apply ``[tool.apx.agent.guardrails]`` config onto the live agent instance.
+
+    Translates ``config.guardrails`` (a ``GuardrailsConfig``) into built-in
+    guard callables and attaches them additively:
+
+    - ``before_tool`` gates (deny / allow / rate-limit) are merged via
+      ``compose(existing_code_hook, *config_gates)`` — code hook runs first.
+    - ``input_guardrails`` (injection heuristic) are appended — code guards
+      run first.
+
+    Idempotent via the ``_apx_config_guards_applied`` sentinel: a second call
+    is a no-op.  ``setup_agent`` can run more than once on the same instance
+    (``mount_mcp_endpoints`` fires its own ``setup_agent`` at startup), so this
+    is a real correctness requirement, not a nicety.
+
+    Warns (never crashes) when guards are declared on a composition root
+    (e.g. ``SequentialAgent``) that has no ``_before_tool`` /
+    ``_input_guardrails`` — matches the ``sub_agents``-merge precedent.
+    """
+    if getattr(agent, "_apx_config_guards_applied", False):
+        return
+
+    from ._guards import build_config_guards, compose  # noqa: PLC0415
+
+    input_guards, before_tool_gate = build_config_guards(config.guardrails)
+
+    if input_guards:
+        existing_igs = getattr(agent, "_input_guardrails", None)
+        if existing_igs is None:
+            logger.warning(
+                "config guardrails.injection_detection set on a %s root, "
+                "which has no _input_guardrails (only LlmAgent does) — ignored.",
+                type(agent).__name__,
+            )
+        else:
+            existing_igs.extend(input_guards)
+
+    if before_tool_gate is not None:
+        if not hasattr(agent, "_before_tool"):
+            logger.warning(
+                "config guardrails tool rules (blocked_tools / allowed_tools / "
+                "rate_limit) set on a %s root, which has no _before_tool "
+                "(only LlmAgent does) — ignored.",
+                type(agent).__name__,
+            )
+        else:
+            code_hook = getattr(agent, "_before_tool", None)
+            if code_hook is not None:
+                setattr(agent, "_before_tool", compose(code_hook, before_tool_gate))
+            else:
+                setattr(agent, "_before_tool", before_tool_gate)
+
+    setattr(agent, "_apx_config_guards_applied", True)
+
+
 def finalize_agent(
     agent: BaseAgent,
     config: AgentConfig | None = None,
@@ -149,6 +205,9 @@ def finalize_agent(
         config = _load_agent_config(pyproject_path=pyproject_path)
     if config is not None:
         apply_config_knobs(agent, config)
+        # E3c: attach declarative guards (idempotent; warns on composition
+        # roots lacking the guard hook attributes).
+        apply_config_guardrails(agent, config)
 
     # Local import: _tool_config lazily imports _resolve_env_var from this module;
     # a top-level import here would make that cycle unconditional at load time.
