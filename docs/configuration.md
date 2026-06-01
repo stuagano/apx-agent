@@ -93,3 +93,36 @@ injection_detection = true        # prompt_injection_heuristic()
 **Error handling:** A typo'd key (e.g. `rate_limt = 60`) is a hard validation error at startup — `GuardrailsConfig` uses `extra="forbid"`. A silent misconfiguration of a guard is worse than failing fast.
 
 **Not config-expressible (code only):** `FeatureFlagGuard`, per-user rate limiting (`principal_key`), custom injection patterns (`patterns`), `WatchdogGuard`.
+
+## Template-as-config — `template = { name = "...", ... }`
+
+> Python only. Declare the entire agent as data — no `agent.py` required.
+
+```toml
+[tool.apx.agent]
+name = "sales-coworker"
+model = "databricks-claude-sonnet-4-6"
+instructions = "Be concise and warm."        # persona overlay (E1)
+template = { name = "data", catalog = "main", schema = "sales" }
+```
+
+The `template` inline-table selects a registered template by `name` and passes the remaining keys as the spec. The template wires the governed tools and sets grounded instructions (the **role**). The `[tool.apx.agent]` envelope (`model`, `instructions`, generation knobs) is the **persona** — layered on top afterward via the existing `compose_instructions` seam.
+
+| Key | Purpose |
+|---|---|
+| `name` | Template registry key (e.g. `"data"`) |
+| other keys | Template `Spec` fields (validated by the template's Pydantic `Spec`) |
+
+**Built-in templates:**
+
+| Name | Class | Spec fields |
+|---|---|---|
+| `data` | `DataTemplate` | `catalog`, `schema`, `warehouse_id?`, `genie_space?`, `vector_index?`, `include_functions?` |
+
+**Interaction with `[[tool.apx.tools]]`:** Config-declared tools are additive — they attach after the template builds the leaf agent. A template-built `DataAgent` gets its wired SQL/Genie/UC tools from the template build; `[[tool.apx.tools]]` entries add on top. Code-wired tools win on name collision.
+
+**Interaction with `[tool.apx.agent.guardrails]`** (E3c): the full finalize order is resolve (build-from-template) → apply_config_knobs (persona compose) → merge_config_tools → apply_config_guardrails.
+
+**No `agent.py` required:** With a `template` configured, all runtimes (`apx run`, `apx deploy`, `apx info`, `apx eval`) build the agent from TOML alone. The `module` key is optional when `template` is set.
+
+**Cross-repo templates:** Third-party templates register via the `apx_agent.templates` Python entry-point group — they appear in the registry after `pip install`. See the E1 spec and the `Template` protocol for authoring a template.
