@@ -1789,23 +1789,8 @@ def deploy(
 
     # 2. Log + register
     #
-    # Apply [tool.apx.agent] knobs onto the agent instance BEFORE log_agent.
-    # MLflow captures the agent at log time, so the deploy path can't rely on
-    # setup_agent (which only runs under `apx run` / the Apps target) to merge
-    # config — without this, config knobs are a silent no-op on model serving.
-    # Same shared seam as setup_agent; constructor still wins.
-    from ._models import AgentConfig
-    from ._wiring import apply_config_knobs
-
-    knob_fields = {
-        k: v for k, v in config.items() if k in AgentConfig.model_fields
-    }
-    # AgentConfig.name is the only required field; the deploy dict may omit it
-    # (name can come from --name). apply_config_knobs ignores name, so any
-    # non-None value satisfies the constructor — reuse the already-resolved one.
-    knob_fields.setdefault("name", effective_agent_name)
-    deploy_config = AgentConfig(**knob_fields)
-    apply_config_knobs(agent, deploy_config)
+    # (Config knobs + persona overlay + declared tools are applied inside
+    # log_agent via finalize_agent — no separate call needed here.)
 
     if effective_experiment:
         mlflow.set_experiment(effective_experiment)

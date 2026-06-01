@@ -584,6 +584,14 @@ def log_agent(
                 f"paths (e.g. '/Users/you@company.com/agents/my_agent')."
             ) from e
 
+    from ._wiring import finalize_agent
+
+    # Finalize BEFORE resource derivation AND before compile capture: config
+    # tools must appear in the logged resources AND in the agent the served
+    # model compiles at predict time. log_agent is public (notebooks/Coworker
+    # call it directly), so this single site covers all log/deploy paths.
+    finalize_agent(agent, pyproject_path=None)  # reads cwd pyproject.toml
+
     from ._resources import ResourceSpec, mlflow_resources_for
 
     # Split extra_resources into specs (auto-materialised) and pre-built
