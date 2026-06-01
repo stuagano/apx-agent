@@ -17,6 +17,7 @@ Skips if optional extras (``langgraph``, ``eval``) are not installed.
 
 from __future__ import annotations
 
+import textwrap
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -35,7 +36,9 @@ from mlflow.types.agent import (  # noqa: E402
     ChatAgentChunk,
 )
 
-from apx_agent import LlmAgent, chat_agent_for  # noqa: E402
+from apx_agent import Agent, LlmAgent, chat_agent_for  # noqa: E402
+from apx_agent._resources import collect_resource_specs  # noqa: E402
+from apx_agent._wiring import finalize_agent  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -233,3 +236,67 @@ def test_from_langchain_message_tool_message_name_fallback() -> None:
     out = _from_langchain_message(ToolMessage(content="r", tool_call_id="c2"), 2)
     assert out.name  # non-empty fallback
     assert out.tool_call_id == "c2"
+
+
+# --- T6: finalize_agent wired into log_agent (GOVERNANCE) ---
+
+
+def test_finalized_agent_contributes_genie_space_resource(tmp_path):
+    pp = tmp_path / "pyproject.toml"
+    pp.write_text(textwrap.dedent("""
+        [tool.apx.agent]
+        name = "t"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "01ef0000000000000000000000000000"
+        name = "ask_sales"
+    """))
+    agent = Agent(tools=[])
+    finalize_agent(agent, pyproject_path=str(pp))
+    kinds = [s.kind for s in collect_resource_specs(agent, model="m")]
+    assert "genie_space" in kinds
+
+
+def test_log_agent_finalizes_before_resource_derivation(tmp_path, monkeypatch):
+    # GOVERNANCE: proves finalize_agent runs BEFORE mlflow_resources_for inside
+    # log_agent. If that ordering is swapped, config-declared tools won't appear
+    # in the logged model's resource list → silent deploy-time permission
+    # failures (the bug the sub_agents precedent shipped). The spy captures
+    # agent.collect_tools() at the resource-derivation call site; if finalize ran
+    # first, "ask_sales" is present. NOTE: mlflow_resources_for is patched on the
+    # _resources module (not _chat_agent) because log_agent imports it via a
+    # local `from ._resources import ...`, which resolves the name from _resources
+    # at call time — patching _chat_agent would not intercept it.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.apx.agent]
+        name = "t"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "01ef0000000000000000000000000000"
+        name = "ask_sales"
+    """))
+    import sys
+    import types
+    import apx_agent._resources as res
+    import apx_agent._chat_agent as ca
+
+    seen = {}
+    def spy_resources(agent, **kw):
+        # State of the agent AT the resource-derivation call site.
+        seen["tools"] = [t.name for t in agent.collect_tools()]
+        return []
+    # log_agent does a LOCAL `from ._resources import ... mlflow_resources_for`,
+    # so the name resolves from the _resources module → patch it THERE, not on ca.
+    monkeypatch.setattr(res, "mlflow_resources_for", spy_resources)
+    # compile_to_chat_agent is a module global of _chat_agent → patch on ca.
+    monkeypatch.setattr(ca, "compile_to_chat_agent", lambda agent, **kw: object())
+    # Stub mlflow so no real logging happens. log_agent does NOT call start_run.
+    fake_pyfunc = types.SimpleNamespace(log_model=lambda **kw: types.SimpleNamespace(name="m"))
+    fake_mlflow = types.SimpleNamespace(pyfunc=fake_pyfunc, set_experiment=lambda *a, **k: None)
+    monkeypatch.setitem(sys.modules, "mlflow", fake_mlflow)
+    monkeypatch.setitem(sys.modules, "mlflow.pyfunc", fake_pyfunc)
+
+    from apx_agent._chat_agent import log_agent
+    log_agent(Agent(tools=[]), model="m")
+    assert "ask_sales" in seen["tools"]  # finalize ran BEFORE resource derivation
