@@ -129,6 +129,20 @@ def _load_agent(module_spec: str) -> Any:
     return getattr(module, variable)
 
 
+def _load_finalized_agent(module_spec: str) -> Any:
+    """Load an agent and apply config knobs + [[tool.apx.tools]] (finalize).
+
+    Use at every CLI entry point that reads the agent's tools/resources or
+    captures it for execution. The model-serving deploy path is the one
+    caller that intentionally uses _load_agent directly — it defers
+    finalization to log_agent.
+    """
+    from ._wiring import finalize_agent
+    agent = _load_agent(module_spec)
+    finalize_agent(agent, pyproject_path=None)
+    return agent
+
+
 # ASGI app module spec served by `apx run`, per scaffold layout.
 _RUN_MODULE_BY_TARGET = {
     "model-serving": "app:app",
@@ -1484,7 +1498,7 @@ def eval_cmd(
 
     from apx_agent import evaluate
 
-    agent = _load_agent(effective_module)
+    agent = _load_finalized_agent(effective_module)
     result = evaluate(
         agent,
         model=model,
@@ -1754,6 +1768,9 @@ def deploy(
         for name in suspicious:
             click.echo(f"#   - {name}", err=True)
 
+    # Bare _load_agent (not _load_finalized_agent): the model-serving deploy
+    # path defers finalization to log_agent, which calls finalize_agent at log
+    # time so the captured model has the merged tools/knobs.
     agent = _load_agent(effective_module)
     config = _read_apx_agent_config()
     effective_experiment = experiment or config.get("experiment")
@@ -2673,7 +2690,7 @@ def _deploy_apps_impl(
     # 2. Optional auto-merge resources
     if auto_update_yml:
         log("# auto-update-yml: merging agent ResourceSpec into databricks.yml")
-        agent = _load_agent(module)
+        agent = _load_finalized_agent(module)
         _auto_update_databricks_yml(
             cwd, agent=agent, bundle_key=bundle_key, log=log,
         )
@@ -2808,7 +2825,7 @@ def publish_tools_cmd(module: str, dry_run: bool) -> None:
     """Publish all @tool(uc=...) decorated tools to Unity Catalog."""
     from apx_agent import publish_tools_to_uc
 
-    agent = _load_agent(module)
+    agent = _load_finalized_agent(module)
     results = publish_tools_to_uc(agent, dry_run=dry_run)
     if not results:
         click.echo("No @tool(uc=...) decorated tools found.")
@@ -2873,7 +2890,7 @@ def mcp_config(
     """Emit the Managed MCP client config snippet for the agent's resources."""
     from apx_agent import managed_mcp_client_config, managed_mcp_urls
 
-    agent = _load_agent(module)
+    agent = _load_finalized_agent(module)
     endpoints = managed_mcp_urls(agent, workspace_host=workspace_host)
     config = managed_mcp_client_config(
         endpoints, name=name, include_unsupported=include_unsupported,
@@ -3019,13 +3036,9 @@ def info(module: str, fmt: str) -> None:
     )
     from apx_agent._tool import get_tool_metadata
 
-    agent = _load_agent(module)
-
-    from ._wiring import finalize_agent
-
     # Finalize so `apx info` reports the same tools/resources the serve and
     # deploy paths will — config-declared [[tool.apx.tools]] included.
-    finalize_agent(agent, pyproject_path=None)  # reads cwd pyproject.toml
+    agent = _load_finalized_agent(module)
 
     # Walk the whole tree — HandoffAgent / SequentialAgent / etc. have no
     # _tool_fns of their own; the tools live on nested LlmAgents.
@@ -3234,7 +3247,7 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
     """
     from ._lint import Severity, lint_agent
 
-    agent = _load_agent(module)
+    agent = _load_finalized_agent(module)
 
     effective_model = model or _read_apx_agent_config().get("model")
 
@@ -3453,7 +3466,7 @@ def test_cmd(
     accept a message and return something?" — cheaper than apx eval,
     no MLflow / eval dataset required.
     """
-    agent = _load_agent(module)
+    agent = _load_finalized_agent(module)
 
     effective_model = model or _read_apx_agent_config().get("model")
     if not effective_model:
@@ -3805,7 +3818,7 @@ def eval_chain_cmd(
     user_token: str | None,
 ) -> None:
     """Eval a multi-agent chain — per-prompt + per-sub-agent coverage."""
-    agent = _load_agent(module)
+    agent = _load_finalized_agent(module)
 
     # Load the evalset same way apx eval does
     data: Any

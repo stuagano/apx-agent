@@ -2854,3 +2854,93 @@ def test_apx_info_lists_config_tools(
 
     assert result.exit_code == 0, result.output
     assert "ask_sales" in result.output
+
+
+# ---------------------------------------------------------------------------
+# apps-deploy path — config-declared tools governance (E2 declarative tools,
+# Task 10)
+# ---------------------------------------------------------------------------
+
+
+def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Governance: a [[tool.apx.tools]] genie tool must be present on the agent
+    that _auto_update_databricks_yml receives, so its genie_space resource is
+    merged into databricks.yml.
+
+    Uses a spy on _auto_update_databricks_yml: captures the agent argument, then
+    raises a sentinel to short-circuit the downstream I/O (wheel build, bundle
+    deploy, apps deploy).  Before the fix in _deploy_apps_impl, the agent was
+    loaded but NOT finalized before the call, so collect_resource_specs would
+    return no genie_space.  After the fix, finalize_agent runs first and the
+    config tool is present.
+    """
+    from apx_agent._resources import collect_resource_specs
+    from apx_agent.cli import _deploy_apps_impl
+
+    # Write a minimal agent module with NO inline tools — genie comes from config.
+    (tmp_path / "deploy_apps_config_tools_agent.py").write_text(textwrap.dedent("""
+        from apx_agent import Agent
+        agent = Agent(tools=[])
+    """))
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [tool.apx.agent]
+        name = "t"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "cfg-space-xyz"
+        name = "ask_data"
+    """))
+    # Minimal databricks.yml so _read_databricks_yml and _resolve_app_name work.
+    (tmp_path / "databricks.yml").write_text(textwrap.dedent("""
+        bundle:
+          name: my-bundle
+        resources:
+          apps:
+            my-app:
+              name: my-app
+    """))
+    monkeypatch.chdir(tmp_path)
+
+    # Sentinel exception to abort after the seam we're testing.
+    class _StopAfterSeam(Exception):
+        pass
+
+    captured_agent: list = []
+
+    def _spy_auto_update(cwd, *, agent, bundle_key, log):
+        captured_agent.append(agent)
+        raise _StopAfterSeam("spy: stopping after seam")
+
+    with patch("apx_agent.cli._preflight_databricks_cli", return_value=None), \
+         patch("apx_agent.cli._preflight_apps", return_value=None), \
+         patch("apx_agent.cli._validate_responses_agent_compiler", return_value=None), \
+         patch("apx_agent.cli._auto_update_databricks_yml", side_effect=_spy_auto_update):
+        try:
+            _deploy_apps_impl(
+                cwd=tmp_path,
+                module="deploy_apps_config_tools_agent:agent",
+                profile=None,
+                bundle_target="dev",
+                no_run=True,
+                auto_update_yml=True,
+                auto_build_wheel=False,
+                auto_experiment=False,
+                vars=(),
+                json_output=False,
+                log=lambda msg: None,
+            )
+        except _StopAfterSeam:
+            pass
+
+    sys.modules.pop("deploy_apps_config_tools_agent", None)
+
+    assert captured_agent, "spy was never called — test setup error"
+    agent = captured_agent[0]
+    specs = collect_resource_specs(agent)
+    kinds = {s.kind for s in specs}
+    assert "genie_space" in kinds, (
+        f"genie_space not in resource specs after finalize; got: {kinds}. "
+        "finalize_agent was not called before _auto_update_databricks_yml."
+    )
