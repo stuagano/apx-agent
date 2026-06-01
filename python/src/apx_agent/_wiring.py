@@ -139,6 +139,11 @@ def finalize_agent(
     is used only by merge_config_tools (to locate [[tool.apx.tools]]). When
     *config* is omitted, it is loaded from *pyproject_path*; if no config is
     found, knobs are skipped but the tool merge still runs.
+
+    Note: a project with no [tool.apx.agent] section is not servable (the serve
+    path requires an agent section), so finalize_agent is not invoked via the
+    serve path for such a project. Whether tools-only agents should be servable
+    is a future (E3) design question.
     """
     if config is None:
         config = _load_agent_config(pyproject_path=pyproject_path)
