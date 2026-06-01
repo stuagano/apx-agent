@@ -1193,3 +1193,16 @@ class TestMemoryWiringIntegration:
         explicit = MagicMock()
         cfg = AgentConfig(name="t", session=SessionBackendConfig(type="inmemory"))
         assert resolve_session_store(cfg, ws=None, override=explicit) is explicit
+
+
+def test_public_exports_memory_config_models():
+    import apx_agent
+    from apx_agent import MemoryBackendConfig, ExampleBackendConfig, SessionBackendConfig
+    cfg = MemoryBackendConfig(type="lakebase", instance_name="inst", database="db",
+                               embedding_model="bge", embedding_dim=1024)
+    assert cfg.type == "lakebase"
+    assert cfg.validate_at_boot is True
+    cfg_s = SessionBackendConfig(type="inmemory")
+    assert cfg_s.type == "inmemory"
+    cfg_e = ExampleBackendConfig(type="inmemory")
+    assert cfg_e.agent_id is None

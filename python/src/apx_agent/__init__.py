@@ -35,10 +35,13 @@ from ._models import (
     AgentTool,
     BeforeModelHook,
     BeforeToolHook,
+    ExampleBackendConfig,
     GuardrailsConfig,
     InputGuardrailFn,
+    MemoryBackendConfig,
     Message,
     OutputGuardrailFn,
+    SessionBackendConfig,
 )
 
 # FastAPI dependency injection
@@ -322,18 +325,21 @@ __all__ = [
     "template",
     "template_registry",
     # Models
+    "AfterModelHook",
+    "AfterToolHook",
     "AgentCard",
     "AgentConfig",
     "AgentContext",
     "AgentTool",
-    "AfterModelHook",
-    "AfterToolHook",
     "BeforeModelHook",
     "BeforeToolHook",
+    "ExampleBackendConfig",
     "GuardrailsConfig",
     "InputGuardrailFn",
+    "MemoryBackendConfig",
     "Message",
     "OutputGuardrailFn",
+    "SessionBackendConfig",
     # Dependencies
     "Dependencies",
     # SQL utilities
