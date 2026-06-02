@@ -2938,6 +2938,224 @@ def test_grant_experiment_to_sp_issues_patch(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Slice C: `/readyz` deploy gate
+# ---------------------------------------------------------------------------
+
+
+def test_check_readyz_ready(monkeypatch) -> None:
+    """A 200 `{"status":"ready"}` response → (True, checks)."""
+    import io
+    import urllib.request
+
+    from apx_agent import cli
+
+    # Token fetch routes through the _run_databricks_cmd seam.
+    def fake_run(args, profile=None):
+        assert args[:2] == ["auth", "token"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"access_token": "secret-token-value"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli, "_run_databricks_cmd", fake_run)
+
+    body = json.dumps(
+        {"status": "ready", "checks": {"llm": "ok", "tracing": "ok"}}
+    ).encode()
+
+    def fake_urlopen(req, timeout=None):
+        # The Authorization header must carry the bearer token (but we never
+        # log it). Confirm it threads through without echoing it anywhere.
+        assert req.get_header("Authorization") == "Bearer secret-token-value"
+        return io.BytesIO(body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    ok, checks = cli._check_readyz(
+        "https://app.example.com", profile="fe-cowork", attempts=1, delay_s=0.0
+    )
+    assert ok is True
+    assert checks == {"llm": "ok", "tracing": "ok"}
+
+
+def test_check_readyz_degraded(monkeypatch) -> None:
+    """A 503 `{"status":"degraded"}` response → (False, checks), no retry."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    from apx_agent import cli
+
+    monkeypatch.setattr(
+        cli,
+        "_run_databricks_cmd",
+        lambda args, profile=None: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"access_token": "tok"}),
+            stderr="",
+        ),
+    )
+
+    body = json.dumps(
+        {"status": "degraded", "checks": {"llm": "fail", "tracing": "ok"}}
+    ).encode()
+
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        # urlopen raises HTTPError on 503; the body is readable off the error.
+        calls["n"] += 1
+        raise urllib.error.HTTPError(
+            "https://app.example.com/readyz", 503, "msg", {}, io.BytesIO(body)
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    # Fail the test loudly if the degraded (parseable) response triggers a sleep.
+    import time as _time
+
+    monkeypatch.setattr(
+        _time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("slept"))
+    )
+
+    ok, checks = cli._check_readyz(
+        "https://app.example.com", profile=None, attempts=5, delay_s=6.0
+    )
+    assert ok is False
+    assert checks == {"llm": "fail", "tracing": "ok"}
+    # A parseable degraded body returns immediately — no retry loop.
+    assert calls["n"] == 1
+
+
+def test_check_readyz_unreachable_returns_error(monkeypatch) -> None:
+    """Total failure to reach /readyz → (False, {"error": ...}), never raises."""
+    import urllib.error
+    import urllib.request
+
+    from apx_agent import cli
+
+    monkeypatch.setattr(
+        cli,
+        "_run_databricks_cmd",
+        lambda args, profile=None: SimpleNamespace(
+            returncode=0, stdout=json.dumps({"access_token": "tok"}), stderr=""
+        ),
+    )
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    import time as _time
+
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+
+    ok, checks = cli._check_readyz(
+        "https://app.example.com", profile=None, attempts=2, delay_s=0.0
+    )
+    assert ok is False
+    assert "error" in checks
+
+
+def _drive_deploy_to_gate(tmp_path, monkeypatch, *, readyz_gate, check_result):
+    """Drive _deploy_apps_impl through to the /readyz gate.
+
+    Returns the list of _check_readyz call args (empty if never called).
+    Raises whatever _deploy_apps_impl raises (e.g. ClickException at the gate).
+    """
+    from apx_agent.cli import _deploy_apps_impl
+
+    (tmp_path / "databricks.yml").write_text(textwrap.dedent("""
+        bundle:
+          name: my-bundle
+        resources:
+          apps:
+            my-app:
+              name: my-app
+    """))
+    monkeypatch.chdir(tmp_path)
+
+    check_calls: list = []
+
+    def fake_check_readyz(app_url, *, profile, **kw):
+        check_calls.append((app_url, profile))
+        return check_result
+
+    with patch("apx_agent.cli._preflight_databricks_cli", return_value=None), \
+         patch("apx_agent.cli._preflight_apps", return_value=None), \
+         patch("apx_agent.cli._validate_responses_agent_compiler", return_value=None), \
+         patch(
+             "apx_agent.cli._run_databricks_cmd",
+             return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+         ), \
+         patch(
+             "apx_agent.cli._poll_app_ready",
+             return_value={
+                 "url": "https://app.example.com",
+                 "service_principal_client_id": None,
+             },
+         ), \
+         patch("apx_agent.cli._check_readyz", side_effect=fake_check_readyz):
+        _deploy_apps_impl(
+            cwd=tmp_path,
+            module="agent:agent",
+            profile=None,
+            bundle_target="dev",
+            no_run=True,
+            auto_update_yml=False,
+            auto_build_wheel=False,
+            auto_experiment=False,
+            vars=(),
+            json_output=False,
+            readyz_gate=readyz_gate,
+            log=lambda msg: None,
+        )
+    return check_calls
+
+
+def test_deploy_readyz_gate_fails_when_degraded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """readyz_gate=True + degraded /readyz → ClickException; gate was called."""
+    import click
+
+    with pytest.raises(click.ClickException) as exc:
+        _drive_deploy_to_gate(
+            tmp_path,
+            monkeypatch,
+            readyz_gate=True,
+            check_result=(False, {"llm": "fail"}),
+        )
+    assert "readyz gate failed" in str(exc.value)
+
+
+def test_deploy_readyz_gate_passes_when_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """readyz_gate=True + ready /readyz → no raise; gate was called once."""
+    calls = _drive_deploy_to_gate(
+        tmp_path,
+        monkeypatch,
+        readyz_gate=True,
+        check_result=(True, {"llm": "ok"}),
+    )
+    assert calls == [("https://app.example.com", None)]
+
+
+def test_deploy_no_readyz_gate_skips_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """readyz_gate=False → _check_readyz is NOT called."""
+    calls = _drive_deploy_to_gate(
+        tmp_path,
+        monkeypatch,
+        readyz_gate=False,
+        check_result=(False, {"llm": "fail"}),
+    )
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
 # `apx info` — config-declared tools (E2 declarative tools, Task 7)
 # ---------------------------------------------------------------------------
 
