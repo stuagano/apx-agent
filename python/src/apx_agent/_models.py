@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
 from fastapi import Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from ._agents import BaseAgent
@@ -54,6 +54,108 @@ Return ``None`` to pass through, or a non-empty string to replace the output."""
 # ---------------------------------------------------------------------------
 
 
+class GuardrailsConfig(BaseModel):
+    """Data-only declaration of built-in guards.
+
+    Maps to ``[tool.apx.agent.guardrails]`` in pyproject.toml.  All guards
+    produced here are *additive* over code-defined guards — code hooks run
+    first, then config gates.  See ``_guards.build_config_guards``.
+
+    ``extra="forbid"`` is intentional: a typo'd guard key that silently
+    disables protection is a security regression; fail loud at startup.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    allowed_tools: list[str] | None = None
+    """Tool allowlist — ``ToolAllowlist(allowed_tools)``.  ``None`` = no
+    allowlist (all tools permitted).  Applied as a ``before_tool`` gate."""
+
+    blocked_tools: list[str] = []
+    """Tool denylist — ``ToolDenylist(blocked_tools)``.  Applied as a
+    ``before_tool`` gate.  Empty list = no denylist."""
+
+    rate_limit: int | None = None
+    """Global calls-per-minute cap — ``RateLimit(per_minute=rate_limit)``.
+    ``None`` = no rate limit.  A single bucket shared across all callers
+    (per-principal limiting requires a code-defined ``principal_key``)."""
+
+    rate_limit_burst: int | None = None
+    """Burst cap for the rate limiter — ``RateLimit(burst=rate_limit_burst)``.
+    ``None`` defaults to ``rate_limit`` (one token per interval, no burst).
+    Ignored when ``rate_limit`` is ``None``."""
+
+    injection_detection: bool = False
+    """When ``True``, appends ``prompt_injection_heuristic()`` to the agent's
+    ``input_guardrails`` list to flag common injection attempts at message
+    ingestion time."""
+
+
+StoreType = Literal["inmemory", "delta", "lakebase"]
+
+
+class MemoryBackendConfig(BaseModel):
+    """Declarative memory backend — maps to ``[tool.apx.agent.memory]``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: StoreType = "inmemory"
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
+    table_name: str | None = None
+    index_name: str | None = None
+    auto_create: bool = True
+    instance_name: str | None = None
+    database: str | None = None
+    host: str | None = None
+    ensure_extension: bool = True
+    namespace_default: str = "default"
+    tool_prefix: str = ""
+    include: list[str] | None = None
+    validate_at_boot: bool = True
+
+
+class ExampleBackendConfig(BaseModel):
+    """Declarative example backend — maps to ``[tool.apx.agent.example]``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: StoreType = "inmemory"
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
+    table_name: str | None = None
+    index_name: str | None = None
+    auto_create: bool = True
+    instance_name: str | None = None
+    database: str | None = None
+    host: str | None = None
+    ensure_extension: bool = True
+    agent_id: str | None = None
+    """Partition key for example rows — defaults to ``config.name`` at attach time."""
+    tool_prefix: str = ""
+    include: list[str] | None = None
+    validate_at_boot: bool = True
+
+
+class SessionBackendConfig(BaseModel):
+    """Declarative session backend — maps to ``[tool.apx.agent.session]``.
+
+    DeltaSessionStore takes ``table_path`` (not ``table_name``); the wiring maps
+    ``table_name`` → ``table_path`` when building a delta session store.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: StoreType = "inmemory"
+    table_name: str | None = None
+    auto_create: bool = True
+    instance_name: str | None = None
+    database: str | None = None
+    host: str | None = None
+    warehouse_id: str | None = None
+    validate_at_boot: bool = True
+
+
 class AgentConfig(BaseModel):
     """Agent configuration — loaded from [tool.apx.agent] in pyproject.toml or constructed directly."""
 
@@ -69,6 +171,27 @@ class AgentConfig(BaseModel):
     url: str | None = None  # Public URL of this agent (supports $ENV_VAR); used for registry self-announcement
     registry: str | None = None  # URL of an agent registry to auto-register with on startup (supports $ENV_VAR)
     api_prefix: str = "/api"  # route prefix for tool endpoints
+    guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
+    """Built-in guard configuration — see ``[tool.apx.agent.guardrails]``."""
+    template: dict[str, Any] | None = None
+    """Template-as-config: ``{ name = "data", catalog = "main", schema = "sales" }``.
+
+    When set, ``resolve_agent`` builds the leaf agent from the named template
+    via ``template_registry.build(name, spec, ws=ws)`` rather than importing a
+    Python module. The ``name`` key selects the template; all other keys become
+    the spec dict passed to the template's ``Spec.model_validate``. The
+    ``[tool.apx.agent]`` envelope (instructions, model, knobs) is layered on top
+    afterward via ``finalize_agent`` as usual — template builds the leaf, persona
+    overlays.
+    """
+    memory: MemoryBackendConfig | None = None
+    """Declarative memory backend — see ``[tool.apx.agent.memory]``."""
+
+    example: ExampleBackendConfig | None = None
+    """Declarative example backend — see ``[tool.apx.agent.example]``."""
+
+    session: SessionBackendConfig | None = None
+    """Declarative session backend — see ``[tool.apx.agent.session]``."""
 
 
 class AgentTool(BaseModel):

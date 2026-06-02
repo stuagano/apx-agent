@@ -111,6 +111,15 @@ class _AgentCallbackHandler(BaseCallbackHandler):
     correctly. The hook callables themselves can be sync or async.
     """
 
+    # langchain's handle_event / ahandle_event wraps every handler call in
+    # try/except and only re-raises if handler.raise_error is True (default
+    # False on BaseCallbackHandler).  Our before_tool / before_model / after_*
+    # hooks raise intentionally to ABORT the call — e.g. a ToolDenylist raises
+    # PermissionError to block a denied tool.  Without raise_error = True the
+    # exception is logged and swallowed, the guard becomes a silent no-op, and
+    # the tool body executes anyway.  This is a SECURITY bug (E3c).
+    raise_error: bool = True
+
     def __init__(
         self,
         *,
