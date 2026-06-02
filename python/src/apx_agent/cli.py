@@ -590,7 +590,10 @@ dependencies = [
     # imports lazily under the hood. A bare ``apx-agent`` dep would let
     # ``uv sync`` succeed but fail at first request inside the deployed App.
     <APX_AGENT_DEP>
-    "mlflow[databricks]>=3.0",
+    # mlflow.genai.agent_server (imported by agent_server/start_server.py)
+    # only exists in mlflow >=3.12; an older floor lets `uv sync` succeed but
+    # the deployed App 502s with ModuleNotFoundError: mlflow.genai.
+    "mlflow[databricks]>=3.12",
     # Add your agent's deps here
 ]
 
@@ -2229,23 +2232,60 @@ def _run_bundle_artifacts(cwd: Path) -> None:
         )
 
 
-def _rewrite_build_pyproject_for_deploy(
-    build_dir: Path, wheel_path: Path,
+def _stage_build_manifest(
+    build_dir: Path, wheel_path: Path | None,
 ) -> None:
-    """Rewrite ``.build/pyproject.toml`` to point at the bundled wheel.
+    """Stage the dependency manifest (``pyproject.toml`` + ``uv.lock``) into ``.build/``.
 
-    The example's source pyproject can use editable
-    ``[tool.uv.sources].apx-agent = { path = "../..", editable = true }``
-    so ``uv sync`` works on first checkout. The deployed App container
-    can't resolve ``../..``, so this helper rewrites the staged copy in
-    ``.build/`` to use the local wheel path instead.
+    The bundle ``artifacts.build`` script deliberately does NOT copy
+    ``pyproject.toml`` / ``uv.lock`` — ``apx deploy`` owns staging the
+    deploy-correct versions here. Without them the Databricks Apps container
+    has no dependency manifest and falls back to the base image's packages
+    (notably an older ``mlflow`` lacking ``mlflow.genai.agent_server``), so the
+    app 502s on startup (issue #116).
 
-    Idempotent: skips silently if ``.build/pyproject.toml`` already points
-    at a wheel, or if it has no ``[tool.uv.sources].apx-agent`` entry.
+    Two install shapes:
 
-    After rewriting, regenerates ``.build/uv.lock`` against the new
-    pyproject so the App container's ``uv sync`` resolves cleanly.
+    - **wheel_path is None** (git+https / PyPI install — the scaffold default
+      outside the framework repo): the deps already resolve remotely, so copy
+      the source ``pyproject.toml`` + ``uv.lock`` into ``.build/`` verbatim.
+      If the source has no ``uv.lock``, stage ``pyproject.toml`` alone and let
+      the container re-resolve.
+
+    - **wheel_path set** (editable/local install — inside the framework repo):
+      the App container can't resolve ``..``, so rewrite the staged
+      ``pyproject.toml`` to point at the bundled wheel and regenerate
+      ``uv.lock`` against it.
+
+    Either way the staged ``uv.lock`` is sanitized to public PyPI so the
+    container's ``uv sync`` doesn't hit the internal proxy.
     """
+    import shutil
+
+    if wheel_path is None:
+        # git+https / PyPI install: stage source manifest verbatim. The deps
+        # resolve from the remote URL pinned in pyproject; no rewrite needed.
+        source_pyproject = build_dir.parent / "pyproject.toml"
+        if not source_pyproject.exists():
+            return
+        pyproject = build_dir / "pyproject.toml"
+        shutil.copy2(source_pyproject, pyproject)
+        click.echo("  staged .build/pyproject.toml (git+https install)", err=True)
+
+        source_lock = build_dir.parent / "uv.lock"
+        lockfile = build_dir / "uv.lock"
+        if source_lock.exists():
+            shutil.copy2(source_lock, lockfile)
+            click.echo("  staged .build/uv.lock", err=True)
+            if _sanitize_uv_lock(lockfile):
+                click.echo("  sanitized .build/uv.lock → public PyPI", err=True)
+        else:
+            click.echo(
+                "  no source uv.lock — container will re-resolve from pyproject",
+                err=True,
+            )
+        return
+
     import subprocess
 
     try:
@@ -2725,13 +2765,24 @@ def _deploy_apps_impl(
             log(f"  built apx-agent wheel: {wheel_path}")
         _run_bundle_artifacts(cwd)
         log("  populated .build/")
-        # If the source pyproject used the editable shape, rewrite the
-        # staged copy in .build/ to use the wheel path instead. Idempotent
-        # when pyproject is already wheel-pinned.
-        if wheel_path:
-            build_dir = cwd / ".build"
-            if build_dir.is_dir():
-                _rewrite_build_pyproject_for_deploy(build_dir, wheel_path)
+        # Stage the dependency manifest into .build/. The artifacts script
+        # omits pyproject.toml/uv.lock by design — without them the Apps
+        # container has no manifest and falls back to base-image packages
+        # (older mlflow, no mlflow.genai) → 502 (issue #116). Runs for BOTH the
+        # wheel (editable/local) and git+https install shapes; passing the
+        # wheel_path (possibly None) selects which.
+        build_dir = cwd / ".build"
+        if build_dir.is_dir():
+            _stage_build_manifest(build_dir, wheel_path)
+            # Fail loud at deploy time rather than as a runtime 502 if the
+            # manifest somehow didn't land.
+            if not (build_dir / "pyproject.toml").exists():
+                raise click.ClickException(
+                    "deploy aborted: .build/pyproject.toml is missing after "
+                    "staging — the Apps container would have no dependency "
+                    "manifest and 502 on startup. Check that the project root "
+                    "has a pyproject.toml."
+                )
     else:
         log("# --no-auto-build-wheel: skipping wheel build + artifacts step")
 
