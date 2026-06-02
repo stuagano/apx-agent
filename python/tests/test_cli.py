@@ -2903,6 +2903,21 @@ def test_scaffold_apps_databricks_yml_enables_autolog_env() -> None:
     assert "APX_AGENT_MLFLOW_AUTOLOG" in _SCAFFOLD_APPS_DATABRICKS_YML
 
 
+def test_scaffold_apps_start_server_mounts_readyz() -> None:
+    from apx_agent.cli import _SCAFFOLD_APPS_START_SERVER
+    s = _SCAFFOLD_APPS_START_SERVER
+    # mount_readyz is imported and called.
+    assert "mount_readyz" in s
+    assert "mount_readyz(app, agent)" in s
+    # The import line includes mount_readyz alongside mount_mcp_endpoints.
+    import_line = next(
+        ln for ln in s.splitlines() if "from apx_agent import" in ln and "mount_mcp_endpoints" in ln
+    )
+    assert "mount_readyz" in import_line
+    # readyz is mounted right after the MCP mount.
+    assert s.index("mount_mcp_endpoints(app, agent)") < s.index("mount_readyz(app, agent)")
+
+
 def test_grant_experiment_to_sp_issues_patch(monkeypatch) -> None:
     from apx_agent import cli
     calls = []
