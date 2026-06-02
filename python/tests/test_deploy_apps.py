@@ -167,6 +167,15 @@ def _install_subprocess_mock(
         return _FakeProc(0, stdout="", stderr="")
 
     monkeypatch.setattr("apx_agent.cli._run_databricks_cmd", fake)
+    # The readyz deploy gate (default ON) issues an authenticated GET against
+    # the live app's /readyz after it reaches RUNNING. It has dedicated unit
+    # coverage in test_cli.py; here we stub it to "ready" so these pipeline
+    # tests stay focused on the bundle validate → deploy → run → poll flow and
+    # don't try to mint a token / hit the network.
+    monkeypatch.setattr(
+        "apx_agent.cli._check_readyz",
+        lambda app_url, *, profile, **_kw: (True, {}),
+    )
     # The Databricks-CLI presence preflight (`shutil.which("databricks")`) is
     # exercised separately in test_deploy_blocks_when_cli_missing; here we
     # simulate the CLI being installed so these tests are deterministic in CI,
@@ -462,6 +471,43 @@ def test_json_output_shape(
     assert "app_url" in payload
 
 
+def test_readyz_gate_fails_deploy_when_degraded(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A degraded /readyz fails the deploy loudly (gate ON by default)."""
+    _install_subprocess_mock(monkeypatch)
+    # Override the default "ready" stub with a degraded result.
+    monkeypatch.setattr(
+        "apx_agent.cli._check_readyz",
+        lambda app_url, *, profile, **_kw: (False, {"llm": "fail"}),
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["deploy", "--target", "apps"])
+    assert result.exit_code != 0
+    assert "readyz gate failed" in result.output
+    assert "--no-readyz-gate" in result.output
+
+
+def test_no_readyz_gate_skips_check(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--no-readyz-gate skips the /readyz call entirely."""
+    _install_subprocess_mock(monkeypatch)
+    called = {"n": 0}
+
+    def _boom(app_url, *, profile, **_kw):
+        called["n"] += 1
+        return (False, {"llm": "fail"})
+
+    monkeypatch.setattr("apx_agent.cli._check_readyz", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["deploy", "--target", "apps", "--no-readyz-gate"]
+    )
+    assert result.exit_code == 0, result.output
+    assert called["n"] == 0
+
+
 def test_missing_responses_agent_module_surfaces_friendly_error(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -607,6 +653,12 @@ def test_profile_is_passed_through(
     # Simulate the Databricks CLI being installed (CI has no `databricks`
     # binary); the presence preflight is covered by test_deploy_blocks_when_cli_missing.
     monkeypatch.setattr("apx_agent.cli._preflight_databricks_cli", lambda: None)
+    # Stub the readyz gate (default ON) so this test stays focused on profile
+    # threading through the bundle/apps subprocess calls.
+    monkeypatch.setattr(
+        "apx_agent.cli._check_readyz",
+        lambda app_url, *, profile, **_kw: (True, {}),
+    )
     runner = CliRunner()
     result = runner.invoke(main, [
         "deploy", "--target", "apps", "--profile", "demo-profile",
