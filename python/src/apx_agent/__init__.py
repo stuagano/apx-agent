@@ -55,6 +55,7 @@ from ._llm import ChatDatabricksGptReasoning, get_llm
 
 # App factory and setup
 from ._wiring import create_app, finalize_agent, mount_mcp_endpoints, setup_agent
+from ._readyz import mount_readyz
 from ._tool_config import ToolConfigError, load_config_tools, merge_config_tools
 
 # Eval bridge
@@ -353,6 +354,7 @@ __all__ = [
     "create_app",
     "finalize_agent",
     "mount_mcp_endpoints",
+    "mount_readyz",
     "setup_agent",
     # Declarative tool config
     "ToolConfigError",
