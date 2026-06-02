@@ -45,6 +45,21 @@ from typing import Any, Mapping
 __all__ = ["extract_obo_headers", "make_obo_workspace_client"]
 
 
+def _in_databricks_app() -> bool:
+    """True when running inside the Databricks Apps runtime.
+
+    Apps auto-injects reserved env vars including ``DATABRICKS_APP_NAME`` and
+    ``DATABRICKS_APP_URL`` (see the Databricks Apps "system environment" docs).
+    Their presence is a reliable App-context marker, used to suppress the
+    ``X-Forwarded-Host`` workspace-host fallback (that header is the app's own
+    hostname in an App, not the workspace API host).
+    """
+    return bool(
+        os.environ.get("DATABRICKS_APP_NAME")
+        or os.environ.get("DATABRICKS_APP_URL")
+    )
+
+
 def _coerce_headers(headers: Any) -> Mapping[str, str]:
     """Return a mapping-like view of ``headers``.
 
@@ -213,7 +228,17 @@ def extract_obo_headers(
     host = ci.get("workspace_host")
     if not host:
         host = os.environ.get("DATABRICKS_HOST")
-    if not host:
+    if not host and not _in_databricks_app():
+        # X-Forwarded-Host last resort — ONLY outside the Databricks Apps
+        # runtime. Inside an App this header is the app's OWN public hostname
+        # (…databricksapps.com), NOT the workspace REST API host. Using it as
+        # workspace_host makes user-scoped SDK calls loop back to the app
+        # (which doesn't serve /api/2.0/*), each attempt read-times-out at 60s
+        # and the SDK retries to its 300s ceiling → a 5-minute hang. In-App we
+        # rely on DATABRICKS_HOST (auto-injected); if it's anomalously absent
+        # we leave workspace_host unset so the SDK fails fast with a clear
+        # config error instead of hanging. Kept for non-Apps proxies that do
+        # pass the workspace API host through this header.
         host = _header_lookup(hdrs, "X-Forwarded-Host")
     if host:
         out["workspace_host"] = str(host)
