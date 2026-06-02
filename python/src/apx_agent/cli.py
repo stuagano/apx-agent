@@ -1609,6 +1609,14 @@ def eval_cmd(
          "ON by default. Only used by --target apps.",
 )
 @click.option(
+    "--readyz-gate/--no-readyz-gate", default=True,
+    help="After the app reaches RUNNING, gate the deploy on its `/readyz` "
+         "capability self-test: GET <app_url>/readyz and FAIL the deploy if "
+         "the agent doesn't report ready (i.e. it doesn't actually answer + "
+         "trace). A green deploy then means the agent works, not just that the "
+         "container booted. ON by default. Only used by --target apps.",
+)
+@click.option(
     "--var", "vars", multiple=True,
     help="Extra `--var key=value` pairs to forward to `databricks bundle "
          "deploy + bundle run`. Repeatable. Use to override resources, "
@@ -1674,6 +1682,7 @@ def deploy(
     auto_update_yml: bool,
     auto_build_wheel: bool,
     auto_experiment: bool,
+    readyz_gate: bool,
     vars: tuple[str, ...],
     json_output: bool,
     no_deploy: bool,
@@ -1726,6 +1735,7 @@ def deploy(
             auto_experiment=auto_experiment,
             vars=vars,
             json_output=json_output,
+            readyz_gate=readyz_gate,
         )
         return
 
@@ -2526,6 +2536,84 @@ def _grant_experiment_to_sp(
         return False
 
 
+def _check_readyz(
+    app_url: str,
+    *,
+    profile: str | None,
+    attempts: int = 5,
+    delay_s: float = 6.0,
+) -> tuple[bool, dict[str, Any]]:
+    """Call the deployed app's ``/readyz`` capability self-test.
+
+    Mints a short-lived bearer token via ``databricks auth token`` (Databricks
+    Apps require auth) and issues an authenticated ``GET <app_url>/readyz``.
+    ``/readyz`` returns HTTP 200 ``{"status":"ready",...}`` when the agent
+    answers + traces, and HTTP 503 ``{"status":"degraded",...}`` otherwise —
+    both are valid JSON bodies to parse.
+
+    Returns ``(status == "ready", checks_dict)``. The app may need a few
+    seconds after RUNNING before ``/readyz`` (which runs the agent) responds,
+    so we retry up to ``attempts`` times with ``delay_s`` between — but a
+    *parseable* response (ready OR degraded) returns immediately; only an
+    unreachable / unparseable endpoint triggers a retry. On total failure to
+    reach it, returns ``(False, {"error": "<short>"})``.
+
+    Best-effort and self-contained: never raises — the CALLER decides whether
+    a not-ready result should fail the deploy. The bearer token is NEVER
+    logged or echoed.
+    """
+    import json as _json
+    import time as _time
+    import urllib.error
+    import urllib.request
+
+    # Mint a bearer token through the established CLI seam. Never log it.
+    token: str | None = None
+    try:
+        tok_proc = _run_databricks_cmd(["auth", "token", "--output", "json"], profile=profile)
+        if getattr(tok_proc, "returncode", 1) == 0 and tok_proc.stdout:
+            token = (_json.loads(tok_proc.stdout) or {}).get("access_token")
+    except Exception as exc:  # pragma: no cover — defensive
+        return False, {"error": f"could not mint token: {str(exc)[:120]}"}
+    if not token:
+        return False, {"error": "could not mint databricks auth token"}
+
+    url = app_url.rstrip("/") + "/readyz"
+    last_error = "unreachable"
+    for attempt in range(max(1, attempts)):
+        try:
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+                raw = resp.read()
+        except urllib.error.HTTPError as http_err:
+            # 503 (degraded) and friends arrive as HTTPError but still carry a
+            # JSON body that is readable off the error object itself.
+            try:
+                raw = http_err.read()
+            except Exception:
+                raw = b""
+        except Exception as exc:
+            last_error = str(exc)[:120]
+            raw = b""
+
+        if raw:
+            try:
+                data = _json.loads(raw)
+            except Exception:
+                data = None
+            if isinstance(data, dict) and "status" in data:
+                checks = data.get("checks")
+                if not isinstance(checks, dict):
+                    checks = {k: v for k, v in data.items() if k != "checks"}
+                return data.get("status") == "ready", checks
+
+        # Unreachable / unparseable — back off and retry.
+        if attempt < max(1, attempts) - 1 and delay_s > 0:
+            _time.sleep(delay_s)
+
+    return False, {"error": f"readyz unreachable: {last_error}"}
+
+
 def _preflight_databricks_cli() -> None:
     """Block deploy early if the Databricks CLI isn't installed."""
     from . import _doctor as _d
@@ -2757,6 +2845,7 @@ def _deploy_apps(
     auto_experiment: bool = True,
     vars: tuple[str, ...] = (),
     json_output: bool,
+    readyz_gate: bool = True,
 ) -> None:
     """Implement ``apx deploy --target apps``.
 
@@ -2778,7 +2867,7 @@ def _deploy_apps(
             auto_build_wheel=auto_build_wheel,
             auto_experiment=auto_experiment,
             vars=vars,
-            json_output=json_output, log=log,
+            json_output=json_output, readyz_gate=readyz_gate, log=log,
         )
     except click.ClickException as e:
         if json_output:
@@ -2799,6 +2888,7 @@ def _deploy_apps_impl(
     auto_experiment: bool = True,
     vars: tuple[str, ...] = (),
     json_output: bool,
+    readyz_gate: bool = True,
     log: Any,
 ) -> None:
     """Inner body of ``_deploy_apps`` — see docstring there."""
@@ -2949,6 +3039,19 @@ def _deploy_apps_impl(
     if sp and resolved_exp_id:
         if _grant_experiment_to_sp(resolved_exp_id, sp, profile=profile):
             log("  granted app SP CAN_MANAGE on tracing experiment")
+
+    # 6c. readyz gate: prove the app actually answers + traces, not just that
+    # the container booted. A green deploy should mean "the agent works".
+    if readyz_gate and app_url:
+        log(f"# readyz gate: GET {app_url}/readyz")
+        ok, checks = _check_readyz(app_url, profile=profile)
+        if ok:
+            log(f"  readyz: ready ({checks})")
+        else:
+            raise click.ClickException(
+                f"readyz gate failed — the app is RUNNING but not ready: {checks}. "
+                f"Re-run with --no-readyz-gate to skip this check."
+            )
 
     # 7. Final report
     if json_output:
