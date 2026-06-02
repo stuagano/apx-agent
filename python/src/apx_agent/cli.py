@@ -680,6 +680,12 @@ import os
 from mlflow.genai.agent_server import AgentServer, invoke, stream
 
 from apx_agent import compile_to_responses_agent, mount_mcp_endpoints
+from apx_agent._mlflow_tracing import autolog_if_env
+
+# Enable MLflow LangChain/LangGraph auto-tracing when APX_AGENT_MLFLOW_AUTOLOG
+# is set (databricks.yml sets it on deploy). Must run before the agent's
+# LangChain components are built/invoked.
+autolog_if_env()
 
 # Import the user's agent from the top-level module.
 from agent import agent
@@ -832,6 +838,8 @@ resources:
             value: databricks
           - name: MLFLOW_EXPERIMENT_ID
             value: ${var.mlflow_experiment_id}
+          - name: APX_AGENT_MLFLOW_AUTOLOG
+            value: "1"
 
 targets:
   dev:
@@ -2459,6 +2467,62 @@ def _ensure_experiment_id(
     return None
 
 
+def _grant_experiment_to_sp(
+    experiment_id: str,
+    sp_client_id: str,
+    *,
+    profile: str | None,
+) -> bool:
+    """Grant the app's service principal ``CAN_MANAGE`` on the tracing experiment.
+
+    ``apx deploy`` creates the experiment under the deploying user, but the
+    deployed app runs as its service principal — which can't access that
+    experiment, so every span is dropped. Granting the SP ``CAN_MANAGE`` via
+    the permissions API lets tracing land. Idempotent.
+
+    Best-effort: any failure (non-zero exit, missing CLI, etc.) is logged to
+    stderr and swallowed — never fail the deploy on the grant. Returns ``True``
+    only when the grant succeeded.
+    """
+    import subprocess
+
+    acl = {
+        "access_control_list": [
+            {
+                "service_principal_name": sp_client_id,
+                "permission_level": "CAN_MANAGE",
+            }
+        ]
+    }
+    cmd = [
+        "databricks",
+        "api",
+        "patch",
+        f"/api/2.0/permissions/experiments/{experiment_id}",
+        "--json",
+        json.dumps(acl),
+    ]
+    if profile:
+        cmd += ["--profile", profile]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            click.echo(
+                "# could not grant app SP access to tracing experiment "
+                f"{experiment_id}: {_tail_lines(proc.stderr or proc.stdout, 3)}",
+                err=True,
+            )
+            return False
+        return True
+    except Exception as exc:
+        click.echo(
+            "# could not grant app SP access to tracing experiment "
+            f"{experiment_id}: {exc}",
+            err=True,
+        )
+        return False
+
+
 def _preflight_databricks_cli() -> None:
     """Block deploy early if the Databricks CLI isn't installed."""
     from . import _doctor as _d
@@ -2790,20 +2854,24 @@ def _deploy_apps_impl(
     # caller didn't pass one. Looks up / creates an experiment at
     # /Users/<current-user>/<bundle_name>-<target>.
     extra_vars: list[str] = []
-    if auto_experiment:
-        existing_vars = list(vars or ())
-        already_set = any(
-            v.startswith("mlflow_experiment_id=") for v in existing_vars
+    # Track the experiment id we end up deploying with, from either the
+    # caller's --var or our auto-create. Used post-poll to grant the app SP
+    # access so tracing can land.
+    resolved_exp_id: str | None = None
+    for v in vars or ():
+        if v.startswith("mlflow_experiment_id="):
+            resolved_exp_id = v.split("=", 1)[1].strip() or None
+            break
+    if auto_experiment and resolved_exp_id is None:
+        eid = _ensure_experiment_id(
+            profile=profile,
+            bundle_name=app_name,
+            bundle_target=bundle_target,
+            env_value=None,
         )
-        if not already_set:
-            eid = _ensure_experiment_id(
-                profile=profile,
-                bundle_name=app_name,
-                bundle_target=bundle_target,
-                env_value=None,
-            )
-            if eid:
-                extra_vars.append(f"mlflow_experiment_id={eid}")
+        if eid:
+            resolved_exp_id = eid
+            extra_vars.append(f"mlflow_experiment_id={eid}")
 
     deploy_var_args: list[str] = []
     for v in list(vars or ()) + extra_vars:
@@ -2870,6 +2938,14 @@ def _deploy_apps_impl(
     log(f"# polling `databricks apps get {app_name}` for ACTIVE/RUNNING")
     payload = _poll_app_ready(app_name, profile, timeout_seconds=300, log=log)
     app_url = payload.get("url") or ""
+
+    # 6b. Grant the app's service principal access to the tracing experiment.
+    # The experiment is created under the deploying user, but the app runs as
+    # its SP — without this grant every span is dropped. Best-effort.
+    sp = payload.get("service_principal_client_id")
+    if sp and resolved_exp_id:
+        if _grant_experiment_to_sp(resolved_exp_id, sp, profile=profile):
+            log("  granted app SP CAN_MANAGE on tracing experiment")
 
     # 7. Final report
     if json_output:

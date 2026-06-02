@@ -2886,6 +2886,43 @@ def test_run_probe_reports_broken_agent(tmp_path: Path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Slice A — deploy tracing on by default
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_apps_start_server_enables_autolog() -> None:
+    from apx_agent.cli import _SCAFFOLD_APPS_START_SERVER
+    assert "autolog_if_env" in _SCAFFOLD_APPS_START_SERVER
+    # called before the user agent import (so spans capture the first run)
+    s = _SCAFFOLD_APPS_START_SERVER
+    assert s.index("autolog_if_env()") < s.index("from agent import agent")
+
+
+def test_scaffold_apps_databricks_yml_enables_autolog_env() -> None:
+    from apx_agent.cli import _SCAFFOLD_APPS_DATABRICKS_YML
+    assert "APX_AGENT_MLFLOW_AUTOLOG" in _SCAFFOLD_APPS_DATABRICKS_YML
+
+
+def test_grant_experiment_to_sp_issues_patch(monkeypatch) -> None:
+    from apx_agent import cli
+    calls = []
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    cli._grant_experiment_to_sp(
+        "2960967542309513",
+        "ff83b07a-2ab4-4564-88d4-54fb79417b06",
+        profile="fe-cowork",
+    )
+    flat = " ".join(" ".join(c) for c in calls)
+    assert "/api/2.0/permissions/experiments/2960967542309513" in flat
+    assert "ff83b07a-2ab4-4564-88d4-54fb79417b06" in flat
+
+
+# ---------------------------------------------------------------------------
 # `apx info` — config-declared tools (E2 declarative tools, Task 7)
 # ---------------------------------------------------------------------------
 
