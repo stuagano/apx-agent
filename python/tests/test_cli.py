@@ -2614,6 +2614,70 @@ def test_sanitize_uv_lock_rewrites_internal_index(tmp_path: Path) -> None:
     assert _sanitize_uv_lock(lock) is False  # idempotent
 
 
+def test_stage_build_manifest_no_wheel_stages_and_sanitizes(tmp_path: Path) -> None:
+    """git+https install path (no local wheel): the deploy must still stage the
+    source pyproject.toml + uv.lock into .build/ so the Apps container has a
+    dependency manifest — otherwise it falls back to the base image's mlflow
+    (no mlflow.genai.agent_server) and 502s. The staged lock is sanitized to
+    public PyPI. Regression for issue #116.
+    """
+    from apx_agent.cli import _stage_build_manifest
+
+    proj = tmp_path / "proj"
+    (proj / ".build").mkdir(parents=True)
+    (proj / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        'dependencies = ["apx-agent[langgraph] @ '
+        'git+https://github.com/stuagano/apx-agent.git@main#subdirectory=python"]\n'
+    )
+    (proj / "uv.lock").write_text(
+        'source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }\n'
+        'url = "https://files.pythonhosted.org/x/foo-1.0-py3-none-any.whl"\n'
+    )
+
+    _stage_build_manifest(proj / ".build", None)
+
+    staged_pyproject = proj / ".build" / "pyproject.toml"
+    staged_lock = proj / ".build" / "uv.lock"
+    assert staged_pyproject.exists(), ".build/pyproject.toml must be staged"
+    assert staged_lock.exists(), ".build/uv.lock must be staged"
+    # Source pyproject copied verbatim (no wheel rewrite in this path).
+    assert "git+https://github.com/stuagano/apx-agent.git" in staged_pyproject.read_text()
+    # Staged lock sanitized away from the internal proxy.
+    assert "pypi-proxy.dev.databricks.com" not in staged_lock.read_text()
+    assert 'registry = "https://pypi.org/simple"' in staged_lock.read_text()
+
+
+def test_stage_build_manifest_no_wheel_missing_lock_stages_pyproject_only(
+    tmp_path: Path,
+) -> None:
+    """No source uv.lock present: stage pyproject.toml and let the container
+    re-resolve. Must not crash on the absent lock."""
+    from apx_agent.cli import _stage_build_manifest
+
+    proj = tmp_path / "proj"
+    (proj / ".build").mkdir(parents=True)
+    (proj / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\ndependencies = []\n'
+    )
+    # No uv.lock in source.
+
+    _stage_build_manifest(proj / ".build", None)
+
+    assert (proj / ".build" / "pyproject.toml").exists()
+    assert not (proj / ".build" / "uv.lock").exists()
+
+
+def test_scaffold_apps_pins_mlflow_with_genai_agent_server(tmp_path: Path) -> None:
+    """The Apps scaffold must pin mlflow to a version that ships
+    ``mlflow.genai.agent_server`` (the start_server import). ``>=3.0`` doesn't
+    guarantee it; the floor must be >=3.12. Regression for issue #116."""
+    from apx_agent.cli import _SCAFFOLD_APPS_PYPROJECT
+
+    assert '"mlflow[databricks]>=3.12"' in _SCAFFOLD_APPS_PYPROJECT
+    assert '"mlflow[databricks]>=3.0"' not in _SCAFFOLD_APPS_PYPROJECT
+
+
 def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
     """--catalog/--schema bake the default DataAgent's data source (no probe)."""
     runner = CliRunner()
