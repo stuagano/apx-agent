@@ -159,12 +159,58 @@ def test_workspace_host_env_wins_over_forwarded_host(
 def test_workspace_host_falls_back_to_forwarded_host_when_no_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Last-resort fallback: header is used when no env, no custom_inputs."""
+    """Last-resort fallback: header is used when no env, no custom_inputs —
+    and NOT running inside a Databricks App (where the header is the app's own
+    host). This protects non-Apps proxies that pass the workspace API host
+    through X-Forwarded-Host."""
     monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+    monkeypatch.delenv("DATABRICKS_APP_URL", raising=False)
     obo = extract_obo_headers(
         headers={"X-Forwarded-Host": "ws.databricks.com"},
     )
     assert obo["workspace_host"] == "ws.databricks.com"
+
+
+def test_workspace_host_skips_forwarded_host_inside_databricks_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside a Databricks App, ``X-Forwarded-Host`` is the app's OWN public
+    hostname (…databricksapps.com), not the workspace REST API host. Using it
+    as ``workspace_host`` makes user-scoped SDK calls loop back to the app
+    (which doesn't serve /api/2.0/*) → 60s read-timeout × retries → a 5-minute
+    hang. So when the App runtime markers are present and DATABRICKS_HOST is
+    (anomalously) absent, do NOT fall back to the header — leave workspace_host
+    unset so the SDK fails fast with a clear config error instead of hanging.
+    Regression for the OBO host loopback hang.
+    """
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "cowork-validation")
+    obo = extract_obo_headers(
+        headers={
+            "X-Forwarded-Access-Token": "tok",
+            "X-Forwarded-Host": "cowork-validation-123.aws.databricksapps.com",
+        },
+    )
+    assert "workspace_host" not in obo
+    # token still extracted — only the host fallback is suppressed.
+    assert obo["user_token"] == "tok"
+
+
+def test_workspace_host_env_still_wins_inside_databricks_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard only suppresses the X-Forwarded-Host *fallback*; the normal
+    Apps path (DATABRICKS_HOST injected) is unaffected."""
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "cowork-validation")
+    monkeypatch.setenv("DATABRICKS_HOST", "fevm-x.cloud.databricks.com")
+    obo = extract_obo_headers(
+        headers={
+            "X-Forwarded-Access-Token": "tok",
+            "X-Forwarded-Host": "cowork-validation-123.aws.databricksapps.com",
+        },
+    )
+    assert obo["workspace_host"] == "fevm-x.cloud.databricks.com"
 
 
 # ---------------------------------------------------------------------------
