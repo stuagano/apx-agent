@@ -99,6 +99,16 @@ pip install -e '.[uc]'
 
 Each factory attaches its resource declaration to the returned tool. `log_agent` collects them automatically.
 
+Every factory in this table can also be declared as **data** in `pyproject.toml` instead of code — the `type` key names the factory and the rest are its arguments. See [`[[tool.apx.tools]]`](configuration.md#declarative-tools--toolapxtools). For example, `genie_tool("space-abc")` is equivalent to:
+
+```toml
+[[tool.apx.tools]]
+type = "genie"
+space_id = "space-abc"
+```
+
+Use code when the tool needs custom logic; use config for plain resource references you'd rather keep out of the agent module.
+
 ```python
 from apx_agent import (
     Agent, genie_tool, vector_search_tool, sql_tool, foundation_model_tool,
