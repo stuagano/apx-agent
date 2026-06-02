@@ -50,7 +50,8 @@ from ._sql import decode_statement, get_warehouse_id, run_sql
 from ._llm import ChatDatabricksGptReasoning, get_llm
 
 # App factory and setup
-from ._wiring import create_app, mount_mcp_endpoints, setup_agent
+from ._wiring import create_app, finalize_agent, mount_mcp_endpoints, setup_agent
+from ._tool_config import ToolConfigError, load_config_tools, merge_config_tools
 
 # Eval bridge
 from ._eval import (
@@ -342,8 +343,13 @@ __all__ = [
     "get_llm",
     # App factory
     "create_app",
+    "finalize_agent",
     "mount_mcp_endpoints",
     "setup_agent",
+    # Declarative tool config
+    "ToolConfigError",
+    "load_config_tools",
+    "merge_config_tools",
     # Eval
     "app_predict_fn",
     "endpoint_predict_fn",

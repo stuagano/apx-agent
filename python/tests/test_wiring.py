@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,6 +15,7 @@ from apx_agent._wiring import (
     _install_responses_input_adapter,
     _mount_protocol_routes,
     apply_config_knobs,
+    finalize_agent,
 )
 
 from .conftest import get_weather, query_genie
@@ -126,6 +128,26 @@ class TestSetupAgent:
         assert agent._temperature == 0.0
         assert agent._max_tokens == 256
         assert agent._max_iterations == 5
+
+    @pytest.mark.asyncio
+    async def test_setup_agent_serves_config_tools_in_card(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "t"
+            model = "databricks-claude-sonnet-4-6"
+            [[tool.apx.tools]]
+            type = "genie"
+            space_id = "01ef"
+            name = "ask_sales"
+        """))
+        app = FastAPI()
+        agent = Agent(tools=[])
+        ctx = await setup_agent(app, agent, pyproject_path=str(pp))
+        # The A2A card snapshot must include the config tool (proves the merge ran
+        # before the card was frozen).
+        skill_names = [s.name for s in ctx.card.skills]
+        assert "ask_sales" in skill_names
 
 
 # ---------------------------------------------------------------------------
@@ -441,3 +463,40 @@ def test_whitespace_only_config_instructions_does_not_block_later_overlay():
     assert agent._instructions == "GROUNDING"  # treated as empty, no-op
     apply_config_knobs(agent, _cfg(instructions="PERSONA"))  # real overlay still applies
     assert "PERSONA" in agent._instructions and "GROUNDING" in agent._instructions
+
+
+# ---------------------------------------------------------------------------
+# finalize_agent — knobs + persona overlay + config-tool merge in one seam
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_applies_knobs_and_merges_tools(tmp_path):
+    pp = tmp_path / "pyproject.toml"
+    pp.write_text(textwrap.dedent("""
+        [tool.apx.agent]
+        name = "t"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "01ef"
+        name = "ask_sales"
+    """))
+    agent = Agent(tools=[], instructions="GROUNDING")
+    cfg = AgentConfig(name="t", temperature=0.3, instructions="PERSONA")
+    finalize_agent(agent, config=cfg, pyproject_path=str(pp))
+    # knob applied
+    assert agent._temperature == 0.3
+    # persona overlay applied
+    assert "PERSONA" in agent._instructions and "GROUNDING" in agent._instructions
+    # config tool merged
+    assert "ask_sales" in [t.name for t in agent.collect_tools()]
+
+
+def test_finalize_is_idempotent(tmp_path):
+    pp = tmp_path / "pyproject.toml"
+    pp.write_text('[tool.apx.agent]\nname="t"\n[[tool.apx.tools]]\ntype="genie"\nspace_id="01ef"\nname="ask_sales"\n')
+    agent = Agent(tools=[], instructions="GROUNDING")
+    cfg = AgentConfig(name="t", instructions="PERSONA")
+    finalize_agent(agent, config=cfg, pyproject_path=str(pp))
+    finalize_agent(agent, config=cfg, pyproject_path=str(pp))
+    assert [t.name for t in agent.collect_tools()].count("ask_sales") == 1
+    assert agent._instructions.count("PERSONA") == 1

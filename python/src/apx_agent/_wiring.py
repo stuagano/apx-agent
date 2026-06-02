@@ -122,6 +122,41 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
             )
 
 
+def finalize_agent(
+    agent: BaseAgent,
+    config: AgentConfig | None = None,
+    pyproject_path: str | None = None,
+) -> None:
+    """Apply all config→instance steps before the agent is served or logged.
+
+    The single seam every runtime must run: it applies generation knobs + the
+    persona instruction overlay (apply_config_knobs) AND merges
+    [[tool.apx.tools]] (merge_config_tools). Idempotent — safe to call from
+    setup_agent (serve), log_agent (log/deploy), and apx info; a second call is
+    a no-op. Future declarative features (memory, guards — E3) extend here.
+
+    When *config* is supplied, knobs are applied from it and *pyproject_path*
+    is used only by merge_config_tools (to locate [[tool.apx.tools]]). When
+    *config* is omitted, it is loaded from *pyproject_path*; if no config is
+    found, knobs are skipped but the tool merge still runs.
+
+    Note: a project with no [tool.apx.agent] section is not servable (the serve
+    path requires an agent section), so finalize_agent is not invoked via the
+    serve path for such a project. Whether tools-only agents should be servable
+    is a future (E3) design question.
+    """
+    if config is None:
+        config = _load_agent_config(pyproject_path=pyproject_path)
+    if config is not None:
+        apply_config_knobs(agent, config)
+
+    # Local import: _tool_config lazily imports _resolve_env_var from this module;
+    # a top-level import here would make that cycle unconditional at load time.
+    from ._tool_config import merge_config_tools  # noqa: PLC0415
+
+    merge_config_tools(agent, pyproject_path=pyproject_path)
+
+
 def _resolve_env_var(value: str) -> str:
     """Resolve a ``$VAR`` or ``${VAR}`` reference to its environment value.
 
@@ -187,8 +222,9 @@ async def setup_agent(
                 sub_agent_urls.append(resolved)
                 existing.add(resolved)
 
-    # Merge config-declared knobs from [tool.apx.agent] onto the agent instance.
-    apply_config_knobs(agent, config)
+    # Apply knobs + persona overlay + config-tool merge BEFORE the card snapshot
+    # (collect_tools below) so declared tools are both callable and advertised.
+    finalize_agent(agent, config, pyproject_path=pyproject_path)
 
     tools = agent.collect_tools()
     tools += await agent.fetch_remote_tools()
