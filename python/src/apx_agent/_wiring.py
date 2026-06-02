@@ -122,10 +122,67 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
             )
 
 
+def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
+    """Apply ``[tool.apx.agent.guardrails]`` config onto the live agent instance.
+
+    Translates ``config.guardrails`` (a ``GuardrailsConfig``) into built-in
+    guard callables and attaches them additively:
+
+    - ``before_tool`` gates (deny / allow / rate-limit) are merged via
+      ``compose(existing_code_hook, *config_gates)`` — code hook runs first.
+    - ``input_guardrails`` (injection heuristic) are appended — code guards
+      run first.
+
+    Idempotent via the ``_apx_config_guards_applied`` sentinel: a second call
+    is a no-op.  ``setup_agent`` can run more than once on the same instance
+    (``mount_mcp_endpoints`` fires its own ``setup_agent`` at startup), so this
+    is a real correctness requirement, not a nicety.
+
+    Warns (never crashes) when guards are declared on a composition root
+    (e.g. ``SequentialAgent``) that has no ``_before_tool`` /
+    ``_input_guardrails`` — matches the ``sub_agents``-merge precedent.
+    """
+    if getattr(agent, "_apx_config_guards_applied", False):
+        return
+
+    from ._guards import build_config_guards, compose  # noqa: PLC0415
+
+    input_guards, before_tool_gate = build_config_guards(config.guardrails)
+
+    if input_guards:
+        existing_igs = getattr(agent, "_input_guardrails", None)
+        if existing_igs is None:
+            logger.warning(
+                "config guardrails.injection_detection set on a %s root, "
+                "which has no _input_guardrails (only LlmAgent does) — ignored.",
+                type(agent).__name__,
+            )
+        else:
+            existing_igs.extend(input_guards)
+
+    if before_tool_gate is not None:
+        if not hasattr(agent, "_before_tool"):
+            logger.warning(
+                "config guardrails tool rules (blocked_tools / allowed_tools / "
+                "rate_limit) set on a %s root, which has no _before_tool "
+                "(only LlmAgent does) — ignored.",
+                type(agent).__name__,
+            )
+        else:
+            code_hook = getattr(agent, "_before_tool", None)
+            if code_hook is not None:
+                setattr(agent, "_before_tool", compose(code_hook, before_tool_gate))
+            else:
+                setattr(agent, "_before_tool", before_tool_gate)
+
+    setattr(agent, "_apx_config_guards_applied", True)
+
+
 def finalize_agent(
     agent: BaseAgent,
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
+    ws: Any | None = None,
 ) -> None:
     """Apply all config→instance steps before the agent is served or logged.
 
@@ -149,12 +206,126 @@ def finalize_agent(
         config = _load_agent_config(pyproject_path=pyproject_path)
     if config is not None:
         apply_config_knobs(agent, config)
+        # E3c: attach declarative guards (idempotent; warns on composition
+        # roots lacking the guard hook attributes).
+        apply_config_guardrails(agent, config)
 
     # Local import: _tool_config lazily imports _resolve_env_var from this module;
     # a top-level import here would make that cycle unconditional at load time.
     from ._tool_config import merge_config_tools  # noqa: PLC0415
 
     merge_config_tools(agent, pyproject_path=pyproject_path)
+
+    # E3b: attach config-declared memory/example tools AFTER the tool merge so
+    # code-wired tools' names are already in the existing set (collision guard).
+    # Must run BEFORE agent.collect_tools() (the A2A card snapshot in setup_agent)
+    # so memory tools appear in the card. attach_declared_memory is idempotent.
+    if config is not None:
+        from ._memory_wiring import attach_declared_memory  # noqa: PLC0415
+
+        attach_declared_memory(agent, config, ws=ws)
+
+
+class TemplateConfigError(ValueError):
+    """Raised when an agent cannot be resolved from the given template config or module."""
+
+
+def _ws_for_template(config: "AgentConfig | None") -> Any:
+    """Return a WorkspaceClient for template resolution, or None.
+
+    Only attempts construction when config has a template field (template.build
+    may need ws for live schema introspection). Degrades gracefully on failure —
+    DataTemplate.build(spec, ws=None) still returns a working agent.
+    """
+    if config is None or config.template is None:
+        return None
+    try:
+        return _make_workspace_client()
+    except Exception as e:
+        logger.warning(
+            "Could not build workspace client for template resolution: %s. "
+            "Template will build with ws=None (graceful degradation — "
+            "grounded instructions require live introspection).",
+            e,
+        )
+        return None
+
+
+def resolve_agent(
+    module_spec: str | None,
+    config: "AgentConfig | None",
+    *,
+    ws: Any | None = None,
+) -> "BaseAgent":
+    """Resolve a ``BaseAgent`` from either a template config or a module import.
+
+    Runs BEFORE ``finalize_agent`` (which then layers knobs/persona/tools/guards).
+
+    **Resolution order (precedence):** ``config.template`` is checked FIRST — when
+    both a ``template`` field and a ``module_spec`` are present, the template wins
+    and the module import is never attempted.
+
+    1. ``config.template`` set → ``template_registry.build(name, spec, ws=ws)``.
+       ``name`` key selects the template; other keys form the spec dict.
+    2. else → import ``module_spec`` (``module:variable``) via ``importlib``
+       (NOT ``cli._load_agent`` — that would create a ``cli → _wiring`` cycle).
+    3. neither → ``TemplateConfigError`` with a clear message.
+
+    Note: this function is only called on the CLI/deploy paths.  On the serve path
+    (``create_app``), an explicit ``agent=`` argument passed by the caller skips
+    ``resolve_agent`` entirely (see the ``if agent is None`` guard), so a
+    ``create_app(agent=my_agent)`` call always wins over any template config.
+    """
+    import importlib
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    from ._template import template_registry
+
+    template_dict: dict[str, Any] | None = None
+    if config is not None and config.template is not None:
+        template_dict = config.template
+
+    if template_dict is not None:
+        tname = template_dict.get("name")
+        if not tname:
+            raise TemplateConfigError(
+                "AgentConfig.template must include a 'name' key to select the template. "
+                f"Got: {template_dict!r}"
+            )
+        spec = {k: v for k, v in template_dict.items() if k != "name"}
+        return template_registry.build(tname, spec, ws=ws)
+
+    if not module_spec:
+        raise TemplateConfigError(
+            "No agent to resolve: config has no 'template' field and no module_spec "
+            "was provided. Either add 'template = { name = \"...\", ... }' to "
+            "[tool.apx.agent] or pass a 'module:variable' module_spec."
+        )
+    if ":" not in module_spec:
+        raise TemplateConfigError(
+            f"module_spec must be 'module:variable', got {module_spec!r}."
+        )
+    mod_path, _, var_name = module_spec.partition(":")
+    if not mod_path or not var_name:
+        raise TemplateConfigError(
+            f"Both module and variable must be non-empty in module_spec, got {module_spec!r}."
+        )
+    cwd = str(_Path.cwd())
+    if cwd not in _sys.path:
+        _sys.path.insert(0, cwd)
+    try:
+        mod = importlib.import_module(mod_path)
+    except ImportError as e:
+        raise TemplateConfigError(
+            f"Failed to import {mod_path!r}: {e}. "
+            "Make sure the module is on PYTHONPATH or in the current directory."
+        ) from e
+    if not hasattr(mod, var_name):
+        raise TemplateConfigError(
+            f"Module {mod_path!r} has no attribute {var_name!r}."
+        )
+    return getattr(mod, var_name)
 
 
 def _resolve_env_var(value: str) -> str:
@@ -171,7 +342,7 @@ def _resolve_env_var(value: str) -> str:
 
 async def setup_agent(
     app: FastAPI,
-    agent: BaseAgent,
+    agent: "BaseAgent | None",
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
 ) -> AgentContext | None:
@@ -194,6 +365,14 @@ async def setup_agent(
         logger.info("No agent config found — agent protocol disabled")
         app.state.agent_context = None
         return None
+
+    # E3a: resolve from template if no agent was passed in.
+    if agent is None:
+        agent = resolve_agent(
+            None,
+            config,
+            ws=getattr(app.state, "workspace_client", None),
+        )
 
     # Merge sub_agents from config
     if config.sub_agents:
@@ -222,9 +401,15 @@ async def setup_agent(
                 sub_agent_urls.append(resolved)
                 existing.add(resolved)
 
-    # Apply knobs + persona overlay + config-tool merge BEFORE the card snapshot
-    # (collect_tools below) so declared tools are both callable and advertised.
-    finalize_agent(agent, config, pyproject_path=pyproject_path)
+    # Apply knobs + persona overlay + config-tool merge + memory attach BEFORE
+    # the card snapshot (collect_tools below) so all declared tools are both
+    # callable and advertised. ws is set by the lifespan before setup_agent runs.
+    finalize_agent(
+        agent,
+        config,
+        pyproject_path=pyproject_path,
+        ws=getattr(app.state, "workspace_client", None),
+    )
 
     tools = agent.collect_tools()
     tools += await agent.fetch_remote_tools()
@@ -545,7 +730,7 @@ async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
 
 
 def create_app(
-    agent: BaseAgent,
+    agent: "BaseAgent | None" = None,
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
     session_store: Any | None = None,
@@ -613,8 +798,18 @@ def create_app(
         if ctx is not None:
             try:
                 from ._invocations import mount_invocations_route
+                from ._memory_wiring import resolve_session_store  # noqa: PLC0415
 
-                mount_invocations_route(app, agent, ctx.config, session_store=session_store)
+                mount_invocations_route(
+                    app,
+                    ctx.agent,
+                    ctx.config,
+                    session_store=resolve_session_store(
+                        ctx.config,
+                        ws=app.state.workspace_client,
+                        override=session_store,
+                    ),
+                )
             except Exception as exc:
                 logger.warning("Skipping /invocations mount: %s", exc)
 

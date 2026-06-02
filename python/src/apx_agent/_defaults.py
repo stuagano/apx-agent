@@ -84,6 +84,23 @@ HeadersDependency: TypeAlias = Annotated[DatabricksAppsHeaders, Depends(get_data
 
 
 # ---------------------------------------------------------------------------
+# Principal dependency — per-request OBO identity
+# ---------------------------------------------------------------------------
+
+
+def _get_principal(headers: HeadersDependency) -> str | None:
+    """Return the OBO user identity (X-Forwarded-User) for the current request.
+
+    Used by config-built memory tools to resolve the per-request principal.
+    Returns ``None`` when running locally without Databricks Apps headers.
+    """
+    return headers.user_id
+
+
+PrincipalDependency: TypeAlias = Annotated[str | None, Depends(_get_principal)]
+
+
+# ---------------------------------------------------------------------------
 # Workspace client factories
 # ---------------------------------------------------------------------------
 
@@ -206,3 +223,9 @@ class Dependencies:
     Sql: TypeAlias = SqlDependency
     """SQL runner bound to the current user's workspace — excluded from schemas.
     Recommended usage: ``sql: Dependencies.Sql``"""
+
+    Principal: TypeAlias = PrincipalDependency
+    """Per-request OBO user identity from X-Forwarded-User.
+    Returns the username string when running inside a Databricks App, or
+    ``None`` for local development without the header.
+    Recommended usage: ``principal: Dependencies.Principal``"""
