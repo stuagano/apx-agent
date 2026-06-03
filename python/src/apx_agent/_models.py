@@ -171,6 +171,12 @@ class AgentConfig(BaseModel):
     url: str | None = None  # Public URL of this agent (supports $ENV_VAR); used for registry self-announcement
     registry: str | None = None  # URL of an agent registry to auto-register with on startup (supports $ENV_VAR)
     api_prefix: str = "/api"  # route prefix for tool endpoints
+    examples: list[str] = []
+    """Starter prompts shown on the dev-UI landing page (``[tool.apx.agent] examples``).
+
+    UI-only metadata: surfaced to the chat landing as clickable starter chips;
+    does not affect runtime agent behavior. Distinct from ``example`` (the
+    declarative example *backend* config)."""
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     """Built-in guard configuration — see ``[tool.apx.agent.guardrails]``."""
     template: dict[str, Any] | None = None
