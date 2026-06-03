@@ -13,8 +13,17 @@ from typing import Annotated, Any, TypeAlias
 from uuid import UUID
 
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.core import Config
 from fastapi import Depends, Header, Request
 from pydantic import BaseModel, SecretStr
+
+# Cap the Databricks SDK retry window for agent-runtime clients. The SDK
+# default is 300s, so a flaky/unreachable workspace API — e.g. FEVM/private-link
+# egress failing to reach the SQL warehouse API, or the host-metadata probe —
+# freezes an interactive agent for a full 5 minutes before erroring. 120s sits
+# well above a serverless SQL-warehouse cold-start (~20-30s) so legitimate
+# cold-starts still complete, but a genuine egress failure surfaces in ~2 min.
+_AGENT_RETRY_TIMEOUT_S = 120
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +43,18 @@ def _make_workspace_client(**kwargs: Any) -> WorkspaceClient:
     - Local dev (neither conflict): no auth_type, SDK auto-detects as usual.
     """
     if kwargs:
-        return WorkspaceClient(auth_type="pat", **kwargs)
+        kwargs.setdefault("retry_timeout_seconds", _AGENT_RETRY_TIMEOUT_S)
+        return WorkspaceClient(config=Config(auth_type="pat", **kwargs))
     client_id = os.environ.get("DATABRICKS_CLIENT_ID")
     client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET")
     if client_id and client_secret:
-        return WorkspaceClient(auth_type="oauth-m2m")
-    return WorkspaceClient()
+        return WorkspaceClient(
+            config=Config(
+                auth_type="oauth-m2m",
+                retry_timeout_seconds=_AGENT_RETRY_TIMEOUT_S,
+            )
+        )
+    return WorkspaceClient(config=Config(retry_timeout_seconds=_AGENT_RETRY_TIMEOUT_S))
 
 
 # ---------------------------------------------------------------------------
