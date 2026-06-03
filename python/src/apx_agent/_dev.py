@@ -117,6 +117,9 @@ _TRACE_CSS = """
              padding:8px 10px;font-size:11px;font-family:monospace;
              color:#aaa;white-space:pre-wrap;word-break:break-all;
              max-height:240px;overflow-y:auto;}
+  .span-event{font-size:11px;color:#888;padding:3px 14px 3px 30px;
+              border-top:1px solid #161616;font-family:monospace;
+              white-space:pre-wrap;word-break:break-word;}
   .indent{border-left:2px solid var(--border);padding-left:16px;margin-top:4px;}
   .err-banner{background:#2a0f0f;border:1px solid #7f1d1d;border-radius:6px;
               padding:12px 16px;color:#fda4af;margin-bottom:16px;}
@@ -209,16 +212,23 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
                 io_html += f'<div class="io-block"><div class="io-label">Inputs</div><pre class="io-pre">{_html.escape(inp[:4000])}</pre></div>'
             if out:
                 io_html += f'<div class="io-block"><div class="io-label">Outputs</div><pre class="io-pre">{_html.escape(out[:4000])}</pre></div>'
+            # Progress markers (span events) render in an always-visible strip
+            # so a cold-start step shows even while the body is collapsed.
+            events_html = ""
+            for ev in (s.get("events") or []):
+                msg = (ev.get("attributes") or {}).get("message") or ev.get("name", "")
+                events_html += f'<div class="span-event">▸ {_html.escape(msg)}</div>'
             kids = "".join(_render_span(c, depth + 1) for c in children.get(s.get("span_id", ""), []))
             indent = f'<div class="indent">{kids}</div>' if kids else ""
             return (
                 f'<div class="span-card">'
-                f'<div class="span-head" onclick="this.nextSibling.classList.toggle(\'open\')">'
+                f'<div class="span-head" onclick="this.parentElement.querySelector(\'.span-body\').classList.toggle(\'open\')">'
                 f'<span class="stype stype-{st}">{st}</span>'
                 f'<span class="sname">{name}</span>'
                 f'<span class="sdur">{dur}</span>'
                 f'<span class="sstatus {st_cls}">{status}</span>'
                 f'</div>'
+                f'{events_html}'
                 f'<div class="span-body">{io_html}</div>'
                 f'</div>'
                 f'{indent}'
@@ -704,6 +714,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 "duration_ms": round((s.end_time_ns - s.start_time_ns) / 1_000_000, 1) if s.end_time_ns and s.start_time_ns else None,
                 "inputs": s.inputs,
                 "outputs": s.outputs,
+                "events": [
+                    {
+                        "name": getattr(e, "name", ""),
+                        "attributes": {
+                            k: str(v)
+                            for k, v in (getattr(e, "attributes", None) or {}).items()
+                        },
+                    }
+                    for e in (getattr(s, "events", None) or [])
+                ],
             })
         if fmt == "json":
             return JSONResponse({"trace_id": trace_id, "spans": span_dicts})
