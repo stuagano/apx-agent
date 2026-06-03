@@ -12,7 +12,7 @@ Three entry points:
 
   * ``eval_against_endpoint(endpoint_url, evalset, ...)`` — same surface as
     ``evaluate()`` but routes every case through a deployed Databricks App's
-    ``/responses`` endpoint. Streams by default to avoid proxy timeouts on
+    ``/invocations`` endpoint. Streams by default to avoid proxy timeouts on
     long pipelines. Pairs with ``apx eval --endpoint-url <url>``.
 """
 
@@ -60,7 +60,7 @@ def app_predict_fn(url: str, token: str | None = None) -> Callable[[dict[str, An
         )
 
     The predict function accepts a dict with a "messages" key (list of message
-    dicts) or a plain string, posts to the agent's /responses endpoint, and
+    dicts) or a plain string, posts to the agent's /invocations endpoint, and
     returns the response text.
     """
     import httpx
@@ -77,7 +77,7 @@ def app_predict_fn(url: str, token: str | None = None) -> Callable[[dict[str, An
             ]
 
         response = httpx.post(
-            f"{base}/responses",
+            f"{base}/invocations",
             json={"input": messages},
             headers=headers,
             timeout=120.0,
@@ -254,7 +254,7 @@ def evaluate(
 
 
 # ---------------------------------------------------------------------------
-# HTTP-endpoint evaluation — drive a deployed Databricks App via /responses
+# HTTP-endpoint evaluation — drive a deployed Databricks App via /invocations
 # ---------------------------------------------------------------------------
 
 
@@ -345,7 +345,7 @@ def endpoint_predict_fn(
     stream: bool = True,
     timeout: float = 300.0,
 ) -> Callable[[Any], str]:
-    """Return a predict function that POSTs to a deployed App's ``/responses``.
+    """Return a predict function that POSTs to a deployed App's ``/invocations``.
 
     Mirrors the pattern from ``examples/data-triage-agent/eval/eval_dataset.py``.
     When ``stream=True`` (the default) the predict function consumes the
@@ -357,7 +357,7 @@ def endpoint_predict_fn(
     """
     resolved_token = _resolve_endpoint_token(token, profile=profile)
     base = endpoint_url.rstrip("/")
-    url = f"{base}/responses"
+    url = f"{base}/invocations"
     headers = {
         "Authorization": f"Bearer {resolved_token}",
         "Content-Type": "application/json",
@@ -367,7 +367,10 @@ def endpoint_predict_fn(
         import urllib.request
 
         question = _extract_question(inputs)
-        body = _json.dumps({"input": question, "stream": stream}).encode()
+        # ``/invocations`` (ResponsesAgent) takes the list form of ``input``.
+        body = _json.dumps(
+            {"input": [{"role": "user", "content": question}], "stream": stream}
+        ).encode()
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
 
         if stream:
@@ -412,14 +415,14 @@ def eval_against_endpoint(
 ) -> Any:
     """Run ``mlflow.genai.evaluate`` against a deployed apx-agent endpoint.
 
-    Drives each evalset row through the App's ``/responses`` endpoint over
+    Drives each evalset row through the App's ``/invocations`` endpoint over
     HTTP. Returns whatever ``mlflow.genai.evaluate`` returns — the same
     shape as :func:`evaluate`.
 
     Args:
         endpoint_url: Base URL of the deployed Databricks App (e.g.
             ``https://my-agent.my-workspace.databricksapps.com``). The
-            ``/responses`` suffix is appended automatically.
+            ``/invocations`` suffix is appended automatically.
         evalset: Eval dataset. Same shape ``mlflow.genai.evaluate`` accepts —
             list of dicts, DataFrame, or path-like.
         token: Databricks bearer token. Falls back to ``$DATABRICKS_TOKEN``
