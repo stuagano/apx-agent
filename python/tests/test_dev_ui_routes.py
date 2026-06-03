@@ -320,3 +320,24 @@ class TestEventsToolCalls:
         assert "item.type === 'function_call_output'" in html
         # and finalizeTrace is told not to double-emit when the stream already did
         assert "emitEvents: !toolEventsFromStream" in html
+
+
+class TestSerializeTraceSpans:
+    """The shared span->dict serializer used by both the route and the
+    in-process trace buffer must produce identical span dicts (incl. events)."""
+
+    def test_serialize_trace_spans_shape(self):
+        from apx_agent._dev import _serialize_trace_spans
+        from types import SimpleNamespace
+        span = SimpleNamespace(
+            span_id="s1", parent_id=None, name="run_sql",
+            span_type=SimpleNamespace(value="TOOL"),
+            status=SimpleNamespace(status_code=SimpleNamespace(value="OK")),
+            start_time_ns=0, end_time_ns=1_000_000, inputs={"q": "x"}, outputs=None,
+            events=[SimpleNamespace(name="apx.progress", attributes={"message": "hi"})],
+        )
+        trace = SimpleNamespace(data=SimpleNamespace(spans=[span]))
+        out = _serialize_trace_spans(trace)
+        assert out[0]["name"] == "run_sql"
+        assert out[0]["span_type"] == "TOOL"
+        assert out[0]["events"][0]["attributes"]["message"] == "hi"

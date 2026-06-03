@@ -180,6 +180,42 @@ def _render_traces_list(rows: list, agent_name: str | None) -> str:
 </body></html>"""
 
 
+def _serialize_trace_spans(trace: Any) -> list[dict]:
+    """Serialize an MLflow trace's spans into plain JSON-able dicts.
+
+    Shared by the trace-detail route AND the in-process trace buffer
+    (``_trace_store``) so both produce IDENTICAL span dicts. Includes the
+    ``events`` field (per-span MLflow span events, e.g. ``apx.progress`` /
+    tool-call markers) added in #128.
+    """
+    spans = list(getattr(getattr(trace, "data", None), "spans", None) or [])
+    span_dicts: list[dict] = []
+    for s in spans:
+        span_dicts.append({
+            "span_id": s.span_id,
+            "parent_id": s.parent_id,
+            "name": s.name,
+            "span_type": s.span_type.value if hasattr(s.span_type, "value") else str(s.span_type),
+            "status": s.status.status_code.value if hasattr(getattr(s.status, "status_code", None), "value") else str(s.status),
+            "start_time_ns": s.start_time_ns,
+            "end_time_ns": s.end_time_ns,
+            "duration_ms": round((s.end_time_ns - s.start_time_ns) / 1_000_000, 1) if s.end_time_ns and s.start_time_ns else None,
+            "inputs": s.inputs,
+            "outputs": s.outputs,
+            "events": [
+                {
+                    "name": getattr(e, "name", ""),
+                    "attributes": {
+                        k: str(v)
+                        for k, v in (getattr(e, "attributes", None) or {}).items()
+                    },
+                }
+                for e in (getattr(s, "events", None) or [])
+            ],
+        })
+    return span_dicts
+
+
 def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -> str:
     import json as _json, html as _html
 
@@ -700,31 +736,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             if fmt == "json":
                 return JSONResponse({"error": "not found"}, status_code=404)
             return HTMLResponse(_render_trace_detail(trace_id, None, "Trace not found"))
-        spans = list(getattr(trace.data, "spans", None) or [])
-        span_dicts = []
-        for s in spans:
-            span_dicts.append({
-                "span_id": s.span_id,
-                "parent_id": s.parent_id,
-                "name": s.name,
-                "span_type": s.span_type.value if hasattr(s.span_type, "value") else str(s.span_type),
-                "status": s.status.status_code.value if hasattr(getattr(s.status, "status_code", None), "value") else str(s.status),
-                "start_time_ns": s.start_time_ns,
-                "end_time_ns": s.end_time_ns,
-                "duration_ms": round((s.end_time_ns - s.start_time_ns) / 1_000_000, 1) if s.end_time_ns and s.start_time_ns else None,
-                "inputs": s.inputs,
-                "outputs": s.outputs,
-                "events": [
-                    {
-                        "name": getattr(e, "name", ""),
-                        "attributes": {
-                            k: str(v)
-                            for k, v in (getattr(e, "attributes", None) or {}).items()
-                        },
-                    }
-                    for e in (getattr(s, "events", None) or [])
-                ],
-            })
+        span_dicts = _serialize_trace_spans(trace)
         if fmt == "json":
             return JSONResponse({"trace_id": trace_id, "spans": span_dicts})
         return HTMLResponse(_render_trace_detail(trace_id, span_dicts, None))
