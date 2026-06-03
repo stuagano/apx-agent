@@ -3375,3 +3375,8 @@ def test_apx_info_with_template_config(tmp_path, monkeypatch):
     res = CliRunner().invoke(main, ["info", "--module", "nonexistent:agent"])
     assert res.exit_code == 0, res.output
     assert "run_sql" in res.output
+
+
+def test_scaffold_apps_pyproject_ships_examples() -> None:
+    from apx_agent.cli import _SCAFFOLD_APPS_PYPROJECT
+    assert "examples = [" in _SCAFFOLD_APPS_PYPROJECT
