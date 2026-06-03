@@ -229,3 +229,31 @@ class TestAutologEnvVar:
 
             autolog_if_env()
             mock_autolog.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# emit_progress unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestEmitProgress:
+    def test_emit_progress_noop_without_active_span(self) -> None:
+        from apx_agent._mlflow_tracing import emit_progress
+
+        # No active span / tracking — must not raise.
+        emit_progress("hello", warehouse_id="wh-1")
+
+    def test_emit_progress_adds_event_to_active_span(self) -> None:
+        import mlflow
+
+        from apx_agent._mlflow_tracing import emit_progress
+
+        with mlflow.start_span(name="parent") as span:
+            emit_progress("Starting SQL warehouse", warehouse_id="wh-1")
+        # The span recorded an event named for apx progress carrying the message.
+        events = getattr(span, "events", None) or []
+        assert any(
+            getattr(e, "name", "") == "apx.progress"
+            and (getattr(e, "attributes", {}) or {}).get("message") == "Starting SQL warehouse"
+            for e in events
+        )
