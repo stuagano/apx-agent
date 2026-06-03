@@ -1497,6 +1497,11 @@ form.addEventListener('submit', async e => {{
   resetTrace();
 
   const assistantDiv = addMsg('assistant', '', true);
+  // Live tool steps render into their own container ABOVE the answer bubble.
+  for (const k in inlineSteps) delete inlineSteps[k];   // reset per send
+  const stepsContainer = document.createElement('div');
+  stepsContainer.className = 'inline-steps';
+  chat.insertBefore(stepsContainer, assistantDiv);       // steps appear ABOVE the answer
   let full = '';
   let pendingTrace = null;
   let traceId = null;
@@ -1552,12 +1557,21 @@ form.addEventListener('submit', async e => {{
                 ? item.arguments : JSON.stringify(item.arguments || {{}});
               const callEv = addEvent('tool-call', item.name || 'tool',
                 argStr.slice(0, 80), {{ arguments: argStr }});
+              // Also render the call live in the transcript as a step row.
+              renderInlineStep(stepsContainer, item.call_id || item.id || item.name,
+                {{ name: item.name, phase: 'running', detail: argStr }});
             }} else if (item.type === 'function_call_output') {{
               toolEventsFromStream = true;
               const outStr = typeof item.output === 'string'
                 ? item.output : JSON.stringify(item.output || '');
               addEvent('tool-result', item.name || 'tool',
                 outStr.slice(0, 80), {{ output: outStr }});
+              // Update the SAME step row (shared call_id) running → done/error.
+              // Pass item.name unchanged (undefined on output items) so the row's
+              // stashed tool name survives — a truthy fallback would overwrite it.
+              const isErr = /\"error\"|\berror\b/i.test(outStr);
+              renderInlineStep(stepsContainer, item.call_id || item.id || item.name,
+                {{ name: item.name, phase: isErr ? 'error' : 'done', detail: outStr }});
             }}
           }} else if (ptype === 'response.completed' && !full) {{
             const out = payload.response && payload.response.output;
