@@ -1428,7 +1428,7 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
     "--endpoint-url", default=None,
     help="Base URL of a deployed Databricks App (e.g. "
          "https://my-agent.<workspace>.databricksapps.com). When set, eval runs "
-         "against the App's /responses endpoint over HTTP. Mutually exclusive "
+         "against the App's /invocations endpoint over HTTP. Mutually exclusive "
          "with --model and --module.",
 )
 @click.option(
@@ -1443,7 +1443,7 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
 )
 @click.option(
     "--stream/--no-stream", default=True,
-    help="Stream the /responses endpoint (default). --no-stream waits for a "
+    help="Stream the /invocations endpoint (default). --no-stream waits for a "
          "single JSON body. Only used with --endpoint-url.",
 )
 @click.option(
@@ -1474,7 +1474,7 @@ def eval_cmd(
       In-process (default): compile the agent and run eval directly.
         apx eval evalset.jsonl --model databricks-claude-sonnet-4-6
 
-      Endpoint: drive a deployed App's /responses endpoint over HTTP.
+      Endpoint: drive a deployed App's /invocations endpoint over HTTP.
         apx eval evalset.jsonl --endpoint-url https://<app>.databricksapps.com
     """
     # Mutex: --endpoint-url is incompatible with the in-process eval flags.

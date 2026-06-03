@@ -82,7 +82,7 @@ class TestAppPredictFn:
         with patch("httpx.post", return_value=resp) as mock_post:
             predict("test")
             url = mock_post.call_args[0][0]
-            assert url == "http://my-agent.com/responses"
+            assert url == "http://my-agent.com/invocations"
 
 
 # ---------------------------------------------------------------------------
@@ -172,9 +172,12 @@ class TestEndpointPredictFn:
             assert result == "Hello, world"
             # Confirm the request payload + URL.
             req = mock_open.call_args[0][0]
-            assert req.full_url == "https://app.example.com/responses"
+            assert req.full_url == "https://app.example.com/invocations"
             payload = json.loads(req.data.decode())
-            assert payload == {"input": "hi", "stream": True}
+            assert payload == {
+                "input": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            }
             assert req.headers.get("Authorization") == "Bearer T"
             assert req.get_method() == "POST"
 
@@ -192,7 +195,10 @@ class TestEndpointPredictFn:
             assert result == "Final answer."
             req = mock_open.call_args[0][0]
             payload = json.loads(req.data.decode())
-            assert payload == {"input": "what is 2+2?", "stream": False}
+            assert payload == {
+                "input": [{"role": "user", "content": "what is 2+2?"}],
+                "stream": False,
+            }
 
     def test_extracts_question_from_messages(self, monkeypatch):
         monkeypatch.setenv("DATABRICKS_TOKEN", "T")
@@ -210,7 +216,7 @@ class TestEndpointPredictFn:
             )
             req = mock_open.call_args[0][0]
             payload = json.loads(req.data.decode())
-            assert payload["input"] == "real question"
+            assert payload["input"] == [{"role": "user", "content": "real question"}]
 
     def test_url_trailing_slash_stripped(self, monkeypatch):
         monkeypatch.setenv("DATABRICKS_TOKEN", "T")
@@ -220,7 +226,7 @@ class TestEndpointPredictFn:
         with patch("urllib.request.urlopen", return_value=fake) as mock_open:
             predict("x")
             req = mock_open.call_args[0][0]
-            assert req.full_url == "https://app.example.com/responses"
+            assert req.full_url == "https://app.example.com/invocations"
 
     def test_stream_skips_malformed_lines(self, monkeypatch):
         """Non-data lines and malformed JSON shouldn't crash the predict fn."""
