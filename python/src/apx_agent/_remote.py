@@ -6,7 +6,7 @@ calls to the remote agent.
 
 Prefers ``DatabricksOpenAI.responses.create(model="apps/<name>")`` for
 automatic OBO token forwarding through the Supervisor gateway. Falls
-back to direct ``POST /responses`` when the app name cannot be resolved.
+back to direct ``POST /invocations`` when the app name cannot be resolved.
 
 Extends ``BaseAgent`` so it can be composed in ``SequentialAgent``,
 ``ParallelAgent``, ``RouterAgent``, or ``HandoffAgent``.
@@ -293,7 +293,7 @@ class RemoteDatabricksAgent(BaseAgent):
                     exc,
                 )
 
-        # Fallback: direct POST /responses
+        # Fallback: direct POST /invocations
         return await self._call_via_http(messages, obo_headers)
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
@@ -406,7 +406,7 @@ class RemoteDatabricksAgent(BaseAgent):
         messages: list[Message],
         headers: dict[str, str],
     ) -> str:
-        """Direct POST /responses fallback."""
+        """Direct POST /invocations fallback."""
         from httpx import AsyncClient
 
         payload = {
@@ -415,7 +415,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
         async with AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
-                f"{self._base_url}/responses",
+                f"{self._base_url}/invocations",
                 json=payload,
                 headers={"Content-Type": "application/json", **headers},
             )
@@ -436,7 +436,7 @@ class RemoteDatabricksAgent(BaseAgent):
         messages: list[Message],
         headers: dict[str, str],
     ) -> AsyncGenerator[str, None]:
-        """Direct POST /responses with stream=true, parsing SSE."""
+        """Direct POST /invocations with stream=true, parsing SSE."""
         from httpx import AsyncClient
 
         payload = {
@@ -447,7 +447,7 @@ class RemoteDatabricksAgent(BaseAgent):
         async with AsyncClient(timeout=self._timeout) as client:
             async with client.stream(
                 "POST",
-                f"{self._base_url}/responses",
+                f"{self._base_url}/invocations",
                 json=payload,
                 headers={
                     "Content-Type": "application/json",
