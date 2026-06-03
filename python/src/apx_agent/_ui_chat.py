@@ -525,6 +525,21 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .msg.assistant {{ align-self: flex-start; color: #ddd; white-space: pre-wrap; }}
   .msg.assistant.streaming::after {{ content: "▋"; animation: blink .7s step-end infinite; }}
   .msg.system {{ align-self: center; font-size: 13px; color: #444; font-style: italic; padding: 20px 0; }}
+  /* --- Rendered assistant markdown (tables, code, lists, headings) --- */
+  .msg.assistant table {{ border-collapse: collapse; margin: 8px 0; font-size: 12px; width: 100%; }}
+  .msg.assistant th, .msg.assistant td {{ border: 1px solid #2a2a2a; padding: 5px 9px; text-align: left; }}
+  .msg.assistant th {{ background: #161616; color: #cfe; font-weight: 600; }}
+  .msg.assistant tr:nth-child(even) td {{ background: #0f0f0f; }}
+  .msg.assistant pre {{ background: #111; border: 1px solid #222; border-radius: 6px; padding: 10px; overflow-x: auto; font-size: 12px; }}
+  .msg.assistant code {{ background: #15171a; border-radius: 4px; padding: 1px 5px; font-size: 12px; font-family: ui-monospace, monospace; }}
+  .msg.assistant pre code {{ background: none; padding: 0; }}
+  .msg.assistant h1, .msg.assistant h2, .msg.assistant h3 {{ margin: 10px 0 6px; line-height: 1.3; }}
+  .msg.assistant ul, .msg.assistant ol {{ margin: 6px 0 6px 20px; }}
+  .msg.assistant li {{ margin: 2px 0; }}
+  .msg.assistant a {{ color: #60b0ff; }}
+  .msg.assistant p {{ margin: 6px 0; }}
+  .msg.assistant > :first-child {{ margin-top: 0; }}
+  .msg.assistant > :last-child {{ margin-bottom: 0; }}
   @keyframes blink {{ 50% {{ opacity: 0; }} }}
 
   /* Inline tool call pills */
@@ -776,6 +791,10 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
 </div>
 
 <div class="tooltip" id="tooltip"></div>
+
+<!-- Vendored locally (no CDN) so the deployed app is offline/private-link safe. -->
+<script src="/_apx/vendor/marked.min.js"></script>
+<script src="/_apx/vendor/purify.min.js"></script>
 
 <script>
 const TOOLS = {tools_json};
@@ -1177,10 +1196,25 @@ function closeDetail() {{
 }}
 
 // ── Chat ──
+function renderAssistantInto(el, text) {{
+  // Sanitized markdown → HTML for assistant messages. marked parses, DOMPurify
+  // strips anything unsafe (escape-by-default; the model never injects raw HTML).
+  try {{
+    el.innerHTML = DOMPurify.sanitize(marked.parse(text || ''));
+    // Block-level HTML now owns the layout — turn off the pre-wrap that the
+    // plain-text fallback relies on, otherwise marked's inter-block newline
+    // text-nodes render as visible blank lines (double-spaced output).
+    el.style.whiteSpace = 'normal';
+  }} catch (e) {{
+    el.textContent = text;       // never break the chat on a render error
+    el.style.whiteSpace = '';    // revert to the CSS pre-wrap for plain text
+  }}
+}}
 function addMsg(role, text, streaming) {{
   const div = document.createElement('div');
   div.className = `msg ${{role}}${{streaming ? ' streaming' : ''}}`;
-  div.textContent = text;
+  if (role === 'assistant') renderAssistantInto(div, text);
+  else div.textContent = text;
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
   return div;
@@ -1451,7 +1485,7 @@ form.addEventListener('submit', async e => {{
           if (payload.trace_id && !traceId) traceId = payload.trace_id;
           if (ptype === 'response.output_text.delta' && payload.delta) {{
             full += payload.delta;
-            assistantDiv.textContent = full;
+            renderAssistantInto(assistantDiv, full);
             chat.scrollTop = chat.scrollHeight;
           }} else if (ptype === 'response.output_item.done') {{
             const item = payload.item || {{}};
@@ -1459,7 +1493,7 @@ form.addEventListener('submit', async e => {{
               for (const part of item.content) {{
                 if (part.type === 'output_text' && part.text) {{
                   full += part.text;
-                  assistantDiv.textContent = full;
+                  renderAssistantInto(assistantDiv, full);
                   chat.scrollTop = chat.scrollHeight;
                 }}
               }}
@@ -1474,7 +1508,7 @@ form.addEventListener('submit', async e => {{
                   }}
                 }}
               }}
-              if (full) assistantDiv.textContent = full;
+              if (full) renderAssistantInto(assistantDiv, full);
             }}
           }} else if (ptype === 'tool.trace') {{
             // Intentional dormant hook: no current producer emits ``tool.trace``.
@@ -1492,7 +1526,7 @@ form.addEventListener('submit', async e => {{
     }}
   }} catch (err) {{
     full = `Error: ${{err.message}}`;
-    assistantDiv.textContent = full;
+    renderAssistantInto(assistantDiv, full);
     traceStatus = 'error';
   }}
 
