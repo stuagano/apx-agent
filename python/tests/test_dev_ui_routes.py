@@ -295,3 +295,28 @@ class TestTraceDetailSpanEvents:
         }]
         html = _render_trace_detail("tr-1", spans, None)
         assert "Starting SQL warehouse" in html
+
+
+class TestEventsToolCalls:
+    """The chat stream surfaces tool calls (+ their SQL/args) as Events live,
+    independent of the trace-span harvest (which needs blob-storage egress).
+    Regression for tool calls being invisible in Events on FEVM workspaces."""
+
+    def test_stream_handler_emits_tool_call_events(self):
+        from apx_agent._ui_chat import _render_agent_ui
+        from apx_agent import AgentConfig, AgentContext
+        from apx_agent._models import AgentTool
+        cfg = AgentConfig(name="d", description="x", examples=[])
+        ctx = AgentContext(
+            config=cfg,
+            tools=[AgentTool(name="run_sql", description="Run SQL",
+                             input_schema={"type": "object", "properties": {}})],
+            card={"name": "d", "skills": []}, agent=None,  # type: ignore[arg-type]
+        )
+        html = _render_agent_ui(ctx)
+        # function_call / function_call_output items become tool events from the stream
+        assert "item.type === 'function_call'" in html
+        assert "addEvent('tool-call', item.name" in html
+        assert "item.type === 'function_call_output'" in html
+        # and finalizeTrace is told not to double-emit when the stream already did
+        assert "emitEvents: !toolEventsFromStream" in html
