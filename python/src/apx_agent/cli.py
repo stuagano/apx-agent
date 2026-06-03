@@ -611,6 +611,13 @@ instructions = "You are a helpful assistant."
 # that imports + wraps it for the Databricks Apps runtime.
 module = "agent:agent"
 
+# Starter prompts shown on the agent's landing page (clickable; fill the chat
+# box so you can edit before sending). Tailor these to your agent's data/tools.
+examples = [
+    "Show me a few sample rows from the data you can access",
+    "What questions can you answer?",
+]
+
 # Optional: declare resource tools as data (no code needed). `type` selects a
 # platform factory; remaining keys are its arguments. See docs/configuration.md
 # for the full type list and the APX_TOOLS_* trust controls.

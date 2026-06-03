@@ -411,6 +411,49 @@ render();
 """
 
 
+def _render_landing(ctx: AgentContext) -> str:
+    """Server-rendered empty-chat landing: greeting + capability cards + starter chips.
+
+    Cards come from the agent's tools (click to expand params); chips come from
+    ``ctx.config.examples`` (click fills the input). Each block renders only when
+    its data is present; the greeting always renders.
+    """
+    import html as _html
+    import json as _json
+
+    name = ctx.config.name
+    desc = ctx.config.description or ""
+    tools = [t for t in ctx.tools if t.name != "create_tool"]
+    examples = ctx.config.examples or []
+
+    parts = [f'<div class="landing-hi">{_html.escape(name)}</div>']
+    if desc:
+        parts.append(f'<div class="landing-sub">{_html.escape(desc)}</div>')
+
+    if tools:
+        cards = "".join(
+            '<div class="cap-card" onclick="this.classList.toggle(&quot;open&quot;)">'
+            f'<div class="cap-name">{_html.escape(t.name)}</div>'
+            f'<div class="cap-desc">{_html.escape(t.description or "")}</div>'
+            f'<pre class="cap-params">{_html.escape(_json.dumps(t.input_schema or {"type": "object", "properties": {}}, indent=2))}</pre>'
+            '</div>'
+            for t in tools
+        )
+        parts.append('<div class="landing-label">What I can do</div>'
+                     f'<div class="cap-cards">{cards}</div>')
+
+    if examples:
+        chips = "".join(
+            f'<button type="button" class="starter-chip" onclick="useExample(this)" '
+            f'data-q="{_html.escape(q, quote=True)}">{_html.escape(q)} →</button>'
+            for q in examples
+        )
+        parts.append('<div class="landing-label">Try asking</div>'
+                     f'<div class="starter-chips">{chips}</div>')
+
+    return f'<div id="landing">{"".join(parts)}</div>'
+
+
 def _render_agent_ui(ctx: AgentContext | None) -> str:
     """Return a self-contained HTML page for interactively testing the agent."""
     import json as _json
@@ -633,6 +676,24 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
                    padding: 12px 24px; font-size: 13px; line-height: 1.6; flex-shrink: 0; }}
   #setup-banner code {{ background: #1a1000; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }}
   .empty-state {{ padding: 24px; color: #444; font-size: 13px; text-align: center; }}
+
+  /* --- Landing (empty-chat) --- */
+  #landing {{ padding: 28px 22px; max-width: 680px; }}
+  .landing-hi {{ font-size: 19px; font-weight: 600; color: #fff; margin-bottom: 4px; }}
+  .landing-sub {{ font-size: 13px; color: #8a929b; margin-bottom: 18px; line-height: 1.4; }}
+  .landing-label {{ font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #5d646c; margin: 16px 0 8px; }}
+  .cap-cards {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }}
+  .cap-card {{ background: #111418; border: 1px solid #262b31; border-radius: 8px; padding: 11px 13px; cursor: pointer; }}
+  .cap-card:hover {{ border-color: #3a424b; }}
+  .cap-name {{ color: #9ecbff; font-size: 12.5px; font-family: ui-monospace, monospace; }}
+  .cap-desc {{ color: #9aa3ad; font-size: 11px; margin-top: 3px; line-height: 1.35; }}
+  .cap-params {{ display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #222;
+                 color: #8a929b; font-size: 10.5px; white-space: pre-wrap; }}
+  .cap-card.open .cap-params {{ display: block; }}
+  .cap-card.open {{ border-color: #2f6b46; }}
+  .starter-chip {{ display: inline-block; background: #15171a; border: 1px solid #2f343a; color: #bfe9cf;
+                   border-radius: 16px; padding: 7px 13px; font-size: 12px; margin: 0 6px 7px 0; cursor: pointer; }}
+  .starter-chip:hover {{ border-color: #2f6b46; }}
 </style>
 </head>
 <body>
@@ -648,7 +709,7 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   <!-- Chat (left) -->
   <div class="chat-panel">
     <div id="chat">
-      <div class="msg system">Chat with <strong>{agent_name}</strong></div>
+      {_render_landing(ctx) if ctx else f'<div class="msg system">Chat with <strong>{agent_name}</strong></div>'}
     </div>
     <form id="form" class="input-bar" autocomplete="off">
       <textarea id="input" rows="1" placeholder="Type a message…" required></textarea>
@@ -718,6 +779,11 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
 
 <script>
 const TOOLS = {tools_json};
+function useExample(btn) {{
+  const inp = document.getElementById('input');
+  inp.value = btn.dataset.q;
+  inp.focus();
+}}
 const chat = document.getElementById('chat');
 const form = document.getElementById('form');
 const inputEl = document.getElementById('input');
@@ -1344,6 +1410,7 @@ form.addEventListener('submit', async e => {{
   e.preventDefault();
   const text = inputEl.value.trim();
   if (!text) return;
+  document.getElementById('landing')?.remove();
   inputEl.value = '';
   inputEl.style.height = 'auto';
   sendBtn.disabled = true;
