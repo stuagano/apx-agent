@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from typing import Any
 
 MAX_TRACES = 50
 
@@ -116,10 +117,10 @@ def _capture_root_trace(otel_span: object) -> None:
 # active multi-processor to dispatch ``on_end`` to it (a duck-typed object is
 # silently never called). We build the subclass lazily and cache one instance,
 # so this module still imports cleanly when OpenTelemetry / MLflow are absent.
-_CAPTURE_INSTANCE: object | None = None
+_CAPTURE_INSTANCE: Any = None
 
 
-def _get_capture_processor() -> object:
+def _get_capture_processor() -> Any:
     """Return the singleton capture ``SpanProcessor`` (lazily building the OTel
     subclass on first use)."""
     global _CAPTURE_INSTANCE
