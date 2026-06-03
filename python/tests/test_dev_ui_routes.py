@@ -117,6 +117,22 @@ class TestVendorAssets:
         assert r.status_code in (403, 404)
 
 
+class TestMarkdownWiring:
+    """The chat page loads the vendored libs locally and renders assistant
+    messages as sanitized markdown."""
+
+    def test_page_loads_vendor_libs_and_renders_assistant(self):
+        from apx_agent._ui_chat import _render_agent_ui
+
+        # Building the full HTML also catches f-string brace-doubling mistakes
+        # in the CSS/JS we added (a stray single {/} throws at f-string eval).
+        html = _render_agent_ui(_make_ctx())
+        assert "/_apx/vendor/marked.min.js" in html
+        assert "/_apx/vendor/purify.min.js" in html
+        assert "DOMPurify.sanitize(marked.parse(" in html  # render wiring present
+        assert "renderAssistantInto" in html  # helper present
+
+
 # ---------------------------------------------------------------------------
 # _pick_workspace_defaults — the Setup page's auto-prefill source
 # ---------------------------------------------------------------------------
