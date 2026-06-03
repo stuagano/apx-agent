@@ -116,6 +116,25 @@ PrincipalDependency: TypeAlias = Annotated[str | None, Depends(_get_principal)]
 
 
 # ---------------------------------------------------------------------------
+# Progress dependency — emit trace progress markers
+# ---------------------------------------------------------------------------
+
+
+ProgressFn: TypeAlias = Callable[..., None]
+"""Callable a tool calls to emit a progress marker into the trace."""
+
+
+def _get_progress() -> ProgressFn:
+    """Return the progress emitter (records a span event on the active span)."""
+    from ._mlflow_tracing import emit_progress
+
+    return emit_progress
+
+
+ProgressDependency: TypeAlias = Annotated[ProgressFn, Depends(_get_progress)]
+
+
+# ---------------------------------------------------------------------------
 # Workspace client factories
 # ---------------------------------------------------------------------------
 
@@ -244,3 +263,7 @@ class Dependencies:
     Returns the username string when running inside a Databricks App, or
     ``None`` for local development without the header.
     Recommended usage: ``principal: Dependencies.Principal``"""
+
+    Progress: TypeAlias = ProgressDependency
+    """Emit a progress marker into the trace: ``progress("Loading…")``.
+    Recommended usage: ``progress: Dependencies.Progress``."""
