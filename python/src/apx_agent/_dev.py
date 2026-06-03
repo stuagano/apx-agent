@@ -117,6 +117,25 @@ _TRACE_CSS = """
              padding:8px 10px;font-size:11px;font-family:monospace;
              color:#aaa;white-space:pre-wrap;word-break:break-all;
              max-height:240px;overflow-y:auto;}
+  /* Compact, deduped conversation view (chat payloads) */
+  .convo{display:flex;flex-direction:column;gap:5px;}
+  .tmsg{display:flex;gap:8px;font-size:12px;line-height:1.45;align-items:baseline;}
+  .trole{flex:none;min-width:74px;color:#6b7686;font-size:10px;font-weight:600;
+         text-transform:uppercase;letter-spacing:.4px;font-family:ui-monospace,monospace;}
+  .tcontent{color:#cbd2da;white-space:pre-wrap;word-break:break-word;
+            font-family:ui-monospace,monospace;font-size:11.5px;}
+  details.tsys{font-size:12px;}
+  details.tsys>summary,details.tprefix>summary{cursor:pointer;color:#6b7686;font-size:11px;
+            list-style:none;padding:1px 0;}
+  details.tsys>summary::-webkit-details-marker,
+  details.tprefix>summary::-webkit-details-marker{display:none;}
+  details.tsys>summary::before,details.tprefix>summary::before{content:"▸ ";color:#4b5563;}
+  details.tsys[open]>summary::before,details.tprefix[open]>summary::before{content:"▾ ";}
+  details.tprefix{border-left:2px solid #1e1e1e;padding-left:8px;margin:2px 0;}
+  details.tprefix[open]{display:flex;flex-direction:column;gap:5px;}
+  pre.tpre{background:#0d0d0d;border:1px solid #1e1e1e;border-radius:5px;margin:4px 0 0;
+           padding:8px 10px;font-size:11px;font-family:monospace;color:#9aa3ad;
+           white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;}
   .span-event{font-size:11px;color:#888;padding:3px 14px 3px 30px;
               border-top:1px solid #161616;font-family:monospace;
               white-space:pre-wrap;word-break:break-word;}
@@ -216,6 +235,175 @@ def _serialize_trace_spans(trace: Any) -> list[dict]:
     return span_dicts
 
 
+# ---------------------------------------------------------------------------
+# Chat-payload rendering for the trace detail.
+#
+# LLM spans log their full ``{"messages": [...]}`` input and ``{"choices": [...]}``
+# output. Because each step re-sends the whole conversation, dumping the raw
+# JSON re-prints the system prompt + every prior turn at every level — the
+# trace reads as if it repeats itself as you descend. These helpers render the
+# payloads as a compact, role-labeled conversation and elide the prefix already
+# shown one level up, so each span shows only what's *new*.
+# ---------------------------------------------------------------------------
+
+_MSG_CONTENT_CAP = 600  # truncate a single message body in the conversation view
+_SYS_PREVIEW = 80       # chars of a folded system prompt shown in its summary line
+
+
+def _is_chat_messages(obj: Any) -> list | None:
+    """If ``obj`` is a chat-input payload, return its ``messages`` list, else None."""
+    if isinstance(obj, dict):
+        msgs = obj.get("messages")
+        if isinstance(msgs, list) and msgs and all(isinstance(m, dict) for m in msgs):
+            return msgs
+    return None
+
+
+def _is_choices(obj: Any) -> list | None:
+    """If ``obj`` is a chat-output payload, return its ``choices`` list, else None."""
+    if isinstance(obj, dict):
+        ch = obj.get("choices")
+        if isinstance(ch, list) and ch and all(isinstance(c, dict) for c in ch):
+            return ch
+    return None
+
+
+def _drop_warmup_traces(traces: list) -> list:
+    """Filter out the startup ``apx.trace_capture.warmup`` self-test traces.
+
+    That trace materializes the OTel provider at startup and carries a single
+    internal span — opened from the list it reads as an empty trace, so it's
+    confusing noise. Identified by the ``mlflow.traceName`` tag. Tolerant of
+    missing/None tags (keeps the trace).
+    """
+    from ._trace_store import WARMUP_SPAN_NAME
+
+    out = []
+    for t in traces:
+        tags = getattr(getattr(t, "info", None), "tags", None) or {}
+        if tags.get("mlflow.traceName") == WARMUP_SPAN_NAME:
+            continue
+        out.append(t)
+    return out
+
+
+def _is_message_heavy(obj: Any) -> bool:
+    """True if ``obj`` is (or wraps) a chat message list.
+
+    The conversation lives uniformly on the LLM spans. The CHAIN/AGENT wrapper
+    spans (LangGraph, model, tools) re-log the same growing message list in a
+    different (LangChain ``type``) shape at every nesting level — that re-log IS
+    the "repeats itself as you go down a level" noise. We detect such payloads
+    so they can be suppressed on non-LLM spans and shown once, on the LLM span.
+    """
+    if _is_chat_messages(obj) is not None or _is_choices(obj) is not None:
+        return True
+    if isinstance(obj, dict):
+        # LangGraph state updates: {"update": {"messages": [...]}, "goto": ...}
+        for v in obj.values():
+            if isinstance(v, dict) and isinstance(v.get("messages"), list):
+                return True
+    if (
+        isinstance(obj, list) and obj and isinstance(obj[0], dict)
+        and ("args" in obj[0] or "tool_calls" in obj[0])
+    ):
+        return True  # the bare tool_call list logged on `tools` wrapper spans
+    return False
+
+
+def _common_prefix_len(a: list, b: list) -> int:
+    """Number of leading elements ``a`` and ``b`` share (by equality)."""
+    n = 0
+    for x, y in zip(a, b):
+        if x == y:
+            n += 1
+        else:
+            break
+    return n
+
+
+def _truncate(text: str, cap: int) -> str:
+    if len(text) <= cap:
+        return text
+    return text[:cap] + f" … (+{len(text) - cap} chars)"
+
+
+def _render_message_line(m: dict) -> str:
+    """Render one chat message as a compact role-labeled row.
+
+    System prompts fold behind a native ``<details>`` disclosure (they're long
+    and identical across calls); assistant tool calls render as
+    ``→ run_sql({...})``; everything else shows a truncated one-liner.
+    """
+    import html as _html, json as _json
+
+    role = str(m.get("role") or "?")
+    content = m.get("content")
+    tool_calls = m.get("tool_calls")
+
+    if role == "system" and isinstance(content, str):
+        n = len(content)
+        preview = _html.escape(content[:_SYS_PREVIEW].replace("\n", " "))
+        return (
+            f'<details class="tmsg tsys"><summary>'
+            f'<span class="trole">system</span> {preview}… ({n} chars)'
+            f'</summary><pre class="tpre">{_html.escape(content)}</pre></details>'
+        )
+
+    if tool_calls and isinstance(tool_calls, list):
+        rows = ""
+        for tc in tool_calls:
+            fn = (tc or {}).get("function") if isinstance(tc, dict) else None
+            name = (fn or {}).get("name", "tool") if isinstance(fn, dict) else "tool"
+            args = (fn or {}).get("arguments", "") if isinstance(fn, dict) else ""
+            if not isinstance(args, str):
+                args = _json.dumps(args)
+            rows += (
+                f'<div class="tmsg"><span class="trole">→ {_html.escape(str(name))}</span>'
+                f'<span class="tcontent">{_html.escape(_truncate(args, _MSG_CONTENT_CAP))}</span></div>'
+            )
+        return rows
+
+    if content is None:
+        content = ""
+    if not isinstance(content, str):
+        content = _json.dumps(content)
+    return (
+        f'<div class="tmsg"><span class="trole">{_html.escape(role)}</span>'
+        f'<span class="tcontent">{_html.escape(_truncate(content, _MSG_CONTENT_CAP))}</span></div>'
+    )
+
+
+def _render_messages_block(messages: list, prev: list | None) -> str:
+    """Render a ``messages`` list, collapsing the prefix shared with ``prev``.
+
+    The shared leading messages (system prompt + prior turns already shown one
+    level up) fold into a single expandable ``↳ + N earlier messages`` line;
+    only the new tail renders expanded.
+    """
+    k = _common_prefix_len(prev or [], messages)
+    html = ""
+    if k > 0:
+        earlier = "".join(_render_message_line(m) for m in messages[:k])
+        plural = "s" if k != 1 else ""
+        html += (
+            f'<details class="tprefix"><summary>↳ + {k} earlier message{plural} '
+            f'(same as above)</summary>{earlier}</details>'
+        )
+    html += "".join(_render_message_line(m) for m in messages[k:])
+    return html
+
+
+def _render_choices_block(choices: list) -> str:
+    """Render assistant output ``choices`` as compact message rows."""
+    html = ""
+    for ch in choices:
+        msg = ch.get("message") if isinstance(ch, dict) else None
+        if isinstance(msg, dict):
+            html += _render_message_line(msg)
+    return html
+
+
 def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -> str:
     import json as _json, html as _html
 
@@ -234,6 +422,13 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
             else:
                 roots.append(s)
 
+        # Running conversation state across the depth-first walk: the last
+        # messages list rendered. A nested LLM span re-sends the whole
+        # conversation, so we collapse the prefix it shares with what was shown
+        # one step earlier and render only the new tail (the "show what's new"
+        # delta view) — DFS order matches execution order.
+        state: dict = {"prev": None}
+
         def _render_span(s: dict, depth: int = 0) -> str:
             st = _span_type_css(s.get("span_type", ""))
             dur = f"{s['duration_ms']}ms" if s.get("duration_ms") is not None else "—"
@@ -241,12 +436,40 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
             st_cls = "sstatus-ok" if "OK" in status.upper() else "sstatus-err"
             name = _html.escape(s.get("name", ""))
             sid = _html.escape(s.get("span_id", ""))
-            inp = _json.dumps(s.get("inputs"), indent=2) if s.get("inputs") else None
-            out = _json.dumps(s.get("outputs"), indent=2) if s.get("outputs") else None
+            inputs_obj = s.get("inputs")
+            outputs_obj = s.get("outputs")
+            # MLflow tags chat-model spans CHAT_MODEL and completion spans LLM.
+            is_llm = str(s.get("span_type", "")).upper() in ("LLM", "CHAT_MODEL")
             io_html = ""
-            if inp:
+            # The conversation renders only on LLM spans (uniform OpenAI shape).
+            # On wrapper spans, message-heavy payloads are suppressed — that
+            # re-log at each nesting level is the down-a-level repetition. Other
+            # (non-message) payloads still render raw on any span.
+            # Inputs
+            msgs = _is_chat_messages(inputs_obj) if is_llm else None
+            if msgs is not None:
+                io_html += (
+                    '<div class="io-block"><div class="io-label">Messages</div>'
+                    f'<div class="convo">{_render_messages_block(msgs, state["prev"])}</div></div>'
+                )
+                state["prev"] = msgs
+            elif inputs_obj and not _is_message_heavy(inputs_obj):
+                inp = _json.dumps(inputs_obj, indent=2)
                 io_html += f'<div class="io-block"><div class="io-label">Inputs</div><pre class="io-pre">{_html.escape(inp[:4000])}</pre></div>'
-            if out:
+            # Outputs — assistant choices (LLM) render as message rows; append the
+            # assistant turn to ``prev`` so the next LLM input collapses it too.
+            choices = _is_choices(outputs_obj) if is_llm else None
+            if choices is not None:
+                io_html += (
+                    '<div class="io-block"><div class="io-label">Response</div>'
+                    f'<div class="convo">{_render_choices_block(choices)}</div></div>'
+                )
+                added = [c["message"] for c in choices
+                         if isinstance(c, dict) and isinstance(c.get("message"), dict)]
+                if added:
+                    state["prev"] = (state["prev"] or []) + added
+            elif outputs_obj and not _is_message_heavy(outputs_obj):
+                out = _json.dumps(outputs_obj, indent=2)
                 io_html += f'<div class="io-block"><div class="io-label">Outputs</div><pre class="io-pre">{_html.escape(out[:4000])}</pre></div>'
             # Progress markers (span events) render in an always-visible strip
             # so a cold-start step shows even while the body is collapsed.
@@ -705,6 +928,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             )) if exp_ids else []
         except Exception:
             traces = []
+        traces = _drop_warmup_traces(traces)
         rows = []
         for t in traces:
             info = t.info
