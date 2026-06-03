@@ -90,6 +90,33 @@ class TestLegacyRedirects:
         assert r.headers["location"].startswith(target)
 
 
+class TestVendorAssets:
+    """Vendored markdown libs (marked + DOMPurify) are served locally from
+    /_apx/vendor/ so the deployed app needs no CDN (offline/private-link safe)."""
+
+    @pytest.mark.asyncio
+    async def test_serves_marked(self, app: FastAPI):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.get("/_apx/vendor/marked.min.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers["content-type"]
+        assert len(r.content) > 1000
+
+    @pytest.mark.asyncio
+    async def test_serves_purify(self, app: FastAPI):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.get("/_apx/vendor/purify.min.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers["content-type"]
+        assert len(r.content) > 1000
+
+    @pytest.mark.asyncio
+    async def test_vendor_path_traversal_blocked(self, app: FastAPI):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.get("/_apx/vendor/../topology/index.html")
+        assert r.status_code in (403, 404)
+
+
 # ---------------------------------------------------------------------------
 # _pick_workspace_defaults — the Setup page's auto-prefill source
 # ---------------------------------------------------------------------------
