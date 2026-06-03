@@ -90,6 +90,49 @@ class TestLegacyRedirects:
         assert r.headers["location"].startswith(target)
 
 
+class TestVendorAssets:
+    """Vendored markdown libs (marked + DOMPurify) are served locally from
+    /_apx/vendor/ so the deployed app needs no CDN (offline/private-link safe)."""
+
+    @pytest.mark.asyncio
+    async def test_serves_marked(self, app: FastAPI):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.get("/_apx/vendor/marked.min.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers["content-type"]
+        assert len(r.content) > 1000
+
+    @pytest.mark.asyncio
+    async def test_serves_purify(self, app: FastAPI):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.get("/_apx/vendor/purify.min.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers["content-type"]
+        assert len(r.content) > 1000
+
+    @pytest.mark.asyncio
+    async def test_vendor_path_traversal_blocked(self, app: FastAPI):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.get("/_apx/vendor/../topology/index.html")
+        assert r.status_code in (403, 404)
+
+
+class TestMarkdownWiring:
+    """The chat page loads the vendored libs locally and renders assistant
+    messages as sanitized markdown."""
+
+    def test_page_loads_vendor_libs_and_renders_assistant(self):
+        from apx_agent._ui_chat import _render_agent_ui
+
+        # Building the full HTML also catches f-string brace-doubling mistakes
+        # in the CSS/JS we added (a stray single {/} throws at f-string eval).
+        html = _render_agent_ui(_make_ctx())
+        assert "/_apx/vendor/marked.min.js" in html
+        assert "/_apx/vendor/purify.min.js" in html
+        assert "DOMPurify.sanitize(marked.parse(" in html  # render wiring present
+        assert "renderAssistantInto" in html  # helper present
+
+
 # ---------------------------------------------------------------------------
 # _pick_workspace_defaults — the Setup page's auto-prefill source
 # ---------------------------------------------------------------------------

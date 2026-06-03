@@ -758,6 +758,20 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return FileResponse(target)
         raise HTTPException(status_code=404, detail="asset not found")
 
+    # Vendored JS (marked + DOMPurify) for chat markdown rendering. Served
+    # locally so the deployed app needs no CDN (offline/private-link safe).
+    _vendor_root = _TopoPath(__file__).parent / "_static" / "vendor"
+
+    @router.get("/_apx/vendor/{filename}", include_in_schema=False)
+    async def vendor_asset(filename: str) -> Any:
+        # Resolve and confirm the result is inside _vendor_root (block path
+        # traversal). {filename} is a single path segment, so a traversal
+        # attempt also simply fails to match this route — guard is belt-and-braces.
+        target = (_vendor_root / filename).resolve()
+        if _vendor_root.resolve() not in target.parents or not target.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(target, media_type="application/javascript")
+
     @router.post("/_apx/replay/tool", include_in_schema=False)
     async def replay_tool(request: Request) -> Any:
         """Re-invoke a registered tool with arbitrary args. Used by the
