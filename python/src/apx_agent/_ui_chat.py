@@ -554,6 +554,19 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .tool-pill .icon {{ font-size: 12px; }}
   .tool-pill .ms {{ font-size: 11px; color: #555; margin-left: 4px; }}
 
+  /* Inline thinking-steps (live tool rows above the answer) */
+  .inline-steps {{ align-self: flex-start; width: 100%; }}
+  .inline-step {{ background: #0e1116; border: 1px solid #1f242b; border-radius: 8px; margin: 6px 0; padding: 0; max-width: 680px; }}
+  .inline-step.error {{ border-color: #3a1a1a; }}
+  .inline-step-head {{ display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; font-size: 12.5px; }}
+  .inline-step-head .step-icon {{ color: #60b0ff; }}
+  .inline-step.error .step-icon {{ color: #f87171; }}
+  .inline-step-head .step-name {{ color: #cfe; font-family: ui-monospace, monospace; }}
+  .inline-step-head .step-label {{ color: #6b7280; margin-left: auto; font-size: 11px; }}
+  .inline-step-detail {{ display: none; margin: 0; padding: 0 12px 10px; color: #8a929b; font-size: 11px;
+                         white-space: pre-wrap; font-family: ui-monospace, monospace; }}
+  .inline-step.open .inline-step-detail {{ display: block; }}
+
   /* Input area */
   .input-bar {{ display: flex; gap: 10px; padding: 16px 24px; background: #111;
                  border-top: 1px solid #222; flex-shrink: 0; }}
@@ -1417,6 +1430,35 @@ function addToolPills(trace) {{
     container.appendChild(res);
   }}
   chat.appendChild(container);
+  chat.scrollTop = chat.scrollHeight;
+}}
+
+// ── Inline thinking-steps ──
+// Live tool-call rows rendered in the transcript above the answer bubble.
+// Keyed by callId so the function_call (running) and its function_call_output
+// (done/error) update the SAME row. The function_call_output item carries no
+// `name`, so we stash the tool name on the row when it's created and reuse it.
+const inlineSteps = {{}};  // callId -> row element (reset per send, see send handler)
+function renderInlineStep(stepsContainer, callId, opts) {{
+  // opts: {{ name, phase: 'running'|'done'|'error', detail }}
+  let row = inlineSteps[callId];
+  if (!row) {{
+    row = document.createElement('div');
+    row.className = 'inline-step';
+    row.innerHTML = '<div class="inline-step-head"></div><pre class="inline-step-detail"></pre>';
+    row.querySelector('.inline-step-head').onclick = () => row.classList.toggle('open');
+    stepsContainer.appendChild(row);
+    inlineSteps[callId] = row;
+  }}
+  if (opts.name) row.dataset.toolName = opts.name;
+  const name = opts.name || row.dataset.toolName || 'tool';
+  const icon = opts.phase === 'running' ? '⚙' : (opts.phase === 'error' ? '✗' : '✓');
+  const label = opts.phase === 'running' ? 'running…' : (opts.phase === 'error' ? 'error' : 'done');
+  row.classList.toggle('error', opts.phase === 'error');
+  row.querySelector('.inline-step-head').innerHTML =
+    `<span class="step-icon">${{icon}}</span><span class="step-name">${{esc(name)}}</span>`
+    + `<span class="step-label">${{label}}</span>`;
+  if (opts.detail != null) row.querySelector('.inline-step-detail').textContent = opts.detail;
   chat.scrollTop = chat.scrollHeight;
 }}
 

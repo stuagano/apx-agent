@@ -322,6 +322,31 @@ class TestEventsToolCalls:
         assert "emitEvents: !toolEventsFromStream" in html
 
 
+class TestInlineSteps:
+    """The chat stream also renders each tool call as an expandable step row
+    in the transcript, above the streaming answer bubble (Genie-Code style).
+    Additive to the Events panel (TestEventsToolCalls) — both fed from the
+    same function_call / function_call_output stream items, keyed by call_id."""
+
+    def test_stream_renders_inline_tool_steps(self):
+        from apx_agent._ui_chat import _render_agent_ui
+        from apx_agent import AgentConfig, AgentContext
+        from apx_agent._models import AgentTool
+        cfg = AgentConfig(name="d", description="x", examples=[])
+        ctx = AgentContext(
+            config=cfg,
+            tools=[AgentTool(name="run_sql", description="Run SQL",
+                             input_schema={"type": "object", "properties": {}})],
+            card={"name": "d", "skills": []}, agent=None,  # type: ignore[arg-type]
+        )
+        html = _render_agent_ui(ctx)
+        assert "function renderInlineStep" in html          # the renderer exists
+        assert "stepsContainer" in html                      # transcript container
+        assert "renderInlineStep(" in html                   # called from the stream branches
+        assert "insertBefore(stepsContainer" in html         # steps sit above the answer bubble
+        assert ".inline-step" in html                        # styling present
+
+
 class TestSerializeTraceSpans:
     """The shared span->dict serializer used by both the route and the
     in-process trace buffer must produce identical span dicts (incl. events)."""
