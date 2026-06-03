@@ -320,3 +320,91 @@ class TestEventsToolCalls:
         assert "item.type === 'function_call_output'" in html
         # and finalizeTrace is told not to double-emit when the stream already did
         assert "emitEvents: !toolEventsFromStream" in html
+
+
+class TestSerializeTraceSpans:
+    """The shared span->dict serializer used by both the route and the
+    in-process trace buffer must produce identical span dicts (incl. events)."""
+
+    def test_serialize_trace_spans_shape(self):
+        from apx_agent._dev import _serialize_trace_spans
+        from types import SimpleNamespace
+        span = SimpleNamespace(
+            span_id="s1", parent_id=None, name="run_sql",
+            span_type=SimpleNamespace(value="TOOL"),
+            status=SimpleNamespace(status_code=SimpleNamespace(value="OK")),
+            start_time_ns=0, end_time_ns=1_000_000, inputs={"q": "x"}, outputs=None,
+            events=[SimpleNamespace(name="apx.progress", attributes={"message": "hi"})],
+        )
+        trace = SimpleNamespace(data=SimpleNamespace(spans=[span]))
+        out = _serialize_trace_spans(trace)
+        assert out[0]["name"] == "run_sql"
+        assert out[0]["span_type"] == "TOOL"
+        assert out[0]["events"][0]["attributes"]["message"] == "hi"
+
+
+class TestTraceDetailBufferAndFailFast:
+    """The trace-detail route serves recent traces from the in-process ring
+    buffer first, and on a buffer miss falls through to a TIME-BOUNDED
+    mlflow.get_trace that fails fast (instead of hanging on blocked blob
+    egress)."""
+
+    @pytest.mark.asyncio
+    async def test_buffer_hit_serves_without_calling_get_trace(self, app: FastAPI):
+        from unittest.mock import patch
+        from apx_agent import _trace_store as ts
+        ts.reset()
+        ts.put("tr-hit", [{"name": "get_time", "span_type": "TOOL", "events": []}])
+
+        def _boom(*a, **k):  # get_trace must NOT be called on a buffer hit
+            raise AssertionError("mlflow.get_trace called on a buffer hit")
+
+        with patch("mlflow.get_trace", side_effect=_boom):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+                r = await ac.get("/_apx/traces/tr-hit?fmt=json")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["trace_id"] == "tr-hit"
+        assert body["spans"][0]["name"] == "get_time"
+
+    @pytest.mark.asyncio
+    async def test_buffer_miss_slow_get_trace_fails_fast(self, app: FastAPI):
+        import time
+        from unittest.mock import patch
+        from apx_agent import _trace_store as ts
+        ts.reset()
+
+        def _slow(*a, **k):
+            time.sleep(30)  # simulate the blocked-blob hang
+            return None
+
+        start = time.monotonic()
+        with patch("mlflow.get_trace", side_effect=_slow):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+                r = await ac.get("/_apx/traces/tr-miss?fmt=json")
+        elapsed = time.monotonic() - start
+        assert elapsed < 8, f"route hung for {elapsed:.1f}s — fail-fast timeout did not fire"
+        assert r.status_code == 200
+        assert "unavailable" in r.json()["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_buffer_miss_ok_get_trace_serves_and_populates_buffer(self, app: FastAPI):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from apx_agent import _trace_store as ts
+        ts.reset()
+        span = SimpleNamespace(
+            span_id="s1", parent_id=None, name="get_time",
+            span_type=SimpleNamespace(value="TOOL"),
+            status=SimpleNamespace(status_code=SimpleNamespace(value="OK")),
+            start_time_ns=0, end_time_ns=1_000_000, inputs={}, outputs=None, events=[],
+        )
+        trace = SimpleNamespace(data=SimpleNamespace(spans=[span]))
+        with patch("mlflow.get_trace", return_value=trace):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+                r = await ac.get("/_apx/traces/tr-ok?fmt=json")
+        assert r.status_code == 200
+        assert r.json()["spans"][0]["name"] == "get_time"
+        # The successful fetch populates the buffer for next time.
+        assert ts.get("tr-ok") is not None
+        assert ts.get("tr-ok")[0]["name"] == "get_time"

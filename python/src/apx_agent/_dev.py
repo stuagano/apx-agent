@@ -180,6 +180,42 @@ def _render_traces_list(rows: list, agent_name: str | None) -> str:
 </body></html>"""
 
 
+def _serialize_trace_spans(trace: Any) -> list[dict]:
+    """Serialize an MLflow trace's spans into plain JSON-able dicts.
+
+    Shared by the trace-detail route AND the in-process trace buffer
+    (``_trace_store``) so both produce IDENTICAL span dicts. Includes the
+    ``events`` field (per-span MLflow span events, e.g. ``apx.progress`` /
+    tool-call markers) added in #128.
+    """
+    spans = list(getattr(getattr(trace, "data", None), "spans", None) or [])
+    span_dicts: list[dict] = []
+    for s in spans:
+        span_dicts.append({
+            "span_id": s.span_id,
+            "parent_id": s.parent_id,
+            "name": s.name,
+            "span_type": s.span_type.value if hasattr(s.span_type, "value") else str(s.span_type),
+            "status": s.status.status_code.value if hasattr(getattr(s.status, "status_code", None), "value") else str(s.status),
+            "start_time_ns": s.start_time_ns,
+            "end_time_ns": s.end_time_ns,
+            "duration_ms": round((s.end_time_ns - s.start_time_ns) / 1_000_000, 1) if s.end_time_ns and s.start_time_ns else None,
+            "inputs": s.inputs,
+            "outputs": s.outputs,
+            "events": [
+                {
+                    "name": getattr(e, "name", ""),
+                    "attributes": {
+                        k: str(v)
+                        for k, v in (getattr(e, "attributes", None) or {}).items()
+                    },
+                }
+                for e in (getattr(s, "events", None) or [])
+            ],
+        })
+    return span_dicts
+
+
 def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -> str:
     import json as _json, html as _html
 
@@ -688,43 +724,65 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     @router.get("/_apx/traces/{trace_id:path}", include_in_schema=False)
     async def trace_detail_ui(trace_id: str, request: Request) -> Any:
         from fastapi.responses import JSONResponse
+        from ._trace_store import get as _ts_get, put as _ts_put
+
         fmt = request.query_params.get("fmt")
-        try:
-            import mlflow as _mlflow
-            trace = _mlflow.get_trace(trace_id)
-        except Exception as exc:
+
+        # 1) Buffer hit — serve from the in-process ring buffer (captured at
+        #    root-span-end, no blob fetch). This is the FEVM/private-link path:
+        #    recent traces are served from memory and never touch get_trace.
+        buffered = _ts_get(trace_id)
+        if buffered is not None:
             if fmt == "json":
-                return JSONResponse({"error": str(exc)}, status_code=404)
-            return HTMLResponse(_render_trace_detail(trace_id, None, str(exc)))
+                return JSONResponse({"trace_id": trace_id, "spans": buffered})
+            return HTMLResponse(_render_trace_detail(trace_id, buffered, None))
+
+        # 2) Buffer miss — fall through to mlflow.get_trace under a worker-thread
+        #    TIMEOUT so a blocked blob fetch fails fast instead of hanging. The
+        #    executor is NOT used as a context manager: its __exit__ would
+        #    shutdown(wait=True) and re-join the still-hung worker, undoing the
+        #    timeout. On timeout we abandon the orphaned thread.
+        import concurrent.futures as _futures
+
+        _GET_TRACE_TIMEOUT_S = 5.0
+        unavailable = (
+            "span data unavailable on this workspace (artifact-storage egress "
+            "blocked) — recent traces are served from memory"
+        )
+
+        def _fetch() -> Any:
+            import mlflow as _mlflow
+            return _mlflow.get_trace(trace_id)
+
+        executor = _futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            fut = executor.submit(_fetch)
+            try:
+                trace = fut.result(timeout=_GET_TRACE_TIMEOUT_S)
+            except _futures.TimeoutError:
+                executor.shutdown(wait=False, cancel_futures=True)
+                if fmt == "json":
+                    return JSONResponse({"error": unavailable}, status_code=200)
+                return HTMLResponse(_render_trace_detail(trace_id, None, unavailable))
+            except Exception as exc:
+                executor.shutdown(wait=False, cancel_futures=True)
+                if fmt == "json":
+                    return JSONResponse({"error": str(exc)}, status_code=404)
+                return HTMLResponse(_render_trace_detail(trace_id, None, str(exc)))
+        finally:
+            # Non-blocking shutdown — never wait on a possibly-hung worker.
+            executor.shutdown(wait=False)
+
         if trace is None:
             if fmt == "json":
                 return JSONResponse({"error": "not found"}, status_code=404)
             return HTMLResponse(_render_trace_detail(trace_id, None, "Trace not found"))
-        spans = list(getattr(trace.data, "spans", None) or [])
-        span_dicts = []
-        for s in spans:
-            span_dicts.append({
-                "span_id": s.span_id,
-                "parent_id": s.parent_id,
-                "name": s.name,
-                "span_type": s.span_type.value if hasattr(s.span_type, "value") else str(s.span_type),
-                "status": s.status.status_code.value if hasattr(getattr(s.status, "status_code", None), "value") else str(s.status),
-                "start_time_ns": s.start_time_ns,
-                "end_time_ns": s.end_time_ns,
-                "duration_ms": round((s.end_time_ns - s.start_time_ns) / 1_000_000, 1) if s.end_time_ns and s.start_time_ns else None,
-                "inputs": s.inputs,
-                "outputs": s.outputs,
-                "events": [
-                    {
-                        "name": getattr(e, "name", ""),
-                        "attributes": {
-                            k: str(v)
-                            for k, v in (getattr(e, "attributes", None) or {}).items()
-                        },
-                    }
-                    for e in (getattr(s, "events", None) or [])
-                ],
-            })
+
+        # 3) Success — serve AND opportunistically populate the buffer so the
+        #    next view (and the FEVM path) hits memory.
+        span_dicts = _serialize_trace_spans(trace)
+        if span_dicts:
+            _ts_put(trace_id, span_dicts)
         if fmt == "json":
             return JSONResponse({"trace_id": trace_id, "spans": span_dicts})
         return HTMLResponse(_render_trace_detail(trace_id, span_dicts, None))
