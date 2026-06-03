@@ -40,6 +40,8 @@ from typing import Any
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementResponse
 
+from ._mlflow_tracing import emit_progress, safe_span
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,33 +106,43 @@ def _ensure_warehouse_running(
     if wh.state == State.RUNNING:
         return
 
-    logger.warning(
-        "SQL warehouse %s is %s — starting it. Serverless cold-start "
-        "typically takes 20-30s; the query will run once it's warm.",
-        warehouse_id, wh.state,
-    )
-    try:
-        ws.warehouses.start(warehouse_id)
-    except Exception as exc:
-        # Start can race (already starting) or fail; either way we'll still try
-        # execute_statement below.
-        logger.debug("warehouses.start raised (continuing): %s", exc)
-
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        time.sleep(2)
+    # Wrap the start+wait in a child span so the cold-start is a visible, timed
+    # step in the trace (otherwise the trace goes silent for ~20-30s).
+    with safe_span(
+        "SQL warehouse cold-start",
+        attributes={"warehouse_id": warehouse_id},
+    ):
+        logger.warning(
+            "SQL warehouse %s is %s — starting it. Serverless cold-start "
+            "typically takes 20-30s; the query will run once it's warm.",
+            warehouse_id, wh.state,
+        )
+        emit_progress(
+            "Starting SQL warehouse — serverless cold-start, ~20-30s",
+            warehouse_id=warehouse_id,
+        )
         try:
-            wh = ws.warehouses.get(warehouse_id)
-        except Exception:
-            continue
-        if wh.state == State.RUNNING:
-            logger.info("warehouse %s is now RUNNING", warehouse_id)
-            return
-    logger.warning(
-        "warehouse %s did not reach RUNNING in %ds; proceeding anyway "
-        "(execute_statement will queue)",
-        warehouse_id, timeout_s,
-    )
+            ws.warehouses.start(warehouse_id)
+        except Exception as exc:
+            # Start can race (already starting) or fail; either way we'll still
+            # try execute_statement below.
+            logger.debug("warehouses.start raised (continuing): %s", exc)
+
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            time.sleep(2)
+            try:
+                wh = ws.warehouses.get(warehouse_id)
+            except Exception:
+                continue
+            if wh.state == State.RUNNING:
+                logger.info("warehouse %s is now RUNNING", warehouse_id)
+                return
+        logger.warning(
+            "warehouse %s did not reach RUNNING in %ds; proceeding anyway "
+            "(execute_statement will queue)",
+            warehouse_id, timeout_s,
+        )
 
 
 def run_sql(
