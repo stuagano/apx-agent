@@ -337,6 +337,12 @@ def chat_agent_for(
             context: ChatContext | None = None,
             custom_inputs: dict[str, Any] | None = None,
         ) -> ChatAgentResponse:
+            # Idempotent, never-raises: ensure the in-process trace-capture
+            # SpanProcessor is attached so the dev-UI Trace detail can serve
+            # this run from memory (FEVM blob egress is blocked).
+            from ._trace_store import ensure_capture_processor
+            ensure_capture_processor()
+
             session = self._load_session(custom_inputs)
             # If a session exists, prepend its history so the LLM sees prior
             # turns. The session itself owns the history; the user just sent
@@ -414,6 +420,10 @@ def chat_agent_for(
             context: ChatContext | None = None,
             custom_inputs: dict[str, Any] | None = None,
         ) -> Generator[ChatAgentChunk, None, None]:
+            # See predict — idempotent capture-processor install (never raises).
+            from ._trace_store import ensure_capture_processor
+            ensure_capture_processor()
+
             session = self._load_session(custom_inputs)
             # If a session exists, prepend its history so the LLM sees prior
             # turns — mirrors ``predict`` and the TS ``predictStream``.

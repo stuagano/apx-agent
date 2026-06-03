@@ -51,32 +51,159 @@ def get(trace_id: str) -> list[dict] | None:
         return _STORE.get(trace_id)
 
 
-def capture_current_trace() -> str | None:
-    """Best-effort: snapshot the just-finished trace from MLflow's in-memory
-    buffer into the ring store (no blob fetch). Returns the trace_id or None.
-    Never raises into the caller.
+# ---------------------------------------------------------------------------
+# Capture mechanism — a SpanProcessor that snapshots the trace at root-span-end
+# ---------------------------------------------------------------------------
+#
+# CAPTURE POINT (empirically verified — see
+# ``tests/test_trace_store.py::test_capture_after_real_agent_run``):
+#
+# The original plan assumed ``mlflow.get_trace()`` reads MLflow's in-memory
+# buffer first (so a cheap post-run snapshot would avoid the blob). That premise
+# is REFUTED by the installed MLflow source: ``mlflow.tracing.fluent.get_trace``
+# goes straight to ``TracingClient().get_trace`` (the tracking store) — which on
+# FEVM/private-link is exactly the blocked blob read that hangs. There is no
+# in-memory shortcut via ``get_trace``, and post-run the trace has already been
+# popped from ``InMemoryTraceManager``.
+#
+# The robust mechanism is an OpenTelemetry ``SpanProcessor`` whose ``on_end``
+# fires for the ROOT span (``span.parent is None``) the instant the trace
+# completes — while the COMPLETE trace (AGENT root + autolog LangGraph
+# TOOL/LLM/CHAIN children) is still live in ``InMemoryTraceManager``. We read it
+# there (no tracking-store / blob access), serialize to plain dicts, and store
+# them. This is structurally correct on FEVM because it never touches the
+# tracking store. It also covers streaming for free: the root ``safe_span`` ends
+# when the generator is exhausted, so ``on_end`` fires for the stream path too.
 
-    CAPTURE POINT (empirically verified — see
-    ``tests/test_trace_store.py::test_capture_after_real_agent_run``):
-    this MUST be called AFTER the adapter's outermost ``safe_span`` block has
-    EXITED. While that root span is still open the trace is not finalized, and
-    ``get_last_active_trace_id()`` / ``get_trace`` would return an incomplete
-    trace (missing the autolog LangGraph TOOL/LLM child spans). Because
-    ``safe_span`` opens the root span first, the autolog spans nest as children
-    of the SAME trace — so once the root closes, this captures one trace
-    carrying both the AGENT root and the TOOL/LLM children, which is exactly
-    the trace the dev UI's ``finalizeTrace`` fetches.
-    """
+_PROCESSOR_INSTALLED = False
+_INSTALL_LOCK = threading.Lock()
+
+
+def _capture_root_trace(otel_span: object) -> None:
+    """Snapshot the just-completed trace from MLflow's in-memory trace manager
+    into the ring store. Called from the SpanProcessor's ``on_end`` for the root
+    span only. Never raises (a SpanProcessor exception can surface on the
+    request thread)."""
+    try:
+        import json as _json
+
+        from mlflow.tracing.constant import SpanAttributeKey
+        from mlflow.tracing.trace_manager import InMemoryTraceManager
+
+        from ._dev import _serialize_trace_spans  # lazy: avoid import cycle
+
+        attrs = getattr(otel_span, "attributes", None) or {}
+        req = attrs.get(SpanAttributeKey.REQUEST_ID)
+        # The attribute is OTel-stored as a JSON string (e.g. '"tr-abc"').
+        if isinstance(req, str) and req.startswith('"'):
+            req = _json.loads(req)
+        if not req:
+            return
+        tm = InMemoryTraceManager.get_instance()
+        with tm.get_trace(req) as live:
+            if live is None:
+                return
+            trace = live.to_mlflow_trace()   # materializes a copy
+        spans = _serialize_trace_spans(trace)
+        if spans:
+            put(req, spans)
+    except Exception:
+        # Best-effort only — tracing must never break a request.
+        return
+
+
+# The capture processor MUST subclass OpenTelemetry's ``SpanProcessor`` for the
+# active multi-processor to dispatch ``on_end`` to it (a duck-typed object is
+# silently never called). We build the subclass lazily and cache one instance,
+# so this module still imports cleanly when OpenTelemetry / MLflow are absent.
+_CAPTURE_INSTANCE: object | None = None
+
+
+def _get_capture_processor() -> object:
+    """Return the singleton capture ``SpanProcessor`` (lazily building the OTel
+    subclass on first use)."""
+    global _CAPTURE_INSTANCE
+    if _CAPTURE_INSTANCE is not None:
+        return _CAPTURE_INSTANCE
+    from opentelemetry.sdk.trace import SpanProcessor
+
+    class _ApxCaptureSpanProcessor(SpanProcessor):
+        """Snapshots a completed trace at root-span-end (``span.parent is None``),
+        reading the still-live trace from MLflow's in-memory manager."""
+
+        def on_start(self, span, parent_context=None):  # type: ignore[override]
+            pass
+
+        def on_end(self, span):  # type: ignore[override]
+            if getattr(span, "parent", None) is None:
+                _capture_root_trace(span)
+
+        def shutdown(self):  # type: ignore[override]  # pragma: no cover
+            pass
+
+        def force_flush(self, timeout_millis: float = 30000) -> bool:  # type: ignore[override]  # pragma: no cover
+            return True
+
+    _CAPTURE_INSTANCE = _ApxCaptureSpanProcessor()
+    return _CAPTURE_INSTANCE
+
+
+def ensure_capture_processor() -> bool:
+    """Idempotently register the trace-capture ``SpanProcessor`` on the live
+    MLflow OTel ``TracerProvider``.
+
+    Self-healing: MLflow rebuilds the provider on tracing enable/disable and
+    reseeds on fork, and the provider does not exist until the first span flows.
+    A register-once design can silently end up detached. So this is installed at
+    startup (``install_capture_processor_at_startup``) AND called at run-start by
+    both adapters (a trivial idempotent check, identical in both paths, never
+    raises). When the processor is already present this is a no-op — it never
+    mutates the active processor set mid-trace (which would break dispatch for
+    the in-flight trace). Returns True if the processor is present (installed now
+    or already there), False if it could not be installed (e.g. MLflow not
+    installed / no SDK provider yet)."""
+    global _PROCESSOR_INSTALLED
+    try:
+        from opentelemetry.sdk.trace import TracerProvider
+
+        from mlflow.tracing.provider import provider as _mlflow_provider
+
+        tp = _mlflow_provider.get()
+        if not isinstance(tp, TracerProvider):
+            return False
+
+        proc = _get_capture_processor()
+
+        def _already_present(provider: TracerProvider) -> bool:
+            # Mirror MLflow's own scan (provider.py) of the active processors.
+            active = getattr(provider, "_active_span_processor", None)
+            existing = getattr(active, "_span_processors", None) or ()
+            return any(p is proc for p in existing)
+
+        if _already_present(tp):
+            _PROCESSOR_INSTALLED = True
+            return True
+
+        with _INSTALL_LOCK:
+            if _already_present(tp):  # re-check under lock
+                _PROCESSOR_INSTALLED = True
+                return True
+            tp.add_span_processor(proc)
+            _PROCESSOR_INSTALLED = True
+            return True
+    except Exception:
+        return False
+
+
+def install_capture_processor_at_startup() -> bool:
+    """Materialize the MLflow tracing provider (which does not exist until the
+    first span flows) with a tiny warm-up span, then install the capture
+    processor — so the VERY FIRST request is captured too. Best-effort; never
+    raises. Call once from the app lifespan after autolog setup."""
     try:
         import mlflow
-        from ._dev import _serialize_trace_spans  # lazy: avoid import cycle
-        trace_id = mlflow.get_last_active_trace_id()
-        if not trace_id:
-            return None
-        trace = mlflow.get_trace(trace_id, silent=True)   # in-memory first
-        spans = _serialize_trace_spans(trace) if trace is not None else []
-        if spans:
-            put(trace_id, spans)
-        return trace_id
+        with mlflow.start_span("apx.trace_capture.warmup"):
+            pass
+        return ensure_capture_processor()
     except Exception:
-        return None
+        return False
