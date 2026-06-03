@@ -563,9 +563,11 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .inline-step.error .step-icon {{ color: #f87171; }}
   .inline-step-head .step-name {{ color: #cfe; font-family: ui-monospace, monospace; }}
   .inline-step-head .step-label {{ color: #6b7280; margin-left: auto; font-size: 11px; }}
-  .inline-step-detail {{ display: none; margin: 0; padding: 0 12px 10px; color: #8a929b; font-size: 11px;
-                         white-space: pre-wrap; font-family: ui-monospace, monospace; }}
+  .inline-step-detail {{ display: none; margin: 0; padding: 0 12px 10px; }}
   .inline-step.open .inline-step-detail {{ display: block; }}
+  .step-detail-label {{ font-size: 10px; color: #5b6470; text-transform: uppercase; letter-spacing: .5px; margin: 8px 0 3px; }}
+  .step-detail-pre {{ margin: 0; color: #8a929b; font-size: 11px; white-space: pre-wrap;
+                      font-family: ui-monospace, monospace; }}
 
   /* Input area */
   .input-bar {{ display: flex; gap: 10px; padding: 16px 24px; background: #111;
@@ -632,6 +634,25 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .event.tool-call .event-title {{ color: #60b0ff; }}
   .event.tool-result .event-title {{ color: #4ade80; }}
   .event.tool-error .event-title {{ color: #f87171; }}
+  /* Tool-call group: call + response paired in one collapsible block. */
+  .event.tool-group {{ flex-direction: column; align-items: stretch; gap: 0; padding: 0; cursor: default; }}
+  .event.tool-group:hover {{ background: transparent; }}
+  .tg-head {{ display: flex; align-items: center; gap: 10px; padding: 10px 16px; cursor: pointer; }}
+  .tg-head:hover {{ background: #151515; }}
+  .tg-name {{ flex: 1; color: #60b0ff; font-family: ui-monospace, monospace; font-size: 13px;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .tg-caret {{ color: #555; font-size: 10px; flex-shrink: 0; transition: transform .12s; }}
+  .event.tool-group:not(.open) .tg-caret {{ transform: rotate(-90deg); }}
+  .tg-body {{ display: none; flex-direction: column; gap: 1px; padding: 0 16px 8px 52px; }}
+  .event.tool-group.open .tg-body {{ display: flex; }}
+  .tg-part {{ display: flex; gap: 10px; font-size: 12px; line-height: 1.5; cursor: pointer;
+              padding: 3px 6px; border-radius: 4px; }}
+  .tg-part:hover {{ background: #141414; }}
+  .tg-label {{ flex: none; min-width: 62px; color: #6b7686; text-transform: uppercase;
+               font-size: 10px; letter-spacing: .4px; font-weight: 600; padding-top: 1px; }}
+  .tg-part.err .tg-label {{ color: #f87171; }}
+  .tg-val {{ color: #cbd2da; font-family: ui-monospace, monospace; min-width: 0;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 
   /* Tool test panel */
   .tool-card {{ border-bottom: 1px solid #1a1a1a; }}
@@ -1178,11 +1199,68 @@ function addEvent(type, title, subtitle, data) {{
   div.className = 'event' + (type === 'tool-call' ? ' tool-call' : type === 'tool-result' ? ' tool-result' : type === 'tool-error' ? ' tool-error' : '');
   div.dataset.idx = events.length - 1;
   const icons = {{ user: '👤', assistant: '🤖', 'tool-call': '⚡', 'tool-result': '✓', 'tool-error': '✗' }};
+  // Label tool rows clearly as call vs response (icons alone aren't obvious).
+  // The tool name (when present and not the generic "tool") is appended.
+  const kindLabel = {{ 'tool-call': 'tool call', 'tool-result': 'tool response', 'tool-error': 'tool error' }}[type] || '';
+  const shownTitle = kindLabel
+    ? (title && title !== 'tool' ? `${{kindLabel}} · ${{title}}` : kindLabel)
+    : title;
   div.innerHTML = `<span class="event-num">#${{num}}</span><span class="event-icon">${{icons[type] || '•'}}</span>`
-    + `<div class="event-body"><div class="event-title">${{title}}</div>`
+    + `<div class="event-body"><div class="event-title">${{shownTitle}}</div>`
     + (subtitle ? `<div class="event-sub">${{subtitle}}</div>` : '') + '</div>';
   div.onclick = () => showDetail(ev, div);
   eventsList.appendChild(div);
+  eventsList.scrollTop = eventsList.scrollHeight;
+  return ev;
+}}
+
+// ── Tool event grouping ──
+// Each tool call + its response are grouped into one collapsible block keyed by
+// call_id (request and response together), so you read "ran X → got Y" as a
+// unit instead of all-calls-then-all-responses interleaved. Non-tool events
+// (user/assistant) stay flat rows via addEvent. Reset per send.
+const toolGroups = {{}};  // groupId -> {{ body }}
+function addToolCall(groupId, name, reqText, reqData) {{
+  if (!eventsStarted) {{ eventsList.innerHTML = ''; eventsStarted = true; }}
+  const num = eventCounter++;
+  const reqEv = {{ num, type: 'tool-call', title: name || 'tool', subtitle: reqText, data: reqData }};
+  events.push(reqEv);
+  const group = document.createElement('div');
+  group.className = 'event tool-group open';
+  group.dataset.idx = events.length - 1;
+  const head = document.createElement('div');
+  head.className = 'tg-head';
+  head.innerHTML = `<span class="event-num">#${{num}}</span><span class="event-icon">⚡</span>`
+    + `<span class="tg-name">${{esc(name || 'tool')}}</span><span class="tg-caret">▾</span>`;
+  head.onclick = () => group.classList.toggle('open');
+  const body = document.createElement('div');
+  body.className = 'tg-body';
+  const reqRow = document.createElement('div');
+  reqRow.className = 'tg-part';
+  reqRow.innerHTML = '<span class="tg-label">request</span>'
+    + `<span class="tg-val">${{esc(reqText || '')}}</span>`;
+  reqRow.onclick = () => showDetail(reqEv, null);
+  body.appendChild(reqRow);
+  group.appendChild(head);
+  group.appendChild(body);
+  eventsList.appendChild(group);
+  eventsList.scrollTop = eventsList.scrollHeight;
+  toolGroups[groupId] = {{ body }};
+  return reqEv;
+}}
+function addToolResponse(groupId, name, respText, respData, isErr) {{
+  const g = toolGroups[groupId];
+  // Unmatched response (no preceding call captured) → fall back to a flat row.
+  if (!g) return addEvent(isErr ? 'tool-error' : 'tool-result', name || 'tool', respText, respData);
+  const ev = {{ num: '', type: isErr ? 'tool-error' : 'tool-result',
+               title: name || 'tool', subtitle: respText, data: respData }};
+  events.push(ev);
+  const row = document.createElement('div');
+  row.className = 'tg-part' + (isErr ? ' err' : '');
+  row.innerHTML = `<span class="tg-label">${{isErr ? 'error' : 'response'}}</span>`
+    + `<span class="tg-val">${{esc(respText || '')}}</span>`;
+  row.onclick = () => showDetail(ev, null);
+  g.body.appendChild(row);
   eventsList.scrollTop = eventsList.scrollHeight;
   return ev;
 }}
@@ -1391,13 +1469,9 @@ async function finalizeTrace(traceId, status, opts) {{
         const isErr = (s.status || '').toUpperCase().includes('ERR');
         const result = s.outputs;
         const dur = s.duration_ms != null ? `${{s.duration_ms}}ms` : '';
-        addEvent('tool-call', s.name, fmt(args).slice(0, 60), {{ arguments: args }});
-        addEvent(
-          isErr ? 'tool-error' : 'tool-result',
-          s.name,
-          dur,
-          {{ result: result }}
-        );
+        const gid = s.span_id || s.name;
+        addToolCall(gid, s.name, fmt(args).slice(0, 120), {{ arguments: args }});
+        addToolResponse(gid, s.name, dur, {{ result: result }}, isErr);
       }}
     }}
   }} catch(e) {{
@@ -1408,7 +1482,9 @@ async function finalizeTrace(traceId, status, opts) {{
 function addToolPills(trace) {{
   const container = document.createElement('div');
   container.className = 'tool-pills';
+  let _pi = 0;
   for (const t of trace) {{
+    const gid = 'pill-' + (_pi++);
     const isErr = t.result && typeof t.result === 'object' && 'error' in t.result;
     const call = document.createElement('span');
     call.className = 'tool-pill call';
@@ -1416,8 +1492,8 @@ function addToolPills(trace) {{
     call.dataset.tip = JSON.stringify(t.args, null, 2);
     call.onmouseenter = showTip;
     call.onmouseleave = hideTip;
-    const callEv = addEvent('tool-call', t.name, fmt(t.args).slice(0, 60), {{ arguments: t.args }});
-    call.onclick = () => showDetail(callEv, eventsList.querySelector(`[data-idx="${{events.indexOf(callEv)}}"]`));
+    const callEv = addToolCall(gid, t.name, fmt(t.args).slice(0, 120), {{ arguments: t.args }});
+    call.onclick = () => showDetail(callEv, null);
     container.appendChild(call);
     const res = document.createElement('span');
     res.className = `tool-pill ${{isErr ? 'error' : 'result'}}`;
@@ -1425,8 +1501,8 @@ function addToolPills(trace) {{
     res.dataset.tip = fmt(t.result);
     res.onmouseenter = showTip;
     res.onmouseleave = hideTip;
-    const resEv = addEvent(isErr ? 'tool-error' : 'tool-result', t.name, `${{t.ms}}ms`, {{ result: t.result }});
-    res.onclick = () => showDetail(resEv, eventsList.querySelector(`[data-idx="${{events.indexOf(resEv)}}"]`));
+    const resEv = addToolResponse(gid, t.name, `${{t.ms}}ms`, {{ result: t.result }}, isErr);
+    res.onclick = () => showDetail(resEv, null);
     container.appendChild(res);
   }}
   chat.appendChild(container);
@@ -1440,17 +1516,22 @@ function addToolPills(trace) {{
 // `name`, so we stash the tool name on the row when it's created and reuse it.
 const inlineSteps = {{}};  // callId -> row element (reset per send, see send handler)
 function renderInlineStep(stepsContainer, callId, opts) {{
-  // opts: {{ name, phase: 'running'|'done'|'error', detail }}
+  // opts: {{ name, phase: 'running'|'done'|'error', request, response }}
+  // The REQUEST (tool args — for a SQL tool, the query itself) and the
+  // RESPONSE (rows) are kept as separate persistent sections so the query
+  // is never overwritten by its result.
   let row = inlineSteps[callId];
   if (!row) {{
     row = document.createElement('div');
     row.className = 'inline-step';
-    row.innerHTML = '<div class="inline-step-head"></div><pre class="inline-step-detail"></pre>';
+    row.innerHTML = '<div class="inline-step-head"></div><div class="inline-step-detail"></div>';
     row.querySelector('.inline-step-head').onclick = () => row.classList.toggle('open');
     stepsContainer.appendChild(row);
     inlineSteps[callId] = row;
   }}
   if (opts.name) row.dataset.toolName = opts.name;
+  if (opts.request != null) row._req = opts.request;
+  if (opts.response != null) row._resp = opts.response;
   const name = opts.name || row.dataset.toolName || 'tool';
   const icon = opts.phase === 'running' ? '⚙' : (opts.phase === 'error' ? '✗' : '✓');
   const label = opts.phase === 'running' ? 'running…' : (opts.phase === 'error' ? 'error' : 'done');
@@ -1458,7 +1539,18 @@ function renderInlineStep(stepsContainer, callId, opts) {{
   row.querySelector('.inline-step-head').innerHTML =
     `<span class="step-icon">${{icon}}</span><span class="step-name">${{esc(name)}}</span>`
     + `<span class="step-label">${{label}}</span>`;
-  if (opts.detail != null) row.querySelector('.inline-step-detail').textContent = opts.detail;
+  const detail = row.querySelector('.inline-step-detail');
+  detail.innerHTML = '';
+  // Show the request unless it's empty/no-arg ('{{}}'): a no-arg tool has no
+  // query to show, so we skip the Request section rather than print '{{}}'.
+  if (row._req != null && row._req !== '' && row._req.trim() !== '{{}}') {{
+    detail.insertAdjacentHTML('beforeend',
+      `<div class="step-detail-label">Request</div><pre class="step-detail-pre">${{esc(row._req)}}</pre>`);
+  }}
+  if (row._resp != null) {{
+    detail.insertAdjacentHTML('beforeend',
+      `<div class="step-detail-label">Response</div><pre class="step-detail-pre">${{esc(row._resp)}}</pre>`);
+  }}
   chat.scrollTop = chat.scrollHeight;
 }}
 
@@ -1499,6 +1591,7 @@ form.addEventListener('submit', async e => {{
   const assistantDiv = addMsg('assistant', '', true);
   // Live tool steps render into their own container ABOVE the answer bubble.
   for (const k in inlineSteps) delete inlineSteps[k];   // reset per send
+  for (const k in toolGroups) delete toolGroups[k];
   const stepsContainer = document.createElement('div');
   stepsContainer.className = 'inline-steps';
   chat.insertBefore(stepsContainer, assistantDiv);       // steps appear ABOVE the answer
@@ -1555,23 +1648,27 @@ form.addEventListener('submit', async e => {{
               toolEventsFromStream = true;
               const argStr = typeof item.arguments === 'string'
                 ? item.arguments : JSON.stringify(item.arguments || {{}});
-              const callEv = addEvent('tool-call', item.name || 'tool',
-                argStr.slice(0, 80), {{ arguments: argStr }});
+              // Group the call + its response by call_id in the Events panel.
+              addToolCall(item.call_id || item.id || item.name, item.name,
+                argStr.slice(0, 120), {{ arguments: argStr }});
               // Also render the call live in the transcript as a step row.
+              // Pass the args as `request` (for a SQL tool this IS the query),
+              // kept separate from the result so it isn't overwritten on done.
               renderInlineStep(stepsContainer, item.call_id || item.id || item.name,
-                {{ name: item.name, phase: 'running', detail: argStr }});
+                {{ name: item.name, phase: 'running', request: argStr }});
             }} else if (item.type === 'function_call_output') {{
               toolEventsFromStream = true;
               const outStr = typeof item.output === 'string'
                 ? item.output : JSON.stringify(item.output || '');
-              addEvent('tool-result', item.name || 'tool',
-                outStr.slice(0, 80), {{ output: outStr }});
+              const isErr = /\"error\"|\berror\b/i.test(outStr);
+              // Fill the response into the SAME group as its call (by call_id).
+              addToolResponse(item.call_id || item.id || item.name, item.name,
+                outStr.slice(0, 120), {{ output: outStr }}, isErr);
               // Update the SAME step row (shared call_id) running → done/error.
               // Pass item.name unchanged (undefined on output items) so the row's
               // stashed tool name survives — a truthy fallback would overwrite it.
-              const isErr = /\"error\"|\berror\b/i.test(outStr);
               renderInlineStep(stepsContainer, item.call_id || item.id || item.name,
-                {{ name: item.name, phase: isErr ? 'error' : 'done', detail: outStr }});
+                {{ name: item.name, phase: isErr ? 'error' : 'done', response: outStr }});
             }}
           }} else if (ptype === 'response.completed' && !full) {{
             const out = payload.response && payload.response.output;

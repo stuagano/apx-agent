@@ -316,10 +316,32 @@ class TestEventsToolCalls:
         html = _render_agent_ui(ctx)
         # function_call / function_call_output items become tool events from the stream
         assert "item.type === 'function_call'" in html
-        assert "addEvent('tool-call', item.name" in html
+        assert "addToolCall(" in html
         assert "item.type === 'function_call_output'" in html
+        assert "addToolResponse(" in html
         # and finalizeTrace is told not to double-emit when the stream already did
         assert "emitEvents: !toolEventsFromStream" in html
+
+    def test_tool_events_grouped_by_call(self):
+        from apx_agent._ui_chat import _render_agent_ui
+        from apx_agent import AgentConfig, AgentContext
+        from apx_agent._models import AgentTool
+        cfg = AgentConfig(name="d", description="x", examples=[])
+        ctx = AgentContext(
+            config=cfg,
+            tools=[AgentTool(name="run_sql", description="Run SQL",
+                             input_schema={"type": "object", "properties": {}})],
+            card={"name": "d", "skills": []}, agent=None,  # type: ignore[arg-type]
+        )
+        html = _render_agent_ui(ctx)
+        # A tool call + its response are grouped into one block keyed by call_id.
+        assert "function addToolCall" in html
+        assert "function addToolResponse" in html
+        assert "toolGroups" in html                 # the call_id -> group map
+        assert "tool-group" in html                 # the group container styling
+        # The grouped block labels the two parts request / response.
+        assert ">request<" in html
+        assert "'error' : 'response'" in html  # the response/error label ternary
 
 
 class TestInlineSteps:
@@ -345,6 +367,147 @@ class TestInlineSteps:
         assert "renderInlineStep(" in html                   # called from the stream branches
         assert "insertBefore(stepsContainer" in html         # steps sit above the answer bubble
         assert ".inline-step" in html                        # styling present
+
+    def test_inline_step_keeps_both_request_and_response(self):
+        """The step must show the tool's REQUEST (args/SQL) AND its RESPONSE
+        (rows) — not overwrite the query with the result. For a SQL tool the
+        query lives in the call args, so dropping the request hides the SQL."""
+        from apx_agent._ui_chat import _render_agent_ui
+        from apx_agent import AgentConfig, AgentContext
+        from apx_agent._models import AgentTool
+        cfg = AgentConfig(name="d", description="x", examples=[])
+        ctx = AgentContext(
+            config=cfg,
+            tools=[AgentTool(name="run_sql", description="Run SQL",
+                             input_schema={"type": "object", "properties": {}})],
+            card={"name": "d", "skills": []}, agent=None,  # type: ignore[arg-type]
+        )
+        html = _render_agent_ui(ctx)
+        # Renderer tracks request + response separately (not a single `detail`).
+        assert "request:" in html      # function_call branch passes the args as request
+        assert "response:" in html     # function_call_output branch passes the output
+        assert "Request" in html       # labeled section in the expanded detail
+        assert "Response" in html      # labeled section in the expanded detail
+
+
+class TestTraceDeltaRender:
+    """The trace detail renders chat payloads as a compact, role-labeled
+    conversation and elides messages already shown one level up — so nesting
+    no longer re-prints the system prompt + prior turns at every level."""
+
+    def test_common_prefix_len(self):
+        from apx_agent._dev import _common_prefix_len
+        a = [{"role": "system", "content": "x"}, {"role": "user", "content": "hi"}]
+        b = a + [{"role": "assistant", "content": "yo"}]
+        assert _common_prefix_len(a, b) == 2
+        assert _common_prefix_len(a, []) == 0
+        assert _common_prefix_len([], b) == 0
+
+    def test_is_chat_messages_detects_payload(self):
+        from apx_agent._dev import _is_chat_messages
+        assert _is_chat_messages({"messages": [{"role": "user", "content": "hi"}]}) is not None
+        assert _is_chat_messages({"statement": "SELECT 1"}) is None
+        assert _is_chat_messages("not a dict") is None
+        assert _is_chat_messages({"messages": []}) is None
+
+    def test_messages_block_collapses_shared_prefix(self):
+        from apx_agent._dev import _render_messages_block
+        prev = [
+            {"role": "system", "content": "S" * 200},
+            {"role": "user", "content": "how many customers"},
+        ]
+        msgs = prev + [
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"function": {"name": "run_sql",
+                                          "arguments": '{"query": "SELECT 1"}'}}]},
+            {"role": "tool", "content": '{"row_count": 1}'},
+        ]
+        html = _render_messages_block(msgs, prev)
+        # The shared [system, user] prefix collapses to one expandable line ...
+        assert "2 earlier messages" in html
+        assert 'class="tprefix"' in html
+        # ... and only the NEW messages render expanded.
+        assert "run_sql" in html
+        assert "row_count" in html
+        # The big system prompt only appears INSIDE the collapsed prefix block,
+        # never in the new-messages tail rendered after it.
+        tail = html.split("</details>", 1)[1] if "</details>" in html else html
+        assert "S" * 200 not in tail
+
+    def test_system_prompt_folds_to_one_line(self):
+        from apx_agent._dev import _render_messages_block
+        msgs = [{"role": "system", "content": "You are a data assistant. " * 30}]
+        html = _render_messages_block(msgs, None)
+        # Long system prompt is rendered behind a <details> disclosure, not raw.
+        assert "<details" in html
+        assert "chars)" in html  # the "(NNN chars)" length hint
+
+    def test_conversation_rendered_only_on_llm_spans(self):
+        """The conversation lives uniformly on LLM spans. Wrapper spans
+        (LangGraph/model CHAIN) re-log the same growing message list in a
+        different shape — that re-log IS the down-a-level repeat — so the
+        detail must render the compact conversation on LLM spans and suppress
+        the message re-dump on non-LLM wrapper spans."""
+        from apx_agent._dev import _render_trace_detail
+        # An LLM span (system prompt lives here) nested under a CHAIN wrapper
+        # that re-logs the same messages in LangChain `type` shape.
+        msgs_openai = [
+            {"role": "system", "content": "You are a data assistant. " * 20},
+            {"role": "user", "content": "how many customers"},
+        ]
+        msgs_langchain = [
+            {"type": "human", "content": "how many customers",
+             "additional_kwargs": {}, "response_metadata": {}},
+        ]
+        spans = [
+            {"span_id": "w", "parent_id": None, "name": "model",
+             "span_type": "CHAIN", "status": "OK", "duration_ms": 10,
+             "inputs": {"messages": msgs_langchain}, "outputs": None, "events": []},
+            {"span_id": "l", "parent_id": "w", "name": "ChatDatabricks",
+             "span_type": "CHAT_MODEL", "status": "OK", "duration_ms": 8,
+             "inputs": {"messages": msgs_openai}, "outputs": None, "events": []},
+        ]
+        html = _render_trace_detail("tr-x", spans, None)
+        # The conversation renders exactly ONCE — on the LLM span — incl. the
+        # folded system prompt. The wrapper CHAIN span suppresses its message
+        # re-log entirely (that re-log is the down-a-level repeat).
+        assert html.count('class="convo"') == 1
+        assert "tsys" in html
+        # The wrapper's LangChain re-log appears nowhere — not compact, not raw.
+        assert "additional_kwargs" not in html  # would appear if raw-dumped
+        assert '"type": "human"' not in html
+        assert html.count("how many customers") == 1  # shown once, on the LLM span
+
+
+class TestWarmupTraceFilter:
+    """The startup ``apx.trace_capture.warmup`` self-test trace must not show in
+    the dev-UI traces list — it carries one internal span and reads as an empty
+    trace when opened, which is confusing noise."""
+
+    def test_warmup_traces_dropped(self):
+        from apx_agent._dev import _drop_warmup_traces
+        from apx_agent._trace_store import WARMUP_SPAN_NAME
+        from types import SimpleNamespace
+
+        def mk(name, tid):
+            return SimpleNamespace(
+                info=SimpleNamespace(trace_id=tid, tags={"mlflow.traceName": name})
+            )
+
+        traces = [
+            mk("streaming", "tr-1"),
+            mk(WARMUP_SPAN_NAME, "tr-2"),
+            mk("streaming", "tr-3"),
+            mk(WARMUP_SPAN_NAME, "tr-4"),
+        ]
+        kept = _drop_warmup_traces(traces)
+        assert [t.info.trace_id for t in kept] == ["tr-1", "tr-3"]
+
+    def test_drop_warmup_tolerates_missing_tags(self):
+        from apx_agent._dev import _drop_warmup_traces
+        from types import SimpleNamespace
+        t = SimpleNamespace(info=SimpleNamespace(trace_id="tr-x", tags=None))
+        assert _drop_warmup_traces([t]) == [t]  # no tags → kept, no crash
 
 
 class TestSerializeTraceSpans:
