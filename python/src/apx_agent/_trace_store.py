@@ -24,6 +24,12 @@ from typing import Any
 
 MAX_TRACES = 50
 
+# Name of the startup self-test span/trace used to materialize the OTel
+# provider (see ``install_capture_processor_at_startup``). The dev-UI traces
+# list filters traces with this name so the internal warm-up doesn't show as a
+# confusing single-span "empty" trace.
+WARMUP_SPAN_NAME = "apx.trace_capture.warmup"
+
 _STORE: "OrderedDict[str, list[dict]]" = OrderedDict()
 _LOCK = threading.Lock()
 
@@ -201,7 +207,7 @@ def install_capture_processor_at_startup() -> bool:
     raises. Call once from the app lifespan after autolog setup."""
     try:
         import mlflow
-        with mlflow.start_span("apx.trace_capture.warmup"):
+        with mlflow.start_span(WARMUP_SPAN_NAME):
             pass
         return ensure_capture_processor()
     except Exception:
