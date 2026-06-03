@@ -73,10 +73,12 @@ def get(trace_id: str) -> list[dict] | None:
 # TOOL/LLM/CHAIN children) is still live in ``InMemoryTraceManager``. We read it
 # there (no tracking-store / blob access), serialize to plain dicts, and store
 # them. This is structurally correct on FEVM because it never touches the
-# tracking store. It also covers streaming for free: the root ``safe_span`` ends
-# when the generator is exhausted, so ``on_end`` fires for the stream path too.
+# tracking store. It also covers the STREAMING paths (the dev UI streams, so
+# that is the production capture path): the root ``safe_span`` ends when the
+# generator is exhausted, so ``on_end`` fires while the trace is still in the
+# in-memory manager — empirically verified for both ``streaming`` and
+# ``predict_stream`` (see the streaming gating tests).
 
-_PROCESSOR_INSTALLED = False
 _INSTALL_LOCK = threading.Lock()
 
 
@@ -163,7 +165,6 @@ def ensure_capture_processor() -> bool:
     the in-flight trace). Returns True if the processor is present (installed now
     or already there), False if it could not be installed (e.g. MLflow not
     installed / no SDK provider yet)."""
-    global _PROCESSOR_INSTALLED
     try:
         from opentelemetry.sdk.trace import TracerProvider
 
@@ -182,15 +183,12 @@ def ensure_capture_processor() -> bool:
             return any(p is proc for p in existing)
 
         if _already_present(tp):
-            _PROCESSOR_INSTALLED = True
             return True
 
         with _INSTALL_LOCK:
             if _already_present(tp):  # re-check under lock
-                _PROCESSOR_INSTALLED = True
                 return True
             tp.add_span_processor(proc)
-            _PROCESSOR_INSTALLED = True
             return True
     except Exception:
         return False

@@ -131,3 +131,80 @@ def test_capture_after_real_agent_run(tmp_path):
     tool_span = next(s for s in spans if s["name"] == "get_time")
     assert tool_span["span_type"] == "TOOL"
     assert isinstance(tool_span["events"], list)
+
+
+def _setup_local_tracing(tmp_path):
+    import mlflow
+
+    mlflow.set_tracking_uri(f"file://{tmp_path}")
+    exp_id = mlflow.create_experiment(f"apx-capture-{tmp_path.name}")
+    mlflow.set_experiment(experiment_id=exp_id)
+    mlflow.langchain.autolog()
+
+
+def test_capture_after_real_streaming_responses_run(tmp_path):
+    """The dev UI streams (x-return-trace-id on the stream), so the STREAMING
+    path is the production capture path. The root safe_span closes when the
+    generator is exhausted — verify capture fires there too, with the tool
+    span, while the trace is still in the in-memory manager."""
+    from unittest.mock import MagicMock, patch
+
+    import mlflow
+
+    from apx_agent import LlmAgent, compile_to_responses_agent
+    from apx_agent import _trace_store as ts
+    from mlflow.types.responses import ResponsesAgentRequest
+
+    _setup_local_tracing(tmp_path)
+    assert ts.install_capture_processor_at_startup() is True
+
+    def get_time() -> str:
+        """Return the current time."""
+        return "12:00"
+
+    agent = LlmAgent(tools=[get_time], instructions="You tell the time.")
+    _, streaming = compile_to_responses_agent(agent, model="fake-endpoint")
+
+    ts.reset()
+    with patch("apx_agent._llm.get_llm", return_value=_fake_tool_then_answer()), patch(
+        "apx_agent._defaults._make_workspace_client", return_value=MagicMock(name="ws")
+    ):
+        # Exhaust the generator — capture only runs once the stream completes.
+        list(streaming(ResponsesAgentRequest(input=[{"role": "user", "content": "time?"}])))
+
+    trace_id = mlflow.get_last_active_trace_id()
+    spans = ts.get(trace_id)
+    assert spans is not None, f"streaming run left buffer empty for {trace_id}"
+    assert "get_time" in [s["name"] for s in spans]
+
+
+def test_capture_after_real_streaming_chat_run(tmp_path):
+    """Same as above for the ChatAgent predict_stream path (dev loop / apx run)."""
+    from unittest.mock import MagicMock, patch
+
+    import mlflow
+
+    from apx_agent import LlmAgent, chat_agent_for
+    from apx_agent import _trace_store as ts
+    from mlflow.types.agent import ChatAgentMessage
+
+    _setup_local_tracing(tmp_path)
+    assert ts.install_capture_processor_at_startup() is True
+
+    def get_time() -> str:
+        """Return the current time."""
+        return "12:00"
+
+    agent = LlmAgent(tools=[get_time], instructions="You tell the time.")
+    wrapped = chat_agent_for(agent, model="fake-endpoint")
+
+    ts.reset()
+    with patch("apx_agent._llm.get_llm", return_value=_fake_tool_then_answer()), patch(
+        "apx_agent._defaults._make_workspace_client", return_value=MagicMock(name="ws")
+    ):
+        list(wrapped.predict_stream(messages=[ChatAgentMessage(role="user", content="time?")]))
+
+    trace_id = mlflow.get_last_active_trace_id()
+    spans = ts.get(trace_id)
+    assert spans is not None, f"chat streaming run left buffer empty for {trace_id}"
+    assert "get_time" in [s["name"] for s in spans]
