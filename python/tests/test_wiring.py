@@ -16,7 +16,6 @@ from apx_agent import Agent, LlmAgent, AgentConfig, AgentContext, SequentialAgen
 from apx_agent._models import GuardrailsConfig
 from apx_agent._inspection import _load_agent_config
 from apx_agent._wiring import (
-    _install_responses_input_adapter,
     _mount_protocol_routes,
     apply_config_knobs,
     apply_config_guardrails,
@@ -330,100 +329,6 @@ class TestCreateApp:
         config = AgentConfig(name="test")
         app = create_app(agent, config)
         assert isinstance(app, FastAPI)
-
-
-# ---------------------------------------------------------------------------
-# /responses string-input adapter
-# ---------------------------------------------------------------------------
-
-
-class TestResponsesStringInputAdapter:
-    """The OpenAI Responses API accepts ``input: string`` or ``input: list``;
-    the upstream ResponsesAgentRequest schema only accepts the list form.
-    The adapter rewrites a string ``input`` to the canonical user-message
-    envelope so curl-first users don't hit a confusing 400."""
-
-    def _app_with_adapter(self) -> FastAPI:
-        """Tiny FastAPI app with the adapter installed + an echo /responses
-        that returns whatever payload the upstream handler sees post-adapter."""
-        app = FastAPI()
-        _install_responses_input_adapter(app)
-
-        @app.post("/responses")
-        async def echo(request: Request) -> JSONResponse:
-            return JSONResponse(await request.json())
-
-        return app
-
-    @pytest.mark.asyncio
-    async def test_string_input_is_rewritten_to_user_message_list(self):
-        app = self._app_with_adapter()
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://t"
-        ) as ac:
-            r = await ac.post("/responses", json={"input": "hello", "stream": False})
-        assert r.status_code == 200
-        body = r.json()
-        assert body["input"] == [{"role": "user", "content": "hello"}]
-        assert body["stream"] is False
-
-    @pytest.mark.asyncio
-    async def test_list_input_passes_through_unchanged(self):
-        """List-form input must not be touched — it's the canonical shape."""
-        app = self._app_with_adapter()
-        payload = {
-            "input": [{"role": "user", "content": "hi"}],
-            "stream": True,
-        }
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://t"
-        ) as ac:
-            r = await ac.post("/responses", json=payload)
-        assert r.status_code == 200
-        assert r.json() == payload
-
-    @pytest.mark.asyncio
-    async def test_other_routes_are_not_touched(self):
-        """The adapter only rewrites POST /responses — leave everything else
-        alone (the same body shape may mean different things on /invocations)."""
-        app = FastAPI()
-        _install_responses_input_adapter(app)
-
-        @app.post("/invocations")
-        async def echo(request: Request) -> JSONResponse:
-            return JSONResponse(await request.json())
-
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://t"
-        ) as ac:
-            r = await ac.post("/invocations", json={"input": "hello"})
-        assert r.status_code == 200
-        # input untouched on /invocations
-        assert r.json() == {"input": "hello"}
-
-    @pytest.mark.asyncio
-    async def test_malformed_json_is_forwarded_unchanged(self):
-        """The adapter must not crash on a malformed body — it forwards the
-        bytes through and lets the real handler return its native 4xx."""
-        app = FastAPI()
-        _install_responses_input_adapter(app)
-
-        @app.post("/responses")
-        async def echo_bytes(request: Request) -> JSONResponse:
-            body = await request.body()
-            return JSONResponse({"received": body.decode("latin-1")})
-
-        bad = b"not json at all"
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://t"
-        ) as ac:
-            r = await ac.post(
-                "/responses",
-                content=bad,
-                headers={"content-type": "application/json"},
-            )
-        assert r.status_code == 200
-        assert r.json()["received"] == bad.decode("latin-1")
 
 
 # ---------------------------------------------------------------------------
