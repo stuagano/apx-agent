@@ -695,6 +695,16 @@ def create_app(
         except Exception as exc:  # pragma: no cover — defensive
             logger.debug("MLflow autolog setup skipped: %s", exc)
 
+        # Install the in-process trace-capture SpanProcessor so the dev-UI Trace
+        # detail can serve recent runs from memory (FEVM/private-link blocks the
+        # blob egress mlflow.get_trace falls through to). Best-effort.
+        try:
+            from ._trace_store import install_capture_processor_at_startup
+
+            install_capture_processor_at_startup()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("Trace-capture processor install skipped: %s", exc)
+
         # Best-effort: a freshly scaffolded agent run locally with `apx run`
         # has no Databricks credentials configured yet. Don't let that crash
         # startup — boot the server (so the dev UI loads) and surface a clear
@@ -822,6 +832,16 @@ def mount_mcp_endpoints(
             autolog_if_env()
         except Exception as exc:  # pragma: no cover — defensive
             logger.debug("MLflow autolog setup skipped: %s", exc)
+
+        # Install the in-process trace-capture SpanProcessor so the dev-UI Trace
+        # detail can serve recent runs from memory (FEVM/private-link blocks the
+        # blob egress mlflow.get_trace falls through to). Best-effort.
+        try:
+            from ._trace_store import install_capture_processor_at_startup
+
+            install_capture_processor_at_startup()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("Trace-capture processor install skipped: %s", exc)
 
         ctx = await setup_agent(app, agent, config, pyproject_path=pyproject_path)
         if ctx is None:

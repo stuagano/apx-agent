@@ -643,6 +643,12 @@ def compile_to_responses_agent(
             # Accept dict for easier testing; coerce via pydantic.
             request = ResponsesAgentRequest(**dict(request))
 
+        # Idempotent, never-raises: ensure the in-process trace-capture
+        # SpanProcessor is attached to the live provider so the dev-UI Trace
+        # detail can serve this run from memory (FEVM blob egress is blocked).
+        from ._trace_store import ensure_capture_processor
+        ensure_capture_processor()
+
         custom_inputs: dict[str, Any] = dict(request.custom_inputs or {})
         session = _load_session(_session_store, custom_inputs)
 
@@ -727,6 +733,10 @@ def compile_to_responses_agent(
         """
         if not isinstance(request, ResponsesAgentRequest):
             request = ResponsesAgentRequest(**dict(request))
+
+        # See non_streaming — idempotent capture-processor install (never raises).
+        from ._trace_store import ensure_capture_processor
+        ensure_capture_processor()
 
         custom_inputs: dict[str, Any] = dict(request.custom_inputs or {})
         session = _load_session(_session_store, custom_inputs)
