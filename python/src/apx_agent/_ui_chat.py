@@ -1459,6 +1459,10 @@ form.addEventListener('submit', async e => {{
   let pendingTrace = null;
   let traceId = null;
   let traceStatus = 'completed';
+  // Tool calls are surfaced live from the stream (below). When that happens we
+  // tell finalizeTrace NOT to re-harvest them from the trace spans, so the
+  // Events panel doesn't double up on workspaces where the trace also loads.
+  let toolEventsFromStream = false;
 
   try {{
     const res = await fetch('/responses', {{
@@ -1497,6 +1501,21 @@ form.addEventListener('submit', async e => {{
                   chat.scrollTop = chat.scrollHeight;
                 }}
               }}
+            }} else if (item.type === 'function_call') {{
+              // Surface the tool call (+ its SQL/args) live from the stream —
+              // no trace fetch, so it works even when artifact-storage egress
+              // is blocked. Detail pane shows the full arguments on click.
+              toolEventsFromStream = true;
+              const argStr = typeof item.arguments === 'string'
+                ? item.arguments : JSON.stringify(item.arguments || {{}});
+              const callEv = addEvent('tool-call', item.name || 'tool',
+                argStr.slice(0, 80), {{ arguments: argStr }});
+            }} else if (item.type === 'function_call_output') {{
+              toolEventsFromStream = true;
+              const outStr = typeof item.output === 'string'
+                ? item.output : JSON.stringify(item.output || '');
+              addEvent('tool-result', item.name || 'tool',
+                outStr.slice(0, 80), {{ output: outStr }});
             }}
           }} else if (ptype === 'response.completed' && !full) {{
             const out = payload.response && payload.response.output;
@@ -1533,7 +1552,7 @@ form.addEventListener('submit', async e => {{
   assistantDiv.classList.remove('streaming');
   addEvent('assistant', full.slice(0, 80) + (full.length > 80 ? '…' : ''), null, {{ content: full }});
   history.push({{ role: 'assistant', content: full }});
-  finalizeTrace(traceId, traceStatus, {{ emitEvents: true }});
+  finalizeTrace(traceId, traceStatus, {{ emitEvents: !toolEventsFromStream }});
   sendBtn.disabled = false;
   inputEl.focus();
 }});
