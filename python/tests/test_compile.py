@@ -204,3 +204,19 @@ class TestUnsupportedAgentTypeRaises:
 
         with pytest.raises(NotImplementedError, match="_MysteryAgent"):
             compile_to_langgraph(_MysteryAgent(), ws=fake_ws, model="any")
+
+
+class TestDependenciesProgress:
+    def test_dependencies_progress_resolves_to_emitter(self) -> None:
+        """``Dependencies.Progress`` exists and the resolver wires
+        ``_get_progress`` to the ``emit_progress`` span-event emitter."""
+        from apx_agent import Dependencies
+        from apx_agent._compile import CompileContext, _make_dep_resolvers
+        from apx_agent._defaults import _get_progress
+        from apx_agent._mlflow_tracing import emit_progress
+
+        assert Dependencies.Progress is not None
+
+        ctx = CompileContext(ws=None, model="m", headers=None)  # type: ignore[arg-type]
+        resolvers = _make_dep_resolvers(ctx)
+        assert resolvers[_get_progress] is emit_progress

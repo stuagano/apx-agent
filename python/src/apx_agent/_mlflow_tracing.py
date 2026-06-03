@@ -229,6 +229,26 @@ def set_span_attribute(span: Any, key: str, value: Any) -> None:
         logger.debug("Failed to set span attribute %r: %s", key, exc)
 
 
+def emit_progress(message: str, **attributes: Any) -> None:
+    """Record a progress marker as an event on the current active MLflow span.
+
+    Surfaces tool progress (e.g. a SQL-warehouse cold-start) in the trace
+    without streaming. No-ops safely when MLflow is absent or there is no
+    active span — never raises into the caller.
+    """
+    try:
+        from mlflow.entities import SpanEvent
+
+        span = current_active_span()
+        if span is None:
+            return
+        attrs: dict[str, Any] = {"message": message}
+        attrs.update({k: str(v) for k, v in attributes.items()})
+        span.add_event(SpanEvent(name="apx.progress", attributes=attrs))
+    except Exception:  # pragma: no cover — tracing must never break a tool
+        return
+
+
 def current_active_span() -> Any:
     """Return the currently active MLflow span, or ``None``.
 

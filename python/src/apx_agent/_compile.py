@@ -54,12 +54,14 @@ from ._agents import (
 )
 from ._defaults import (
     _get_principal,
+    _get_progress,
     _get_request,
     _get_sql_runner,
     _get_user_client,
     _get_workspace_client,
     get_databricks_headers,
 )
+from ._mlflow_tracing import emit_progress
 from ._inspection import _inspect_tool_fn, _make_input_model
 
 if TYPE_CHECKING:
@@ -103,6 +105,7 @@ def _make_dep_resolvers(ctx: CompileContext) -> dict[Any, Any]:
         get_databricks_headers: ctx.headers,
         _get_sql_runner: (lambda q: run_sql(ctx.ws, q)),
         _get_principal: (ctx.headers.user_id if ctx.headers else None),  # E3b
+        _get_progress: emit_progress,  # tool progress → trace span events
         # _get_request intentionally omitted: no FastAPI Request inside a
         # compiled graph. Tools needing the raw request can't be compiled
         # without lifting them; we fail loudly if encountered.

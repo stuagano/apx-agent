@@ -51,3 +51,33 @@ def test_swallows_get_failure_so_query_still_runs() -> None:
     ws.warehouses.get.side_effect = Exception("perm denied")
     _ensure_warehouse_running(ws, "wh-3")  # must not raise
     ws.warehouses.start.assert_not_called()
+
+
+def test_ensure_warehouse_running_opens_cold_start_span(monkeypatch) -> None:
+    """A STOPPED warehouse → the start+wait is wrapped in a 'warehouse' span so
+    the cold-start is a visible, timed step in the trace (not silent)."""
+    import contextlib
+
+    import apx_agent._sql as sql
+
+    calls: list[str] = []
+
+    @contextlib.contextmanager
+    def fake_span(name, **kw):
+        calls.append(name)
+        yield None
+
+    monkeypatch.setattr(sql, "safe_span", fake_span)
+
+    from types import SimpleNamespace
+
+    states = [State.STOPPED, State.RUNNING]
+    ws = SimpleNamespace(
+        warehouses=SimpleNamespace(
+            get=lambda _id: SimpleNamespace(state=states.pop(0) if states else State.RUNNING),
+            start=lambda _id: None,
+        )
+    )
+    monkeypatch.setattr(sql.time, "sleep", lambda *_: None)
+    sql._ensure_warehouse_running(ws, "wh-1", timeout_s=10)
+    assert any("warehouse" in c.lower() for c in calls)
