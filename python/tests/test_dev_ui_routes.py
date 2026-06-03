@@ -199,3 +199,41 @@ class TestPickWorkspaceDefaults:
         )
         out = _pick_workspace_defaults(broken)
         assert out == {}
+
+
+class TestLandingRender:
+    def _ctx(self, *, tools, examples):
+        from apx_agent._models import AgentTool
+
+        cfg = AgentConfig(name="demo-agent", description="A demo agent.", examples=examples)
+        tool_objs = [
+            AgentTool(name=n, description=d, input_schema={"type": "object", "properties": {}})
+            for n, d in tools
+        ]
+        card = AgentCard(name="demo-agent", description="A demo agent.", skills=[])
+        return AgentContext(config=cfg, tools=tool_objs, card=card, agent=None)  # type: ignore[arg-type]
+
+    def test_landing_shows_greeting_cards_and_chips(self):
+        from apx_agent._ui_chat import _render_agent_ui
+        html = _render_agent_ui(self._ctx(
+            tools=[("sample_customer", "Preview rows."), ("run_sql", "Run SQL.")],
+            examples=["Show me sample customers", "Top 5 by balance"],
+        ))
+        assert 'id="landing"' in html
+        assert "demo-agent" in html and "A demo agent." in html
+        assert "sample_customer" in html and "run_sql" in html      # capability cards
+        assert "Show me sample customers" in html and "Top 5 by balance" in html  # chips
+
+    def test_landing_no_tools_no_chips_still_has_greeting(self):
+        from apx_agent._ui_chat import _render_agent_ui
+        html = _render_agent_ui(self._ctx(tools=[], examples=[]))
+        assert 'id="landing"' in html
+        assert "demo-agent" in html
+        assert 'class="cap-cards"' not in html       # no capability cards
+        assert 'class="starter-chips"' not in html   # no chips
+
+    def test_landing_examples_only_no_tools(self):
+        from apx_agent._ui_chat import _render_agent_ui
+        html = _render_agent_ui(self._ctx(tools=[], examples=["Hi there"]))
+        assert 'class="starter-chips"' in html and "Hi there" in html
+        assert 'class="cap-cards"' not in html
