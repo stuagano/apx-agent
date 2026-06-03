@@ -72,10 +72,12 @@ class TestGetUserClient:
             host=None, user_name=None, user_id=None,
             user_email=None, request_id=None, token=None,
         )
-        with patch("apx_agent._defaults.WorkspaceClient") as MockWS:
+        with patch("apx_agent._defaults.WorkspaceClient") as MockWS, \
+             patch("apx_agent._defaults.Config") as MockConfig:
             MockWS.return_value = MagicMock()
             client = _get_user_client(headers)
-            MockWS.assert_called_once_with()
+            MockConfig.assert_called_once_with(retry_timeout_seconds=120)
+            MockWS.assert_called_once_with(config=MockConfig.return_value)
             assert client is not None
 
     def test_creates_client_with_obo_token_and_host(self):
@@ -91,14 +93,18 @@ class TestGetUserClient:
             request_id=None,
             token=SecretStr("obo-token-123"),
         )
-        with patch("apx_agent._defaults.WorkspaceClient") as MockWS:
+        with patch("apx_agent._defaults.WorkspaceClient") as MockWS, \
+             patch("apx_agent._defaults.Config") as MockConfig:
             MockWS.return_value = MagicMock()
             client = _get_user_client(headers)
-            MockWS.assert_called_once_with(
+            MockConfig.assert_called_once_with(
                 auth_type="pat",
                 token="obo-token-123",
                 host="https://myworkspace.cloud.databricks.com",
+                retry_timeout_seconds=120,
             )
+            MockWS.assert_called_once_with(config=MockConfig.return_value)
+            assert client is not None
 
     def test_obo_client_uses_pat_auth_type(self):
         """OBO tokens pin auth_type='pat' so env OAuth M2M creds are ignored."""
@@ -111,10 +117,11 @@ class TestGetUserClient:
             user_name=None, user_id=None, user_email=None,
             request_id=None, token=SecretStr("token"),
         )
-        with patch("apx_agent._defaults.WorkspaceClient") as MockWS:
+        with patch("apx_agent._defaults.WorkspaceClient") as MockWS, \
+             patch("apx_agent._defaults.Config") as MockConfig:
             MockWS.return_value = MagicMock()
             _get_user_client(headers)
-            assert MockWS.call_args.kwargs.get("auth_type") == "pat"
+            assert MockConfig.call_args.kwargs.get("auth_type") == "pat"
 
 
 class TestMakeWorkspaceClient:
@@ -129,10 +136,12 @@ class TestMakeWorkspaceClient:
         clean_env = {k: v for k, v in os.environ.items()
                      if k not in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET")}
         with patch("apx_agent._defaults.WorkspaceClient") as MockWS, \
+             patch("apx_agent._defaults.Config") as MockConfig, \
              patch.dict("os.environ", clean_env, clear=True):
             MockWS.return_value = MagicMock()
             _make_workspace_client()
-            MockWS.assert_called_once_with()
+            MockConfig.assert_called_once_with(retry_timeout_seconds=120)
+            MockWS.assert_called_once_with(config=MockConfig.return_value)
 
     def test_oauth_and_pat_conflict_pins_oauth_m2m(self):
         """When OAuth M2M env vars are present, auth_type='oauth-m2m' suppresses PAT."""
@@ -145,10 +154,14 @@ class TestMakeWorkspaceClient:
             "DATABRICKS_TOKEN": "dapi-my-pat",
         }
         with patch("apx_agent._defaults.WorkspaceClient") as MockWS, \
+             patch("apx_agent._defaults.Config") as MockConfig, \
              patch.dict("os.environ", conflict_env, clear=True):
             MockWS.return_value = MagicMock()
             _make_workspace_client()
-            MockWS.assert_called_once_with(auth_type="oauth-m2m")
+            MockConfig.assert_called_once_with(
+                auth_type="oauth-m2m", retry_timeout_seconds=120,
+            )
+            MockWS.assert_called_once_with(config=MockConfig.return_value)
 
     def test_explicit_token_pins_pat(self):
         """Explicit OBO token uses auth_type='pat' so OAuth M2M env vars are ignored."""
@@ -161,11 +174,34 @@ class TestMakeWorkspaceClient:
             "DATABRICKS_TOKEN": "dapi-my-pat",
         }
         with patch("apx_agent._defaults.WorkspaceClient") as MockWS, \
+             patch("apx_agent._defaults.Config") as MockConfig, \
              patch.dict("os.environ", conflict_env, clear=True):
             MockWS.return_value = MagicMock()
             _make_workspace_client(token="obo-token", host="https://ws.databricks.com")
-            MockWS.assert_called_once_with(
-                auth_type="pat", token="obo-token", host="https://ws.databricks.com"
+            MockConfig.assert_called_once_with(
+                auth_type="pat",
+                token="obo-token",
+                host="https://ws.databricks.com",
+                retry_timeout_seconds=120,
+            )
+            MockWS.assert_called_once_with(config=MockConfig.return_value)
+
+    def test_caps_retry_timeout_to_fail_fast(self):
+        """All agent-runtime clients cap retry_timeout_seconds (well below the
+        SDK's 300s default) so a flaky/unreachable workspace API fails fast
+        instead of freezing an interactive agent for 5 minutes. Regression for
+        the FEVM SQL-warehouse 5-minute hang."""
+        from unittest.mock import patch
+        from apx_agent._defaults import _AGENT_RETRY_TIMEOUT_S, _make_workspace_client
+
+        assert 30 < _AGENT_RETRY_TIMEOUT_S < 300  # above cold-start, below default
+        with patch("apx_agent._defaults.WorkspaceClient") as MockWS, \
+             patch("apx_agent._defaults.Config") as MockConfig:
+            MockWS.return_value = MagicMock()
+            _make_workspace_client(token="t", host="https://h")
+            assert (
+                MockConfig.call_args.kwargs["retry_timeout_seconds"]
+                == _AGENT_RETRY_TIMEOUT_S
             )
 
 
