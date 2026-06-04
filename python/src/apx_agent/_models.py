@@ -278,11 +278,13 @@ class AgentContext:
         tools: list[AgentTool],
         card: AgentCard,
         agent: "BaseAgent",
+        schema: "dict | None" = None,
     ):
         self.config = config
         self.tools = tools
         self.card = card
         self.agent = agent
+        self.schema = schema
         self._tool_map: dict[str, AgentTool] = {t.name: t for t in tools}
 
     def get_tool(self, name: str) -> AgentTool | None:

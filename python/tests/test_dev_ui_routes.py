@@ -596,3 +596,22 @@ class TestTraceDetailBufferAndFailFast:
         # The successful fetch populates the buffer for next time.
         assert ts.get("tr-ok") is not None
         assert ts.get("tr-ok")[0]["name"] == "get_time"
+
+
+class TestAgentContextSchema:
+    def test_context_accepts_schema(self):
+        from apx_agent import AgentConfig, AgentContext
+        cfg = AgentConfig(name="d", description="x", examples=[])
+        ctx = AgentContext(
+            config=cfg, tools=[], card={"name": "d", "skills": []},
+            agent=None,  # type: ignore[arg-type]
+            schema={"catalog": "samples", "schema": "tpch", "tables": {"t": ["a(int)"]}},
+        )
+        assert ctx.schema["tables"] == {"t": ["a(int)"]}
+
+    def test_schema_defaults_none(self):
+        from apx_agent import AgentConfig, AgentContext
+        cfg = AgentConfig(name="d", description="x", examples=[])
+        ctx = AgentContext(config=cfg, tools=[], card={"name": "d", "skills": []},
+                           agent=None)  # type: ignore[arg-type]
+        assert ctx.schema is None
