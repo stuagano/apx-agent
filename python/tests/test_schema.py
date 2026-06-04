@@ -34,3 +34,36 @@ class TestLoadBakedSchema:
         d.mkdir()
         (d / SCHEMA_MANIFEST_NAME).write_text("{not valid json")
         assert load_baked_schema(tmp_path) is None
+
+
+class TestIntrospectViaTablesApi:
+    def test_builds_table_to_columns_map(self):
+        from types import SimpleNamespace
+        from apx_agent._schema import introspect_schema_columns
+
+        def col(name, type_text):
+            return SimpleNamespace(name=name, type_text=type_text)
+
+        tables = [
+            SimpleNamespace(name="customer", columns=[col("c_custkey", "bigint"), col("c_name", "string")]),
+            SimpleNamespace(name="orders", columns=[col("o_orderkey", "bigint")]),
+        ]
+        ws = SimpleNamespace(tables=SimpleNamespace(list=lambda catalog_name, schema_name: tables))
+        out = introspect_schema_columns(ws, "samples", "tpch")
+        assert out == {
+            "customer": ["c_custkey(bigint)", "c_name(string)"],
+            "orders": ["o_orderkey(bigint)"],
+        }
+
+    def test_returns_empty_on_failure(self):
+        from types import SimpleNamespace
+        from apx_agent._schema import introspect_schema_columns
+
+        def boom(**_):
+            raise RuntimeError("no perms")
+        ws = SimpleNamespace(tables=SimpleNamespace(list=boom))
+        assert introspect_schema_columns(ws, "c", "s") == {}
+
+    def test_none_ws_returns_empty(self):
+        from apx_agent._schema import introspect_schema_columns
+        assert introspect_schema_columns(None, "c", "s") == {}

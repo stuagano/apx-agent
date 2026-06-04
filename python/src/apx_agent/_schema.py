@@ -83,6 +83,35 @@ def introspect_schema(
     return result
 
 
+def introspect_schema_columns(
+    ws: Any, catalog: str, schema: str
+) -> dict[str, list[str]]:
+    """Return ``{table_name: ["column(type)", ...]}`` via the Unity Catalog
+    Tables API — no SQL warehouse required (unlike ``introspect_schema``).
+
+    Used at scaffold time, where no warehouse is resolved. Best-effort: returns
+    ``{}`` on any failure (no client, perms, network) so the scaffold proceeds
+    without a manifest.
+    """
+    if not (ws and catalog and schema):
+        return {}
+    try:
+        listed = list(ws.tables.list(catalog_name=catalog, schema_name=schema))
+    except Exception:
+        return {}
+    result: dict[str, list[str]] = {}
+    for t in listed:
+        if not getattr(t, "name", None):
+            continue
+        cols = [
+            f"{c.name}({c.type_text or ''})"
+            for c in (getattr(t, "columns", None) or [])
+            if getattr(c, "name", None)
+        ]
+        result[t.name] = cols
+    return result
+
+
 def build_instructions_from_schema(
     catalog: str,
     schema: str,
