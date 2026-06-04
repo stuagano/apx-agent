@@ -1390,6 +1390,40 @@ def _probe_import(module_spec: str) -> None:
             sys.path.remove(cwd)
 
 
+@main.command("refresh-schema")
+@click.option("--profile", default=None,
+              help="Databricks CLI profile to introspect with. "
+                   "Falls back to $DATABRICKS_CONFIG_PROFILE.")
+def refresh_schema(profile: str | None) -> None:
+    """Re-introspect this project's catalog.schema and rewrite .apx/schema.json.
+
+    Run inside a scaffolded project. Reads the existing manifest to learn which
+    catalog/schema to refresh, re-introspects via the Tables API, and overwrites
+    the manifest so the agent's grounding + landing card reflect the live schema.
+    """
+    import json as _json
+    from ._schema import load_baked_schema, APX_DIR, SCHEMA_MANIFEST_NAME
+
+    existing = load_baked_schema(Path.cwd())
+    if not existing or not existing.get("catalog") or not existing.get("schema"):
+        raise click.ClickException(
+            "no .apx/schema.json found in this project — run `apx scaffold` first "
+            "(or create the manifest) so I know which catalog.schema to refresh."
+        )
+    catalog, schema = existing["catalog"], existing["schema"]
+    manifest = _schema_manifest_for_scaffold(catalog, schema, profile=profile)
+    if manifest is None:
+        raise click.ClickException(
+            f"could not read tables for {catalog}.{schema} — check your profile "
+            f"and Unity Catalog grants."
+        )
+    out = Path.cwd() / APX_DIR / SCHEMA_MANIFEST_NAME
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(_json.dumps(manifest, indent=2))
+    n = len(manifest["tables"])
+    click.echo(f"refreshed {out} — {n} table{'s' if n != 1 else ''} from {catalog}.{schema}")
+
+
 @main.command()
 @click.option(
     "--module",
