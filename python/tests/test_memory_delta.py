@@ -619,3 +619,35 @@ def test_protocol_compliance() -> None:
 
     store = DeltaMemoryStore(run_sql=lambda s: [])
     assert isinstance(store, MemoryStore)
+
+
+class TestEpochToIsoStringInput:
+    """Databricks statement-execution returns numeric columns as STRINGS, so a
+    recalled ``updated_at``/``created_at`` arrives as e.g. ``'1.78e9'``.
+    ``_epoch_to_iso`` must coerce before comparing — regression for recall
+    crashing with "'<=' not supported between instances of 'str' and 'int'"."""
+
+    def test_accepts_plain_string_seconds(self):
+        from apx_agent._memory_delta import _epoch_to_iso
+        out = _epoch_to_iso("1780597237.801")
+        assert out.startswith("2026-") and out.endswith("Z")
+
+    def test_accepts_scientific_string(self):
+        from apx_agent._memory_delta import _epoch_to_iso
+        out = _epoch_to_iso("1.780597237801E9")
+        assert "T" in out and out.endswith("Z")
+
+    def test_garbage_string_falls_back_no_crash(self):
+        from apx_agent._memory_delta import _epoch_to_iso
+        assert _epoch_to_iso("not a number").endswith("Z")
+
+    def test_row_to_memory_with_string_timestamps(self):
+        from apx_agent._memory_delta import _row_to_memory
+        row = {
+            "id": "m1", "principal_id": "u@x", "namespace": "default",
+            "content": "hi", "tags": [], "importance": "0.9",
+            "created_at": "1.78e9", "updated_at": "1.780597237801E9",
+        }
+        m = _row_to_memory(row)  # must not raise
+        assert m.content == "hi" and m.importance == 0.9
+        assert m.updated_at.endswith("Z")

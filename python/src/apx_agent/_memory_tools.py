@@ -155,6 +155,10 @@ def make_memory_tools(
                     list. Each line is ``"- [score=X.XX] {content}"``.
                     Returns ``"No memories found."`` when nothing matches.
                     """
+                    # Per-request OBO principal wins; fall back to the configured
+                    # default (e.g. the local CLI-profile identity) so memory
+                    # works when no OBO header is present (local apx run).
+                    principal = principal or default_principal_id
                     if not principal:
                         return NO_PRINCIPAL
                     results = store.recall(
@@ -223,6 +227,10 @@ def make_memory_tools(
                         raise ValueError(
                             f"importance must be in [0, 1]; got {importance}"
                         )
+                    # Per-request OBO principal wins; fall back to the configured
+                    # default (e.g. the local CLI-profile identity) so memory
+                    # works when no OBO header is present (local apx run).
+                    principal = principal or default_principal_id
                     if not principal:
                         return NO_PRINCIPAL
                     memory = store.add(
