@@ -140,3 +140,50 @@ class TestDataTemplate:
         from apx_agent._topology import _agent_class_to_node_type
         agent = DataTemplate().build(DataTemplate.Spec(catalog="main", schema="sales"))
         assert _agent_class_to_node_type(agent) == "DataAgent"
+
+
+class TestDataAgentBakedSchema:
+    def test_explicit_tables_ground_instructions(self):
+        from apx_agent import DataAgent
+        agent = DataAgent(
+            "samples", "tpch",
+            tables={"customer": ["c_custkey(bigint)", "c_name(string)"]},
+        )
+        instr = agent._instructions
+        assert "customer" in instr and "c_custkey(bigint)" in instr
+        assert "call the SQL tool to confirm what tables" not in instr
+
+    def test_auto_discovers_manifest(self, tmp_path, monkeypatch):
+        import json
+        from apx_agent._schema import APX_DIR, SCHEMA_MANIFEST_NAME
+        from apx_agent import DataAgent
+        d = tmp_path / APX_DIR
+        d.mkdir()
+        (d / SCHEMA_MANIFEST_NAME).write_text(json.dumps({
+            "catalog": "samples", "schema": "tpch",
+            "tables": {"orders": ["o_orderkey(bigint)"]},
+        }))
+        monkeypatch.chdir(tmp_path)
+        agent = DataAgent("samples", "tpch")
+        assert "orders" in agent._instructions and "o_orderkey(bigint)" in agent._instructions
+        assert "call the SQL tool to confirm what tables" not in agent._instructions
+
+    def test_manifest_for_other_schema_ignored(self, tmp_path, monkeypatch):
+        import json
+        from apx_agent._schema import APX_DIR, SCHEMA_MANIFEST_NAME
+        from apx_agent import DataAgent
+        d = tmp_path / APX_DIR
+        d.mkdir()
+        (d / SCHEMA_MANIFEST_NAME).write_text(json.dumps({
+            "catalog": "other", "schema": "elsewhere",
+            "tables": {"x": ["a(int)"]},
+        }))
+        monkeypatch.chdir(tmp_path)
+        agent = DataAgent("samples", "tpch")  # different schema → ignore manifest
+        assert "call the SQL tool to confirm what tables" in agent._instructions
+
+    def test_no_manifest_falls_back(self, tmp_path, monkeypatch):
+        from apx_agent import DataAgent
+        monkeypatch.chdir(tmp_path)
+        agent = DataAgent("samples", "tpch")
+        assert "call the SQL tool to confirm what tables" in agent._instructions
