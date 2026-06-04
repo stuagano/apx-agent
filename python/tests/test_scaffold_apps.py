@@ -325,3 +325,96 @@ def test_scaffold_here_overrides_auto_redirect(
     pyproject = (framework_root / "myagent" / "pyproject.toml").read_text()
     assert "git+https://github.com/stuagano/apx-agent.git" in pyproject
     assert 'path = ".."' not in pyproject
+
+
+# ---------------------------------------------------------------------------
+# --template coworker + --persona
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None:
+    """``--template coworker --persona '...'`` bakes the persona into agent.py."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "scaffold", "my_coworker",
+            "--dir", str(tmp_path),
+            "--target", "apps",
+            "--template", "coworker",
+            "--catalog", "main", "--schema", "sales",
+            "--persona", "a sales analyst who knows revenue data deeply",
+            "--no-interactive",
+        ],
+        catch_exceptions=False,
+        env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
+    )
+    assert result.exit_code == 0, result.output
+    agent_src = (tmp_path / "my_coworker" / "agent.py").read_text()
+    assert "a sales analyst who knows revenue data deeply" in agent_src
+    assert "persona=" in agent_src
+
+
+def test_scaffold_coworker_without_persona_omits_kwarg(tmp_path: Path) -> None:
+    """When no persona is given, the CoworkerAgent call has no persona= kwarg."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "scaffold", "my_coworker2",
+            "--dir", str(tmp_path),
+            "--target", "apps",
+            "--template", "coworker",
+            "--catalog", "main", "--schema", "sales",
+            "--no-interactive",
+        ],
+        catch_exceptions=False,
+        env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
+    )
+    assert result.exit_code == 0, result.output
+    agent_src = (tmp_path / "my_coworker2" / "agent.py").read_text()
+    assert "persona=" not in agent_src
+
+
+def test_scaffold_interactive_prompts_for_catalog_schema_persona(tmp_path: Path) -> None:
+    """``--interactive`` prompts for catalog, schema, and persona for coworker.
+
+    Without a real workspace, catalog list is empty → falls to free-text prompts.
+    The runner injects "main\\n" for catalog, "sales\\n" for schema, and
+    "payroll analyst\\n" for persona.
+    """
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "scaffold", "interactive_agent",
+            "--dir", str(tmp_path),
+            "--target", "apps",
+            "--template", "coworker",
+            "--interactive",
+        ],
+        input="main\nsales\npayroll analyst\n",
+        catch_exceptions=False,
+        env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
+    )
+    assert result.exit_code == 0, result.output
+    agent_src = (tmp_path / "interactive_agent" / "agent.py").read_text()
+    assert "payroll analyst" in agent_src
+
+
+def test_scaffold_no_interactive_skips_prompts(tmp_path: Path) -> None:
+    """``--no-interactive`` skips prompting even with missing catalog/schema."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "scaffold", "silent_agent",
+            "--dir", str(tmp_path),
+            "--target", "apps",
+            "--no-interactive",
+        ],
+        catch_exceptions=False,
+        env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
+    )
+    # Falls through to auto-detect (which returns samples.nyctaxi when no ws).
+    assert result.exit_code == 0, result.output

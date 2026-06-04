@@ -682,7 +682,7 @@ from apx_agent import CoworkerAgent
 #   memory="persistent" # (default) UC Delta tables — survives restart
 #   memory="lakebase"   # production pgvector — use explicit
 #                       # [tool.apx.agent.memory]/[.session] type="lakebase" blocks
-agent = CoworkerAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS>, memory="persistent", name="<APP_NAME>")
+agent = CoworkerAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS><PERSONA_ARG>, memory="persistent", name="<APP_NAME>")
 '''
 
 
@@ -1058,6 +1058,78 @@ def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[
     return (prelude, f", extra_tools=[{fn}]")
 
 
+def _interactive_resolve(
+    ws: "Any | None",
+    catalog: "str | None",
+    schema: "str | None",
+    persona: "str | None",
+    template: str,
+) -> "tuple[str | None, str | None, str | None]":
+    """Prompt for any missing catalog/schema, and persona when template='coworker'.
+
+    Already-provided values pass through unchanged. Falls back to free-text
+    prompts when ws is None or the listing is empty.
+    """
+    skip_cat = {"system", "__databricks_internal"}
+    skip_sch = {"information_schema"}
+
+    if catalog is None:
+        cat_list: list[str] = []
+        if ws is not None:
+            try:
+                cat_list = [
+                    c.name for c in ws.catalogs.list()
+                    if c.name and c.name not in skip_cat
+                ][:20]
+            except Exception:
+                cat_list = []
+        if cat_list:
+            click.echo("Available catalogs:")
+            for i, c in enumerate(cat_list, 1):
+                click.echo(f"  {i:2}. {c}")
+            idx = click.prompt(
+                "Choose a catalog",
+                type=click.IntRange(1, len(cat_list)),
+            )
+            catalog = cat_list[idx - 1]
+        else:
+            catalog = click.prompt("Catalog (e.g. main, samples)")
+
+    if schema is None:
+        sch_list: list[str] = []
+        if ws is not None and catalog:
+            try:
+                sch_list = [
+                    s.name for s in ws.schemas.list(catalog_name=catalog)
+                    if s.name and s.name not in skip_sch
+                ][:20]
+            except Exception:
+                sch_list = []
+        if sch_list:
+            click.echo(f"Available schemas in {catalog}:")
+            for i, s in enumerate(sch_list, 1):
+                click.echo(f"  {i:2}. {s}")
+            idx = click.prompt(
+                "Choose a schema",
+                type=click.IntRange(1, len(sch_list)),
+            )
+            schema = sch_list[idx - 1]
+        else:
+            schema = click.prompt(f"Schema in {catalog}")
+
+    if template == "coworker" and persona is None:
+        raw = click.prompt(
+            "Persona — describe this coworker's role and expertise\n"
+            "  e.g. 'a payroll analyst who knows HR data deeply'\n"
+            "  Leave blank to skip",
+            default="",
+            show_default=False,
+        )
+        persona = raw.strip() or None
+
+    return catalog, schema, persona
+
+
 def _scaffold_model_serving(
     target: Path, name: str, force: bool, catalog: str, schema: str,
     table: str | None = None,
@@ -1152,7 +1224,7 @@ def _scaffold_install_ref() -> str:
 
 def _scaffold_apps(
     target: Path, name: str, force: bool, catalog: str, schema: str,
-    table: str | None = None, template: str = "data",
+    table: str | None = None, template: str = "data", persona: str | None = None,
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
@@ -1189,6 +1261,8 @@ def _scaffold_apps(
             "# in that URL to upgrade; switch to a PyPI pin once apx-agent ships there.\n"
         )
 
+    persona_arg = f", persona={repr(persona)}" if persona else ""
+
     def _sub(template: str) -> str:
         return (
             template.replace("<APP_NAME>", name)
@@ -1196,6 +1270,7 @@ def _scaffold_apps(
             .replace("<SCHEMA>", schema)
             .replace("<EXAMPLE_TOOL>", prelude)
             .replace("<EXTRA_TOOLS>", extra_tools)
+            .replace("<PERSONA_ARG>", persona_arg)
             .replace("<APX_AGENT_DEP>", apx_dep)
             .replace("<APX_AGENT_SOURCE>", apx_source)
         )
@@ -1281,10 +1356,22 @@ def _scaffold_apps(
     help="Agent kind: 'data' (pre-grounded SQL agent) or 'coworker' "
          "(pre-grounded + memory). Apps target only for coworker.",
 )
+@click.option(
+    "--persona", default=None,
+    help="Role phrase baked into the CoworkerAgent's grounded instructions "
+         "(e.g. 'a payroll analyst who knows HR data deeply'). "
+         "Only used when --template coworker. Prompted interactively when omitted "
+         "in interactive mode.",
+)
+@click.option(
+    "--interactive/--no-interactive", "interactive", default=None,
+    help="Prompt for catalog, schema, and persona instead of auto-detecting. "
+         "Defaults to interactive when stdin is a TTY.",
+)
 def scaffold(
     name: str, directory: str, scaffold_target: str, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
-    scaffold_template: str,
+    scaffold_template: str, persona: str | None, interactive: bool | None,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -1330,6 +1417,21 @@ def scaffold(
             )
     target.mkdir(parents=True, exist_ok=True)
 
+    # Interactive resolution — prompt for missing catalog/schema/persona when
+    # running in a TTY (or when --interactive is explicit). --no-interactive or
+    # a non-TTY stdin skips prompts (CI-safe). Already-provided flags pass through.
+    interactive_mode = interactive if interactive is not None else sys.stdin.isatty()
+    _needs_prompt = (
+        catalog is None
+        or schema is None
+        or (scaffold_template == "coworker" and persona is None)
+    )
+    if interactive_mode and _needs_prompt:
+        ws_i = _make_ws_for_scaffold(profile)
+        catalog, schema, persona = _interactive_resolve(
+            ws_i, catalog, schema, persona, scaffold_template
+        )
+
     # Resolve the default DataAgent's data target + a sample table for the
     # baked example tool: explicit flags win, else probe the workspace
     # (best-effort), else fall back to the samples demo.
@@ -1366,7 +1468,7 @@ def scaffold(
     if scaffold_target == "apps":
         _scaffold_apps(
             target, project_name, force, catalog, schema, table,
-            template=scaffold_template,
+            template=scaffold_template, persona=persona,
         )
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)
