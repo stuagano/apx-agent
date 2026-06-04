@@ -46,6 +46,7 @@ def _build_data_tools_and_instructions(
     genie_space: str | None,
     vector_index: str | None,
     instructions: str | None,
+    persona: str | None,
     tables: dict | None,
     extra_tools: list[Any] | None,
 ) -> tuple[list[Any], str]:
@@ -95,7 +96,7 @@ def _build_data_tools_and_instructions(
         tools += extra_tools
 
     resolved_instructions = instructions or build_instructions_from_schema(
-        catalog, schema, tables
+        catalog, schema, tables, persona=persona
     )
     return tools, resolved_instructions
 
@@ -117,6 +118,9 @@ class DataAgent(LlmAgent):
         genie_space: Optional Genie space id — adds a ``genie_tool``.
         vector_index: Optional Vector Search index — adds a ``vector_search_tool``.
         instructions: Override the schema-generated grounding instructions.
+        persona: Optional role phrase woven into the schema-generated
+            instructions ("You are {persona}. …"). Ignored when ``instructions``
+            is given explicitly.
         tables: Pre-baked schema as ``{table: ["col(type)", ...]}`` (e.g. the
             ``.apx/schema.json`` manifest). Grounds the agent without a live
             workspace call. When omitted, falls back to live introspection
@@ -138,6 +142,7 @@ class DataAgent(LlmAgent):
         genie_space: str | None = None,
         vector_index: str | None = None,
         instructions: str | None = None,
+        persona: str | None = None,
         tables: dict | None = None,
         name: str | None = None,
         extra_tools: list[Any] | None = None,
@@ -155,6 +160,7 @@ class DataAgent(LlmAgent):
             genie_space=genie_space,
             vector_index=vector_index,
             instructions=instructions,
+            persona=persona,
             tables=tables,
             extra_tools=extra_tools,
         )
