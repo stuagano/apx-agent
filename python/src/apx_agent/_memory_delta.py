@@ -146,7 +146,19 @@ def _iso_to_epoch(iso: str | None) -> float:
 
 
 def _epoch_to_iso(seconds: float | None) -> str:
-    """Convert UNIX epoch seconds to ISO-8601 (UTC). Returns now on garbage."""
+    """Convert UNIX epoch seconds to ISO-8601 (UTC). Returns now on garbage.
+
+    Coerces to ``float`` first: Databricks statement-execution returns numeric
+    columns as STRINGS, so a recalled ``updated_at``/``created_at`` arrives as
+    e.g. ``'1.78e9'``. Comparing that string with ``<= 0`` would raise
+    ``"'<=' not supported between instances of 'str' and 'int'"`` and crash
+    recall — coerce before the guard.
+    """
+    if seconds is not None and not isinstance(seconds, (int, float)):
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            return iso_now()
     if seconds is None or seconds <= 0:
         return iso_now()
     try:
