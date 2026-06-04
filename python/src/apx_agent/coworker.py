@@ -88,3 +88,40 @@ class CoworkerAgent(DataAgent):
     ) -> None:
         super().__init__(catalog, schema, persona=persona, **kwargs)
         self.memory_config, self.session_config = normalize_memory_knob(memory)
+
+
+@template
+class CoworkerTemplate:
+    """A pre-grounded data agent that remembers (facts + session); memory
+    upgradeable off → inmemory → persistent → lakebase. Wraps ``CoworkerAgent``."""
+
+    name = "coworker"
+    title = "Coworker"
+    description = (
+        "A pre-grounded data agent that remembers (facts + session); "
+        "memory upgradeable off → inmemory → persistent → lakebase."
+    )
+
+    class Spec(BaseModel):
+        model_config = ConfigDict(populate_by_name=True)
+        catalog: str
+        schema_name: str = Field(alias="schema")  # 'schema' in config dicts
+        warehouse_id: str | None = None
+        persona: str | None = None
+        memory: str = "persistent"
+        genie_space: str | None = None
+        vector_index: str | None = None
+        include_functions: bool = True
+
+    def build(self, spec: "CoworkerTemplate.Spec", *, ws: Any | None = None) -> CoworkerAgent:
+        return CoworkerAgent(
+            spec.catalog,
+            spec.schema_name,
+            persona=spec.persona,
+            memory=spec.memory,
+            warehouse_id=spec.warehouse_id,
+            ws=ws,
+            include_functions=spec.include_functions,
+            genie_space=spec.genie_space,
+            vector_index=spec.vector_index,
+        )

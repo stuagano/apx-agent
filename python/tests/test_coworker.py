@@ -57,3 +57,25 @@ class TestCoworkerAgent:
         from apx_agent.coworker import CoworkerAgent
         cw = CoworkerAgent("samples", "tpch", tables={"t": ["a(int)"]})
         assert cw.memory_config.type == "delta"
+
+
+class TestCoworkerTemplate:
+    def test_registered_and_builds_coworker_agent(self):
+        from apx_agent._template import template_registry
+        from apx_agent.coworker import CoworkerAgent
+        tmpl = template_registry.get("coworker")
+        spec = tmpl.Spec(catalog="samples", schema="tpch",
+                         persona="a revenue analyst", memory="persistent")
+        agent = tmpl.build(spec, ws=None)
+        assert isinstance(agent, CoworkerAgent)
+        assert agent.memory_config.type == "delta"
+        assert agent._instructions.startswith("You are a revenue analyst.")
+
+    def test_data_template_still_resolves(self):
+        from apx_agent._template import template_registry
+        assert template_registry.get("data") is not None
+
+    def test_exported_from_package(self):
+        import apx_agent
+        assert hasattr(apx_agent, "CoworkerAgent")
+        assert hasattr(apx_agent, "CoworkerTemplate")
