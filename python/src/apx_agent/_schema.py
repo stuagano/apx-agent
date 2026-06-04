@@ -8,6 +8,34 @@ from __future__ import annotations
 
 from typing import Any
 
+import json
+from pathlib import Path
+
+APX_DIR = ".apx"
+SCHEMA_MANIFEST_NAME = "schema.json"
+
+
+def load_baked_schema(start: "Path | str | None" = None) -> "dict | None":
+    """Find and parse the baked schema manifest ``.apx/schema.json``.
+
+    Walks up from ``start`` (default: current working directory) to the
+    filesystem root, returning the first ``.apx/schema.json`` parsed as a dict
+    (keys: ``catalog``, ``schema``, ``tables``). Returns ``None`` when no
+    manifest is found or it cannot be parsed — callers degrade to the generic
+    (ungrounded) path rather than crash.
+    """
+    here = Path(start) if start is not None else Path.cwd()
+    here = here.resolve()
+    for d in [here, *here.parents]:
+        candidate = d / APX_DIR / SCHEMA_MANIFEST_NAME
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text())
+            except Exception:
+                return None
+            return data if isinstance(data, dict) else None
+    return None
+
 
 def introspect_schema(
     ws: Any,
