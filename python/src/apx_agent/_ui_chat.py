@@ -430,6 +430,26 @@ def _render_landing(ctx: AgentContext) -> str:
     if desc:
         parts.append(f'<div class="landing-sub">{_html.escape(desc)}</div>')
 
+    schema = getattr(ctx, "schema", None)
+    if schema and isinstance(schema.get("tables"), dict) and schema["tables"]:
+        fqn = f'{schema.get("catalog", "")}.{schema.get("schema", "")}'.strip(".")
+        tbls = schema["tables"]
+        rows = ""
+        for tname, cols in list(tbls.items())[:12]:
+            col_names = [c.split("(")[0] for c in (cols or [])][:6]
+            shown = ", ".join(col_names)
+            if len(cols or []) > 6:
+                shown += " …"
+            rows += (f'<div class="data-row"><span class="data-tbl">{_html.escape(tname)}</span>'
+                     f'<span class="data-cols">{_html.escape(shown)}</span></div>')
+        more = f' <span class="data-more">(+{len(tbls) - 12} more)</span>' if len(tbls) > 12 else ""
+        parts.append(
+            '<div class="data-card">'
+            f'<div class="data-card-head">I understand <code>{_html.escape(fqn)}</code> '
+            f'— {len(tbls)} table{"s" if len(tbls) != 1 else ""}{more}</div>'
+            f'{rows}</div>'
+        )
+
     if tools:
         cards = "".join(
             '<div class="cap-card" onclick="this.classList.toggle(&quot;open&quot;)">'
@@ -730,6 +750,15 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   #landing {{ padding: 28px 22px; max-width: 680px; }}
   .landing-hi {{ font-size: 19px; font-weight: 600; color: #fff; margin-bottom: 4px; }}
   .landing-sub {{ font-size: 13px; color: #8a929b; margin-bottom: 18px; line-height: 1.4; }}
+  .data-card {{ background: #0e1116; border: 1px solid #1f242b; border-radius: 10px;
+                padding: 12px 14px; margin: 10px 0; max-width: 680px; }}
+  .data-card-head {{ font-size: 12.5px; color: #9aa3ad; margin-bottom: 8px; }}
+  .data-card-head code {{ color: #60b0ff; }}
+  .data-row {{ display: flex; gap: 10px; font-size: 12px; padding: 2px 0; }}
+  .data-tbl {{ flex: none; min-width: 110px; color: #cfe; font-family: ui-monospace, monospace; }}
+  .data-cols {{ color: #6b7280; font-family: ui-monospace, monospace; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }}
+  .data-more {{ color: #6b7280; }}
   .landing-label {{ font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #5d646c; margin: 16px 0 8px; }}
   .cap-cards {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }}
   .cap-card {{ background: #111418; border: 1px solid #262b31; border-radius: 8px; padding: 11px 13px; cursor: pointer; }}
