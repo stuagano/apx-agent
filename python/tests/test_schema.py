@@ -99,3 +99,28 @@ class TestBuildInstructions:
         assert "col0(int)" in out
         assert "col39(int)" not in out      # capped
         assert "more" in out.lower()        # "+N more" hint
+
+
+class TestPersona:
+    def test_persona_leads_grounded_instructions(self):
+        from apx_agent._schema import build_instructions_from_schema
+        tables = {"customer": ["c_custkey(bigint)", "c_name(string)"]}
+        out = build_instructions_from_schema("samples", "tpch", tables,
+                                             persona="a revenue analyst")
+        assert out.startswith("You are a revenue analyst.")
+        # grounding is intact
+        assert "customer" in out and "c_custkey(bigint)" in out
+        assert "SHOW TABLES" in out
+
+    def test_no_persona_keeps_default_lead(self):
+        from apx_agent._schema import build_instructions_from_schema
+        out = build_instructions_from_schema("samples", "tpch",
+                                             {"customer": ["c_custkey(bigint)"]})
+        assert out.startswith("You are a data assistant for samples.tpch.")
+
+    def test_persona_on_ungrounded_too(self):
+        from apx_agent._schema import build_instructions_from_schema
+        out = build_instructions_from_schema("samples", "tpch", {},
+                                             persona="a revenue analyst")
+        assert out.startswith("You are a revenue analyst.")
+        assert "confirm what tables and columns are available" in out  # still discovers
