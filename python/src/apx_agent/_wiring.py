@@ -427,7 +427,11 @@ async def setup_agent(
             for t in tools
         ],
     )
-    ctx = AgentContext(config=config, tools=tools, card=card, agent=agent)
+    from ._schema import load_baked_schema
+    ctx = AgentContext(
+        config=config, tools=tools, card=card, agent=agent,
+        schema=load_baked_schema(),
+    )
     app.state.agent_context = ctx
 
     logger.info(f"Agent protocol enabled: {config.name} ({len(tools)} tools)")

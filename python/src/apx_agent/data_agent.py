@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ._agents import LlmAgent
 from ._resources import ResourceSpec, attach_resources
-from ._schema import build_instructions_from_schema, introspect_schema
+from ._schema import build_instructions_from_schema, introspect_schema, load_baked_schema
 from ._template import template
 
 
@@ -46,6 +46,7 @@ def _build_data_tools_and_instructions(
     genie_space: str | None,
     vector_index: str | None,
     instructions: str | None,
+    tables: dict | None,
     extra_tools: list[Any] | None,
 ) -> tuple[list[Any], str]:
     """Shared builder: returns (tools, instructions) for the data agent shape."""
@@ -53,8 +54,24 @@ def _build_data_tools_and_instructions(
     from .sql_tools import sql_tool
     from .vector_search import vector_search_tool
 
-    # Introspect once at construction (best-effort) when a client is given.
-    tables = introspect_schema(ws, catalog, schema, warehouse_id) if ws else {}
+    # Resolve the schema (table -> columns), in priority order:
+    #   1) explicit `tables=` override
+    #   2) live introspection when a workspace client is given
+    #   3) the baked `.apx/schema.json` manifest (scaffold-time grounding)
+    #   4) {} -> generic, ungrounded instructions
+    resolved_tables: dict = tables or {}
+    if not resolved_tables and ws:
+        resolved_tables = introspect_schema(ws, catalog, schema, warehouse_id)
+    if not resolved_tables:
+        baked = load_baked_schema()
+        if (
+            baked
+            and baked.get("catalog") == catalog
+            and baked.get("schema") == schema
+            and isinstance(baked.get("tables"), dict)
+        ):
+            resolved_tables = baked["tables"]
+    tables = resolved_tables
 
     sql = sql_tool(warehouse_id=warehouse_id)
     if tables:
@@ -100,6 +117,10 @@ class DataAgent(LlmAgent):
         genie_space: Optional Genie space id — adds a ``genie_tool``.
         vector_index: Optional Vector Search index — adds a ``vector_search_tool``.
         instructions: Override the schema-generated grounding instructions.
+        tables: Pre-baked schema as ``{table: ["col(type)", ...]}`` (e.g. the
+            ``.apx/schema.json`` manifest). Grounds the agent without a live
+            workspace call. When omitted, falls back to live introspection
+            (if ``ws`` given) then auto-discovery of ``.apx/schema.json``.
         name: Agent name. Defaults to ``"{schema}_data_agent"``.
         extra_tools: Additional tools to append.
         **kwargs: Forwarded to ``LlmAgent`` (``temperature``, ``sub_agents``,
@@ -117,6 +138,7 @@ class DataAgent(LlmAgent):
         genie_space: str | None = None,
         vector_index: str | None = None,
         instructions: str | None = None,
+        tables: dict | None = None,
         name: str | None = None,
         extra_tools: list[Any] | None = None,
         **kwargs: Any,
@@ -133,6 +155,7 @@ class DataAgent(LlmAgent):
             genie_space=genie_space,
             vector_index=vector_index,
             instructions=instructions,
+            tables=tables,
             extra_tools=extra_tools,
         )
         super().__init__(
