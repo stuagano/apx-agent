@@ -4,6 +4,46 @@ The core value of the `CoworkerAgent` class is **the join**: two systems of reco
 that each own half the truth, joined on a business entity, answering a question
 neither system can answer alone.
 
+## What the CoworkerAgent actually is
+
+`CoworkerAgent` **is a** `DataAgent` (subclass, not a wrapper — see
+`python/src/apx_agent/coworker.py`). It adds exactly two knobs:
+
+1. **`persona`** — a plain string woven into the grounded instructions the
+   `DataAgent` already builds from the schema. There is no separate
+   `PersonalityConfig` class.
+2. **`memory`** — a one-word tier knob: `"off"` / `"inmemory"` /
+   `"persistent"` (default, UC Delta) / `"delta"`. It normalizes into
+   `MemoryBackendConfig` + `SessionBackendConfig` carried as declared config;
+   the framework's finalize/serve path does the wiring, so construction needs
+   no `ws`. `memory="lakebase"` deliberately raises — production pgvector
+   needs explicit `[tool.apx.agent.memory]` / `[tool.apx.agent.session]`
+   blocks, because the one-word knob can't carry connection details.
+
+```python
+agent = CoworkerAgent(
+    "main", "payroll",
+    persona="a payroll operations analyst",
+    memory="persistent",
+)
+```
+
+The declarative surface is **TOML, not YAML**: `[tool.apx.agent]` in
+`pyproject.toml`. Two ways to get a coworker:
+
+- **Code-first** — `apx scaffold --template coworker` generates an `agent.py`
+  with the one-liner above.
+- **Config-first (template-as-config)** — `CoworkerTemplate`
+  (`name = "coworker"`) exposes a pydantic `Spec` (`catalog`, `schema`,
+  `warehouse_id`, `persona`, `memory`, `genie_space`, `vector_index`,
+  `include_functions`); `build(spec)` constructs the `CoworkerAgent`. The Spec
+  is the entire declarative surface.
+
+**Mental model:** `CoworkerAgent = DataAgent + persona string + memory tier` —
+pre-grounded in the schema (it already knows the tables/columns) and it
+remembers across turns (facts + session). Default memory works with zero
+infra; Lakebase is an upgrade, never a prerequisite.
+
 **The pattern:** the join key is a business entity (employee, deal, asset,
 shipment, encounter), each system is authoritative for half the record, and the
 expensive human workflow today is a person doing the join manually — tabbing
