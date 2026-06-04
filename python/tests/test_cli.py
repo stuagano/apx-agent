@@ -3380,3 +3380,48 @@ def test_apx_info_with_template_config(tmp_path, monkeypatch):
 def test_scaffold_apps_pyproject_ships_examples() -> None:
     from apx_agent.cli import _SCAFFOLD_APPS_PYPROJECT
     assert "examples = [" in _SCAFFOLD_APPS_PYPROJECT
+
+
+class TestScaffoldSchemaManifest:
+    def test_manifest_built_from_introspection(self, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(
+            cli, "introspect_schema_columns",
+            lambda ws, c, s: {"customer": ["c_custkey(bigint)"]},
+        )
+        # _make_ws_for_scaffold returns a dummy; introspection is what we stubbed
+        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: object())
+        m = cli._schema_manifest_for_scaffold("samples", "tpch", profile=None)
+        assert m == {
+            "catalog": "samples", "schema": "tpch",
+            "tables": {"customer": ["c_custkey(bigint)"]},
+        }
+
+    def test_manifest_none_when_empty(self, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(cli, "introspect_schema_columns", lambda ws, c, s: {})
+        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: object())
+        assert cli._schema_manifest_for_scaffold("c", "s", profile=None) is None
+
+    def test_manifest_none_when_no_ws(self, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
+        assert cli._schema_manifest_for_scaffold("c", "s", profile=None) is None
+
+    def test_apps_scaffold_writes_manifest(self, tmp_path, monkeypatch):
+        import json
+        from apx_agent import cli
+        monkeypatch.setattr(
+            cli, "_schema_manifest_for_scaffold",
+            lambda c, s, profile=None: {"catalog": c, "schema": s, "tables": {"t": ["a(int)"]}},
+        )
+        cli._scaffold_apps(tmp_path, "demo", force=True, catalog="samples", schema="tpch", table="t")
+        manifest = tmp_path / ".apx" / "schema.json"
+        assert manifest.is_file()
+        assert json.loads(manifest.read_text())["tables"] == {"t": ["a(int)"]}
+
+    def test_apps_scaffold_no_manifest_when_none(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda c, s, profile=None: None)
+        cli._scaffold_apps(tmp_path, "demo", force=True, catalog="samples", schema="tpch", table="t")
+        assert not (tmp_path / ".apx" / "schema.json").exists()

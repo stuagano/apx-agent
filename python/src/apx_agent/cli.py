@@ -39,6 +39,7 @@ from typing import Any
 import click
 
 from . import _doctor as _doctor_mod
+from ._schema import introspect_schema_columns
 
 logger = logging.getLogger(__name__)
 
@@ -794,6 +795,7 @@ artifacts:
       cp -r sub_agents .build/ 2>/dev/null || true
       # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts README.md .build/ 2>/dev/null || true
+      cp -r .apx .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
       # pyproject.toml and uv.lock are written by apx deploy (wheel-pinned).
       # Do NOT copy them here — bundle deploy re-runs this script and would
@@ -981,6 +983,32 @@ def _probe_first_table(catalog: str, schema: str, profile: str | None = None) ->
     return None
 
 
+def _make_ws_for_scaffold(profile: str | None):
+    """Build a WorkspaceClient for scaffold-time introspection, or None."""
+    try:
+        from databricks.sdk import WorkspaceClient
+        return WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    except Exception:
+        return None
+
+
+def _schema_manifest_for_scaffold(
+    catalog: str, schema: str, profile: str | None = None
+) -> "dict | None":
+    """Introspect ``catalog.schema`` via the Tables API and return a manifest
+    dict ``{catalog, schema, tables}``, or ``None`` when nothing is readable.
+
+    Calls the module-level ``introspect_schema_columns`` (so tests can stub it).
+    """
+    ws = _make_ws_for_scaffold(profile)
+    if ws is None:
+        return None
+    tables = introspect_schema_columns(ws, catalog, schema)
+    if not tables:
+        return None
+    return {"catalog": catalog, "schema": schema, "tables": tables}
+
+
 def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[str, str]":
     """Bake a 'talk to your data' example tool against a real table.
 
@@ -1018,6 +1046,9 @@ def _scaffold_model_serving(
     Mirrors the pre-``--target`` shape: top-level ``agent.py`` + ``app.py``.
     """
     prelude, extra_tools = _example_tool_block(catalog, schema, table)
+
+    import json as _json
+    manifest = _schema_manifest_for_scaffold(catalog, schema)
     files = {
         "pyproject.toml": _SCAFFOLD_PYPROJECT.format(name=name),
         "agent.py": _SCAFFOLD_AGENT.format(
@@ -1028,11 +1059,14 @@ def _scaffold_model_serving(
         ".gitignore": _SCAFFOLD_GITIGNORE,
         "README.md": _SCAFFOLD_README.format(name=name),
     }
+    if manifest is not None:
+        files[".apx/schema.json"] = _json.dumps(manifest, indent=2)
     for rel_path, content in files.items():
         path = target / rel_path
         if path.exists() and not force:
             click.echo(f"  skip   {path} (exists; pass --force to overwrite)")
             continue
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
         click.echo(f"  write  {path}")
 
@@ -1106,6 +1140,9 @@ def _scaffold_apps(
     """
     prelude, extra_tools = _example_tool_block(catalog, schema, table)
 
+    import json as _json
+    manifest = _schema_manifest_for_scaffold(catalog, schema)
+
     # Pick the apx-agent install ref that will let ``uv sync`` succeed from
     # this scaffold directory. Inside the framework repo, use the editable
     # parent-dir source (fast dev loop). Outside, embed a pinned git+https
@@ -1156,6 +1193,8 @@ def _scaffold_apps(
         "scripts/__init__.py": "",
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
     }
+    if manifest is not None:
+        files[".apx/schema.json"] = _json.dumps(manifest, indent=2)
     for rel_path, content in files.items():
         path = target / rel_path
         if path.exists() and not force:
