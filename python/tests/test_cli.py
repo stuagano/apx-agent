@@ -3425,3 +3425,30 @@ class TestScaffoldSchemaManifest:
         monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda c, s, profile=None: None)
         cli._scaffold_apps(tmp_path, "demo", force=True, catalog="samples", schema="tpch", table="t")
         assert not (tmp_path / ".apx" / "schema.json").exists()
+
+
+class TestRefreshSchema:
+    def test_refresh_rewrites_manifest(self, tmp_path, monkeypatch):
+        import json
+        from click.testing import CliRunner
+        from apx_agent import cli
+        # existing manifest pins samples.tpch
+        d = tmp_path / ".apx"; d.mkdir()
+        (d / "schema.json").write_text(json.dumps(
+            {"catalog": "samples", "schema": "tpch", "tables": {"old": ["a(int)"]}}))
+        monkeypatch.setattr(
+            cli, "_schema_manifest_for_scaffold",
+            lambda c, s, profile=None: {"catalog": c, "schema": s, "tables": {"new": ["b(int)"]}},
+        )
+        monkeypatch.chdir(tmp_path)
+        res = CliRunner().invoke(cli.main, ["refresh-schema"])
+        assert res.exit_code == 0, res.output
+        assert json.loads((d / "schema.json").read_text())["tables"] == {"new": ["b(int)"]}
+
+    def test_refresh_errors_without_existing_manifest(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        monkeypatch.chdir(tmp_path)
+        res = CliRunner().invoke(cli.main, ["refresh-schema"])
+        assert res.exit_code != 0
+        assert "no .apx/schema.json" in res.output.lower()
