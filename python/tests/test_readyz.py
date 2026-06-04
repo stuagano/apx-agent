@@ -148,3 +148,29 @@ def test_readyz_never_500s(monkeypatch) -> None:
     client = TestClient(_make_app(agent))
     resp = client.get("/readyz")
     assert resp.status_code == 503
+
+
+class TestReadyzMemory:
+    def _app_for(self, agent):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from apx_agent._readyz import mount_readyz
+        import apx_agent._readyz as rz
+        # Stub the canned probe so the test doesn't need a real model.
+        rz._run_canned_probe = lambda a, m: ("hi", "tr-1")  # type: ignore
+        app = FastAPI()
+        mount_readyz(app, agent)
+        return TestClient(app)
+
+    def test_memory_degraded_surfaced(self):
+        from apx_agent import Agent
+        agent = Agent(instructions="x", tools=[])
+        agent._apx_memory_degraded = "delta memory needs a workspace/warehouse — not active"
+        body = self._app_for(agent).get("/readyz").json()
+        assert "delta memory needs" in body["checks"]["memory"]
+
+    def test_memory_ok_when_not_degraded(self):
+        from apx_agent import Agent
+        agent = Agent(instructions="x", tools=[])
+        body = self._app_for(agent).get("/readyz").json()
+        assert body["checks"]["memory"] == "ok"

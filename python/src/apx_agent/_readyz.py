@@ -166,6 +166,7 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
             "tracing": "unavailable",
             "tools_registered": _count_tools(agent),
             "tool_exec": "skipped",
+            "memory": getattr(agent, "_apx_memory_degraded", None) or "ok",
         }
         try:
             # Module-global lookup so monkeypatch.setattr resolves at call time.
