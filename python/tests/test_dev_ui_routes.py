@@ -615,3 +615,26 @@ class TestAgentContextSchema:
         ctx = AgentContext(config=cfg, tools=[], card={"name": "d", "skills": []},
                            agent=None)  # type: ignore[arg-type]
         assert ctx.schema is None
+
+
+class TestLandingDataCard:
+    def _ctx(self, schema):
+        from apx_agent import AgentConfig, AgentContext
+        cfg = AgentConfig(name="d", description="x", examples=[])
+        return AgentContext(config=cfg, tools=[], card={"name": "d", "skills": []},
+                            agent=None, schema=schema)  # type: ignore[arg-type]
+
+    def test_card_renders_tables_and_columns(self):
+        from apx_agent._ui_chat import _render_landing
+        ctx = self._ctx({"catalog": "samples", "schema": "tpch",
+                         "tables": {"customer": ["c_custkey(bigint)", "c_name(string)"]}})
+        html = _render_landing(ctx)
+        assert "samples.tpch" in html
+        assert "customer" in html
+        assert "c_custkey" in html
+        assert "data-card" in html  # the card container styling/class
+
+    def test_card_omitted_without_schema(self):
+        from apx_agent._ui_chat import _render_landing
+        html = _render_landing(self._ctx(None))
+        assert "data-card" not in html
