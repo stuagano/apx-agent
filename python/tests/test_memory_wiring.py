@@ -641,3 +641,50 @@ class TestAgentCarriedConfig:
         cfg = AgentConfig(name="c", description="d")
         store = resolve_session_store(cfg, ws=None, agent=agent)
         assert store is not None
+
+
+class TestLocalDevPrincipal:
+    """Local ``apx run`` has no OBO ``X-Forwarded-User`` header, so memory tools
+    would have no principal and recall/remember would no-op. Resolve a default
+    principal from the Databricks CLI profile identity (``ws.current_user``) when
+    NOT in a deployed App, so memory works in the dev loop. Deployed: returns
+    None (the per-request OBO principal wins)."""
+
+    def test_resolves_profile_user_locally(self, monkeypatch):
+        import apx_agent._obo as obo, apx_agent._memory_wiring as mw
+        from types import SimpleNamespace
+        monkeypatch.setattr(obo, "_in_databricks_app", lambda: False)
+        ws = SimpleNamespace(current_user=SimpleNamespace(
+            me=lambda: SimpleNamespace(user_name="me@corp.com")))
+        assert mw._resolve_default_principal(ws) == "me@corp.com"
+
+    def test_none_in_databricks_app(self, monkeypatch):
+        import apx_agent._obo as obo, apx_agent._memory_wiring as mw
+        from types import SimpleNamespace
+        monkeypatch.setattr(obo, "_in_databricks_app", lambda: True)
+        ws = SimpleNamespace(current_user=SimpleNamespace(
+            me=lambda: SimpleNamespace(user_name="sp")))
+        assert mw._resolve_default_principal(ws) is None
+
+    def test_none_without_ws(self, monkeypatch):
+        import apx_agent._obo as obo, apx_agent._memory_wiring as mw
+        monkeypatch.setattr(obo, "_in_databricks_app", lambda: False)
+        assert mw._resolve_default_principal(None) is None
+
+    def test_attach_passes_default_principal(self, monkeypatch):
+        import apx_agent._obo as obo, apx_agent._memory_wiring as mw
+        import apx_agent._memory_tools as mt
+        from apx_agent import Agent
+        from apx_agent._models import AgentConfig, MemoryBackendConfig
+        from types import SimpleNamespace
+        monkeypatch.setattr(obo, "_in_databricks_app", lambda: False)
+        captured: dict = {}
+        monkeypatch.setattr(mt, "make_memory_tools",
+                            lambda **kw: captured.update(kw) or [])
+        agent = Agent(instructions="x", tools=[])
+        cfg = AgentConfig(name="c", description="d",
+                          memory=MemoryBackendConfig(type="inmemory"))
+        ws = SimpleNamespace(current_user=SimpleNamespace(
+            me=lambda: SimpleNamespace(user_name="me@corp.com")))
+        mw.attach_declared_memory(agent, cfg, ws=ws)
+        assert captured.get("default_principal_id") == "me@corp.com"
