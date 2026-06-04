@@ -604,3 +604,40 @@ class TestPredictSeamPrincipalThreading:
             "No user_id in custom_inputs → headers must be None to preserve "
             "the existing null-principal behavior"
         )
+
+
+class TestAgentCarriedConfig:
+    def _agent(self):
+        # Minimal leaf agent with the registration hooks attach_declared_memory needs.
+        from apx_agent import Agent
+        return Agent(instructions="x", tools=[])
+
+    def test_attach_uses_agent_memory_config_when_no_block(self):
+        from apx_agent._memory_wiring import attach_declared_memory
+        from apx_agent._models import AgentConfig, MemoryBackendConfig
+        agent = self._agent()
+        agent.memory_config = MemoryBackendConfig(type="inmemory")  # carried
+        cfg = AgentConfig(name="c", description="d")                # no memory block
+        attach_declared_memory(agent, cfg, ws=None)
+        names = {getattr(fn, "__name__", "") for fn in getattr(agent, "_tool_fns", [])}
+        assert any("recall" in n or "remember" in n for n in names)
+
+    def test_explicit_block_overrides_agent_config(self):
+        from apx_agent._memory_wiring import attach_declared_memory
+        from apx_agent._models import AgentConfig, MemoryBackendConfig
+        agent = self._agent()
+        agent.memory_config = MemoryBackendConfig(type="delta")     # carried (would need ws)
+        cfg = AgentConfig(name="c", description="d",
+                          memory=MemoryBackendConfig(type="inmemory"))  # explicit wins
+        attach_declared_memory(agent, cfg, ws=None)
+        names = {getattr(fn, "__name__", "") for fn in getattr(agent, "_tool_fns", [])}
+        assert any("recall" in n or "remember" in n for n in names)  # inmemory built (no ws needed)
+
+    def test_resolve_session_uses_agent_config_when_no_block(self):
+        from apx_agent._memory_wiring import resolve_session_store
+        from apx_agent._models import AgentConfig, SessionBackendConfig
+        agent = self._agent()
+        agent.session_config = SessionBackendConfig(type="inmemory")
+        cfg = AgentConfig(name="c", description="d")
+        store = resolve_session_store(cfg, ws=None, agent=agent)
+        assert store is not None

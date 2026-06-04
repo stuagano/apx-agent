@@ -3452,3 +3452,27 @@ class TestRefreshSchema:
         res = CliRunner().invoke(cli.main, ["refresh-schema"])
         assert res.exit_code != 0
         assert "no .apx/schema.json" in res.output.lower()
+
+
+class TestScaffoldCoworker:
+    def test_apps_coworker_agent_py(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold",
+                            lambda c, s, profile=None: None)  # skip introspection
+        cli._scaffold_apps(tmp_path, "demo", force=True,
+                           catalog="samples", schema="tpch", table="customer",
+                           template="coworker")
+        agent_py = (tmp_path / "agent.py").read_text()
+        assert "CoworkerAgent(" in agent_py
+        assert 'memory="persistent"' in agent_py
+        assert "lakebase" in agent_py            # the upgrade-ladder comment
+        assert "DataAgent(" not in agent_py
+
+    def test_apps_default_is_data_agent(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold",
+                            lambda c, s, profile=None: None)
+        cli._scaffold_apps(tmp_path, "demo", force=True,
+                           catalog="samples", schema="tpch", table="customer",
+                           template="data")
+        assert "DataAgent(" in (tmp_path / "agent.py").read_text()

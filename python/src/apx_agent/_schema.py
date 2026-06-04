@@ -132,6 +132,7 @@ def build_instructions_from_schema(
     catalog: str,
     schema: str,
     tables: dict[str, list[str]],
+    persona: str | None = None,
 ) -> str:
     """Build agent instructions from schema metadata without an LLM call.
 
@@ -139,13 +140,14 @@ def build_instructions_from_schema(
     tell the agent to query directly — no discovery step. When no tables are
     known, the agent is told to discover the schema with the SQL tool first.
     """
+    lead = f"You are {persona}. " if persona else ""
     fqn = f"{catalog}.{schema}" if catalog and schema else schema or catalog or "the data"
     table_names = list(tables.keys())
 
     if not table_names:
         # Ungrounded: nothing known — tell the agent to discover first.
         return (
-            f"You are a data assistant for {fqn}. Your data includes: {fqn}.\n\n"
+            lead + f"You are a data assistant for {fqn}. Your data includes: {fqn}.\n\n"
             f"At the start of every session, call the SQL tool to confirm what "
             f"tables and columns are available before answering questions.\n\n"
             f"To answer data questions: use the SQL tool with a targeted SELECT "
@@ -173,7 +175,7 @@ def build_instructions_from_schema(
         )
 
     return (
-        f"You are a data assistant for {fqn}. You already know the schema below — "
+        lead + f"You are a data assistant for {fqn}. You already know the schema below — "
         f"query the relevant table directly with the SQL tool. Do NOT run "
         f"SHOW TABLES or DESCRIBE to discover the structure; it is given here.\n\n"
         f"Schema:\n{_format_schema_block(tables)}\n\n"

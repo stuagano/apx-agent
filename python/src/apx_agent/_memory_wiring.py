@@ -306,8 +306,10 @@ def attach_declared_memory(
     from ._example_tools import make_example_tools  # noqa: PLC0415
 
     # --- memory ---
-    if config.memory is not None:
-        mcfg = config.memory
+    # Explicit [tool.apx.agent.memory] block wins; else use the agent-carried
+    # config (e.g. CoworkerAgent.memory_config). The framework supplies ``ws``.
+    mcfg = config.memory if config.memory is not None else getattr(agent, "memory_config", None)
+    if mcfg is not None:
         store = None
         try:
             store = _build_memory_store(mcfg, ws)
@@ -322,6 +324,8 @@ def attach_declared_memory(
                 "(deploy with valid Databricks credentials). Memory tools will be absent.",
                 mcfg.type,
             )
+            setattr(agent, "_apx_memory_degraded",
+                    f"{mcfg.type} memory needs a workspace/warehouse — not active")
         if store is not None:
             # Config path uses the dep-principal mechanism (proved in Phase 0 Task 0.2).
             # _use_dep_principal=True emits tools with a `principal: Dependencies.Principal`
@@ -386,20 +390,20 @@ def resolve_session_store(
     config: "AgentConfig",
     ws: Any | None,
     override: Any | None = None,
+    agent: Any | None = None,
 ) -> Any | None:
     """Return a SessionStore for this agent, or None.
 
-    Precedence: explicit ``override`` arg > config ``session`` field > None.
-    This is called in the ``create_app`` lifespan before ``mount_invocations_route``.
-    The explicit ``create_app(session_store=X)`` arg wins over config (code is
-    more specific intent).
+    Precedence: explicit ``override`` arg > config ``session`` block >
+    agent-carried ``session_config`` (e.g. CoworkerAgent) > None.
     """
     if override is not None:
         return override
-    if config.session is None:
+    scfg = config.session if config.session is not None else getattr(agent, "session_config", None)
+    if scfg is None:
         return None
     try:
-        return _build_session_store(config.session, ws)
+        return _build_session_store(scfg, ws)
     except (ValueError, ImportError) as exc:
         logger.warning(
             "[tool.apx.agent.session] build failed — no session store: %s", exc
