@@ -9,12 +9,13 @@ so construction needs no ``ws`` (same property as DataAgent grounding).
 
 from __future__ import annotations
 
-from ._models import MemoryBackendConfig, SessionBackendConfig
+from ._models import MemoryBackendConfig, SessionBackendConfig, StoreType
 
 # Bare-knob rungs → backend StoreType. ``lakebase`` is intentionally absent: it
 # needs connection details the one-word knob can't express (see normalize).
-_KNOB_TO_TYPE: dict[str, str] = {
-    "off": "",            # sentinel: disabled
+# ``None`` is the "off" sentinel (disabled).
+_KNOB_TO_TYPE: dict[str, StoreType | None] = {
+    "off": None,          # sentinel: disabled
     "inmemory": "inmemory",
     "local": "inmemory",
     "persistent": "delta",
@@ -47,7 +48,7 @@ def normalize_memory_knob(
             "[tool.apx.agent.memory] block for lakebase."
         )
     tier = _KNOB_TO_TYPE[v]
-    if not tier:  # "off"
+    if tier is None:  # "off"
         return (None, None)
     return (MemoryBackendConfig(type=tier), SessionBackendConfig(type=tier))
 
