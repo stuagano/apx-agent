@@ -44,6 +44,46 @@ pre-grounded in the schema (it already knows the tables/columns) and it
 remembers across turns (facts + session). Default memory works with zero
 infra; Lakebase is an upgrade, never a prerequisite.
 
+## The outline and the colors
+
+The template is the **outline**; the data **fills in the colors**. The
+template never contains data — it *points* at it. The Spec holds the shape of
+the coworker (persona, memory, which tools); `catalog`/`schema` are a
+reference to a UC schema that lives next to, and separate from, the template.
+
+That separation is the whole GTM story: the two source systems land in the
+lakehouse first (Lakeflow Connect or whatever ingestion you have — Kronos and
+Workday tables side by side in one UC schema), and the coworker is grounded
+over the *joined landing zone*. The join the agent reasons about is a join the
+lakehouse already made physically possible.
+
+So every use case below is **the same outline, different colors**:
+
+```toml
+# Payroll coworker — Kronos × Workday
+[tool.apx.agent]
+template = "coworker"
+catalog  = "main"
+schema   = "payroll"        # Kronos + Workday landed tables
+persona  = "a payroll operations analyst"
+memory   = "persistent"
+```
+
+```toml
+# Quote-to-Cash coworker — Salesforce × NetSuite: SAME template
+[tool.apx.agent]
+template = "coworker"
+catalog  = "main"
+schema   = "revops"         # Salesforce + NetSuite landed tables
+persona  = "a revenue operations analyst"
+memory   = "persistent"
+```
+
+Nothing else changes. One template, six coworkers — the Spec fields are the
+blanks, the customer's schema and persona are the fill. That's why the
+use-case list below can grow without any new code: a new use case is a new
+pair of landed systems plus a one-paragraph persona, not a new agent class.
+
 **The pattern:** the join key is a business entity (employee, deal, asset,
 shipment, encounter), each system is authoritative for half the record, and the
 expensive human workflow today is a person doing the join manually — tabbing
