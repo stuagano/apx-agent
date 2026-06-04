@@ -745,6 +745,7 @@ def create_app(
                         ctx.config,
                         ws=app.state.workspace_client,
                         override=session_store,
+                        agent=ctx.agent,
                     ),
                 )
             except Exception as exc:
