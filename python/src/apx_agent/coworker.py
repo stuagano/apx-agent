@@ -50,3 +50,41 @@ def normalize_memory_knob(
     if not tier:  # "off"
         return (None, None)
     return (MemoryBackendConfig(type=tier), SessionBackendConfig(type=tier))
+
+
+from typing import Any
+
+from .data_agent import DataAgent
+from ._template import template
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class CoworkerAgent(DataAgent):
+    """A pre-grounded ``DataAgent`` that remembers — persona + memory.
+
+    Adds an optional ``persona`` (woven into the grounded instructions) and a
+    single ``memory`` knob covering facts + session. Memory is declared as
+    ``memory_config`` / ``session_config`` and wired by the framework's
+    finalize/serve path with the app workspace client (so no ``ws`` is needed at
+    construction). Composes like any agent: directly, as a ``sub_agent``, or as a
+    leaf in a ``SequentialAgent`` / ``RouterAgent``.
+
+    Args:
+        memory: Memory tier knob — ``"off"``, ``"inmemory"`` (alias ``"local"``),
+            ``"persistent"`` (alias ``"delta"``, the default). For ``lakebase``,
+            use explicit ``[tool.apx.agent.memory]`` / ``.session`` blocks.
+        persona: Optional role phrase (see ``DataAgent``).
+        (All other args are ``DataAgent``'s.)
+    """
+
+    def __init__(
+        self,
+        catalog: str,
+        schema: str,
+        *,
+        persona: str | None = None,
+        memory: str = "persistent",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(catalog, schema, persona=persona, **kwargs)
+        self.memory_config, self.session_config = normalize_memory_knob(memory)
