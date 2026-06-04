@@ -1,0 +1,77 @@
+# Coworker Agent Use Cases — Joining Disparate Systems
+
+The core value of the `CoworkerAgent` class is **the join**: two systems of record
+that each own half the truth, joined on a business entity, answering a question
+neither system can answer alone.
+
+**The pattern:** the join key is a business entity (employee, deal, asset,
+shipment, encounter), each system is authoritative for half the record, and the
+expensive human workflow today is a person doing the join manually — tabbing
+between two screens.
+
+## Reference example
+
+### Payroll Agent — Kronos × Workday
+
+- **Join key:** employee ID
+- **System A (Kronos):** time and attendance — what hours were actually worked
+- **System B (Workday):** HR and payroll — what the employee should be paid
+- **Question only the join answers:** "Why doesn't this paycheck match the
+  hours worked, and which punches or pay rules caused the discrepancy?"
+
+## Five more
+
+### 1. Quote-to-Cash Agent — Salesforce × NetSuite
+
+- **Join key:** account / opportunity → invoice
+- **Salesforce:** what was sold and on what terms
+- **NetSuite:** what was billed and collected
+- **Question:** "Did the deal we closed actually invoice at the negotiated
+  discount, and why is this customer 60 days past due on a contract Sales
+  thinks is healthy?" Revenue leakage lives exactly in that gap.
+
+### 2. Onboarding/Offboarding Agent — Workday × Okta (or AD)
+
+- **Join key:** employee ID
+- **Workday:** employment status, start/term dates
+- **Okta/AD:** what access actually exists
+- **Question:** "Which day-one new hires have no accounts — and which
+  terminated contractors still have access?" The second one is a
+  compliance/audit story, not just convenience.
+
+### 3. Warranty & Entitlement Agent — ServiceNow × SAP
+
+- **Join key:** customer / asset serial number
+- **ServiceNow:** what broke, what the customer is asking for
+- **SAP:** contract, warranty terms, parts inventory
+- **Question:** "Is this repair covered, do we have the part, and what should
+  the customer actually pay?" Today that's a support rep tabbing between two
+  screens.
+
+### 4. Order-Status Agent — Oracle ERP × project44/FourKites (TMS)
+
+- **Join key:** PO / shipment number
+- **Oracle ERP:** what was ordered and invoiced
+- **TMS:** where the freight physically is
+- **Question:** "Where's my order, will it hit the dock date, and does the
+  carrier invoice match the rate on the PO?" Three-way match plus live
+  tracking in one conversation.
+
+### 5. Claims Integrity Agent — Epic × claims/clearinghouse
+
+- **Join key:** patient encounter
+- **Epic (EHR):** what care was documented
+- **Claims system:** what was coded, submitted, and denied
+- **Question:** "Why was this claim denied, and is the supporting
+  documentation actually in the chart?" Denial management is a huge labor
+  line item and it's purely a cross-system reconciliation problem.
+
+## Why this sells
+
+- **Mismatch detection is the product.** The agent isn't summarizing either
+  system — it's surfacing disagreements between them: unbilled deals,
+  unrevoked access, denied-but-documented claims. Mismatches quantify
+  directly in dollars, so the business case slide writes itself.
+- **Memory compounds the value.** The `CoworkerAgent`'s persistent memory
+  learns account-specific mapping quirks (this customer's PO format, this
+  carrier's reference codes), so the join gets cheaper every time.
