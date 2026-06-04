@@ -274,6 +274,26 @@ def _build_example_store(cfg: Any, ws: Any | None) -> Any | None:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_default_principal(ws: Any | None) -> str | None:
+    """Local-dev fallback principal, from the Databricks CLI profile identity.
+
+    A deployed Databricks App gets the per-request OBO principal from the
+    ``X-Forwarded-User`` header, so this returns ``None`` there (the per-request
+    principal wins). Local ``apx run`` has no OBO header — without a principal
+    the memory tools no-op ("No principal_id available"). Resolve the CLI
+    profile's current user (``ws.current_user.me()``) as the default so memory
+    works in the dev loop. Best-effort; never raises.
+    """
+    from ._obo import _in_databricks_app  # noqa: PLC0415 (avoid import cycle)
+
+    if ws is None or _in_databricks_app():
+        return None
+    try:
+        return ws.current_user.me().user_name
+    except Exception:
+        return None
+
+
 def attach_declared_memory(
     agent: Any,
     config: "AgentConfig",
@@ -333,6 +353,7 @@ def attach_declared_memory(
             tools = make_memory_tools(
                 store=store,
                 _use_dep_principal=True,
+                default_principal_id=_resolve_default_principal(ws),
                 namespace_default=mcfg.namespace_default,
                 tool_prefix=mcfg.tool_prefix,
                 include=mcfg.include,  # type: ignore[arg-type]

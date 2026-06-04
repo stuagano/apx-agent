@@ -433,3 +433,35 @@ class TestDepPrincipalPath:
         bob_result = recall(query="only", principal="bob")
         assert "alice only" in alice_result and "bob only" not in alice_result
         assert "bob only" in bob_result and "alice only" not in bob_result
+
+
+class TestDepPrincipalFallsBackToDefault:
+    """With ``_use_dep_principal=True`` (the config / agent-carried path), when
+    the per-request OBO principal is absent (None — e.g. local ``apx run`` with
+    no X-Forwarded-User), the tools must fall back to ``default_principal_id``
+    rather than no-op. Regression: memory was dead in the local dev loop because
+    the dep branch ignored default_principal_id."""
+
+    def test_remember_uses_default_when_dep_principal_none(self) -> None:
+        store = InMemoryMemoryStore()
+        tools = make_memory_tools(
+            store=store, _use_dep_principal=True, default_principal_id="bob"
+        )
+        out = _find_tool(tools, "remember")(content="hello", principal=None)
+        assert out != "No principal_id available; cannot recall memories."
+        rows = store.list(MemoryFilter(principal_id="bob"))
+        assert len(rows) == 1 and rows[0].content == "hello"
+
+    def test_dep_principal_wins_over_default(self) -> None:
+        store = InMemoryMemoryStore()
+        tools = make_memory_tools(
+            store=store, _use_dep_principal=True, default_principal_id="bob"
+        )
+        _find_tool(tools, "remember")(content="hi", principal="alice")
+        assert len(store.list(MemoryFilter(principal_id="alice"))) == 1
+        assert len(store.list(MemoryFilter(principal_id="bob"))) == 0
+
+    def test_no_principal_and_no_default_still_degrades(self) -> None:
+        tools = make_memory_tools(store=InMemoryMemoryStore(), _use_dep_principal=True)
+        out = _find_tool(tools, "remember")(content="x", principal=None)
+        assert out == "No principal_id available; cannot recall memories."
