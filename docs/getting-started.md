@@ -28,6 +28,15 @@ export DATABRICKS_CONFIG_PROFILE=<name>
 
 You'll also need a Databricks workspace with access to a model serving endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
+Once you have the CLI installed (below), run `apx doctor` to confirm everything is wired up before you touch `apx run` or `apx deploy`:
+
+```bash
+apx doctor            # checks Python, uv, Databricks CLI, auth, project layout
+apx doctor --offline  # skip the live workspace round-trip (CI / offline)
+```
+
+It prints a `Fix:` line for anything wrong. Auth errors caught here are much cleaner than the errors you'd see mid-`apx run`.
+
 ### Installing apx-agent
 
 It's not on PyPI yet — install straight from GitHub. The package lives in the `python/` subdirectory, so the URL needs `#subdirectory=python`:
@@ -139,6 +148,24 @@ agent = DataAgent("main", "sales", ws=WorkspaceClient())
 | `vector_search_tool("index_name")` | A Databricks Vector Search index |
 | `@tool def fn(...) -> str` | Any Python function |
 
+### Want an agent that remembers?
+
+`CoworkerAgent` is a `DataAgent` that also remembers across sessions. Same
+one-liner, two extra knobs:
+
+```python
+from apx_agent import CoworkerAgent
+
+agent = CoworkerAgent(
+    "main", "payroll",
+    persona="a payroll operations analyst",
+    memory="persistent",   # UC Delta — no extra infra
+)
+```
+
+Scaffold one with `apx scaffold my-coworker --template coworker`. See
+[`docs/coworker.md`](coworker.md) for the full reference.
+
 ## Updating your agent
 
 After the initial deploy, `apx deploy` uploads your code to a path in your Databricks workspace (visible in the deploy output as `Downloading source code from /Workspace/Users/.../src/...`). That's where your agent lives at runtime.
@@ -154,14 +181,36 @@ No new deployment, no URL change.
 
 ---
 
+## After deploy — confirming it works
+
+`apx deploy` prints the app URL when it finishes. To confirm the agent is
+live and answering:
+
+1. **Open the URL** — it redirects to `/_apx/agent`, same chat UI as local dev.
+2. **Ask a question** — same first questions you used locally: *"what tables
+   can you query?"* then something data-specific. If the agent answers, the
+   deploy is healthy.
+3. **Check traces** — `/_apx/traces` on the deployed URL shows production
+   spans stored in your workspace's MLflow experiment. A trace with a
+   successful tool call confirms the full stack (auth, SQL warehouse, UC) is
+   working end-to-end.
+
+If the app shows a 502 or the agent can't reach the warehouse, run
+`apx doctor` locally and check [`docs/deployment-troubleshooting.md`](deployment-troubleshooting.md).
+
+---
+
 ## What's next
 
 | Goal | Doc |
 |------|-----|
+| Agent that remembers across sessions | [coworker.md](coworker.md) |
 | Choose Apps vs Model Serving | [apps-vs-model-serving.md](apps-vs-model-serving.md) |
 | Build a multi-step pipeline | [workflow-patterns.md](workflow-patterns.md) |
 | Add multi-turn memory | [sessions-and-memory.md](sessions-and-memory.md) |
 | Write and publish UC function tools | [governed-primitives.md](governed-primitives.md) |
+| DataAgent reference | [data-agent.md](data-agent.md) |
+| pyproject.toml reference | [pyproject-toml.md](pyproject-toml.md) |
 | Add compliance guards | [compliance.md](compliance.md) |
 | Full CLI reference | [cli.md](cli.md) |
 
@@ -169,7 +218,7 @@ No new deployment, no URL change.
 
 ## Troubleshooting
 
-Run `apx doctor` at any point to diagnose your environment:
+`apx doctor` is the first thing to run when something isn't working:
 
 ```bash
 apx doctor            # full check incl. a live workspace round-trip
@@ -180,3 +229,12 @@ apx doctor --json     # machine-readable output
 It reports your Python version, `uv`, the Databricks CLI, authentication, and
 your project layout, with a `Fix:` line for anything wrong. The exit code is
 non-zero if any check fails, so it is safe to use in CI preflights.
+
+**Auth errors** (`Could not resolve Databricks authentication`) — re-run
+`databricks auth login --profile <name>` and confirm with
+`databricks current-user me --profile <name>`, then restart `apx run`.
+
+**Warehouse stopped** — open the **Probe** tab at `/_apx/probe/checks`; it
+shows warehouse status and a link to start it.
+
+For deploy failures, see [`docs/deployment-troubleshooting.md`](deployment-troubleshooting.md).

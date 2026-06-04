@@ -214,7 +214,8 @@ def _preflight_databricks_auth() -> None:
         raise click.ClickException(
             _fix_msg(
                 "Could not resolve Databricks authentication. This agent "
-                "connects to a workspace at startup.",
+                "connects to a workspace at startup.\n"
+                "Run `apx doctor` for a full environment check.",
                 result.detail,
                 result.fix,
             )
