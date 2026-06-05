@@ -16,6 +16,35 @@ Deploy to Databricks Apps or Mosaic AI Model Serving — same agent, one flag.
 
 ---
 
+## Quick start
+
+Python 3.11+ required.
+
+```bash
+uv add apx-agent
+uv run apx scaffold my-agent
+cd my-agent
+```
+
+**Run it locally:**
+
+```bash
+uv run apx run --reload
+# FastAPI on http://localhost:8000 — chat at /_apx/agent, traces at /_apx/traces
+```
+
+**When it looks right, deploy:**
+
+```bash
+uv run apx deploy --target apps
+```
+
+> **Something not working?** Run `apx doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
+
+See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough including prerequisites, workspace requirements, and the local dev walk.
+
+---
+
 ## LlmAgent — you control the loop
 
 `LlmAgent` is an LLM + tools + a loop. You decide what it can call, when it
@@ -145,18 +174,6 @@ See [docs/coworker.md](docs/coworker.md) for the full reference.
 
 ---
 
-## Deploy anywhere
-
-```bash
-apx deploy                                          # Databricks Apps (default)
-apx deploy --target model-serving --name main.agents.my_agent
-```
-
-Same agent code. Same tools. Same `apx.*` MLflow trace schema either way. No
-changes to `agent.py` to switch targets.
-
----
-
 ## See what you built
 
 Every deployed agent ships with `/_apx/topology` — an interactive graph of
@@ -169,26 +186,7 @@ See [docs/dev-ui.md](docs/dev-ui.md) for the full `/_apx/*` surface (chat, trace
 
 ---
 
-📚 **[Docs](docs/)** · 🚀 **[Quick start](#quick-start)** · 🧪 **[Examples](python/examples/EXAMPLES.md)** · ⚙️ **[CLI](#cli)**
-
----
-
-## Quick start
-
-Python 3.11+ required.
-
-```bash
-uv add apx-agent
-uv run apx scaffold my-agent
-cd my-agent && uv run apx run --reload   # FastAPI on :8000, /_apx/* dev UI
-```
-
-When it looks right: `uv run apx deploy`.
-
-> **Something not working?** Run `apx doctor` — checks Python, uv, Databricks
-> CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
-
-See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough including prerequisites, workspace requirements, and the local dev walk.
+📚 **[Docs](docs/)** · 🧪 **[Examples](python/examples/EXAMPLES.md)** · ⚙️ **[CLI](#cli)**
 
 ---
 
@@ -213,8 +211,7 @@ See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough 
 ```bash
 apx scaffold <name>                # scaffold a new agent project
 apx run                            # local FastAPI dev server (/_apx/agent)
-apx deploy                         # deploy to Databricks Apps (default)
-apx deploy --target model-serving --name catalog.schema.agent
+apx deploy --target apps           # deploy to Databricks Apps
 apx eval evalset.jsonl             # run against deployed endpoint with LLM judge
 apx doctor                         # diagnose auth, deps, project layout
 ```

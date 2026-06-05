@@ -217,10 +217,14 @@ wheels = [
 name = "apx-agent"
 source = { editable = "." }
 dependencies = [
+    { name = "databricks-langchain" },
     { name = "databricks-openai" },
     { name = "databricks-sdk" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "langchain" },
+    { name = "langchain-core" },
+    { name = "langgraph" },
     { name = "mcp" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -228,10 +232,6 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "databricks-langchain" },
-    { name = "langchain" },
-    { name = "langchain-core" },
-    { name = "langgraph" },
     { name = "mlflow" },
     { name = "psycopg", extra = ["binary"] },
     { name = "sqlalchemy" },
@@ -244,18 +244,14 @@ lakebase = [
     { name = "psycopg", extra = ["binary"] },
     { name = "sqlalchemy" },
 ]
-langgraph = [
-    { name = "databricks-langchain" },
-    { name = "langchain" },
-    { name = "langchain-core" },
-    { name = "langgraph" },
-]
 uc = [
     { name = "unitycatalog-ai" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "hatch-vcs" },
+    { name = "hatchling" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -264,18 +260,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "databricks-langchain", marker = "extra == 'all'", specifier = ">=0.3.0" },
-    { name = "databricks-langchain", marker = "extra == 'langgraph'", specifier = ">=0.3.0" },
+    { name = "databricks-langchain", specifier = ">=0.3.0" },
     { name = "databricks-openai", specifier = ">=0.15.0" },
     { name = "databricks-sdk", specifier = ">=0.74.0" },
     { name = "fastapi", specifier = ">=0.119.0" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "langchain", marker = "extra == 'all'", specifier = ">=1.0.0" },
-    { name = "langchain", marker = "extra == 'langgraph'", specifier = ">=1.0.0" },
-    { name = "langchain-core", marker = "extra == 'all'", specifier = ">=1.0.0" },
-    { name = "langchain-core", marker = "extra == 'langgraph'", specifier = ">=1.0.0" },
-    { name = "langgraph", marker = "extra == 'all'", specifier = ">=1.1.0" },
-    { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=1.1.0" },
+    { name = "langchain", specifier = ">=1.0.0" },
+    { name = "langchain-core", specifier = ">=1.0.0" },
+    { name = "langgraph", specifier = ">=1.1.0" },
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "mlflow", marker = "extra == 'all'", specifier = ">=2.0" },
     { name = "mlflow", marker = "extra == 'eval'", specifier = ">=2.0" },
@@ -288,10 +280,12 @@ requires-dist = [
     { name = "unitycatalog-ai", marker = "extra == 'all'", specifier = ">=0.1.0" },
     { name = "unitycatalog-ai", marker = "extra == 'uc'", specifier = ">=0.1.0" },
 ]
-provides-extras = ["all", "eval", "lakebase", "langgraph", "uc"]
+provides-extras = ["all", "eval", "lakebase", "uc"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "hatch-vcs", specifier = ">=0.5.0" },
+    { name = "hatchling", specifier = ">=1.29.0" },
     { name = "pyright", specifier = ">=1.1.380" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
@@ -1483,6 +1477,35 @@ source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
 sdist = { url = "https://files.pythonhosted.org/packages/01/ee/02a2c011bdab74c6fb3c75474d40b3052059d95df7e73351460c8588d963/h11-0.16.0.tar.gz", hash = "sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1", size = 101250, upload-time = "2025-04-24T03:35:25.427Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl", hash = "sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86", size = 37515, upload-time = "2025-04-24T03:35:24.344Z" },
+]
+
+[[package]]
+name = "hatch-vcs"
+version = "0.5.0"
+source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
+dependencies = [
+    { name = "hatchling" },
+    { name = "setuptools-scm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6b/b0/4cc743d38adbee9d57d786fa496ed1daadb17e48589b6da8fa55717a0746/hatch_vcs-0.5.0.tar.gz", hash = "sha256:0395fa126940340215090c344a2bf4e2a77bcbe7daab16f41b37b98c95809ff9", size = 11424, upload-time = "2025-05-27T05:16:04.49Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5f/48/1f85cee4b7b4f40b9b814b1febbc661bda6ced9649e410a0b74f6e415dd0/hatch_vcs-0.5.0-py3-none-any.whl", hash = "sha256:b49677dbdc597460cc22d01b27ab3696f5e16a21ecf2700fb01bc28e1f2a04a7", size = 8507, upload-time = "2025-05-27T05:16:03.184Z" },
+]
+
+[[package]]
+name = "hatchling"
+version = "1.29.0"
+source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
+dependencies = [
+    { name = "packaging" },
+    { name = "pathspec" },
+    { name = "pluggy" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
+    { name = "trove-classifiers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cf/9c/b4cfe330cd4f49cff17fd771154730555fa4123beb7f292cf0098b4e6c20/hatchling-1.29.0.tar.gz", hash = "sha256:793c31816d952cee405b83488ce001c719f325d9cda69f1fc4cd750527640ea6", size = 55656, upload-time = "2026-02-23T19:42:06.539Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d3/8a/44032265776062a89171285ede55a0bdaadc8ac00f27f0512a71a9e3e1c8/hatchling-1.29.0-py3-none-any.whl", hash = "sha256:50af9343281f34785fab12da82e445ed987a6efb34fd8c2fc0f6e6630dbcc1b0", size = 76356, upload-time = "2026-02-23T19:42:05.197Z" },
 ]
 
 [[package]]
@@ -2973,6 +2996,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pathspec"
+version = "1.1.1"
+source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/82/42f767fc1c1143d6fd36efb827202a2d997a375e160a71eb2888a925aac1/pathspec-1.1.1.tar.gz", hash = "sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a", size = 135180, upload-time = "2026-04-27T01:46:08.907Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f1/d9/7fb5aa316bc299258e68c73ba3bddbc499654a07f151cba08f6153988714/pathspec-1.1.1-py3-none-any.whl", hash = "sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189", size = 57328, upload-time = "2026-04-27T01:46:07.06Z" },
+]
+
+[[package]]
 name = "pillow"
 version = "12.1.1"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
@@ -4294,6 +4326,22 @@ wheels = [
 ]
 
 [[package]]
+name = "setuptools-scm"
+version = "10.0.5"
+source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
+dependencies = [
+    { name = "packaging" },
+    { name = "setuptools" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "vcs-versioning" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a5/b1/2a6a8ecd6f9e263754036a0b573360bdbd6873b595725e49e11139722041/setuptools_scm-10.0.5.tar.gz", hash = "sha256:bbba8fe754516cdefd017f4456721775e6ef9662bd7887fb52ae26813d4838c3", size = 56748, upload-time = "2026-03-27T15:57:05.751Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5c/e1/342c4434df56aa537f6ce7647eefee521d96fbb828b08acd709865767652/setuptools_scm-10.0.5-py3-none-any.whl", hash = "sha256:f611037d8aae618221503b8fa89319f073438252ae3420e01c9ceec249131a0a", size = 21695, upload-time = "2026-03-27T15:57:03.969Z" },
+]
+
+[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
@@ -4589,6 +4637,15 @@ wheels = [
 ]
 
 [[package]]
+name = "trove-classifiers"
+version = "2026.5.22.10"
+source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
+sdist = { url = "https://files.pythonhosted.org/packages/86/b6/1c41aa221b157b624ea1a72e975404ef228724d249011ee411ac211a615e/trove_classifiers-2026.5.22.10.tar.gz", hash = "sha256:5477e9974e91904fb2cfa4a7581ab6e2f30c2c38d847fd00ed866080748101d5", size = 17061, upload-time = "2026-05-22T10:17:28.99Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c9/02/9a14d3048ffa4f45b7c60956a9b22688dd925d6de50f6baf7e55f3664942/trove_classifiers-2026.5.22.10-py3-none-any.whl", hash = "sha256:01fe864225726e03efb843827ecabfe319fc4dee8dd66d65b8996cb09be46e2c", size = 14225, upload-time = "2026-05-22T10:17:27.569Z" },
+]
+
+[[package]]
 name = "types-requests"
 version = "2.33.0.20260327"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
@@ -4827,6 +4884,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/37/945b4ca0ac27e3dc4952642d4c900edd030b3da6c9634875af6e13ae80e5/uvloop-0.22.1-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b91328c72635f6f9e0282e4a57da7470c7350ab1c9f48546c0f2866205349d21", size = 4467065, upload-time = "2025-10-16T22:16:58.206Z" },
     { url = "https://files.pythonhosted.org/packages/97/cc/48d232f33d60e2e2e0b42f4e73455b146b76ebe216487e862700457fbf3c/uvloop-0.22.1-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:daf620c2995d193449393d6c62131b3fbd40a63bf7b307a1527856ace637fe88", size = 4328384, upload-time = "2025-10-16T22:16:59.36Z" },
     { url = "https://files.pythonhosted.org/packages/e4/16/c1fd27e9549f3c4baf1dc9c20c456cd2f822dbf8de9f463824b0c0357e06/uvloop-0.22.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:6cde23eeda1a25c75b2e07d39970f3374105d5eafbaab2a4482be82f272d5a5e", size = 4296730, upload-time = "2025-10-16T22:17:00.744Z" },
+]
+
+[[package]]
+name = "vcs-versioning"
+version = "1.1.1"
+source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
+dependencies = [
+    { name = "packaging" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/49/42/d97a7795055677961c63a1eef8e7b19d5968ed992ed3a70ab8eb012efad8/vcs_versioning-1.1.1.tar.gz", hash = "sha256:fabd75a3cab7dd8ac02fe24a3a9ba936bf258667b5a62ed468c9a1da0f5775bc", size = 97575, upload-time = "2026-03-27T20:42:41.613Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e6/60/73603fbcdbe5e803855bcce4414f94eaeed449083bd8183e67161af78188/vcs_versioning-1.1.1-py3-none-any.whl", hash = "sha256:b541e2ba79fc6aaa3850f8a7f88af43d97c1c80649c01142ee4146eddbc599e4", size = 79851, upload-time = "2026-03-27T20:42:40.45Z" },
 ]
 
 [[package]]
