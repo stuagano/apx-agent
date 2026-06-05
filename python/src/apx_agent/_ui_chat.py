@@ -1225,6 +1225,16 @@ let eventCounter = 0;
 let events = [];
 let eventsStarted = false;
 
+// Stable session key for the dev-UI conversation.  Stored in sessionStorage so
+// a page refresh resumes the same server-side session (the user doesn't lose
+// agent memory / conversation state).  A new tab always gets a fresh UUID.
+const _THREAD_KEY = '_apx_dev_thread_id';
+let devThreadId = sessionStorage.getItem(_THREAD_KEY);
+if (!devThreadId) {{
+  devThreadId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
+  sessionStorage.setItem(_THREAD_KEY, devThreadId);
+}}
+
 function fmt(v) {{
   if (v === null || v === undefined) return 'null';
   if (typeof v === 'string') return v.length > 600 ? v.slice(0, 600) + '\\n…' : v;
@@ -1651,7 +1661,7 @@ form.addEventListener('submit', async e => {{
     const res = await fetch('/responses', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json', 'x-return-trace-id': 'true' }},
-      body: JSON.stringify({{ input: history, stream: true }}),
+      body: JSON.stringify({{ input: history, stream: true, custom_inputs: {{ thread_id: devThreadId }} }}),
     }});
     if (!res.ok) throw new Error(`${{res.status}} ${{await res.text()}}`);
 

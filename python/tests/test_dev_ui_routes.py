@@ -132,6 +132,21 @@ class TestMarkdownWiring:
         assert "DOMPurify.sanitize(marked.parse(" in html  # render wiring present
         assert "renderAssistantInto" in html  # helper present
 
+    def test_dev_ui_sends_thread_id_in_custom_inputs(self):
+        """Dev UI must pass custom_inputs.thread_id with every /responses call
+        so the server-side session store is used (multi-turn memory, reload
+        resume). The thread_id is generated once per sessionStorage lifetime."""
+        from apx_agent._ui_chat import _render_agent_ui
+
+        html = _render_agent_ui(_make_ctx())
+        # sessionStorage persistence so page refresh resumes the same session.
+        assert "sessionStorage" in html
+        assert "_apx_dev_thread_id" in html
+        assert "devThreadId" in html
+        # The main chat fetch must include custom_inputs carrying the thread_id.
+        assert "custom_inputs" in html
+        assert "thread_id: devThreadId" in html
+
 
 # ---------------------------------------------------------------------------
 # _pick_workspace_defaults — the Setup page's auto-prefill source
