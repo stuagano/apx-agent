@@ -356,7 +356,7 @@ async def setup_agent(
       * Dev UI at ``/_apx/*`` (when ``_dev`` module loadable)
 
     The ``POST /invocations`` route is mounted separately by ``create_app``
-    after ``setup_agent`` runs (it depends on the optional ``langgraph`` extra).
+    after ``setup_agent`` runs (depends on the eval/mlflow extra).
     Returns the ``AgentContext``, or ``None`` if config is missing.
     """
     if config is None:
