@@ -191,7 +191,15 @@ def normalize_memory_knob(
     tier = _KNOB_TO_TYPE[v]
     if tier is None:
         return (None, None)
-    return (MemoryBackendConfig(type=tier), SessionBackendConfig(type=tier))
+    # Provide a default table_name for delta so memory="persistent" works
+    # out of the box without requiring an explicit [tool.apx.agent.memory] block.
+    # Users can override by supplying an explicit block with their own table path.
+    table_name = "main.default.apx_memories" if tier == "delta" else None
+    session_table = "main.default.apx_sessions" if tier == "delta" else None
+    return (
+        MemoryBackendConfig(type=tier, table_name=table_name),
+        SessionBackendConfig(type=tier, table_name=session_table),
+    )
 
 
 class AgentConfig(BaseModel):

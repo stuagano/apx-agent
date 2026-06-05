@@ -517,10 +517,9 @@ _SCAFFOLD_AGENT = '''\
 from apx_agent import DataAgent
 
 {example_tool}
-# A governed data agent over ``{catalog}.{schema}`` (auto-detected from your
-# workspace at scaffold time). Point it at your own ``catalog.schema``, and
-# pass ``ws=WorkspaceClient()`` to auto-discover the schema's tables + UC
-# functions and ground the instructions in the real columns.
+# A governed data agent over ``{catalog}.{schema}`` (schema baked at scaffold
+# time — no runtime discovery needed). To switch catalogs or refresh the
+# baked schema: ``apx scaffold <name> --catalog <cat> --schema <sch>``.
 agent = DataAgent("{catalog}", "{schema}"{extra_tools})
 '''
 
@@ -733,6 +732,8 @@ import os
 from mlflow.genai.agent_server import AgentServer, invoke, stream
 
 from apx_agent import compile_to_responses_agent, mount_mcp_endpoints, mount_readyz
+from apx_agent._defaults import _make_workspace_client
+from apx_agent._memory_wiring import resolve_session_store
 from apx_agent._mlflow_tracing import autolog_if_env
 
 # Enable MLflow LangChain/LangGraph auto-tracing when APX_AGENT_MLFLOW_AUTOLOG
@@ -745,7 +746,9 @@ from agent import agent
 
 MODEL = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
 
-_invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL)
+_ws = _make_workspace_client()
+_session_store = resolve_session_store(None, _ws, agent=agent)
+_invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL, session_store=_session_store)
 
 
 @invoke()
@@ -766,8 +769,8 @@ app = server.app
 mount_mcp_endpoints(app, agent)
 mount_readyz(app, agent)
 
-from apx_agent._defaults import _make_workspace_client
-app.state.workspace_client = _make_workspace_client()
+app.state.workspace_client = _ws
+app.state.session_store = _session_store
 
 
 if __name__ == "__main__":
