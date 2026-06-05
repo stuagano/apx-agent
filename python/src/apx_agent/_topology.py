@@ -323,6 +323,7 @@ def _agent_class_to_node_type(agent: "BaseAgent") -> str:
         "LlmAgent",
         "Agent",
         "DataAgent",
+        "CoworkerAgent",
         "SequentialAgent",
         "ParallelAgent",
         "LoopAgent",
