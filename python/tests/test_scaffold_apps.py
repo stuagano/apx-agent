@@ -328,12 +328,12 @@ def test_scaffold_here_overrides_auto_redirect(
 
 
 # ---------------------------------------------------------------------------
-# --template coworker + --persona
+# --template coworker: persona via interactive flow
 # ---------------------------------------------------------------------------
 
 
 def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None:
-    """``--template coworker --persona '...'`` bakes the persona into agent.py."""
+    """Interactive coworker scaffold bakes persona into agent.py."""
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -342,10 +342,10 @@ def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None
             "--dir", str(tmp_path),
             "--target", "apps",
             "--template", "coworker",
-            "--catalog", "main", "--schema", "sales",
-            "--persona", "a sales analyst who knows revenue data deeply",
-            "--no-interactive",
+            "--interactive",
         ],
+        # catalog prompt → "main", schema prompt → "sales", persona → role text
+        input="main\nsales\na sales analyst who knows revenue data deeply\n",
         catch_exceptions=False,
         env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
     )

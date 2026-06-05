@@ -1357,21 +1357,14 @@ def _scaffold_apps(
          "(pre-grounded + memory). Apps target only for coworker.",
 )
 @click.option(
-    "--persona", default=None,
-    help="Role phrase baked into the CoworkerAgent's grounded instructions "
-         "(e.g. 'a payroll analyst who knows HR data deeply'). "
-         "Only used when --template coworker. Prompted interactively when omitted "
-         "in interactive mode.",
-)
-@click.option(
     "--interactive/--no-interactive", "interactive", default=None,
-    help="Prompt for catalog, schema, and persona instead of auto-detecting. "
-         "Defaults to interactive when stdin is a TTY.",
+    help="Prompt for catalog, schema, and (for --template coworker) persona "
+         "instead of auto-detecting. Defaults to interactive when stdin is a TTY.",
 )
 def scaffold(
     name: str, directory: str, scaffold_target: str, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
-    scaffold_template: str, persona: str | None, interactive: bool | None,
+    scaffold_template: str, interactive: bool | None,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -1420,12 +1413,9 @@ def scaffold(
     # Interactive resolution — prompt for missing catalog/schema/persona when
     # running in a TTY (or when --interactive is explicit). --no-interactive or
     # a non-TTY stdin skips prompts (CI-safe). Already-provided flags pass through.
+    persona: str | None = None
     interactive_mode = interactive if interactive is not None else sys.stdin.isatty()
-    _needs_prompt = (
-        catalog is None
-        or schema is None
-        or (scaffold_template == "coworker" and persona is None)
-    )
+    _needs_prompt = catalog is None or schema is None or scaffold_template == "coworker"
     if interactive_mode and _needs_prompt:
         ws_i = _make_ws_for_scaffold(profile)
         catalog, schema, persona = _interactive_resolve(
