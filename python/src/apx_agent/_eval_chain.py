@@ -90,14 +90,14 @@ def evaluate_chain(
         ``ChainEvalReport`` with per-prompt results + aggregate
         sub-agent coverage counts.
 
-    Requires the ``eval`` + ``langgraph`` extras.
+    Requires the ``eval`` extra (mlflow).
     """
     try:
         import mlflow  # noqa: F401
     except ImportError as e:  # pragma: no cover
         raise ImportError(
             "evaluate_chain requires mlflow. "
-            "Install with: pip install 'apx-agent[eval,langgraph]'"
+            "Install with: pip install 'apx-agent[eval]'"
         ) from e
 
     raw_result = evaluate(

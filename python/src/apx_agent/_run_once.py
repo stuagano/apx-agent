@@ -25,11 +25,11 @@ if TYPE_CHECKING:
     from ._agents import BaseAgent
 
 # Top-level import so tests can patch and so import failures surface as
-# friendlier errors when langgraph/eval extras aren't installed. The
+# friendlier errors when the eval extra (mlflow) isn't installed. The
 # function itself raises a clearer error when this is None.
 try:
     from ._chat_agent import compile_to_chat_agent
-except ImportError:  # pragma: no cover — exercised only without langgraph
+except ImportError:  # pragma: no cover — defensive
     compile_to_chat_agent = None  # type: ignore[assignment]
 
 from ._inspection import _load_agent_config
@@ -80,8 +80,8 @@ def run_once(
     """
     if compile_to_chat_agent is None:
         raise ImportError(
-            "run_once requires the langgraph + eval extras. "
-            "Install with: pip install 'apx-agent[eval,langgraph]'"
+            "run_once requires the eval extra (mlflow). "
+            "Install with: pip install 'apx-agent[eval]'"
         )
 
     effective_model = model

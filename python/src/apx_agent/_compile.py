@@ -19,7 +19,7 @@ Supported agent types and their LangGraph topologies:
   * ``RouterAgent``     → router decision node + conditional edges to targets
   * ``HandoffAgent``    → conditional edges driven by ``transfer_to_*`` tool calls
 
-Requires the ``langgraph`` extra: ``pip install 'apx-agent[langgraph]'``.
+Requires ``langgraph`` (included in apx-agent's required dependencies).
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from fastapi import params
 # Hoisted so TypedDicts defined inside compile functions (e.g. LoopState) can
 # reference ``Annotated[list, add_messages]``. ``get_type_hints`` evaluates the
 # class body in the module's globals later, not in the function's local scope.
-try:  # pragma: no cover — optional langgraph extra
+try:  # pragma: no cover — defensive guard
     from langgraph.graph.message import add_messages
     from typing_extensions import Annotated, TypedDict
 except ImportError:  # pragma: no cover — let downstream code raise on use

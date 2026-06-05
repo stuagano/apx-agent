@@ -29,11 +29,11 @@ if TYPE_CHECKING:
     from ._agents import BaseAgent
 
 # Top-level import so tests can monkeypatch it. Falls back to a lazy import
-# stub when the langgraph extra isn't installed (the evaluate function
-# raises a friendlier error in that case).
+# stub when mlflow (eval extra) isn't installed — the evaluate function
+# raises a friendlier error in that case.
 try:
     from ._chat_agent import compile_to_chat_agent
-except ImportError:  # pragma: no cover — exercised only without langgraph
+except ImportError:  # pragma: no cover — defensive
     compile_to_chat_agent = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
@@ -193,9 +193,9 @@ def evaluate(
         Whatever ``mlflow.genai.evaluate`` returns (typically a
         ``mlflow.models.EvaluationResult``).
 
-    Requires the ``eval`` and ``langgraph`` extras::
+    Requires the ``eval`` extra (mlflow)::
 
-        pip install 'apx-agent[eval,langgraph]'
+        pip install 'apx-agent[eval]'
     """
     try:
         import mlflow
@@ -216,8 +216,8 @@ def evaluate(
 
     if compile_to_chat_agent is None:
         raise ImportError(
-            "evaluate requires the langgraph extra. "
-            "Install with: pip install 'apx-agent[eval,langgraph]'"
+            "evaluate requires mlflow (eval extra). "
+            "Install with: pip install 'apx-agent[eval]'"
         )
 
     chat_agent = compile_to_chat_agent(agent, model=model)

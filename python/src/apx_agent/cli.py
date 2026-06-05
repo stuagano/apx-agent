@@ -497,9 +497,9 @@ _SCAFFOLD_PYPROJECT = '''\
 name = "{name}"
 version = "0.1.0"
 requires-python = ">=3.11"
-# [langgraph] pulls langchain/langgraph/databricks-langchain — required by the
-# agent compile path that `apx deploy` (log_agent) and `apx run` exercise.
-dependencies = ["apx-agent[langgraph]"]
+# langgraph/langchain/databricks-langchain are required by the agent compile
+# path — they're included as required deps in apx-agent's core package.
+dependencies = ["apx-agent"]
 
 [tool.uv.sources]
 # Editable local install — keeps `uv sync` working from this directory.
@@ -1373,7 +1373,7 @@ def _scaffold_apps(
     # parent-dir source (fast dev loop). Outside, embed a pinned git+https
     # URL in the dep line so the user doesn't need a sibling checkout.
     if _is_inside_framework_repo(target):
-        apx_dep = '"apx-agent[langgraph]",'
+        apx_dep = '"apx-agent",'
         apx_source = (
             "[tool.uv.sources]\n"
             "# Editable local install — keeps `uv sync` working from this directory.\n"
@@ -1384,7 +1384,7 @@ def _scaffold_apps(
     else:
         ref = _scaffold_install_ref()
         apx_dep = (
-            f'"apx-agent[langgraph] @ '
+            f'"apx-agent @ '
             f'git+https://github.com/stuagano/apx-agent.git@{ref}#subdirectory=python",'
         )
         apx_source = (
@@ -4124,8 +4124,8 @@ def test_cmd(
         from mlflow.types.agent import ChatAgentMessage
     except ImportError as e:
         raise click.ClickException(
-            "apx test requires the eval + langgraph extras. "
-            "Install with: pip install 'apx-agent[eval,langgraph]'"
+            "apx test requires the eval extra (mlflow). "
+            "Install with: pip install 'apx-agent[eval]'"
         ) from e
 
     chat_agent = compile_to_chat_agent(agent, model=effective_model)

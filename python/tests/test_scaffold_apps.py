@@ -130,10 +130,9 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
 
     assert parsed["project"]["name"] == "my_agent"
     deps = parsed["project"]["dependencies"]
-    # The [langgraph] extra is REQUIRED at runtime — compile_to_responses_agent
-    # pulls in langchain_core via compile_to_langgraph. Bare 'apx-agent' fails
-    # at first request inside the deployed App. See commit 6f84ad24.
-    assert any(d == "apx-agent[langgraph]" or d.startswith("apx-agent[") for d in deps), deps
+    # apx-agent includes langgraph/langchain as required deps — no extra needed.
+    # The dep line references just "apx-agent" (or a git+https URL to the same).
+    assert any("apx-agent" in d for d in deps), deps
     # The mlflow dependency is pinned with the [databricks] extra and a
     # minimum version. Search loosely so the version pin can move.
     assert any("mlflow[databricks]" in d for d in deps), deps

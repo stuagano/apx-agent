@@ -326,18 +326,26 @@ def check_extras(cwd: Path) -> Check:
 
     target = _detect_target(cwd)
     if target == "apps":
-        module, extra = "apx_agent._responses_agent", "apps"
+        module, label, fix = (
+            "mlflow.genai.agent_server",
+            "mlflow.genai (eval extra)",
+            "pip install 'apx-agent[eval]'  (or `uv sync` in this project)",
+        )
     else:
-        module, extra = "langchain", "langgraph"
+        module, label, fix = (
+            "langchain",
+            "langchain (required dep)",
+            "uv sync  (langgraph/langchain are required deps of apx-agent)",
+        )
     try:
         importlib.import_module(module)
-        return Check("Required extra", Status.OK, f"{extra} extra installed", None)
+        return Check("Required extra", Status.OK, f"{label} installed", None)
     except ImportError:
         return Check(
             "Required extra",
             Status.FAIL,
-            f"the '{extra}' extra is not installed (needed for target {target})",
-            f"pip install 'apx-agent[{extra}]'  (or `uv sync` in this project)",
+            f"{label} is not installed (needed for target {target})",
+            fix,
         )
 
 
