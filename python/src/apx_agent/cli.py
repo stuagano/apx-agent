@@ -698,21 +698,16 @@ agent = LlmAgent(
 
 
 _SCAFFOLD_APPS_AGENT_COWORKER = '''\
-"""<APP_NAME> — a DataAgent with a named persona and objective."""
+"""<APP_NAME> — a coworker: DataAgent + persona + objective."""
 from __future__ import annotations
 
-from apx_agent import CoworkerAgent
+from apx_agent import DataAgent
 
 <EXAMPLE_TOOL>
-# A coworker over ``<CATALOG>.<SCHEMA>``: pre-grounded in the schema (knows
-# the tables/columns). Persona shapes its voice; objective defines its mission.
-# Together: "You are {persona} designed to {objective}."
-#
-# To add memory (opt-in):
-#   memory="inmemory"   # forgets on restart
-#   memory="persistent" # UC Delta tables — survives restart
-#   memory="lakebase"   # production pgvector — needs explicit config block
-agent = CoworkerAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS><PERSONA_ARG><OBJECTIVE_ARG>, name="<APP_NAME>")
+# A coworker is a DataAgent with a persona (who it is) and an objective
+# (what it is designed to do). At runtime the lead becomes:
+#   "You are {persona} designed to {objective}."
+agent = DataAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS><PERSONA_ARG><OBJECTIVE_ARG>, name="<APP_NAME>")
 '''
 
 
@@ -1153,7 +1148,7 @@ def _scaffold_wizard(
             click.echo("\nAgent type:")
             click.echo("  1. Base agent  ← plain LlmAgent, you bring the tools")
             click.echo("  2. DataAgent   — pre-grounded in your UC data, SQL tools included")
-            click.echo("  3. Coworker    — DataAgent + persona (system instructions)")
+            click.echo("  3. Coworker    — DataAgent + persona + objective")
             idx = click.prompt("Template", type=click.IntRange(1, 3), default=2)
             template = {1: "base", 2: "data", 3: "coworker"}[idx]
         else:

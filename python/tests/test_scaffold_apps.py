@@ -380,7 +380,7 @@ def test_scaffold_coworker_with_persona_and_objective(tmp_path: Path) -> None:
 
 
 def test_scaffold_coworker_without_persona_omits_kwarg(tmp_path: Path) -> None:
-    """When no persona is given, the CoworkerAgent call has no persona= kwarg."""
+    """When no persona/objective given, the DataAgent call omits those kwargs."""
     runner = CliRunner()
     result = runner.invoke(
         main,
