@@ -208,3 +208,127 @@ class TestEditOnComposed:
         nodes = {n["name"]: n for n in _parse_agent_nodes(out)}
         assert "echo" not in nodes["data_agent"]["tools"]
         assert "def echo(" not in out  # function gone, no dangling reference
+
+
+# ---------------------------------------------------------------------------
+# DataAgent / CoworkerAgent in the Setup UI pattern switch
+# ---------------------------------------------------------------------------
+
+_COWORKER_SOURCE = (
+    'from apx_agent.coworker import CoworkerAgent\n\n'
+    'agent = CoworkerAgent("sales", "main", "sales", instructions="You are a sales assistant.")\n'
+)
+
+_DATA_AGENT_SOURCE = (
+    'from apx_agent import DataAgent\n\n'
+    'agent = DataAgent("analytics", "main", "sales", instructions="Query data.")\n'
+)
+
+
+class TestSetupPatternLeafNoOp:
+    """setup_pattern must not rewrite DataAgent/CoworkerAgent positional args.
+
+    _parse_agent_nodes uses wrapper=None for direct leaf calls (Agent, DataAgent,
+    CoworkerAgent). _dev.py does `wrapper or "Agent"` as a fallback. This means
+    `current_type` is always "Agent" for leaf agents, and _set_agent_wrapper is
+    never called on DataAgent/CoworkerAgent source — which is correct, because
+    _set_agent_wrapper only accepts Agent/LlmAgent/LoopAgent and would corrupt
+    DataAgent("name","catalog","schema") → Agent("name","catalog","schema").
+    """
+
+    def test_set_agent_wrapper_on_agent_only_accepts_leaf_types(self):
+        """_set_agent_wrapper rejects DataAgent/CoworkerAgent as wrapper targets."""
+        from apx_agent._ui_edit import _set_agent_wrapper
+
+        with pytest.raises(ValueError, match="Unsupported"):
+            _set_agent_wrapper(_COWORKER_SOURCE, "DataAgent", target="agent")
+
+    def test_parse_agent_nodes_identifies_coworker_as_leaf(self):
+        """CoworkerAgent direct calls set wrapper=None (direct-call path)."""
+        nodes = {n["name"]: n for n in _parse_agent_nodes(_COWORKER_SOURCE)}
+        assert "agent" in nodes
+        agent_node = nodes["agent"]
+        # Direct leaf call → wrapper=None (not a composition wrapper).
+        assert agent_node["wrapper"] is None
+        assert agent_node.get("members") is None
+
+    def test_parse_agent_nodes_identifies_data_agent_as_leaf(self):
+        """DataAgent direct calls set wrapper=None (direct-call path)."""
+        nodes = {n["name"]: n for n in _parse_agent_nodes(_DATA_AGENT_SOURCE)}
+        agent_node = nodes["agent"]
+        assert agent_node["wrapper"] is None
+        assert agent_node.get("members") is None
+
+
+class TestSetupPatternEndpoint:
+    """HTTP-level regression: setup_pattern must accept DataAgent/CoworkerAgent
+    and return changed=False when switching between leaf agent types."""
+
+    @pytest.fixture
+    def app(self, tmp_path, monkeypatch):
+        import fastapi
+        from apx_agent import AgentConfig, AgentContext
+        from apx_agent._dev import build_dev_ui_router
+        from apx_agent._models import AgentCard
+        import apx_agent._dev as _dev_mod
+        import apx_agent._ui_edit as _edit_mod
+
+        agent_py = tmp_path / "agent.py"
+        agent_py.write_text(_COWORKER_SOURCE)
+        # Patch both the module-level binding in _dev and the original in _ui_edit.
+        monkeypatch.setattr(_dev_mod, "_find_agent_router_path", lambda: agent_py)
+        monkeypatch.setattr(_edit_mod, "_find_agent_router_path", lambda: agent_py)
+
+        config = AgentConfig(name="test", model="fake")
+        card = AgentCard(name="test", description="", skills=[])
+        ctx = AgentContext(config=config, tools=[], card=card, agent=None)  # type: ignore[arg-type]
+        a = fastapi.FastAPI()
+        a.state.agent_context = ctx
+        a.include_router(build_dev_ui_router())
+        return a
+
+    @pytest.mark.asyncio
+    async def test_coworker_to_agent_is_noop(self, app, tmp_path):
+        from httpx import ASGITransport, AsyncClient
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.post("/_apx/setup/agent-pattern", json={"pattern": "Agent"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["changed"] is False  # must NOT rewrite the file
+
+    @pytest.mark.asyncio
+    async def test_coworker_to_data_agent_is_noop(self, app):
+        """DataAgent/CoworkerAgent are now in _AUTO_PATTERNS — no 'Unknown pattern' error,
+        and the request is a no-op because both are leaf types."""
+        from httpx import ASGITransport, AsyncClient
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.post("/_apx/setup/agent-pattern", json={"pattern": "DataAgent"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["changed"] is False  # leaf→leaf, no rewrite
+
+    @pytest.mark.asyncio
+    async def test_coworker_pattern_unknown_rejected(self, app):
+        from httpx import ASGITransport, AsyncClient
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.post("/_apx/setup/agent-pattern", json={"pattern": "MegaAgent"})
+        assert r.status_code == 400
+        assert "Unknown pattern" in r.json()["error"]
+
+    @pytest.mark.asyncio
+    async def test_coworker_to_loop_agent_falls_through(self, app, tmp_path):
+        """CoworkerAgent → LoopAgent should attempt the rewrite (not be a no-op)."""
+        from httpx import ASGITransport, AsyncClient
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.post("/_apx/setup/agent-pattern", json={"pattern": "LoopAgent"})
+        # Either succeeds with a rewrite or 400 from compile check — but NOT a silent no-op.
+        assert r.status_code in (200, 400)
+        data = r.json()
+        if r.status_code == 200:
+            assert data.get("changed") is not False or data.get("type") == "LoopAgent"

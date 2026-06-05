@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ._models import AgentContext
 from ._ui_nav import (
@@ -249,8 +252,8 @@ def _splice_tool(source: str, fn_code: str, fn_name: str, *, target: str = "agen
         existing = _agent_tool_names(result, target)
         if existing is not None and fn_name not in existing:
             result = _set_agent_tools(result, existing + [fn_name], target=target)
-    except Exception:  # noqa: BLE001 — never block the function insert on a wiring hiccup
-        pass
+    except Exception as _e:  # noqa: BLE001 — never block the function insert on a wiring hiccup
+        logger.warning("_splice_tool: failed to wire %r into %r tools=[]: %s", fn_name, target, _e)
 
     return result
 
@@ -432,8 +435,17 @@ def _remove_tool(source: str, fn_name: str) -> str:
                 result = _set_agent_tools(
                     result, [n for n in names if n != fn_name], target=node["name"]
                 )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _e:  # noqa: BLE001
+        logger.warning(
+            "_remove_tool: AST unwiring of %r failed (%s); falling back to regex removal", fn_name, _e
+        )
+        # Regex fallback: remove fn_name from any tools=[...] list to avoid
+        # a stale reference that causes NameError at agent load time.
+        # Handles: [fn_name, rest], [first, fn_name], [first, fn_name, rest]
+        esc = re.escape(fn_name)
+        result = re.sub(rf",\s*\b{esc}\b", "", result)   # trailing: first, fn_name
+        result = re.sub(rf"\b{esc}\b\s*,\s*", "", result)  # leading:  fn_name, rest
+        result = re.sub(rf"\b{esc}\b", "", result)         # sole element
 
     return result
 

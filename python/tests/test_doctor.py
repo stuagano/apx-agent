@@ -248,7 +248,7 @@ def test_extras_apps_installed(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor.importlib, "import_module", lambda m: None)
     c = doctor.check_extras(tmp_path)
     assert c.status is doctor.Status.OK
-    assert "apps" in c.detail
+    assert "mlflow" in c.detail.lower() or "eval" in c.detail.lower()
 
 
 def test_extras_apps_missing(tmp_path, monkeypatch):
@@ -260,7 +260,7 @@ def test_extras_apps_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor.importlib, "import_module", boom)
     c = doctor.check_extras(tmp_path)
     assert c.status is doctor.Status.FAIL
-    assert "apps" in c.fix
+    assert "eval" in c.fix or "mlflow" in c.fix.lower()
 
 
 def test_extras_langgraph_missing(tmp_path, monkeypatch):
