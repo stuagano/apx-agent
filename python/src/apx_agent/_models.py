@@ -156,6 +156,44 @@ class SessionBackendConfig(BaseModel):
     validate_at_boot: bool = True
 
 
+# Memory-knob helpers — shared by LlmAgent (base) and CoworkerAgent (default "persistent")
+_KNOB_TO_TYPE: dict[str, StoreType | None] = {
+    "off": None,
+    "inmemory": "inmemory",
+    "local": "inmemory",
+    "persistent": "delta",
+    "delta": "delta",
+}
+
+
+def normalize_memory_knob(
+    value: str,
+) -> "tuple[MemoryBackendConfig | None, SessionBackendConfig | None]":
+    """Map a one-word memory tier to ``(MemoryBackendConfig, SessionBackendConfig)``.
+
+    Returns ``(None, None)`` for ``"off"``.  Raises for ``"lakebase"`` (needs
+    explicit TOML blocks) and for unknown values.
+    """
+    v = (value or "").strip().lower()
+    if v == "lakebase":
+        raise ValueError(
+            "memory='lakebase' needs connection details the one-word knob can't "
+            "carry — add explicit [tool.apx.agent.memory] and "
+            "[tool.apx.agent.session] blocks with type='lakebase' "
+            "(host, database, embedding_model, embedding_dim)."
+        )
+    if v not in _KNOB_TO_TYPE:
+        raise ValueError(
+            f"memory={value!r} is not a valid tier; use one of: off, inmemory "
+            "(alias local), persistent (alias delta), or an explicit "
+            "[tool.apx.agent.memory] block for lakebase."
+        )
+    tier = _KNOB_TO_TYPE[v]
+    if tier is None:
+        return (None, None)
+    return (MemoryBackendConfig(type=tier), SessionBackendConfig(type=tier))
+
+
 class AgentConfig(BaseModel):
     """Agent configuration — loaded from [tool.apx.agent] in pyproject.toml or constructed directly."""
 

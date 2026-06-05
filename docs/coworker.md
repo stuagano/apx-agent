@@ -1,6 +1,13 @@
 # CoworkerAgent
 
-A `DataAgent` that remembers — persona + persistent memory across sessions.
+A **CoworkerAgent** is a pre-grounded data agent that remembers. It's a
+`DataAgent` subclass that adds two knobs — `persona` and `memory` — and
+nothing else. The same governed tools, the same UC identity passthrough, the
+same deploy path.
+
+---
+
+## The one-liner
 
 ```python
 from apx_agent import CoworkerAgent
@@ -8,114 +15,175 @@ from apx_agent import CoworkerAgent
 agent = CoworkerAgent(
     "main", "payroll",
     persona="a payroll operations analyst",
-    memory="persistent",  # default
+    memory="persistent",
 )
 ```
 
-That's it. One line. Every conversation the same user has with this agent is connected — facts recalled from earlier sessions, session continuity restored on reconnect.
+That's the whole definition. Two required args (`catalog`, `schema`), two
+optional knobs. Everything else — grounded instructions, SQL tool, UC
+identity passthrough — is inherited from `DataAgent`.
 
-## What it actually is
+---
 
-`CoworkerAgent` **is a** `DataAgent` subclass. It adds exactly two knobs:
+## The two knobs
 
-1. **`persona`** — a plain string woven into the grounded instructions the `DataAgent` builds from the UC schema. Tells the agent its role and voice.
-2. **`memory`** — a one-word tier knob. Defaults to `"persistent"` (UC Delta). `DataAgent` defaults to `"off"`.
+### `persona`
 
-Everything else — schema grounding, SQL tool, UC function tools, identity passthrough — is inherited from `DataAgent`. See [`data-agent.md`](data-agent.md) for those details.
+A plain string prepended to the grounded instructions. It gives the agent its
+role without replacing the schema grounding the `DataAgent` already builds.
 
-## Memory tiers
+```python
+CoworkerAgent("main", "payroll", persona="a payroll operations analyst")
+# → instructions: "You are a payroll operations analyst. You have access to
+#    the following tables in main.payroll: ..."
+```
 
-| `memory=` | Backend | Notes |
+No `PersonalityConfig` class. Just a string.
+
+### `memory`
+
+A one-word tier controlling both facts memory and session continuity:
+
+| Value | What it means | Infra required |
 |---|---|---|
-| `"off"` | none | stateless; default for plain `Agent` / `DataAgent` |
-| `"inmemory"` (alias `"local"`) | in-process dict | survives turns, not restarts; good for development |
-| `"persistent"` (alias `"delta"`) | UC Delta table | survives restarts and redeploys; default for `CoworkerAgent` |
-| lakebase | pgvector | use explicit TOML blocks — one-word knob can't carry connection details |
+| `"off"` | Stateless — no memory tools wired | None |
+| `"inmemory"` | Remembers within a single process run | None |
+| `"persistent"` | **Default.** Survives restarts via UC Delta tables | UC catalog |
+| `"delta"` | Alias for `"persistent"` | UC catalog |
+| `"lakebase"` | Raises — see below | — |
 
-`memory="persistent"` wires **two** stores at the same tier:
-- **Fact memory** — long-term key/value facts the agent remembers across any session (`remember_fact`, `recall_facts`).
-- **Session memory** — multi-turn conversation history, restored on reconnect (`save_session`, `load_session`).
+`"persistent"` is the default. A coworker that forgets on restart isn't much
+of a coworker, and UC Delta needs no extra infra beyond a Unity Catalog.
 
-Both stores are UC Delta tables, auto-created on first use. No extra infra, no extra config.
+**`memory="lakebase"` raises intentionally.** Lakebase (pgvector) needs a
+host, database, embedding model, and embedding dimensions — the one-word knob
+can't carry those. To use Lakebase, pass `memory="off"` (or omit it) and
+declare the backend explicitly in `pyproject.toml`:
 
-For lakebase (pgvector), use explicit `[tool.apx.agent.memory]` and `[tool.apx.agent.session]` blocks in `pyproject.toml` — see [`sessions-and-memory.md`](sessions-and-memory.md).
+```toml
+[tool.apx.agent.memory]
+type           = "lakebase"
+instance_name  = "my-lakebase"
+database       = "agentdb"
+embedding_model = "databricks-bge-large-en"
+embedding_dim  = 1024
+```
 
-## Scaffold
+The upgrade path is: `off → inmemory → persistent → lakebase`. Start with
+`persistent` unless you have a reason not to.
+
+---
+
+## What scaffold generates
 
 ```bash
 apx scaffold my-coworker --template coworker
-cd my-coworker && uv sync && uv run apx run
 ```
 
-Generates two files:
+Writes two files you care about:
 
-```
-my-coworker/
-├── agent.py          ← edit this
-└── pyproject.toml    ← ops envelope
-```
-
-`agent.py`:
+**`agent.py`** — the agent definition:
 ```python
 from apx_agent import CoworkerAgent
 
-agent = CoworkerAgent(
-    "main", "payroll",
-    persona="a payroll operations analyst",
-)
+agent = CoworkerAgent("main", "payroll", memory="persistent", name="my-coworker")
 ```
 
-`pyproject.toml` (key section):
+**`pyproject.toml`** — the app envelope:
 ```toml
 [tool.apx.agent]
-name = "my-coworker"
-model = "databricks-claude-sonnet-4-6"
+name        = "my-coworker"
+description = "An apx-agent on Databricks Apps."
+model       = "databricks-claude-sonnet-4-6"
+module      = "agent:agent"
 ```
 
-Point it at your schema, change the persona, run it.
+Edit `agent.py` to point at your catalog/schema and set a persona. Don't
+edit `agent_server/start_server.py` — that's framework boilerplate.
 
-## Two-system join pattern
+---
 
-The core value of `CoworkerAgent` is joining two systems of record in a single agent. The join key is a business entity; each system is authoritative for half the record.
+## The two-system join pattern
+
+A coworker's data lives in Unity Catalog, not in the agent definition. Two
+source systems land in one UC schema (via Lakeflow Connect or any ingestion),
+and the coworker is grounded over the joined landing zone. The agent reasons
+about the join; the lakehouse makes it physically possible.
+
+**The template is the outline. The data fills in the colors.**
+
+Every use case below is the same outline with a different `schema` and
+`persona`:
 
 ```python
-# Payroll: Kronos (time/attendance) × Workday (HR/pay)
-agent = CoworkerAgent("main", "payroll", persona="a payroll operations analyst")
+# Payroll — Kronos × Workday
+agent = CoworkerAgent("main", "payroll",
+    persona="a payroll operations analyst", memory="persistent")
 
-# RevOps: Salesforce (deals) × NetSuite (billing)
-agent = CoworkerAgent("main", "revops", persona="a revenue operations analyst")
+# Quote-to-Cash — Salesforce × NetSuite
+agent = CoworkerAgent("main", "revops",
+    persona="a revenue operations analyst", memory="persistent")
 
-# IT: Workday (employment status) × Okta (access/accounts)
-agent = CoworkerAgent("main", "it_compliance", persona="an IT compliance analyst")
+# Onboarding/Offboarding — Workday × Okta
+agent = CoworkerAgent("main", "identity",
+    persona="an IT onboarding and access analyst", memory="persistent")
 
-# Field service: ServiceNow (cases) × SAP (contracts/parts)
-agent = CoworkerAgent("main", "warranty", persona="a warranty entitlement agent")
+# Warranty & Entitlement — ServiceNow × SAP
+agent = CoworkerAgent("main", "service",
+    persona="a warranty and entitlement analyst", memory="persistent")
 
-# Supply chain: Oracle ERP (orders) × TMS (freight tracking)
-agent = CoworkerAgent("main", "logistics", persona="a supply chain analyst")
+# Order Status — ERP × TMS
+agent = CoworkerAgent("main", "supply_chain",
+    persona="a supply chain operations analyst", memory="persistent")
 
-# Healthcare: Epic (clinical docs) × claims clearinghouse (billing)
-agent = CoworkerAgent("main", "revenue_cycle", persona="a revenue cycle analyst")
+# Claims Integrity — Epic × clearinghouse
+agent = CoworkerAgent("main", "claims",
+    persona="a claims integrity analyst", memory="persistent")
 ```
 
-Same one-liner in every case. The UC schema holds the landed tables; the persona describes the role. See [`coworker-use-cases.md`](coworker-use-cases.md) for full use case detail.
+One template, six coworkers. A new use case is a new landed schema and a
+persona string — no new code.
+
+---
+
+## The join key pattern
+
+Each use case above has the same structure:
+
+| | |
+|---|---|
+| **System A** | Owns half the truth (time worked, deal terms, HR status, …) |
+| **System B** | Owns the other half (payroll, invoices, access, …) |
+| **Join key** | The business entity that links them (employee ID, opportunity ID, asset serial, …) |
+| **The question** | Something neither system can answer alone |
+
+The agent's value is surfacing mismatches: the paycheck that doesn't match
+the hours, the terminated employee who still has access, the claim denied
+despite documented care. Mismatches quantify directly in dollars — the
+business case writes itself.
+
+Memory compounds this: the coworker learns account-specific mapping quirks
+(this customer's PO format, this carrier's reference codes) so the join gets
+cheaper every turn.
+
+---
 
 ## CoworkerAgent vs CoworkerTemplate
 
-| | `CoworkerAgent` | `CoworkerTemplate` |
-|---|---|---|
-| What it is | A Python class (DataAgent subclass) | `@template` registry entry |
-| How you use it | `agent.py` one-liner | `pyproject.toml` `template = "coworker"` block |
-| User-facing today | **Yes** — this is the primary surface | Future — config-only path not yet served |
-| Needs `agent.py` | Yes | No (once served) |
+`CoworkerAgent` is the runtime agent — the Python object that answers
+questions. You instantiate it directly in `agent.py`.
 
-Today every coworker is a Python one-liner in `agent.py`. The `CoworkerTemplate` machinery is for a future config-only path where the entire coworker is declared in `pyproject.toml`. Use `CoworkerAgent` directly.
+`CoworkerTemplate` is the factory registration — it's what `apx scaffold
+--template coworker` resolves, and what would let the framework build a
+coworker from TOML alone without any Python. Today every coworker is a
+Python one-liner; the template machinery is the seam for future config-only
+builds.
+
+---
 
 ## Further reading
 
-| Goal | Doc |
-|---|---|
-| Schema grounding, SQL tool, identity passthrough | [`data-agent.md`](data-agent.md) |
-| Memory/session TOML reference (lakebase, Delta options) | [`sessions-and-memory.md`](sessions-and-memory.md) |
-| Use cases — the two-system join catalog | [`coworker-use-cases.md`](coworker-use-cases.md) |
-| pyproject.toml envelope | [`pyproject-toml.md`](pyproject-toml.md) |
+- [`docs/configuration.md`](configuration.md) — full `[tool.apx.agent.memory]` and `[tool.apx.agent.session]` field reference
+- [`docs/sessions-and-memory.md`](sessions-and-memory.md) — how memory and session stores work under the hood
+- [`docs/coworker-use-cases.md`](coworker-use-cases.md) — the five two-system join use cases in detail
+- [`python/src/apx_agent/coworker.py`](../python/src/apx_agent/coworker.py) — the implementation (it's short)

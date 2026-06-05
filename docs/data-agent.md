@@ -1,6 +1,13 @@
 # DataAgent
 
-A governed agent over a Unity Catalog schema. One line to create; automatically discovers tables, columns, and UC functions; runs SQL as the calling user.
+A **DataAgent** is an `LlmAgent` wired to a Unity Catalog schema in one line.
+It discovers the tables, grounds its instructions in the real columns, wires a
+SQL tool that runs as the calling user (UC grants enforced per-request), and
+optionally wires UC functions, Genie, and Vector Search from the same schema.
+
+---
+
+## The one-liner
 
 ```python
 from apx_agent import DataAgent
@@ -8,92 +15,95 @@ from apx_agent import DataAgent
 agent = DataAgent("main", "sales")
 ```
 
-Pass `ws=WorkspaceClient()` to ground it in the real schema at startup:
+That's a working agent. Two required args — catalog and schema — and
+everything else has a sensible default.
+
+---
+
+## All arguments
 
 ```python
-from databricks.sdk import WorkspaceClient
-agent = DataAgent("main", "sales", ws=WorkspaceClient())
-```
-
-## Constructor args
-
-| Arg | Type | Default | What it does |
-|---|---|---|---|
-| `catalog` | `str` | required | UC catalog |
-| `schema` | `str` | required | UC schema |
-| `warehouse_id` | `str \| None` | `None` | SQL warehouse; falls back to env `WAREHOUSE_ID` |
-| `ws` | `WorkspaceClient \| None` | `None` | Live workspace for schema introspection |
-| `include_functions` | `bool` | `True` | Pull UC functions in `catalog.schema` as tools |
-| `genie_space` | `str \| None` | `None` | Add a Genie space as a tool |
-| `vector_index` | `str \| None` | `None` | Add a Vector Search index as a tool |
-| `instructions` | `str \| None` | `None` | Override the auto-generated system prompt |
-| `persona` | `str \| None` | `None` | Role phrase woven into the grounded instructions |
-| `tables` | `dict \| None` | `None` | Explicit table metadata (skips live introspection) |
-| `extra_tools` | `list \| None` | `None` | Additional `@tool` functions to register |
-| `memory` | `str` | `"off"` | Memory tier — see below |
-| `name` | `str \| None` | `"{schema}_data_agent"` | Agent name for traces |
-| `**kwargs` | | | Passed to `LlmAgent` (temperature, max_tokens, etc.) |
-
-## Schema grounding resolution order
-
-At construction, `DataAgent` resolves the schema description used to generate instructions and configure the SQL tool:
-
-1. **Explicit `tables=`** — caller-supplied metadata wins.
-2. **Live introspection via `ws=`** — `SHOW TABLES` + column inspection if `ws` is provided.
-3. **Baked `.apx/schema.json`** — written by `apx scaffold`; no live call needed at startup.
-4. **Ungrounded fallback** — instructions omit table details; agent can still run SQL but won't name tables.
-
-Scaffolded projects include `.apx/schema.json` so the agent starts grounded even with `ws=None`. Pass `ws=WorkspaceClient()` to pick up schema changes without re-scaffolding.
-
-## Memory knob
-
-Any agent — `DataAgent`, plain `Agent`, or `CoworkerAgent` — can remember across sessions using the `memory=` knob. It's a base-class feature on `LlmAgent`.
-
-| `memory=` | Backend | Default for |
-|---|---|---|
-| `"off"` | none | `DataAgent`, `Agent` |
-| `"inmemory"` | in-process | dev/testing |
-| `"persistent"` / `"delta"` | UC Delta | `CoworkerAgent` |
-
-```python
-# DataAgent that also remembers
-agent = DataAgent("main", "sales", memory="persistent")
-```
-
-For lakebase (pgvector), use explicit `[tool.apx.agent.memory]` TOML blocks.
-
-## Identity passthrough
-
-SQL runs as the **calling user**, not a service principal. Each request carries an OBO (on-behalf-of) token from the Databricks App's OAuth proxy. UC grants are enforced per-request — if the user can't `SELECT` a table, the agent can't either.
-
-This is automatic. No configuration needed.
-
-## Extending
-
-`DataAgent` is a `LlmAgent`. You can add extra tools, compose it into a `SequentialAgent`, or subclass it:
-
-```python
-from apx_agent import DataAgent, tool
-
-@tool
-def send_alert(message: str) -> str:
-    """Send an ops alert to Slack."""
-    ...
-
 agent = DataAgent(
-    "main", "ops",
-    extra_tools=[send_alert],
-    persona="an ops engineer",
+    "main",               # catalog
+    "sales",              # schema
+    warehouse_id="abc",   # SQL warehouse; auto-discovered if omitted
+    ws=WorkspaceClient(), # introspects schema at construction; optional
+    persona="a sales analyst",   # role string woven into grounded instructions
+    genie_space="abc123", # adds a genie_tool; optional
+    vector_index="main.sales.embeddings",  # adds vector_search_tool; optional
+    include_functions=True,  # wire UC functions from catalog.schema (needs ws)
+    tables={"orders": ["id(bigint)", "amount(decimal)"]},  # pre-baked schema
+    instructions="...",   # override the auto-generated grounding entirely
+    name="sales-agent",   # defaults to "{schema}_data_agent"
+    extra_tools=[my_tool],  # append additional tools
 )
 ```
 
-For an agent that also remembers, use `CoworkerAgent` — see [`coworker.md`](coworker.md).
+### How schema grounding resolves
+
+The agent grounds its instructions in the actual table columns. Resolution
+order (first match wins):
+
+1. **`tables=`** explicit override — use this in tests or when you have the
+   schema from another source
+2. **`ws=` live introspection** — discovers tables and columns from the
+   workspace at construction time
+3. **`.apx/schema.json`** — the baked schema manifest written by `apx scaffold`
+   (same catalog+schema); survives deploy without a `ws` arg
+4. **Ungrounded fallback** — generic data-assistant instructions; still
+   functional, just not schema-aware
+
+For most production deployments (Databricks Apps), use the baked manifest
+path: `apx scaffold` writes `.apx/schema.json`, the framework loads it at
+startup, no `ws` needed at construction.
+
+### Identity passthrough
+
+The SQL tool runs queries as the **calling user**, not the app's service
+principal. Their UC grants apply at query time. The agent can't touch what
+they can't touch. No auth code at the tool level — the framework handles it.
+
+---
+
+## Extending a DataAgent
+
+Add tools on top of the base schema wiring:
+
+```python
+from apx_agent import DataAgent, uc_function_tool
+
+agent = DataAgent(
+    "main", "sales",
+    genie_space="abc123",       # Genie for natural-language data queries
+    vector_index="main.sales.product_docs",  # semantic search
+    extra_tools=[uc_function_tool("main.tools.send_alert")],
+)
+```
+
+Or compose it as a sub-agent inside a router:
+
+```python
+from apx_agent import RouterAgent, DataAgent
+
+agent = RouterAgent(sub_agents=[
+    DataAgent("main", "sales",   name="sales"),
+    DataAgent("main", "support", name="support"),
+])
+```
+
+---
+
+## CoworkerAgent
+
+`CoworkerAgent` is a `DataAgent` subclass that adds `persona` and `memory`.
+If you want the agent to remember across sessions, use `CoworkerAgent` — see
+[`docs/coworker.md`](coworker.md).
+
+---
 
 ## Further reading
 
-| Goal | Doc |
-|---|---|
-| Agent with memory | [`coworker.md`](coworker.md) |
-| Memory/session backends | [`sessions-and-memory.md`](sessions-and-memory.md) |
-| UC function tools | [`governed-primitives.md`](governed-primitives.md) |
-| pyproject.toml envelope | [`pyproject-toml.md`](pyproject-toml.md) |
+- [`docs/coworker.md`](coworker.md) — `DataAgent + persona + memory`
+- [`docs/configuration.md`](configuration.md) — full `[tool.apx.agent]` TOML reference
+- [`docs/governed-primitives.md`](governed-primitives.md) — `sql_tool`, `genie_tool`, `vector_search_tool`, `uc_function_tool`
+- [`python/src/apx_agent/data_agent.py`](../python/src/apx_agent/data_agent.py) — the implementation

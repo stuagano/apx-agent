@@ -18,9 +18,12 @@ from ._models import (
     BeforeModelHook,
     BeforeToolHook,
     InputGuardrailFn,
+    MemoryBackendConfig,
     Message,
     OutputGuardrailFn,
+    SessionBackendConfig,
     _ToolFn,
+    normalize_memory_knob,
 )
 from ._inspection import (
     _inspect_tool_fn,
@@ -105,6 +108,7 @@ class LlmAgent(BaseAgent):
         output_guardrails: list[OutputGuardrailFn] | None = None,
         context_window_tokens: int | None = None,
         name: str | None = None,
+        memory: str = "off",
     ) -> None:
         self._tool_fns = tools
         self._sub_agent_urls = sub_agents or []
@@ -120,6 +124,9 @@ class LlmAgent(BaseAgent):
         self._input_guardrails = input_guardrails or []
         self._output_guardrails = output_guardrails or []
         self._context_window_tokens = context_window_tokens
+        self.memory_config: MemoryBackendConfig | None
+        self.session_config: SessionBackendConfig | None
+        self.memory_config, self.session_config = normalize_memory_knob(memory)
 
         # Pre-analyze all functions at construction time
         self._analyzed: list[tuple[_ToolFn, dict[str, Any], list[str], type[BaseModel] | None]] = []
