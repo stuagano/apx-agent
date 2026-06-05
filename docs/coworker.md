@@ -1,9 +1,9 @@
 # CoworkerAgent
 
-A **CoworkerAgent** is a pre-grounded data agent that remembers. It's a
-`DataAgent` subclass that adds two knobs — `persona` and `memory` — and
-nothing else. The same governed tools, the same UC identity passthrough, the
-same deploy path.
+A **CoworkerAgent** joins two disparate source systems landed in a Unity
+Catalog schema. It's a `DataAgent` subclass that adds three coworker-specific
+knobs — `persona`, `join_key`, and `objective` — and nothing else. The same
+governed tools, the same UC identity passthrough, the same deploy path.
 
 ---
 
@@ -15,30 +15,67 @@ from apx_agent import CoworkerAgent
 agent = CoworkerAgent(
     "main", "payroll",
     persona="a payroll operations analyst",
+    join_key="employee ID",
+    objective="surface mismatches between hours worked and paychecks issued",
     memory="persistent",
 )
 ```
 
-That's the whole definition. Two required args (`catalog`, `schema`), two
-optional knobs. Everything else — grounded instructions, SQL tool, UC
-identity passthrough — is inherited from `DataAgent`.
+That's the whole definition. Two required args (`catalog`, `schema`), three
+identity knobs, one memory knob. Everything else — grounded instructions, SQL
+tool, UC identity passthrough — is inherited from `DataAgent`.
 
 ---
 
-## The two knobs
+## The three identity knobs
 
 ### `persona`
 
-A plain string prepended to the grounded instructions. It gives the agent its
-role without replacing the schema grounding the `DataAgent` already builds.
+A plain string that gives the agent its role identity. Woven into the
+schema-grounded instructions the `DataAgent` already builds.
 
 ```python
 CoworkerAgent("main", "payroll", persona="a payroll operations analyst")
-# → instructions: "You are a payroll operations analyst. You have access to
+# → "You are a payroll operations analyst. You have access to
 #    the following tables in main.payroll: ..."
 ```
 
 No `PersonalityConfig` class. Just a string.
+
+### `join_key`
+
+The business entity that links the two source systems in the schema.
+It tells the agent which field to join on when querying across tables.
+
+```python
+CoworkerAgent("main", "payroll", join_key="employee ID")
+```
+
+| | |
+|---|---|
+| `"employee ID"` | Payroll — Kronos × Workday |
+| `"opportunity ID"` | Quote-to-Cash — Salesforce × NetSuite |
+| `"asset serial number"` | Warranty — ServiceNow × SAP |
+| `"patient encounter ID"` | Claims — Epic × clearinghouse |
+| `"PO / shipment number"` | Order Status — Oracle ERP × TMS |
+
+### `objective`
+
+A plain string that defines *the question only the join answers* — the thing
+neither source system can answer alone. When both `persona` and `objective`
+are given, the lead becomes `"You are {persona} designed to {objective}."`:
+
+```python
+CoworkerAgent(
+    "main", "payroll",
+    persona="a payroll operations analyst",
+    join_key="employee ID",
+    objective="surface mismatches between hours worked and paychecks issued",
+)
+# → "You are a payroll operations analyst designed to surface mismatches
+#    between hours worked and paychecks issued. The two source systems
+#    are linked on employee ID. You have access to ..."
+```
 
 ### `memory`
 
@@ -86,7 +123,13 @@ Writes two files you care about:
 ```python
 from apx_agent import CoworkerAgent
 
-agent = CoworkerAgent("main", "payroll", memory="persistent", name="my-coworker")
+agent = CoworkerAgent(
+    "main", "payroll",
+    persona="a payroll operations analyst",
+    objective="surface mismatches between hours worked and paychecks issued",
+    # memory="persistent",  # uncomment to remember facts across sessions
+    name="my-coworker",
+)
 ```
 
 **`pyproject.toml`** — the app envelope:
@@ -118,27 +161,39 @@ Every use case below is the same outline with a different `schema` and
 ```python
 # Payroll — Kronos × Workday
 agent = CoworkerAgent("main", "payroll",
-    persona="a payroll operations analyst", memory="persistent")
+    persona="a payroll operations analyst",
+    objective="surface mismatches between hours worked and paychecks issued",
+    memory="persistent")
 
 # Quote-to-Cash — Salesforce × NetSuite
 agent = CoworkerAgent("main", "revops",
-    persona="a revenue operations analyst", memory="persistent")
+    persona="a revenue operations analyst",
+    objective="identify revenue leakage between closed deals and invoiced amounts",
+    memory="persistent")
 
 # Onboarding/Offboarding — Workday × Okta
 agent = CoworkerAgent("main", "identity",
-    persona="an IT onboarding and access analyst", memory="persistent")
+    persona="an IT onboarding and access analyst",
+    objective="flag new hires without access and terminated employees still provisioned",
+    memory="persistent")
 
 # Warranty & Entitlement — ServiceNow × SAP
 agent = CoworkerAgent("main", "service",
-    persona="a warranty and entitlement analyst", memory="persistent")
+    persona="a warranty and entitlement analyst",
+    objective="determine repair coverage and parts availability from contract and inventory data",
+    memory="persistent")
 
 # Order Status — ERP × TMS
 agent = CoworkerAgent("main", "supply_chain",
-    persona="a supply chain operations analyst", memory="persistent")
+    persona="a supply chain operations analyst",
+    objective="reconcile order status, dock dates, and carrier invoices across ERP and TMS",
+    memory="persistent")
 
 # Claims Integrity — Epic × clearinghouse
 agent = CoworkerAgent("main", "claims",
-    persona="a claims integrity analyst", memory="persistent")
+    persona="a claims integrity analyst",
+    objective="explain claim denials and verify supporting documentation in the chart",
+    memory="persistent")
 ```
 
 One template, six coworkers. A new use case is a new landed schema and a

@@ -142,8 +142,9 @@ def build_instructions_from_schema(
     known, the agent is told to discover the schema with the SQL tool first.
 
     ``persona`` sets the agent's role ("a payroll analyst").
-    ``objective`` sets its mission ("process payroll and answer compensation questions").
-    When both are given the lead is: "You are {persona} designed to {objective}."
+    ``objective`` sets its mission ("surface mismatches between hours worked and paychecks issued").
+    When both persona and objective are given the lead is:
+    "You are {persona} designed to {objective}."
     """
     if persona and objective:
         lead = f"You are {persona} designed to {objective}. "

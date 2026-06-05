@@ -698,16 +698,13 @@ agent = LlmAgent(
 
 
 _SCAFFOLD_APPS_AGENT_COWORKER = '''\
-"""<APP_NAME> — a coworker: DataAgent + persona + objective."""
 from __future__ import annotations
 
-from apx_agent import DataAgent
+from apx_agent import CoworkerAgent
 
 <EXAMPLE_TOOL>
-# A coworker is a DataAgent with a persona (who it is) and an objective
-# (what it is designed to do). At runtime the lead becomes:
-#   "You are {persona} designed to {objective}."
-agent = DataAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS><PERSONA_ARG><OBJECTIVE_ARG>, name="<APP_NAME>")
+# Add memory="persistent" to remember facts and context across sessions.
+agent = CoworkerAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS><PERSONA_ARG><JOIN_KEY_ARG><OBJECTIVE_ARG>, name="<APP_NAME>")
 '''
 
 
@@ -1128,11 +1125,11 @@ def _scaffold_wizard(
     template: "str | None",
     catalog: "str | None",
     schema: "str | None",
-) -> "tuple[str, str, str | None, str | None, str | None, str | None]":
+) -> "tuple[str, str, str | None, str | None, str | None, str | None, str | None]":
     """Directive first-time setup wizard.
 
     Asks one question at a time, only for values not already pinned by a
-    flag. Returns ``(target, template, catalog, schema, persona, objective)``.
+    flag. Returns ``(target, template, catalog, schema, persona, objective, join_key)``.
     """
     # --- deployment target ---
     if target is None:
@@ -1146,21 +1143,23 @@ def _scaffold_wizard(
     if template is None:
         if target == "apps":
             click.echo("\nAgent type:")
-            click.echo("  1. Base agent  ← plain LlmAgent, you bring the tools")
-            click.echo("  2. DataAgent   — pre-grounded in your UC data, SQL tools included")
-            click.echo("  3. Coworker    — DataAgent + persona + objective")
+            click.echo("  1. Base       — plain agent, you bring the tools")
+            click.echo("  2. Data       — grounded in your UC schema, SQL tools included")
+            click.echo("  3. Coworker   — joins two source systems; persona + join key + objective")
             idx = click.prompt("Template", type=click.IntRange(1, 3), default=2)
             template = {1: "base", 2: "data", 3: "coworker"}[idx]
         else:
             template = "data"
 
-    # --- catalog / schema / persona / objective (not needed for base) ---
+    # --- catalog / schema / persona / objective / join_key (not needed for base) ---
     if template in ("data", "coworker"):
-        catalog, schema, persona, objective = _interactive_resolve(ws, catalog, schema, None, None, template)
+        catalog, schema, persona, objective, join_key = _interactive_resolve(
+            ws, catalog, schema, None, None, None, template
+        )
     else:
-        persona = objective = None
+        persona = objective = join_key = None
 
-    return target, template, catalog, schema, persona, objective
+    return target, template, catalog, schema, persona, objective, join_key
 
 
 def _interactive_resolve(
@@ -1169,13 +1168,14 @@ def _interactive_resolve(
     schema: "str | None",
     persona: "str | None",
     objective: "str | None",
+    join_key: "str | None",
     template: str,
-) -> "tuple[str | None, str | None, str | None, str | None]":
-    """Prompt for any missing catalog/schema/persona/objective.
+) -> "tuple[str | None, str | None, str | None, str | None, str | None]":
+    """Prompt for any missing catalog/schema/persona/objective/join_key.
 
     Already-provided values pass through unchanged. Falls back to free-text
     prompts when ws is None or the listing is empty. Returns
-    ``(catalog, schema, persona, objective)``.
+    ``(catalog, schema, persona, objective, join_key)``.
     """
     if catalog is None:
         cat_list = _ws_list_catalogs(ws, limit=20) if ws is not None else []
@@ -1208,26 +1208,36 @@ def _interactive_resolve(
     if template == "coworker":
         if persona is None:
             raw = click.prompt(
-                "Persona — the agent's role\n"
-                "  e.g. 'a fraud detection analyst', 'a payroll specialist'\n"
+                "Persona — who is this agent?\n"
+                "  e.g. 'a payroll operations analyst', 'a fraud detection analyst'\n"
                 "  Leave blank to skip",
                 default="",
                 show_default=False,
             )
             persona = raw.strip() or None
 
+        if join_key is None:
+            raw = click.prompt(
+                "Join key — the business entity linking the two source systems\n"
+                "  e.g. 'employee ID', 'opportunity ID', 'asset serial number'\n"
+                "  Leave blank to skip",
+                default="",
+                show_default=False,
+            )
+            join_key = raw.strip() or None
+
         if objective is None:
             raw = click.prompt(
-                "Objective — what this agent is designed to do\n"
-                "  e.g. 'detect fraudulent transactions and flag anomalies'\n"
-                "       'process payroll and answer compensation questions'\n"
+                "Objective — what is this agent designed to do?\n"
+                "  e.g. 'surface mismatches between hours worked and paychecks issued'\n"
+                "       'detect fraudulent transactions and flag anomalies'\n"
                 "  Leave blank to skip",
                 default="",
                 show_default=False,
             )
             objective = raw.strip() or None
 
-    return catalog, schema, persona, objective
+    return catalog, schema, persona, objective, join_key
 
 
 def _scaffold_model_serving(
@@ -1326,6 +1336,7 @@ def _scaffold_apps(
     target: Path, name: str, force: bool, catalog: str, schema: str,
     table: str | None = None, template: str = "data",
     persona: str | None = None, objective: str | None = None,
+    join_key: str | None = None,
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
@@ -1368,6 +1379,7 @@ def _scaffold_apps(
 
     persona_arg = f", persona={repr(persona)}" if persona else ""
     objective_arg = f", objective={repr(objective)}" if objective else ""
+    join_key_arg = f", join_key={repr(join_key)}" if join_key else ""
 
     def _sub(template: str) -> str:
         return (
@@ -1378,6 +1390,7 @@ def _scaffold_apps(
             .replace("<EXTRA_TOOLS>", extra_tools)
             .replace("<PERSONA_ARG>", persona_arg)
             .replace("<OBJECTIVE_ARG>", objective_arg)
+            .replace("<JOIN_KEY_ARG>", join_key_arg)
             .replace("<APX_AGENT_DEP>", apx_dep)
             .replace("<APX_AGENT_SOURCE>", apx_source)
         )
@@ -1529,8 +1542,9 @@ def scaffold(
     objective: str | None = None
     interactive_mode = interactive if interactive is not None else sys.stdin.isatty()
 
+    join_key: str | None = None
     if interactive_mode:
-        scaffold_target, scaffold_template, catalog, schema, persona, objective = _scaffold_wizard(
+        scaffold_target, scaffold_template, catalog, schema, persona, objective, join_key = _scaffold_wizard(
             ws=_make_ws_for_scaffold(profile),
             target=scaffold_target,
             template=scaffold_template,
@@ -1582,6 +1596,7 @@ def scaffold(
         _scaffold_apps(
             target, project_name, force, catalog, schema, table,
             template=scaffold_template, persona=persona, objective=objective,
+            join_key=join_key,
         )
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)
