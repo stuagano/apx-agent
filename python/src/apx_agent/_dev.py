@@ -2048,7 +2048,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if pattern in _SNIPPET_PATTERNS:
             return JSONResponse({"ok": True, "snippet": _SNIPPET_PATTERNS[pattern]})
 
-        _AUTO_PATTERNS = {"Agent", "LlmAgent", "LoopAgent"}
+        # Leaf agent types that can be switched between each other without
+        # touching positional args (they all use the same (name, ...) signature).
+        _LEAF_AGENT_TYPES = {"Agent", "LlmAgent", "DataAgent", "CoworkerAgent"}
+        _AUTO_PATTERNS = _LEAF_AGENT_TYPES | {"LoopAgent"}
         if pattern not in _AUTO_PATTERNS:
             return JSONResponse({"ok": False, "error": f"Unknown pattern: {pattern}"}, status_code=400)
 
@@ -2065,7 +2068,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"ok": False, "error": "No 'agent' variable in agent.py"}, status_code=400)
 
         current_type = agent_node["wrapper"] or "Agent"
-        if current_type == pattern or (pattern in ("Agent", "LlmAgent") and current_type in ("Agent", "LlmAgent")):
+        # Leaf→leaf switch is a no-op: DataAgent/CoworkerAgent carry extra positional
+        # args (catalog, schema) that _set_agent_wrapper would corrupt by blindly
+        # renaming the class. Edit agent.py directly to change between leaf types.
+        if current_type == pattern or (pattern in _LEAF_AGENT_TYPES and current_type in _LEAF_AGENT_TYPES):
             return JSONResponse({"ok": True, "type": current_type, "changed": False})
 
         # Can't collapse a multi-agent composition back to a single agent here —

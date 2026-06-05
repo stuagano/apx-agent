@@ -28,16 +28,18 @@ async def _check_workspace_auth() -> dict[str, Any]:
     try:
         from databricks.sdk import WorkspaceClient
 
-        def _init() -> str:
+        def _init() -> tuple[str, str]:
             ws = WorkspaceClient()
             host = ws.config.host or "?"
-            return host
+            me = ws.current_user.me()
+            user = getattr(me, "user_name", None) or getattr(me, "userName", "")
+            return host, user
 
-        host = await asyncio.wait_for(asyncio.to_thread(_init), timeout=_CHECK_TIMEOUT_S)
+        host, user = await asyncio.wait_for(asyncio.to_thread(_init), timeout=_CHECK_TIMEOUT_S)
         return {
             "name": "workspace_auth",
             "status": "ok",
-            "message": f"Authenticated against {host}",
+            "message": f"{user} @ {host}" if user else f"Authenticated against {host}",
             "hint": "",
         }
     except asyncio.TimeoutError:
@@ -409,8 +411,14 @@ async def _check_resources(ctx: AgentContext | None) -> dict[str, Any]:
                 if spec.kind in _verifiable and key not in seen:
                     seen.add(key)
                     specs.append(key)
-    except Exception:
-        pass
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("_check_resources: tool scan failed: %s", _e)
+        return {
+            "name": "resources",
+            "status": "warn",
+            "message": f"Could not scan tools for governed resources: {_e}",
+            "hint": "Check that agent.py imports cleanly.",
+        }
 
     if not specs:
         return {
