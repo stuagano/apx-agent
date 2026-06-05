@@ -83,14 +83,14 @@ A one-word tier controlling both facts memory and session continuity:
 
 | Value | What it means | Infra required |
 |---|---|---|
-| `"off"` | Stateless — no memory tools wired | None |
+| `"off"` | **Default.** Stateless — no memory tools wired | None |
 | `"inmemory"` | Remembers within a single process run | None |
-| `"persistent"` | **Default.** Survives restarts via UC Delta tables | UC catalog |
+| `"persistent"` | Survives restarts via UC Delta tables | UC catalog |
 | `"delta"` | Alias for `"persistent"` | UC catalog |
 | `"lakebase"` | Raises — see below | — |
 
-`"persistent"` is the default. A coworker that forgets on restart isn't much
-of a coworker, and UC Delta needs no extra infra beyond a Unity Catalog.
+`"off"` is the default. Uncomment `memory="persistent"` to opt in — it
+survives restarts using UC Delta tables, no extra infra beyond Unity Catalog.
 
 **`memory="lakebase"` raises intentionally.** Lakebase (pgvector) needs a
 host, database, embedding model, and embedding dimensions — the one-word knob
@@ -107,7 +107,8 @@ embedding_dim  = 1024
 ```
 
 The upgrade path is: `off → inmemory → persistent → lakebase`. Start with
-`persistent` unless you have a reason not to.
+`off` (the default) and add `memory="persistent"` when you want facts to
+survive restarts.
 
 ---
 

@@ -95,15 +95,16 @@ agent = RouterAgent(sub_agents=[
 
 ## CoworkerAgent
 
-`CoworkerAgent` is a `DataAgent` subclass that adds `persona` and `memory`.
-If you want the agent to remember across sessions, use `CoworkerAgent` — see
+`CoworkerAgent` is a `DataAgent` subclass that adds `persona`, `join_key`,
+and `objective` — the three identity knobs for a two-system join — plus a
+`memory` knob for persistence across sessions. See
 [`docs/coworker.md`](coworker.md).
 
 ---
 
 ## Further reading
 
-- [`docs/coworker.md`](coworker.md) — `DataAgent + persona + memory`
+- [`docs/coworker.md`](coworker.md) — `DataAgent + persona + join_key + objective + memory`
 - [`docs/configuration.md`](configuration.md) — full `[tool.apx.agent]` TOML reference
 - [`docs/governed-primitives.md`](governed-primitives.md) — `sql_tool`, `genie_tool`, `vector_search_tool`, `uc_function_tool`
 - [`python/src/apx_agent/data_agent.py`](../python/src/apx_agent/data_agent.py) — the implementation
