@@ -3463,9 +3463,8 @@ class TestScaffoldCoworker:
                            catalog="samples", schema="tpch", table="customer",
                            template="coworker")
         agent_py = (tmp_path / "agent.py").read_text()
-        assert "DataAgent(" in agent_py           # coworker IS a DataAgent
-        assert "persona} designed to {objective}" in agent_py  # composition comment
-        assert "CoworkerAgent(" not in agent_py
+        assert "CoworkerAgent(" in agent_py
+        assert "DataAgent(" not in agent_py       # the alias name carries the intent
 
     def test_apps_default_is_data_agent(self, tmp_path, monkeypatch):
         from apx_agent import cli

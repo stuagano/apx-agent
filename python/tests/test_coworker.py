@@ -58,6 +58,27 @@ class TestCoworkerAgent:
         cw = CoworkerAgent("samples", "tpch", tables={"t": ["a(int)"]})
         assert cw.memory_config is None
 
+    def test_join_key_woven_into_instructions(self):
+        from apx_agent.coworker import CoworkerAgent
+        cw = CoworkerAgent(
+            "main", "payroll",
+            persona="a payroll analyst",
+            join_key="employee ID",
+            objective="surface mismatches between hours worked and paychecks issued",
+            tables={"timesheet": ["emp_id(bigint)", "hours(float)"]},
+        )
+        assert "employee ID" in cw._instructions
+        assert "You are a payroll analyst designed to" in cw._instructions
+
+    def test_join_key_without_objective(self):
+        from apx_agent.coworker import CoworkerAgent
+        cw = CoworkerAgent(
+            "main", "payroll",
+            join_key="employee ID",
+            tables={"timesheet": ["emp_id(bigint)"]},
+        )
+        assert "employee ID" in cw._instructions
+
 
 class TestCoworkerTemplate:
     def test_registered_and_builds_coworker_agent(self):

@@ -121,9 +121,9 @@ class DataAgent(LlmAgent):
         instructions: Override the schema-generated grounding instructions.
         persona: Optional role phrase ("a payroll analyst"). Woven into
             schema-generated instructions. Ignored when ``instructions`` is given.
-        objective: Optional mission phrase ("process payroll and answer
-            compensation questions"). When both persona and objective are given,
-            the lead becomes "You are {persona} designed to {objective}."
+        objective: Optional mission phrase ("surface mismatches between hours
+            worked and paychecks issued"). When both persona and objective are
+            given, the lead becomes "You are {persona} designed to {objective}."
         tables: Pre-baked schema as ``{table: ["col(type)", ...]}`` (e.g. the
             ``.apx/schema.json`` manifest). Grounds the agent without a live
             workspace call. When omitted, falls back to live introspection

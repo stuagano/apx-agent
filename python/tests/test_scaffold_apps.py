@@ -344,8 +344,8 @@ def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None
             "--template", "coworker",
             "--interactive",
         ],
-        # catalog → "main", schema → "sales", persona → role text, objective → blank
-        input="main\nsales\na sales analyst who knows revenue data deeply\n\n",
+        # catalog → "main", schema → "sales", persona → role text, join_key → blank, objective → blank
+        input="main\nsales\na sales analyst who knows revenue data deeply\n\n\n",
         catch_exceptions=False,
         env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
     )
@@ -356,7 +356,7 @@ def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None
 
 
 def test_scaffold_coworker_with_persona_and_objective(tmp_path: Path) -> None:
-    """Interactive coworker scaffold bakes both persona and objective into agent.py."""
+    """Interactive coworker scaffold bakes persona, join_key, and objective into agent.py."""
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -367,20 +367,23 @@ def test_scaffold_coworker_with_persona_and_objective(tmp_path: Path) -> None:
             "--template", "coworker",
             "--interactive",
         ],
-        input="main\nfraud\na fraud detection analyst\ndetect fraudulent transactions and flag anomalies\n",
+        # catalog, schema, persona, join_key, objective
+        input="main\nfraud\na fraud detection analyst\ntransaction ID\ndetect fraudulent transactions and flag anomalies\n",
         catch_exceptions=False,
         env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
     )
     assert result.exit_code == 0, result.output
     agent_src = (tmp_path / "fraud_agent" / "agent.py").read_text()
     assert "a fraud detection analyst" in agent_src
+    assert "transaction ID" in agent_src
     assert "detect fraudulent transactions and flag anomalies" in agent_src
     assert "persona=" in agent_src
+    assert "join_key=" in agent_src
     assert "objective=" in agent_src
 
 
 def test_scaffold_coworker_without_persona_omits_kwarg(tmp_path: Path) -> None:
-    """When no persona/objective given, the DataAgent call omits those kwargs."""
+    """When no persona/objective given, the CoworkerAgent call omits those kwargs."""
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -418,8 +421,8 @@ def test_scaffold_interactive_prompts_for_catalog_schema_persona(tmp_path: Path)
             "--template", "coworker",
             "--interactive",
         ],
-        # catalog, schema, persona, objective (blank = skip)
-        input="main\nsales\npayroll analyst\n\n",
+        # catalog, schema, persona, join_key (blank), objective (blank)
+        input="main\nsales\npayroll analyst\n\n\n",
         catch_exceptions=False,
         env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
     )
