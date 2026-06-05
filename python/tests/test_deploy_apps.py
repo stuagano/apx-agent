@@ -511,33 +511,31 @@ def test_no_readyz_gate_skips_check(
 def test_missing_responses_agent_module_surfaces_friendly_error(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If the apps extra isn't installed, --target apps fails with a clear msg.
+    """If mlflow.genai isn't installed, --target apps fails with a clear msg.
 
-    Simulates the ImportError by stubbing ``_responses_agent`` in sys.modules
-    with a sentinel that re-raises on attribute access. The CLI's
-    ``from apx_agent._responses_agent import compile_to_responses_agent``
-    line then surfaces the friendly "install apx-agent[apps]" message.
+    Simulates the ImportError by intercepting the import of
+    ``mlflow.genai.agent_server``, which is the actual runtime dep that
+    ``_validate_responses_agent_compiler`` probes.
     """
     import builtins
 
-    # Wipe the cached stub so the import goes through the import system.
-    monkeypatch.delitem(sys.modules, "apx_agent._responses_agent", raising=False)
     real_import = builtins.__import__
 
     def fake_import(name: str, globals=None, locals=None, fromlist=(), level=0):  # type: ignore[no-untyped-def]
-        if name == "apx_agent._responses_agent" or (
-            name == "apx_agent" and "_responses_agent" in (fromlist or ())
+        if name == "mlflow.genai.agent_server" or (
+            name == "mlflow.genai" and "agent_server" in (fromlist or ())
         ):
-            raise ImportError("No module named 'apx_agent._responses_agent'")
+            raise ImportError("No module named 'mlflow.genai.agent_server'")
         return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.delitem(sys.modules, "mlflow.genai.agent_server", raising=False)
 
     _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(main, ["deploy", "--target", "apps"])
     assert result.exit_code != 0
-    assert "apx-agent[apps]" in result.output
+    assert "apx-agent[eval]" in result.output
 
 
 def test_terminal_error_state_fails_fast(
