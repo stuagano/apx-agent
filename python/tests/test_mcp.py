@@ -92,6 +92,82 @@ class TestBuildMcpComponents:
         assert "error" in text or "404" in text or "not found" in text
 
 
+class TestMcpAcceptHeaderNormalization:
+    """_mcp_http must inject both required Accept types so the MCP library
+    doesn't reject requests with 406 Not Acceptable.  Genie Code omits the
+    Accept header entirely; AI Playground may send only application/json."""
+
+    def _make_scope(self, accept: str | None) -> dict:
+        headers = [(b"content-type", b"application/json")]
+        if accept is not None:
+            headers.append((b"accept", accept.encode()))
+        return {
+            "type": "http",
+            "method": "POST",
+            "path": "/mcp",
+            "query_string": b"",
+            "root_path": "",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "headers": headers,
+        }
+
+    def _accept_from_scope(self, scope: dict) -> str:
+        for k, v in scope["headers"]:
+            if k.lower() == b"accept":
+                return v.decode()
+        return ""
+
+    def _run_accept_normalization(self, scope: dict) -> str:
+        """Run the same logic that _mcp_http applies to the scope."""
+        headers = list(scope.get("headers", []))
+        accept_vals = [v for k, v in headers if k.lower() == b"accept"]
+        has_json = any(b"application/json" in v for v in accept_vals)
+        has_sse = any(b"text/event-stream" in v for v in accept_vals)
+        if not has_json or not has_sse:
+            headers = [(k, v) for k, v in headers if k.lower() != b"accept"]
+            existing = b", ".join(accept_vals)
+            required = []
+            if not has_json:
+                required.append(b"application/json")
+            if not has_sse:
+                required.append(b"text/event-stream")
+            new_accept = b", ".join(required)
+            if existing:
+                new_accept = new_accept + b", " + existing
+            headers.append((b"accept", new_accept))
+            scope["headers"] = headers
+        return self._accept_from_scope(scope)
+
+    def test_no_accept_header_gets_both_types(self):
+        scope = self._make_scope(accept=None)
+        result = self._run_accept_normalization(scope)
+        assert "application/json" in result
+        assert "text/event-stream" in result
+
+    def test_only_json_accept_gets_sse_added(self):
+        scope = self._make_scope(accept="application/json")
+        result = self._run_accept_normalization(scope)
+        assert "application/json" in result
+        assert "text/event-stream" in result
+
+    def test_only_sse_accept_gets_json_added(self):
+        scope = self._make_scope(accept="text/event-stream")
+        result = self._run_accept_normalization(scope)
+        assert "application/json" in result
+        assert "text/event-stream" in result
+
+    def test_both_present_is_unchanged(self):
+        original = "application/json, text/event-stream"
+        scope = self._make_scope(accept=original)
+        result = self._run_accept_normalization(scope)
+        assert "application/json" in result
+        assert "text/event-stream" in result
+        # Should not duplicate
+        assert result.count("application/json") == 1
+        assert result.count("text/event-stream") == 1
+
+
 class TestMcpAuthContextVars:
     def test_set_mcp_auth_is_request_scoped(self):
         """Verify contextvars don't leak between contexts."""

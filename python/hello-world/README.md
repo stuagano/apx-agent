@@ -2,6 +2,11 @@
 
 apx-agent project targeting Databricks Apps.
 
+## Install (once)
+```bash
+pip install apx-agent
+```
+
 ## Setup
 ```bash
 uv sync
@@ -10,35 +15,16 @@ uv run quickstart  # creates the MLflow experiment + writes .env
 
 ## Local dev
 ```bash
-uv run apx run --reload
+apx-agent run --reload
 # → FastAPI on http://localhost:8000 with the /_apx/* dev UI. Edit agent.py;
 #   --reload picks up changes. See docs/getting-started.md for the walkthrough.
 curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","content":"hi"}]}'
 ```
 
 ## Deploy
-
-If the framework wheel hasn't changed, just deploy the source:
 ```bash
-cd python/hello-world
-databricks bundle deploy --profile <profile>
-databricks apps deploy hello-world \
-  --source-code-path /Workspace/Users/<you>/.bundle/hello-world/dev/files/.build \
-  --profile <profile>
+apx-agent deploy --target apps
 ```
-
-If you've rebuilt the wheel (e.g. after editing `builder-ui` or framework code), run `make wheel` from the repo root first — it rebuilds the frontend, packages the wheel, copies it into place, and patches `.build/uv.lock` with the new hash:
-```bash
-# from repo root
-make wheel
-cd python/hello-world
-databricks bundle deploy --profile <profile>
-databricks apps deploy hello-world \
-  --source-code-path /Workspace/Users/<you>/.bundle/hello-world/dev/files/.build \
-  --profile <profile>
-```
-
-> **Note:** `databricks bundle deploy` only uploads workspace files. You must also run `databricks apps deploy` to trigger the app to pick up the new code.
 
 ## Edit
 Define your agent + tools in `agent.py` (top-level). The

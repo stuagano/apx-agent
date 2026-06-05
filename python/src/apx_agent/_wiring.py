@@ -598,12 +598,19 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         scope = dict(request.scope)
         headers = list(scope.get("headers", []))
         accept_vals = [v for k, v in headers if k.lower() == b"accept"]
-        if not any(b"text/event-stream" in v for v in accept_vals):
+        has_json = any(b"application/json" in v for v in accept_vals)
+        has_sse = any(b"text/event-stream" in v for v in accept_vals)
+        if not has_json or not has_sse:
             headers = [(k, v) for k, v in headers if k.lower() != b"accept"]
             existing = b", ".join(accept_vals)
-            new_accept = b"text/event-stream" + (
-                b", " + existing if existing else b""
-            )
+            required = []
+            if not has_json:
+                required.append(b"application/json")
+            if not has_sse:
+                required.append(b"text/event-stream")
+            new_accept = b", ".join(required)
+            if existing:
+                new_accept = new_accept + b", " + existing
             headers.append((b"accept", new_accept))
             scope["headers"] = headers
         await mcp_http_manager.handle_request(

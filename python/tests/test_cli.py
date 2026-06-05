@@ -2804,7 +2804,7 @@ def test_fix_msg_format():
     assert "what happened" in msg
     assert "Fix:" in msg
     assert "do this" in msg
-    assert "apx doctor" in msg
+    assert "apx-agent doctor" in msg
 
 
 def test_preflight_auth_uses_check(monkeypatch):
@@ -2854,7 +2854,7 @@ def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
     out = result.output
     assert "cd my-agent" in out
     assert "uv sync" in out
-    assert "apx run" in out
+    assert "apx-agent run" in out
 
 
 # ---------------------------------------------------------------------------
@@ -2882,7 +2882,7 @@ def test_run_probe_reports_broken_agent(tmp_path: Path, monkeypatch):
     assert "does_not_exist_xyz" in out or "start_server" in out
     # Load-bearing: distinguishes the probe's structured error from a raw
     # uvicorn traceback.
-    assert "apx doctor" in out
+    assert "apx-agent doctor" in out
 
 
 # ---------------------------------------------------------------------------
@@ -3474,3 +3474,326 @@ class TestScaffoldCoworker:
                            catalog="samples", schema="tpch", table="customer",
                            template="data")
         assert "DataAgent(" in (tmp_path / "agent.py").read_text()
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent refresh-schema`
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshSchema:
+    def test_error_when_no_schema_json(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh-schema"])
+        assert result.exit_code != 0
+        assert "schema.json" in result.output or "scaffold" in result.output
+
+    def test_happy_path_rewrites_manifest(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.chdir(tmp_path)
+        apx_dir = tmp_path / ".apx"
+        apx_dir.mkdir()
+        (apx_dir / "schema.json").write_text(
+            json.dumps({"catalog": "main", "schema": "default", "tables": []})
+        )
+        new_manifest = {"catalog": "main", "schema": "default", "tables": [{"name": "t1"}]}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold",
+                            lambda c, s, profile=None: new_manifest)
+
+        result = CliRunner().invoke(main, ["refresh-schema"])
+        assert result.exit_code == 0, result.output
+        assert "refreshed" in result.output
+        written = json.loads((apx_dir / "schema.json").read_text())
+        assert written["tables"] == [{"name": "t1"}]
+
+    def test_error_when_introspect_returns_none(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.chdir(tmp_path)
+        apx_dir = tmp_path / ".apx"
+        apx_dir.mkdir()
+        (apx_dir / "schema.json").write_text(
+            json.dumps({"catalog": "main", "schema": "default", "tables": []})
+        )
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold",
+                            lambda c, s, profile=None: None)
+
+        result = CliRunner().invoke(main, ["refresh-schema"])
+        assert result.exit_code != 0
+        assert "could not read tables" in result.output or "check your profile" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent publish`
+# ---------------------------------------------------------------------------
+
+
+class TestPublish:
+    def test_missing_required_flags(self):
+        result = CliRunner().invoke(main, ["publish"])
+        assert result.exit_code != 0
+
+    def test_happy_path(self):
+        fake_result = {"tool_id": "tid-123", "status": "ok"}
+        with patch("apx_agent.publish_to_supervisor", return_value=fake_result) as mock_pub:
+            result = CliRunner().invoke(main, [
+                "publish",
+                "--endpoint", "my-endpoint",
+                "--supervisor", "sup-456",
+                "--description", "Routes sales questions",
+            ])
+        assert result.exit_code == 0, result.output
+        assert "my-endpoint" in result.output
+        assert "sup-456" in result.output
+        mock_pub.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent hot-swap`
+# ---------------------------------------------------------------------------
+
+
+class TestHotSwap:
+    def test_model_serving_missing_endpoint(self):
+        result = CliRunner().invoke(main, [
+            "hot-swap", "--model", "databricks-claude-opus-4",
+        ])
+        assert result.exit_code != 0
+        assert "endpoint" in result.output.lower()
+
+    def test_model_serving_missing_model(self):
+        result = CliRunner().invoke(main, [
+            "hot-swap", "--endpoint", "my-ep",
+        ])
+        assert result.exit_code != 0
+        assert "--model" in result.output
+
+    def test_apps_missing_llm_endpoint(self):
+        result = CliRunner().invoke(main, [
+            "hot-swap", "--target", "apps",
+        ])
+        assert result.exit_code != 0
+        assert "llm-endpoint" in result.output
+
+    def test_model_serving_happy_path(self):
+        fake_result = SimpleNamespace(
+            endpoint_name="my-ep",
+            new_model="databricks-claude-opus-4",
+            previous_model=None,
+            served_entities_updated=1,
+        )
+        with patch("apx_agent._hot_swap.hot_swap_model", return_value=fake_result) as mock_hs:
+            result = CliRunner().invoke(main, [
+                "hot-swap",
+                "--endpoint", "my-ep",
+                "--model", "databricks-claude-opus-4",
+            ])
+        assert result.exit_code == 0, result.output
+        assert "my-ep" in result.output
+        mock_hs.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent export-traces`
+# ---------------------------------------------------------------------------
+
+
+class TestExportTraces:
+    def test_missing_experiment_and_no_config(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, [
+            "export-traces", "--table", "main.default.traces",
+        ])
+        assert result.exit_code != 0
+        assert "experiment" in result.output.lower()
+
+    def test_happy_path(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        fake_result = SimpleNamespace(
+            rows_written=5,
+            traces_pulled=5,
+            target_table="main.default.traces",
+            skipped=0,
+        )
+        fake_ws = MagicMock()
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
+             patch("apx_agent.export_traces", return_value=fake_result) as mock_et:
+            result = CliRunner().invoke(main, [
+                "export-traces",
+                "--experiment", "/my/experiment",
+                "--table", "main.default.traces",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "5" in result.output
+        mock_et.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent topology`
+# ---------------------------------------------------------------------------
+
+
+class TestTopology:
+    def test_schema_without_catalog_fails(self):
+        result = CliRunner().invoke(main, [
+            "topology", "--schema", "myschema",
+        ])
+        assert result.exit_code != 0
+        assert "--catalog" in result.output or "catalog" in result.output.lower()
+
+    def test_happy_path_stdout(self):
+        fake_topo = SimpleNamespace(nodes=["a", "b"], edges=["a->b"])
+        fake_ws = MagicMock()
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
+             patch("apx_agent.discover_topology", return_value=fake_topo), \
+             patch("apx_agent.render_topology", return_value="graph LR\n  a --> b"):
+            result = CliRunner().invoke(main, ["topology"])
+
+        assert result.exit_code == 0, result.output
+        assert "graph LR" in result.output
+
+    def test_output_file(self, tmp_path):
+        fake_topo = SimpleNamespace(nodes=["a"], edges=[])
+        out = tmp_path / "topo.mmd"
+        fake_ws = MagicMock()
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
+             patch("apx_agent.discover_topology", return_value=fake_topo), \
+             patch("apx_agent.render_topology", return_value="graph LR"):
+            result = CliRunner().invoke(main, ["topology", "--output", str(out)])
+
+        assert result.exit_code == 0, result.output
+        assert out.read_text().strip() == "graph LR"
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent eval-chain`
+# ---------------------------------------------------------------------------
+
+
+class TestEvalChain:
+    def test_happy_path_jsonl(self, tmp_path, monkeypatch):
+        evalset = tmp_path / "cases.jsonl"
+        evalset.write_text('{"request": "hello"}\n{"request": "bye"}\n')
+
+        fake_agent = MagicMock()
+        fake_case = SimpleNamespace(
+            request="hello",
+            duration_ms=120,
+            sub_agents_invoked=["sub1"],
+            tool_calls=["tool_a"],
+        )
+        fake_report = SimpleNamespace(
+            cases=[fake_case],
+            sub_agent_coverage={"sub1": 1},
+        )
+
+        with patch("apx_agent.cli._load_finalized_agent", return_value=fake_agent), \
+             patch("apx_agent.evaluate_chain", return_value=fake_report):
+            result = CliRunner().invoke(main, [
+                "eval-chain", str(evalset),
+                "--model", "databricks-claude-opus-4",
+                "--experiment", "/exp/my-eval",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "chain-eval cases: 1" in result.output
+        assert "sub1" in result.output
+
+    def test_happy_path_json_array(self, tmp_path):
+        evalset = tmp_path / "cases.json"
+        evalset.write_text('[{"request": "hi"}]')
+
+        fake_agent = MagicMock()
+        fake_report = SimpleNamespace(cases=[], sub_agent_coverage={})
+
+        with patch("apx_agent.cli._load_finalized_agent", return_value=fake_agent), \
+             patch("apx_agent.evaluate_chain", return_value=fake_report):
+            result = CliRunner().invoke(main, [
+                "eval-chain", str(evalset),
+                "--model", "databricks-claude-opus-4",
+                "--experiment", "/exp/my-eval",
+            ])
+
+        assert result.exit_code == 0, result.output
+
+    def test_bad_json_fails(self, tmp_path):
+        evalset = tmp_path / "cases.json"
+        evalset.write_text("not-json")
+
+        fake_agent = MagicMock()
+        with patch("apx_agent.cli._load_finalized_agent", return_value=fake_agent):
+            result = CliRunner().invoke(main, [
+                "eval-chain", str(evalset),
+                "--model", "databricks-claude-opus-4",
+                "--experiment", "/exp/my-eval",
+            ])
+
+        assert result.exit_code != 0
+        assert "parse" in result.output.lower() or "json" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent canary`
+# ---------------------------------------------------------------------------
+
+
+class TestCanary:
+    def test_canary_status_happy_path(self):
+        fake_cfg = SimpleNamespace(
+            endpoint="my-ep",
+            served_entities=[("entity-v1", "catalog.schema.model", "1")],
+            traffic_split={"entity-v1": 100},
+        )
+        fake_ws = MagicMock()
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
+             patch("apx_agent.get_canary_config", return_value=fake_cfg):
+            result = CliRunner().invoke(main, ["canary", "status", "--endpoint", "my-ep"])
+
+        assert result.exit_code == 0, result.output
+        assert "my-ep" in result.output
+        assert "entity-v1" in result.output
+
+    def test_canary_status_missing_endpoint(self):
+        result = CliRunner().invoke(main, ["canary", "status"])
+        assert result.exit_code != 0
+
+    def test_canary_deploy_model_serving_missing_endpoint(self):
+        result = CliRunner().invoke(main, [
+            "canary", "deploy",
+            "--model", "catalog.schema.model",
+            "--version", "1",
+        ])
+        assert result.exit_code != 0
+        assert "endpoint" in result.output.lower()
+
+    def test_canary_deploy_model_serving_missing_model(self):
+        result = CliRunner().invoke(main, [
+            "canary", "deploy",
+            "--endpoint", "my-ep",
+            "--version", "1",
+        ])
+        assert result.exit_code != 0
+        assert "--model" in result.output
+
+    def test_canary_deploy_model_serving_missing_version(self):
+        result = CliRunner().invoke(main, [
+            "canary", "deploy",
+            "--endpoint", "my-ep",
+            "--model", "catalog.schema.model",
+        ])
+        assert result.exit_code != 0
+        assert "--version" in result.output
+
+    def test_canary_deploy_apps_missing_canary_version(self):
+        result = CliRunner().invoke(main, [
+            "canary", "deploy", "--target", "apps",
+        ])
+        assert result.exit_code != 0
+        assert "canary-version" in result.output

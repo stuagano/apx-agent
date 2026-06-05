@@ -1,17 +1,17 @@
-"""apx — command-line interface for the apx-agent framework.
+"""apx-agent — command-line interface for the apx-agent framework.
 
 Subcommands:
 
-  apx scaffold <name>           Generate a new agent project
-  apx run                       Run the agent locally (uvicorn against create_app)
-  apx eval <evalset>            Run Mosaic AI Agent Evaluation
-  apx deploy                    Log to MLflow + deploy via databricks.agents.deploy
-  apx publish-tools             Publish @tool(uc=...) decorated tools to UC
-  apx publish                   Register the deployed endpoint as a Supervisor sub-agent
-  apx mcp-config                Emit the Managed MCP client config snippet
-  apx memory <cmd>              recall / remember / forget / list — MemoryStore CRUD
-  apx examples <cmd>            find / save / remove / list — ExampleStore CRUD
-  apx version                   Print the package version
+  apx-agent scaffold <name>           Generate a new agent project
+  apx-agent run                       Run the agent locally (uvicorn against create_app)
+  apx-agent eval <evalset>            Run Mosaic AI Agent Evaluation
+  apx-agent deploy                    Log to MLflow + deploy via databricks.agents.deploy
+  apx-agent publish-tools             Publish @tool(uc=...) decorated tools to UC
+  apx-agent publish                   Register the deployed endpoint as a Supervisor sub-agent
+  apx-agent mcp-config                Emit the Managed MCP client config snippet
+  apx-agent memory <cmd>              recall / remember / forget / list — MemoryStore CRUD
+  apx-agent examples <cmd>            find / save / remove / list — ExampleStore CRUD
+  apx-agent version                   Print the package version
 
 Every command that operates on an agent accepts ``--module MODULE:VAR``
 to point at the agent definition (defaults to ``agent:agent``). The module
@@ -49,7 +49,7 @@ def _fix_msg(title: str, detail: str, fix: str | None) -> str:
     parts = [title, detail]
     if fix:
         parts.append(f"\nFix:\n    {fix}")
-    parts.append("\nRun `apx doctor` for a full check.")
+    parts.append("\nRun `apx-agent doctor` for a full check.")
     return "\n".join(parts)
 
 
@@ -134,7 +134,7 @@ def _load_finalized_agent(module_spec: str) -> Any:
     """Resolve + finalize an agent for CLI commands.
 
     Loads [tool.apx.agent] config first, then resolve_agent so template-only
-    projects (no agent.py) work via apx info / lint / eval / run. Falls back
+    projects (no agent.py) work via apx-agent info / lint / eval / run. Falls back
     to module-import for code-defined agents.
     """
     from ._wiring import finalize_agent, resolve_agent, _ws_for_template
@@ -146,7 +146,7 @@ def _load_finalized_agent(module_spec: str) -> Any:
     return agent
 
 
-# ASGI app module spec served by `apx run`, per scaffold layout.
+# ASGI app module spec served by `apx-agent run`, per scaffold layout.
 _RUN_MODULE_BY_TARGET = {
     "model-serving": "app:app",
     "apps": "agent_server.start_server:app",
@@ -157,8 +157,8 @@ def _detect_target(cwd: Path | None = None) -> str:
     """Infer the project's target (model-serving vs apps) from its layout.
 
     The apps scaffold writes ``agent_server/start_server.py``; the flat
-    model-serving scaffold writes a top-level ``app.py``. Lets ``apx run`` and
-    ``apx deploy`` work without an explicit ``--module``/``--target`` regardless
+    model-serving scaffold writes a top-level ``app.py``. Lets ``apx-agent run`` and
+    ``apx-agent deploy`` work without an explicit ``--module``/``--target`` regardless
     of which scaffold the user chose. Defaults to model-serving when neither
     marker is present.
     """
@@ -202,9 +202,9 @@ def _databrickscfg_profiles() -> list[str]:
 
 
 def _preflight_databricks_auth() -> None:
-    """Fail `apx run`/`deploy` with dev-time guidance when auth is unresolved.
+    """Fail `apx-agent run`/`deploy` with dev-time guidance when auth is unresolved.
 
-    Delegates to the doctor auth checks so inline errors and `apx doctor` share
+    Delegates to the doctor auth checks so inline errors and `apx-agent doctor` share
     one source of truth. Runs both the offline credential-resolution check and a
     live workspace round-trip so expired tokens are caught here rather than
     surfacing as confusing data errors mid-run.
@@ -217,7 +217,7 @@ def _preflight_databricks_auth() -> None:
             _fix_msg(
                 "Could not resolve Databricks authentication. This agent "
                 "connects to a workspace at startup.\n"
-                "Run `apx doctor` for a full environment check.",
+                "Run `apx-agent doctor` for a full environment check.",
                 result.detail,
                 result.fix,
             )
@@ -229,7 +229,7 @@ def _preflight_databricks_auth() -> None:
             _fix_msg(
                 "Databricks credentials resolved but workspace rejected the token. "
                 "Re-run `databricks auth login` to refresh.\n"
-                "Run `apx doctor` for details.",
+                "Run `apx-agent doctor` for details.",
                 live.detail,
                 live.fix,
             )
@@ -408,7 +408,7 @@ class _ApxGroup(click.Group):
 @click.group(cls=_ApxGroup)
 @click.version_option(_resolve_version(), package_name="apx-agent", prog_name="apx")
 def main() -> None:
-    """apx — declarative agents on Databricks. See `apx --help` for commands."""
+    """apx-agent — declarative agents on Databricks. See `apx-agent --help` for commands."""
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +442,7 @@ _GLYPH = {
 @click.option("--offline", is_flag=True, help="Skip the live workspace check.")
 @click.option("--json", "as_json", is_flag=True, help="Emit checks as JSON.")
 def doctor(offline: bool, as_json: bool) -> None:
-    """Diagnose the apx environment: tools, auth, and project layout.
+    """Diagnose the apx-agent environment: tools, auth, and project layout.
 
     Runs a live workspace round-trip by default; pass --offline to skip it.
     Exits non-zero if any check fails.
@@ -481,7 +481,7 @@ def doctor(offline: bool, as_json: bool) -> None:
     if fails:
         click.echo(
             f"{fails} failed, {warns} warning(s). "
-            "Fix the ✗ items, then re-run `apx doctor`."
+            "Fix the ✗ items, then re-run `apx-agent doctor`."
         )
         sys.exit(1)
     click.echo(f"All clear ({warns} warning(s)).")
@@ -503,7 +503,7 @@ dependencies = ["apx-agent"]
 
 [tool.uv.sources]
 # Editable local install — keeps `uv sync` working from this directory.
-# At deploy time apx deploy builds a wheel and rewrites pyproject.toml to
+# At deploy time apx-agent deploy builds a wheel and rewrites pyproject.toml to
 # reference it (since the App container can't resolve ".."). Drop this block
 # and change dependencies to `"apx-agent==<version>"` once published to PyPI.
 apx-agent = {{ path = "..", editable = true }}
@@ -533,13 +533,13 @@ from apx_agent import DataAgent
 {example_tool}
 # A governed data agent over ``{catalog}.{schema}`` (schema baked at scaffold
 # time — no runtime discovery needed). To switch catalogs or refresh the
-# baked schema: ``apx scaffold <name> --catalog <cat> --schema <sch>``.
+# baked schema: ``apx-agent scaffold <name> --catalog <cat> --schema <sch>``.
 agent = DataAgent("{catalog}", "{schema}"{extra_tools})
 '''
 
 
 _SCAFFOLD_APP = '''\
-"""FastAPI app entry point — for `apx run` / Databricks Apps hosting."""
+"""FastAPI app entry point — for `apx-agent run` / Databricks Apps hosting."""
 
 from apx_agent import create_app
 
@@ -570,15 +570,15 @@ An apx-agent.
 
 ```bash
 uv sync
-apx run             # uvicorn against app.py:app
+apx-agent run             # uvicorn against app.py:app
 ```
 
 ## Deploy to Model Serving
 
 ```bash
-apx publish-tools                                          # any @tool(uc=...) tools
-apx deploy --name main.agents.{name}                       # logs + deploys
-apx publish --endpoint {name} --supervisor SUPERVISOR_ID   # optional
+apx-agent publish-tools                                          # any @tool(uc=...) tools
+apx-agent deploy --name main.agents.{name}                       # logs + deploys
+apx-agent publish --endpoint {name} --supervisor SUPERVISOR_ID   # optional
 ```
 '''
 
@@ -647,12 +647,12 @@ examples = [
 _SCAFFOLD_APPS_AGENT = '''\
 """<APP_NAME> — apx-agent root agent (ADK-style top-level definition).
 
-Generated by ``apx scaffold <APP_NAME> --target apps``.
+Generated by ``apx-agent scaffold <APP_NAME> --target apps``.
 
 Edit this file to define your agent. ``agent`` is the canonical top-level
 symbol that ``agent_server/start_server.py`` imports + wraps for the
 Databricks Apps runtime. The same symbol is consumed by
-``apx deploy --target model-serving`` if you also publish to a serving
+``apx-agent deploy --target model-serving`` if you also publish to a serving
 endpoint.
 
 The Apps runtime boilerplate — ``compile_to_responses_agent``,
@@ -671,7 +671,7 @@ from apx_agent import DataAgent
 #
 # Make it your own:
 #   * point it at your own data:  DataAgent("main", "sales", name="<APP_NAME>")
-#   * re-scaffold to refresh the baked schema:  apx scaffold <name> --catalog <c>
+#   * re-scaffold to refresh the baked schema:  apx-agent scaffold <name> --catalog <c>
 #   * add ``genie_space=...`` / ``vector_index=...`` for Genie or Vector Search
 #   * or drop back to a plain ``Agent(tools=[...])`` with your own ``@tool``s
 agent = DataAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS>, name="<APP_NAME>")
@@ -681,7 +681,7 @@ agent = DataAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS>, name="<APP_NAME>")
 _SCAFFOLD_APPS_AGENT_BASE = '''\
 """<APP_NAME> — apx-agent root agent.
 
-Generated by ``apx scaffold <APP_NAME> --template base``.
+Generated by ``apx-agent scaffold <APP_NAME> --template base``.
 
 Edit this file to define your agent. ``agent`` is the symbol
 ``agent_server/start_server.py`` imports and wires into the
@@ -721,7 +721,7 @@ agent = CoworkerAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS><PERSONA_ARG><JOIN_KEY
 
 
 _SCAFFOLD_APPS_START_SERVER = '''\
-"""FastAPI entry point for Databricks Apps — AUTO-GENERATED by apx scaffold.
+"""FastAPI entry point for Databricks Apps — AUTO-GENERATED by apx-agent scaffold.
 
 Don't edit this file. Edit ``../agent.py`` instead — that's where your
 agent lives. This file wires it into the Databricks Apps runtime:
@@ -732,7 +732,7 @@ agent lives. This file wires it into the Databricks Apps runtime:
   * Mounts apx-agent's ``/mcp`` + ``/.well-known/agent.json`` + ``/health``
     so Genie / Genie Code can consume the same agent.
   * Mounts ``/readyz`` — a capability self-test that proves the agent answers
-    and traces (used by ``apx deploy`` as a readiness gate).
+    and traces (used by ``apx-agent deploy`` as a readiness gate).
 
 Run via ``uvicorn agent_server.start_server:app --host 0.0.0.0 --port $DATABRICKS_APP_PORT``
 (driven by ``databricks.yml`` on deploy).
@@ -844,10 +844,10 @@ variables:
     default: ""
 
 # ``artifacts.default.build`` packages the deploy bundle into ``./.build``.
-# ``apx deploy --target apps`` runs this script BEFORE ``bundle validate`` so
+# ``apx-agent deploy --target apps`` runs this script BEFORE ``bundle validate`` so
 # the DAB validator sees a populated source dir. Manually copying the
 # apx-agent wheel into the project keeps the App container's ``uv sync``
-# off the public index — apx deploy handles the wheel build for you when
+# off the public index — apx-agent deploy handles the wheel build for you when
 # ``[tool.uv.sources].apx-agent`` references a local path.
 artifacts:
   default:
@@ -859,9 +859,9 @@ artifacts:
       cp -r sub_agents .build/ 2>/dev/null || true
       # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts README.md .build/ 2>/dev/null || true
-      cp -r .apx .build/ 2>/dev/null || true
+      cp -r .apx-agent .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
-      # pyproject.toml and uv.lock are written by apx deploy (wheel-pinned).
+      # pyproject.toml and uv.lock are written by apx-agent deploy (wheel-pinned).
       # Do NOT copy them here — bundle deploy re-runs this script and would
       # overwrite the rewritten versions.
 
@@ -888,7 +888,7 @@ resources:
           experiment:
             experiment_id: ${resources.experiments.<APP_NAME>_experiment.id}
             permission: CAN_MANAGE
-        # apx deploy --target apps will auto-add resources from the agent's
+        # apx-agent deploy --target apps will auto-add resources from the agent's
         # ResourceSpec list. For now, list any extras here manually:
         - name: llm-endpoint
           description: Foundation model endpoint used by the agent.
@@ -950,7 +950,7 @@ uv run quickstart  # creates the MLflow experiment + writes .env
 
 ## Local dev
 ```bash
-uv run apx run --reload
+uv run apx-agent run --reload
 # → FastAPI on http://localhost:8000 with the /_apx/* dev UI (chat, edit,
 #   topology, traces, eval, setup wizard). Edit agent.py in your IDE;
 #   --reload picks up changes. See docs/getting-started.md for the walkthrough.
@@ -959,7 +959,7 @@ curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","con
 
 ## Deploy
 ```bash
-apx deploy --target apps  # validates, deploys, runs the bundle
+apx-agent deploy --target apps  # validates, deploys, runs the bundle
 ```
 
 ## Edit
@@ -978,7 +978,7 @@ def _discover_default_data(
     profile: str | None = None,
 ) -> "tuple[str, str, str | None] | None":
     """Best-effort: pick a (catalog, schema, sample_table) the scaffold's default
-    DataAgent can actually read, so a fresh ``apx run`` answers a real question
+    DataAgent can actually read, so a fresh ``apx-agent run`` answers a real question
     immediately — and a baked example tool queries a real table.
 
     Prefers ``samples.nyctaxi`` (Databricks' built-in demo data) when present;
@@ -1102,7 +1102,7 @@ def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[
 
 
 # ---------------------------------------------------------------------------
-# Workspace listing helpers — used by _interactive_resolve and apx list
+# Workspace listing helpers — used by _interactive_resolve and apx-agent list
 # ---------------------------------------------------------------------------
 
 _SKIP_CATALOGS: frozenset[str] = frozenset({"system", "__databricks_internal"})
@@ -1382,7 +1382,7 @@ def _scaffold_apps(
         apx_source = (
             "[tool.uv.sources]\n"
             "# Editable local install — keeps `uv sync` working from this directory.\n"
-            "# At deploy time apx deploy builds a wheel and rewrites .build/pyproject.toml\n"
+            "# At deploy time apx-agent deploy builds a wheel and rewrites .build/pyproject.toml\n"
             "# to reference it (since the App container can't resolve \"..\").\n"
             'apx-agent = { path = "..", editable = true }\n'
         )
@@ -1461,7 +1461,7 @@ def _scaffold_apps(
         "Runtime to generate scaffolding for. "
         "'apps' (default) generates a Databricks Apps bundle: agent_server/ + "
         "databricks.yml, with the built-in dev UI (chat, edit, tool builder), "
-        "deployed via apx deploy. 'model-serving' generates the flat "
+        "deployed via apx-agent deploy. 'model-serving' generates the flat "
         "agent.py + app.py layout for a Mosaic AI ChatAgent serving endpoint. "
         "Prompted interactively when omitted in a TTY."
     ),
@@ -1514,13 +1514,13 @@ def scaffold(
 
     With ``--target apps`` (the default) writes a Databricks Apps bundle:
     ``agent_server/`` package + ``databricks.yml`` + the dev UI, deployable
-    with ``apx deploy``. With ``--target model-serving`` writes a flat
+    with ``apx-agent deploy``. With ``--target model-serving`` writes a flat
     ``agent.py``/``app.py`` project for a Mosaic AI ChatAgent serving endpoint.
 
     The default agent is a ``DataAgent`` grounded in real data: unless you pass
     ``--catalog``/``--schema``, the workspace is probed (best-effort) for a
     catalog/schema you can read — preferring ``samples.nyctaxi`` — so a fresh
-    ``apx run`` can answer a real question immediately.
+    ``apx-agent run`` can answer a real question immediately.
     """
     target = Path(directory) / name
 
@@ -1624,13 +1624,13 @@ def scaffold(
 
     click.echo()
     click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")
-    click.echo(f"Next: cd {name} && uv sync && uv run apx run    # serve locally")
-    click.echo("Tip: run `apx doctor` to check your environment before deploying.")
+    click.echo(f"Next: cd {name} && uv sync && apx-agent run    # serve locally")
+    click.echo("Tip: run `apx-agent doctor` to check your environment before deploying.")
     if scaffold_target == "apps":
-        click.echo(f"      uv run apx deploy                        # → Databricks Apps")
+        click.echo(f"      apx-agent deploy                        # → Databricks Apps")
     else:
         click.echo(
-            f"      uv run apx deploy --model <endpoint> --name <catalog.schema.model>"
+            f"      apx-agent deploy --model <endpoint> --name <catalog.schema.model>"
         )
 
 
@@ -1675,7 +1675,7 @@ def _probe_import(module_spec: str) -> None:
                 f"Failed to import your agent module `{mod_name}`.",
                 detail,
                 "Fix the error in your agent code shown above, then re-run "
-                "`apx run`.",
+                "`apx-agent run`.",
             )
         ) from e
     finally:
@@ -1700,7 +1700,7 @@ def refresh_schema(profile: str | None) -> None:
     existing = load_baked_schema(Path.cwd())
     if not existing or not existing.get("catalog") or not existing.get("schema"):
         raise click.ClickException(
-            "no .apx/schema.json found in this project — run `apx scaffold` first "
+            "no .apx/schema.json found in this project — run `apx-agent scaffold` first "
             "(or create the manifest) so I know which catalog.schema to refresh."
         )
     catalog, schema = existing["catalog"], existing["schema"]
@@ -1738,7 +1738,7 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
         import uvicorn
     except ImportError as e:
         raise click.ClickException(
-            "uvicorn is required for `apx run`. Install with: "
+            "uvicorn is required for `apx-agent run`. Install with: "
             "pip install 'uvicorn[standard]'"
         ) from e
     if module is None:
@@ -1755,7 +1755,7 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
     # Default ON for the dev loop: the Trace panel is useless without per-tool
     # and per-LLM spans, and the runtime's manual ``safe_span`` wraps only emit
     # the outer wrapper. ``setdefault`` so anyone who really wants the bare
-    # boot can ``APX_AGENT_MLFLOW_AUTOLOG=0 apx run``. Deploy paths are
+    # boot can ``APX_AGENT_MLFLOW_AUTOLOG=0 apx-agent run``. Deploy paths are
     # unaffected — they never go through this code.
     #
     # Important: the ``apps`` scaffold's ASGI module bypasses ``_wiring.create_app``
@@ -1853,10 +1853,10 @@ def eval_cmd(
     Two modes:
 
       In-process (default): compile the agent and run eval directly.
-        apx eval evalset.jsonl --model databricks-claude-sonnet-4-6
+        apx-agent eval evalset.jsonl --model databricks-claude-sonnet-4-6
 
       Endpoint: drive a deployed App's /invocations endpoint over HTTP.
-        apx eval evalset.jsonl --endpoint-url https://<app>.databricksapps.com
+        apx-agent eval evalset.jsonl --endpoint-url https://<app>.databricksapps.com
     """
     # Mutex: --endpoint-url is incompatible with the in-process eval flags.
     if endpoint_url and (model or module):
@@ -2023,7 +2023,7 @@ def eval_cmd(
 @click.option(
     "--set-uc-tags/--no-set-uc-tags", default=True,
     help="Write apx.agent.* UC tags on the registered model after deploy so "
-         "the agent shows up in apx list / topology / watchdog crawls. On by default.",
+         "the agent shows up in apx-agent list / topology / watchdog crawls. On by default.",
 )
 @click.option(
     "--agent-name", default=None,
@@ -2267,7 +2267,7 @@ def deploy(
     else:
         click.echo("Skipping deploy (--no-deploy).")
 
-    # 4. Set UC tags so the agent shows up in apx list / topology / watchdog
+    # 4. Set UC tags so the agent shows up in apx-agent list / topology / watchdog
     if set_uc_tags:
         try:
             from apx_agent import set_uc_tags_for_agent
@@ -2326,7 +2326,7 @@ def _read_databricks_yml(cwd: Path) -> dict[str, Any]:
         raise click.ClickException(
             f"No databricks.yml found at {path}. "
             "--target apps expects a scaffolded Apps project — run "
-            "`apx scaffold <name> --target apps` first."
+            "`apx-agent scaffold <name> --target apps` first."
         )
     try:
         data = yaml.safe_load(path.read_text()) or {}
@@ -2536,7 +2536,7 @@ def _ensure_apx_wheel(cwd: Path) -> Path | None:
             f"{src_ver!r}, but pyproject.toml at {pyproject_path} "
             f"references {expected_name!r}.\n\n"
             "Update [tool.uv.sources].apx-agent.path to point at "
-            f"./apx_agent-{src_ver}-py3-none-any.whl, then re-run apx "
+            f"./apx_agent-{src_ver}-py3-none-any.whl, then re-run apx-agent "
             "deploy."
         )
 
@@ -2643,7 +2643,7 @@ def _stage_build_manifest(
     """Stage the dependency manifest (``pyproject.toml`` + ``uv.lock``) into ``.build/``.
 
     The bundle ``artifacts.build`` script deliberately does NOT copy
-    ``pyproject.toml`` / ``uv.lock`` — ``apx deploy`` owns staging the
+    ``pyproject.toml`` / ``uv.lock`` — ``apx-agent deploy`` owns staging the
     deploy-correct versions here. Without them the Databricks Apps container
     has no dependency manifest and falls back to the base image's packages
     (notably an older ``mlflow`` lacking ``mlflow.genai.agent_server``), so the
@@ -2872,7 +2872,7 @@ def _grant_experiment_to_sp(
 ) -> bool:
     """Grant the app's service principal ``CAN_MANAGE`` on the tracing experiment.
 
-    ``apx deploy`` creates the experiment under the deploying user, but the
+    ``apx-agent deploy`` creates the experiment under the deploying user, but the
     deployed app runs as its service principal — which can't access that
     experiment, so every span is dropped. Granting the SP ``CAN_MANAGE`` via
     the permissions API lets tracing land. Idempotent.
@@ -3006,7 +3006,7 @@ def _preflight_databricks_cli() -> None:
     if result.status is not _d.Status.OK:
         raise click.ClickException(
             _fix_msg(
-                "`apx deploy` needs the Databricks CLI.",
+                "`apx-agent deploy` needs the Databricks CLI.",
                 result.detail,
                 result.fix,
             )
@@ -3030,7 +3030,7 @@ def _preflight_apps(cwd: Path) -> None:
     if missing:
         raise click.ClickException(
             "Pre-flight failed for --target apps. Missing in current "
-            f"directory: {', '.join(missing)}. Run `apx scaffold <name> "
+            f"directory: {', '.join(missing)}. Run `apx-agent scaffold <name> "
             "--target apps` to generate the expected layout."
         )
 
@@ -3042,7 +3042,7 @@ def _validate_responses_agent_compiler() -> None:
     deployed image level; the module-level import of ``_responses_agent``
     always succeeds (mlflow is lazy-imported). Check the real runtime dep
     (mlflow.genai) directly so a missing ``eval`` extra is caught at
-    ``apx deploy`` time rather than at first request.
+    ``apx-agent deploy`` time rather than at first request.
     """
     try:
         import mlflow.genai.agent_server  # noqa: F401
@@ -3232,7 +3232,7 @@ def _deploy_apps(
     json_output: bool,
     readyz_gate: bool = True,
 ) -> None:
-    """Implement ``apx deploy --target apps``.
+    """Implement ``apx-agent deploy --target apps``.
 
     Routes all progress logs to stderr (so ``--json-output`` can keep stdout
     clean), runs the bundle validate → deploy → run → poll-ready sequence,
@@ -3277,7 +3277,7 @@ def _deploy_apps_impl(
     log: Any,
 ) -> None:
     """Inner body of ``_deploy_apps`` — see docstring there."""
-    log(f"# apx deploy --target apps (bundle-target={bundle_target}, "
+    log(f"# apx-agent deploy --target apps (bundle-target={bundle_target}, "
         f"profile={profile or '<default>'})")
 
     # 1. Pre-flight
@@ -3606,9 +3606,9 @@ def logs(
     Two modes:
 
     \b
-      apx logs --endpoint NAME              Runtime logs from a Model Serving endpoint
-      apx logs --endpoint NAME --build      Build-time logs from the endpoint's build
-      apx logs --app NAME [--profile P]     Logs from an apx-agent hosted as a Databricks App
+      apx-agent logs --endpoint NAME              Runtime logs from a Model Serving endpoint
+      apx-agent logs --endpoint NAME --build      Build-time logs from the endpoint's build
+      apx-agent logs --app NAME [--profile P]     Logs from an apx-agent hosted as a Databricks App
 
     For the --endpoint path, ``served_model`` is auto-discovered from the
     endpoint's current config when not supplied explicitly.
@@ -3687,7 +3687,7 @@ def info(module: str, fmt: str) -> None:
     )
     from apx_agent._tool import get_tool_metadata
 
-    # Finalize so `apx info` reports the same tools/resources the serve and
+    # Finalize so `apx-agent info` reports the same tools/resources the serve and
     # deploy paths will — config-declared [[tool.apx.tools]] included.
     agent = _load_finalized_agent(module)
 
@@ -3784,7 +3784,7 @@ def trace(
         import mlflow
     except ImportError as e:
         raise click.ClickException(
-            "apx trace requires mlflow. Install with: pip install 'apx-agent[eval]'"
+            "apx-agent trace requires mlflow. Install with: pip install 'apx-agent[eval]'"
         ) from e
 
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
@@ -3893,8 +3893,8 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
     sub-agent URL env vars, model name shape.
 
     Exits non-zero if any ERROR findings are reported. WARNING findings
-    are reported but don't fail. Pair with ``apx test`` (smoke) and
-    ``apx eval`` (behavior) for a full pre-deploy check.
+    are reported but don't fail. Pair with ``apx-agent test`` (smoke) and
+    ``apx-agent eval`` (behavior) for a full pre-deploy check.
     """
     from ._lint import Severity, lint_agent
 
@@ -3919,7 +3919,7 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
         ))
     else:
         if not findings:
-            click.echo("apx lint: clean — no findings.")
+            click.echo("apx-agent lint: clean — no findings.")
         else:
             for f in findings:
                 marker = {
@@ -3992,7 +3992,7 @@ def hot_swap_cmd(
     See docs/apps-canary-hotswap-design.md for the rationale.
 
     For full artifact-version A/B with traffic split (model-serving)
-    or canary soak environments (apps), use `apx canary` instead.
+    or canary soak environments (apps), use `apx-agent canary` instead.
     """
     if deploy_target == "model-serving":
         if not endpoint:
@@ -4036,7 +4036,7 @@ def _hot_swap_model_serving(
         click.echo(f"hot-swap failed: {type(e).__name__}: {e}", err=True)
         sys.exit(1)
 
-    click.echo(f"apx hot-swap: {result.endpoint_name}")
+    click.echo(f"apx-agent hot-swap: {result.endpoint_name}")
     click.echo(f"  new model:      {result.new_model}")
     if result.previous_model:
         click.echo(f"  previous override: {result.previous_model}")
@@ -4079,7 +4079,7 @@ def _hot_swap_apps_cli(
                    err=True)
         sys.exit(1)
 
-    click.echo(f"apx hot-swap --target apps: {result.app_name}")
+    click.echo(f"apx-agent hot-swap --target apps: {result.app_name}")
     click.echo(f"  bundle target:  {result.bundle_target}")
     click.echo(f"  var:            {result.var_name}")
     click.echo(f"  new value:      {result.new_value}")
@@ -4114,7 +4114,7 @@ def test_cmd(
     """Compile the agent locally and send sample prompts through it.
 
     Smoke test for "did I break the import / can the agent at least
-    accept a message and return something?" — cheaper than apx eval,
+    accept a message and return something?" — cheaper than apx-agent eval,
     no MLflow / eval dataset required.
     """
     agent = _load_finalized_agent(module)
@@ -4137,7 +4137,7 @@ def test_cmd(
         from mlflow.types.agent import ChatAgentMessage
     except ImportError as e:
         raise click.ClickException(
-            "apx test requires the eval extra (mlflow). "
+            "apx-agent test requires the eval extra (mlflow). "
             "Install with: pip install 'apx-agent[eval]'"
         ) from e
 
@@ -4199,8 +4199,8 @@ def list_group(
 ) -> None:
     """Discover workspace resources — catalogs, schemas, tables, tools, agents.
 
-    With no subcommand, behaves like ``apx list agents`` for backwards
-    compatibility. Run ``apx list --help`` to see available subcommands.
+    With no subcommand, behaves like ``apx-agent list agents`` for backwards
+    compatibility. Run ``apx-agent list --help`` to see available subcommands.
     """
     if ctx.invoked_subcommand is None:
         ctx.invoke(list_agents_cmd, catalog=catalog, schema=schema, fmt=fmt)
@@ -4211,7 +4211,7 @@ def _require_sdk() -> "Any":
         from databricks.sdk import WorkspaceClient
         return WorkspaceClient()
     except ImportError as e:
-        raise click.ClickException("apx list requires databricks-sdk.") from e
+        raise click.ClickException("apx-agent list requires databricks-sdk.") from e
 
 
 @list_group.command("agents")
@@ -4373,7 +4373,7 @@ def list_tables_cmd(catalog: str, schema: str, fmt: str) -> None:
 def list_tools_cmd(catalog: str, schema: str, fmt: str) -> None:
     """List UC functions in CATALOG.SCHEMA (available as agent tools).
 
-    These are the functions ``apx publish-tools`` registers and that
+    These are the functions ``apx-agent publish-tools`` registers and that
     DataAgent / CoworkerAgent can call when ``include_functions=True``.
     """
     ws = _require_sdk()
@@ -4441,7 +4441,7 @@ def cost(
     try:
         from databricks.sdk import WorkspaceClient
     except ImportError as e:
-        raise click.ClickException("apx cost requires databricks-sdk.") from e
+        raise click.ClickException("apx-agent cost requires databricks-sdk.") from e
 
     from apx_agent import cost_for_agent
 
@@ -4563,7 +4563,7 @@ def topology(
     try:
         from databricks.sdk import WorkspaceClient
     except ImportError as e:
-        raise click.ClickException("apx topology requires databricks-sdk.") from e
+        raise click.ClickException("apx-agent topology requires databricks-sdk.") from e
 
     from apx_agent import discover_topology, render_topology
 
@@ -4605,7 +4605,7 @@ def eval_chain_cmd(
     """Eval a multi-agent chain — per-prompt + per-sub-agent coverage."""
     agent = _load_finalized_agent(module)
 
-    # Load the evalset same way apx eval does
+    # Load the evalset same way apx-agent eval does
     data: Any
     path = Path(evalset)
     try:
@@ -5258,7 +5258,7 @@ def watchdog_status(
 # memory / examples — store CRUD + recall from the CLI
 # ---------------------------------------------------------------------------
 #
-# Both subcommand groups (`apx memory ...` and `apx examples ...`) operate
+# Both subcommand groups (`apx-agent memory ...` and `apx-agent examples ...`) operate
 # against a user-supplied store. The store comes from one of two places:
 #
 #   1. --store-module MODULE:VAR              (explicit flag)
