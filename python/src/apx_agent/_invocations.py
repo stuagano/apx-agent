@@ -41,9 +41,9 @@ OBO auth bridge:
   This is THE seam that preserves enterprise user-scope auth across the move
   to the supported runtime.
 
-Requires the ``langgraph`` and ``eval`` extras::
+Requires the ``eval`` extra (mlflow)::
 
-    pip install 'apx-agent[langgraph,eval]'
+    pip install 'apx-agent[eval]'
 """
 
 from __future__ import annotations
@@ -85,10 +85,9 @@ def mount_invocations_route(
             by the ``conversation_id`` in ``context``.
 
     Returns:
-        ``True`` if the route was mounted; ``False`` if the optional
-        ``langgraph`` / ``eval`` extras are missing (warning is logged).
-        Mounting is best-effort: a missing dep at startup never breaks the
-        whole app.
+        ``True`` if the route was mounted; ``False`` if the ``eval`` extra
+        (mlflow) is missing (warning is logged). Mounting is best-effort: a
+        missing dep at startup never breaks the whole app.
     """
     try:
         from ._chat_agent import chat_agent_for
@@ -96,7 +95,7 @@ def mount_invocations_route(
     except ImportError as e:
         logger.warning(
             "Cannot mount /invocations: %s. "
-            "Install apx-agent[langgraph,eval] to enable the MLflow ChatAgent route.",
+            "Install apx-agent[eval] to enable the MLflow ChatAgent route.",
             e,
         )
         return False

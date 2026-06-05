@@ -3023,19 +3023,20 @@ def _preflight_apps(cwd: Path) -> None:
 
 
 def _validate_responses_agent_compiler() -> None:
-    """Confirm the apps extra is installed.
+    """Confirm mlflow.genai.agent_server is installed.
 
-    The Apps deploy flow ultimately relies on ``compile_to_responses_agent``
-    being available at runtime in the deployed image. We surface a friendly
-    error if the apx-agent[apps] extra (mlflow.genai) isn't installed in
-    the developer environment.
+    The Apps deploy flow relies on ``compile_to_responses_agent`` at the
+    deployed image level; the module-level import of ``_responses_agent``
+    always succeeds (mlflow is lazy-imported). Check the real runtime dep
+    (mlflow.genai) directly so a missing ``eval`` extra is caught at
+    ``apx deploy`` time rather than at first request.
     """
     try:
-        from apx_agent._responses_agent import compile_to_responses_agent  # noqa: F401
+        import mlflow.genai.agent_server  # noqa: F401
     except ImportError as e:
         raise click.ClickException(
-            "compile_to_responses_agent is not available — please install "
-            "the apps extra: pip install 'apx-agent[apps]'. "
+            "mlflow.genai.agent_server is not available — please install "
+            "mlflow: pip install 'apx-agent[eval]' or pip install 'mlflow>=3.12'. "
             f"(underlying error: {e})"
         ) from e
 

@@ -44,10 +44,10 @@ application of the decorators::
     invoke()(non_streaming)   # module-level — registers once
     stream()(streaming)       # module-level — registers once
 
-Requires the ``langgraph`` and ``eval`` extras (mlflow >= 3.x for
+Requires the ``eval`` extra (mlflow >= 3.x for
 ``mlflow.genai.agent_server`` and ``mlflow.types.responses``)::
 
-    pip install 'apx-agent[langgraph,eval]'  # or 'apx-agent[apps]' when available
+    pip install 'apx-agent[eval]'
 """
 
 from __future__ import annotations
@@ -69,8 +69,8 @@ logger = logging.getLogger(__name__)
 
 _APPS_MISSING_MSG = (
     "compile_to_responses_agent requires mlflow>=3.x (mlflow.genai.agent_server "
-    "and mlflow.types.responses). Install with: pip install 'apx-agent[apps]' "
-    "(or pip install 'apx-agent[eval]' and ensure mlflow>=3 is on the path)."
+    "and mlflow.types.responses). Install with: pip install 'apx-agent[eval]' "
+    "(ensure mlflow>=3.12 is installed)."
 )
 
 

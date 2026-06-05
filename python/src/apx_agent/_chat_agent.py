@@ -36,9 +36,9 @@ Hosting decision matrix:
       deploy. Each request runs as the model's service principal unless the
       caller threads a user token through ``custom_inputs``.
 
-Requires the ``langgraph`` and ``eval`` (mlflow) extras::
+Requires the ``eval`` extra (mlflow)::
 
-    pip install 'apx-agent[langgraph,eval]'
+    pip install 'apx-agent[eval]'
 """
 
 from __future__ import annotations
