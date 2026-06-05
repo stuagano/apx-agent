@@ -113,6 +113,15 @@ def mount_invocations_route(
         custom_inputs: dict[str, Any] = dict(body.get("custom_inputs") or {})
         stream = bool(body.get("stream", False))
 
+        # --- context.conversation_id → custom_inputs.session_id bridge ----
+        # AI Playground and Model Serving send the session key in the standard
+        # MLflow ChatAgent ``context`` field. The ChatAgent reads it from
+        # ``custom_inputs["session_id"]``. Bridge here so multi-turn memory
+        # works without callers knowing the internal key name.
+        context_raw: dict[str, Any] = body.get("context") or {}
+        if context_raw.get("conversation_id"):
+            custom_inputs.setdefault("session_id", context_raw["conversation_id"])
+
         # --- OBO header bridge ---------------------------------------------
         # Unified extractor handles both runtime conventions:
         #   - custom_inputs.user_token (caller-supplied; wins)
