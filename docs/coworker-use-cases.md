@@ -7,13 +7,19 @@ neither system can answer alone.
 ## What the CoworkerAgent actually is
 
 `CoworkerAgent` **is a** `DataAgent` (subclass, not a wrapper — see
-`python/src/apx_agent/coworker.py`). It adds exactly two knobs:
+`python/src/apx_agent/coworker.py`). It adds three identity knobs and one
+memory knob on top of `DataAgent`:
 
 1. **`persona`** — a plain string woven into the grounded instructions the
    `DataAgent` already builds from the schema. There is no separate
    `PersonalityConfig` class.
-2. **`memory`** — a one-word tier knob: `"off"` / `"inmemory"` /
-   `"persistent"` (default, UC Delta) / `"delta"`. It normalizes into
+2. **`join_key`** — the business entity linking the two source systems
+   (e.g. `"employee ID"`, `"opportunity ID"`). Folded into the objective so
+   the agent knows which field to join on across landed tables.
+3. **`objective`** — what this agent is designed to do. Combined with
+   `join_key` when both are given.
+4. **`memory`** — a one-word tier knob: `"off"` (default) / `"inmemory"` /
+   `"persistent"` (UC Delta) / `"delta"`. It normalizes into
    `MemoryBackendConfig` + `SessionBackendConfig` carried as declared config;
    the framework's finalize/serve path does the wiring, so construction needs
    no `ws`. `memory="lakebase"` deliberately raises — production pgvector
@@ -65,21 +71,25 @@ So every use case below is **the same outline, different colors**:
 ```toml
 # Payroll coworker — Kronos × Workday
 [tool.apx.agent]
-template = "coworker"
-catalog  = "main"
-schema   = "payroll"        # Kronos + Workday landed tables
-persona  = "a payroll operations analyst"
-memory   = "persistent"
+template   = "coworker"
+catalog    = "main"
+schema     = "payroll"        # Kronos + Workday landed tables
+persona    = "a payroll operations analyst"
+join_key   = "employee ID"
+objective  = "surface mismatches between hours worked and paychecks issued"
+memory     = "persistent"
 ```
 
 ```toml
 # Quote-to-Cash coworker — Salesforce × NetSuite: SAME template
 [tool.apx.agent]
-template = "coworker"
-catalog  = "main"
-schema   = "revops"         # Salesforce + NetSuite landed tables
-persona  = "a revenue operations analyst"
-memory   = "persistent"
+template   = "coworker"
+catalog    = "main"
+schema     = "revops"         # Salesforce + NetSuite landed tables
+persona    = "a revenue operations analyst"
+join_key   = "opportunity ID"
+objective  = "identify revenue leakage between closed deals and invoiced amounts"
+memory     = "persistent"
 ```
 
 Nothing else changes. One template, six coworkers — the Spec fields are the

@@ -191,6 +191,8 @@ from apx_agent import CoworkerAgent
 agent = CoworkerAgent(
     "main", "payroll",
     persona="a payroll operations analyst",
+    join_key="employee ID",
+    objective="surface mismatches between hours worked and paychecks issued",
     memory="persistent",              # picks up [tool.apx.agent.memory] if present
 )
 ```

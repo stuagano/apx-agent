@@ -118,6 +118,7 @@ The `template` inline-table selects a registered template by `name` and passes t
 | Name | Class | Spec fields |
 |---|---|---|
 | `data` | `DataTemplate` | `catalog`, `schema`, `warehouse_id?`, `genie_space?`, `vector_index?`, `include_functions?` |
+| `coworker` | `CoworkerTemplate` | `catalog`, `schema`, `persona?`, `join_key?`, `objective?`, `memory?`, `warehouse_id?`, `genie_space?`, `vector_index?`, `include_functions?` |
 
 **Interaction with `[[tool.apx.tools]]`:** Config-declared tools are additive — they attach after the template builds the leaf agent. A template-built `DataAgent` gets its wired SQL/Genie/UC tools from the template build; `[[tool.apx.tools]]` entries add on top. Code-wired tools win on name collision.
 
