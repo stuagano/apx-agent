@@ -1,12 +1,12 @@
-"""Coworker — a pre-grounded DataAgent that remembers (facts + session).
+"""Coworker — a DataAgent with a named persona.
 
 ``CoworkerAgent`` is a ``DataAgent`` subclass.  All it adds is:
 
 - ``persona`` — woven into the grounded instructions.
-- ``memory`` — defaulting to ``"persistent"`` instead of ``"off"``.
+- ``memory`` — defaults to ``"off"`` (stateless); opt-in to ``"persistent"``
+  or ``"lakebase"`` when you need cross-session recall.
 
-Memory wiring lives in ``LlmAgent`` (base class); ``normalize_memory_knob``
-lives in ``_models``.  Construction needs no ``ws``.
+Memory wiring lives in ``LlmAgent`` (base class).  Construction needs no ``ws``.
 """
 
 from __future__ import annotations
@@ -20,18 +20,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class CoworkerAgent(DataAgent):
-    """A pre-grounded ``DataAgent`` that remembers — persona + memory.
+    """A ``DataAgent`` with an optional persona (system instructions).
 
-    Adds an optional ``persona`` (woven into the grounded instructions) and
-    defaults ``memory`` to ``"persistent"`` (UC Delta facts + session).
-    Memory wiring is handled by the base ``LlmAgent``; all tier values and
-    escalation paths are documented on ``LlmAgent.memory``.
+    Coworker = DataAgent + persona. Memory is opt-in via the ``memory`` knob;
+    the default is ``"off"`` (stateless). Upgrade to ``"persistent"`` (UC Delta)
+    or ``"lakebase"`` when cross-session recall is needed.
 
     Args:
-        memory: Memory tier — ``"off"``, ``"inmemory"``, ``"persistent"``
-            (default, alias ``"delta"``). For ``lakebase``, use explicit
-            ``[tool.apx.agent.memory]`` / ``.session`` TOML blocks.
-        persona: Optional role phrase (see ``DataAgent``).
+        persona: Optional role phrase woven into grounded instructions.
+        memory: Memory tier — ``"off"`` (default), ``"inmemory"``,
+            ``"persistent"`` (alias ``"delta"``). For ``lakebase``, use
+            explicit ``[tool.apx.agent.memory]`` / ``.session`` TOML blocks.
         (All other args are ``DataAgent``'s.)
     """
 
@@ -41,7 +40,7 @@ class CoworkerAgent(DataAgent):
         schema: str,
         *,
         persona: str | None = None,
-        memory: str = "persistent",
+        memory: str = "off",
         **kwargs: Any,
     ) -> None:
         super().__init__(catalog, schema, persona=persona, memory=memory, **kwargs)
@@ -49,14 +48,13 @@ class CoworkerAgent(DataAgent):
 
 @template
 class CoworkerTemplate:
-    """A pre-grounded data agent that remembers (facts + session); memory
-    upgradeable off → inmemory → persistent → lakebase. Wraps ``CoworkerAgent``."""
+    """A DataAgent with a named persona; memory off by default, upgradeable."""
 
     name = "coworker"
     title = "Coworker"
     description = (
-        "A pre-grounded data agent that remembers (facts + session); "
-        "memory upgradeable off → inmemory → persistent → lakebase."
+        "A DataAgent with a named persona (system instructions). "
+        "Memory is opt-in: off → inmemory → persistent → lakebase."
     )
 
     class Spec(BaseModel):
@@ -65,7 +63,7 @@ class CoworkerTemplate:
         schema_name: str = Field(alias="schema")  # 'schema' in config dicts
         warehouse_id: str | None = None
         persona: str | None = None
-        memory: str = "persistent"
+        memory: str = "off"
         genie_space: str | None = None
         vector_index: str | None = None
         include_functions: bool = True

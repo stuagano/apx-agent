@@ -53,10 +53,10 @@ class TestCoworkerAgent:
                            tables={"t": ["a(int)"]})
         assert cw.memory_config is None and cw.session_config is None
 
-    def test_default_memory_is_persistent(self):
+    def test_default_memory_is_off(self):
         from apx_agent.coworker import CoworkerAgent
         cw = CoworkerAgent("samples", "tpch", tables={"t": ["a(int)"]})
-        assert cw.memory_config.type == "delta"
+        assert cw.memory_config is None
 
 
 class TestCoworkerTemplate:
