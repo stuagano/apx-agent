@@ -746,6 +746,7 @@ from mlflow.genai.agent_server import AgentServer, invoke, stream
 
 from apx_agent import compile_to_responses_agent, mount_mcp_endpoints, mount_readyz
 from apx_agent._defaults import _make_workspace_client
+from apx_agent._inspection import _load_agent_config
 from apx_agent._memory_wiring import resolve_session_store
 from apx_agent._mlflow_tracing import autolog_if_env
 
@@ -760,7 +761,11 @@ from agent import agent
 MODEL = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
 
 _ws = _make_workspace_client()
-_session_store = resolve_session_store(None, _ws, agent=agent)
+# Load pyproject.toml config so [tool.apx.agent.session] is honoured even when
+# the agent constructor uses memory="off" (the default). Constructor-carried
+# session_config still wins via resolve_session_store's precedence logic.
+_agent_config = _load_agent_config()
+_session_store = resolve_session_store(_agent_config, _ws, agent=agent)
 _invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL, session_store=_session_store)
 
 
