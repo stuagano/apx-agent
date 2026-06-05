@@ -17,20 +17,16 @@ dependencies = [
     "httpx>=0.27.0",
     "mcp>=1.0.0",
     "databricks-openai>=0.15.0",
-]
-
-[project.optional-dependencies]
-eval = ["mlflow>=2.0"]
-langgraph = [
-    # langchain 1.2.x imports ``ExecutionInfo`` from ``langgraph.runtime`` —
-    # only present in langgraph >= 1.1.0. Without this floor the resolver
-    # can land on 1.0.10 and the App throws ImportError at first request.
-    # Surfaced by the fe-stable customer_triage Apps deploy on 2026-05-20.
+    # langchain 1.2.x imports ExecutionInfo from langgraph.runtime —
+    # only present in langgraph >= 1.1.0.
     "langgraph>=1.1.0",
     "langchain>=1.0.0",
     "langchain-core>=1.0.0",
     "databricks-langchain>=0.3.0",
 ]
+
+[project.optional-dependencies]
+eval = ["mlflow>=2.0"]
 uc = [
     "unitycatalog-ai>=0.1.0",
 ]
@@ -38,7 +34,7 @@ lakebase = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
 ]
-all = ["apx-agent[eval,langgraph,uc,lakebase]"]
+all = ["apx-agent[eval,uc,lakebase]"]
 
 [dependency-groups]
 dev = [

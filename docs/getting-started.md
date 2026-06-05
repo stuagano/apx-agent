@@ -36,11 +36,11 @@ export DATABRICKS_CONFIG_PROFILE=<name>
 ### Install apx-agent
 
 ```bash
-uv add "apx-agent[langgraph]"
+uv add apx-agent
 ```
 
-Or pin a specific version: `uv add "apx-agent[langgraph]==0.2.2"`. To track
-`main` before a release: `uv add "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@main#subdirectory=python"`.
+Or pin a specific version: `uv add "apx-agent==0.3.0"`. To track `main`
+before a release: `uv add "apx-agent @ git+https://github.com/stuagano/apx-agent.git@main#subdirectory=python"`.
 
 ### Verify setup
 
@@ -58,7 +58,7 @@ It prints a `Fix:` line for anything wrong. Auth errors caught here are much cle
 ## Scaffold and run locally
 
 ```bash
-uv add "apx-agent[langgraph]"    # install apx into your current env
+uv add apx-agent                 # install apx into your current env
 uv run apx scaffold my-agent     # creates my-agent/ in the current directory
 cd my-agent && uv sync           # my-agent has its own isolated env — sync it
 ```
