@@ -221,8 +221,23 @@ async def _gather_sub_agent_checks(ctx: AgentContext | None) -> list[dict[str, A
     return list(await asyncio.gather(*[_check_sub_agent(raw, url) for raw, url in resolved]))
 
 
+def _pyproject_experiment() -> str:
+    """Return ``[tool.apx.agent].experiment`` from pyproject.toml, or ``""``."""
+    try:
+        from .cli import _read_apx_agent_config  # noqa: PLC0415
+        return _read_apx_agent_config().get("experiment") or ""
+    except Exception:
+        return ""
+
+
 async def _check_mlflow_config() -> dict[str, Any]:
-    """Verify MLFLOW_TRACKING_URI + MLFLOW_EXPERIMENT_ID look sane."""
+    """Verify MLFLOW_TRACKING_URI + experiment config look sane.
+
+    Accepts two equivalent ways to declare the experiment:
+      - ``MLFLOW_EXPERIMENT_ID`` env var (Apps/deploy convention)
+      - ``[tool.apx.agent].experiment`` in pyproject.toml (``apx run`` sets
+        this via ``mlflow.set_experiment()`` before serving starts)
+    """
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
     experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID", "")
 
@@ -240,29 +255,45 @@ async def _check_mlflow_config() -> dict[str, Any]:
             "message": f"MLFLOW_TRACKING_URI={tracking_uri!r} (expected 'databricks')",
             "hint": "Set MLFLOW_TRACKING_URI=databricks to use the workspace MLflow backend.",
         }
-    if not experiment_id:
+    # Accept experiment declared via pyproject.toml as equivalent to the env var.
+    # ``apx run`` calls mlflow.set_experiment() from this key before serving.
+    pyproject_exp = _pyproject_experiment()
+    if not experiment_id and not pyproject_exp:
         return {
             "name": "mlflow_config",
             "status": "warn",
-            "message": "MLFLOW_EXPERIMENT_ID not set — traces land in the default experiment",
-            "hint": "Set MLFLOW_EXPERIMENT_ID to pin the experiment. Find the ID in the MLflow UI URL.",
+            "message": "Experiment not configured — traces land in the default experiment",
+            "hint": (
+                "Set MLFLOW_EXPERIMENT_ID in app.yaml, or set `experiment` in "
+                "[tool.apx.agent] in pyproject.toml."
+            ),
         }
 
     # Verify the experiment actually exists and is reachable.
+    # Prefer MLFLOW_EXPERIMENT_ID (numeric id); fall back to name lookup.
     try:
         from mlflow.tracking import MlflowClient as _MlflowClient
 
         def _verify() -> str:
-            exp = _MlflowClient().get_experiment(experiment_id)
-            return getattr(exp, "name", experiment_id)
+            client = _MlflowClient()
+            if experiment_id:
+                exp = client.get_experiment(experiment_id)
+                return getattr(exp, "name", experiment_id)
+            # pyproject experiment is a name, not an id — look up by name.
+            exp = client.get_experiment_by_name(pyproject_exp)
+            if exp is None:
+                raise ValueError(f"experiment {pyproject_exp!r} not found")
+            return exp.name
 
+        exp_label = experiment_id or pyproject_exp
         exp_name = await asyncio.wait_for(
             asyncio.to_thread(_verify), timeout=_CHECK_TIMEOUT_S
         )
+        source = "env" if experiment_id else "pyproject.toml"
         return {
             "name": "mlflow_config",
             "status": "ok",
-            "message": f"Experiment {experiment_id!r} ({exp_name}) reachable",
+            "message": f"Experiment {exp_label!r} ({exp_name}) reachable [{source}]",
             "hint": "",
         }
     except ImportError:
@@ -277,14 +308,15 @@ async def _check_mlflow_config() -> dict[str, Any]:
             "name": "mlflow_config",
             "status": "warn",
             "message": f"MLflow experiment lookup timed out after {_CHECK_TIMEOUT_S}s",
-            "hint": "Workspace may be slow or MLFLOW_EXPERIMENT_ID may be wrong.",
+            "hint": "Workspace may be slow or the experiment name/ID may be wrong.",
         }
     except Exception as exc:  # noqa: BLE001
+        exp_label = experiment_id or pyproject_exp
         return {
             "name": "mlflow_config",
             "status": "fail",
-            "message": f"Experiment {experiment_id!r} not found: {str(exc)[:160]}",
-            "hint": "Verify MLFLOW_EXPERIMENT_ID matches an experiment in this workspace.",
+            "message": f"Experiment {exp_label!r} not found: {str(exc)[:160]}",
+            "hint": "Verify MLFLOW_EXPERIMENT_ID or [tool.apx.agent].experiment matches an experiment in this workspace.",
         }
 
 
@@ -667,12 +699,27 @@ async def _check_mlflow_read() -> dict[str, Any]:
             "message": "mlflow not installed",
             "hint": "",
         }
+
+    # Resolve experiment_id: prefer env var; fall back to pyproject.toml name.
+    if not experiment_id:
+        pyproject_exp = _pyproject_experiment()
+        if pyproject_exp:
+            try:
+                exp = _MlflowClient().get_experiment_by_name(pyproject_exp)
+                if exp is not None:
+                    experiment_id = exp.experiment_id
+            except Exception:
+                pass
+
     if not experiment_id:
         return {
             "name": "mlflow_read",
             "status": "skip",
-            "message": "MLFLOW_EXPERIMENT_ID not set — read path not exercised",
-            "hint": "Set MLFLOW_EXPERIMENT_ID to verify trace reads work.",
+            "message": "Experiment not configured — read path not exercised",
+            "hint": (
+                "Set MLFLOW_EXPERIMENT_ID or `experiment` in [tool.apx.agent] "
+                "to verify trace reads work."
+            ),
         }
 
     def _read() -> tuple[str, bool]:

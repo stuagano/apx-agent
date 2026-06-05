@@ -453,3 +453,134 @@ class TestCheckMlflowExportCategories:
         assert "write_denied" in result["message"]
         assert "EDIT" in result["hint"]
         _mlflow_tracing._mlflow_export_errors.clear()
+
+
+class TestMlflowConfigPyprojectFallback:
+    """_check_mlflow_config must not warn when experiment is set via pyproject.toml."""
+
+    @pytest.mark.asyncio
+    async def test_pyproject_experiment_suppresses_missing_id_warn(self, monkeypatch):
+        from apx_agent._ui_probe import _check_mlflow_config
+
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks")
+        monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+
+        fake_exp = MagicMock()
+        fake_exp.name = "/Users/x/my-agent-experiment"
+
+        with patch("apx_agent._ui_probe._pyproject_experiment", return_value="my-agent-experiment"), \
+             patch("mlflow.tracking.MlflowClient") as mock_client_cls:
+            mock_client_cls.return_value.get_experiment_by_name.return_value = fake_exp
+            result = await _check_mlflow_config()
+
+        assert result["status"] == "ok"
+        assert "pyproject.toml" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_no_experiment_anywhere_warns(self, monkeypatch):
+        from apx_agent._ui_probe import _check_mlflow_config
+
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks")
+        monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+
+        with patch("apx_agent._ui_probe._pyproject_experiment", return_value=""):
+            result = await _check_mlflow_config()
+
+        assert result["status"] == "warn"
+        assert "pyproject.toml" in result["hint"]
+
+    @pytest.mark.asyncio
+    async def test_env_var_id_takes_precedence(self, monkeypatch):
+        from apx_agent._ui_probe import _check_mlflow_config
+
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks")
+        monkeypatch.setenv("MLFLOW_EXPERIMENT_ID", "42")
+
+        fake_exp = MagicMock()
+        fake_exp.name = "env-exp"
+
+        with patch("apx_agent._ui_probe._pyproject_experiment", return_value="pyproject-exp"), \
+             patch("mlflow.tracking.MlflowClient") as mock_client_cls:
+            mock_client_cls.return_value.get_experiment.return_value = fake_exp
+            result = await _check_mlflow_config()
+
+        assert result["status"] == "ok"
+        assert "env" in result["message"]
+        mock_client_cls.return_value.get_experiment.assert_called_once_with("42")
+
+
+class TestInvocationsSessionBridge:
+    """context.conversation_id must be bridged to custom_inputs.session_id."""
+
+    @pytest.mark.asyncio
+    async def test_context_conversation_id_injected(self):
+        from apx_agent._invocations import mount_invocations_route
+        from apx_agent import LlmAgent, AgentConfig
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from unittest.mock import MagicMock, patch
+        from mlflow.types.agent import ChatAgentResponse
+
+        agent = LlmAgent(tools=[])
+        config = AgentConfig(name="sess-test", model="fake-model")
+
+        captured: dict = {}
+        mock_ca = MagicMock()
+        mock_ca.predict.return_value = ChatAgentResponse(messages=[])
+
+        def _spy(agent_arg, *, model, session_store=None):
+            captured["chat_agent"] = mock_ca
+            return mock_ca
+
+        app = FastAPI()
+        with patch("apx_agent._chat_agent.chat_agent_for", side_effect=_spy):
+            mount_invocations_route(app, agent, config)
+            client = TestClient(app)
+            client.post(
+                "/invocations",
+                json={
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "context": {"conversation_id": "conv-abc-123"},
+                },
+            )
+
+        call_kwargs = mock_ca.predict.call_args.kwargs
+        custom_inputs = call_kwargs.get("custom_inputs") or {}
+        assert custom_inputs.get("session_id") == "conv-abc-123"
+
+    @pytest.mark.asyncio
+    async def test_explicit_session_id_not_overridden(self):
+        from apx_agent._invocations import mount_invocations_route
+        from apx_agent import LlmAgent, AgentConfig
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from unittest.mock import MagicMock, patch
+        from mlflow.types.agent import ChatAgentResponse
+
+        agent = LlmAgent(tools=[])
+        config = AgentConfig(name="sess-test2", model="fake-model")
+
+        captured: dict = {}
+        mock_ca = MagicMock()
+        mock_ca.predict.return_value = ChatAgentResponse(messages=[])
+
+        def _spy(agent_arg, *, model, session_store=None):
+            captured["chat_agent"] = mock_ca
+            return mock_ca
+
+        app = FastAPI()
+        with patch("apx_agent._chat_agent.chat_agent_for", side_effect=_spy):
+            mount_invocations_route(app, agent, config)
+            client = TestClient(app)
+            client.post(
+                "/invocations",
+                json={
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "custom_inputs": {"session_id": "explicit-id"},
+                    "context": {"conversation_id": "conv-should-not-win"},
+                },
+            )
+
+        call_kwargs = mock_ca.predict.call_args.kwargs
+        custom_inputs = call_kwargs.get("custom_inputs") or {}
+        assert custom_inputs.get("session_id") == "explicit-id"
