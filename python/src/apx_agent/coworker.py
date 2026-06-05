@@ -1,67 +1,48 @@
-"""Coworker — a DataAgent with a named persona.
+"""Coworker — a DataAgent with persona + objective.
 
-``CoworkerAgent`` is a ``DataAgent`` subclass.  All it adds is:
+A *coworker* is not a separate agent type; it is a ``DataAgent`` configured
+with a ``persona`` (who it is) and an ``objective`` (what it is designed to
+do).  ``CoworkerAgent`` is therefore just an alias for ``DataAgent``:
 
-- ``persona`` — woven into the grounded instructions.
-- ``memory`` — defaults to ``"off"`` (stateless); opt-in to ``"persistent"``
-  or ``"lakebase"`` when you need cross-session recall.
+    agent = DataAgent(
+        "main", "payroll",
+        persona="a payroll specialist",
+        objective="process payroll and answer compensation questions",
+    )
 
-Memory wiring lives in ``LlmAgent`` (base class).  Construction needs no ``ws``.
+``CoworkerTemplate`` is kept for template-as-config use cases and builds a
+``DataAgent`` directly.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from ._models import normalize_memory_knob as normalize_memory_knob  # re-export for tests
 from .data_agent import DataAgent
 from ._template import template
+from ._models import normalize_memory_knob as normalize_memory_knob  # re-export for tests
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class CoworkerAgent(DataAgent):
-    """A ``DataAgent`` with an optional persona (system instructions).
-
-    Coworker = DataAgent + persona. Memory is opt-in via the ``memory`` knob;
-    the default is ``"off"`` (stateless). Upgrade to ``"persistent"`` (UC Delta)
-    or ``"lakebase"`` when cross-session recall is needed.
-
-    Args:
-        persona: Optional role phrase woven into grounded instructions.
-        memory: Memory tier — ``"off"`` (default), ``"inmemory"``,
-            ``"persistent"`` (alias ``"delta"``). For ``lakebase``, use
-            explicit ``[tool.apx.agent.memory]`` / ``.session`` TOML blocks.
-        (All other args are ``DataAgent``'s.)
-    """
-
-    def __init__(
-        self,
-        catalog: str,
-        schema: str,
-        *,
-        persona: str | None = None,
-        objective: str | None = None,
-        memory: str = "off",
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(catalog, schema, persona=persona, objective=objective, memory=memory, **kwargs)
+# A coworker IS a DataAgent — no subclass needed.
+CoworkerAgent = DataAgent
 
 
 @template
 class CoworkerTemplate:
-    """A DataAgent with a named persona; memory off by default, upgradeable."""
+    """A DataAgent with persona + objective; memory off by default."""
 
     name = "coworker"
     title = "Coworker"
     description = (
-        "A DataAgent with a named persona (system instructions). "
-        "Memory is opt-in: off → inmemory → persistent → lakebase."
+        "A DataAgent with a persona (who it is) and an objective "
+        "(what it is designed to do). Memory is opt-in."
     )
 
     class Spec(BaseModel):
         model_config = ConfigDict(populate_by_name=True)
         catalog: str
-        schema_name: str = Field(alias="schema")  # 'schema' in config dicts
+        schema_name: str = Field(alias="schema")
         warehouse_id: str | None = None
         persona: str | None = None
         objective: str | None = None
@@ -70,8 +51,8 @@ class CoworkerTemplate:
         vector_index: str | None = None
         include_functions: bool = True
 
-    def build(self, spec: "CoworkerTemplate.Spec", *, ws: Any | None = None) -> CoworkerAgent:
-        return CoworkerAgent(
+    def build(self, spec: "CoworkerTemplate.Spec", *, ws: Any | None = None) -> DataAgent:
+        return DataAgent(
             spec.catalog,
             spec.schema_name,
             persona=spec.persona,
