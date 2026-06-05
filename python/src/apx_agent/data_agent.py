@@ -47,6 +47,7 @@ def _build_data_tools_and_instructions(
     vector_index: str | None,
     instructions: str | None,
     persona: str | None,
+    objective: str | None,
     tables: dict | None,
     extra_tools: list[Any] | None,
 ) -> tuple[list[Any], str]:
@@ -96,7 +97,7 @@ def _build_data_tools_and_instructions(
         tools += extra_tools
 
     resolved_instructions = instructions or build_instructions_from_schema(
-        catalog, schema, tables, persona=persona
+        catalog, schema, tables, persona=persona, objective=objective
     )
     return tools, resolved_instructions
 
@@ -118,9 +119,11 @@ class DataAgent(LlmAgent):
         genie_space: Optional Genie space id — adds a ``genie_tool``.
         vector_index: Optional Vector Search index — adds a ``vector_search_tool``.
         instructions: Override the schema-generated grounding instructions.
-        persona: Optional role phrase woven into the schema-generated
-            instructions ("You are {persona}. …"). Ignored when ``instructions``
-            is given explicitly.
+        persona: Optional role phrase ("a payroll analyst"). Woven into
+            schema-generated instructions. Ignored when ``instructions`` is given.
+        objective: Optional mission phrase ("process payroll and answer
+            compensation questions"). When both persona and objective are given,
+            the lead becomes "You are {persona} designed to {objective}."
         tables: Pre-baked schema as ``{table: ["col(type)", ...]}`` (e.g. the
             ``.apx/schema.json`` manifest). Grounds the agent without a live
             workspace call. When omitted, falls back to live introspection
@@ -143,6 +146,7 @@ class DataAgent(LlmAgent):
         vector_index: str | None = None,
         instructions: str | None = None,
         persona: str | None = None,
+        objective: str | None = None,
         tables: dict | None = None,
         name: str | None = None,
         extra_tools: list[Any] | None = None,
@@ -161,6 +165,7 @@ class DataAgent(LlmAgent):
             vector_index=vector_index,
             instructions=instructions,
             persona=persona,
+            objective=objective,
             tables=tables,
             extra_tools=extra_tools,
         )

@@ -133,14 +133,26 @@ def build_instructions_from_schema(
     schema: str,
     tables: dict[str, list[str]],
     persona: str | None = None,
+    objective: str | None = None,
 ) -> str:
     """Build agent instructions from schema metadata without an LLM call.
 
     When tables (with columns) are known, the instructions LIST the schema and
     tell the agent to query directly — no discovery step. When no tables are
     known, the agent is told to discover the schema with the SQL tool first.
+
+    ``persona`` sets the agent's role ("a payroll analyst").
+    ``objective`` sets its mission ("process payroll and answer compensation questions").
+    When both are given the lead is: "You are {persona} designed to {objective}."
     """
-    lead = f"You are {persona}. " if persona else ""
+    if persona and objective:
+        lead = f"You are {persona} designed to {objective}. "
+    elif persona:
+        lead = f"You are {persona}. "
+    elif objective:
+        lead = f"Your objective: {objective}. "
+    else:
+        lead = ""
     fqn = f"{catalog}.{schema}" if catalog and schema else schema or catalog or "the data"
     table_names = list(tables.keys())
 
