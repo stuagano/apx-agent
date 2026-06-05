@@ -53,6 +53,7 @@ class CoworkerAgent(DataAgent):
         objective: str | None = None,
         **kwargs: Any,
     ) -> None:
+        self.join_key = join_key
         resolved_objective = objective
         if join_key:
             join_context = f"The two source systems are linked on {join_key}"

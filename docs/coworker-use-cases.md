@@ -24,6 +24,8 @@ neither system can answer alone.
 agent = CoworkerAgent(
     "main", "payroll",
     persona="a payroll operations analyst",
+    join_key="employee ID",
+    objective="surface mismatches between hours worked and paychecks issued",
     memory="persistent",
 )
 ```
@@ -35,14 +37,15 @@ The declarative surface is **TOML, not YAML**: `[tool.apx.agent]` in
   with the one-liner above.
 - **Config-first (template-as-config)** — `CoworkerTemplate`
   (`name = "coworker"`) exposes a pydantic `Spec` (`catalog`, `schema`,
-  `warehouse_id`, `persona`, `memory`, `genie_space`, `vector_index`,
-  `include_functions`); `build(spec)` constructs the `CoworkerAgent`. The Spec
-  is the entire declarative surface.
+  `warehouse_id`, `persona`, `join_key`, `objective`, `memory`, `genie_space`,
+  `vector_index`, `include_functions`); `build(spec)` constructs the
+  `CoworkerAgent`. The Spec is the entire declarative surface.
 
-**Mental model:** `CoworkerAgent = DataAgent + persona string + memory tier` —
-pre-grounded in the schema (it already knows the tables/columns) and it
-remembers across turns (facts + session). Default memory works with zero
-infra; Lakebase is an upgrade, never a prerequisite.
+**Mental model:** `CoworkerAgent = DataAgent + persona + join_key + objective` —
+pre-grounded in the schema (it already knows the tables/columns), knows which
+field links the two source systems, and remembers across turns (facts +
+session). Default memory works with zero infra; Lakebase is an upgrade, never
+a prerequisite.
 
 ## The outline and the colors
 
