@@ -184,7 +184,7 @@ See [docs/dev-ui.md](docs/dev-ui.md) for the full `/_apx/*` surface (chat, trace
 Python 3.11+ required.
 
 ```bash
-uv add "apx-agent[langgraph]"
+uv add apx-agent
 uv run apx scaffold my-agent
 cd my-agent && uv run apx run --reload   # FastAPI on :8000, /_apx/* dev UI
 ```
