@@ -1097,6 +1097,42 @@ def _ws_list_functions(ws: "Any", catalog: str, schema: str, limit: int = 100) -
         return []
 
 
+def _scaffold_wizard(
+    ws: "Any | None",
+    target: "str | None",
+    template: "str | None",
+    catalog: "str | None",
+    schema: "str | None",
+) -> "tuple[str, str, str | None, str | None, str | None]":
+    """Directive first-time setup wizard.
+
+    Asks one question at a time, only for values not already pinned by a
+    flag. Returns ``(target, template, catalog, schema, persona)``.
+    """
+    # --- deployment target ---
+    if target is None:
+        click.echo("\nWhere will this agent run?")
+        click.echo("  1. Databricks Apps   ← recommended (dev UI, one-command deploy)")
+        click.echo("  2. Model Serving     (ChatAgent endpoint only)")
+        idx = click.prompt("Target", type=click.IntRange(1, 2), default=1)
+        target = "apps" if idx == 1 else "model-serving"
+
+    # --- agent template ---
+    if template is None:
+        if target == "apps":
+            click.echo("\nAgent type:")
+            click.echo("  1. DataAgent   ← grounded in your data, answers via SQL")
+            click.echo("  2. Coworker    (DataAgent + persistent memory + persona)")
+            idx = click.prompt("Template", type=click.IntRange(1, 2), default=1)
+            template = "data" if idx == 1 else "coworker"
+        else:
+            template = "data"
+
+    # --- catalog / schema / persona ---
+    catalog, schema, persona = _interactive_resolve(ws, catalog, schema, None, template)
+    return target, template, catalog, schema, persona
+
+
 def _interactive_resolve(
     ws: "Any | None",
     catalog: "str | None",
@@ -1335,14 +1371,14 @@ def _scaffold_apps(
 @click.option(
     "--target", "scaffold_target",
     type=click.Choice(["apps", "model-serving"]),
-    default="apps",
-    show_default=True,
+    default=None,
     help=(
         "Runtime to generate scaffolding for. "
         "'apps' (default) generates a Databricks Apps bundle: agent_server/ + "
         "databricks.yml, with the built-in dev UI (chat, edit, tool builder), "
         "deployed via apx deploy. 'model-serving' generates the flat "
-        "agent.py + app.py layout for a Mosaic AI ChatAgent serving endpoint."
+        "agent.py + app.py layout for a Mosaic AI ChatAgent serving endpoint. "
+        "Prompted interactively when omitted in a TTY."
     ),
 )
 @click.option("--force", is_flag=True, help="Overwrite existing files.")
@@ -1371,20 +1407,20 @@ def _scaffold_apps(
 @click.option(
     "--template", "scaffold_template",
     type=click.Choice(["data", "coworker"]),
-    default="data",
-    show_default=True,
+    default=None,
     help="Agent kind: 'data' (pre-grounded SQL agent) or 'coworker' "
-         "(pre-grounded + memory). Apps target only for coworker.",
+         "(pre-grounded + memory). Apps target only for coworker. "
+         "Prompted interactively when omitted in a TTY.",
 )
 @click.option(
     "--interactive/--no-interactive", "interactive", default=None,
-    help="Prompt for catalog, schema, and (for --template coworker) persona "
-         "instead of auto-detecting. Defaults to interactive when stdin is a TTY.",
+    help="Run the setup wizard (target, template, catalog, schema, persona). "
+         "Defaults to on when stdin is a TTY.",
 )
 def scaffold(
-    name: str, directory: str, scaffold_target: str, force: bool, here: bool,
+    name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
-    scaffold_template: str, interactive: bool | None,
+    scaffold_template: str | None, interactive: bool | None,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -1430,28 +1466,43 @@ def scaffold(
             )
     target.mkdir(parents=True, exist_ok=True)
 
-    # Interactive resolution — prompt for missing catalog/schema/persona when
-    # running in a TTY (or when --interactive is explicit). --no-interactive or
-    # a non-TTY stdin skips prompts (CI-safe). Already-provided flags pass through.
+    # -----------------------------------------------------------------------
+    # Step 1: run the setup wizard or apply CLI defaults.
+    # The wizard fires in a TTY (or with --interactive) and asks for anything
+    # not already pinned by a flag. --no-interactive / CI stdin skips it.
+    # -----------------------------------------------------------------------
     persona: str | None = None
     interactive_mode = interactive if interactive is not None else sys.stdin.isatty()
-    _needs_prompt = catalog is None or schema is None or scaffold_template == "coworker"
-    if interactive_mode and _needs_prompt:
-        ws_i = _make_ws_for_scaffold(profile)
-        catalog, schema, persona = _interactive_resolve(
-            ws_i, catalog, schema, persona, scaffold_template
+
+    if interactive_mode:
+        scaffold_target, scaffold_template, catalog, schema, persona = _scaffold_wizard(
+            ws=_make_ws_for_scaffold(profile),
+            target=scaffold_target,
+            template=scaffold_template,
+            catalog=catalog,
+            schema=schema,
+        )
+    else:
+        scaffold_target = scaffold_target or "apps"
+        scaffold_template = scaffold_template or "data"
+
+    # -----------------------------------------------------------------------
+    # Step 2: validate the combination before touching the filesystem.
+    # -----------------------------------------------------------------------
+    if scaffold_target == "model-serving" and scaffold_template == "coworker":
+        raise click.ClickException(
+            "--template coworker requires --target apps "
+            "(model-serving coworker scaffold is a follow-up)."
         )
 
-    # Resolve the default DataAgent's data target + a sample table for the
-    # baked example tool: explicit flags win, else probe the workspace
-    # (best-effort), else fall back to the samples demo.
+    # -----------------------------------------------------------------------
+    # Step 3: resolve the data source — explicit > auto-detect > demo fallback.
+    # -----------------------------------------------------------------------
     table: str | None = None
     if catalog and schema:
-        # Explicit target — still probe a table so the baked example tool
-        # grounds in real data (parity with the auto-detected path).
         table = _probe_first_table(catalog, schema, profile)
         extra = f" (example tool over `{table}`)" if table else ""
-        click.echo(f"# data source: {catalog}.{schema} (from --catalog/--schema){extra}")
+        click.echo(f"# data source: {catalog}.{schema}{extra}")
     else:
         found = _discover_default_data(profile)
         if found:
@@ -1465,15 +1516,8 @@ def scaffold(
             catalog, schema = "samples", "nyctaxi"
             click.echo(
                 "# data source: samples.nyctaxi (default — couldn't probe the "
-                "workspace; pass --catalog/--schema or set a profile to ground "
-                "the agent in your own data)"
+                "workspace; pass --catalog/--schema to ground the agent in your data)"
             )
-
-    if scaffold_target == "model-serving" and scaffold_template == "coworker":
-        raise click.ClickException(
-            "--template coworker requires --target apps "
-            "(model-serving coworker scaffold is a follow-up)."
-        )
 
     if scaffold_target == "apps":
         _scaffold_apps(
