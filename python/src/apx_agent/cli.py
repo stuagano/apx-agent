@@ -665,14 +665,13 @@ from __future__ import annotations
 from apx_agent import DataAgent
 
 <EXAMPLE_TOOL>
-# A governed data agent over ``<CATALOG>.<SCHEMA>`` (auto-detected from your
-# workspace at scaffold time). It answers questions grounded in that schema and
-# queries via a SQL tool that runs as the calling user — their UC grants apply.
+# A governed data agent over ``<CATALOG>.<SCHEMA>`` (schema baked at scaffold
+# time — no runtime discovery needed). It answers questions grounded in that
+# schema and queries via a SQL tool that runs as the calling user.
 #
 # Make it your own:
 #   * point it at your own data:  DataAgent("main", "sales", name="<APP_NAME>")
-#   * pass ``ws=WorkspaceClient()`` to auto-discover the schema's tables + UC
-#     functions and ground the instructions in the real columns
+#   * re-scaffold to refresh the baked schema:  apx scaffold <name> --catalog <c>
 #   * add ``genie_space=...`` / ``vector_index=...`` for Genie or Vector Search
 #   * or drop back to a plain ``Agent(tools=[...])`` with your own ``@tool``s
 agent = DataAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS>, name="<APP_NAME>")

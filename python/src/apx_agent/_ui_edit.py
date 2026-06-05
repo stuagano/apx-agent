@@ -175,6 +175,7 @@ _LEAF_AGENT_TOOL_KWARG = {
     "Agent": "tools",
     "LlmAgent": "tools",
     "DataAgent": "extra_tools",
+    "CoworkerAgent": "extra_tools",
 }
 
 
