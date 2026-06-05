@@ -30,17 +30,16 @@ agent = LlmAgent(
         uc_function_tool("main.tools.lookup_account"),
         genie_tool("abc123", description="Answer billing questions"),
     ],
-    max_iterations=10,
-    before_tool=lambda name, args: print(f"calling {name}"),
-    after_tool=lambda name, result: audit_log(name, result),
+    # max_iterations=10,                              # cap runaway chains
+    # before_tool=lambda name, args: audit(name),     # intercept every call
+    # after_tool=lambda name, result: log(result),    # inspect every result
+    # input_guardrails=[check_injection],             # gate at the message boundary
+    # memory="persistent",                            # UC Delta — no extra infra
+    # memory="lakebase",                              # pgvector for semantic recall
 )
 ```
 
-The loop knobs: `max_iterations` caps runaway chains. `before_tool` and
-`after_tool` run synchronously around every tool call — use them for logging,
-redaction, rate limiting, or hard stops. `input_guardrails` and
-`output_guardrails` intercept at the message boundary. None of this requires
-subclassing.
+Every hook is optional. None requires subclassing.
 
 **Compose loops explicitly.** `LoopAgent` iterates until a condition is met;
 `SequentialAgent` pipelines agents in order; `ParallelAgent` fans out;
