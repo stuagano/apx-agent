@@ -204,8 +204,10 @@ def _databrickscfg_profiles() -> list[str]:
 def _preflight_databricks_auth() -> None:
     """Fail `apx run`/`deploy` with dev-time guidance when auth is unresolved.
 
-    Delegates to the doctor auth check so inline errors and `apx doctor` share
-    one source of truth.
+    Delegates to the doctor auth checks so inline errors and `apx doctor` share
+    one source of truth. Runs both the offline credential-resolution check and a
+    live workspace round-trip so expired tokens are caught here rather than
+    surfacing as confusing data errors mid-run.
     """
     from . import _doctor as _d
 
@@ -218,6 +220,18 @@ def _preflight_databricks_auth() -> None:
                 "Run `apx doctor` for a full environment check.",
                 result.detail,
                 result.fix,
+            )
+        )
+    # Also verify the token is actually accepted by the workspace.
+    live = _d.check_databricks_workspace(auth_ok=True)
+    if live.status is _d.Status.FAIL:
+        raise click.ClickException(
+            _fix_msg(
+                "Databricks credentials resolved but workspace rejected the token. "
+                "Re-run `databricks auth login` to refresh.\n"
+                "Run `apx doctor` for details.",
+                live.detail,
+                live.fix,
             )
         )
 
@@ -2230,11 +2244,14 @@ def deploy(
                 "databricks-agents is required for deployment. "
                 "Install with: pip install databricks-agents"
             ) from e
-        agents.deploy(registered_model_name, model_version=info.registered_model_version)
+        deployment = agents.deploy(registered_model_name, model_version=info.registered_model_version)
+        endpoint_name = getattr(deployment, "endpoint_name", None) or registered_model_name.rsplit(".", 1)[-1]
         click.echo(
             f"Deployed {registered_model_name} version "
             f"{info.registered_model_version} as a serving endpoint."
         )
+        click.echo(f"  Endpoint: {endpoint_name}")
+        click.echo("  View in workspace: Serving → Endpoints")
     else:
         click.echo("Skipping deploy (--no-deploy).")
 
@@ -3403,9 +3420,20 @@ def _deploy_apps_impl(
         if ok:
             log(f"  readyz: ready ({checks})")
         else:
+            # Parse checks dict into human-readable lines so the error
+            # names the failing capability rather than dumping raw JSON.
+            if isinstance(checks, dict):
+                failing = [
+                    f"  • {k}: {v}"
+                    for k, v in checks.items()
+                    if v not in ("ok", None, True)
+                ]
+                detail = "\n".join(failing) if failing else str(checks)
+            else:
+                detail = str(checks)
             raise click.ClickException(
-                f"readyz gate failed — the app is RUNNING but not ready: {checks}. "
-                f"Re-run with --no-readyz-gate to skip this check."
+                f"readyz gate failed — app is running but not healthy:\n{detail}\n"
+                f"Fix the issues above then re-deploy, or re-run with --no-readyz-gate to skip."
             )
 
     # 7. Final report

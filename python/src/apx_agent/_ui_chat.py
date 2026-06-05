@@ -496,10 +496,24 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   <code>src/{app}/backend/agent_router.py</code> with an <code>Agent(tools=[...])</code> call,
   then restart the dev server.
 </div>""" if not_configured else ""
-    # First-run wizard nudge: show banner if no catalog/warehouse configured
+    # First-run wizard nudge: show banner if no catalog/warehouse configured.
+    # Read from disk (.env) so changes without restart are reflected.
     if not not_configured and ctx:
-        _env_catalog = os.environ.get("DEMO_CATALOG") or os.environ.get("CATALOG", "")
-        _env_wh = os.environ.get("WAREHOUSE_ID", "")
+        from pathlib import Path
+        _dotenv: dict[str, str] = {}
+        for _dotenv_path in (Path.cwd() / ".env", Path.cwd() / ".env.local"):
+            try:
+                for _line in _dotenv_path.read_text().splitlines():
+                    if "=" in _line and not _line.lstrip().startswith("#"):
+                        _k, _, _v = _line.partition("=")
+                        _dotenv[_k.strip()] = _v.strip().strip('"').strip("'")
+            except Exception:
+                pass
+        _env_catalog = (
+            _dotenv.get("DEMO_CATALOG") or _dotenv.get("CATALOG")
+            or os.environ.get("DEMO_CATALOG") or os.environ.get("CATALOG", "")
+        )
+        _env_wh = _dotenv.get("WAREHOUSE_ID") or os.environ.get("WAREHOUSE_ID", "")
         if not _env_catalog or not _env_wh:
             setup_banner = (
                 '<div id="setup-banner" style="background:#1a1200;border-color:#5a3a00;color:#ffb84d">'
