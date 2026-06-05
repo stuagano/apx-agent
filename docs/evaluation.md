@@ -54,9 +54,9 @@ result = evaluate(
 
 The wrapper tolerates the common eval-dataset shapes — bare strings, `{"request": ...}`, `{"input": ...}`, `{"prompt": ...}`, `{"messages": [...]}`. Pass `user_token=...` (and `workspace_host=...`) to evaluate as a specific user via the OBO path — useful for testing UC-grant boundaries during eval.
 
-Requires the `eval` and `langgraph` extras. apx-agent isn't on PyPI yet — from a git clone:
+Requires the `eval` extra (mlflow). apx-agent isn't on PyPI yet — from a git clone:
 
 ```bash
 cd apx-agent/python
-pip install -e '.[eval,langgraph]'
+pip install -e '.[eval]'
 ```
