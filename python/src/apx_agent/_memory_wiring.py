@@ -338,14 +338,17 @@ def attach_declared_memory(
                 "[tool.apx.agent.memory] build failed — skipping memory tools: %s",
                 exc,
             )
-        if store is None and ws is None and mcfg.type in ("lakebase", "delta"):
-            logger.warning(
-                "[tool.apx.agent.memory] type=%r requires ws; ws=None at this point "
-                "(deploy with valid Databricks credentials). Memory tools will be absent.",
-                mcfg.type,
-            )
-            setattr(agent, "_apx_memory_degraded",
-                    f"{mcfg.type} memory needs a workspace/warehouse — not active")
+        if store is None and mcfg.type in ("lakebase", "delta"):
+            if ws is None:
+                logger.warning(
+                    "[tool.apx.agent.memory] type=%r requires ws; ws=None at this point "
+                    "(deploy with valid Databricks credentials). Memory tools will be absent.",
+                    mcfg.type,
+                )
+                msg = f"{mcfg.type} memory needs a workspace/warehouse — not active"
+            else:
+                msg = f"{mcfg.type} memory build failed — check logs for details"
+            setattr(agent, "_apx_memory_degraded", msg)
         if store is not None:
             # Config path uses the dep-principal mechanism (proved in Phase 0 Task 0.2).
             # _use_dep_principal=True emits tools with a `principal: Dependencies.Principal`
@@ -408,7 +411,7 @@ def attach_declared_memory(
 
 
 def resolve_session_store(
-    config: "AgentConfig",
+    config: "AgentConfig | None",
     ws: Any | None,
     override: Any | None = None,
     agent: Any | None = None,
@@ -420,7 +423,8 @@ def resolve_session_store(
     """
     if override is not None:
         return override
-    scfg = config.session if config.session is not None else getattr(agent, "session_config", None)
+    config_session = config.session if config is not None else None
+    scfg = config_session if config_session is not None else getattr(agent, "session_config", None)
     if scfg is None:
         return None
     try:

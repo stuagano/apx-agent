@@ -30,10 +30,14 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+import logging
+
 from ._agents import LlmAgent
 from ._resources import ResourceSpec, attach_resources
 from ._schema import build_instructions_from_schema, introspect_schema, load_baked_schema
 from ._template import template
+
+logger = logging.getLogger(__name__)
 
 
 def _build_data_tools_and_instructions(
@@ -73,6 +77,14 @@ def _build_data_tools_and_instructions(
             and isinstance(baked.get("tables"), dict)
         ):
             resolved_tables = baked["tables"]
+    if not resolved_tables:
+        logger.warning(
+            "DataAgent(%r, %r): no schema found via tables=, ws=, or .apx/schema.json — "
+            "running ungrounded (generic SQL assistant). Pass ws= or run "
+            "`apx scaffold` to bake the schema.",
+            catalog,
+            schema,
+        )
     tables = resolved_tables
 
     sql = sql_tool(warehouse_id=warehouse_id)

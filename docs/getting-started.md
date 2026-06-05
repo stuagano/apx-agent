@@ -44,11 +44,11 @@ before a release: `uv add "apx-agent @ git+https://github.com/stuagano/apx-agent
 
 ### Verify setup
 
-Once `apx` is installed, run `apx doctor` to confirm everything is wired before you touch `apx run` or `apx deploy`:
+Once `apx-agent` is installed, run `apx doctor` to confirm everything is wired before you touch `apx run` or `apx deploy`:
 
 ```bash
-apx doctor            # checks Python, uv, Databricks CLI, auth, project layout
-apx doctor --offline  # skip the live workspace round-trip (CI / offline)
+uv run apx doctor            # checks Python, uv, Databricks CLI, auth, project layout
+uv run apx doctor --offline  # skip the live workspace round-trip (CI / offline)
 ```
 
 It prints a `Fix:` line for anything wrong. Auth errors caught here are much cleaner than errors mid-`apx run`.
@@ -62,6 +62,11 @@ uv add apx-agent                 # install apx into your current env
 uv run apx scaffold my-agent     # creates my-agent/ in the current directory
 cd my-agent && uv sync           # my-agent has its own isolated env — sync it
 ```
+
+> `apx scaffold` is interactive by default — it asks for a catalog, schema, and
+> SQL warehouse, then bakes the schema into `.apx/schema.json` so the agent is
+> grounded before the first question. To skip the prompts and use defaults:
+> `uv run apx scaffold my-agent --no-interactive`.
 
 > `apx scaffold` creates the project in the current directory. If you want it
 > somewhere else, `cd` there first.
@@ -130,11 +135,11 @@ From inside `my-agent/`, this bundles the project and creates a Databricks App. 
 
 `apx deploy` prints the app URL when it finishes. To confirm the agent is live:
 
-1. **Open the URL** — it redirects to `/_apx/agent`, same chat UI as local dev.
-2. **Ask a question** — same first questions you used locally. If the agent answers, the deploy is healthy.
-3. **Check traces** — `/_apx/traces` on the deployed URL shows production spans stored in your workspace's MLflow experiment. A trace with a successful tool call confirms the full stack (auth, SQL warehouse, UC) is working end-to-end.
+1. **Check `/readyz`** — `curl <app-url>/readyz` returns `{"status":"ok"}` when the agent is running and all capabilities (memory, warehouse) are healthy. This is the fastest smoke test.
+2. **Ask a question** — open `<app-url>` in a browser and ask the same questions you tested locally. If the agent answers, the deploy is healthy.
+3. **Check traces** — open your workspace, go to **Machine Learning → Experiments**, and find your agent's experiment. A trace with a successful tool call confirms the full stack (auth, SQL warehouse, UC) is working end-to-end.
 
-If the app shows a 502 or the agent can't reach the warehouse, run `apx doctor` locally and check [`docs/deployment-troubleshooting.md`](deployment-troubleshooting.md).
+If the app shows a 502 or `/readyz` returns an error, run `uv run apx doctor` locally and check [`docs/deployment-troubleshooting.md`](deployment-troubleshooting.md).
 
 ---
 
@@ -148,12 +153,9 @@ from apx_agent import DataAgent
 agent = DataAgent("samples", "nyctaxi")
 ```
 
-Point it at your own data by changing the catalog/schema. Pass `ws=WorkspaceClient()` to auto-discover the schema's tables and columns at construction time:
-
-```python
-from databricks.sdk import WorkspaceClient
-agent = DataAgent("main", "sales", ws=WorkspaceClient())
-```
+Point it at your own data by changing the catalog/schema. The scaffolded agent
+already has the schema baked in (no runtime discovery needed). To refresh
+the schema after table changes, re-run `apx scaffold`.
 
 `DataAgent` is just a specialized `Agent`, so you can also wire tools directly:
 
@@ -221,9 +223,9 @@ No new deployment, no URL change.
 `apx doctor` is the first thing to run when something isn't working:
 
 ```bash
-apx doctor            # full check incl. a live workspace round-trip
-apx doctor --offline  # skip the network check (CI / offline)
-apx doctor --json     # machine-readable output
+uv run apx doctor            # full check incl. a live workspace round-trip
+uv run apx doctor --offline  # skip the network check (CI / offline)
+uv run apx doctor --json     # machine-readable output
 ```
 
 **Auth errors** (`Could not resolve Databricks authentication`) — re-run `databricks auth login --profile <name>` and confirm with `databricks current-user me --profile <name>`, then restart `apx run`.
