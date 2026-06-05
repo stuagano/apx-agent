@@ -2,21 +2,15 @@
 
 Mounts the supported Mosaic AI surface on the agent:
 
-  * ``POST /invocations`` — MLflow ChatAgent protocol (used by Model Serving,
-    AI Playground, Review App, Agent Evaluation). Bridges Databricks Apps'
-    ``X-Forwarded-Access-Token`` header into ``custom_inputs["user_token"]``
-    so user-scoped OBO auth flows through.
+  * ``POST /invocations`` — MLflow ChatAgent protocol (Model Serving, Review App,
+    Agent Evaluation). OBO header bridge for user-scoped auth in Apps.
+  * ``POST /responses`` — MLflow ResponsesAgent protocol (AI Playground, Apps
+    runtime). Same compiled agent, same session_store — no divergence.
   * ``GET /.well-known/agent.json`` — A2A discovery card.
   * ``GET /health`` — liveness probe.
   * ``GET|POST|DELETE /mcp`` — stateless MCP HTTP transport for Genie Code
     and AI Playground.
   * ``{api_prefix}/tools/<name>`` — per-tool FastAPI routes for direct invocation.
-
-The legacy ``/responses`` endpoint, the custom apx-agent trace system, and
-the apx-agent-specific request/response types were deleted when the framework
-moved to the supported runtime (LangGraph + MLflow ChatAgent). ``BaseAgent``
-subclasses' ``.run()`` / ``.stream()`` methods now compile to LangGraph; the
-``/invocations`` route is the protocol surface.
 """
 
 from __future__ import annotations
@@ -730,26 +724,35 @@ def create_app(
             app, agent, config, pyproject_path=pyproject_path
         )
 
-        # Mount the supported /invocations route (MLflow ChatAgent protocol).
-        # Best-effort — missing optional deps log a warning and skip.
+        # Mount the supported /invocations + /responses routes.
+        # Both use the same resolved session_store. Best-effort — missing
+        # optional deps log a warning and skip the affected route only.
         if ctx is not None:
+            _store: Any = None
             try:
-                from ._invocations import mount_invocations_route
+                from ._invocations import mount_invocations_route, mount_responses_route
                 from ._memory_wiring import resolve_session_store  # noqa: PLC0415
 
-                mount_invocations_route(
-                    app,
-                    ctx.agent,
+                _store = resolve_session_store(
                     ctx.config,
-                    session_store=resolve_session_store(
-                        ctx.config,
-                        ws=app.state.workspace_client,
-                        override=session_store,
-                        agent=ctx.agent,
-                    ),
+                    ws=app.state.workspace_client,
+                    override=session_store,
+                    agent=ctx.agent,
+                )
+                mount_invocations_route(
+                    app, ctx.agent, ctx.config, session_store=_store
                 )
             except Exception as exc:
                 logger.warning("Skipping /invocations mount: %s", exc)
+
+            try:
+                from ._invocations import mount_responses_route
+
+                mount_responses_route(
+                    app, ctx.agent, ctx.config, session_store=_store
+                )
+            except Exception as exc:
+                logger.warning("Skipping /responses mount: %s", exc)
 
         if ctx is not None:
             mcp_lifecycle = await _setup_mcp(app, ctx)
@@ -819,6 +822,19 @@ def mount_mcp_endpoints(
     # Mount the route shells immediately. They read from app.state — which
     # gets populated in the lifespan startup event below.
     _mount_protocol_routes(app)
+
+    # Dev UI (/_apx/*) — available when running locally with `apx run`.
+    # Absent in production Apps deployments (DATABRICKS_APP_PORT is set by
+    # the Apps runtime). The mount is call-time so it runs before the startup
+    # event and the routes are registered on the first request.
+    if not os.environ.get("DATABRICKS_APP_PORT"):
+        try:
+            from ._dev import build_dev_ui_router
+
+            app.include_router(build_dev_ui_router())
+            logger.info("Dev UI mounted at /_apx/* (local dev mode)")
+        except Exception as exc:  # pragma: no cover — optional dep
+            logger.debug("Dev UI not available: %s", exc)
 
     # Track the in-flight MCP lifecycle so shutdown can close it cleanly.
     _state_key = "_apx_mount_state"

@@ -1760,6 +1760,14 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
     # ``agent`` module — autolog has to be active before LangChain components
     # are instantiated for the instrumentation to attach.
     os.environ.setdefault("APX_AGENT_MLFLOW_AUTOLOG", "1")
+    _experiment = _read_apx_agent_config().get("experiment")
+    if _experiment:
+        try:
+            import mlflow as _mlflow
+            _mlflow.set_experiment(_experiment)
+            click.echo(f"# MLflow experiment: {_experiment}", err=True)
+        except Exception as exc:  # pragma: no cover — defensive
+            click.echo(f"# MLflow set_experiment skipped: {exc}", err=True)
     try:
         from ._mlflow_tracing import autolog_if_env
         autolog_if_env()

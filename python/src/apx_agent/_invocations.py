@@ -186,3 +186,117 @@ async def _stream_chunks(
         # frame, so consumers parsing only ``data:`` lines still observe it.
         err = json.dumps({"error": type(exc).__name__, "message": str(exc)})
         yield f"data: {err}\n\n"
+
+
+def mount_responses_route(
+    app: FastAPI,
+    agent: BaseAgent,
+    config: "AgentConfig",
+    session_store: Any | None = None,
+) -> bool:
+    """Mount POST ``/responses`` (MLflow ResponsesAgent protocol) onto ``app``.
+
+    This is the ResponsesAgent wire shape — ``{"input": [...], "stream": bool}``
+    — used by AI Playground and the Apps runtime. Adding it to the model-serving
+    target (``create_app``) closes the gap that broke the dev-UI playground for
+    projects that deploy to model serving.
+
+    Args:
+        app: The FastAPI app to mount the route onto.
+        agent: The apx-agent ``BaseAgent`` to serve.
+        config: The ``AgentConfig`` — ``config.model`` is the serving endpoint.
+        session_store: Optional ``SessionStore`` for multi-turn memory.
+
+    Returns:
+        ``True`` if the route was mounted; ``False`` if the ``eval`` extra
+        (mlflow >= 3.x) is missing or compilation fails (warning is logged).
+    """
+    try:
+        from ._responses_agent import compile_to_responses_agent
+    except (ImportError, NotImplementedError) as exc:
+        logger.warning(
+            "Cannot mount /responses: %s. "
+            "Install apx-agent[eval] to enable the ResponsesAgent route.",
+            exc,
+        )
+        return False
+
+    try:
+        _invoke_fn, _stream_fn = compile_to_responses_agent(
+            agent, model=config.model, session_store=session_store
+        )
+    except Exception as exc:
+        logger.warning("Cannot compile ResponsesAgent for /responses: %s", exc)
+        return False
+
+    @app.post("/responses", include_in_schema=False)
+    async def responses_endpoint(request: Request) -> Any:
+        try:
+            body = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
+
+        input_items = body.get("input", [])
+        stream = bool(body.get("stream", False))
+        custom_inputs: dict[str, Any] = dict(body.get("custom_inputs") or {})
+
+        from ._obo import extract_obo_headers
+
+        obo = extract_obo_headers(custom_inputs=custom_inputs, headers=request.headers)
+        for key, val in obo.items():
+            custom_inputs.setdefault(key, val)
+
+        try:
+            from ._responses_agent import _import_responses_types
+
+            ResponsesAgentRequest, _, _ = _import_responses_types()
+            req = ResponsesAgentRequest(
+                input=input_items, custom_inputs=custom_inputs or None
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid input: {exc}")
+
+        with safe_span(
+            "POST /responses",
+            span_type="CHAIN",
+            attributes={
+                "http.route": "/responses",
+                "apx.agent_name": config.name,
+                "apx.streaming": stream,
+                "apx.user_scoped": bool(custom_inputs.get("user_token")),
+                "apx.input_items": len(input_items) if isinstance(input_items, list) else 1,
+            },
+        ):
+            if stream:
+                return StreamingResponse(
+                    _stream_response_events(_stream_fn, req),
+                    media_type="text/event-stream",
+                )
+            result = _invoke_fn(req)
+            return result.model_dump() if hasattr(result, "model_dump") else result
+
+    logger.info(
+        "Mounted /responses (MLflow ResponsesAgent protocol) for agent %r",
+        config.name,
+    )
+    return True
+
+
+async def _stream_response_events(stream_fn: Any, req: Any):
+    """SSE generator for the ``/responses`` endpoint.
+
+    Wraps a sync ``ResponsesAgent`` streaming generator in an async context.
+    Each ``ResponsesAgentStreamEvent`` is serialised as a ``data:`` SSE frame.
+    """
+    try:
+        for event in stream_fn(req):
+            payload = (
+                event.model_dump_json()
+                if hasattr(event, "model_dump_json")
+                else json.dumps(event)
+            )
+            yield f"data: {payload}\n\n"
+    except Exception as exc:
+        logger.exception("Error during /responses stream")
+        err = json.dumps({"type": "error", "error": type(exc).__name__, "message": str(exc)})
+        yield f"data: {err}\n\n"

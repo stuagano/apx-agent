@@ -282,8 +282,8 @@ from ._watchdog import (
     set_uc_tags_for_agent,
 )
 
-# MLflow ChatAgent /invocations route mounter (optional — same extras)
-from ._invocations import mount_invocations_route
+# MLflow ChatAgent /invocations + ResponsesAgent /responses route mounters
+from ._invocations import mount_invocations_route, mount_responses_route
 
 # MLflow tracing helpers (optional — graceful no-op without mlflow)
 from ._mlflow_tracing import (
@@ -538,8 +538,9 @@ __all__ = [
     "make_uc_violation_writer",
     "make_mcp_transport",
     "make_watchdog_transport",
-    # MLflow /invocations route mounter
+    # MLflow route mounters
     "mount_invocations_route",
+    "mount_responses_route",
     # MLflow tracing
     "current_active_span",
     "enable_langchain_autolog",
