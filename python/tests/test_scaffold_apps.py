@@ -446,3 +446,19 @@ def test_scaffold_no_interactive_skips_prompts(tmp_path: Path) -> None:
     )
     # Falls through to auto-detect (which returns samples.nyctaxi when no ws).
     assert result.exit_code == 0, result.output
+
+
+def test_start_server_loads_agent_config_for_session(tmp_path: Path) -> None:
+    """start_server.py must call _load_agent_config() so [tool.apx.agent.session]
+    in pyproject.toml is respected — not just agent-constructor memory=."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["scaffold", "sess_agent", "--target", "apps", "--dir", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+
+    start_server = (tmp_path / "sess_agent" / "agent_server" / "start_server.py").read_text()
+    # The config must be loaded from pyproject.toml and passed to resolve_session_store.
+    assert "_load_agent_config" in start_server
+    assert "resolve_session_store(_agent_config" in start_server
