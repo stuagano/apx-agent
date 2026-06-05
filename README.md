@@ -30,12 +30,7 @@ agent = LlmAgent(
         uc_function_tool("main.tools.lookup_account"),
         genie_tool("abc123", description="Answer billing questions"),
     ],
-    # max_iterations=10,                              # cap runaway chains
-    # before_tool=lambda name, args: audit(name),     # intercept every call
-    # after_tool=lambda name, result: log(result),    # inspect every result
-    # input_guardrails=[check_injection],             # gate at the message boundary
-    # memory="persistent",                            # UC Delta — no extra infra
-    # memory="lakebase",                              # pgvector for semantic recall
+    # memory="lakebase",   # pgvector semantic recall across sessions
 )
 ```
 
