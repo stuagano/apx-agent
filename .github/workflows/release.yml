@@ -10,7 +10,8 @@ on:
       - "v*"
 
 permissions:
-  contents: write  # create the release + upload the wheel as an asset
+  contents: write   # create the release + upload the wheel as an asset
+  id-token: write   # OIDC token for PyPI trusted publisher
 
 jobs:
   release:
@@ -42,6 +43,11 @@ jobs:
             echo "::error::Built wheel version ${VER} does not match tag ${TAG}. Tag a clean commit (no extra commits past the tag)."
             exit 1
           fi
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist/
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

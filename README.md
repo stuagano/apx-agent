@@ -184,11 +184,9 @@ See [docs/dev-ui.md](docs/dev-ui.md) for the full `/_apx/*` surface (chat, trace
 Python 3.11+ required.
 
 ```bash
-git clone https://github.com/stuagano/apx-agent.git
-cd apx-agent/python && uv sync   # installs apx into this env
-uv run apx scaffold my-agent     # creates my-agent/ here
-cd my-agent && uv sync           # my-agent has its own env — sync it
-uv run apx run --reload          # FastAPI on :8000, hot reload, /_apx/* dev UI
+uv add "apx-agent[langgraph]"
+uv run apx scaffold my-agent
+cd my-agent && uv run apx run --reload   # FastAPI on :8000, /_apx/* dev UI
 ```
 
 When it looks right: `uv run apx deploy`.
