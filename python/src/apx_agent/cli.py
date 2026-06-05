@@ -682,7 +682,7 @@ from apx_agent import CoworkerAgent
 #   memory="persistent" # (default) UC Delta tables — survives restart
 #   memory="lakebase"   # production pgvector — use explicit
 #                       # [tool.apx.agent.memory]/[.session] type="lakebase" blocks
-agent = CoworkerAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS>, memory="persistent", name="<APP_NAME>")
+agent = CoworkerAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS><PERSONA_ARG>, memory="persistent", name="<APP_NAME>")
 '''
 
 
@@ -1058,6 +1058,98 @@ def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[
     return (prelude, f", extra_tools=[{fn}]")
 
 
+# ---------------------------------------------------------------------------
+# Workspace listing helpers — used by _interactive_resolve and apx list
+# ---------------------------------------------------------------------------
+
+_SKIP_CATALOGS: frozenset[str] = frozenset({"system", "__databricks_internal"})
+_SKIP_SCHEMAS: frozenset[str] = frozenset({"information_schema"})
+
+
+def _ws_list_catalogs(ws: "Any", limit: int = 50) -> list[str]:
+    try:
+        return [c.name for c in ws.catalogs.list() if c.name and c.name not in _SKIP_CATALOGS][:limit]
+    except Exception:
+        return []
+
+
+def _ws_list_schemas(ws: "Any", catalog: str, limit: int = 50) -> list[str]:
+    try:
+        return [
+            s.name for s in ws.schemas.list(catalog_name=catalog)
+            if s.name and s.name not in _SKIP_SCHEMAS
+        ][:limit]
+    except Exception:
+        return []
+
+
+def _ws_list_tables(ws: "Any", catalog: str, schema: str, limit: int = 100) -> list[Any]:
+    try:
+        return list(ws.tables.list(catalog_name=catalog, schema_name=schema))[:limit]
+    except Exception:
+        return []
+
+
+def _ws_list_functions(ws: "Any", catalog: str, schema: str, limit: int = 100) -> list[Any]:
+    try:
+        return list(ws.functions.list(catalog_name=catalog, schema_name=schema))[:limit]
+    except Exception:
+        return []
+
+
+def _interactive_resolve(
+    ws: "Any | None",
+    catalog: "str | None",
+    schema: "str | None",
+    persona: "str | None",
+    template: str,
+) -> "tuple[str | None, str | None, str | None]":
+    """Prompt for any missing catalog/schema, and persona when template='coworker'.
+
+    Already-provided values pass through unchanged. Falls back to free-text
+    prompts when ws is None or the listing is empty.
+    """
+    if catalog is None:
+        cat_list = _ws_list_catalogs(ws, limit=20) if ws is not None else []
+        if cat_list:
+            click.echo("Available catalogs:")
+            for i, c in enumerate(cat_list, 1):
+                click.echo(f"  {i:2}. {c}")
+            idx = click.prompt(
+                "Choose a catalog",
+                type=click.IntRange(1, len(cat_list)),
+            )
+            catalog = cat_list[idx - 1]
+        else:
+            catalog = click.prompt("Catalog (e.g. main, samples)")
+
+    if schema is None:
+        sch_list = _ws_list_schemas(ws, catalog, limit=20) if (ws is not None and catalog) else []
+        if sch_list:
+            click.echo(f"Available schemas in {catalog}:")
+            for i, s in enumerate(sch_list, 1):
+                click.echo(f"  {i:2}. {s}")
+            idx = click.prompt(
+                "Choose a schema",
+                type=click.IntRange(1, len(sch_list)),
+            )
+            schema = sch_list[idx - 1]
+        else:
+            schema = click.prompt(f"Schema in {catalog}")
+
+    if template == "coworker" and persona is None:
+        raw = click.prompt(
+            "Persona — describe this coworker's role and expertise\n"
+            "  e.g. 'a payroll analyst who knows HR data deeply'\n"
+            "  Leave blank to skip",
+            default="",
+            show_default=False,
+        )
+        persona = raw.strip() or None
+
+    return catalog, schema, persona
+
+
 def _scaffold_model_serving(
     target: Path, name: str, force: bool, catalog: str, schema: str,
     table: str | None = None,
@@ -1152,7 +1244,7 @@ def _scaffold_install_ref() -> str:
 
 def _scaffold_apps(
     target: Path, name: str, force: bool, catalog: str, schema: str,
-    table: str | None = None, template: str = "data",
+    table: str | None = None, template: str = "data", persona: str | None = None,
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
@@ -1189,6 +1281,8 @@ def _scaffold_apps(
             "# in that URL to upgrade; switch to a PyPI pin once apx-agent ships there.\n"
         )
 
+    persona_arg = f", persona={repr(persona)}" if persona else ""
+
     def _sub(template: str) -> str:
         return (
             template.replace("<APP_NAME>", name)
@@ -1196,6 +1290,7 @@ def _scaffold_apps(
             .replace("<SCHEMA>", schema)
             .replace("<EXAMPLE_TOOL>", prelude)
             .replace("<EXTRA_TOOLS>", extra_tools)
+            .replace("<PERSONA_ARG>", persona_arg)
             .replace("<APX_AGENT_DEP>", apx_dep)
             .replace("<APX_AGENT_SOURCE>", apx_source)
         )
@@ -1281,10 +1376,15 @@ def _scaffold_apps(
     help="Agent kind: 'data' (pre-grounded SQL agent) or 'coworker' "
          "(pre-grounded + memory). Apps target only for coworker.",
 )
+@click.option(
+    "--interactive/--no-interactive", "interactive", default=None,
+    help="Prompt for catalog, schema, and (for --template coworker) persona "
+         "instead of auto-detecting. Defaults to interactive when stdin is a TTY.",
+)
 def scaffold(
     name: str, directory: str, scaffold_target: str, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
-    scaffold_template: str,
+    scaffold_template: str, interactive: bool | None,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -1330,6 +1430,18 @@ def scaffold(
             )
     target.mkdir(parents=True, exist_ok=True)
 
+    # Interactive resolution — prompt for missing catalog/schema/persona when
+    # running in a TTY (or when --interactive is explicit). --no-interactive or
+    # a non-TTY stdin skips prompts (CI-safe). Already-provided flags pass through.
+    persona: str | None = None
+    interactive_mode = interactive if interactive is not None else sys.stdin.isatty()
+    _needs_prompt = catalog is None or schema is None or scaffold_template == "coworker"
+    if interactive_mode and _needs_prompt:
+        ws_i = _make_ws_for_scaffold(profile)
+        catalog, schema, persona = _interactive_resolve(
+            ws_i, catalog, schema, persona, scaffold_template
+        )
+
     # Resolve the default DataAgent's data target + a sample table for the
     # baked example tool: explicit flags win, else probe the workspace
     # (best-effort), else fall back to the samples demo.
@@ -1366,7 +1478,7 @@ def scaffold(
     if scaffold_target == "apps":
         _scaffold_apps(
             target, project_name, force, catalog, schema, table,
-            template=scaffold_template,
+            template=scaffold_template, persona=persona,
         )
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)
@@ -3907,7 +4019,7 @@ def test_cmd(
 # ---------------------------------------------------------------------------
 
 
-@main.command("list")
+@main.group("list", invoke_without_command=True)
 @click.option("--catalog", default=None,
               help="Restrict to a UC catalog. Default: any.")
 @click.option("--schema", default=None,
@@ -3916,7 +4028,40 @@ def test_cmd(
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-def list_cmd(catalog: str | None, schema: str | None, fmt: str) -> None:
+@click.pass_context
+def list_group(
+    ctx: click.Context,
+    catalog: str | None,
+    schema: str | None,
+    fmt: str,
+) -> None:
+    """Discover workspace resources — catalogs, schemas, tables, tools, agents.
+
+    With no subcommand, behaves like ``apx list agents`` for backwards
+    compatibility. Run ``apx list --help`` to see available subcommands.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(list_agents_cmd, catalog=catalog, schema=schema, fmt=fmt)
+
+
+def _require_sdk() -> "Any":
+    try:
+        from databricks.sdk import WorkspaceClient
+        return WorkspaceClient()
+    except ImportError as e:
+        raise click.ClickException("apx list requires databricks-sdk.") from e
+
+
+@list_group.command("agents")
+@click.option("--catalog", default=None,
+              help="Restrict to a UC catalog. Default: any.")
+@click.option("--schema", default=None,
+              help="Restrict to a UC schema (requires --catalog).")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def list_agents_cmd(catalog: str | None, schema: str | None, fmt: str) -> None:
     """Discover apx-agents in the workspace by their UC tags.
 
     Looks for registered models tagged ``apx.agent.name`` — the tag
@@ -3927,21 +4072,7 @@ def list_cmd(catalog: str | None, schema: str | None, fmt: str) -> None:
     if schema and not catalog:
         raise click.UsageError("--schema requires --catalog.")
 
-    try:
-        from databricks.sdk import WorkspaceClient
-    except ImportError as e:
-        raise click.ClickException(
-            "apx list requires databricks-sdk."
-        ) from e
-
-    ws = WorkspaceClient()
-
-    filter_parts: list[str] = []
-    if catalog:
-        filter_parts.append(f"catalog_name = '{catalog}'")
-    if schema:
-        filter_parts.append(f"schema_name = '{schema}'")
-    filter_string = " AND ".join(filter_parts) if filter_parts else None
+    ws = _require_sdk()
 
     try:
         models_iter = ws.registered_models.list(
@@ -3951,7 +4082,6 @@ def list_cmd(catalog: str | None, schema: str | None, fmt: str) -> None:
         )
         models = list(models_iter)
     except TypeError:
-        # Older SDK signatures took different kwargs; fall back to a no-filter list.
         models = list(ws.registered_models.list())  # type: ignore[call-arg]
 
     rows: list[dict[str, Any]] = []
@@ -3959,7 +4089,6 @@ def list_cmd(catalog: str | None, schema: str | None, fmt: str) -> None:
         tags = {t.key: t.value for t in (getattr(m, "tags", None) or [])}
         if "apx.agent.name" not in tags:
             continue
-        # Resource count parsed off the metadata blob when present
         resource_count = 0
         try:
             metadata_json = tags.get("apx.agent.metadata") or "{}"
@@ -3991,6 +4120,123 @@ def list_cmd(catalog: str | None, schema: str | None, fmt: str) -> None:
             f"{(r['tool_count'] or '-'):>6}  "
             f"{r['resource_count']:>9}"
         )
+
+
+@list_group.command("catalogs")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def list_catalogs_cmd(fmt: str) -> None:
+    """List Unity Catalog catalogs accessible in this workspace."""
+    ws = _require_sdk()
+    catalogs = _ws_list_catalogs(ws)
+
+    if fmt == "json":
+        click.echo(json.dumps(catalogs))
+        return
+
+    if not catalogs:
+        click.echo("No catalogs found (or insufficient permissions).")
+        return
+    for name in catalogs:
+        click.echo(name)
+
+
+@list_group.command("schemas")
+@click.argument("catalog")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def list_schemas_cmd(catalog: str, fmt: str) -> None:
+    """List schemas in CATALOG."""
+    ws = _require_sdk()
+    schemas = _ws_list_schemas(ws, catalog)
+
+    if fmt == "json":
+        click.echo(json.dumps(schemas))
+        return
+
+    if not schemas:
+        click.echo(f"No schemas found in {catalog}.")
+        return
+    for name in schemas:
+        click.echo(name)
+
+
+@list_group.command("tables")
+@click.argument("catalog")
+@click.argument("schema")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def list_tables_cmd(catalog: str, schema: str, fmt: str) -> None:
+    """List tables in CATALOG.SCHEMA."""
+    ws = _require_sdk()
+    tables = _ws_list_tables(ws, catalog, schema)
+
+    if fmt == "json":
+        rows = [
+            {
+                "name": getattr(t, "name", None),
+                "full_name": getattr(t, "full_name", None),
+                "table_type": str(getattr(t, "table_type", "")),
+                "comment": getattr(t, "comment", None),
+            }
+            for t in tables
+        ]
+        click.echo(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not tables:
+        click.echo(f"No tables found in {catalog}.{schema}.")
+        return
+    click.echo(f"{'TABLE':<40}  {'TYPE':<16}  COMMENT")
+    for t in tables:
+        name = getattr(t, "name", "-") or "-"
+        ttype = str(getattr(t, "table_type", "")).replace("TableType.", "") or "-"
+        comment = (getattr(t, "comment", None) or "")[:60]
+        click.echo(f"{name:<40}  {ttype:<16}  {comment}")
+
+
+@list_group.command("tools")
+@click.argument("catalog")
+@click.argument("schema")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def list_tools_cmd(catalog: str, schema: str, fmt: str) -> None:
+    """List UC functions in CATALOG.SCHEMA (available as agent tools).
+
+    These are the functions ``apx publish-tools`` registers and that
+    DataAgent / CoworkerAgent can call when ``include_functions=True``.
+    """
+    ws = _require_sdk()
+    fns = _ws_list_functions(ws, catalog, schema)
+
+    if fmt == "json":
+        rows = [
+            {
+                "name": getattr(f, "name", None),
+                "full_name": getattr(f, "full_name", None),
+                "comment": getattr(f, "comment", None),
+            }
+            for f in fns
+        ]
+        click.echo(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not fns:
+        click.echo(f"No UC functions found in {catalog}.{schema}.")
+        return
+    click.echo(f"{'FUNCTION':<50}  COMMENT")
+    for f in fns:
+        name = getattr(f, "name", "-") or "-"
+        comment = (getattr(f, "comment", None) or "")[:70]
+        click.echo(f"{name:<50}  {comment}")
 
 
 # ---------------------------------------------------------------------------
