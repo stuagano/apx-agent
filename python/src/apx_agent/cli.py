@@ -698,21 +698,21 @@ agent = LlmAgent(
 
 
 _SCAFFOLD_APPS_AGENT_COWORKER = '''\
-"""<APP_NAME> — a DataAgent with a named persona."""
+"""<APP_NAME> — a DataAgent with a named persona and objective."""
 from __future__ import annotations
 
 from apx_agent import CoworkerAgent
 
 <EXAMPLE_TOOL>
-# A coworker over ``<CATALOG>.<SCHEMA>``: pre-grounded in the schema (it already
-# knows the tables/columns) with an optional persona that shapes its voice
-# and expertise.
+# A coworker over ``<CATALOG>.<SCHEMA>``: pre-grounded in the schema (knows
+# the tables/columns). Persona shapes its voice; objective defines its mission.
+# Together: "You are {persona} designed to {objective}."
 #
 # To add memory (opt-in):
 #   memory="inmemory"   # forgets on restart
 #   memory="persistent" # UC Delta tables — survives restart
 #   memory="lakebase"   # production pgvector — needs explicit config block
-agent = CoworkerAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS><PERSONA_ARG>, name="<APP_NAME>")
+agent = CoworkerAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS><PERSONA_ARG><OBJECTIVE_ARG>, name="<APP_NAME>")
 '''
 
 
@@ -1133,11 +1133,11 @@ def _scaffold_wizard(
     template: "str | None",
     catalog: "str | None",
     schema: "str | None",
-) -> "tuple[str, str, str | None, str | None, str | None]":
+) -> "tuple[str, str, str | None, str | None, str | None, str | None]":
     """Directive first-time setup wizard.
 
     Asks one question at a time, only for values not already pinned by a
-    flag. Returns ``(target, template, catalog, schema, persona)``.
+    flag. Returns ``(target, template, catalog, schema, persona, objective)``.
     """
     # --- deployment target ---
     if target is None:
@@ -1159,13 +1159,13 @@ def _scaffold_wizard(
         else:
             template = "data"
 
-    # --- catalog / schema / persona (not needed for base) ---
+    # --- catalog / schema / persona / objective (not needed for base) ---
     if template in ("data", "coworker"):
-        catalog, schema, persona = _interactive_resolve(ws, catalog, schema, None, template)
+        catalog, schema, persona, objective = _interactive_resolve(ws, catalog, schema, None, None, template)
     else:
-        persona = None
+        persona = objective = None
 
-    return target, template, catalog, schema, persona
+    return target, template, catalog, schema, persona, objective
 
 
 def _interactive_resolve(
@@ -1173,12 +1173,14 @@ def _interactive_resolve(
     catalog: "str | None",
     schema: "str | None",
     persona: "str | None",
+    objective: "str | None",
     template: str,
-) -> "tuple[str | None, str | None, str | None]":
-    """Prompt for any missing catalog/schema, and persona when template='coworker'.
+) -> "tuple[str | None, str | None, str | None, str | None]":
+    """Prompt for any missing catalog/schema/persona/objective.
 
     Already-provided values pass through unchanged. Falls back to free-text
-    prompts when ws is None or the listing is empty.
+    prompts when ws is None or the listing is empty. Returns
+    ``(catalog, schema, persona, objective)``.
     """
     if catalog is None:
         cat_list = _ws_list_catalogs(ws, limit=20) if ws is not None else []
@@ -1208,17 +1210,29 @@ def _interactive_resolve(
         else:
             schema = click.prompt(f"Schema in {catalog}")
 
-    if template == "coworker" and persona is None:
-        raw = click.prompt(
-            "Persona — describe this coworker's role and expertise\n"
-            "  e.g. 'a payroll analyst who knows HR data deeply'\n"
-            "  Leave blank to skip",
-            default="",
-            show_default=False,
-        )
-        persona = raw.strip() or None
+    if template == "coworker":
+        if persona is None:
+            raw = click.prompt(
+                "Persona — the agent's role\n"
+                "  e.g. 'a fraud detection analyst', 'a payroll specialist'\n"
+                "  Leave blank to skip",
+                default="",
+                show_default=False,
+            )
+            persona = raw.strip() or None
 
-    return catalog, schema, persona
+        if objective is None:
+            raw = click.prompt(
+                "Objective — what this agent is designed to do\n"
+                "  e.g. 'detect fraudulent transactions and flag anomalies'\n"
+                "       'process payroll and answer compensation questions'\n"
+                "  Leave blank to skip",
+                default="",
+                show_default=False,
+            )
+            objective = raw.strip() or None
+
+    return catalog, schema, persona, objective
 
 
 def _scaffold_model_serving(
@@ -1315,7 +1329,8 @@ def _scaffold_install_ref() -> str:
 
 def _scaffold_apps(
     target: Path, name: str, force: bool, catalog: str, schema: str,
-    table: str | None = None, template: str = "data", persona: str | None = None,
+    table: str | None = None, template: str = "data",
+    persona: str | None = None, objective: str | None = None,
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
@@ -1357,6 +1372,7 @@ def _scaffold_apps(
         )
 
     persona_arg = f", persona={repr(persona)}" if persona else ""
+    objective_arg = f", objective={repr(objective)}" if objective else ""
 
     def _sub(template: str) -> str:
         return (
@@ -1366,6 +1382,7 @@ def _scaffold_apps(
             .replace("<EXAMPLE_TOOL>", prelude)
             .replace("<EXTRA_TOOLS>", extra_tools)
             .replace("<PERSONA_ARG>", persona_arg)
+            .replace("<OBJECTIVE_ARG>", objective_arg)
             .replace("<APX_AGENT_DEP>", apx_dep)
             .replace("<APX_AGENT_SOURCE>", apx_source)
         )
@@ -1514,10 +1531,11 @@ def scaffold(
     # not already pinned by a flag. --no-interactive / CI stdin skips it.
     # -----------------------------------------------------------------------
     persona: str | None = None
+    objective: str | None = None
     interactive_mode = interactive if interactive is not None else sys.stdin.isatty()
 
     if interactive_mode:
-        scaffold_target, scaffold_template, catalog, schema, persona = _scaffold_wizard(
+        scaffold_target, scaffold_template, catalog, schema, persona, objective = _scaffold_wizard(
             ws=_make_ws_for_scaffold(profile),
             target=scaffold_target,
             template=scaffold_template,
@@ -1568,7 +1586,7 @@ def scaffold(
     if scaffold_target == "apps":
         _scaffold_apps(
             target, project_name, force, catalog, schema, table,
-            template=scaffold_template, persona=persona,
+            template=scaffold_template, persona=persona, objective=objective,
         )
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)

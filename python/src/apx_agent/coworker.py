@@ -40,10 +40,11 @@ class CoworkerAgent(DataAgent):
         schema: str,
         *,
         persona: str | None = None,
+        objective: str | None = None,
         memory: str = "off",
         **kwargs: Any,
     ) -> None:
-        super().__init__(catalog, schema, persona=persona, memory=memory, **kwargs)
+        super().__init__(catalog, schema, persona=persona, objective=objective, memory=memory, **kwargs)
 
 
 @template
@@ -63,6 +64,7 @@ class CoworkerTemplate:
         schema_name: str = Field(alias="schema")  # 'schema' in config dicts
         warehouse_id: str | None = None
         persona: str | None = None
+        objective: str | None = None
         memory: str = "off"
         genie_space: str | None = None
         vector_index: str | None = None
@@ -73,6 +75,7 @@ class CoworkerTemplate:
             spec.catalog,
             spec.schema_name,
             persona=spec.persona,
+            objective=spec.objective,
             memory=spec.memory,
             warehouse_id=spec.warehouse_id,
             ws=ws,
