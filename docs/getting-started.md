@@ -35,13 +35,12 @@ export DATABRICKS_CONFIG_PROFILE=<name>
 
 ### Install apx-agent
 
-Not on PyPI yet — install straight from GitHub. The package lives in the `python/` subdirectory:
-
 ```bash
-uv add "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@v0.2.2#subdirectory=python"
+uv add "apx-agent[langgraph]"
 ```
 
-Pin a release tag (`@v0.2.2`) for stability or `@main` for the latest. The clone-and-`uv sync` flow in the next section is the easiest way to get started.
+Or pin a specific version: `uv add "apx-agent[langgraph]==0.2.2"`. To track
+`main` before a release: `uv add "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@main#subdirectory=python"`.
 
 ### Verify setup
 
@@ -58,17 +57,14 @@ It prints a `Fix:` line for anything wrong. Auth errors caught here are much cle
 
 ## Scaffold and run locally
 
-Clone the repo and scaffold a new project:
-
 ```bash
-git clone https://github.com/stuagano/apx-agent.git
-cd apx-agent/python && uv sync   # installs apx into this env
+uv add "apx-agent[langgraph]"    # install apx into your current env
 uv run apx scaffold my-agent     # creates my-agent/ in the current directory
 cd my-agent && uv sync           # my-agent has its own isolated env — sync it
 ```
 
 > `apx scaffold` creates the project in the current directory. If you want it
-> somewhere else, `cd` there before scaffolding.
+> somewhere else, `cd` there first.
 
 ### What scaffold gave you
 
