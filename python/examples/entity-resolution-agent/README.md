@@ -62,7 +62,7 @@ Key properties:
 - **Network** — The app is colocated with UC, Vector Search, and SQL warehouses. No VPN, no cross-region latency.
 - **Lifecycle** — Databricks handles HTTPS termination, compute scaling, and restarts. You deploy a directory of files; the platform runs them.
 
-The `app.yml` file at the root of this example defines the startup command and environment variables. `databricks apps deploy` (or `uv run apx deploy`) uploads the source tree and starts the app.
+The `app.yml` file at the root of this example defines the startup command and environment variables. `databricks apps deploy` (or `uv run apx-agent deploy`) uploads the source tree and starts the app.
 
 ---
 
@@ -114,7 +114,7 @@ These routes are present in every apx-agent app, regardless of whether a custom 
 ### 3. Local development tooling
 
 ```bash
-uv run apx deploy           # package + deploy to Databricks Apps
+uv run apx-agent deploy           # package + deploy to Databricks Apps
 ```
 
 The `apx` CLI handles packaging the app as a Python wheel, copying static assets, and calling `databricks apps deploy`. During local development, `uv run uvicorn ... --reload` works without any apx-specific tooling.
@@ -455,7 +455,7 @@ env:
 ### Step 2: Deploy
 
 ```bash
-uv run apx deploy
+uv run apx-agent deploy
 ```
 
 ### Step 3: Verify
@@ -609,7 +609,7 @@ resources:
       source_code_path: ./.build               # what to upload to Databricks
 ```
 
-`apx deploy` (and `databricks bundle deploy`) reads this file to run the build and deploy the result. You rarely edit this unless you're changing the bundle name or adding new resources (jobs, pipelines, etc.).
+`apx-agent deploy` (and `databricks bundle deploy`) reads this file to run the build and deploy the result. You rarely edit this unless you're changing the bundle name or adding new resources (jobs, pipelines, etc.).
 
 ### `.build/` — Generated artifact (do not edit)
 

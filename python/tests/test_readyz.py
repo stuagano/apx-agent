@@ -2,7 +2,7 @@
 
 Unlike /health (liveness — 200 once the server booted), /readyz proves the
 agent can actually answer a canned prompt and that an MLflow trace was
-recorded for the run. It is later called by ``apx deploy`` as a gate (Slice C).
+recorded for the run. It is later called by ``apx-agent deploy`` as a gate (Slice C).
 
 The handler delegates the agent-run step to the module-global
 ``_run_canned_probe`` helper, which these tests monkeypatch so nothing hits

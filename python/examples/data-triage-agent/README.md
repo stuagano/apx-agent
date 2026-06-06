@@ -1,6 +1,6 @@
 # Data Triage Agent
 
-Investigates why data is missing from Databricks tables — **six-step `SequentialAgent` pipeline, each step structurally guaranteed to run**. Deploys to **either** Databricks Apps **or** Mosaic AI Model Serving via `apx deploy --target {apps,model-serving}`.
+Investigates why data is missing from Databricks tables — **six-step `SequentialAgent` pipeline, each step structurally guaranteed to run**. Deploys to **either** Databricks Apps **or** Mosaic AI Model Serving via `apx-agent deploy --target {apps,model-serving}`.
 
 A `SequentialAgent` composes six focused `Agent`s that each handle one phase of the investigation. Conversation history accumulates automatically — every agent's output is visible to the next. Delegates SQL and Delta forensics to the [data-inspector](../data-inspector/) sub-agent via A2A.
 
@@ -198,10 +198,10 @@ Code-push deploy via `databricks bundle deploy + bundle run`. No container build
 
 ```bash
 cd python/examples/data-triage-agent
-apx deploy --target apps --var "data_inspector_url=https://<your-data-inspector-app>.databricksapps.com"
+apx-agent deploy --target apps --var "data_inspector_url=https://<your-data-inspector-app>.databricksapps.com"
 ```
 
-`apx deploy --target apps` is the complete pipeline — builds the
+`apx-agent deploy --target apps` is the complete pipeline — builds the
 apx-agent wheel, stages `.build/`, auto-resolves an MLflow experiment id
 (creates/reuses `/Users/<you>/mcp-data-triage-agent-dev`), runs
 `databricks bundle deploy + run`, polls until `RUNNING`/`ACTIVE`.
@@ -232,7 +232,7 @@ curl -X POST "$APP_URL/invocations" \
 For production endpoints recognized by AI Playground, Review App, Supervisor Agent. Container build path.
 
 ```bash
-apx deploy --module agent:agent \
+apx-agent deploy --module agent:agent \
            --model databricks-claude-sonnet-4-6 \
            --name main.agents.data_triage_agent
 ```

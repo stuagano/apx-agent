@@ -3,7 +3,7 @@
 apx-agent's DSL defines ONE declarative agent that is served two ways via two
 adapters that diverge ONLY at the serving boundary but must behave IDENTICALLY:
 
-  * **ChatAgent adapter** (dev loop / ``apx run``):
+  * **ChatAgent adapter** (dev loop / ``apx-agent run``):
     ``chat_agent_for(agent, model=...)`` →
     ``_ApxChatAgent.predict(messages, custom_inputs)``. Wire shape
     ``{"messages": [...]}`` (``ChatAgentMessage`` list).

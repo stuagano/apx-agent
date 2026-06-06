@@ -1,0 +1,111 @@
+bundle:
+  name: my_coworker
+
+# The root apx-agent ``.gitignore`` excludes ``**/.build/`` because that
+# directory is built from source by ``databricks bundle deploy`` — checking
+# it in would leak wheels + duplicated source. But DAB sync honors
+# ``.gitignore`` when uploading, which means the staging tree referenced by
+# ``source_code_path: ./.build`` would be empty inside the App container.
+# ``sync.include`` overrides the ignore for this one path so the bundle can
+# upload the staged tree without un-ignoring it everywhere else.
+sync:
+  include:
+    - .build/**
+
+variables:
+  workspace_user:
+    description: User who owns the experiment
+    default: ${workspace.current_user.userName}
+  llm_endpoint_name:
+    description: Foundation model endpoint the agent calls.
+    default: databricks-claude-sonnet-4-6
+  mlflow_experiment_id:
+    description: |
+      MLflow experiment ID for tracing. Populated by scripts/quickstart.py
+      into a local .env file and surfaced here for the app environment.
+    default: ""
+
+# ``artifacts.default.build`` packages the deploy bundle into ``./.build``.
+# ``apx deploy --target apps`` runs this script BEFORE ``bundle validate`` so
+# the DAB validator sees a populated source dir. Manually copying the
+# apx-agent wheel into the project keeps the App container's ``uv sync``
+# off the public index — apx deploy handles the wheel build for you when
+# ``[tool.uv.sources].apx-agent`` references a local path.
+artifacts:
+  default:
+    build: |
+      mkdir -p .build
+      # User-authored: top-level agent.py (+ optional tools.py, sub_agents/).
+      cp agent.py .build/ 2>/dev/null || true
+      cp tools.py .build/ 2>/dev/null || true
+      cp -r sub_agents .build/ 2>/dev/null || true
+      # Framework boilerplate + project files (don't edit agent_server/).
+      cp -r agent_server scripts README.md .build/ 2>/dev/null || true
+      cp -r .apx .build/ 2>/dev/null || true
+      cp apx_agent-*.whl .build/ 2>/dev/null || true
+      # pyproject.toml and uv.lock are written by apx deploy (wheel-pinned).
+      # Do NOT copy them here — bundle deploy re-runs this script and would
+      # overwrite the rewritten versions.
+
+resources:
+  experiments:
+    my_coworker_experiment:
+      name: /Users/${var.workspace_user}/${bundle.name}-${bundle.target}
+
+  apps:
+    my_coworker:
+      name: my_coworker
+      description: my_coworker apx-agent
+      source_code_path: ./.build
+      # OAuth scopes the forwarded user (OBO) token carries, so governed tools
+      # run AS the calling user. The iam.* defaults are always granted and must
+      # NOT be listed here. `sql` is what DataAgent / sql_tool / uc_function_tool
+      # need; add `dashboards.genie` for genie_tool and `vectorsearch.vector-search-endpoints`
+      # for vector_search_tool. (Changing scopes requires users to re-authorize.)
+      user_api_scopes:
+        - sql
+        - serving.serving-endpoints
+      resources:
+        - name: experiment
+          experiment:
+            experiment_id: ${resources.experiments.my_coworker_experiment.id}
+            permission: CAN_MANAGE
+        # apx deploy --target apps will auto-add resources from the agent's
+        # ResourceSpec list. For now, list any extras here manually:
+        - name: llm-endpoint
+          description: Foundation model endpoint used by the agent.
+          serving_endpoint:
+            name: ${var.llm_endpoint_name}
+            permission: CAN_QUERY
+
+      # NOTE: the DAB schema for ``apps.<name>.config`` uses ``env`` (a list
+      # of {name, value} dicts) — NOT ``env_variables``. ``bundle validate``
+      # warns about unknown keys, so keep this aligned.
+      config:
+        command:
+          - uvicorn
+          - agent_server.start_server:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - $DATABRICKS_APP_PORT
+        env:
+          - name: APX_MODEL
+            value: ${var.llm_endpoint_name}
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
+          - name: APX_AGENT_MLFLOW_AUTOLOG
+            value: "1"
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production
+    resources:
+      apps:
+        my_coworker:
+          name: my_coworker

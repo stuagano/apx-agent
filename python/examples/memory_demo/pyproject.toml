@@ -21,12 +21,12 @@ apx-agent = { path = "../..", editable = true }
 name = "memory_demo"
 description = "Travel concierge with seeded memories + few-shot examples."
 model = "databricks-claude-sonnet-4-6"
-# Module path to the apx-agent Agent — used by `apx deploy` and friends.
+# Module path to the apx-agent Agent — used by `apx-agent deploy` and friends.
 # ADK-style layout: ``agent`` is exported by top-level ``agent.py``.
 module = "agent:agent"
 
 [tool.apx.deploy]
-# Apps-target metadata. `apx deploy --target apps` reads this block.
+# Apps-target metadata. `apx-agent deploy --target apps` reads this block.
 target = "apps"
 bundle_name = "memory-demo"
 app_name = "memory-demo"

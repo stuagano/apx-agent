@@ -8,6 +8,8 @@ agent lives. This file wires it into the Databricks Apps runtime:
   * Registers ``@invoke`` / ``@stream`` handlers.
   * Mounts apx-agent's ``/mcp`` + ``/.well-known/agent.json`` + ``/health``
     so Genie / Genie Code can consume the same agent.
+  * Mounts ``/readyz`` — a capability self-test that proves the agent answers
+    and traces (used by ``apx-agent deploy`` as a readiness gate).
 
 Run via ``uvicorn agent_server.start_server:app --host 0.0.0.0 --port $DATABRICKS_APP_PORT``
 (driven by ``databricks.yml`` on deploy).
@@ -19,7 +21,13 @@ import os
 
 from mlflow.genai.agent_server import AgentServer, invoke, stream
 
-from apx_agent import compile_to_responses_agent, mount_mcp_endpoints
+from apx_agent import compile_to_responses_agent, mount_mcp_endpoints, mount_readyz
+from apx_agent._mlflow_tracing import autolog_if_env
+
+# Enable MLflow LangChain/LangGraph auto-tracing when APX_AGENT_MLFLOW_AUTOLOG
+# is set (databricks.yml sets it on deploy). Must run before the agent's
+# LangChain components are built/invoked.
+autolog_if_env()
 
 # Import the user's agent from the top-level module.
 from agent import agent
@@ -45,6 +53,10 @@ server = AgentServer(agent_type="ResponsesAgent")
 app = server.app
 
 mount_mcp_endpoints(app, agent)
+mount_readyz(app, agent)
+
+from apx_agent._defaults import _make_workspace_client
+app.state.workspace_client = _make_workspace_client()
 
 
 if __name__ == "__main__":

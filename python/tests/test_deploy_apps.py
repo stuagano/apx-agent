@@ -1,4 +1,4 @@
-"""Tests for ``apx deploy --target apps`` — the Databricks Asset Bundle path.
+"""Tests for ``apx-agent deploy --target apps`` — the Databricks Asset Bundle path.
 
 The Apps deploy flow shells out to the ``databricks`` CLI. Every subprocess
 call routes through ``apx_agent.cli._run_databricks_cmd``, which gives a

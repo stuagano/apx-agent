@@ -20,7 +20,7 @@ Typical usage::
 
 or via the CLI::
 
-    apx topology --format mermaid > topology.mmd
+    apx-agent topology --format mermaid > topology.mmd
 """
 
 from __future__ import annotations

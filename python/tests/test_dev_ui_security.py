@@ -69,7 +69,7 @@ async def test_guard_gates_writes_and_probe_not_reads(monkeypatch):
     # SSRF probe (GET) → gated by path.
     with pytest.raises(HTTPException):
         await _dev_write_guard(_req(method="GET", path="/_apx/setup/probe-json"))
-    # Deploy stream (GET that spawns `apx deploy`) → gated by path.
+    # Deploy stream (GET that spawns `apx-agent deploy`) → gated by path.
     with pytest.raises(HTTPException):
         await _dev_write_guard(_req(method="GET", path="/_apx/deploy/stream"))
     # Read diagnostic (H9) → NOT gated.

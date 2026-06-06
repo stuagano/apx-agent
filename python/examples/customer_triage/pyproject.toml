@@ -27,12 +27,12 @@ name = "customer_triage"
 description = "Customer support triage — classifies queries and hands off to specialists."
 model = "databricks-claude-sonnet-4-6"
 max_iterations = 8
-# Module path to the apx-agent Agent — used by `apx deploy` and friends.
+# Module path to the apx-agent Agent — used by `apx-agent deploy` and friends.
 # ADK-style layout: ``agent`` is exported by top-level ``agent.py``.
 module = "agent:agent"
 
 [tool.apx.deploy]
-# Apps-target metadata. `apx deploy --target apps` reads this block.
+# Apps-target metadata. `apx-agent deploy --target apps` reads this block.
 target = "apps"
 bundle_name = "customer-triage"
 app_name = "customer-triage"
