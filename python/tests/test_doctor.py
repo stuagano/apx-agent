@@ -292,6 +292,124 @@ def test_apx_install_not_found(monkeypatch):
     assert "editable" in c.detail
 
 
+class TestCheckDeclaredTools:
+    def _project(self, tmp_path: Path, tools_toml: str = "") -> Path:
+        (tmp_path / "pyproject.toml").write_text(
+            f"[tool.apx.agent]\nname='x'\n{tools_toml}"
+        )
+        (tmp_path / "agent.py").write_text("# agent\n")
+        return tmp_path
+
+    def test_no_tools_section_returns_empty(self, tmp_path):
+        self._project(tmp_path)
+        result = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert result == []
+
+    def test_not_apx_project_returns_empty(self, tmp_path):
+        result = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert result == []
+
+    def test_auth_not_ok_skips_with_check_per_resource(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'genie'\nspace_id = 'abc123'\n"
+            "\n[[tool.apx.tools]]\ntype = 'vector_search'\nindex_name = 'cat.sch.idx'\n",
+        )
+        checks = doctor.check_declared_tools(tmp_path, auth_ok=False)
+        assert len(checks) == 2
+        assert all(c.status is Status.SKIP for c in checks)
+
+    def test_genie_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'genie'\nspace_id = 'space-1'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert len(checks) == 1
+        assert checks[0].status is Status.OK
+        ws.genie.get_space.assert_called_once_with(space_id="space-1")
+
+    def test_genie_not_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'genie'\nspace_id = 'bad-space'\n",
+        )
+        ws = MagicMock()
+        ws.genie.get_space.side_effect = Exception("404 not found")
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks[0].status is Status.WARN
+        assert "bad-space" in checks[0].fix
+
+    def test_vector_search_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'vector_search'\nindex_name = 'cat.sch.idx'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks[0].status is Status.OK
+        ws.vector_search_indexes.get_index.assert_called_once_with(index_name="cat.sch.idx")
+
+    def test_uc_function_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'uc_function'\nfunction_name = 'main.tools.my_fn'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks[0].status is Status.OK
+        ws.functions.get.assert_called_once_with(full_name="main.tools.my_fn")
+
+    def test_uc_function_toolkit_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'uc_function_toolkit'\ncatalog_schema = 'main.tools'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks[0].status is Status.OK
+        ws.schemas.get.assert_called_once_with(full_name="main.tools")
+
+    def test_sql_warehouse_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'sql'\nwarehouse_id = 'wh-abc'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks[0].status is Status.OK
+        ws.warehouses.get.assert_called_once_with(id="wh-abc")
+
+    def test_sql_no_warehouse_id_skipped(self, tmp_path):
+        """sql_tool without warehouse_id is valid config — nothing to validate."""
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'sql'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks == []
+
+    def test_non_resource_type_ignored(self, tmp_path):
+        """openapi/http/mcp tools don't need presence-checks here."""
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'http'\nurl = 'http://localhost/api'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks == []
+
+
 def test_auth_sdk_not_importable(monkeypatch):
     """A broken/minimal install where databricks-sdk can't be imported FAILs
     fast with a clear message, rather than passing through to a deep traceback

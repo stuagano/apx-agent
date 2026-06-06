@@ -174,7 +174,8 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
             checks["llm"] = "ok" if text else "fail"
             checks["tracing"] = "ok" if trace_id else "unavailable"
 
-            ready = checks["llm"] == "ok" and checks["tracing"] in ("ok", "unavailable")
+            mem_ok = checks["memory"] in ("ok", None)
+            ready = checks["llm"] == "ok" and checks["tracing"] in ("ok", "unavailable") and mem_ok
             status = "ready" if ready else "degraded"
             return Response(
                 content=json.dumps({"status": status, "checks": checks}),

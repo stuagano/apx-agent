@@ -76,6 +76,7 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
         project.append(memory_check)
+    project.extend(check_declared_tools(cwd, auth_ok=auth.status is Status.OK))
     return [
         ("Environment", environment),
         ("Authentication", authentication),
@@ -433,3 +434,183 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
             )
 
     return Check(label, Status.SKIP, f"unknown type {mem.type!r}", None)
+
+
+def check_declared_tools(cwd: Path, *, auth_ok: bool) -> list[Check]:
+    """Validate that each declared [[tool.apx.tools]] resource exists in the workspace.
+
+    Covers: Genie spaces, Vector Search indexes, UC functions/toolkits, and SQL
+    warehouses (including warehouse_id in [tool.apx.agent.session]).
+    """
+    if not _is_apx_project(cwd):
+        return []
+
+    from apx_agent._tool_config import _read_tools_section  # noqa: PLC0415
+
+    tables = _read_tools_section(str(cwd / "pyproject.toml"))
+
+    # Collect session warehouse_id if configured.
+    session_warehouse: str | None = None
+    try:
+        from ._inspection import _load_agent_config  # noqa: PLC0415
+
+        cfg = _load_agent_config()
+        sess = getattr(cfg, "session", None) if cfg else None
+        if sess and getattr(sess, "warehouse_id", None):
+            session_warehouse = sess.warehouse_id
+    except Exception:
+        pass
+
+    if not tables and not session_warehouse:
+        return []
+
+    checks: list[Check] = []
+
+    _RESOURCE_TYPES = {"genie", "genie_query", "vector_search", "uc_function", "uc_function_toolkit", "sql"}
+    resource_tables = [t for t in tables if t.get("type") in _RESOURCE_TYPES]
+    if not resource_tables and not session_warehouse:
+        return []
+
+    if not auth_ok:
+        for table in resource_tables:
+            typ = table.get("type", "")
+            checks.append(Check(
+                f"Tool ({typ})",
+                Status.SKIP,
+                "skipped — fix Databricks auth first",
+                None,
+            ))
+        if session_warehouse:
+            checks.append(Check(
+                "Session warehouse",
+                Status.SKIP,
+                "skipped — fix Databricks auth first",
+                None,
+            ))
+        return checks
+
+    from ._defaults import _make_workspace_client  # noqa: PLC0415
+
+    ws = _make_workspace_client()
+
+    for table in resource_tables:
+        typ = table.get("type", "")
+
+        if typ in ("genie", "genie_query"):
+            space_id = table.get("space_id", "")
+            if not space_id:
+                checks.append(Check(
+                    "Genie space",
+                    Status.WARN,
+                    "space_id missing in [[tool.apx.tools]]",
+                    "Add space_id to the genie tool config.",
+                ))
+                continue
+            try:
+                ws.genie.get_space(space_id=space_id)
+                checks.append(Check(f"Genie space ({space_id[:20]})", Status.OK, "found", None))
+            except Exception as exc:
+                short = str(exc)[:120]
+                checks.append(Check(
+                    f"Genie space ({space_id[:20]})",
+                    Status.WARN,
+                    f"not found or not accessible ({short})",
+                    f"Confirm space_id {space_id!r} exists and your principal has access.",
+                ))
+
+        elif typ == "vector_search":
+            index_name = table.get("index_name", "")
+            if not index_name:
+                checks.append(Check(
+                    "VS index",
+                    Status.WARN,
+                    "index_name missing in [[tool.apx.tools]]",
+                    "Add index_name to the vector_search tool config.",
+                ))
+                continue
+            try:
+                ws.vector_search_indexes.get_index(index_name=index_name)
+                checks.append(Check(f"VS index ({index_name})", Status.OK, "found", None))
+            except Exception as exc:
+                short = str(exc)[:120]
+                checks.append(Check(
+                    f"VS index ({index_name})",
+                    Status.WARN,
+                    f"not found or not accessible ({short})",
+                    "Confirm the index exists and has READY status.",
+                ))
+
+        elif typ == "uc_function":
+            function_name = table.get("function_name", "")
+            if not function_name:
+                checks.append(Check(
+                    "UC function",
+                    Status.WARN,
+                    "function_name missing in [[tool.apx.tools]]",
+                    "Add function_name to the uc_function tool config.",
+                ))
+                continue
+            try:
+                ws.functions.get(full_name=function_name)
+                checks.append(Check(f"UC function ({function_name})", Status.OK, "found", None))
+            except Exception as exc:
+                short = str(exc)[:120]
+                checks.append(Check(
+                    f"UC function ({function_name})",
+                    Status.WARN,
+                    f"not found or not accessible ({short})",
+                    f"Confirm {function_name!r} exists in Unity Catalog.",
+                ))
+
+        elif typ == "uc_function_toolkit":
+            catalog_schema = table.get("catalog_schema", "")
+            if not catalog_schema:
+                checks.append(Check(
+                    "UC function toolkit",
+                    Status.WARN,
+                    "catalog_schema missing in [[tool.apx.tools]]",
+                    "Add catalog_schema to the uc_function_toolkit config.",
+                ))
+                continue
+            try:
+                ws.schemas.get(full_name=catalog_schema)
+                checks.append(Check(f"UC schema ({catalog_schema})", Status.OK, "found", None))
+            except Exception as exc:
+                short = str(exc)[:120]
+                checks.append(Check(
+                    f"UC schema ({catalog_schema})",
+                    Status.WARN,
+                    f"not found or not accessible ({short})",
+                    f"Confirm {catalog_schema!r} exists and your principal has USE SCHEMA.",
+                ))
+
+        elif typ == "sql":
+            warehouse_id = table.get("warehouse_id", "")
+            if not warehouse_id:
+                continue  # warehouse_id is optional for sql_tool — skip silently
+            try:
+                ws.warehouses.get(id=warehouse_id)
+                checks.append(Check(f"SQL warehouse ({warehouse_id})", Status.OK, "found", None))
+            except Exception as exc:
+                short = str(exc)[:120]
+                checks.append(Check(
+                    f"SQL warehouse ({warehouse_id})",
+                    Status.WARN,
+                    f"not found or not accessible ({short})",
+                    f"Confirm warehouse {warehouse_id!r} exists and is running.",
+                ))
+
+    if session_warehouse:
+        try:
+            ws.warehouses.get(id=session_warehouse)
+            checks.append(Check(f"Session warehouse ({session_warehouse})", Status.OK, "found", None))
+        except Exception as exc:
+            short = str(exc)[:120]
+            checks.append(Check(
+                f"Session warehouse ({session_warehouse})",
+                Status.WARN,
+                f"not found or not accessible ({short})",
+                f"Confirm warehouse {session_warehouse!r} exists and is running.",
+            ))
+
+    return checks
