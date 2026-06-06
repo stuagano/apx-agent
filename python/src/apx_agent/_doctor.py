@@ -139,7 +139,7 @@ def check_pypi_index(cwd: Path) -> Check:
                 f"({_PYPI_PROXY_HOST}) — unreachable for external users and "
                 "deployed Apps, so `uv sync`/deploy will fail off the corp network",
                 "Unset the proxy index env var, then `uv lock` to re-resolve "
-                "from public PyPI (`apx deploy` also sanitizes the lock before "
+                "from public PyPI (`apx-agent deploy` also sanitizes the lock before "
                 "bundling).",
             )
     except OSError:
@@ -167,7 +167,7 @@ def check_databricks_cli() -> Check:
         return Check(
             "Databricks CLI",
             Status.WARN,
-            "not found — needed for `apx deploy`",
+            "not found — needed for `apx-agent deploy`",
             "brew install databricks/tap/databricks  "
             "(or see docs.databricks.com/dev-tools/cli)",
         )
@@ -192,7 +192,7 @@ def check_uvicorn() -> Check:
         return Check(
             "uvicorn",
             Status.WARN,
-            "not importable — required by `apx run`",
+            "not importable — required by `apx-agent run`",
             "pip install 'uvicorn[standard]'  (or `apx-agent[apps]`)",
         )
 
@@ -217,7 +217,7 @@ def check_databricks_auth() -> Check:
         profiles = _databrickscfg_profiles()
         if profiles:
             fix = (
-                "Pick a profile: DATABRICKS_CONFIG_PROFILE=<name> apx ...  "
+                "Pick a profile: DATABRICKS_CONFIG_PROFILE=<name> apx-agent ...  "
                 f"(configured: {', '.join(profiles)})"
             )
             detail = "credentials unresolved — profile unset or ambiguous"
@@ -294,7 +294,7 @@ def check_project_layout(cwd: Path) -> Check:
             "Project layout",
             Status.SKIP,
             f"{cwd} is not an apx project",
-            "Run `apx scaffold my-agent` to create one, then cd into it.",
+            "Run `apx-agent scaffold my-agent` to create one, then cd into it.",
         )
     from apx_agent.cli import _detect_target
 
@@ -310,7 +310,7 @@ def check_project_layout(cwd: Path) -> Check:
         "Project layout",
         Status.FAIL,
         f"pyproject declares an agent but {marker} is missing",
-        "Re-run `apx scaffold` or restore the agent entrypoint.",
+        "Re-run `apx-agent scaffold` or restore the agent entrypoint.",
     )
 
 
@@ -361,8 +361,8 @@ def check_databricks_yml(cwd: Path) -> Check:
     return Check(
         "databricks.yml",
         Status.WARN,
-        "missing — `apx deploy --target apps` needs it",
-        "Re-run `apx scaffold <name> --target apps`, or `apx deploy` "
+        "missing — `apx-agent deploy --target apps` needs it",
+        "Re-run `apx-agent scaffold <name> --target apps`, or `apx-agent deploy` "
         "for model-serving (no bundle required).",
     )
 

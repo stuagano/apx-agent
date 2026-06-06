@@ -22,21 +22,21 @@ Python 3.11+ required.
 
 ```bash
 uv add apx-agent
-uv run apx scaffold my-agent
+uv run apx-agent scaffold my-agent
 cd my-agent
 ```
 
 **Run it locally:**
 
 ```bash
-uv run apx run --reload
+uv run apx-agent run --reload
 # FastAPI on http://localhost:8000 — chat at /_apx/agent, traces at /_apx/traces
 ```
 
 **When it looks right, deploy:**
 
 ```bash
-uv run apx deploy --target apps
+uv run apx-agent deploy --target apps
 ```
 
 > **Something not working?** Run `apx-agent doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
@@ -97,7 +97,7 @@ prompt, no hallucinated schema.
 
 **How schema discovery works (first match wins):**
 
-1. **`apx scaffold` bakes `.apx/schema.json`** at project creation time by
+1. **`apx-agent scaffold` bakes `.apx/schema.json`** at project creation time by
    querying the UC Tables API. The manifest ships with your code, so a
    deployed app is grounded in the real columns with no `ws=` arg and no
    warehouse needed at startup.
@@ -167,7 +167,7 @@ it exists to answer. Common patterns:
 Scaffold one:
 
 ```bash
-apx scaffold my-coworker --template coworker
+apx-agent scaffold my-coworker --template coworker
 ```
 
 See [docs/coworker.md](docs/coworker.md) for the full reference.
@@ -209,10 +209,10 @@ See [docs/dev-ui.md](docs/dev-ui.md) for the full `/_apx/*` surface (chat, trace
 ## CLI
 
 ```bash
-apx scaffold <name>                # scaffold a new agent project
-apx run                            # local FastAPI dev server (/_apx/agent)
-apx deploy --target apps           # deploy to Databricks Apps
-apx eval evalset.jsonl             # run against deployed endpoint with LLM judge
+apx-agent scaffold <name>          # scaffold a new agent project
+apx-agent run                      # local FastAPI dev server (/_apx/agent)
+apx-agent deploy --target apps     # deploy to Databricks Apps
+apx-agent eval evalset.jsonl       # run against deployed endpoint with LLM judge
 apx-agent doctor                   # diagnose auth, deps, project layout
 ```
 
