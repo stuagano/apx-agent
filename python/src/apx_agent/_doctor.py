@@ -73,6 +73,9 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
         check_extras(cwd),
         check_databricks_yml(cwd),
     ]
+    memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
+    if memory_check is not None:
+        project.append(memory_check)
     return [
         ("Environment", environment),
         ("Authentication", authentication),
@@ -361,3 +364,72 @@ def check_databricks_yml(cwd: Path) -> Check:
         "Re-run `apx scaffold <name> --target apps`, or `apx deploy` "
         "for model-serving (no bundle required).",
     )
+
+
+def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
+    """Check that the configured memory backend is reachable.
+
+    Returns ``None`` when no memory config is present (nothing to check).
+    Skips the live probe when auth is not available.
+    """
+    if not _is_apx_project(cwd):
+        return None
+    try:
+        from ._inspection import _load_agent_config  # noqa: PLC0415
+        cfg = _load_agent_config()
+    except Exception:
+        return None
+    if cfg is None or cfg.memory is None:
+        return None
+
+    mem = cfg.memory
+    label = "Memory backend"
+
+    if not auth_ok:
+        return Check(label, Status.SKIP, f"type={mem.type} — skipped (auth unavailable)", None)
+
+    if mem.type == "inmemory":
+        return Check(label, Status.OK, "inmemory (no external backend)", None)
+
+    if mem.type == "delta":
+        if not mem.table_name:
+            return Check(
+                label, Status.WARN,
+                "type=delta but no table_name — memory will degrade at runtime",
+                "Add table_name to [tool.apx.agent.memory] and re-run `uv run quickstart`.",
+            )
+        try:
+            from ._defaults import _make_workspace_client  # noqa: PLC0415
+            from ._sql import run_sql  # noqa: PLC0415
+            ws = _make_workspace_client()
+            run_sql(ws, f"SELECT 1 FROM {mem.table_name} LIMIT 0")
+            return Check(label, Status.OK, f"delta table reachable: {mem.table_name}", None)
+        except Exception as exc:
+            short = str(exc)[:120]
+            return Check(
+                label, Status.WARN,
+                f"delta table not yet reachable ({short})",
+                "Run `uv run quickstart` to create the memory tables.",
+            )
+
+    if mem.type == "lakebase":
+        if not mem.instance_name:
+            return Check(
+                label, Status.WARN,
+                "type=lakebase but no instance_name — memory will degrade at runtime",
+                "Add instance_name to [tool.apx.agent.memory] and re-run `uv run quickstart`.",
+            )
+        try:
+            from ._defaults import _make_workspace_client  # noqa: PLC0415
+            ws = _make_workspace_client()
+            ws.database.get_database_instance(mem.instance_name)
+            return Check(label, Status.OK, f"lakebase instance exists: {mem.instance_name}", None)
+        except Exception as exc:
+            short = str(exc)[:120]
+            return Check(
+                label, Status.WARN,
+                f"lakebase instance '{mem.instance_name}' not found ({short})",
+                "Run `uv run quickstart` to provision the lakebase instance.",
+            )
+
+    return Check(label, Status.SKIP, f"unknown type {mem.type!r}", None)

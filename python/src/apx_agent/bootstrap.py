@@ -146,4 +146,99 @@ def init_apps_experiment(
     return experiment_path, experiment_id
 
 
-__all__ = ["init_apps_experiment"]
+_DELTA_MEMORY_DDL = """\
+CREATE TABLE IF NOT EXISTS {table} (
+  id STRING,
+  principal_id STRING,
+  namespace STRING,
+  content STRING,
+  tags ARRAY<STRING>,
+  importance FLOAT,
+  embedding ARRAY<FLOAT>,
+  metadata STRING,
+  created_at DOUBLE,
+  updated_at DOUBLE
+) USING DELTA"""
+
+_DELTA_SESSION_DDL = """\
+CREATE TABLE IF NOT EXISTS {table} (
+  session_id STRING NOT NULL,
+  history STRING,
+  state STRING,
+  created_at DOUBLE,
+  updated_at DOUBLE
+) USING DELTA"""
+
+
+def provision_memory_backends(
+    *,
+    pyproject_path: str | None = None,
+) -> list[str]:
+    """Provision memory and session backends declared in ``pyproject.toml``.
+
+    - **delta**: runs ``CREATE TABLE IF NOT EXISTS`` for both the memory and
+      session tables.  Idempotent — safe to re-run.
+    - **lakebase**: checks whether the named instance already exists; creates
+      it via the Databricks SDK if not.  Prints the ``read_write_dns`` host so
+      you can paste it into the ``[tool.apx.agent.memory] host`` field.
+
+    Returns a list of status lines for printing.  No-ops silently when no
+    memory config is present.
+    """
+    from ._inspection import _load_agent_config  # noqa: PLC0415
+    from ._defaults import _make_workspace_client  # noqa: PLC0415
+
+    cfg = _load_agent_config(pyproject_path)
+    if cfg is None or cfg.memory is None:
+        return []
+
+    mem = cfg.memory
+    sess = getattr(cfg, "session", None)
+
+    ws = _make_workspace_client()
+    lines: list[str] = []
+
+    if mem.type == "delta":
+        from ._sql import run_sql  # noqa: PLC0415
+
+        for table, ddl in [
+            (mem.table_name, _DELTA_MEMORY_DDL),
+            (sess.table_name if sess else None, _DELTA_SESSION_DDL),
+        ]:
+            if not table:
+                continue
+            try:
+                run_sql(ws, ddl.format(table=table))
+                lines.append(f"  create memory table  {table}")
+            except Exception as exc:
+                lines.append(f"  WARN  memory table {table}: {exc}")
+
+    elif mem.type == "lakebase":
+        if not mem.instance_name:
+            lines.append("  skip   lakebase — no instance_name in config")
+            return lines
+
+        from databricks.sdk.service.database import DatabaseInstance  # noqa: PLC0415
+
+        instance_name = mem.instance_name
+        try:
+            existing = ws.database.get_database_instance(instance_name)
+            host = existing.read_write_dns or "(host pending)"
+            lines.append(f"  exists lakebase instance '{instance_name}'  host={host}")
+        except Exception:
+            lines.append(f"  create lakebase instance '{instance_name}' (this may take ~2 min)…")
+            try:
+                result = ws.database.create_database_instance_and_wait(
+                    DatabaseInstance(name=instance_name)
+                )
+                host = result.read_write_dns or "(host not yet available — re-run quickstart)"
+                lines.append(f"  done   lakebase instance '{instance_name}'")
+                lines.append(f"         host = {host}")
+                lines.append(f"         Add to pyproject.toml:  host = \"{host}\"")
+            except Exception as exc:
+                lines.append(f"  FAIL   lakebase provisioning: {exc}")
+
+    return lines
+
+
+__all__ = ["init_apps_experiment", "provision_memory_backends"]

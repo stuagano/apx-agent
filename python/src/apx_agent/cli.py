@@ -800,20 +800,36 @@ _SCAFFOLD_APPS_QUICKSTART = '''\
 """quickstart — one-shot setup for the <APP_NAME> Apps deploy.
 
 Creates the MLflow experiment for tracing and writes its ID to .env.
+Provisions memory backends (Delta tables or Lakebase instance) if configured.
 Safe to re-run; idempotent.
 """
-from apx_agent.bootstrap import init_apps_experiment
+from apx_agent.bootstrap import init_apps_experiment, provision_memory_backends
 
 
 def main() -> None:
     path, exp_id = init_apps_experiment()
     print(f"MLflow experiment: {path} (id={exp_id})")
 
+    for line in provision_memory_backends():
+        print(line)
+
 
 if __name__ == "__main__":
     main()
 '''
 
+
+_SCAFFOLD_MEMORY_BLOCK = '''
+# Uncomment to enable persistent memory (Delta tables auto-created by `uv run quickstart`).
+# Re-run quickstart after changing these table names.
+# [tool.apx.agent.memory]
+# type = "delta"
+# table_name = "<CATALOG>.<SCHEMA>.apx_<APP_NAME_SLUG>_memory"
+#
+# [tool.apx.agent.session]
+# type = "delta"
+# table_name = "<CATALOG>.<SCHEMA>.apx_<APP_NAME_SLUG>_sessions"
+'''
 
 _SCAFFOLD_APPS_DATABRICKS_YML = '''\
 bundle:
@@ -1402,9 +1418,13 @@ def _scaffold_apps(
     objective_arg = f", objective={repr(objective)}" if objective else ""
     join_key_arg = f", join_key={repr(join_key)}" if join_key else ""
 
+    import re as _re
+    name_slug = _re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
+
     def _sub(template: str) -> str:
         return (
             template.replace("<APP_NAME>", name)
+            .replace("<APP_NAME_SLUG>", name_slug)
             .replace("<CATALOG>", catalog)
             .replace("<SCHEMA>", schema)
             .replace("<EXAMPLE_TOOL>", prelude)
@@ -1416,8 +1436,13 @@ def _scaffold_apps(
             .replace("<APX_AGENT_SOURCE>", apx_source)
         )
 
+    # Inject commented-out memory block when a UC catalog/schema is known (coworker / data agents).
+    pyproject = _sub(
+        _SCAFFOLD_APPS_PYPROJECT + (_SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else "")
+    )
+
     files: dict[str, str] = {
-        "pyproject.toml": _sub(_SCAFFOLD_APPS_PYPROJECT),
+        "pyproject.toml": pyproject,
         "databricks.yml": _sub(_SCAFFOLD_APPS_DATABRICKS_YML),
         ".env.example": _SCAFFOLD_APPS_ENV_EXAMPLE,
         ".gitignore": _SCAFFOLD_GITIGNORE,
