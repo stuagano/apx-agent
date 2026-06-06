@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from databricks.sdk import WorkspaceClient
 
 from ._models import AgentContext
 from ._ui_nav import _apx_nav_links, _deploy_overlay_html

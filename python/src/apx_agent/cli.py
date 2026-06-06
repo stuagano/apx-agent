@@ -1652,10 +1652,10 @@ def scaffold(
     click.echo(f"Next: cd {name} && uv sync && apx-agent run    # serve locally")
     click.echo("Tip: run `apx-agent doctor` to check your environment before deploying.")
     if scaffold_target == "apps":
-        click.echo(f"      apx-agent deploy                        # → Databricks Apps")
+        click.echo("      apx-agent deploy                        # → Databricks Apps")
     else:
         click.echo(
-            f"      apx-agent deploy --model <endpoint> --name <catalog.schema.model>"
+            "      apx-agent deploy --model <endpoint> --name <catalog.schema.model>"
         )
 
 
@@ -5265,7 +5265,7 @@ def watchdog_status(
         click.echo(json.dumps(payload, indent=2, default=str))
         return
 
-    click.echo(f"# watchdog status"
+    click.echo("# watchdog status"
                + (f" for agent={agent_name}" if agent_name else "")
                + f" via {tool_name}")
     click.echo(f"  action:     {decision.action}")

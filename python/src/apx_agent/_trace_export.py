@@ -309,14 +309,14 @@ def export_traces(
         f"USING (SELECT * FROM VALUES "
         + ", ".join(value_tuples)
         + " AS src("
-        f"  trace_id, experiment_id, agent_name, operation, status,"
-        f"  start_time_ms, execution_time_ms, session_id, user_token_provided,"
-        f"  model_endpoint, tool_count, watchdog_action, watchdog_policy_id,"
-        f"  tags, exported_at"
-        f")) src "
-        f"ON target.trace_id = src.trace_id "
-        f"WHEN MATCHED THEN UPDATE SET * "
-        f"WHEN NOT MATCHED THEN INSERT *"
+        "  trace_id, experiment_id, agent_name, operation, status,"
+        "  start_time_ms, execution_time_ms, session_id, user_token_provided,"
+        "  model_endpoint, tool_count, watchdog_action, watchdog_policy_id,"
+        "  tags, exported_at"
+        ")) src "
+        "ON target.trace_id = src.trace_id "
+        "WHEN MATCHED THEN UPDATE SET * "
+        "WHEN NOT MATCHED THEN INSERT *"
     )
     try:
         run_sql(ws, sql, warehouse_id=warehouse_id)

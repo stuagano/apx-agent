@@ -9,10 +9,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from ._models import AgentContext
 from ._ui_nav import (
-    _apx_nav_css,
-    _apx_nav_html,
     _apx_nav_links,
     _deploy_overlay_html,
     _topology_minimap_html,

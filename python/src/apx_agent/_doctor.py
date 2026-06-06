@@ -551,7 +551,7 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool) -> list[Check]:
                 ))
                 continue
             try:
-                ws.functions.get(full_name=function_name)
+                ws.functions.get(name=function_name)
                 checks.append(Check(f"UC function ({function_name})", Status.OK, "found", None))
             except Exception as exc:
                 short = str(exc)[:120]

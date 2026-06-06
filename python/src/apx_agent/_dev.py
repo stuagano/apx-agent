@@ -19,6 +19,7 @@ import asyncio
 import json as _json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
@@ -52,7 +53,6 @@ from ._ui_setup import (
     _render_setup_ui,
 )
 from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes, _validate_probe_url
-from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ def _span_type_css(span_type: str) -> str:
 
 
 def _render_traces_list(rows: list, agent_name: str | None) -> str:
-    import json as _json, html as _html
+    import html as _html
 
     title = f"{agent_name} — traces" if agent_name else "Traces"
     if not rows:
@@ -335,7 +335,8 @@ def _render_message_line(m: dict) -> str:
     and identical across calls); assistant tool calls render as
     ``→ run_sql({...})``; everything else shows a truncated one-liner.
     """
-    import html as _html, json as _json
+    import html as _html
+    import json as _json
 
     role = str(m.get("role") or "?")
     content = m.get("content")
@@ -405,7 +406,8 @@ def _render_choices_block(choices: list) -> str:
 
 
 def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -> str:
-    import json as _json, html as _html
+    import json as _json
+    import html as _html
 
     err_html = f'<div class="err-banner">{_html.escape(error or "Unknown error")}</div>' if error else ""
 
@@ -435,7 +437,7 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
             status = s.get("status", "")
             st_cls = "sstatus-ok" if "OK" in status.upper() else "sstatus-err"
             name = _html.escape(s.get("name", ""))
-            sid = _html.escape(s.get("span_id", ""))
+            _html.escape(s.get("span_id", ""))
             inputs_obj = s.get("inputs")
             outputs_obj = s.get("outputs")
             # MLflow tags chat-model spans CHAT_MODEL and completion spans LLM.
@@ -903,7 +905,6 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         max_results = int(request.query_params.get("max", "50"))
         experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
         try:
-            import mlflow as _mlflow
             # include_spans=False skips artifact download — works even when
             # the blob-storage endpoint is unreachable (e.g. private-link
             # workspaces where *.storage.cloud.databricks.com is blocked).

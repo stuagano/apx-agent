@@ -8,7 +8,7 @@ _inspection.py sees the real Annotated[...] type, not a string.
 import logging
 from typing import Any
 
-from ._sql import get_warehouse_id, run_sql
+from ._sql import run_sql
 
 logger = logging.getLogger(__name__)
 

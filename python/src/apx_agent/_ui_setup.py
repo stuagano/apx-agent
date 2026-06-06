@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ._models import AgentContext
 from ._ui_edit import _find_deploy_root
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
 
