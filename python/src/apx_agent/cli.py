@@ -975,7 +975,7 @@ curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","con
 
 ## Deploy
 ```bash
-apx-agent deploy --target apps  # validates, deploys, runs the bundle
+uv run apx-agent deploy --target apps  # validates, deploys, runs the bundle
 ```
 
 ## Edit
@@ -1634,8 +1634,9 @@ def scaffold(
         else:
             catalog, schema = "samples", "nyctaxi"
             click.echo(
-                "# data source: samples.nyctaxi (default — couldn't probe the "
-                "workspace; pass --catalog/--schema to ground the agent in your data)"
+                "# data source: samples.nyctaxi (fallback — couldn't reach the "
+                "workspace; run `databricks auth login` if you haven't authenticated, "
+                "or pass --catalog/--schema to ground the agent in your own data)"
             )
 
     if scaffold_target == "apps":
@@ -1649,13 +1650,13 @@ def scaffold(
 
     click.echo()
     click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")
-    click.echo(f"Next: cd {name} && uv sync && apx-agent run    # serve locally")
-    click.echo("Tip: run `apx-agent doctor` to check your environment before deploying.")
+    click.echo(f"Next: cd {name} && uv sync && uv run apx-agent run    # serve locally")
+    click.echo("Tip: run `uv run apx-agent doctor` to check your environment before deploying.")
     if scaffold_target == "apps":
-        click.echo("      apx-agent deploy                        # → Databricks Apps")
+        click.echo("      uv run apx-agent deploy                  # → Databricks Apps")
     else:
         click.echo(
-            "      apx-agent deploy --model <endpoint> --name <catalog.schema.model>"
+            "      uv run apx-agent deploy --model <endpoint> --name <catalog.schema.model>"
         )
 
 

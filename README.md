@@ -23,7 +23,7 @@ Python 3.11+ required.
 ```bash
 uv add apx-agent
 uv run apx-agent scaffold my-agent
-cd my-agent
+cd my-agent && uv sync
 ```
 
 **Run it locally:**
@@ -39,7 +39,7 @@ uv run apx-agent run --reload
 uv run apx-agent deploy --target apps
 ```
 
-> **Something not working?** Run `apx-agent doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
+> **Something not working?** Run `uv run apx-agent doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
 
 See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough including prerequisites, workspace requirements, and the local dev walk.
 
