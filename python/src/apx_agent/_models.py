@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
@@ -168,11 +169,20 @@ _KNOB_TO_TYPE: dict[str, StoreType | None] = {
 
 def normalize_memory_knob(
     value: str,
+    *,
+    catalog: str | None = None,
+    schema: str | None = None,
+    name: str | None = None,
 ) -> "tuple[MemoryBackendConfig | None, SessionBackendConfig | None]":
     """Map a one-word memory tier to ``(MemoryBackendConfig, SessionBackendConfig)``.
 
     Returns ``(None, None)`` for ``"off"``.  Raises for ``"lakebase"`` (needs
     explicit TOML blocks) and for unknown values.
+
+    When *catalog* and *schema* are provided (DataAgent / CoworkerAgent), the
+    delta table names are derived from them so memory lands in the same UC
+    location as the agent's data.  Falls back to ``main.default`` for bare
+    ``LlmAgent(memory="persistent")`` callers that have no catalog/schema.
     """
     v = (value or "").strip().lower()
     if v == "lakebase":
@@ -191,11 +201,18 @@ def normalize_memory_knob(
     tier = _KNOB_TO_TYPE[v]
     if tier is None:
         return (None, None)
-    # Provide a default table_name for delta so memory="persistent" works
-    # out of the box without requiring an explicit [tool.apx.agent.memory] block.
-    # Users can override by supplying an explicit block with their own table path.
-    table_name = "main.default.apx_memories" if tier == "delta" else None
-    session_table = "main.default.apx_sessions" if tier == "delta" else None
+    if tier == "delta":
+        if catalog and schema:
+            raw = (name or schema).lower()
+            slug = re.sub(r"[^a-z0-9_]", "_", raw).strip("_") or "agent"
+            table_name: str | None = f"{catalog}.{schema}.apx_{slug}_memory"
+            session_table: str | None = f"{catalog}.{schema}.apx_{slug}_sessions"
+        else:
+            table_name = "main.default.apx_memories"
+            session_table = "main.default.apx_sessions"
+    else:
+        table_name = None
+        session_table = None
     return (
         MemoryBackendConfig(type=tier, table_name=table_name),
         SessionBackendConfig(type=tier, table_name=session_table),

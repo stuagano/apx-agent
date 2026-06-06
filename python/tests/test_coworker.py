@@ -19,6 +19,25 @@ class TestNormalizeMemoryKnob:
         for v in ("persistent", "delta"):
             mem, sess = normalize_memory_knob(v)
             assert mem.type == "delta" and sess.type == "delta"
+            # No catalog → falls back to main.default so bare LlmAgent still works
+            assert mem.table_name == "main.default.apx_memories"
+            assert sess.table_name == "main.default.apx_sessions"
+
+    def test_persistent_with_catalog_derives_uc_table_names(self):
+        mem, sess = normalize_memory_knob("persistent", catalog="acme", schema="hr", name="hr_coworker")
+        assert mem.type == "delta"
+        assert mem.table_name == "acme.hr.apx_hr_coworker_memory"
+        assert sess.table_name == "acme.hr.apx_hr_coworker_sessions"
+
+    def test_persistent_with_catalog_slugifies_name(self):
+        # Non-alphanumeric chars → underscores; trailing stripped
+        mem, sess = normalize_memory_knob("persistent", catalog="cat", schema="sch", name="my-agent name!")
+        assert mem.table_name == "cat.sch.apx_my_agent_name_memory"
+
+    def test_persistent_with_catalog_falls_back_to_schema_when_no_name(self):
+        mem, sess = normalize_memory_knob("persistent", catalog="cat", schema="sales")
+        assert mem.table_name == "cat.sales.apx_sales_memory"
+        assert sess.table_name == "cat.sales.apx_sales_sessions"
 
     def test_lakebase_errors_to_explicit_block(self):
         with pytest.raises(ValueError, match="lakebase"):
@@ -46,6 +65,11 @@ class TestCoworkerAgent:
         # memory declared (not yet built — needs ws at wiring time)
         assert cw.memory_config is not None and cw.memory_config.type == "delta"
         assert cw.session_config is not None and cw.session_config.type == "delta"
+        # table names must be scoped to the coworker's own catalog.schema, not main.default
+        assert cw.memory_config.table_name is not None
+        assert cw.memory_config.table_name.startswith("samples.tpch.")
+        assert cw.session_config.table_name is not None
+        assert cw.session_config.table_name.startswith("samples.tpch.")
 
     def test_memory_off_declares_nothing(self):
         from apx_agent.coworker import CoworkerAgent
