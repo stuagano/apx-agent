@@ -1,7 +1,7 @@
 """Bootstrap helpers for apx-agent Apps deployments.
 
 This module hosts the small amount of pre-deploy plumbing that every
-``apx scaffold --target apps`` project needs: creating an MLflow experiment
+``apx-agent scaffold --target apps`` project needs: creating an MLflow experiment
 at the canonical workspace path and writing its id into a local ``.env`` so
 the bundle and the agent module pick it up.
 

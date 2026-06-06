@@ -958,7 +958,7 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
     Right panel — live tool schemas (what the model sees) updated on debounce.
     New Tool modal — structured form that generates correct function boilerplate.
 
-    Cmd/Ctrl+S saves the file; restart `apx run` to load the new agent code.
+    Cmd/Ctrl+S saves the file; restart `apx-agent run` to load the new agent code.
     """
     import json as _json
     import re as _re

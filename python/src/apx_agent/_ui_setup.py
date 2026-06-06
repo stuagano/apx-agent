@@ -952,7 +952,7 @@ document.querySelectorAll('.pcard').forEach(card => {{
       }}
       setActiveCard(d.type);
       status.style.color = '#4ade80';
-      status.textContent = d.changed ? 'Saved — restart `apx run` to load' : `Already ${{d.type}}`;
+      status.textContent = d.changed ? 'Saved — restart `apx-agent run` to load' : `Already ${{d.type}}`;
       setTimeout(() => {{ status.textContent = ''; }}, 4000);
     }} catch(e) {{
       status.style.color = '#f87171';

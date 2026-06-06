@@ -3,7 +3,7 @@
 ``/health`` is a *liveness* probe — it returns 200 as soon as the server
 process has booted. ``/readyz`` is a *readiness* probe: it proves the agent
 can actually answer a canned prompt and that an MLflow trace was recorded for
-the run. ``apx deploy`` later calls this endpoint as a deploy gate (Slice C),
+the run. ``apx-agent deploy`` later calls this endpoint as a deploy gate (Slice C),
 so a green deploy means the agent really responds and traces.
 
 Design:

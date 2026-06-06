@@ -235,7 +235,7 @@ async def _check_mlflow_config() -> dict[str, Any]:
 
     Accepts two equivalent ways to declare the experiment:
       - ``MLFLOW_EXPERIMENT_ID`` env var (Apps/deploy convention)
-      - ``[tool.apx.agent].experiment`` in pyproject.toml (``apx run`` sets
+      - ``[tool.apx.agent].experiment`` in pyproject.toml (``apx-agent run`` sets
         this via ``mlflow.set_experiment()`` before serving starts)
     """
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
@@ -256,7 +256,7 @@ async def _check_mlflow_config() -> dict[str, Any]:
             "hint": "Set MLFLOW_TRACKING_URI=databricks to use the workspace MLflow backend.",
         }
     # Accept experiment declared via pyproject.toml as equivalent to the env var.
-    # ``apx run`` calls mlflow.set_experiment() from this key before serving.
+    # ``apx-agent run`` calls mlflow.set_experiment() from this key before serving.
     pyproject_exp = _pyproject_experiment()
     if not experiment_id and not pyproject_exp:
         return {

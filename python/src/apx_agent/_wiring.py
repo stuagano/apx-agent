@@ -44,13 +44,13 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
 
     This is the **shared config→instance seam** that both serve paths must run:
 
-      * ``apx run`` / Apps target — via ``setup_agent`` (this module).
-      * model-serving deploy — via ``apx deploy`` calling this right before
+      * ``apx-agent run`` / Apps target — via ``setup_agent`` (this module).
+      * model-serving deploy — via ``apx-agent deploy`` calling this right before
         ``log_agent``, because MLflow captures the agent *at log time*; nothing
         re-applies config inside the logged model's per-request compile.
 
     Keeping both paths on one helper is what prevents cross-target drift (a
-    knob that works under ``apx run`` but silently no-ops on a deploy). Future
+    knob that works under ``apx-agent run`` but silently no-ops on a deploy). Future
     declarative features that likewise need to land on the instance before it
     is captured — tools merge, memory attach, guard attach — should extend this
     same function rather than re-implementing the merge at one call site.
@@ -688,7 +688,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-        # MLflow auto-tracing. ``apx run`` sets ``APX_AGENT_MLFLOW_AUTOLOG=1``
+        # MLflow auto-tracing. ``apx-agent run`` sets ``APX_AGENT_MLFLOW_AUTOLOG=1``
         # before importing the user's module so the dev loop gets per-tool +
         # per-LLM spans by default. Deploy paths reach this lifespan with the
         # env unset, so autolog stays off there (selective spans in the
@@ -710,7 +710,7 @@ def create_app(
         except Exception as exc:  # pragma: no cover — defensive
             logger.debug("Trace-capture processor install skipped: %s", exc)
 
-        # Best-effort: a freshly scaffolded agent run locally with `apx run`
+        # Best-effort: a freshly scaffolded agent run locally with `apx-agent run`
         # has no Databricks credentials configured yet. Don't let that crash
         # startup — boot the server (so the dev UI loads) and surface a clear
         # error only when a tool actually needs the client.
@@ -830,7 +830,7 @@ def mount_mcp_endpoints(
     # gets populated in the lifespan startup event below.
     _mount_protocol_routes(app)
 
-    # Dev UI (/_apx/*) — available when running locally with `apx run`.
+    # Dev UI (/_apx/*) — available when running locally with `apx-agent run`.
     # Absent in production Apps deployments (DATABRICKS_APP_PORT is set by
     # the Apps runtime). The mount is call-time so it runs before the startup
     # event and the routes are registered on the first request.
@@ -850,7 +850,7 @@ def mount_mcp_endpoints(
     async def _apx_mount_startup() -> None:  # type: ignore[misc]
         # MLflow auto-tracing. This is the apps-target path (the AgentServer app
         # is not created via create_app, so create_app's lifespan never runs
-        # here). Under ``apx run --reload`` the worker subprocess re-imports the
+        # here). Under ``apx-agent run --reload`` the worker subprocess re-imports the
         # module and re-runs this startup, but never re-runs cli run()'s body —
         # so autolog must be (re)applied in-process here or per-tool/per-LLM
         # spans stop emitting under --reload (audit M5).

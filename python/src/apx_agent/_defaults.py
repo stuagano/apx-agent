@@ -149,7 +149,7 @@ def _get_user_client(headers: HeadersDependency) -> WorkspaceClient:
 
     Uses the OBO token from X-Forwarded-Access-Token when running inside a
     Databricks App.  Falls back to CLI-configured credentials for local
-    development (``apx dev`` / ``uvicorn --reload``).
+    development (``apx-agent dev`` / ``uvicorn --reload``).
     """
     if not headers.token:
         logger.info("No OBO token — falling back to CLI credentials for local dev")
