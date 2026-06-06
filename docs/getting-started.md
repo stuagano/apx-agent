@@ -44,11 +44,11 @@ before a release: `uv add "apx-agent @ git+https://github.com/stuagano/apx-agent
 
 ### Verify setup
 
-Once `apx-agent` is installed, run `apx doctor` to confirm everything is wired before you touch `apx run` or `apx deploy`:
+Once `apx-agent` is installed, run `apx-agent doctor` to confirm everything is wired before you touch `apx run` or `apx deploy`:
 
 ```bash
-uv run apx doctor            # checks Python, uv, Databricks CLI, auth, project layout
-uv run apx doctor --offline  # skip the live workspace round-trip (CI / offline)
+uv run apx-agent doctor            # checks Python, uv, Databricks CLI, auth, project layout
+uv run apx-agent doctor --offline  # skip the live workspace round-trip (CI / offline)
 ```
 
 It prints a `Fix:` line for anything wrong. Auth errors caught here are much cleaner than errors mid-`apx run`.
@@ -139,7 +139,7 @@ From inside `my-agent/`, this bundles the project and creates a Databricks App. 
 2. **Ask a question** — open `<app-url>` in a browser and ask the same questions you tested locally. If the agent answers, the deploy is healthy.
 3. **Check traces** — open your workspace, go to **Machine Learning → Experiments**, and find your agent's experiment. A trace with a successful tool call confirms the full stack (auth, SQL warehouse, UC) is working end-to-end.
 
-If the app shows a 502 or `/readyz` returns an error, run `uv run apx doctor` locally and check [`docs/deployment-troubleshooting.md`](deployment-troubleshooting.md).
+If the app shows a 502 or `/readyz` returns an error, run `uv run apx-agent doctor` locally and check [`docs/deployment-troubleshooting.md`](deployment-troubleshooting.md).
 
 ---
 
@@ -220,12 +220,12 @@ No new deployment, no URL change.
 
 ## Troubleshooting
 
-`apx doctor` is the first thing to run when something isn't working:
+`apx-agent doctor` is the first thing to run when something isn't working:
 
 ```bash
-uv run apx doctor            # full check incl. a live workspace round-trip
-uv run apx doctor --offline  # skip the network check (CI / offline)
-uv run apx doctor --json     # machine-readable output
+uv run apx-agent doctor            # full check incl. a live workspace round-trip
+uv run apx-agent doctor --offline  # skip the network check (CI / offline)
+uv run apx-agent doctor --json     # machine-readable output
 ```
 
 **Auth errors** (`Could not resolve Databricks authentication`) — re-run `databricks auth login --profile <name>` and confirm with `databricks current-user me --profile <name>`, then restart `apx run`.

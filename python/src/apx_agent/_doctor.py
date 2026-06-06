@@ -1,6 +1,6 @@
 """Environment diagnostics for the apx CLI.
 
-The *facts* layer behind `apx doctor` and the inline preflights in cli.py.
+The *facts* layer behind `apx-agent doctor` and the inline preflights in cli.py.
 Each `check_*` function inspects one thing and returns a `Check`. cli.py owns
 presentation; this module owns what's wrong and how to fix it. References to
 cli helpers (`_detect_target`, `_databrickscfg_profiles`) are lazy imports so

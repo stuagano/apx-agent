@@ -39,7 +39,7 @@ uv run apx run --reload
 uv run apx deploy --target apps
 ```
 
-> **Something not working?** Run `apx doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
+> **Something not working?** Run `apx-agent doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
 
 See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough including prerequisites, workspace requirements, and the local dev walk.
 
@@ -213,7 +213,7 @@ apx scaffold <name>                # scaffold a new agent project
 apx run                            # local FastAPI dev server (/_apx/agent)
 apx deploy --target apps           # deploy to Databricks Apps
 apx eval evalset.jsonl             # run against deployed endpoint with LLM judge
-apx doctor                         # diagnose auth, deps, project layout
+apx-agent doctor                   # diagnose auth, deps, project layout
 ```
 
 See [docs/cli.md](docs/cli.md) for the full surface.

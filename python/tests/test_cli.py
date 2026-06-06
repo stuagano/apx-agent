@@ -2736,7 +2736,7 @@ def test_scaffold_explicit_target_bakes_example_tool(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# `apx doctor`
+# `apx-agent doctor`
 # ---------------------------------------------------------------------------
 
 
