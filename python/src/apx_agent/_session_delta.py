@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ._session import Session, StoreError
 from ._sql import run_sql

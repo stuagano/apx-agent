@@ -302,7 +302,7 @@ env:
 ### Step 2: Deploy
 
 ```bash
-uv run apx deploy
+uv run apx-agent deploy
 ```
 
 ### Step 3: Verify
@@ -360,7 +360,7 @@ shortage-intelligence-agent/
 ├── app.yml                       # Runtime command + env vars
 ├── pyproject.toml                # Package config and deps
 ├── databricks.yml                # Asset Bundle — app + morning-scan job
-├── evalset.jsonl                 # Eval prompts for apx eval-chain
+├── evalset.jsonl                 # Eval prompts for apx-agent eval-chain
 ├── agent.py                      # SequentialAgent: 5-step pipeline
 ├── app.py                        # FastAPI app entry point
 ├── api.py                        # HTTP routes: /version, /current-user
@@ -401,8 +401,8 @@ Migration status:
 
 | Move | Status |
 |---|---|
-| Deploy via `apx deploy` (chains publish-tools + log_agent + agents.deploy + set_uc_tags) | ✅ shipped |
-| `evalset.jsonl` for `apx eval-chain` | ✅ shipped |
+| Deploy via `apx-agent deploy` (chains publish-tools + log_agent + agents.deploy + set_uc_tags) | ✅ shipped |
+| `evalset.jsonl` for `apx-agent eval-chain` | ✅ shipped |
 | Extract `classify_shortage_severity` as `@tool(uc=...)` (worked UC-function example) | ✅ shipped |
 | Wire `DeltaSessionStore` (multi-turn) | ✅ shipped 2026-05-25 |
 | Wire `WatchdogGuard` + local guards | ✅ shipped 2026-05-25 |
@@ -411,7 +411,7 @@ Migration status:
 ### Deploy via the canonical flow
 
 ```bash
-apx deploy \
+apx-agent deploy \
   --module agent:agent \
   --model databricks-claude-sonnet-4-6 \
   --name main.agents.shortage_intelligence \
@@ -419,14 +419,14 @@ apx deploy \
   --experiment /Users/me@company.com/agents/shortage_intelligence
 ```
 
-By default `apx deploy` runs the full canonical flow in one command:
+By default `apx-agent deploy` runs the full canonical flow in one command:
 
 1. `publish_tools_to_uc(agent)` — register any `@tool(uc=...)` decorated tools (currently `classify_shortage_severity`).
 2. `log_agent(agent, ...)` — log the compiled ChatAgent + auto-derived MLflow resources, register a model version in UC.
 3. `databricks.agents.deploy(...)` — promote the registered version to a Model Serving endpoint.
-4. `set_uc_tags_for_agent(...)` — write `apx.agent.*` UC tags so the agent shows up in `apx list`, `apx topology`, and watchdog's crawler.
+4. `set_uc_tags_for_agent(...)` — write `apx.agent.*` UC tags so the agent shows up in `apx-agent list`, `apx-agent topology`, and watchdog's crawler.
 
-Toggle individual stages with `--no-publish-tools`, `--no-deploy`, or `--no-set-uc-tags`. Model / experiment / agent-name defaults live in `[tool.apx.agent]` in `pyproject.toml`, so once configured you can just run `apx deploy --name main.agents.shortage_intelligence`.
+Toggle individual stages with `--no-publish-tools`, `--no-deploy`, or `--no-set-uc-tags`. Model / experiment / agent-name defaults live in `[tool.apx.agent]` in `pyproject.toml`, so once configured you can just run `apx-agent deploy --name main.agents.shortage_intelligence`.
 
 ### Operate via the apx CLI
 
@@ -435,14 +435,14 @@ apx info  --module agent:agent
 apx logs  --endpoint shortage_intelligence
 apx trace --agent shortage_intelligence --limit 20
 apx cost  --agent shortage_intelligence --hours 24
-apx topology --format mermaid > shortage_topology.mmd
-apx list
+apx-agent topology --format mermaid > shortage_topology.mmd
+apx-agent list
 ```
 
 ### Evaluate the chain
 
 ```bash
-apx eval-chain evalset.jsonl \
+apx-agent eval-chain evalset.jsonl \
     --module agent:agent \
     --model "$SERVING_MODEL_ENDPOINT" \
     --experiment "$APX_EXPERIMENT"

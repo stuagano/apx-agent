@@ -9,10 +9,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from ._models import AgentContext
 from ._ui_nav import (
-    _apx_nav_css,
-    _apx_nav_html,
     _apx_nav_links,
     _deploy_overlay_html,
     _topology_minimap_html,
@@ -958,7 +955,7 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
     Right panel — live tool schemas (what the model sees) updated on debounce.
     New Tool modal — structured form that generates correct function boilerplate.
 
-    Cmd/Ctrl+S saves the file; restart `apx run` to load the new agent code.
+    Cmd/Ctrl+S saves the file; restart `apx-agent run` to load the new agent code.
     """
     import json as _json
     import re as _re

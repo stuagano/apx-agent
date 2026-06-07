@@ -13,7 +13,7 @@ Three entry points:
   * ``eval_against_endpoint(endpoint_url, evalset, ...)`` — same surface as
     ``evaluate()`` but routes every case through a deployed Databricks App's
     ``/invocations`` endpoint. Streams by default to avoid proxy timeouts on
-    long pipelines. Pairs with ``apx eval --endpoint-url <url>``.
+    long pipelines. Pairs with ``apx-agent eval --endpoint-url <url>``.
 """
 
 from __future__ import annotations

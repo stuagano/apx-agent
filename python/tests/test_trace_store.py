@@ -179,7 +179,7 @@ def test_capture_after_real_streaming_responses_run(tmp_path):
 
 
 def test_capture_after_real_streaming_chat_run(tmp_path):
-    """Same as above for the ChatAgent predict_stream path (dev loop / apx run)."""
+    """Same as above for the ChatAgent predict_stream path (dev loop / apx-agent run)."""
     from unittest.mock import MagicMock, patch
 
     import mlflow

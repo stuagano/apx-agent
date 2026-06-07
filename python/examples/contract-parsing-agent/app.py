@@ -1,6 +1,6 @@
 """contract-parsing-agent: FastAPI app for local dev.
 
-This file is what ``apx dev`` (or ``uvicorn app:app``) runs locally — wraps
+This file is what ``apx-agent dev`` (or ``uvicorn app:app``) runs locally — wraps
 the agent with apx-agent's A2A surface, mounts the SPA + ``/api/*`` routes,
 and serves the React client/dist/ when present.
 """

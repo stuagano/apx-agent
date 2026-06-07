@@ -437,7 +437,7 @@ class TestDepPrincipalPath:
 
 class TestDepPrincipalFallsBackToDefault:
     """With ``_use_dep_principal=True`` (the config / agent-carried path), when
-    the per-request OBO principal is absent (None — e.g. local ``apx run`` with
+    the per-request OBO principal is absent (None — e.g. local ``apx-agent run`` with
     no X-Forwarded-User), the tools must fall back to ``default_principal_id``
     rather than no-op. Regression: memory was dead in the local dev loop because
     the dep branch ignored default_principal_id."""

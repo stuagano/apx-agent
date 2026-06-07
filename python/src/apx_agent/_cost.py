@@ -177,7 +177,7 @@ def cost_for_agent(
     """Resolve an agent name to its serving endpoint, then return cost.
 
     Either ``agent_name`` or ``endpoint`` must be set. When ``agent_name``
-    is provided, ``apx list``-style scan is used to find the registered
+    is provided, ``apx-agent list``-style scan is used to find the registered
     model tagged ``apx.agent.name=<agent_name>`` and read its serving
     endpoint from the metadata.
 

@@ -292,6 +292,124 @@ def test_apx_install_not_found(monkeypatch):
     assert "editable" in c.detail
 
 
+class TestCheckDeclaredTools:
+    def _project(self, tmp_path: Path, tools_toml: str = "") -> Path:
+        (tmp_path / "pyproject.toml").write_text(
+            f"[tool.apx.agent]\nname='x'\n{tools_toml}"
+        )
+        (tmp_path / "agent.py").write_text("# agent\n")
+        return tmp_path
+
+    def test_no_tools_section_returns_empty(self, tmp_path):
+        self._project(tmp_path)
+        result = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert result == []
+
+    def test_not_apx_project_returns_empty(self, tmp_path):
+        result = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert result == []
+
+    def test_auth_not_ok_skips_with_check_per_resource(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'genie'\nspace_id = 'abc123'\n"
+            "\n[[tool.apx.tools]]\ntype = 'vector_search'\nindex_name = 'cat.sch.idx'\n",
+        )
+        checks = doctor.check_declared_tools(tmp_path, auth_ok=False)
+        assert len(checks) == 2
+        assert all(c.status is Status.SKIP for c in checks)
+
+    def test_genie_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'genie'\nspace_id = 'space-1'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert len(checks) == 1
+        assert checks[0].status is Status.OK
+        ws.genie.get_space.assert_called_once_with(space_id="space-1")
+
+    def test_genie_not_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'genie'\nspace_id = 'bad-space'\n",
+        )
+        ws = MagicMock()
+        ws.genie.get_space.side_effect = Exception("404 not found")
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks[0].status is Status.WARN
+        assert "bad-space" in checks[0].fix
+
+    def test_vector_search_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'vector_search'\nindex_name = 'cat.sch.idx'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks[0].status is Status.OK
+        ws.vector_search_indexes.get_index.assert_called_once_with(index_name="cat.sch.idx")
+
+    def test_uc_function_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'uc_function'\nfunction_name = 'main.tools.my_fn'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks[0].status is Status.OK
+        ws.functions.get.assert_called_once_with(name="main.tools.my_fn")
+
+    def test_uc_function_toolkit_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'uc_function_toolkit'\ncatalog_schema = 'main.tools'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks[0].status is Status.OK
+        ws.schemas.get.assert_called_once_with(full_name="main.tools")
+
+    def test_sql_warehouse_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'sql'\nwarehouse_id = 'wh-abc'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks[0].status is Status.OK
+        ws.warehouses.get.assert_called_once_with(id="wh-abc")
+
+    def test_sql_no_warehouse_id_skipped(self, tmp_path):
+        """sql_tool without warehouse_id is valid config — nothing to validate."""
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'sql'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks == []
+
+    def test_non_resource_type_ignored(self, tmp_path):
+        """openapi/http/mcp tools don't need presence-checks here."""
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'http'\nurl = 'http://localhost/api'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks == []
+
+
 def test_auth_sdk_not_importable(monkeypatch):
     """A broken/minimal install where databricks-sdk can't be imported FAILs
     fast with a clear message, rather than passing through to a deep traceback
@@ -306,3 +424,133 @@ def test_auth_sdk_not_importable(monkeypatch):
     c = doctor.check_databricks_auth()
     assert c.status is doctor.Status.FAIL
     assert "databricks-sdk not importable" in c.detail
+
+
+class TestCheckModelEndpoint:
+    def _make_pyproject(self, tmp_path: Path, model: str) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            f'[tool.apx.agent]\nmodel = "{model}"\n'
+        )
+
+    def test_no_pyproject_returns_none(self, tmp_path: Path):
+        assert doctor.check_model_endpoint(tmp_path, auth_ok=True) is None
+
+    def test_auth_not_ok_returns_none(self, tmp_path: Path):
+        self._make_pyproject(tmp_path, "databricks-claude-sonnet-4-6")
+        assert doctor.check_model_endpoint(tmp_path, auth_ok=False) is None
+
+    def test_no_model_key_returns_none(self, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\n")
+        assert doctor.check_model_endpoint(tmp_path, auth_ok=True) is None
+
+    def test_endpoint_found_returns_ok(self, tmp_path: Path):
+        self._make_pyproject(tmp_path, "databricks-claude-sonnet-4-6")
+        ws = MagicMock()
+        ep = MagicMock()
+        ep.state = None
+        ws.serving_endpoints.get.return_value = ep
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_model_endpoint(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.OK
+        ws.serving_endpoints.get.assert_called_once_with("databricks-claude-sonnet-4-6")
+
+    def test_endpoint_not_found_returns_fail(self, tmp_path: Path):
+        self._make_pyproject(tmp_path, "databricks-claude-sonnet-4-6")
+        ws = MagicMock()
+        ws.serving_endpoints.get.side_effect = Exception("404 Not Found")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_model_endpoint(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.FAIL
+        assert "not found" in c.detail
+        assert "pyproject.toml" in c.fix
+
+    def test_endpoint_other_error_returns_warn(self, tmp_path: Path):
+        self._make_pyproject(tmp_path, "databricks-claude-sonnet-4-6")
+        ws = MagicMock()
+        ws.serving_endpoints.get.side_effect = Exception("connection timeout")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_model_endpoint(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.WARN
+
+
+class TestCheckUcDataSource:
+    def _project(self, tmp_path: Path, catalog: str, schema: str) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            f'[tool.apx.agent]\nname = "x"\n'
+            f'[tool.apx.agent.template]\nname = "data"\n'
+            f'catalog = "{catalog}"\nschema = "{schema}"\n'
+        )
+
+    def test_no_pyproject_returns_none(self, tmp_path: Path):
+        assert doctor.check_uc_data_source(tmp_path, auth_ok=True) is None
+
+    def test_auth_not_ok_returns_none(self, tmp_path: Path):
+        self._project(tmp_path, "main", "sales")
+        assert doctor.check_uc_data_source(tmp_path, auth_ok=False) is None
+
+    def test_no_template_catalog_returns_none(self, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        assert doctor.check_uc_data_source(tmp_path, auth_ok=True) is None
+
+    def test_schema_found_returns_ok(self, tmp_path: Path):
+        self._project(tmp_path, "main", "sales")
+        ws = MagicMock()
+        ws.schemas.get.return_value = MagicMock()
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_uc_data_source(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.OK
+        ws.schemas.get.assert_called_once_with(full_name="main.sales")
+
+    def test_schema_not_found_returns_fail(self, tmp_path: Path):
+        self._project(tmp_path, "main", "sales")
+        ws = MagicMock()
+        ws.schemas.get.side_effect = Exception("404 Not Found")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_uc_data_source(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.FAIL
+        assert "not found" in c.detail
+        assert "USE SCHEMA" in c.fix
+
+    def test_schema_permission_denied_returns_fail(self, tmp_path: Path):
+        self._project(tmp_path, "main", "sales")
+        ws = MagicMock()
+        ws.schemas.get.side_effect = Exception("403 permission denied")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_uc_data_source(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.FAIL
+        assert "USE SCHEMA" in c.fix
+
+
+class TestCheckAppsEnabled:
+    def test_auth_not_ok_returns_none(self):
+        assert doctor.check_apps_enabled(auth_ok=False) is None
+
+    def test_apps_enabled_returns_ok(self):
+        ws = MagicMock()
+        ws.apps.list.return_value = iter([])
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_apps_enabled(auth_ok=True)
+        assert c is not None
+        assert c.status is Status.OK
+
+    def test_apps_disabled_returns_warn(self):
+        ws = MagicMock()
+        ws.apps.list.side_effect = Exception("404 feature not enabled")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_apps_enabled(auth_ok=True)
+        assert c is not None
+        assert c.status is Status.WARN
+        assert "model-serving" in c.fix
+
+    def test_other_error_returns_none(self):
+        ws = MagicMock()
+        ws.apps.list.side_effect = Exception("network timeout")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_apps_enabled(auth_ok=True)
+        assert c is None

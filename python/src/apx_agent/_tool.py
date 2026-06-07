@@ -38,7 +38,6 @@ Design rules locked at the framework level:
 
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, TypeVar, overload
 

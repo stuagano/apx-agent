@@ -1,4 +1,4 @@
-"""Tests for ``apx scaffold --target apps`` — the Databricks Apps scaffold.
+"""Tests for ``apx-agent scaffold --target apps`` — the Databricks Apps scaffold.
 
 Covers:
   1. ``--target apps`` writes the expected file tree (ADK-style: top-level
@@ -11,7 +11,7 @@ Covers:
   4. Generated top-level ``agent.py`` parses as valid Python and the
      framework boilerplate at ``agent_server/start_server.py`` imports
      ``from agent import agent``.
-  5. ``apx scaffold`` with no ``--target`` still produces the Model Serving
+  5. ``apx-agent scaffold`` with no ``--target`` still produces the Model Serving
      layout (backwards compatibility).
   6. ``--target apps --force`` overwrites an existing directory.
   7. The ADK-style layout: ``agent_server/agent.py`` MUST NOT exist
@@ -54,7 +54,7 @@ APPS_EXPECTED_FILES: tuple[str, ...] = (
 
 
 def test_scaffold_apps_creates_expected_file_tree(tmp_path: Path) -> None:
-    """``apx scaffold my_agent --target apps`` creates every expected file."""
+    """``apx-agent scaffold my_agent --target apps`` creates every expected file."""
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -254,7 +254,7 @@ def test_scaffold_apps_gitignore_includes_sidecar(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 8: framework-checkout auto-redirect (the "I ran apx scaffold at the
+# Test 8: framework-checkout auto-redirect (the "I ran apx-agent scaffold at the
 # repo root" gotcha that otherwise produces a broken `path = ".."` install)
 # ---------------------------------------------------------------------------
 
@@ -273,7 +273,7 @@ def _make_fake_framework_checkout(root: Path) -> Path:
 def test_scaffold_at_framework_repo_root_redirects_into_python(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Running ``apx scaffold X`` from the framework repo root auto-redirects
+    """Running ``apx-agent scaffold X`` from the framework repo root auto-redirects
     into ``python/X/`` so the editable ``path = ".."`` install resolves."""
     framework_root = tmp_path / "fakeframework"
     framework_python = _make_fake_framework_checkout(framework_root)

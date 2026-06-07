@@ -55,7 +55,6 @@ from ._agents import (
 from ._defaults import (
     _get_principal,
     _get_progress,
-    _get_request,
     _get_sql_runner,
     _get_user_client,
     _get_workspace_client,

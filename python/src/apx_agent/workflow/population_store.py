@@ -211,10 +211,9 @@ class PopulationStore:
         Requires SparkSession (available in Workflow tasks and notebooks).
         Automatically applies Delta optimizeWrite for efficient small-file handling.
         """
-        from pyspark.sql import SparkSession
         from pyspark.sql.types import (
             StructType, StructField,
-            StringType, IntegerType, DoubleType, BooleanType, TimestampType,
+            StringType, IntegerType, DoubleType, BooleanType,
         )
 
         schema = StructType([

@@ -186,7 +186,7 @@ APP_URL=https://your-app.databricksapps.com
 ### Step 3: Deploy
 
 ```bash
-uv run apx deploy
+uv run apx-agent deploy
 ```
 
 ### Step 4: Verify

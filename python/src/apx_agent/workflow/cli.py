@@ -26,7 +26,6 @@ import asyncio
 import concurrent.futures
 import json
 import os
-import sys
 
 
 def _run_async(coro):
@@ -109,8 +108,9 @@ def seed_population():
     if not seed_hypotheses:
         print("[voynich-seed] WARNING: Decipherer returned 0 hypotheses. Using fallback seeder.")
         # Fallback: generate minimal diversity seed using built-in logic
-        from apx_agent.workflow import CipherType, SourceLanguage, Hypothesis
-        import uuid, random
+        from apx_agent.workflow import CipherType, Hypothesis
+        import uuid
+        import random
         alphabet = list("abcdefghijklmnopqrstuvwxyz")
         cipher_types = [
             CipherType.SUBSTITUTION, CipherType.TRANSPOSITION,
@@ -249,7 +249,7 @@ def vacuum_population():
     _inject_job_params(unknown)
 
     config = _build_config_from_env()
-    ws     = _build_workspace_client()
+    _build_workspace_client()
 
     from pyspark.sql import SparkSession
     spark = SparkSession.builder.getOrCreate()
@@ -259,11 +259,11 @@ def vacuum_population():
 
     # OPTIMIZE with ZORDER for the most common query pattern
     spark.sql(f"OPTIMIZE {table} ZORDER BY (generation, fitness_composite)")
-    print(f"[voynich-vacuum] ✓ OPTIMIZE complete")
+    print("[voynich-vacuum] ✓ OPTIMIZE complete")
 
     # VACUUM (remove files older than 7 days)
     spark.sql(f"VACUUM {table} RETAIN 168 HOURS")
-    print(f"[voynich-vacuum] ✓ VACUUM complete")
+    print("[voynich-vacuum] ✓ VACUUM complete")
 
     # Remove flagged-for-review entries older than keep_generations
     rows = spark.sql(f"""
