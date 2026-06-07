@@ -68,7 +68,7 @@ async def _check_model(ctx: AgentContext | None) -> dict[str, Any]:
             "name": "model",
             "status": "skip",
             "message": "No model configured",
-            "hint": "Set `model` in pyproject.toml [tool.apx_agent].",
+            "hint": "Set `model` in pyproject.toml under [tool.apx.agent].",
         }
 
     model = ctx.config.model

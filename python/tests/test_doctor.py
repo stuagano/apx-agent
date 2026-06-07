@@ -363,7 +363,7 @@ class TestCheckDeclaredTools:
         with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
             checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
         assert checks[0].status is Status.OK
-        ws.functions.get.assert_called_once_with(full_name="main.tools.my_fn")
+        ws.functions.get.assert_called_once_with(name="main.tools.my_fn")
 
     def test_uc_function_toolkit_found(self, tmp_path):
         self._project(
@@ -424,3 +424,53 @@ def test_auth_sdk_not_importable(monkeypatch):
     c = doctor.check_databricks_auth()
     assert c.status is doctor.Status.FAIL
     assert "databricks-sdk not importable" in c.detail
+
+
+class TestCheckModelEndpoint:
+    def _make_pyproject(self, tmp_path: Path, model: str) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            f'[tool.apx.agent]\nmodel = "{model}"\n'
+        )
+
+    def test_no_pyproject_returns_none(self, tmp_path: Path):
+        assert doctor.check_model_endpoint(tmp_path, auth_ok=True) is None
+
+    def test_auth_not_ok_returns_none(self, tmp_path: Path):
+        self._make_pyproject(tmp_path, "databricks-claude-sonnet-4-6")
+        assert doctor.check_model_endpoint(tmp_path, auth_ok=False) is None
+
+    def test_no_model_key_returns_none(self, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\n")
+        assert doctor.check_model_endpoint(tmp_path, auth_ok=True) is None
+
+    def test_endpoint_found_returns_ok(self, tmp_path: Path):
+        self._make_pyproject(tmp_path, "databricks-claude-sonnet-4-6")
+        ws = MagicMock()
+        ep = MagicMock()
+        ep.state = None
+        ws.serving_endpoints.get.return_value = ep
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_model_endpoint(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.OK
+        ws.serving_endpoints.get.assert_called_once_with("databricks-claude-sonnet-4-6")
+
+    def test_endpoint_not_found_returns_fail(self, tmp_path: Path):
+        self._make_pyproject(tmp_path, "databricks-claude-sonnet-4-6")
+        ws = MagicMock()
+        ws.serving_endpoints.get.side_effect = Exception("404 Not Found")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_model_endpoint(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.FAIL
+        assert "not found" in c.detail
+        assert "pyproject.toml" in c.fix
+
+    def test_endpoint_other_error_returns_warn(self, tmp_path: Path):
+        self._make_pyproject(tmp_path, "databricks-claude-sonnet-4-6")
+        ws = MagicMock()
+        ws.serving_endpoints.get.side_effect = Exception("connection timeout")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_model_endpoint(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.WARN

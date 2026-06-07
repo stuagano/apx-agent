@@ -49,7 +49,7 @@ def _fix_msg(title: str, detail: str, fix: str | None) -> str:
     parts = [title, detail]
     if fix:
         parts.append(f"\nFix:\n    {fix}")
-    parts.append("\nRun `apx-agent doctor` for a full check.")
+    parts.append("\nRun `uv run apx-agent doctor` for a full check.")
     return "\n".join(parts)
 
 
@@ -1701,7 +1701,7 @@ def _probe_import(module_spec: str) -> None:
                 f"Failed to import your agent module `{mod_name}`.",
                 detail,
                 "Fix the error in your agent code shown above, then re-run "
-                "`apx-agent run`.",
+                "`uv run apx-agent run`.",
             )
         ) from e
     finally:
@@ -1726,7 +1726,7 @@ def refresh_schema(profile: str | None) -> None:
     existing = load_baked_schema(Path.cwd())
     if not existing or not existing.get("catalog") or not existing.get("schema"):
         raise click.ClickException(
-            "no .apx/schema.json found in this project — run `apx-agent scaffold` first "
+            "no .apx/schema.json found in this project — run `uv run apx-agent scaffold` first "
             "(or create the manifest) so I know which catalog.schema to refresh."
         )
     catalog, schema = existing["catalog"], existing["schema"]
@@ -1765,7 +1765,7 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
     except ImportError as e:
         raise click.ClickException(
             "uvicorn is required for `apx-agent run`. Install with: "
-            "pip install 'uvicorn[standard]'"
+            "uv add 'apx-agent[apps]'  (or: uv add 'uvicorn[standard]')"
         ) from e
     if module is None:
         detected = _detect_target()
@@ -2280,7 +2280,7 @@ def deploy(
         except ImportError as e:
             raise click.ClickException(
                 "databricks-agents is required for deployment. "
-                "Install with: pip install databricks-agents"
+                "Install with: uv add databricks-agents"
             ) from e
         deployment = agents.deploy(registered_model_name, model_version=info.registered_model_version)
         endpoint_name = getattr(deployment, "endpoint_name", None) or registered_model_name.rsplit(".", 1)[-1]
@@ -3075,7 +3075,7 @@ def _validate_responses_agent_compiler() -> None:
     except ImportError as e:
         raise click.ClickException(
             "mlflow.genai.agent_server is not available — please install "
-            "mlflow: pip install 'apx-agent[eval]' or pip install 'mlflow>=3.12'. "
+            "the eval extra: uv add 'apx-agent[eval]'. "
             f"(underlying error: {e})"
         ) from e
 
@@ -3810,7 +3810,7 @@ def trace(
         import mlflow
     except ImportError as e:
         raise click.ClickException(
-            "apx-agent trace requires mlflow. Install with: pip install 'apx-agent[eval]'"
+            "apx-agent trace requires mlflow. Install with: uv add 'apx-agent[eval]'"
         ) from e
 
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
@@ -4164,7 +4164,7 @@ def test_cmd(
     except ImportError as e:
         raise click.ClickException(
             "apx-agent test requires the eval extra (mlflow). "
-            "Install with: pip install 'apx-agent[eval]'"
+            "Install with: uv add 'apx-agent[eval]'"
         ) from e
 
     chat_agent = compile_to_chat_agent(agent, model=effective_model)

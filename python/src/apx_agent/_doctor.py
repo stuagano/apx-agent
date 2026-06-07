@@ -67,6 +67,9 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
         authentication.append(
             check_databricks_workspace(auth_ok=auth.status is Status.OK)
         )
+        model_check = check_model_endpoint(cwd, auth_ok=auth.status is Status.OK)
+        if model_check is not None:
+            authentication.append(model_check)
     project = [
         check_project_layout(cwd),
         check_target(cwd),
@@ -193,7 +196,7 @@ def check_uvicorn() -> Check:
             "uvicorn",
             Status.WARN,
             "not importable — required by `apx-agent run`",
-            "pip install 'uvicorn[standard]'  (or `apx-agent[apps]`)",
+            "uv add 'apx-agent[apps]'  (includes uvicorn[standard])",
         )
 
 
@@ -206,7 +209,7 @@ def check_databricks_auth() -> Check:
             "Databricks auth",
             Status.FAIL,
             f"databricks-sdk not importable: {e}",
-            "pip install databricks-sdk  (normally pulled in by apx-agent)",
+            "uv add databricks-sdk  (normally pulled in by apx-agent)",
         )
     try:
         Config()
@@ -277,6 +280,62 @@ def check_databricks_workspace(*, auth_ok: bool) -> Check:
         )
 
 
+def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
+    """Verify the configured model endpoint exists in the workspace.
+
+    Only runs when inside an apx project (reads `model` from pyproject.toml)
+    and auth is available. Returns None when there's nothing to check.
+    """
+    if not auth_ok:
+        return None
+    pyproject = cwd / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            return None
+    try:
+        data = tomllib.loads(pyproject.read_text())
+    except Exception:
+        return None
+    model: str | None = (
+        data.get("tool", {}).get("apx", {}).get("agent", {}).get("model")
+    )
+    if not model:
+        return None
+    label = f"Model endpoint ({model})"
+    try:
+        from databricks.sdk import WorkspaceClient
+        ws = WorkspaceClient()
+        ep = ws.serving_endpoints.get(model)
+        state = getattr(getattr(ep, "state", None), "ready", None)
+        if state and str(state).upper() not in ("READY", "NOT_UPDATING"):
+            return Check(
+                label, Status.WARN,
+                f"endpoint exists but state={state}",
+                "The model endpoint may be deploying or degraded — try again in a minute.",
+            )
+        return Check(label, Status.OK, "exists and reachable", None)
+    except Exception as e:
+        msg = str(e)
+        if "404" in msg or "does not exist" in msg.lower() or "not found" in msg.lower():
+            return Check(
+                label, Status.FAIL,
+                f"endpoint not found: {model}",
+                "Check the endpoint name under Serving in your workspace. "
+                "Update `model` in pyproject.toml [tool.apx.agent] to match.",
+            )
+        return Check(
+            label, Status.WARN,
+            f"could not verify endpoint ({msg})",
+            "Endpoint lookup failed — check auth and workspace access.",
+        )
+
+
 def _is_apx_project(cwd: Path) -> bool:
     """True when cwd looks like a scaffolded apx project."""
     pyproject = cwd / "pyproject.toml"
@@ -333,7 +392,7 @@ def check_extras(cwd: Path) -> Check:
         module, label, fix = (
             "mlflow.genai.agent_server",
             "mlflow.genai (eval extra)",
-            "pip install 'apx-agent[eval]'  (or `uv sync` in this project)",
+            "uv add 'apx-agent[eval]'  (or `uv sync --extra eval` in this project)",
         )
     else:
         module, label, fix = (
