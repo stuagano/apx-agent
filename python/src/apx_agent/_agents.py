@@ -520,17 +520,54 @@ class _TransferBody(BaseModel):
     context: str = ""
 
 
+def _normalize_router_agents(
+    agents: list[tuple[str, str, "BaseAgent"]] | list["BaseAgent"],
+) -> list[tuple[str, str, "BaseAgent"]]:
+    """Normalize either form to ``[(name, description, agent), ...]``."""
+    if not agents:
+        raise ValueError("RouterAgent requires at least one agent")
+    if isinstance(agents[0], tuple):
+        return agents  # type: ignore[return-value]
+    routes: list[tuple[str, "BaseAgent", "BaseAgent"]] = []
+    for agent in agents:
+        name = getattr(agent, "_name", None)
+        if not name:
+            raise ValueError(
+                "RouterAgent: each agent must have name= set when passed as a list. "
+                f"Got {agent!r} with no name."
+            )
+        desc = getattr(agent, "_description", "") or f"Routes to the {name} agent."
+        routes.append((name, desc, agent))  # type: ignore[arg-type]
+    return routes  # type: ignore[return-value]
+
+
 class RouterAgent(BaseAgent):
-    """Routes to one of several sub-agents based on a single LLM routing call."""
+    """Routes to one of several sub-agents based on a single LLM routing call.
+
+    Accepts either an explicit ``(name, description, agent)`` triple list, or a
+    plain ``list[BaseAgent]`` where each agent supplies its own ``name`` and
+    ``description``::
+
+        billing = Agent(
+            name="billing",
+            description="Handles billing questions and invoice disputes.",
+            tools=[lookup_invoice],
+        )
+        support = Agent(
+            name="support",
+            description="Answers product and technical support questions.",
+            tools=[search_docs],
+        )
+
+        router = RouterAgent(agents=[billing, support])
+    """
 
     def __init__(
         self,
-        agents: list[tuple[str, str, BaseAgent]],
+        agents: list[tuple[str, str, BaseAgent]] | list[BaseAgent],
         instructions: str = "",
     ) -> None:
-        if not agents:
-            raise ValueError("RouterAgent requires at least one agent")
-        self._routes = agents
+        self._routes = _normalize_router_agents(agents)
         self._instructions = instructions
 
     def _transfer_tool_schemas(self) -> list[dict[str, Any]]:
@@ -628,20 +665,51 @@ class RouterAgent(BaseAgent):
         return tools
 
 
+def _normalize_handoff_agents(
+    agents: dict[str, "LlmAgent"] | list["LlmAgent"],
+) -> dict[str, "LlmAgent"]:
+    """Normalize either form to ``{name: agent}``."""
+    if isinstance(agents, dict):
+        return agents
+    result: dict[str, "LlmAgent"] = {}
+    for agent in agents:
+        name = getattr(agent, "_name", None)
+        if not name:
+            raise ValueError(
+                "HandoffAgent: each agent must have name= set when passed as a list. "
+                f"Got {agent!r} with no name."
+            )
+        result[name] = agent
+    return result
+
+
 class HandoffAgent(BaseAgent):
-    """Multi-agent system where each agent can hand off control to another mid-conversation."""
+    """Multi-agent system where each agent can hand off control to another mid-conversation.
+
+    Accepts either a ``{name: agent}`` dict or a plain ``list[LlmAgent]``
+    where each agent supplies its own ``name``::
+
+        triage = Agent(name="triage", description="Classifies incoming requests.", tools=[...])
+        billing = Agent(name="billing", description="Handles billing questions.", tools=[...])
+        support = Agent(name="support", description="Answers product questions.", tools=[...])
+
+        agent = HandoffAgent(agents=[triage, billing, support], start="triage")
+    """
 
     TRANSFER_PREFIX = "transfer_to_"
 
     def __init__(
         self,
-        agents: dict[str, LlmAgent],
-        start: str,
+        agents: dict[str, LlmAgent] | list[LlmAgent],
+        start: str | None = None,
         max_handoffs: int = 5,
     ) -> None:
-        if start not in agents:
+        agents_dict = _normalize_handoff_agents(agents)
+        if start is None:
+            start = next(iter(agents_dict))
+        if start not in agents_dict:
             raise ValueError(f"HandoffAgent start='{start}' not found in agents dict")
-        self._agents = agents
+        self._agents = agents_dict
         self._start = start
         self._max_handoffs = max_handoffs
 
@@ -649,7 +717,9 @@ class HandoffAgent(BaseAgent):
         return [
             AgentTool(
                 name=f"{self.TRANSFER_PREFIX}{name}",
-                description=f"Hand off to the {name} agent.",
+                description=(
+                    getattr(sub, "_description", "") or f"Hand off to the {name} agent."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -661,7 +731,7 @@ class HandoffAgent(BaseAgent):
                     "required": [],
                 },
             )
-            for name in self._agents
+            for name, sub in self._agents.items()
             if name != current_name
         ]
 
