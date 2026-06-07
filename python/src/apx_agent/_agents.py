@@ -126,7 +126,12 @@ class LlmAgent(BaseAgent):
         self._context_window_tokens = context_window_tokens
         self.memory_config: MemoryBackendConfig | None
         self.session_config: SessionBackendConfig | None
-        self.memory_config, self.session_config = normalize_memory_knob(memory)
+        self.memory_config, self.session_config = normalize_memory_knob(
+            memory,
+            catalog=getattr(self, "catalog", None),
+            schema=getattr(self, "schema", None),
+            name=self._name,
+        )
 
         # Pre-analyze all functions at construction time
         self._analyzed: list[tuple[_ToolFn, dict[str, Any], list[str], type[BaseModel] | None]] = []

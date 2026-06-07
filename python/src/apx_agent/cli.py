@@ -749,6 +749,7 @@ from apx_agent._defaults import _make_workspace_client
 from apx_agent._inspection import _load_agent_config
 from apx_agent._memory_wiring import resolve_session_store
 from apx_agent._mlflow_tracing import autolog_if_env
+from apx_agent._wiring import finalize_agent
 
 # Enable MLflow LangChain/LangGraph auto-tracing when APX_AGENT_MLFLOW_AUTOLOG
 # is set (databricks.yml sets it on deploy). Must run before the agent's
@@ -761,10 +762,11 @@ from agent import agent
 MODEL = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
 
 _ws = _make_workspace_client()
-# Load pyproject.toml config so [tool.apx.agent.session] is honoured even when
-# the agent constructor uses memory="off" (the default). Constructor-carried
-# session_config still wins via resolve_session_store's precedence logic.
+# Load pyproject.toml config and fully finalize the agent so [tool.apx.agent]
+# blocks (memory, session, tools, guardrails) are honoured on Apps deploy —
+# not just when served via create_app().
 _agent_config = _load_agent_config()
+finalize_agent(agent, _agent_config, ws=_ws)
 _session_store = resolve_session_store(_agent_config, _ws, agent=agent)
 _invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL, session_store=_session_store)
 
