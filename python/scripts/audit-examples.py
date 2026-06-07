@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Credless dry-run audit of every apx-agent example.
 
-The task asked for ``apx deploy --no-deploy --no-publish-tools --no-set-uc-tags``
+The task asked for ``apx-agent deploy --no-deploy --no-publish-tools --no-set-uc-tags``
 to catch import errors / missing tool resources / broken composition without
 hitting a workspace. Investigation found that this is **infeasible** under the
 "no workspace creds" constraint:
@@ -22,7 +22,7 @@ that catches exactly what the task listed:
   2. Call ``apx_agent.mlflow_resources_for(agent, model=...)`` to derive
      MLflow resources (catches missing tool resources / un-resolvable
      ``ResourceSpec`` entries on the agent — same coverage as
-     ``apx deploy``'s log step, minus the predict() roundtrip).
+     ``apx-agent deploy``'s log step, minus the predict() roundtrip).
 
 Both probes run inside the example's own ``uv run`` so its dep set
 (fitz, slack_sdk, vector_search, ...) is in scope. The probe runs as

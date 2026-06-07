@@ -6,8 +6,7 @@ import os
 from typing import Any
 
 from ._models import AgentContext
-from ._ui_edit import _find_agent_router_path
-from ._ui_nav import _apx_nav_css, _apx_nav_html, _apx_nav_links, _deploy_overlay_html
+from ._ui_nav import _apx_nav_links, _deploy_overlay_html
 
 
 # Tabs exposed by the unified shell at /_apx/agent. Each entry is

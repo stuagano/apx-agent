@@ -2,7 +2,7 @@
 
 Unlike /health (liveness — 200 once the server booted), /readyz proves the
 agent can actually answer a canned prompt and that an MLflow trace was
-recorded for the run. It is later called by ``apx deploy`` as a gate (Slice C).
+recorded for the run. It is later called by ``apx-agent deploy`` as a gate (Slice C).
 
 The handler delegates the agent-run step to the module-global
 ``_run_canned_probe`` helper, which these tests monkeypatch so nothing hits
@@ -174,3 +174,20 @@ class TestReadyzMemory:
         agent = Agent(instructions="x", tools=[])
         body = self._app_for(agent).get("/readyz").json()
         assert body["checks"]["memory"] == "ok"
+
+    def test_memory_degraded_returns_503(self):
+        from apx_agent import Agent
+        agent = Agent(instructions="x", tools=[])
+        agent._apx_memory_degraded = "delta backend not reachable"
+        resp = self._app_for(agent).get("/readyz")
+        assert resp.status_code == 503
+        assert resp.json()["status"] == "degraded"
+
+    def test_memory_no_config_is_still_ready(self):
+        """memory=None (not configured) must not block readiness."""
+        from apx_agent import Agent
+        agent = Agent(instructions="x", tools=[])
+        # _apx_memory_degraded not set — same as None / "ok"
+        resp = self._app_for(agent).get("/readyz")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ready"

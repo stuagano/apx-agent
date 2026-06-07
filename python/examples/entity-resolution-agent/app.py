@@ -1,8 +1,8 @@
 """entity-resolution-agent: FastAPI app for local dev.
 
 The Apps-target deployment uses ``agent_server/start_server.py``. This file
-is what ``apx dev`` (or ``uvicorn app:app``) runs locally — adds the React
-SPA, the apx dev UI, and the auxiliary ``/api/*`` routes that the SPA calls.
+is what ``apx-agent dev`` (or ``uvicorn app:app``) runs locally — adds the React
+SPA, the apx-agent dev UI, and the auxiliary ``/api/*`` routes that the SPA calls.
 """
 from __future__ import annotations
 

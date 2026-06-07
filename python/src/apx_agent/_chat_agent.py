@@ -53,7 +53,6 @@ from ._compile import compile_to_langgraph
 from ._mlflow_tracing import safe_span, set_span_outputs
 
 if TYPE_CHECKING:
-    from databricks.sdk import WorkspaceClient
     from mlflow.types.agent import (
         ChatAgentChunk,
         ChatAgentMessage,
@@ -273,7 +272,6 @@ def chat_agent_for(
         ChatAgentChunk,
         ChatAgentMessage,
         ChatAgentResponse,
-        ChatContext,
     )
 
     from ._session import Session, append_turn, load_or_create_session
@@ -299,7 +297,6 @@ def chat_agent_for(
             re-logging the artifact. Falls back to the compile-time model
             otherwise.
             """
-            import os
             return os.environ.get("APX_AGENT_MODEL_OVERRIDE") or self._model
 
         def _load_session(self, custom_inputs: dict[str, Any] | None) -> Session | None:

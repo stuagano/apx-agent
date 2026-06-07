@@ -31,13 +31,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable
 
-import httpx
+if TYPE_CHECKING:
+    from .engine import WorkflowEngine
+
 import mlflow
 from databricks.sdk import WorkspaceClient
 

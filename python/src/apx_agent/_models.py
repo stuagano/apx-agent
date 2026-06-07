@@ -6,7 +6,6 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
-from fastapi import Request
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:

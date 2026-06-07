@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from databricks.sdk import WorkspaceClient
 
 from ._models import AgentContext
 from ._ui_nav import _apx_nav_links, _deploy_overlay_html
@@ -65,7 +68,7 @@ async def _check_model(ctx: AgentContext | None) -> dict[str, Any]:
             "name": "model",
             "status": "skip",
             "message": "No model configured",
-            "hint": "Set `model` in pyproject.toml [tool.apx_agent].",
+            "hint": "Set `model` in pyproject.toml under [tool.apx.agent].",
         }
 
     model = ctx.config.model
@@ -235,7 +238,7 @@ async def _check_mlflow_config() -> dict[str, Any]:
 
     Accepts two equivalent ways to declare the experiment:
       - ``MLFLOW_EXPERIMENT_ID`` env var (Apps/deploy convention)
-      - ``[tool.apx.agent].experiment`` in pyproject.toml (``apx run`` sets
+      - ``[tool.apx.agent].experiment`` in pyproject.toml (``apx-agent run`` sets
         this via ``mlflow.set_experiment()`` before serving starts)
     """
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
@@ -256,7 +259,7 @@ async def _check_mlflow_config() -> dict[str, Any]:
             "hint": "Set MLFLOW_TRACKING_URI=databricks to use the workspace MLflow backend.",
         }
     # Accept experiment declared via pyproject.toml as equivalent to the env var.
-    # ``apx run`` calls mlflow.set_experiment() from this key before serving.
+    # ``apx-agent run`` calls mlflow.set_experiment() from this key before serving.
     pyproject_exp = _pyproject_experiment()
     if not experiment_id and not pyproject_exp:
         return {

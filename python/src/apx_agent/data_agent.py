@@ -81,7 +81,7 @@ def _build_data_tools_and_instructions(
         logger.warning(
             "DataAgent(%r, %r): no schema found via tables=, ws=, or .apx/schema.json — "
             "running ungrounded (generic SQL assistant). Pass ws= or run "
-            "`apx scaffold` to bake the schema.",
+            "`apx-agent scaffold` to bake the schema.",
             catalog,
             schema,
         )

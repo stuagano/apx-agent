@@ -644,7 +644,7 @@ class TestAgentCarriedConfig:
 
 
 class TestLocalDevPrincipal:
-    """Local ``apx run`` has no OBO ``X-Forwarded-User`` header, so memory tools
+    """Local ``apx-agent run`` has no OBO ``X-Forwarded-User`` header, so memory tools
     would have no principal and recall/remember would no-op. Resolve a default
     principal from the Databricks CLI profile identity (``ws.current_user``) when
     NOT in a deployed App, so memory works in the dev loop. Deployed: returns

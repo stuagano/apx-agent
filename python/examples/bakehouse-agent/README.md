@@ -31,7 +31,7 @@ uv sync
 uv run quickstart            # MLflow experiment + .env
 export WAREHOUSE_ID=<id>      # optional — auto-discovered if your workspace has serverless SQL
 
-uv run apx run --reload
+uv run apx-agent run --reload
 # → FastAPI on http://localhost:8000 with the /_apx/* dev UI; --reload picks up agent.py edits.
 # open http://localhost:8000/_apx/agent and try:
 #   "total sales by franchise?"        → routed to sales_agent
@@ -40,7 +40,7 @@ uv run apx run --reload
 
 ## Deploy
 ```bash
-apx deploy --target apps
+apx-agent deploy --target apps
 ```
 
 ## Upgrade — semantic review search (optional)

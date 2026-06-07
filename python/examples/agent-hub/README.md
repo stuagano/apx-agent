@@ -66,7 +66,7 @@ The hub needs something to register. Deploy any other example in this repo first
 
 ```bash
 cd ../data-inspector      # or data-triage-agent, shortage-intelligence-agent, etc.
-uv run apx deploy
+uv run apx-agent deploy
 ```
 
 Note the deployed app URL — you'll need it to seed the hub in Part 2.
@@ -202,7 +202,7 @@ This regenerates `src/agent_hub/ui/dist/` with the latest frontend code. Always 
 ### Step 2: Deploy
 
 ```bash
-uv run apx deploy
+uv run apx-agent deploy
 ```
 
 ### Step 3: Verify
@@ -227,7 +227,7 @@ print('State: ', d.get('app_status', {}).get('state', 'unknown'))
 
 ```bash
 npm run build          # required if any UI files changed
-uv run apx deploy
+uv run apx-agent deploy
 ```
 
 ---

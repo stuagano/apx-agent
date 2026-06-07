@@ -1,7 +1,7 @@
 """quickstart — one-shot setup for the data_inspector Apps deploy.
 
 Run via ``uv run quickstart`` (registered as a console script in
-``pyproject.toml``). Does the minimum needed before ``apx deploy --target apps``:
+``pyproject.toml``). Does the minimum needed before ``apx-agent deploy --target apps``:
 
   1. Create (or reuse) an MLflow experiment at
      ``/Users/${USER}/data-inspector-${BUNDLE_TARGET}``.
@@ -86,7 +86,7 @@ def main() -> int:
     print(f"  experiment_id : {experiment_id}")
     print(f"  env file : {env_path}")
     print()
-    print("Next: apx deploy --target apps")
+    print("Next: apx-agent deploy --target apps")
     return 0
 
 

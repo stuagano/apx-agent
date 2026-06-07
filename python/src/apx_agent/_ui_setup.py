@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ._models import AgentContext
 from ._ui_edit import _find_deploy_root
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
 
@@ -952,7 +951,7 @@ document.querySelectorAll('.pcard').forEach(card => {{
       }}
       setActiveCard(d.type);
       status.style.color = '#4ade80';
-      status.textContent = d.changed ? 'Saved — restart `apx run` to load' : `Already ${{d.type}}`;
+      status.textContent = d.changed ? 'Saved — restart `apx-agent run` to load' : `Already ${{d.type}}`;
       setTimeout(() => {{ status.textContent = ''; }}, 4000);
     }} catch(e) {{
       status.style.color = '#f87171';

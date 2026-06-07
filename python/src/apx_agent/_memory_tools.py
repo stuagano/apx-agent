@@ -157,7 +157,7 @@ def make_memory_tools(
                     """
                     # Per-request OBO principal wins; fall back to the configured
                     # default (e.g. the local CLI-profile identity) so memory
-                    # works when no OBO header is present (local apx run).
+                    # works when no OBO header is present (local apx-agent run).
                     principal = principal or default_principal_id
                     if not principal:
                         return NO_PRINCIPAL
@@ -229,7 +229,7 @@ def make_memory_tools(
                         )
                     # Per-request OBO principal wins; fall back to the configured
                     # default (e.g. the local CLI-profile identity) so memory
-                    # works when no OBO header is present (local apx run).
+                    # works when no OBO header is present (local apx-agent run).
                     principal = principal or default_principal_id
                     if not principal:
                         return NO_PRINCIPAL

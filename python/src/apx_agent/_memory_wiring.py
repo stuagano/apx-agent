@@ -279,7 +279,7 @@ def _resolve_default_principal(ws: Any | None) -> str | None:
 
     A deployed Databricks App gets the per-request OBO principal from the
     ``X-Forwarded-User`` header, so this returns ``None`` there (the per-request
-    principal wins). Local ``apx run`` has no OBO header — without a principal
+    principal wins). Local ``apx-agent run`` has no OBO header — without a principal
     the memory tools no-op ("No principal_id available"). Resolve the CLI
     profile's current user (``ws.current_user.me()``) as the default so memory
     works in the dev loop. Best-effort; never raises.

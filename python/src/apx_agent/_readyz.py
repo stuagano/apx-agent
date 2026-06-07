@@ -3,7 +3,7 @@
 ``/health`` is a *liveness* probe — it returns 200 as soon as the server
 process has booted. ``/readyz`` is a *readiness* probe: it proves the agent
 can actually answer a canned prompt and that an MLflow trace was recorded for
-the run. ``apx deploy`` later calls this endpoint as a deploy gate (Slice C),
+the run. ``apx-agent deploy`` later calls this endpoint as a deploy gate (Slice C),
 so a green deploy means the agent really responds and traces.
 
 Design:
@@ -174,7 +174,8 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
             checks["llm"] = "ok" if text else "fail"
             checks["tracing"] = "ok" if trace_id else "unavailable"
 
-            ready = checks["llm"] == "ok" and checks["tracing"] in ("ok", "unavailable")
+            mem_ok = checks["memory"] in ("ok", None)
+            ready = checks["llm"] == "ok" and checks["tracing"] in ("ok", "unavailable") and mem_ok
             status = "ready" if ready else "degraded"
             return Response(
                 content=json.dumps({"status": status, "checks": checks}),

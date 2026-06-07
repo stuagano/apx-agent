@@ -18,7 +18,7 @@ quickstart = "scripts.quickstart:main"
 
 [tool.uv.sources]
 # Editable local install — keeps `uv sync` working from this directory.
-# At deploy time apx deploy builds a wheel and rewrites .build/pyproject.toml
+# At deploy time apx-agent deploy builds a wheel and rewrites .build/pyproject.toml
 # to reference it (since the App container can't resolve ".."). Drop this block
 # and pin "apx-agent[langgraph]==<version>" once published to PyPI.
 apx-agent = { path = "..", editable = true }

@@ -49,7 +49,7 @@ def _fix_msg(title: str, detail: str, fix: str | None) -> str:
     parts = [title, detail]
     if fix:
         parts.append(f"\nFix:\n    {fix}")
-    parts.append("\nRun `apx-agent doctor` for a full check.")
+    parts.append("\nRun `uv run apx-agent doctor` for a full check.")
     return "\n".join(parts)
 
 
@@ -800,20 +800,36 @@ _SCAFFOLD_APPS_QUICKSTART = '''\
 """quickstart — one-shot setup for the <APP_NAME> Apps deploy.
 
 Creates the MLflow experiment for tracing and writes its ID to .env.
+Provisions memory backends (Delta tables or Lakebase instance) if configured.
 Safe to re-run; idempotent.
 """
-from apx_agent.bootstrap import init_apps_experiment
+from apx_agent.bootstrap import init_apps_experiment, provision_memory_backends
 
 
 def main() -> None:
     path, exp_id = init_apps_experiment()
     print(f"MLflow experiment: {path} (id={exp_id})")
 
+    for line in provision_memory_backends():
+        print(line)
+
 
 if __name__ == "__main__":
     main()
 '''
 
+
+_SCAFFOLD_MEMORY_BLOCK = '''
+# Uncomment to enable persistent memory (Delta tables auto-created by `uv run quickstart`).
+# Re-run quickstart after changing these table names.
+# [tool.apx.agent.memory]
+# type = "delta"
+# table_name = "<CATALOG>.<SCHEMA>.apx_<APP_NAME_SLUG>_memory"
+#
+# [tool.apx.agent.session]
+# type = "delta"
+# table_name = "<CATALOG>.<SCHEMA>.apx_<APP_NAME_SLUG>_sessions"
+'''
 
 _SCAFFOLD_APPS_DATABRICKS_YML = '''\
 bundle:
@@ -959,7 +975,7 @@ curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","con
 
 ## Deploy
 ```bash
-apx-agent deploy --target apps  # validates, deploys, runs the bundle
+uv run apx-agent deploy --target apps  # validates, deploys, runs the bundle
 ```
 
 ## Edit
@@ -1402,9 +1418,13 @@ def _scaffold_apps(
     objective_arg = f", objective={repr(objective)}" if objective else ""
     join_key_arg = f", join_key={repr(join_key)}" if join_key else ""
 
+    import re as _re
+    name_slug = _re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
+
     def _sub(template: str) -> str:
         return (
             template.replace("<APP_NAME>", name)
+            .replace("<APP_NAME_SLUG>", name_slug)
             .replace("<CATALOG>", catalog)
             .replace("<SCHEMA>", schema)
             .replace("<EXAMPLE_TOOL>", prelude)
@@ -1416,8 +1436,13 @@ def _scaffold_apps(
             .replace("<APX_AGENT_SOURCE>", apx_source)
         )
 
+    # Inject commented-out memory block when a UC catalog/schema is known (coworker / data agents).
+    pyproject = _sub(
+        _SCAFFOLD_APPS_PYPROJECT + (_SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else "")
+    )
+
     files: dict[str, str] = {
-        "pyproject.toml": _sub(_SCAFFOLD_APPS_PYPROJECT),
+        "pyproject.toml": pyproject,
         "databricks.yml": _sub(_SCAFFOLD_APPS_DATABRICKS_YML),
         ".env.example": _SCAFFOLD_APPS_ENV_EXAMPLE,
         ".gitignore": _SCAFFOLD_GITIGNORE,
@@ -1609,8 +1634,9 @@ def scaffold(
         else:
             catalog, schema = "samples", "nyctaxi"
             click.echo(
-                "# data source: samples.nyctaxi (default — couldn't probe the "
-                "workspace; pass --catalog/--schema to ground the agent in your data)"
+                "# data source: samples.nyctaxi (fallback — couldn't reach the "
+                "workspace; run `databricks auth login` if you haven't authenticated, "
+                "or pass --catalog/--schema to ground the agent in your own data)"
             )
 
     if scaffold_target == "apps":
@@ -1624,13 +1650,13 @@ def scaffold(
 
     click.echo()
     click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")
-    click.echo(f"Next: cd {name} && uv sync && apx-agent run    # serve locally")
-    click.echo("Tip: run `apx-agent doctor` to check your environment before deploying.")
+    click.echo(f"Next: cd {name} && uv sync && uv run apx-agent run    # serve locally")
+    click.echo("Tip: run `uv run apx-agent doctor` to check your environment before deploying.")
     if scaffold_target == "apps":
-        click.echo(f"      apx-agent deploy                        # → Databricks Apps")
+        click.echo("      uv run apx-agent deploy                  # → Databricks Apps")
     else:
         click.echo(
-            f"      apx-agent deploy --model <endpoint> --name <catalog.schema.model>"
+            "      uv run apx-agent deploy --model <endpoint> --name <catalog.schema.model>"
         )
 
 
@@ -1675,7 +1701,7 @@ def _probe_import(module_spec: str) -> None:
                 f"Failed to import your agent module `{mod_name}`.",
                 detail,
                 "Fix the error in your agent code shown above, then re-run "
-                "`apx-agent run`.",
+                "`uv run apx-agent run`.",
             )
         ) from e
     finally:
@@ -1700,7 +1726,7 @@ def refresh_schema(profile: str | None) -> None:
     existing = load_baked_schema(Path.cwd())
     if not existing or not existing.get("catalog") or not existing.get("schema"):
         raise click.ClickException(
-            "no .apx/schema.json found in this project — run `apx-agent scaffold` first "
+            "no .apx/schema.json found in this project — run `uv run apx-agent scaffold` first "
             "(or create the manifest) so I know which catalog.schema to refresh."
         )
     catalog, schema = existing["catalog"], existing["schema"]
@@ -1739,7 +1765,7 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
     except ImportError as e:
         raise click.ClickException(
             "uvicorn is required for `apx-agent run`. Install with: "
-            "pip install 'uvicorn[standard]'"
+            "uv add 'apx-agent[apps]'  (or: uv add 'uvicorn[standard]')"
         ) from e
     if module is None:
         detected = _detect_target()
@@ -2254,7 +2280,7 @@ def deploy(
         except ImportError as e:
             raise click.ClickException(
                 "databricks-agents is required for deployment. "
-                "Install with: pip install databricks-agents"
+                "Install with: uv add databricks-agents"
             ) from e
         deployment = agents.deploy(registered_model_name, model_version=info.registered_model_version)
         endpoint_name = getattr(deployment, "endpoint_name", None) or registered_model_name.rsplit(".", 1)[-1]
@@ -3049,7 +3075,7 @@ def _validate_responses_agent_compiler() -> None:
     except ImportError as e:
         raise click.ClickException(
             "mlflow.genai.agent_server is not available — please install "
-            "mlflow: pip install 'apx-agent[eval]' or pip install 'mlflow>=3.12'. "
+            "the eval extra: uv add 'apx-agent[eval]'. "
             f"(underlying error: {e})"
         ) from e
 
@@ -3784,7 +3810,7 @@ def trace(
         import mlflow
     except ImportError as e:
         raise click.ClickException(
-            "apx-agent trace requires mlflow. Install with: pip install 'apx-agent[eval]'"
+            "apx-agent trace requires mlflow. Install with: uv add 'apx-agent[eval]'"
         ) from e
 
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
@@ -4138,7 +4164,7 @@ def test_cmd(
     except ImportError as e:
         raise click.ClickException(
             "apx-agent test requires the eval extra (mlflow). "
-            "Install with: pip install 'apx-agent[eval]'"
+            "Install with: uv add 'apx-agent[eval]'"
         ) from e
 
     chat_agent = compile_to_chat_agent(agent, model=effective_model)
@@ -5240,7 +5266,7 @@ def watchdog_status(
         click.echo(json.dumps(payload, indent=2, default=str))
         return
 
-    click.echo(f"# watchdog status"
+    click.echo("# watchdog status"
                + (f" for agent={agent_name}" if agent_name else "")
                + f" via {tool_name}")
     click.echo(f"  action:     {decision.action}")

@@ -19,6 +19,7 @@ import asyncio
 import json as _json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
@@ -52,7 +53,6 @@ from ._ui_setup import (
     _render_setup_ui,
 )
 from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes, _validate_probe_url
-from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ def _span_type_css(span_type: str) -> str:
 
 
 def _render_traces_list(rows: list, agent_name: str | None) -> str:
-    import json as _json, html as _html
+    import html as _html
 
     title = f"{agent_name} — traces" if agent_name else "Traces"
     if not rows:
@@ -335,7 +335,8 @@ def _render_message_line(m: dict) -> str:
     and identical across calls); assistant tool calls render as
     ``→ run_sql({...})``; everything else shows a truncated one-liner.
     """
-    import html as _html, json as _json
+    import html as _html
+    import json as _json
 
     role = str(m.get("role") or "?")
     content = m.get("content")
@@ -405,7 +406,8 @@ def _render_choices_block(choices: list) -> str:
 
 
 def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -> str:
-    import json as _json, html as _html
+    import json as _json
+    import html as _html
 
     err_html = f'<div class="err-banner">{_html.escape(error or "Unknown error")}</div>' if error else ""
 
@@ -435,7 +437,7 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
             status = s.get("status", "")
             st_cls = "sstatus-ok" if "OK" in status.upper() else "sstatus-err"
             name = _html.escape(s.get("name", ""))
-            sid = _html.escape(s.get("span_id", ""))
+            _html.escape(s.get("span_id", ""))
             inputs_obj = s.get("inputs")
             outputs_obj = s.get("outputs")
             # MLflow tags chat-model spans CHAT_MODEL and completion spans LLM.
@@ -561,7 +563,7 @@ def _parse_judge_output(text: str) -> tuple[str, str]:
 # write/probe endpoints must not be reachable by every authorized App viewer.
 #
 # Posture:
-#   * Local ``apx run`` (no DATABRICKS_APP_PORT) → writes allowed (the dev loop).
+#   * Local ``apx-agent run`` (no DATABRICKS_APP_PORT) → writes allowed (the dev loop).
 #   * Deployed Databricks App (DATABRICKS_APP_PORT set):
 #       - APX_DEV_UI_TOKEN unset  → writes DENIED (safe default).
 #       - APX_DEV_UI_TOKEN set    → require a matching ``X-APX-Dev-Token`` header
@@ -580,7 +582,7 @@ _DEV_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 def _is_deployed_app() -> bool:
     """True when running inside a deployed Databricks App.
 
-    Env-only (``DATABRICKS_APP_PORT``) deliberately — a local ``apx run`` that
+    Env-only (``DATABRICKS_APP_PORT``) deliberately — a local ``apx-agent run`` that
     happens to sit behind a proxy must not be locked out, so the X-Forwarded-*
     heuristic used elsewhere is not consulted here.
     """
@@ -627,7 +629,7 @@ async def _dev_write_guard(request: Request) -> None:
     (chat, traces, topology, probe/checks, setup/catalogs, …) fall through.
     """
     # Two side-effecting GETs need gating too: the SSRF probe and
-    # /_apx/deploy/stream, which spawns ``apx deploy`` as a subprocess
+    # /_apx/deploy/stream, which spawns ``apx-agent deploy`` as a subprocess
     # (privileged, state-changing — same threat class as the write endpoints).
     path = request.url.path
     is_side_effecting_get = path.endswith("/setup/probe-json") or path.endswith(
@@ -644,7 +646,7 @@ def inject_create_tool_meta(ctx: AgentContext) -> None:
         description=(
             "Create a new tool for this agent from a natural language description. "
             "Call this when the user asks to add a new capability, tool, or function to the agent. "
-            "The tool is appended to agent.py; restart `apx run` (or redeploy) to load it."
+            "The tool is appended to agent.py; restart `apx-agent run` (or redeploy) to load it."
         ),
         input_schema={
             "type": "object",
@@ -663,7 +665,7 @@ def inject_create_tool_meta(ctx: AgentContext) -> None:
         "\n\n[DEV MODE] You have a special `create_tool` capability. "
         "When the user asks you to add a new tool, capability, or function, "
         "call `create_tool` with a detailed description of what it should do. "
-        "The tool will be generated and inserted into agent_router.py; restart `apx run` to load it."
+        "The tool will be generated and inserted into agent_router.py; restart `apx-agent run` to load it."
     )
     ctx.config.instructions = (ctx.config.instructions or "") + _dev_addendum
     logger.info("Dev mode: create_tool meta-tool injected into agent context")
@@ -903,7 +905,6 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         max_results = int(request.query_params.get("max", "50"))
         experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
         try:
-            import mlflow as _mlflow
             # include_spans=False skips artifact download — works even when
             # the blob-storage endpoint is unreachable (e.g. private-link
             # workspaces where *.storage.cloud.databricks.com is blocked).
@@ -911,7 +912,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             client = _MlflowClient()
             # MLflow's search_traces(experiment_ids=None) trips on the local
             # sqlite store ("'NoneType' object is not iterable"), which is the
-            # default backend for local `apx run` — so the Trace panel sees
+            # default backend for local `apx-agent run` — so the Trace panel sees
             # nothing even when traces are being recorded. Resolve to all
             # experiments when no MLFLOW_EXPERIMENT_ID is set so the dev loop
             # surfaces its traces. In the deployed runtime MLFLOW_EXPERIMENT_ID
@@ -1546,7 +1547,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 yield "data: ERROR: apx binary not found in PATH\n\n"
                 yield "data: __EXIT__1\n\n"
                 return
-            yield f"data: Running: apx deploy {root}\n\n"
+            yield f"data: Running: apx-agent deploy {root}\n\n"
             try:
                 proc = await _asyncio.create_subprocess_exec(
                     apx_bin, "deploy", str(root),

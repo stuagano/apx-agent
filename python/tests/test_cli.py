@@ -2,7 +2,7 @@
 
 Covers:
   1. apx --help and `version` print without errors.
-  2. apx scaffold creates the expected file tree.
+  2. apx-agent scaffold creates the expected file tree.
   3. _parse_module_spec validates the MODULE:VARIABLE syntax.
   4. _load_agent imports a real module and returns the named attribute.
   5. apx mcp-config emits a JSON config snippet for a sample agent.
@@ -132,7 +132,7 @@ def test_version_runs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# `apx scaffold`
+# `apx-agent scaffold`
 # ---------------------------------------------------------------------------
 
 
@@ -281,7 +281,7 @@ def test_info_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 
 # ---------------------------------------------------------------------------
-# `apx deploy --experiment` and pyproject fallback
+# `apx-agent deploy --experiment` and pyproject fallback
 # ---------------------------------------------------------------------------
 
 
@@ -911,7 +911,7 @@ def test_trace_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 
 
 # ---------------------------------------------------------------------------
-# `apx test`
+# `apx-agent test`
 # ---------------------------------------------------------------------------
 
 
@@ -1005,7 +1005,7 @@ def test_test_default_prompt_when_none_supplied(
 
 
 # ---------------------------------------------------------------------------
-# `apx list`
+# `apx-agent list`
 # ---------------------------------------------------------------------------
 
 
@@ -2058,7 +2058,7 @@ def test_memory_consolidate_requires_summarize_fn(
 
 
 # ---------------------------------------------------------------------------
-# `apx deploy` — env-var capture + secret-scan
+# `apx-agent deploy` — env-var capture + secret-scan
 # ---------------------------------------------------------------------------
 
 
@@ -2369,7 +2369,7 @@ def test_deploy_secret_scan_picks_up_dotenv_keys(
 
 
 # ---------------------------------------------------------------------------
-# apx eval — endpoint-url flag, mutex, token parsing
+# apx-agent eval — endpoint-url flag, mutex, token parsing
 # ---------------------------------------------------------------------------
 
 
@@ -2471,7 +2471,7 @@ def test_eval_in_process_still_requires_model(tmp_path: Path) -> None:
 
 
 def test_run_passes_app_dir_to_uvicorn() -> None:
-    """`apx run` must hand uvicorn an app_dir of the CWD.
+    """`apx-agent run` must hand uvicorn an app_dir of the CWD.
 
     Regression for "Error loading ASGI app. Could not import module 'app'":
     the `apx` console-script's sys.path does not include the CWD, so without
@@ -2501,7 +2501,7 @@ def test_detect_target_distinguishes_layouts(tmp_path: Path) -> None:
 
 
 def test_run_autodetects_apps_module() -> None:
-    """In an apps layout, `apx run` serves the agent_server module."""
+    """In an apps layout, `apx-agent run` serves the agent_server module."""
     runner = CliRunner()
     fake_uvicorn = MagicMock()
     with runner.isolated_filesystem(), \
@@ -2516,7 +2516,7 @@ def test_run_autodetects_apps_module() -> None:
 
 
 def test_deploy_autodetects_apps_target() -> None:
-    """In an apps layout, `apx deploy` (no --target) takes the apps path."""
+    """In an apps layout, `apx-agent deploy` (no --target) takes the apps path."""
     runner = CliRunner()
     with runner.isolated_filesystem(), \
             patch("apx_agent.cli._deploy_apps") as mock_apps:
@@ -2539,7 +2539,7 @@ def test_deploy_autodetects_model_serving_target() -> None:
 
 
 def test_run_friendly_error_when_auth_unresolved() -> None:
-    """When Databricks auth can't resolve, `apx run` gives dev guidance, not a
+    """When Databricks auth can't resolve, `apx-agent run` gives dev guidance, not a
     deep SDK traceback. The agent connects to a workspace at startup."""
     runner = CliRunner()
     fake_uvicorn = MagicMock()
@@ -2561,7 +2561,7 @@ def test_ensure_apx_wheel_resolves_dynamic_version(tmp_path: Path, monkeypatch) 
     """Editable apx-agent with a dynamic (hatch-vcs) version: the wheel name
     isn't in pyproject, so _ensure_apx_wheel must resolve it from the built
     dist/. Regression for the `dist_dir / None` TypeError that broke
-    `apx deploy --target apps` after hatch-vcs landed.
+    `apx-agent deploy --target apps` after hatch-vcs landed.
     """
     from apx_agent.cli import _ensure_apx_wheel
 
@@ -2736,7 +2736,7 @@ def test_scaffold_explicit_target_bakes_example_tool(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# `apx doctor`
+# `apx-agent doctor`
 # ---------------------------------------------------------------------------
 
 
@@ -2842,7 +2842,7 @@ def test_unknown_command_no_close_match():
 
 
 # ---------------------------------------------------------------------------
-# `apx scaffold` — next-steps footer (Task 10)
+# `apx-agent scaffold` — next-steps footer (Task 10)
 # ---------------------------------------------------------------------------
 
 
@@ -2858,7 +2858,7 @@ def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# `apx run` — pre-import probe (Task 8)
+# `apx-agent run` — pre-import probe (Task 8)
 # ---------------------------------------------------------------------------
 
 

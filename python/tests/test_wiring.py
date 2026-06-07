@@ -155,7 +155,7 @@ class TestSetupAgent:
 
 
 # ---------------------------------------------------------------------------
-# apply_config_knobs — shared seam used by both setup_agent AND apx deploy
+# apply_config_knobs — shared seam used by both setup_agent AND apx-agent deploy
 # (model-serving). The deploy path calls this directly before log_agent, so
 # these tests cover the deploy-path application without standing up the CLI.
 # ---------------------------------------------------------------------------
