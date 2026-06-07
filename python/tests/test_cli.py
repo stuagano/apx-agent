@@ -2918,6 +2918,16 @@ def test_scaffold_apps_start_server_mounts_readyz() -> None:
     assert s.index("mount_mcp_endpoints(app, agent)") < s.index("mount_readyz(app, agent)")
 
 
+def test_scaffold_apps_start_server_calls_finalize_agent() -> None:
+    from apx_agent.cli import _SCAFFOLD_APPS_START_SERVER
+    s = _SCAFFOLD_APPS_START_SERVER
+    assert "finalize_agent" in s
+    # finalize_agent must run before compile so memory tools are attached
+    assert s.index("finalize_agent(") < s.index("compile_to_responses_agent(")
+    # and before resolve_session_store (which reads agent.session_config)
+    assert s.index("finalize_agent(") < s.index("resolve_session_store(")
+
+
 def test_grant_experiment_to_sp_issues_patch(monkeypatch) -> None:
     from apx_agent import cli
     calls = []

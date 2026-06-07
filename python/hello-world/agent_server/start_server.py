@@ -8,6 +8,8 @@ agent lives. This file wires it into the Databricks Apps runtime:
   * Registers ``@invoke`` / ``@stream`` handlers.
   * Mounts apx-agent's ``/mcp`` + ``/.well-known/agent.json`` + ``/health``
     so Genie / Genie Code can consume the same agent.
+  * Mounts ``/readyz`` — a capability self-test that proves the agent answers
+    and traces (used by ``apx-agent deploy`` as a readiness gate).
 
 Run via ``uvicorn agent_server.start_server:app --host 0.0.0.0 --port $DATABRICKS_APP_PORT``
 (driven by ``databricks.yml`` on deploy).
@@ -19,14 +21,31 @@ import os
 
 from mlflow.genai.agent_server import AgentServer, invoke, stream
 
-from apx_agent import compile_to_responses_agent, mount_mcp_endpoints
+from apx_agent import compile_to_responses_agent, mount_mcp_endpoints, mount_readyz
+from apx_agent._defaults import _make_workspace_client
+from apx_agent._inspection import _load_agent_config
+from apx_agent._memory_wiring import resolve_session_store
+from apx_agent._mlflow_tracing import autolog_if_env
+from apx_agent._wiring import finalize_agent
+
+# Enable MLflow LangChain/LangGraph auto-tracing when APX_AGENT_MLFLOW_AUTOLOG
+# is set (databricks.yml sets it on deploy). Must run before the agent's
+# LangChain components are built/invoked.
+autolog_if_env()
 
 # Import the user's agent from the top-level module.
 from agent import agent
 
 MODEL = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
 
-_invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL)
+_ws = _make_workspace_client()
+# Load pyproject.toml config and fully finalize the agent so [tool.apx.agent]
+# blocks (memory, session, tools, guardrails) are honoured on Apps deploy —
+# not just when served via create_app().
+_agent_config = _load_agent_config()
+finalize_agent(agent, _agent_config, ws=_ws)
+_session_store = resolve_session_store(_agent_config, _ws, agent=agent)
+_invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL, session_store=_session_store)
 
 
 @invoke()
@@ -45,9 +64,10 @@ server = AgentServer(agent_type="ResponsesAgent")
 app = server.app
 
 mount_mcp_endpoints(app, agent)
+mount_readyz(app, agent)
 
-from apx_agent._defaults import _make_workspace_client
-app.state.workspace_client = _make_workspace_client()
+app.state.workspace_client = _ws
+app.state.session_store = _session_store
 
 
 if __name__ == "__main__":
