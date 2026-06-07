@@ -11,15 +11,19 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from ._models import (
+    AfterAgentCallback,
     AfterModelHook,
     AfterToolHook,
     AgentContext,
     AgentTool,
+    BeforeAgentCallback,
     BeforeModelHook,
     BeforeToolHook,
     InputGuardrailFn,
     MemoryBackendConfig,
     Message,
+    OnModelErrorCallback,
+    OnToolErrorCallback,
     OutputGuardrailFn,
     SessionBackendConfig,
     _ToolFn,
@@ -97,6 +101,8 @@ class LlmAgent(BaseAgent):
         tools: list[_ToolFn],
         sub_agents: list[str] | None = None,
         instructions: str = "",
+        instruction: str = "",
+        description: str = "",
         temperature: float | None = None,
         max_tokens: int | None = None,
         max_iterations: int | None = None,
@@ -104,6 +110,14 @@ class LlmAgent(BaseAgent):
         after_tool: AfterToolHook | None = None,
         before_model: BeforeModelHook | None = None,
         after_model: AfterModelHook | None = None,
+        before_tool_callback: BeforeToolHook | None = None,
+        after_tool_callback: AfterToolHook | None = None,
+        before_model_callback: BeforeModelHook | None = None,
+        after_model_callback: AfterModelHook | None = None,
+        before_agent_callback: BeforeAgentCallback | None = None,
+        after_agent_callback: AfterAgentCallback | None = None,
+        on_model_error_callback: OnModelErrorCallback | None = None,
+        on_tool_error_callback: OnToolErrorCallback | None = None,
         input_guardrails: list[InputGuardrailFn] | None = None,
         output_guardrails: list[OutputGuardrailFn] | None = None,
         context_window_tokens: int | None = None,
@@ -112,15 +126,20 @@ class LlmAgent(BaseAgent):
     ) -> None:
         self._tool_fns = tools
         self._sub_agent_urls = sub_agents or []
-        self._instructions = instructions
+        self._instructions = instructions or instruction
+        self._description = description
         self._name = name
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._max_iterations = max_iterations
-        self._before_tool = before_tool
-        self._after_tool = after_tool
-        self._before_model = before_model
-        self._after_model = after_model
+        self._before_tool = before_tool_callback or before_tool
+        self._after_tool = after_tool_callback or after_tool
+        self._before_model = before_model_callback or before_model
+        self._after_model = after_model_callback or after_model
+        self._before_agent_callback = before_agent_callback
+        self._after_agent_callback = after_agent_callback
+        self._on_model_error_callback = on_model_error_callback
+        self._on_tool_error_callback = on_tool_error_callback
         self._input_guardrails = input_guardrails or []
         self._output_guardrails = output_guardrails or []
         self._context_window_tokens = context_window_tokens
@@ -154,9 +173,17 @@ class LlmAgent(BaseAgent):
                 return result
         return None
 
+    async def _invoke_callback(self, callback: Any, *args: Any) -> None:
+        if callback is None:
+            return
+        result = callback(*args)
+        if inspect.isawaitable(result):
+            await result
+
     async def run(self, messages: list[Message], request: Request) -> str:
         from ._compile_run import run_via_compile
 
+        await self._invoke_callback(self._before_agent_callback, messages)
         if rejection := await self._apply_input_guardrails(messages):
             return rejection
         text = await run_via_compile(
@@ -164,11 +191,13 @@ class LlmAgent(BaseAgent):
         )
         if replacement := await self._apply_output_guardrails(text):
             return replacement
+        await self._invoke_callback(self._after_agent_callback, text)
         return text
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
         from ._compile_run import stream_via_compile
 
+        await self._invoke_callback(self._before_agent_callback, messages)
         if rejection := await self._apply_input_guardrails(messages):
             yield rejection
             return
@@ -185,6 +214,7 @@ class LlmAgent(BaseAgent):
         # Callers requiring full replacement should use run() instead of stream().
         if replacement := await self._apply_output_guardrails(full_text):
             yield f"\n\n---\n**[Content filtered]** {replacement}"
+        await self._invoke_callback(self._after_agent_callback, full_text)
 
     def build_router(self) -> APIRouter:
         """Build an APIRouter with a POST route for each tool."""

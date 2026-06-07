@@ -28,12 +28,14 @@ from ._template import Template, TemplateInfo, TemplateRegistry, template, templ
 
 # Models
 from ._models import (
+    AfterAgentCallback,
     AfterModelHook,
     AfterToolHook,
     AgentCard,
     AgentConfig,
     AgentContext,
     AgentTool,
+    BeforeAgentCallback,
     BeforeModelHook,
     BeforeToolHook,
     ExampleBackendConfig,
@@ -41,6 +43,8 @@ from ._models import (
     InputGuardrailFn,
     MemoryBackendConfig,
     Message,
+    OnModelErrorCallback,
+    OnToolErrorCallback,
     OutputGuardrailFn,
     SessionBackendConfig,
 )
@@ -329,12 +333,14 @@ __all__ = [
     "template",
     "template_registry",
     # Models
+    "AfterAgentCallback",
     "AfterModelHook",
     "AfterToolHook",
     "AgentCard",
     "AgentConfig",
     "AgentContext",
     "AgentTool",
+    "BeforeAgentCallback",
     "BeforeModelHook",
     "BeforeToolHook",
     "ExampleBackendConfig",
@@ -342,6 +348,8 @@ __all__ = [
     "InputGuardrailFn",
     "MemoryBackendConfig",
     "Message",
+    "OnModelErrorCallback",
+    "OnToolErrorCallback",
     "OutputGuardrailFn",
     "SessionBackendConfig",
     # Dependencies

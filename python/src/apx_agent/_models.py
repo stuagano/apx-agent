@@ -40,6 +40,20 @@ AfterModelHook: TypeAlias = Callable[[Any], Any]
 ``response`` is the langchain LLMResult/AIMessage produced by the model.
 Return value is ignored; raising propagates after the response is in hand."""
 
+# Agent-level callbacks (ADK-compatible naming)
+BeforeAgentCallback: TypeAlias = Callable[[list["Message"]], Any]
+"""Called before the agent processes a request: ``callback(messages)``.
+Return value is ignored; raising prevents the agent from running."""
+AfterAgentCallback: TypeAlias = Callable[[str], Any]
+"""Called after the agent produces its final response: ``callback(text)``.
+Return value is ignored."""
+OnModelErrorCallback: TypeAlias = Callable[[Exception], Any]
+"""Called when the model invocation raises: ``callback(exception)``.
+Return value is ignored; the original exception still propagates."""
+OnToolErrorCallback: TypeAlias = Callable[[str, Exception], Any]
+"""Called when a tool call raises: ``callback(tool_name, exception)``.
+Return value is ignored; the original exception still propagates."""
+
 # Guardrail callables — return None to pass, or a string to short-circuit
 InputGuardrailFn: TypeAlias = Callable[[list["Message"]], "str | None"]
 """Called with the incoming messages before the LLM sees them.
