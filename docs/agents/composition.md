@@ -1,16 +1,15 @@
-# Workflow patterns
+# Agent composition
 
-Composable agent patterns for multi-step orchestration. The LLM doesn't pick the route when the route is part of the contract.
+Composable agent patterns where the orchestration structure is part of the contract — the LLM executes within each step, but the graph topology is code.
 
 | Agent | Purpose |
 |-------|---------|
 | `SequentialAgent` | Pipeline execution (analyze → plan → execute) |
 | `ParallelAgent` | Fan-out / gather (fetch weather + news concurrently) |
 | `LoopAgent` | Iterative refinement (draft → review → revise until done) |
-| `RouterAgent` | Conditional routing (billing → bill agent, data → triage agent) |
-| `HandoffAgent` | Peer handoff mid-conversation (triage → billing) |
-| `RemoteAgent` | Cross-endpoint sub-agent call |
 | `agent_tool` | LLM-driven delegation — wrap any agent as a callable tool |
+
+For routing and handoff patterns, see [routing.md](routing.md).
 
 ## Sequential — multi-step pipelines
 
@@ -49,36 +48,6 @@ from apx_agent import LoopAgent
 
 drafter = Agent(instructions="Draft a response. Call finish_loop when satisfied.")
 refiner = LoopAgent(drafter, max_iterations=5)
-```
-
-## Router — conditional routing
-
-LLM picks one branch based on the user's input. Use when the route is data-dependent but the branch agents are fixed.
-
-```python
-from apx_agent import RouterAgent
-
-router = RouterAgent({
-    "billing": billing_agent,
-    "technical": tech_agent,
-    "data": data_agent,
-})
-```
-
-## Handoff — peer handoff mid-conversation
-
-An agent transfers the conversation to a peer agent. The new agent inherits the conversation state.
-
-```python
-from apx_agent import HandoffAgent
-
-triage = HandoffAgent(
-    instructions="Triage the user's question, then hand off to the right specialist.",
-    targets={
-        "billing_agent": billing_agent,
-        "technical_agent": tech_agent,
-    },
-)
 ```
 
 ## `agent_tool` — LLM-driven delegation
@@ -165,66 +134,3 @@ All three are LLM-driven — the LLM picks the target. The differences are how o
 | `agent_tool` | Many — call sub-agents like tools | Parent stays in charge, can call again, can interleave with its own tools |
 
 Reach for `agent_tool` when the parent needs to stay in charge. Reach for `RouterAgent` when one decision is enough and the branches are mutually exclusive. Reach for `HandoffAgent` when control should fully transfer.
-
-## Local vs remote — pick the deploy boundary
-
-An agent is a *module* either way — the question is whether it lives in the same process as its caller, or in its own app behind A2A. That's an orthogonal choice from how the edge is selected (deterministic vs LLM-driven). Two axes, four corners:
-
-|                       | Local (same process)                              | Remote (A2A)                                       |
-|-----------------------|---------------------------------------------------|----------------------------------------------------|
-| **Deterministic edge** | `SequentialAgent` / `ParallelAgent` / `LoopAgent` | `RemoteAgent` inside a workflow                    |
-| **LLM-driven edge**    | `agent_tool(sub_agent)`                           | `sub_agents=[url]`                                 |
-
-Pick the deploy boundary by **lifecycle and consumers**, not by agent count. Six agents that always run together, version together, and have no external caller belong in one app composed locally. One agent that has multiple callers, evolves independently, or has a different scaling shape belongs in its own app reached over A2A.
-
-Reach for a separate app when at least one is true:
-
-- **Second consumer.** Another agent (or another team) wants to call it.
-- **Independent deploy cadence.** It changes on a different clock than its caller.
-- **Different scaling profile.** CPU-heavy vs LLM-latency-bound, bursty vs steady, etc.
-- **Cleaner OBO surface.** It owns a sensitive resource and the auth boundary should be explicit.
-
-Keep it local otherwise.
-
-`python/examples/data-triage-agent/` demonstrates both corners in one codebase: a six-step `SequentialAgent` composed locally (deterministic + local), delegating to a `data-inspector` sub-agent over A2A (LLM-driven + remote).
-
-## Sub-agents — cross-endpoint composition
-
-When sub-agents are deployed as separate Model Serving endpoints or Databricks Apps:
-
-```python
-# Model Serving target — sub-agents become DatabricksServingEndpoint resources
-agent = Agent(
-    instructions="Route the user's question to the right specialist.",
-    sub_agents=[
-        "endpoints/data-triage",
-        "endpoints/billing",
-        "endpoints/sql-explainer",
-    ],
-)
-```
-
-```python
-# Databricks Apps target — sub-agents are sibling Apps
-agent = Agent(
-    instructions="Route the user's question to the right specialist.",
-    sub_agents=[
-        "$DATA_TRIAGE_URL",  # $VAR expanded at startup
-        "$BILLING_URL",
-    ],
-)
-```
-
-When deployed to Model Serving, sub-agent endpoints are auto-declared as resources. When hosted in Apps, sub-agent calls go through the app-to-app auth path (see [mcp-and-a2a.md](mcp-and-a2a.md)).
-
-## Durable execution
-
-`SequentialAgent`, `LoopAgent`, and `EvolutionaryAgent` can persist each step's output through a pluggable `WorkflowEngine` — a run can resume after a crash, redeploy, or pause.
-
-| Backend | When to use |
-|---------|-------------|
-| `InMemoryEngine` | Default — tests, dev, short interactive runs |
-| `DeltaEngine` | Production — SQL Statements API against a Delta table; survives restarts |
-| `InngestEngine` | Optional adapter — when you already run Inngest as your orchestrator |
-
-Durable workflows generally need Apps hosting — Model Serving is stateless and short-lived per request.

@@ -41,7 +41,7 @@ uv run apx-agent deploy --target apps
 
 > **Something not working?** Run `uv run apx-agent doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
 
-See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough including prerequisites, workspace requirements, and the local dev walk.
+See [docs/get-started/quickstart.md](docs/get-started/quickstart.md) for the full walkthrough including prerequisites, workspace requirements, and the local dev walk.
 
 ---
 
@@ -79,7 +79,7 @@ investigation = SequentialAgent(
 )
 ```
 
-See [docs/workflow-patterns.md](docs/workflow-patterns.md) for the full composition reference.
+See [docs/agents/composition.md](docs/agents/composition.md) for the full composition reference.
 
 ---
 
@@ -128,9 +128,9 @@ agent = DataAgent(
 **How governance works:** deploy once, everyone runs as themselves. The app
 forwards each caller's OAuth token per request, and Unity Catalog enforces
 their grants on their data. Share the app with your team — each person queries
-their own slice. See [docs/identity-passthrough.md](docs/identity-passthrough.md).
+their own slice. See [docs/safety/identity-passthrough.md](docs/safety/identity-passthrough.md).
 
-See [docs/data-agent.md](docs/data-agent.md) for the full reference.
+See [docs/agents/data-agent.md](docs/agents/data-agent.md) for the full reference.
 
 ---
 
@@ -170,7 +170,7 @@ Scaffold one:
 apx-agent scaffold my-coworker --template coworker
 ```
 
-See [docs/coworker.md](docs/coworker.md) for the full reference.
+See [docs/agents/coworker.md](docs/agents/coworker.md) for the full reference.
 
 ---
 
@@ -182,7 +182,7 @@ resources they reach. Click any node for its details.
 
 ![/_apx/topology — interactive graph of agents, tools, sub-agents, and platform resources](docs/images/topology-customer-triage.png)
 
-See [docs/dev-ui.md](docs/dev-ui.md) for the full `/_apx/*` surface (chat, traces, eval, tool inspector, probe).
+See [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) for the full `/_apx/*` surface (chat, traces, eval, tool inspector, probe).
 
 ---
 
@@ -216,7 +216,7 @@ apx-agent eval evalset.jsonl       # run against deployed endpoint with LLM judg
 apx-agent doctor                   # diagnose auth, deps, project layout
 ```
 
-See [docs/cli.md](docs/cli.md) for the full surface.
+See [docs/get-started/cli.md](docs/get-started/cli.md) for the full surface.
 
 ---
 
@@ -224,18 +224,19 @@ See [docs/cli.md](docs/cli.md) for the full surface.
 
 | Topic | Doc |
 |---|---|
-| DataAgent reference | [docs/data-agent.md](docs/data-agent.md) |
-| CoworkerAgent reference | [docs/coworker.md](docs/coworker.md) |
-| CoworkerAgent use cases | [docs/coworker-use-cases.md](docs/coworker-use-cases.md) |
-| Workflow patterns + composition | [docs/workflow-patterns.md](docs/workflow-patterns.md) |
-| Identity passthrough + OBO | [docs/identity-passthrough.md](docs/identity-passthrough.md) |
-| Configuration — `pyproject.toml`, declarative tools | [docs/configuration.md](docs/configuration.md) |
-| Sessions + memory + examples | [docs/sessions-and-memory.md](docs/sessions-and-memory.md) |
-| Apps vs Model Serving | [docs/apps-vs-model-serving.md](docs/apps-vs-model-serving.md) |
-| Governed primitives + UC functions | [docs/governed-primitives.md](docs/governed-primitives.md) |
-| Evaluation + MLflow | [docs/evaluation.md](docs/evaluation.md) |
-| Compliance — Watchdog, audit log, guards | [docs/compliance.md](docs/compliance.md) |
-| Dev UI | [docs/dev-ui.md](docs/dev-ui.md) |
+| DataAgent reference | [docs/agents/data-agent.md](docs/agents/data-agent.md) |
+| CoworkerAgent reference | [docs/agents/coworker.md](docs/agents/coworker.md) |
+| CoworkerAgent use cases | [docs/agents/coworker-use-cases.md](docs/agents/coworker-use-cases.md) |
+| Agent composition (Sequential, Parallel, Loop, agent_tool) | [docs/agents/composition.md](docs/agents/composition.md) |
+| Routing (RouterAgent, HandoffAgent) | [docs/agents/routing.md](docs/agents/routing.md) |
+| Identity passthrough + OBO | [docs/safety/identity-passthrough.md](docs/safety/identity-passthrough.md) |
+| Configuration — `pyproject.toml`, declarative tools | [docs/reference/configuration.md](docs/reference/configuration.md) |
+| Sessions + memory + examples | [docs/running/sessions-and-memory.md](docs/running/sessions-and-memory.md) |
+| Apps vs Model Serving | [docs/deploy/apps-vs-model-serving.md](docs/deploy/apps-vs-model-serving.md) |
+| Governed primitives + UC functions | [docs/tools/overview.md](docs/tools/overview.md) |
+| Evaluation + MLflow | [docs/evaluate/overview.md](docs/evaluate/overview.md) |
+| Compliance — Watchdog, audit log, guards | [docs/safety/compliance.md](docs/safety/compliance.md) |
+| Dev UI | [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) |
 
 ---
 

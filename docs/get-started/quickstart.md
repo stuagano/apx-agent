@@ -139,7 +139,7 @@ From inside `my-agent/`, this bundles the project and creates a Databricks App. 
 2. **Ask a question** — open `<app-url>` in a browser and ask the same questions you tested locally. If the agent answers, the deploy is healthy.
 3. **Check traces** — open your workspace, go to **Machine Learning → Experiments**, and find your agent's experiment. A trace with a successful tool call confirms the full stack (auth, SQL warehouse, UC) is working end-to-end.
 
-If the app shows a 502 or `/readyz` returns an error, run `uv run apx-agent doctor` locally and check [`docs/deployment-troubleshooting.md`](deployment-troubleshooting.md).
+If the app shows a 502 or `/readyz` returns an error, run `uv run apx-agent doctor` locally and check [`docs/deploy/troubleshooting.md`](../deploy/troubleshooting.md).
 
 ---
 
@@ -185,7 +185,7 @@ agent = CoworkerAgent(
 ```
 
 Scaffold one with `apx-agent scaffold my-coworker --template coworker`. See
-[`docs/coworker.md`](coworker.md) for the full reference.
+[`docs/agents/coworker.md`](../agents/coworker.md) for the full reference.
 
 ---
 
@@ -206,14 +206,14 @@ No new deployment, no URL change.
 
 | Goal | Doc |
 |------|-----|
-| Join two source systems | [coworker.md](coworker.md) |
-| Choose Apps vs Model Serving | [apps-vs-model-serving.md](apps-vs-model-serving.md) |
-| Build a multi-step pipeline | [workflow-patterns.md](workflow-patterns.md) |
-| Add multi-turn memory | [sessions-and-memory.md](sessions-and-memory.md) |
-| Write and publish UC function tools | [governed-primitives.md](governed-primitives.md) |
-| DataAgent reference | [data-agent.md](data-agent.md) |
-| pyproject.toml reference | [pyproject-toml.md](pyproject-toml.md) |
-| Add compliance guards | [compliance.md](compliance.md) |
+| Join two source systems | [coworker.md](../agents/coworker.md) |
+| Choose Apps vs Model Serving | [apps-vs-model-serving.md](../deploy/apps-vs-model-serving.md) |
+| Build a multi-step pipeline | [composition.md](../agents/composition.md) |
+| Add multi-turn memory | [sessions-and-memory.md](../running/sessions-and-memory.md) |
+| Write and publish UC function tools | [tools/overview.md](../tools/overview.md) |
+| DataAgent reference | [data-agent.md](../agents/data-agent.md) |
+| pyproject.toml reference | [pyproject-toml.md](../reference/pyproject-toml.md) |
+| Add compliance guards | [compliance.md](../safety/compliance.md) |
 | Full CLI reference | [cli.md](cli.md) |
 
 ---
@@ -234,4 +234,4 @@ uv run apx-agent doctor --json     # machine-readable output
 
 **`apx-agent deploy` fails with Apps error** — confirm Apps is enabled in your workspace under **Workspace Settings → Apps**. If not available, use `--target model-serving` instead.
 
-For deploy failures, see [`docs/deployment-troubleshooting.md`](deployment-troubleshooting.md).
+For deploy failures, see [`docs/deploy/troubleshooting.md`](../deploy/troubleshooting.md).

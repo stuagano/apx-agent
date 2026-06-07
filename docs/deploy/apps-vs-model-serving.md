@@ -12,11 +12,11 @@ the framework absorbs on your behalf, and (5) how to migrate between them.
 
 Sibling docs:
 
-- [`memory_demo` README](../python/examples/memory_demo/README.md) — worked
+- [`memory_demo` README](../../python/examples/memory_demo/README.md) — worked
   example that runs in both modes.
-- [`lakebase-recipe.md`](./lakebase-recipe.md) — durable agent state on
+- [`lakebase-recipe.md`](../running/lakebase-recipe.md) — durable agent state on
   Postgres. Both targets can use it.
-- [`deployment-troubleshooting.md`](./deployment-troubleshooting.md) —
+- [`troubleshooting.md`](./troubleshooting.md) —
   per-target failure modes and how to read them.
 
 ## 1. When to use which
@@ -38,8 +38,8 @@ the single biggest source of iteration pain in the SDK today.
 | **Async / WebSocket support** | No — request/response only | Yes — full FastAPI surface, SSE, WebSocket if you want it |
 | **Co-located UI** | No (separate app or AI Playground) | Yes — front the same App with a SPA, same auth context |
 | **Traffic split / canary** | Native (Model Serving served entities + traffic config) | Not built in — handle at app/route level or via two Apps + a router |
-| **Canary deploy CLI** | `apx canary deploy` (default) — adds a served entity at N% traffic via `databricks.agents.deploy` | `apx canary deploy --target apps --canary-version X` — writes a `canary-X` DAB target and deploys a sibling App. Soak-environment semantics; no platform traffic split. See [apps-canary-hotswap-design.md](./apps-canary-hotswap-design.md) |
-| **Hot-swap LLM endpoint** | `apx hot-swap` (default) — rewrites `APX_AGENT_MODEL_OVERRIDE` env_var on the served entity | `apx hot-swap --target apps --llm-endpoint NEW` — re-deploys with `--var llm_endpoint_name=NEW`. App restarts off the new env. See [apps-canary-hotswap-design.md](./apps-canary-hotswap-design.md) |
+| **Canary deploy CLI** | `apx canary deploy` (default) — adds a served entity at N% traffic via `databricks.agents.deploy` | `apx canary deploy --target apps --canary-version X` — writes a `canary-X` DAB target and deploys a sibling App. Soak-environment semantics; no platform traffic split. See [apps-canary-hotswap-design.md](../engine-scope/apps-canary-hotswap-design.md) |
+| **Hot-swap LLM endpoint** | `apx hot-swap` (default) — rewrites `APX_AGENT_MODEL_OVERRIDE` env_var on the served entity | `apx hot-swap --target apps --llm-endpoint NEW` — re-deploys with `--var llm_endpoint_name=NEW`. App restarts off the new env. See [apps-canary-hotswap-design.md](../engine-scope/apps-canary-hotswap-design.md) |
 | **Review App integration** | Native — `agent_evaluation` Review App reads from a registered model | Indirect — log traces to MLflow, evaluate offline |
 | **Mosaic AI Supervisor publish** | Native via `apx publish --supervisor <id>` | Not supported as of 2026-05 — Supervisor consumes Model-Serving endpoints |
 | **Autoscale model** | Per-endpoint, scale-to-zero with cold-start cost | Per-app, manual `min/max` workers; scale-to-zero supported via auto-suspend |
@@ -268,9 +268,9 @@ A few things that bite in practice:
 
 ## 8. Cross-links
 
-- [`memory_demo` worked example](../python/examples/memory_demo/README.md) —
+- [`memory_demo` worked example](../../python/examples/memory_demo/README.md) —
   identical agent code, both targets, side-by-side.
-- [`lakebase-recipe.md`](./lakebase-recipe.md) — durable state on Postgres
+- [`lakebase-recipe.md`](../running/lakebase-recipe.md) — durable state on Postgres
   for either runtime.
-- [`deployment-troubleshooting.md`](./deployment-troubleshooting.md) — per-runtime
+- [`troubleshooting.md`](./troubleshooting.md) — per-runtime
   failure modes.

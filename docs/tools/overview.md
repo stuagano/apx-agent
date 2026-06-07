@@ -99,7 +99,7 @@ pip install -e '.[uc]'
 
 Each factory attaches its resource declaration to the returned tool. `log_agent` collects them automatically.
 
-Every factory in this table can also be declared as **data** in `pyproject.toml` instead of code — the `type` key names the factory and the rest are its arguments. See [`[[tool.apx.tools]]`](configuration.md#declarative-tools--toolapxtools). For example, `genie_tool("space-abc")` is equivalent to:
+Every factory in this table can also be declared as **data** in `pyproject.toml` instead of code — the `type` key names the factory and the rest are its arguments. See [`[[tool.apx.tools]]`](../reference/configuration.md#declarative-tools--toolapxtools). For example, `genie_tool("space-abc")` is equivalent to:
 
 ```toml
 [[tool.apx.tools]]

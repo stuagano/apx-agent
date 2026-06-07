@@ -5,7 +5,7 @@ This is the **app envelope**: it declares name, model, instructions, and where
 to find the agent code. It is not the agent itself — that lives in `agent.py`.
 
 > This is the quick reference. For exhaustive field documentation see
-> [`docs/configuration.md`](configuration.md).
+> [`docs/reference/configuration.md`](configuration.md).
 
 ---
 
@@ -221,6 +221,6 @@ You could point the agent at a different schema without touching `pyproject.toml
 
 ## Further reading
 
-- [`docs/data-agent.md`](data-agent.md) — DataAgent reference
-- [`docs/coworker.md`](coworker.md) — CoworkerAgent reference
-- [`docs/configuration.md`](configuration.md) — full field-by-field reference for every sub-section
+- [`docs/agents/data-agent.md`](../agents/data-agent.md) — DataAgent reference
+- [`docs/agents/coworker.md`](../agents/coworker.md) — CoworkerAgent reference
+- [`docs/reference/configuration.md`](configuration.md) — full field-by-field reference for every sub-section
