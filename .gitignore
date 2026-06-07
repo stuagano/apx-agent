@@ -41,7 +41,7 @@ mlruns/
 **/_version.py
 
 # Local reference clones (not part of the project)
-reference/
+/reference/
 
 # Local scaffold sandboxes (developer's own apx-agent scratch projects)
 python/apxshared/

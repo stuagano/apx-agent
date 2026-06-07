@@ -20,7 +20,7 @@ A React-flow visualization of the agent topology: agent nodes, tools, sub-agents
 
 Color coding follows NodeType: pink stroke for routing agents (`HandoffAgent`, `RouterAgent`), blue for `LlmAgent`, slate for tools, green/yellow/cyan/orange for UC functions / Genie spaces / vector indexes / serving endpoints respectively. Selection highlights the node and its incident edges.
 
-Data is served from `GET /_apx/topology.json` (full graph) and `GET /_apx/topology/inspect/{node_id}` (per-node details). See the [topology spec](superpowers/specs/2026-05-22-topology-ui.md) for the full schema.
+Data is served from `GET /_apx/topology.json` (full graph) and `GET /_apx/topology/inspect/{node_id}` (per-node details). See the [topology spec](../superpowers/specs/2026-05-22-topology-ui.md) for the full schema.
 
 ### `/_apx/edit` — Edit agent source
 Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file; restart `apx run` to load the new code (there is no live hot-reload — the agent is compiled at startup).

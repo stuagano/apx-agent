@@ -18,7 +18,7 @@ module locally or behind a FastAPI route inside an App.
 `memory_demo` previously deployed via Model Serving (`databricks.agents.deploy`).
 We moved the deploy story to Apps because Model Serving container builds queue —
 iteration suffers. The full tradeoff write-up is in
-[`docs/apps-vs-model-serving.md`](../../../docs/apps-vs-model-serving.md).
+[`docs/deploy/apps-vs-model-serving.md`](../../../docs/deploy/apps-vs-model-serving.md).
 
 ## What's in here
 
@@ -111,7 +111,7 @@ replaces them:
 
 | Want | Swap to | See |
 |---|---|---|
-| Shared state across App replicas | `LakebaseMemoryStore`, `LakebaseExampleStore` | [`docs/lakebase-recipe.md`](../../../docs/lakebase-recipe.md) |
+| Shared state across App replicas | `LakebaseMemoryStore`, `LakebaseExampleStore` | [`docs/running/lakebase-recipe.md`](../../../docs/running/lakebase-recipe.md) |
 | Delta + Vector Search backing | `DeltaMemoryStore`, `DeltaExampleStore` | `apx_agent._memory_delta` / `_example_delta` source |
 
 When you move to Lakebase, also add a `database` resource to `databricks.yml`

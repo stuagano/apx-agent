@@ -17,7 +17,7 @@ uv run quickstart  # creates the MLflow experiment + writes .env
 ```bash
 apx-agent run --reload
 # → FastAPI on http://localhost:8000 with the /_apx/* dev UI. Edit agent.py;
-#   --reload picks up changes. See docs/getting-started.md for the walkthrough.
+#   --reload picks up changes. See docs/get-started/quickstart.md for the walkthrough.
 curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","content":"hi"}]}'
 ```
 
