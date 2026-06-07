@@ -240,7 +240,7 @@ builds.
 
 ## Further reading
 
-- [`docs/configuration.md`](configuration.md) — full `[tool.apx.agent.memory]` and `[tool.apx.agent.session]` field reference
-- [`docs/sessions-and-memory.md`](sessions-and-memory.md) — how memory and session stores work under the hood
-- [`docs/coworker-use-cases.md`](coworker-use-cases.md) — the five two-system join use cases in detail
-- [`python/src/apx_agent/coworker.py`](../python/src/apx_agent/coworker.py) — the implementation (it's short)
+- [`docs/reference/configuration.md`](../reference/configuration.md) — full `[tool.apx.agent.memory]` and `[tool.apx.agent.session]` field reference
+- [`docs/running/sessions-and-memory.md`](../running/sessions-and-memory.md) — how memory and session stores work under the hood
+- [`docs/agents/coworker-use-cases.md`](coworker-use-cases.md) — the five two-system join use cases in detail
+- [`python/src/apx_agent/coworker.py`](../../python/src/apx_agent/coworker.py) — the implementation (it's short)

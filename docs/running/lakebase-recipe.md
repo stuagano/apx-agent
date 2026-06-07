@@ -220,7 +220,7 @@ Lakebase honors standard Postgres backup tooling. `databricks database get-datab
 
 ## 8. Migration: `InMemoryMemoryStore` → `LakebaseMemoryStore`
 
-For agents that started life with the in-process store (typical during local development — see [`python/examples/customer_triage/`](../python/examples/customer_triage/)), porting state forward is a one-shot script using `add_batch`:
+For agents that started life with the in-process store (typical during local development — see [`python/examples/customer_triage/`](../../python/examples/customer_triage/)), porting state forward is a one-shot script using `add_batch`:
 
 ```python
 """Migrate InMemoryMemoryStore contents into a LakebaseMemoryStore.
@@ -274,7 +274,7 @@ The same shape works for `LakebaseExampleStore` — swap principal for `agent_id
 
 ## Cross-references
 
-- Python store source: [`python/src/apx_agent/_session_lakebase.py`](../python/src/apx_agent/_session_lakebase.py), [`_memory_lakebase.py`](../python/src/apx_agent/_memory_lakebase.py), [`_example_lakebase.py`](../python/src/apx_agent/_example_lakebase.py)
-- TypeScript equivalents: [`typescript/src/session-lakebase.ts`](../typescript/src/session-lakebase.ts), [`memory-lakebase.ts`](../typescript/src/memory-lakebase.ts), [`example-lakebase.ts`](../typescript/src/example-lakebase.ts)
-- Worked example with `InMemoryMemoryStore` ready to swap: [`python/examples/customer_triage/`](../python/examples/customer_triage/)
-- Full MemoryBank narrative: [root README](../README.md#memory-bank--long-lived-recall-across-conversations)
+- Python store source: [`python/src/apx_agent/_session_lakebase.py`](../../python/src/apx_agent/_session_lakebase.py), [`_memory_lakebase.py`](../../python/src/apx_agent/_memory_lakebase.py), [`_example_lakebase.py`](../../python/src/apx_agent/_example_lakebase.py)
+- TypeScript equivalents: [`typescript/src/session-lakebase.ts`](../../typescript/src/session-lakebase.ts), [`memory-lakebase.ts`](../../typescript/src/memory-lakebase.ts), [`example-lakebase.ts`](../../typescript/src/example-lakebase.ts)
+- Worked example with `InMemoryMemoryStore` ready to swap: [`python/examples/customer_triage/`](../../python/examples/customer_triage/)
+- Full MemoryBank narrative: [root README](../../README.md#memory-bank--long-lived-recall-across-conversations)

@@ -190,7 +190,7 @@ The events table has no rows after midnight — what happened?
 
 ## Part 3: Deploy
 
-The agent ships with two deploy paths. Pick by workload; the full tradeoff write-up is in [`docs/apps-vs-model-serving.md`](../../../docs/apps-vs-model-serving.md).
+The agent ships with two deploy paths. Pick by workload; the full tradeoff write-up is in [`docs/deploy/apps-vs-model-serving.md`](../../../docs/deploy/apps-vs-model-serving.md).
 
 ### Option A: Databricks Apps (`--target apps`, recommended for fast iteration)
 

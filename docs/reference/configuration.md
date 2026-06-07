@@ -30,7 +30,7 @@ Environment variable references (`$VAR` or `${VAR}`) are resolved at startup.
 
 > Python only. The TypeScript plugin has no `[[tool.apx.tools]]` equivalent — declare tools in code via the `tools` option.
 
-Resource-reference tools can be declared as data instead of code. Each `[[tool.apx.tools]]` entry is a table-array sibling of `[tool.apx.agent]`; `type` selects a [platform tool factory](governed-primitives.md#platform-tool-factories) and the remaining keys are its arguments:
+Resource-reference tools can be declared as data instead of code. Each `[[tool.apx.tools]]` entry is a table-array sibling of `[tool.apx.agent]`; `type` selects a [platform tool factory](../tools/overview.md#platform-tool-factories) and the remaining keys are its arguments:
 
 ```toml
 [tool.apx.agent]

@@ -4,8 +4,8 @@ Real-world failure modes observed when running `apx deploy` against Databricks w
 
 Sibling docs:
 
-- [`docs/lakebase-recipe.md`](./lakebase-recipe.md) — durable state side (sessions, memory, examples on Postgres).
-- [`typescript/README.md`](../typescript/README.md) — JS/TS surface; the deploy story is Python-only today.
+- [`docs/running/lakebase-recipe.md`](../running/lakebase-recipe.md) — durable state side (sessions, memory, examples on Postgres).
+- [`typescript/README.md`](../../typescript/README.md) — JS/TS surface; the deploy story is Python-only today.
 
 ## 1. Pre-flight checklist
 
@@ -269,8 +269,8 @@ Do **not** delete the registered model (`main.agents.my_agent` without `--versio
 
 ## 6. Cross-references
 
-- Lakebase / durable state: [`docs/lakebase-recipe.md`](./lakebase-recipe.md)
-- TypeScript surface: [`typescript/README.md`](../typescript/README.md)
-- CLI source: [`python/src/apx_agent/cli.py`](../python/src/apx_agent/cli.py)
+- Lakebase / durable state: [`docs/running/lakebase-recipe.md`](../running/lakebase-recipe.md)
+- TypeScript surface: [`typescript/README.md`](../../typescript/README.md)
+- CLI source: [`python/src/apx_agent/cli.py`](../../python/src/apx_agent/cli.py)
 - The `apx deploy` flow (publish-tools → log_agent → agents.deploy → set_uc_tags): commit `7a857b75`
 - The `mlflow.set_experiment` ordering fix: commit `41e82eee`

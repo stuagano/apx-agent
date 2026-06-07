@@ -43,7 +43,7 @@ apx-agent run                    # uvicorn against app.py:app
 
 ## Publish + deploy
 
-This example ships two deploy paths — pick by workload. The full tradeoff write-up is in [`docs/apps-vs-model-serving.md`](../../../docs/apps-vs-model-serving.md).
+This example ships two deploy paths — pick by workload. The full tradeoff write-up is in [`docs/deploy/apps-vs-model-serving.md`](../../../docs/deploy/apps-vs-model-serving.md).
 
 ### Option A: Model Serving (`--target model-serving`, default)
 
@@ -163,7 +163,7 @@ account_memory_store = LakebaseMemoryStore(
 )
 ```
 
-See [`docs/lakebase-recipe.md`](../../../docs/lakebase-recipe.md) for the full Lakebase provisioning + pgvector walkthrough, including the `principal_id` index and the ivfflat tuning knob.
+See [`docs/running/lakebase-recipe.md`](../../../docs/running/lakebase-recipe.md) for the full Lakebase provisioning + pgvector walkthrough, including the `principal_id` index and the ivfflat tuning knob.
 
 **Resolving `principal_id` in production:**
 
