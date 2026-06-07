@@ -70,6 +70,9 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
         model_check = check_model_endpoint(cwd, auth_ok=auth.status is Status.OK)
         if model_check is not None:
             authentication.append(model_check)
+        apps_check = check_apps_enabled(auth_ok=auth.status is Status.OK)
+        if apps_check is not None:
+            authentication.append(apps_check)
     project = [
         check_project_layout(cwd),
         check_target(cwd),
@@ -79,6 +82,9 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
         project.append(memory_check)
+    uc_check = check_uc_data_source(cwd, auth_ok=auth.status is Status.OK)
+    if uc_check is not None:
+        project.append(uc_check)
     project.extend(check_declared_tools(cwd, auth_ok=auth.status is Status.OK))
     return [
         ("Environment", environment),
@@ -334,6 +340,110 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
             f"could not verify endpoint ({msg})",
             "Endpoint lookup failed — check auth and workspace access.",
         )
+
+
+def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
+    """Verify the UC catalog.schema declared in [tool.apx.agent.template] exists.
+
+    DataAgent / CoworkerAgent projects declare their data source as:
+        [tool.apx.agent.template]
+        name = "data"
+        catalog = "main"
+        schema  = "sales"
+
+    A missing or inaccessible schema is the most common silent failure: the
+    agent starts fine, every SQL query 403s, and the user sees "I can't find
+    any data" with no clear diagnosis. Returns None when not in an apx project
+    or no template catalog/schema is declared.
+    """
+    if not auth_ok:
+        return None
+    pyproject = cwd / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            return None
+    try:
+        data = tomllib.loads(pyproject.read_text())
+    except Exception:
+        return None
+    tmpl: dict = (
+        data.get("tool", {}).get("apx", {}).get("agent", {}).get("template") or {}
+    )
+    catalog = tmpl.get("catalog", "")
+    schema = tmpl.get("schema", "")
+    if not catalog or not schema:
+        return None
+    fqn = f"{catalog}.{schema}"
+    label = f"UC schema ({fqn})"
+    try:
+        from databricks.sdk import WorkspaceClient
+        ws = WorkspaceClient()
+        ws.schemas.get(full_name=fqn)
+        return Check(label, Status.OK, "exists and readable", None)
+    except Exception as e:
+        msg = str(e)
+        if "404" in msg or "does not exist" in msg.lower() or "not found" in msg.lower():
+            return Check(
+                label, Status.FAIL,
+                f"schema not found: {fqn}",
+                f"Confirm `{fqn}` exists in Unity Catalog and your principal has USE SCHEMA. "
+                "Update catalog/schema in pyproject.toml [tool.apx.agent.template] to match.",
+            )
+        if "403" in msg or "permission" in msg.lower() or "denied" in msg.lower():
+            return Check(
+                label, Status.FAIL,
+                f"permission denied on {fqn}",
+                f"Grant USE CATALOG on `{catalog}` and USE SCHEMA on `{fqn}` to your principal.",
+            )
+        return Check(
+            label, Status.WARN,
+            f"could not verify schema ({msg})",
+            "Schema lookup failed — check auth and Unity Catalog grants.",
+        )
+
+
+def check_apps_enabled(*, auth_ok: bool) -> Check | None:
+    """Verify Databricks Apps is enabled in this workspace.
+
+    `apx-agent deploy --target apps` will fail immediately if Apps isn't
+    enabled, but nothing warns you until deploy time. This check probes the
+    Apps API early so `apx-agent doctor` can catch it before any code is
+    bundled or uploaded. Returns None when auth isn't available.
+    """
+    if not auth_ok:
+        return None
+    try:
+        from databricks.sdk import WorkspaceClient
+        ws = WorkspaceClient()
+        # list(limit=1) is the lightest possible probe — one round-trip,
+        # no results needed. A 404 or FEATURE_DISABLED means Apps is off.
+        list(ws.apps.list(limit=1))
+        return Check("Databricks Apps", Status.OK, "enabled in this workspace", None)
+    except Exception as e:
+        msg = str(e)
+        lower = msg.lower()
+        if (
+            "404" in msg
+            or "feature" in lower
+            or "disabled" in lower
+            or "not enabled" in lower
+            or "not available" in lower
+        ):
+            return Check(
+                "Databricks Apps",
+                Status.WARN,
+                "Apps may not be enabled in this workspace",
+                "Ask your workspace admin to enable Databricks Apps, or deploy with "
+                "`uv run apx-agent deploy --target model-serving` instead.",
+            )
+        # Any other error (network, auth) — don't fail the check hard
+        return None
 
 
 def _is_apx_project(cwd: Path) -> bool:

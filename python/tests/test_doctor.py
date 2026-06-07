@@ -474,3 +474,83 @@ class TestCheckModelEndpoint:
             c = doctor.check_model_endpoint(tmp_path, auth_ok=True)
         assert c is not None
         assert c.status is Status.WARN
+
+
+class TestCheckUcDataSource:
+    def _project(self, tmp_path: Path, catalog: str, schema: str) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            f'[tool.apx.agent]\nname = "x"\n'
+            f'[tool.apx.agent.template]\nname = "data"\n'
+            f'catalog = "{catalog}"\nschema = "{schema}"\n'
+        )
+
+    def test_no_pyproject_returns_none(self, tmp_path: Path):
+        assert doctor.check_uc_data_source(tmp_path, auth_ok=True) is None
+
+    def test_auth_not_ok_returns_none(self, tmp_path: Path):
+        self._project(tmp_path, "main", "sales")
+        assert doctor.check_uc_data_source(tmp_path, auth_ok=False) is None
+
+    def test_no_template_catalog_returns_none(self, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        assert doctor.check_uc_data_source(tmp_path, auth_ok=True) is None
+
+    def test_schema_found_returns_ok(self, tmp_path: Path):
+        self._project(tmp_path, "main", "sales")
+        ws = MagicMock()
+        ws.schemas.get.return_value = MagicMock()
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_uc_data_source(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.OK
+        ws.schemas.get.assert_called_once_with(full_name="main.sales")
+
+    def test_schema_not_found_returns_fail(self, tmp_path: Path):
+        self._project(tmp_path, "main", "sales")
+        ws = MagicMock()
+        ws.schemas.get.side_effect = Exception("404 Not Found")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_uc_data_source(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.FAIL
+        assert "not found" in c.detail
+        assert "USE SCHEMA" in c.fix
+
+    def test_schema_permission_denied_returns_fail(self, tmp_path: Path):
+        self._project(tmp_path, "main", "sales")
+        ws = MagicMock()
+        ws.schemas.get.side_effect = Exception("403 permission denied")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_uc_data_source(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.FAIL
+        assert "USE SCHEMA" in c.fix
+
+
+class TestCheckAppsEnabled:
+    def test_auth_not_ok_returns_none(self):
+        assert doctor.check_apps_enabled(auth_ok=False) is None
+
+    def test_apps_enabled_returns_ok(self):
+        ws = MagicMock()
+        ws.apps.list.return_value = iter([])
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_apps_enabled(auth_ok=True)
+        assert c is not None
+        assert c.status is Status.OK
+
+    def test_apps_disabled_returns_warn(self):
+        ws = MagicMock()
+        ws.apps.list.side_effect = Exception("404 feature not enabled")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_apps_enabled(auth_ok=True)
+        assert c is not None
+        assert c.status is Status.WARN
+        assert "model-serving" in c.fix
+
+    def test_other_error_returns_none(self):
+        ws = MagicMock()
+        ws.apps.list.side_effect = Exception("network timeout")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_apps_enabled(auth_ok=True)
+        assert c is None
