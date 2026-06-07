@@ -414,6 +414,48 @@ class TestRouterAgent:
         assert "get_weather" in names
         assert "structured_tool" in names
 
+    # Description-driven (ADK-style) form
+
+    def test_description_driven_form(self):
+        a1 = LlmAgent(tools=[get_weather], name="weather", description="Handles weather queries.")
+        a2 = LlmAgent(tools=[structured_tool], name="data", description="Handles data queries.")
+        router = RouterAgent(agents=[a1, a2])
+        assert len(router._routes) == 2
+        names = {r[0] for r in router._routes}
+        assert names == {"weather", "data"}
+
+    def test_description_driven_uses_agent_description(self):
+        a1 = LlmAgent(tools=[get_weather], name="weather", description="Weather specialist.")
+        router = RouterAgent(agents=[a1])
+        assert router._routes[0][1] == "Weather specialist."
+
+    def test_description_driven_fallback_description(self):
+        a1 = LlmAgent(tools=[get_weather], name="weather")
+        router = RouterAgent(agents=[a1])
+        assert "weather" in router._routes[0][1]
+
+    def test_description_driven_transfer_schemas(self):
+        a1 = LlmAgent(tools=[get_weather], name="weather", description="Weather specialist.")
+        a2 = LlmAgent(tools=[structured_tool], name="data", description="Data specialist.")
+        router = RouterAgent(agents=[a1, a2])
+        schemas = router._transfer_tool_schemas()
+        weather_schema = next(s for s in schemas if s["function"]["name"] == "transfer_to_weather")
+        assert weather_schema["function"]["description"] == "Weather specialist."
+
+    def test_description_driven_collect_tools(self):
+        a1 = LlmAgent(tools=[get_weather], name="weather", description="Weather.")
+        a2 = LlmAgent(tools=[structured_tool], name="data", description="Data.")
+        router = RouterAgent(agents=[a1, a2])
+        tools = router.collect_tools()
+        names = {t.name for t in tools}
+        assert "get_weather" in names
+        assert "structured_tool" in names
+
+    def test_description_driven_requires_name(self):
+        a1 = LlmAgent(tools=[get_weather])  # no name
+        with pytest.raises(ValueError, match="name="):
+            RouterAgent(agents=[a1])
+
 
 # ---------------------------------------------------------------------------
 # HandoffAgent
@@ -454,3 +496,30 @@ class TestHandoffAgent:
             all_paths.extend(route.path for route in r.routes)
         assert "/tools/transfer_to_a" in all_paths
         assert "/tools/transfer_to_b" in all_paths
+
+    # List form (ADK-style)
+
+    def test_list_form_normalizes_to_dict(self):
+        a1 = LlmAgent(tools=[get_weather], name="weather")
+        a2 = LlmAgent(tools=[structured_tool], name="data")
+        handoff = HandoffAgent(agents=[a1, a2], start="weather")
+        assert set(handoff._agents.keys()) == {"weather", "data"}
+
+    def test_list_form_default_start_is_first(self):
+        a1 = LlmAgent(tools=[get_weather], name="triage")
+        a2 = LlmAgent(tools=[structured_tool], name="data")
+        handoff = HandoffAgent(agents=[a1, a2])
+        assert handoff._start == "triage"
+
+    def test_list_form_requires_name(self):
+        a1 = LlmAgent(tools=[get_weather])  # no name
+        with pytest.raises(ValueError, match="name="):
+            HandoffAgent(agents=[a1])
+
+    def test_list_form_transfer_uses_description(self):
+        a1 = LlmAgent(tools=[get_weather], name="weather", description="Weather expert.")
+        a2 = LlmAgent(tools=[structured_tool], name="data", description="Data analyst.")
+        handoff = HandoffAgent(agents=[a1, a2])
+        transfer_tools = handoff._transfer_tools_for("weather")
+        data_tool = next(t for t in transfer_tools if t.name == "transfer_to_data")
+        assert data_tool.description == "Data analyst."
