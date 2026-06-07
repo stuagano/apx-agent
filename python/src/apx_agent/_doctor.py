@@ -421,9 +421,9 @@ def check_apps_enabled(*, auth_ok: bool) -> Check | None:
     try:
         from databricks.sdk import WorkspaceClient
         ws = WorkspaceClient()
-        # list(limit=1) is the lightest possible probe — one round-trip,
-        # no results needed. A 404 or FEATURE_DISABLED means Apps is off.
-        list(ws.apps.list(limit=1))
+        # Iterate once — lightest possible probe, no results needed.
+        # A 404 or FEATURE_DISABLED means Apps is off.
+        next(iter(ws.apps.list()), None)
         return Check("Databricks Apps", Status.OK, "enabled in this workspace", None)
     except Exception as e:
         msg = str(e)
