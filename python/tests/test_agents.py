@@ -170,6 +170,107 @@ class TestLlmAgent:
         result = await agent._apply_input_guardrails([Message(role="user", content="test")])
         assert result == "Async blocked"
 
+    # ADK alignment: description, instruction alias, named callbacks
+
+    def test_description_stored(self):
+        agent = LlmAgent(tools=[get_weather], description="Checks the weather forecast.")
+        assert agent._description == "Checks the weather forecast."
+
+    def test_description_defaults_empty(self):
+        agent = LlmAgent(tools=[get_weather])
+        assert agent._description == ""
+
+    def test_instruction_alias_for_instructions(self):
+        agent = LlmAgent(tools=[get_weather], instruction="Be concise.")
+        assert agent._instructions == "Be concise."
+
+    def test_instructions_takes_precedence_over_instruction(self):
+        agent = LlmAgent(tools=[get_weather], instructions="Primary.", instruction="Secondary.")
+        assert agent._instructions == "Primary."
+
+    def test_before_model_callback_alias(self):
+        hook = MagicMock()
+        agent = LlmAgent(tools=[get_weather], before_model_callback=hook)
+        assert agent._before_model is hook
+
+    def test_after_model_callback_alias(self):
+        hook = MagicMock()
+        agent = LlmAgent(tools=[get_weather], after_model_callback=hook)
+        assert agent._after_model is hook
+
+    def test_before_tool_callback_alias(self):
+        hook = MagicMock()
+        agent = LlmAgent(tools=[get_weather], before_tool_callback=hook)
+        assert agent._before_tool is hook
+
+    def test_after_tool_callback_alias(self):
+        hook = MagicMock()
+        agent = LlmAgent(tools=[get_weather], after_tool_callback=hook)
+        assert agent._after_tool is hook
+
+    def test_callback_alias_preferred_over_legacy(self):
+        legacy = MagicMock()
+        adk = MagicMock()
+        agent = LlmAgent(tools=[get_weather], before_model=legacy, before_model_callback=adk)
+        assert agent._before_model is adk
+
+    @pytest.mark.asyncio
+    async def test_before_agent_callback_invoked(self):
+        called_with = []
+
+        def on_before(messages):
+            called_with.append(messages)
+
+        agent = LlmAgent(
+            tools=[get_weather],
+            before_agent_callback=on_before,
+            input_guardrails=[lambda _: "blocked"],
+        )
+        msgs = [Message(role="user", content="hi")]
+        await agent.run(msgs, MagicMock())
+        assert called_with == [msgs]
+
+    @pytest.mark.asyncio
+    async def test_after_agent_callback_invoked(self):
+        called_with = []
+
+        def on_after(text):
+            called_with.append(text)
+
+        agent = LlmAgent(
+            tools=[get_weather],
+            after_agent_callback=on_after,
+            input_guardrails=[lambda _: "the answer"],
+        )
+        await agent.run([Message(role="user", content="hi")], MagicMock())
+        # input guardrail short-circuits before run_via_compile; after_agent not called
+        assert called_with == []
+
+    @pytest.mark.asyncio
+    async def test_async_before_agent_callback(self):
+        called = []
+
+        async def async_before(messages):
+            called.append(True)
+
+        agent = LlmAgent(
+            tools=[get_weather],
+            before_agent_callback=async_before,
+            input_guardrails=[lambda _: "blocked"],
+        )
+        await agent.run([Message(role="user", content="hi")], MagicMock())
+        assert called == [True]
+
+    def test_on_model_error_callback_stored(self):
+        cb = MagicMock()
+        agent = LlmAgent(tools=[get_weather], on_model_error_callback=cb)
+        assert agent._on_model_error_callback is cb
+
+    def test_on_tool_error_callback_stored(self):
+        cb = MagicMock()
+        agent = LlmAgent(tools=[get_weather], on_tool_error_callback=cb)
+        assert agent._on_tool_error_callback is cb
+
 
 # ---------------------------------------------------------------------------
 # SequentialAgent
