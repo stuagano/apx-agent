@@ -1,0 +1,59 @@
+# Payroll Coworker — Kronos × Workday
+#
+# Joins time-and-attendance (Kronos) with HR/payroll (Workday) on employee ID.
+# Surfaces mismatches between hours worked and paychecks issued.
+#
+# Data requirements: both systems landed in the same UC schema.
+# Typical tables: kronos_timesheets, workday_payroll_runs, workday_employees
+
+name: payroll-coworker
+description: >
+  Reconciles hours worked (Kronos) against paychecks issued (Workday).
+  Flags discrepancies, overtime anomalies, and pay rule violations.
+model: databricks-claude-sonnet-4-6
+instructions: >
+  You are a payroll operations analyst. Always cite the employee_id when
+  surfacing discrepancies. Distinguish between data errors (wrong hours logged)
+  and pay rule errors (wrong rate applied).
+examples:
+  - "Who has a mismatch between logged hours and their paycheck this period?"
+  - "Show me employees with overtime hours that weren't paid at the overtime rate"
+  - "Which employees were paid but have no timesheet records this pay run?"
+  - "Summarize total payroll variance by department"
+
+template:
+  name: coworker
+  catalog: $CATALOG
+  schema: $SCHEMA
+  persona: a payroll operations analyst
+  join_key: employee ID
+  objective: >
+    Surface mismatches between hours worked and paychecks issued.
+    Identify pay rule violations, missing punches, and overtime discrepancies.
+  memory: persistent
+  warehouse_id: $WAREHOUSE_ID
+  include_functions: true
+
+memory:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_payroll_coworker_memory
+  auto_create: true
+  validate_at_boot: true
+
+session:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_payroll_coworker_sessions
+  auto_create: true
+  validate_at_boot: true
+
+guardrails:
+  injection_detection: true
+  blocked_tools: []
+  rate_limit: null
+
+tools: []
+# Uncomment to add a Genie space for natural-language data access:
+# - type: genie
+#   space_id: $GENIE_SPACE_ID
+#   name: ask_payroll_data
+#   description: Answer questions about payroll and time-and-attendance data.
