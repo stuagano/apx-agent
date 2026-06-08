@@ -142,7 +142,7 @@ def test_scaffold_creates_expected_files(tmp_path: Path) -> None:
     # covered by test_scaffold_apps.py.
     result = runner.invoke(
         main,
-        ["scaffold", "my_agent", "--target", "model-serving", "--dir", str(tmp_path)],
+        ["scaffold", "my_agent", "--target", "model-serving", "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code == 0, result.output
     base = tmp_path / "my_agent"
@@ -161,7 +161,7 @@ def test_scaffold_refuses_overwrite_without_force(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["scaffold", "existing", "--dir", str(tmp_path)],
+        ["scaffold", "existing", "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code != 0
     assert "already exists" in result.output
@@ -175,7 +175,7 @@ def test_scaffold_overwrites_with_force(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["scaffold", "existing", "--dir", str(tmp_path), "--force"],
+        ["scaffold", "existing", "--dir", str(tmp_path), "--force", "--no-yaml"],
     )
     assert result.exit_code == 0
     assert "# old content" not in (target / "agent.py").read_text()
@@ -2683,7 +2683,7 @@ def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main, ["scaffold", "ag", "--catalog", "main", "--schema", "sales",
-               "--dir", str(tmp_path)],
+               "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code == 0, result.output
     agent_py = (tmp_path / "ag" / "agent.py").read_text()
@@ -2727,7 +2727,7 @@ def test_scaffold_explicit_target_bakes_example_tool(tmp_path: Path) -> None:
     with patch("apx_agent.cli._probe_first_table", return_value="trips"):
         result = runner.invoke(
             main, ["scaffold", "ag", "--catalog", "main", "--schema", "sales",
-                   "--dir", str(tmp_path)],
+                   "--dir", str(tmp_path), "--no-yaml"],
         )
     assert result.exit_code == 0, result.output
     agent_py = (tmp_path / "ag" / "agent.py").read_text()
@@ -2849,7 +2849,7 @@ def test_unknown_command_no_close_match():
 def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()
-    result = runner.invoke(main, ["scaffold", "my-agent"])
+    result = runner.invoke(main, ["scaffold", "my-agent", "--no-yaml"])
     assert result.exit_code == 0
     out = result.output
     assert "cd my-agent" in out

@@ -1472,6 +1472,54 @@ def _scaffold_apps(
         click.echo(f"  write  {path}")
 
 
+def _scaffold_to_yaml(
+    name: str,
+    directory: Path,
+    scaffold_template: str,
+    catalog: str | None,
+    schema: str | None,
+    persona: str | None,
+    join_key: str | None,
+    objective: str | None,
+) -> None:
+    import yaml as _yaml
+    spec: dict = {
+        "name": name,
+        "description": "",
+        "model": "databricks-claude-sonnet-4-6",
+        "instructions": "",
+        "examples": [],
+    }
+    if scaffold_template in ("coworker", "data"):
+        spec["template"] = {
+            "name": scaffold_template,
+            "catalog": catalog or "$CATALOG",
+            "schema": schema or "$SCHEMA",
+        }
+        if scaffold_template == "coworker":
+            spec["template"]["persona"] = persona or "a data analyst"
+            spec["template"]["join_key"] = join_key or ""
+            spec["template"]["objective"] = objective or ""
+            spec["template"]["memory"] = "persistent"
+            safe_name = name.replace("-", "_")
+            spec["memory"] = {
+                "type": "delta",
+                "table_name": f"$CATALOG.$SCHEMA.apx_{safe_name}_memory",
+                "auto_create": True,
+            }
+            spec["session"] = {
+                "type": "delta",
+                "table_name": f"$CATALOG.$SCHEMA.apx_{safe_name}_sessions",
+                "auto_create": True,
+            }
+    spec["guardrails"] = {"injection_detection": False}
+    spec["tools"] = []
+    out = directory / f"{name}.yaml"
+    out.write_text(_yaml.dump(spec, sort_keys=False, allow_unicode=True))
+    click.echo(f"Spec written to {out}")
+    click.echo(f"  Fill in $CATALOG/$SCHEMA, then: apx deploy {out.name}")
+
+
 @main.command()
 @click.argument("name")
 @click.option(
@@ -1532,10 +1580,14 @@ def _scaffold_apps(
     help="Run the setup wizard (target, template, catalog, schema, persona). "
          "Defaults to on when stdin is a TTY.",
 )
+@click.option(
+    "--yaml/--no-yaml", "emit_yaml", default=True,
+    help="Output a YAML spec file instead of a full project directory (default: on).",
+)
 def scaffold(
     name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
-    scaffold_template: str | None, interactive: bool | None,
+    scaffold_template: str | None, interactive: bool | None, emit_yaml: bool,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -1574,12 +1626,13 @@ def scaffold(
     # baked into the templates must be the bare directory name, or it produces
     # an invalid PEP 508 ``[project].name`` that breaks ``uv sync``.
     project_name = Path(name).name
-    if target.exists() and not force:
-        if any(target.iterdir()):
-            raise click.ClickException(
-                f"{target} already exists and is not empty. Pass --force to overwrite."
-            )
-    target.mkdir(parents=True, exist_ok=True)
+    if not emit_yaml:
+        if target.exists() and not force:
+            if any(target.iterdir()):
+                raise click.ClickException(
+                    f"{target} already exists and is not empty. Pass --force to overwrite."
+                )
+        target.mkdir(parents=True, exist_ok=True)
 
     # -----------------------------------------------------------------------
     # Step 1: run the setup wizard or apply CLI defaults.
@@ -1602,6 +1655,19 @@ def scaffold(
     else:
         scaffold_target = scaffold_target or "apps"
         scaffold_template = scaffold_template or "data"
+
+    if emit_yaml:
+        _scaffold_to_yaml(
+            name=project_name,
+            directory=Path(directory),
+            scaffold_template=scaffold_template or "base",
+            catalog=catalog,
+            schema=schema,
+            persona=persona,
+            join_key=join_key,
+            objective=objective,
+        )
+        return
 
     # -----------------------------------------------------------------------
     # Step 2: validate the combination before touching the filesystem.
