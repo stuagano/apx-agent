@@ -426,15 +426,22 @@ def _load_session(
     Serving ``session_id`` convention used by ``_chat_agent.py``). Both are
     plumbed through ``custom_inputs`` so the apx-agent SessionStore handles
     them identically.
+
+    On ``StoreError`` (warehouse cold-start, permissions, transient failure)
+    the agent degrades to sessionless rather than blocking the response.
     """
     if store is None or not custom_inputs:
         return None
     thread_id = custom_inputs.get("thread_id") or custom_inputs.get("session_id")
     if not thread_id:
         return None
-    from ._session import load_or_create_session
+    from ._session import StoreError, load_or_create_session
 
-    return load_or_create_session(store, thread_id)
+    try:
+        return load_or_create_session(store, thread_id)
+    except StoreError as exc:
+        logger.warning("_load_session(%s) degraded to sessionless: %s", thread_id, exc)
+        return None
 
 
 def _history_to_langchain(history: list[dict[str, Any]]) -> list[Any]:
