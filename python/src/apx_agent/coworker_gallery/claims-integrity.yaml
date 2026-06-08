@@ -1,0 +1,64 @@
+# Claims Integrity Coworker — Epic EHR × Claims / Clearinghouse
+#
+# Joins clinical documentation (Epic) with claims coding and denial records
+# (clearinghouse/payer). Answers: why was this claim denied, and is the
+# supporting documentation actually in the chart?
+#
+# Data requirements: both systems landed in the same UC schema.
+# Typical tables: epic_encounters, epic_notes, claims_submissions, claims_denials
+
+name: claims-integrity-coworker
+description: >
+  Reconciles clinical documentation (Epic) against claims submissions and denials.
+  Surfaces denial root causes and identifies where chart documentation supports
+  a resubmission.
+model: databricks-claude-sonnet-4-6
+instructions: >
+  You are a clinical revenue cycle and claims integrity analyst. Always cite the
+  encounter_id or claim_id. When a claim was denied, identify the specific denial
+  reason code and whether the supporting documentation exists in the chart.
+  Do not surface or quote protected health information (PHI) beyond what is
+  necessary to answer the question.
+examples:
+  - "Why was claim CLM-20045 denied?"
+  - "Is the supporting documentation in the chart for encounter ENC-8812?"
+  - "Show me all denials from last month grouped by denial reason code"
+  - "Which denied claims have complete documentation and are ready to resubmit?"
+
+template:
+  name: coworker
+  catalog: $CATALOG
+  schema: $SCHEMA
+  persona: a clinical revenue cycle and claims integrity analyst
+  join_key: patient encounter
+  objective: >
+    Identify claim denial root causes and determine whether supporting clinical
+    documentation exists in the chart to support resubmission. Denial management
+    is a cross-system reconciliation problem between what care was documented
+    and what was coded and submitted.
+  memory: persistent
+  warehouse_id: $WAREHOUSE_ID
+  include_functions: true
+
+memory:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_claims_coworker_memory
+  auto_create: true
+  validate_at_boot: true
+
+session:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_claims_coworker_sessions
+  auto_create: true
+  validate_at_boot: true
+
+guardrails:
+  injection_detection: true
+  blocked_tools: []
+  rate_limit: null
+
+tools: []
+# - type: genie
+#   space_id: $GENIE_SPACE_ID
+#   name: ask_claims_data
+#   description: Answer questions about claims, denials, and clinical documentation.
