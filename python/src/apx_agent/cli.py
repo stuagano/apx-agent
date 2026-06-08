@@ -1150,6 +1150,37 @@ def _pick_from_list(items: list[str], prompt: str) -> str:
     return items[idx]
 
 
+def _pick_coworker_gallery() -> "tuple[str, Path]":
+    """List bundled coworker gallery YAMLs and return (name, path) of the selection."""
+    import importlib.resources as _ir
+    gallery_dir = Path(_ir.files("apx_agent").joinpath("coworker_gallery"))  # type: ignore[arg-type]
+    yamls = sorted(gallery_dir.glob("*.yaml"))
+    if not yamls:
+        raise click.ClickException("No coworker gallery files found.")
+    import yaml as _yaml
+    entries: list[tuple[str, str, Path]] = []
+    for p in yamls:
+        try:
+            data = _yaml.safe_load(p.read_text())
+            cname = data.get("name", p.stem)
+            desc = str(data.get("description", "")).strip().splitlines()[0]
+        except Exception:
+            cname, desc = p.stem, ""
+        entries.append((cname, desc, p))
+    click.echo("\nAvailable coworker templates:")
+    for i, (cname, desc, _) in enumerate(entries, 1):
+        click.echo(f"  {i:2}. {cname:<35} {desc}")
+    raw = click.prompt("Select coworker", default="1")
+    try:
+        idx = int(raw) - 1
+        if not 0 <= idx < len(entries):
+            raise ValueError
+    except ValueError:
+        raise click.ClickException(f"Invalid selection: {raw!r}")
+    cname, _, path = entries[idx]
+    return cname, path
+
+
 def _pick_template() -> str:
     """List registered templates and return the user's selection."""
     from ._template import template_registry
@@ -1534,6 +1565,33 @@ def _scaffold_apps(
         click.echo(f"  write  {path}")
 
 
+def _scaffold_from_gallery(
+    gallery_yaml_path: Path,
+    name: str,
+    directory: Path,
+    catalog: "str | None",
+    schema: "str | None",
+) -> None:
+    """Copy a gallery YAML to <directory>/<name>.yaml, patching name/catalog/schema."""
+    import yaml as _yaml
+    data = _yaml.safe_load(gallery_yaml_path.read_text())
+    data["name"] = name
+    if catalog and "template" in data:
+        data["template"]["catalog"] = catalog
+    if schema and "template" in data:
+        data["template"]["schema"] = schema
+    # patch memory/session table names to use the agent name
+    safe_name = name.replace("-", "_")
+    for section in ("memory", "session"):
+        if section in data and "table_name" in data[section]:
+            suffix = "memory" if section == "memory" else "sessions"
+            data[section]["table_name"] = f"$CATALOG.$SCHEMA.apx_{safe_name}_{suffix}"
+    out = directory / f"{name}.yaml"
+    out.write_text(_yaml.dump(data, sort_keys=False, allow_unicode=True))
+    click.echo(f"Spec written to {out}")
+    click.echo(f"  Edit $CATALOG/$SCHEMA, then: apx deploy {out.name}")
+
+
 def _scaffold_to_yaml(
     name: str,
     directory: Path,
@@ -1635,8 +1693,15 @@ def _scaffold_to_yaml(
         "Shorthand: --coworker / --data."
     ),
 )
-@click.option("--coworker", "use_coworker", is_flag=True, default=False,
-              help="Shorthand for --template coworker.")
+@click.option(
+    "--coworker", "coworker_spec", default=None, is_eager=False,
+    metavar="[list|NAME]",
+    help=(
+        "Pick a pre-built coworker. Use 'list' to browse the gallery, "
+        "a coworker name to select directly, or omit the value to use "
+        "--template coworker."
+    ),
+)
 @click.option("--data", "use_data", is_flag=True, default=False,
               help="Shorthand for --template data.")
 @click.option(
@@ -1651,7 +1716,7 @@ def _scaffold_to_yaml(
 def scaffold(
     name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
-    scaffold_template: str | None, use_coworker: bool, use_data: bool,
+    scaffold_template: str | None, coworker_spec: str | None, use_data: bool,
     interactive: bool | None, emit_yaml: bool,
 ) -> None:
     """Generate a new agent project at <NAME>.
@@ -1693,7 +1758,7 @@ def scaffold(
     project_name = Path(name).name
 
     # Resolve shorthand template flags before any other logic.
-    if use_coworker:
+    if coworker_spec is not None:
         scaffold_template = "coworker"
     elif use_data:
         scaffold_template = "data"
@@ -1710,6 +1775,24 @@ def scaffold(
     # Step 0: template/catalog/schema pickers and sanity check.
     # Triggered by passing "list" as the value for any of these options.
     # -----------------------------------------------------------------------
+    gallery_yaml_path: "Path | None" = None
+    if coworker_spec == "list" or coworker_spec is not None and coworker_spec not in ("",):
+        # --coworker list → interactive gallery picker
+        # --coworker <name> → find by name in the gallery
+        if coworker_spec == "list":
+            _, gallery_yaml_path = _pick_coworker_gallery()
+        else:
+            import importlib.resources as _ir
+            import yaml as _yaml
+            gallery_dir = Path(_ir.files("apx_agent").joinpath("coworker_gallery"))  # type: ignore[arg-type]
+            matched = [p for p in sorted(gallery_dir.glob("*.yaml")) if p.stem == coworker_spec or _yaml.safe_load(p.read_text()).get("name") == coworker_spec]
+            if not matched:
+                raise click.ClickException(
+                    f"No coworker named {coworker_spec!r} in the gallery. "
+                    "Use --coworker list to browse available templates."
+                )
+            gallery_yaml_path = matched[0]
+
     if scaffold_template == "list" or catalog == "list" or schema == "list":
         ws = _make_ws_for_scaffold(profile)
         if scaffold_template == "list":
@@ -1749,16 +1832,25 @@ def scaffold(
         scaffold_template = scaffold_template or "data"
 
     if emit_yaml:
-        _scaffold_to_yaml(
-            name=project_name,
-            directory=Path(directory),
-            scaffold_template=scaffold_template or "base",
-            catalog=catalog,
-            schema=schema,
-            persona=persona,
-            join_key=join_key,
-            objective=objective,
-        )
+        if gallery_yaml_path is not None:
+            _scaffold_from_gallery(
+                gallery_yaml_path=gallery_yaml_path,
+                name=project_name,
+                directory=Path(directory),
+                catalog=catalog,
+                schema=schema,
+            )
+        else:
+            _scaffold_to_yaml(
+                name=project_name,
+                directory=Path(directory),
+                scaffold_template=scaffold_template or "base",
+                catalog=catalog,
+                schema=schema,
+                persona=persona,
+                join_key=join_key,
+                objective=objective,
+            )
         return
 
     # -----------------------------------------------------------------------
