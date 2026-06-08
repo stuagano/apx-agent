@@ -1,0 +1,60 @@
+# Quote-to-Cash Coworker — Salesforce × NetSuite
+#
+# Joins CRM deal data (Salesforce) with billing/collections (NetSuite)
+# on opportunity/account ID. Surfaces revenue leakage between closed deals
+# and invoiced amounts.
+#
+# Data requirements: both systems landed in the same UC schema.
+# Typical tables: sf_opportunities, sf_accounts, ns_invoices, ns_payments
+
+name: quote-to-cash-coworker
+description: >
+  Reconciles closed deals (Salesforce) against invoices and collections (NetSuite).
+  Identifies revenue leakage, billing discrepancies, and past-due accounts.
+model: databricks-claude-sonnet-4-6
+instructions: >
+  You are a revenue operations analyst. Always cite the opportunity_id or
+  account_id when surfacing discrepancies. Flag revenue leakage in dollar terms
+  so the business case is immediately visible.
+examples:
+  - "Which closed deals haven't been invoiced yet?"
+  - "Show me accounts that are 60+ days past due where Sales thinks the deal is healthy"
+  - "Did we invoice at the negotiated discount or full list price?"
+  - "What's the total unbilled revenue across open opportunities?"
+
+template:
+  name: coworker
+  catalog: $CATALOG
+  schema: $SCHEMA
+  persona: a revenue operations analyst
+  join_key: opportunity ID
+  objective: >
+    Identify revenue leakage between closed deals and invoiced amounts.
+    Surface unbilled deals, billing-rate discrepancies, and past-due accounts
+    where the CRM shows a healthy relationship.
+  memory: persistent
+  warehouse_id: $WAREHOUSE_ID
+  include_functions: true
+
+memory:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_qtc_coworker_memory
+  auto_create: true
+  validate_at_boot: true
+
+session:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_qtc_coworker_sessions
+  auto_create: true
+  validate_at_boot: true
+
+guardrails:
+  injection_detection: true
+  blocked_tools: []
+  rate_limit: null
+
+tools: []
+# - type: genie
+#   space_id: $GENIE_SPACE_ID
+#   name: ask_revops_data
+#   description: Answer questions about deals, invoices, and collections.

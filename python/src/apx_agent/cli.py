@@ -1150,6 +1150,130 @@ def _pick_from_list(items: list[str], prompt: str) -> str:
     return items[idx]
 
 
+_COWORKER_GEN_PROMPT = """\
+You are an expert at designing Databricks coworker agents. Generate a YAML spec for a coworker
+agent that joins two enterprise data systems and surfaces actionable insights.
+
+Use EXACTLY this structure (no extra keys, no markdown fences):
+
+name: <kebab-case-name>
+description: >
+  <1-2 sentence description ending with a period.>
+model: databricks-claude-sonnet-4-6
+instructions: >
+  You are <persona>. Always cite the <join_key> when surfacing discrepancies.
+  <2-3 sentences about how to distinguish error types and what to prioritise.>
+examples:
+  - "<example question 1>"
+  - "<example question 2>"
+  - "<example question 3>"
+  - "<example question 4>"
+
+template:
+  name: coworker
+  catalog: $CATALOG
+  schema: $SCHEMA
+  persona: <persona one-liner>
+  join_key: <join key field name>
+  objective: >
+    <2-3 sentences about the core reconciliation objective.>
+  memory: persistent
+  warehouse_id: $WAREHOUSE_ID
+  include_functions: true
+
+memory:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_<name_underscored>_memory
+  auto_create: true
+  validate_at_boot: true
+
+session:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_<name_underscored>_sessions
+  auto_create: true
+  validate_at_boot: true
+
+guardrails:
+  injection_detection: true
+  blocked_tools: []
+  rate_limit: null
+
+tools: []
+
+Here is the user's coworker definition:
+{spec}
+
+Output ONLY the YAML. No explanation, no markdown fences.
+"""
+
+
+def _generate_coworker_yaml(profile: "str | None") -> str:
+    """Ask the user a few questions then use an LLM to author the full coworker YAML."""
+    click.echo("\nLet's define your coworker. Answer a few questions:\n")
+    system_a = click.prompt("System A (e.g. Salesforce, SAP, Oracle ERP)")
+    system_a_data = click.prompt(f"What data lives in {system_a}? (e.g. closed deals, invoices)")
+    system_b = click.prompt("System B (e.g. NetSuite, Workday, ServiceNow)")
+    system_b_data = click.prompt(f"What data lives in {system_b}? (e.g. payments, HR records)")
+    join_key = click.prompt("Join key between the two systems (e.g. account_id, employee_id)")
+    persona = click.prompt("Analyst persona (e.g. a revenue operations analyst)")
+    objective = click.prompt("What should the coworker surface? (e.g. unbilled deals, pay discrepancies)")
+
+    spec = (
+        f"System A: {system_a} — {system_a_data}\n"
+        f"System B: {system_b} — {system_b_data}\n"
+        f"Join key: {join_key}\n"
+        f"Persona: {persona}\n"
+        f"Objective: {objective}"
+    )
+    click.echo("\nGenerating coworker YAML...\n")
+    try:
+        from databricks.sdk import WorkspaceClient
+        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        response = ws.serving_endpoints.query(
+            name="databricks-claude-sonnet-4-6",
+            messages=[{"role": "user", "content": _COWORKER_GEN_PROMPT.format(spec=spec)}],
+            max_tokens=1200,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as exc:
+        raise click.ClickException(
+            f"LLM generation failed: {exc}\n"
+            "Ensure you have a valid Databricks profile with access to "
+            "databricks-claude-sonnet-4-6, or pick from the gallery with --coworker list."
+        ) from exc
+
+
+def _pick_coworker_gallery() -> "tuple[str, Path]":
+    """List bundled coworker gallery YAMLs and return (name, path) of the selection."""
+    import importlib.resources as _ir
+    gallery_dir = Path(_ir.files("apx_agent").joinpath("coworker_gallery"))  # type: ignore[arg-type]
+    yamls = sorted(gallery_dir.glob("*.yaml"))
+    if not yamls:
+        raise click.ClickException("No coworker gallery files found.")
+    import yaml as _yaml
+    entries: list[tuple[str, str, Path]] = []
+    for p in yamls:
+        try:
+            data = _yaml.safe_load(p.read_text())
+            cname = data.get("name", p.stem)
+            desc = str(data.get("description", "")).strip().splitlines()[0]
+        except Exception:
+            cname, desc = p.stem, ""
+        entries.append((cname, desc, p))
+    click.echo("\nAvailable coworker templates:")
+    for i, (cname, desc, _) in enumerate(entries, 1):
+        click.echo(f"  {i:2}. {cname:<35} {desc}")
+    raw = click.prompt("Select coworker", default="1")
+    try:
+        idx = int(raw) - 1
+        if not 0 <= idx < len(entries):
+            raise ValueError
+    except ValueError:
+        raise click.ClickException(f"Invalid selection: {raw!r}")
+    cname, _, path = entries[idx]
+    return cname, path
+
+
 def _pick_template() -> str:
     """List registered templates and return the user's selection."""
     from ._template import template_registry
@@ -1534,6 +1658,33 @@ def _scaffold_apps(
         click.echo(f"  write  {path}")
 
 
+def _scaffold_from_gallery(
+    gallery_yaml_path: Path,
+    name: str,
+    directory: Path,
+    catalog: "str | None",
+    schema: "str | None",
+) -> None:
+    """Copy a gallery YAML to <directory>/<name>.yaml, patching name/catalog/schema."""
+    import yaml as _yaml
+    data = _yaml.safe_load(gallery_yaml_path.read_text())
+    data["name"] = name
+    if catalog and "template" in data:
+        data["template"]["catalog"] = catalog
+    if schema and "template" in data:
+        data["template"]["schema"] = schema
+    # patch memory/session table names to use the agent name
+    safe_name = name.replace("-", "_")
+    for section in ("memory", "session"):
+        if section in data and "table_name" in data[section]:
+            suffix = "memory" if section == "memory" else "sessions"
+            data[section]["table_name"] = f"$CATALOG.$SCHEMA.apx_{safe_name}_{suffix}"
+    out = directory / f"{name}.yaml"
+    out.write_text(_yaml.dump(data, sort_keys=False, allow_unicode=True))
+    click.echo(f"Spec written to {out}")
+    click.echo(f"  Edit $CATALOG/$SCHEMA, then: apx deploy {out.name}")
+
+
 def _scaffold_to_yaml(
     name: str,
     directory: Path,
@@ -1631,12 +1782,22 @@ def _scaffold_to_yaml(
     type=click.Choice(["base", "data", "coworker", "list"]),
     default=None,
     help=(
-        "Agent kind: 'base' (bare LlmAgent, you bring the tools), "
-        "'data' (pre-grounded SQL agent), or 'coworker' "
-        "(DataAgent + persona). Apps target only for coworker. "
-        "Prompted interactively when omitted in a TTY."
+        "Agent kind: 'base', 'data', 'coworker', or 'list' to pick interactively. "
+        "Shorthand: --coworker / --data."
     ),
 )
+@click.option(
+    "--coworker", "coworker_spec", default=None, is_eager=False,
+    metavar="[list|NAME]",
+    help=(
+        "Pick or generate a coworker. Use 'list' to browse the gallery, "
+        "'generate' to LLM-author one from your description, "
+        "a coworker name to select directly, or omit the value to use "
+        "--template coworker."
+    ),
+)
+@click.option("--data", "use_data", is_flag=True, default=False,
+              help="Shorthand for --template data.")
 @click.option(
     "--interactive/--no-interactive", "interactive", default=None,
     help="Run the setup wizard (target, template, catalog, schema, persona). "
@@ -1649,7 +1810,8 @@ def _scaffold_to_yaml(
 def scaffold(
     name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
-    scaffold_template: str | None, interactive: bool | None, emit_yaml: bool,
+    scaffold_template: str | None, coworker_spec: str | None, use_data: bool,
+    interactive: bool | None, emit_yaml: bool,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -1688,6 +1850,13 @@ def scaffold(
     # baked into the templates must be the bare directory name, or it produces
     # an invalid PEP 508 ``[project].name`` that breaks ``uv sync``.
     project_name = Path(name).name
+
+    # Resolve shorthand template flags before any other logic.
+    if coworker_spec is not None:
+        scaffold_template = "coworker"
+    elif use_data:
+        scaffold_template = "data"
+
     if not emit_yaml:
         if target.exists() and not force:
             if any(target.iterdir()):
@@ -1700,6 +1869,28 @@ def scaffold(
     # Step 0: template/catalog/schema pickers and sanity check.
     # Triggered by passing "list" as the value for any of these options.
     # -----------------------------------------------------------------------
+    gallery_yaml_path: "Path | None" = None
+    generated_yaml_str: "str | None" = None
+    if coworker_spec is not None and coworker_spec not in ("",):
+        if coworker_spec == "list":
+            # --coworker list → interactive gallery picker
+            _, gallery_yaml_path = _pick_coworker_gallery()
+        elif coworker_spec == "generate":
+            # --coworker generate → LLM-author from user's description
+            generated_yaml_str = _generate_coworker_yaml(profile)
+        else:
+            # --coworker <name> → find by name in the gallery
+            import importlib.resources as _ir
+            import yaml as _yaml
+            gallery_dir = Path(_ir.files("apx_agent").joinpath("coworker_gallery"))  # type: ignore[arg-type]
+            matched = [p for p in sorted(gallery_dir.glob("*.yaml")) if p.stem == coworker_spec or _yaml.safe_load(p.read_text()).get("name") == coworker_spec]
+            if not matched:
+                raise click.ClickException(
+                    f"No coworker named {coworker_spec!r} in the gallery. "
+                    "Use --coworker list to browse, or --coworker generate to author one."
+                )
+            gallery_yaml_path = matched[0]
+
     if scaffold_template == "list" or catalog == "list" or schema == "list":
         ws = _make_ws_for_scaffold(profile)
         if scaffold_template == "list":
@@ -1739,16 +1930,30 @@ def scaffold(
         scaffold_template = scaffold_template or "data"
 
     if emit_yaml:
-        _scaffold_to_yaml(
-            name=project_name,
-            directory=Path(directory),
-            scaffold_template=scaffold_template or "base",
-            catalog=catalog,
-            schema=schema,
-            persona=persona,
-            join_key=join_key,
-            objective=objective,
-        )
+        if generated_yaml_str is not None:
+            out = Path(directory) / f"{project_name}.yaml"
+            out.write_text(generated_yaml_str)
+            click.echo(f"Spec written to {out}")
+            click.echo(f"  Edit $CATALOG/$SCHEMA, then: apx deploy {out.name}")
+        elif gallery_yaml_path is not None:
+            _scaffold_from_gallery(
+                gallery_yaml_path=gallery_yaml_path,
+                name=project_name,
+                directory=Path(directory),
+                catalog=catalog,
+                schema=schema,
+            )
+        else:
+            _scaffold_to_yaml(
+                name=project_name,
+                directory=Path(directory),
+                scaffold_template=scaffold_template or "base",
+                catalog=catalog,
+                schema=schema,
+                persona=persona,
+                join_key=join_key,
+                objective=objective,
+            )
         return
 
     # -----------------------------------------------------------------------

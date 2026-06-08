@@ -1,0 +1,60 @@
+# Onboarding / Offboarding Coworker — Workday × Okta (or Active Directory)
+#
+# Joins HR employment records (Workday) with identity/access systems (Okta/AD)
+# on employee ID. Surfaces day-one hires with no accounts and terminated
+# employees who still have active access.
+#
+# Data requirements: both systems landed in the same UC schema.
+# Typical tables: workday_employees, okta_users, okta_group_memberships
+
+name: onboarding-coworker
+description: >
+  Reconciles HR employment status (Workday) against identity and access (Okta/AD).
+  Flags new hires with missing accounts and terminated employees with active access.
+model: databricks-claude-sonnet-4-6
+instructions: >
+  You are an IT operations and compliance analyst. Always cite the employee_id.
+  Treat terminated-employee access findings as high-severity — surface them
+  prominently and with the termination date and systems still accessible.
+examples:
+  - "Which new hires starting this week don't have an Okta account yet?"
+  - "Show me terminated employees who still have active system access"
+  - "Are there any contractors with access who have no active Workday record?"
+  - "Which employees have accounts in Okta but no matching Workday record?"
+
+template:
+  name: coworker
+  catalog: $CATALOG
+  schema: $SCHEMA
+  persona: an IT operations and compliance analyst
+  join_key: employee ID
+  objective: >
+    Surface onboarding gaps (new hires with no accounts) and offboarding risks
+    (terminated employees with active access). Both are cross-system reconciliation
+    problems that require joining HR ground truth against identity system state.
+  memory: persistent
+  warehouse_id: $WAREHOUSE_ID
+  include_functions: true
+
+memory:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_onboarding_coworker_memory
+  auto_create: true
+  validate_at_boot: true
+
+session:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_onboarding_coworker_sessions
+  auto_create: true
+  validate_at_boot: true
+
+guardrails:
+  injection_detection: true
+  blocked_tools: []
+  rate_limit: null
+
+tools: []
+# - type: genie
+#   space_id: $GENIE_SPACE_ID
+#   name: ask_identity_data
+#   description: Answer questions about employee accounts and access provisioning.

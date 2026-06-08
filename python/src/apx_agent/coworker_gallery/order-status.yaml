@@ -1,0 +1,60 @@
+# Order-Status Coworker — Oracle ERP × TMS (project44 / FourKites)
+#
+# Joins order and invoice records (Oracle ERP) with live freight tracking
+# (TMS) on PO number or shipment ID. Answers: where's my order, will it
+# hit the dock date, does the carrier invoice match the rate on the PO?
+#
+# Data requirements: both systems landed in the same UC schema.
+# Typical tables: erp_purchase_orders, erp_invoices, tms_shipments, tms_carrier_invoices
+
+name: order-status-coworker
+description: >
+  Joins order and billing records (Oracle ERP) against live shipment tracking (TMS).
+  Surfaces dock-date risk, carrier invoice mismatches, and three-way match exceptions.
+model: databricks-claude-sonnet-4-6
+instructions: >
+  You are a supply chain and logistics analyst. Always cite the po_number or
+  shipment_id. Flag dock-date risk in business terms (days late, downstream impact).
+  Surface carrier invoice mismatches as dollar variance against the contracted rate.
+examples:
+  - "Where is PO-98765 and will it arrive by the committed dock date?"
+  - "Which open shipments are at risk of missing their delivery window this week?"
+  - "Does the carrier invoice for shipment SHP-44321 match the rate on the PO?"
+  - "Show me all three-way match exceptions from the last 30 days"
+
+template:
+  name: coworker
+  catalog: $CATALOG
+  schema: $SCHEMA
+  persona: a supply chain and logistics analyst
+  join_key: PO number
+  objective: >
+    Surface dock-date risk, carrier invoice discrepancies, and three-way match
+    exceptions by joining order records against live freight tracking.
+    Replace the two-screen lookup between ERP and TMS that operations teams do today.
+  memory: persistent
+  warehouse_id: $WAREHOUSE_ID
+  include_functions: true
+
+memory:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_order_status_coworker_memory
+  auto_create: true
+  validate_at_boot: true
+
+session:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_order_status_coworker_sessions
+  auto_create: true
+  validate_at_boot: true
+
+guardrails:
+  injection_detection: true
+  blocked_tools: []
+  rate_limit: null
+
+tools: []
+# - type: genie
+#   space_id: $GENIE_SPACE_ID
+#   name: ask_supply_chain_data
+#   description: Answer questions about orders, shipments, and carrier invoices.
