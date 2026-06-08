@@ -132,6 +132,19 @@ config = _load_agent_config()
 app = create_app(config=config)
 '''
 
+_KEEPALIVE_CONTENT = '''\
+"""Scheduled keepalive — pings /readyz to prevent cold starts. Do not edit."""
+import sys
+import urllib.request
+
+url = sys.argv[1]
+try:
+    urllib.request.urlopen(url, timeout=10)
+    print(f"OK: {url}")
+except Exception as exc:
+    print(f"WARN: {url} — {exc}")
+'''
+
 
 def _build_databricks_yml(config: "AgentConfig") -> str:
     """Build databricks.yml bundle definition for *config*."""
@@ -214,6 +227,28 @@ resources:
           - name: APX_AGENT_MLFLOW_AUTOLOG
             value: "1"
 
+  jobs:
+    {name}_keepalive:
+      name: {name}-keepalive
+      description: Pings /readyz every 5 minutes to prevent cold starts.
+      schedule:
+        quartz_cron_expression: "0 0/5 * * * ?"
+        timezone_id: UTC
+        pause_status: UNPAUSED
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - requests
+      tasks:
+        - task_key: ping
+          environment_key: default
+          spark_python_task:
+            python_file: ./.build/agent_server/keepalive.py
+            parameters:
+              - ${{resources.apps.{name}.url}}/readyz
+
 targets:
   dev:
     mode: development
@@ -270,6 +305,7 @@ def generate_project(config: "AgentConfig", target_dir: Path) -> None:
     agent_server_dir.mkdir(exist_ok=True)
     (agent_server_dir / "__init__.py").write_text("")
     (agent_server_dir / "start_server.py").write_text(_START_SERVER_CONTENT)
+    (agent_server_dir / "keepalive.py").write_text(_KEEPALIVE_CONTENT)
 
     # databricks.yml
     (target_dir / "databricks.yml").write_text(_build_databricks_yml(config))

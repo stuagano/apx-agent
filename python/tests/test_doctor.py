@@ -239,7 +239,8 @@ def test_databricks_yml_skip_outside_project(tmp_path: Path):
 
 def _make_langgraph_project(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
-    (tmp_path / "agent.py").write_text("# agent\n")
+    # app.py without databricks.yml → model-serving layout
+    (tmp_path / "app.py").write_text("# model-serving entry point\n")
     return tmp_path
 
 
