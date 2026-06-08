@@ -4,7 +4,7 @@
 |---------|----------|
 | [get-started/](get-started/) | Quickstart, CLI reference, Dev UI |
 | [agents/](agents/) | LlmAgent, DataAgent, CoworkerAgent, composition, routing |
-| [tools/](tools/) | Governed primitives, MCP |
+| [tools/](tools/) | Governed primitives, custom tools, MCP |
 | [multi-agent/](multi-agent/) | Deploy boundaries, sub-agents, A2A auth |
 | [running/](running/) | Sessions, memory, Lakebase |
 | [safety/](safety/) | Callbacks, identity passthrough, compliance |
@@ -30,6 +30,7 @@
 ## Tools
 
 - [tools/overview.md](tools/overview.md) — governed primitives: sql_tool, genie_tool, vector_search_tool, uc_function_tool
+- [tools/custom-tools.md](tools/custom-tools.md) — @tool, http_tool, openapi_tool, mcp_tool, mcp_toolkit
 - [tools/mcp.md](tools/mcp.md) — Managed MCP gateway
 
 ## Multi-agent

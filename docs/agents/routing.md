@@ -14,21 +14,11 @@ For composition patterns (Sequential, Parallel, Loop, agent_tool), see [composit
 
 LLM picks one branch based on the user's input. Use when the route is data-dependent but the branch agents are fixed.
 
-```python
-from apx_agent import RouterAgent
-
-router = RouterAgent({
-    "billing": billing_agent,
-    "technical": tech_agent,
-    "data": data_agent,
-})
-```
-
-### Description-driven routing
-
-Pass agents as a plain list — `RouterAgent` reads `name` and `description` from each agent and uses them as the routing table:
+Pass agents as a list — `RouterAgent` reads `name` and `description` from each agent and uses them as the routing table:
 
 ```python
+from apx_agent import RouterAgent, Agent
+
 billing_agent = Agent(
     name="billing",
     description="Handles billing inquiries, invoice lookups, and payment issues.",
@@ -44,6 +34,17 @@ router = RouterAgent([billing_agent, tech_agent])
 ```
 
 `description` is the routing signal the LLM sees — write it like tool documentation.
+
+### Explicit tuple form
+
+Pass `(name, description, agent)` triples to set routing metadata separately from the agent definition:
+
+```python
+router = RouterAgent([
+    ("billing", "Handles billing inquiries, invoice lookups, and payment issues.", billing_agent),
+    ("technical", "Handles technical support, error messages, and configuration issues.", tech_agent),
+])
+```
 
 ## Handoff — peer handoff mid-conversation
 
