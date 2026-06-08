@@ -1134,6 +1134,22 @@ def _ws_list_catalogs(ws: "Any", limit: int = 50) -> list[str]:
         return []
 
 
+def _pick_from_list(items: list[str], prompt: str) -> str:
+    """Present a numbered list and return the user's selection."""
+    if not items:
+        raise click.ClickException("No items found in the workspace.")
+    for i, item in enumerate(items, 1):
+        click.echo(f"  {i:2}. {item}")
+    raw = click.prompt(prompt, default="1")
+    try:
+        idx = int(raw) - 1
+        if not 0 <= idx < len(items):
+            raise ValueError
+    except ValueError:
+        raise click.ClickException(f"Invalid selection: {raw!r}")
+    return items[idx]
+
+
 def _ws_list_schemas(ws: "Any", catalog: str, limit: int = 50) -> list[str]:
     try:
         return [
@@ -1635,13 +1651,26 @@ def scaffold(
         target.mkdir(parents=True, exist_ok=True)
 
     # -----------------------------------------------------------------------
+    # Step 0: catalog/schema picker — triggered by --catalog list / --schema list.
+    # -----------------------------------------------------------------------
+    if catalog == "list" or schema == "list":
+        ws = _make_ws_for_scaffold(profile)
+        if catalog == "list":
+            click.echo("\nAvailable catalogs:")
+            catalog = _pick_from_list(_ws_list_catalogs(ws), "Select catalog")
+        if schema == "list":
+            click.echo(f"\nAvailable schemas in {catalog}:")
+            schema = _pick_from_list(_ws_list_schemas(ws, catalog), "Select schema")
+        click.echo(f"\n→ apx scaffold {name} --template {scaffold_template or 'coworker'} --catalog {catalog} --schema {schema}\n")
+
+    # -----------------------------------------------------------------------
     # Step 1: run the setup wizard or apply CLI defaults.
     # The wizard fires in a TTY (or with --interactive) and asks for anything
     # not already pinned by a flag. --no-interactive / CI stdin skips it.
     # -----------------------------------------------------------------------
     persona: str | None = None
     objective: str | None = None
-    interactive_mode = interactive if interactive is not None else sys.stdin.isatty()
+    interactive_mode = interactive if interactive is not None else (sys.stdin.isatty() and scaffold_template is None)
 
     join_key: str | None = None
     if interactive_mode:
