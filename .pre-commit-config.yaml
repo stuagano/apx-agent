@@ -15,3 +15,130 @@ repos:
         language: script
         files: uv\.lock$
         pass_filenames: false
+
+      # ── Code-quality lint hooks (ported from agent-framework) ─────────
+      #
+      # Strategy: hooks with 100+ existing violations use a broad
+      # backlog exclude for all of python/src/apx_agent/ — they enforce
+      # on new files and tests only. Hooks with fewer violations list
+      # specific backlog files so the scope is narrower and shrinks as
+      # files are fixed. Graduate files by removing them from the
+      # backlog regex below.
+
+      # Ban `.get(key, "")` — 134 existing violations, broad backlog.
+      - id: no-dict-get-empty-string
+        name: no `.get(key, "")`
+        language: system
+        entry: python3 scripts/lint/lint_no_dict_get_empty_string.py
+        types: [python]
+        exclude: &apx_broad_backlog |-
+          (?x)^(
+            # All current src has violations — graduate file by file.
+            python/src/apx_agent/
+          )
+
+      # Ban `x or ""` — 152 existing violations, broad backlog.
+      - id: no-empty-string-coercion
+        name: no `x or ""` empty-string coercion
+        language: system
+        entry: python3 scripts/lint/lint_no_empty_string_coercion.py
+        types: [python]
+        exclude: *apx_broad_backlog
+
+      # Ban `getattr(x, "literal")` — 337 existing violations, broad backlog.
+      - id: no-getattr-literal
+        name: no `getattr(..., "<literal>", ...)`
+        language: system
+        entry: python3 scripts/lint/lint_no_getattr_literal.py
+        types: [python]
+        exclude: *apx_broad_backlog
+
+      # Ban `object` type annotations — 1 src violation + 9 test files.
+      - id: no-object-annotations
+        name: no `object` type annotations
+        language: system
+        entry: python3 scripts/lint/lint_no_object_annotations.py
+        types: [python]
+        exclude: |-
+          (?x)^(
+            python/src/apx_agent/_trace_store\.py$
+            |python/tests/test_canary\.py$
+            |python/tests/test_cli\.py$
+            |python/tests/test_example\.py$
+            |python/tests/test_example_lakebase\.py$
+            |python/tests/test_memory\.py$
+            |python/tests/test_memory_consolidate\.py$
+            |python/tests/test_memory_lakebase\.py$
+            |python/tests/test_publish\.py$
+            |python/tests/test_topology\.py$
+          )
+
+      # Ban `str = ""` defaults — 22 violations, narrow backlog.
+      - id: no-empty-string-default
+        name: no `str = ""` defaults
+        language: system
+        entry: python3 scripts/lint/lint_no_empty_string_default.py
+        types: [python]
+        exclude: |-
+          (?x)^(
+            python/src/apx_agent/_agents\.py$
+            |python/src/apx_agent/_compile\.py$
+            |python/src/apx_agent/_compile_run\.py$
+            |python/tests/test_canary_apps\.py$
+            |python/tests/test_catalog\.py$
+            |python/tests/test_deploy_apps\.py$
+            |python/tests/test_doctor\.py$
+            |python/tests/test_hot_swap_apps\.py$
+            |python/tests/test_instructions\.py$
+            |python/tests/test_sql\.py$
+          )
+
+      # Ban `os.environ.get("VAR", "literal")` — 0 remaining violations, no backlog.
+      - id: no-invented-env-default
+        name: no invented env-var defaults
+        language: system
+        entry: python3 scripts/lint/lint_no_invented_env_default.py
+        types: [python]
+
+      # Ban `-> tuple[X, Y]` returns — 22 violations, narrow backlog.
+      - id: no-tuple-return
+        name: no `tuple[X, Y, ...]` returns
+        language: system
+        entry: python3 scripts/lint/lint_no_tuple_return.py
+        types: [python]
+        exclude: |-
+          (?x)^(
+            python/src/apx_agent/_audit\.py$
+            |python/src/apx_agent/_chat_agent\.py$
+            |python/src/apx_agent/_dev\.py$
+            |python/src/apx_agent/_guards\.py$
+            |python/src/apx_agent/_inspection\.py$
+            |python/src/apx_agent/_managed_mcp\.py$
+            |python/src/apx_agent/_mcp\.py$
+            |python/src/apx_agent/_readyz\.py$
+            |python/src/apx_agent/_responses_agent\.py$
+            |python/src/apx_agent/_topology\.py$
+            |python/src/apx_agent/_ui_probe\.py$
+            |python/src/apx_agent/bootstrap\.py$
+            |python/src/apx_agent/cli\.py$
+            |python/src/apx_agent/data_agent\.py$
+            |python/tests/test_example_lakebase\.py$
+            |python/tests/test_memory_lakebase\.py$
+            |python/tests/test_serving_conformance\.py$
+          )
+
+      # Ban unconditional @pytest.mark.skip — 0 existing violations, no backlog.
+      - id: no-skipped-tests
+        name: no unconditional `@pytest.mark.skip`
+        language: system
+        entry: python3 scripts/lint/lint_no_skipped_tests.py
+        types: [python]
+        files: ^python/tests/
+
+      # Ban globally-clobbering asyncio patches in tests — 0 violations.
+      - id: no-global-asyncio-patch
+        name: no globally-clobbering asyncio monkeypatch
+        language: system
+        entry: python3 scripts/lint/lint_no_global_asyncio_patch.py
+        types: [python]
+        files: ^python/tests/

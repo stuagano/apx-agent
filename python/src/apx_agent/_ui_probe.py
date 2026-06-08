@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Per-check timeout. The endpoint runs all checks in parallel so wall time
 # is roughly max(check_durations) + overhead.
 _CHECK_TIMEOUT_S = 4.0
+_UNSET_ENV = ""  # optional probe env vars (MLflow URI, experiment ID) resolve to empty when not set
 
 
 async def _check_workspace_auth() -> dict[str, Any]:
@@ -211,7 +212,7 @@ async def _gather_sub_agent_checks(ctx: AgentContext | None) -> list[dict[str, A
     for raw in sub_agents:
         url = raw
         if isinstance(url, str) and url.startswith("$"):
-            url = os.environ.get(url.lstrip("$").strip("{}"), "")
+            url = os.environ.get(url.lstrip("$").strip("{}"), _UNSET_ENV)
         if url:
             resolved.append((raw, url))
     if not resolved:
@@ -241,8 +242,8 @@ async def _check_mlflow_config() -> dict[str, Any]:
       - ``[tool.apx.agent].experiment`` in pyproject.toml (``apx-agent run`` sets
         this via ``mlflow.set_experiment()`` before serving starts)
     """
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
-    experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID", "")
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", _UNSET_ENV)
+    experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID", _UNSET_ENV)
 
     if not tracking_uri:
         return {

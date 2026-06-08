@@ -48,7 +48,7 @@ def _resolve_env_deep(value: Any) -> Any:
 
 def _check_allowlist(index: int, type_: str, kwargs: dict[str, Any]) -> None:
     """Raise ToolConfigError if the tool's host is not in APX_TOOLS_ALLOWED_HOSTS."""
-    allowed_raw = os.environ.get("APX_TOOLS_ALLOWED_HOSTS", "").strip()
+    allowed_raw = (os.environ.get("APX_TOOLS_ALLOWED_HOSTS") or "").strip()
     if not allowed_raw or type_ not in _IO_TYPES:
         return  # unset → trusted default; or non-network type → no restriction
     hosts = {h.strip() for h in allowed_raw.split(",") if h.strip()}
@@ -132,7 +132,8 @@ def _build_one(
     except Exception as e:
         # Factory-time runtime failure (network/live discovery). Only I/O types
         # reach here; pure-data factories don't fail for connectivity reasons.
-        strict = os.environ.get("APX_TOOLS_STRICT", "").strip().lower() in ("1", "true", "yes")
+        _strict_raw = os.environ.get("APX_TOOLS_STRICT")
+        strict = bool(_strict_raw and _strict_raw.strip().lower() in ("1", "true", "yes"))
         if strict:
             raise ToolConfigError(f"tool #{index} (type={type_}): {e}") from e
         logger.warning(

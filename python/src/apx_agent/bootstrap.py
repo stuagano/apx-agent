@@ -15,6 +15,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+_DEFAULT_BUNDLE_TARGET = "dev"  # fall back to local dev mode when BUNDLE_TARGET not set
+_DEFAULT_MLFLOW_TRACKING_URI = "databricks"  # MLflow default for Databricks workspaces
+
 
 def _resolve_user(user: str | None) -> str:
     """Best-effort user identity for the experiment path.
@@ -37,7 +40,7 @@ def _resolve_target(target: str | None) -> str:
     """Bundle target — defaults to ``BUNDLE_TARGET`` env, then ``"dev"``."""
     if target:
         return target
-    return os.environ.get("BUNDLE_TARGET", "dev")
+    return os.environ.get("BUNDLE_TARGET", _DEFAULT_BUNDLE_TARGET)
 
 
 def _resolve_agent_name(agent_name: str | None) -> str:
@@ -51,7 +54,7 @@ def _resolve_tracking_uri(tracking_uri: str | None) -> str:
     """Tracking URI — defaults to ``MLFLOW_TRACKING_URI`` env, then ``"databricks"``."""
     if tracking_uri:
         return tracking_uri
-    return os.environ.get("MLFLOW_TRACKING_URI", "databricks")
+    return os.environ.get("MLFLOW_TRACKING_URI", _DEFAULT_MLFLOW_TRACKING_URI)
 
 
 def _ensure_experiment(experiment_path: str, tracking_uri: str) -> str:

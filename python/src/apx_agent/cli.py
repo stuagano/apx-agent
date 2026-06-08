@@ -1150,6 +1150,52 @@ def _pick_from_list(items: list[str], prompt: str) -> str:
     return items[idx]
 
 
+def _pick_template() -> str:
+    """List registered templates and return the user's selection."""
+    from ._template import template_registry
+    templates = template_registry.list()
+    if not templates:
+        raise click.ClickException("No templates registered.")
+    click.echo("\nAvailable templates:")
+    for i, t in enumerate(templates, 1):
+        click.echo(f"  {i:2}. {t.name:<12} {t.title} — {t.description}")
+    raw = click.prompt("Select template", default="1")
+    try:
+        idx = int(raw) - 1
+        if not 0 <= idx < len(templates):
+            raise ValueError
+    except ValueError:
+        raise click.ClickException(f"Invalid selection: {raw!r}")
+    return templates[idx].name
+
+
+def _scaffold_sanity_check(
+    ws: "Any | None",
+    template: str,
+    catalog: str | None,
+    schema: str | None,
+) -> None:
+    """Warn about common mistakes without blocking the user."""
+    needs_data = template in ("data", "coworker")
+    if needs_data and not catalog:
+        click.echo("  Warning: --catalog is not set. The agent will have no data source.", err=True)
+        return
+    if needs_data and catalog == "hive_metastore":
+        click.echo(
+            "  Warning: hive_metastore is a legacy catalog. "
+            "Consider migrating your tables to Unity Catalog for full governance.",
+            err=True,
+        )
+    if needs_data and catalog and schema and ws is not None:
+        tables = _ws_list_tables(ws, catalog, schema)
+        if not tables:
+            click.echo(
+                f"  Warning: no tables found in {catalog}.{schema}. "
+                "The agent will be grounded on an empty schema — add data first.",
+                err=True,
+            )
+
+
 def _ws_list_schemas(ws: "Any", catalog: str, limit: int = 50) -> list[str]:
     try:
         return [
@@ -1582,7 +1628,7 @@ def _scaffold_to_yaml(
 )
 @click.option(
     "--template", "scaffold_template",
-    type=click.Choice(["base", "data", "coworker"]),
+    type=click.Choice(["base", "data", "coworker", "list"]),
     default=None,
     help=(
         "Agent kind: 'base' (bare LlmAgent, you bring the tools), "
@@ -1651,10 +1697,13 @@ def scaffold(
         target.mkdir(parents=True, exist_ok=True)
 
     # -----------------------------------------------------------------------
-    # Step 0: catalog/schema picker — triggered by --catalog list / --schema list.
+    # Step 0: template/catalog/schema pickers and sanity check.
+    # Triggered by passing "list" as the value for any of these options.
     # -----------------------------------------------------------------------
-    if catalog == "list" or schema == "list":
+    if scaffold_template == "list" or catalog == "list" or schema == "list":
         ws = _make_ws_for_scaffold(profile)
+        if scaffold_template == "list":
+            scaffold_template = _pick_template()
         if catalog == "list":
             click.echo("\nAvailable catalogs:")
             catalog = _pick_from_list(_ws_list_catalogs(ws), "Select catalog")
@@ -1662,6 +1711,10 @@ def scaffold(
             click.echo(f"\nAvailable schemas in {catalog}:")
             schema = _pick_from_list(_ws_list_schemas(ws, catalog), "Select schema")
         click.echo(f"\n→ apx scaffold {name} --template {scaffold_template or 'coworker'} --catalog {catalog} --schema {schema}\n")
+        _scaffold_sanity_check(ws, scaffold_template or "coworker", catalog, schema)
+    elif scaffold_template and (catalog or schema):
+        # Even without "list", run the sanity check when template+catalog are explicit.
+        _scaffold_sanity_check(_make_ws_for_scaffold(profile), scaffold_template, catalog, schema)
 
     # -----------------------------------------------------------------------
     # Step 1: run the setup wizard or apply CLI defaults.

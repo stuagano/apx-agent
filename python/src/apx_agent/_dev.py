@@ -596,7 +596,8 @@ def _enforce_dev_write_auth(request: Request) -> None:
     """
     import hmac
 
-    token = os.environ.get("APX_DEV_UI_TOKEN", "").strip()
+    raw = os.environ.get("APX_DEV_UI_TOKEN")
+    token = raw.strip() if raw else ""
 
     if not token:
         # No token configured. Allow locally; deny on a deployed App so the
@@ -2282,7 +2283,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def wizard_tables(request: Request, catalog: str, schema: str) -> Any:
         from fastapi.responses import JSONResponse
         ws: WorkspaceClient = request.app.state.workspace_client
-        warehouse_id = os.environ.get("WAREHOUSE_ID", "")
+        warehouse_id = os.environ.get("WAREHOUSE_ID") or ""
         env_path = _find_env_path()
         if env_path and env_path.exists():
             env_vars = _read_env_file(env_path)
