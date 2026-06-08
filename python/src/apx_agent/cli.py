@@ -165,7 +165,9 @@ def _detect_target(cwd: Path | None = None) -> str:
     cwd = cwd or Path.cwd()
     if (cwd / "agent_server" / "start_server.py").exists():
         return "apps"
-    return "model-serving"
+    if (cwd / "app.py").exists() and not (cwd / "databricks.yml").exists():
+        return "model-serving"
+    return "apps"
 
 
 def _sanitize_uv_lock(lock_path: Path) -> bool:
