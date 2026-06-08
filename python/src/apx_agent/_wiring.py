@@ -650,13 +650,13 @@ async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
             "MCP server enabled at /mcp/sse (SSE) and /mcp (stateless HTTP)"
         )
         return mcp_http_manager.run()
-    except ImportError:
+    except (ImportError, Exception) as _mcp_exc:
         app.state.mcp_server = None
         app.state.mcp_transport = None
         app.state.mcp_http_manager = None
         logger.warning(
-            "mcp package not installed — /mcp endpoints disabled. "
-            "pip install apx-agent[mcp]"
+            "MCP server disabled (%s: %s). pip install apx-agent[mcp] if needed.",
+            type(_mcp_exc).__name__, _mcp_exc,
         )
         return nullcontext()
 

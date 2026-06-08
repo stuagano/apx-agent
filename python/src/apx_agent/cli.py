@@ -165,7 +165,9 @@ def _detect_target(cwd: Path | None = None) -> str:
     cwd = cwd or Path.cwd()
     if (cwd / "agent_server" / "start_server.py").exists():
         return "apps"
-    return "model-serving"
+    if (cwd / "app.py").exists() and not (cwd / "databricks.yml").exists():
+        return "model-serving"
+    return "apps"
 
 
 def _sanitize_uv_lock(lock_path: Path) -> bool:
@@ -1673,16 +1675,22 @@ def _scaffold_from_gallery(
         data["template"]["catalog"] = catalog
     if schema and "template" in data:
         data["template"]["schema"] = schema
-    # patch memory/session table names to use the agent name
+    # warehouse_id is optional and auto-detected at runtime; remove the $VAR placeholder
+    if "template" in data and "warehouse_id" in data["template"]:
+        del data["template"]["warehouse_id"]
+    # patch memory/session table names to use the agent name + resolved catalog/schema
     safe_name = name.replace("-", "_")
+    cat = catalog or "$CATALOG"
+    sch = schema or "$SCHEMA"
     for section in ("memory", "session"):
         if section in data and "table_name" in data[section]:
             suffix = "memory" if section == "memory" else "sessions"
-            data[section]["table_name"] = f"$CATALOG.$SCHEMA.apx_{safe_name}_{suffix}"
+            data[section]["table_name"] = f"{cat}.{sch}.apx_{safe_name}_{suffix}"
     out = directory / f"{name}.yaml"
     out.write_text(_yaml.dump(data, sort_keys=False, allow_unicode=True))
     click.echo(f"Spec written to {out}")
-    click.echo(f"  Edit $CATALOG/$SCHEMA, then: apx deploy {out.name}")
+    hint = "apx deploy" if catalog and schema else "fill in $CATALOG/$SCHEMA, then: apx deploy"
+    click.echo(f"  {hint} {out.name}")
 
 
 def _scaffold_to_yaml(
@@ -1930,6 +1938,7 @@ def scaffold(
         scaffold_template = scaffold_template or "data"
 
     if emit_yaml:
+        Path(directory).mkdir(parents=True, exist_ok=True)
         if generated_yaml_str is not None:
             out = Path(directory) / f"{project_name}.yaml"
             out.write_text(generated_yaml_str)
@@ -2310,6 +2319,22 @@ def eval_cmd(
 # ---------------------------------------------------------------------------
 
 
+def _inject_framework_source(project_dir: Path, framework_python: Path) -> None:
+    """Append [tool.uv.sources] to the generated pyproject.toml pointing at the
+    framework source so _ensure_apx_wheel can build and bundle the wheel.
+
+    Without this, deploying from source produces an App container that tries to
+    install apx-agent from a registry where it may not be published yet.
+    """
+    pyproject = project_dir / "pyproject.toml"
+    text = pyproject.read_text()
+    if "[tool.uv.sources]" in text:
+        return
+    abs_src = framework_python.resolve()
+    text += f'\n[tool.uv.sources]\napx-agent = {{ path = "{abs_src}", editable = true }}\n'
+    pyproject.write_text(text)
+
+
 def _deploy_from_yaml(
     yaml_path: Path,
     profile: str | None,
@@ -2333,6 +2358,12 @@ def _deploy_from_yaml(
         project_dir = Path(tmp) / config.name
         generate_project(config, project_dir)
 
+        # When running inside the framework source repo, inject the editable
+        # source so _ensure_apx_wheel can build and bundle the wheel.
+        framework_python = _find_nearby_framework_python(Path.cwd())
+        if framework_python is not None:
+            _inject_framework_source(project_dir, framework_python)
+
         import os
         orig = os.getcwd()
         try:
@@ -2342,7 +2373,7 @@ def _deploy_from_yaml(
                 profile=profile,
                 bundle_target=bundle_target,
                 no_run=no_run,
-                auto_update_yml=True,
+                auto_update_yml=False,  # generated yml is complete; no agent.py to inspect
                 auto_build_wheel=True,
                 auto_experiment=True,
                 vars=(),

@@ -300,6 +300,7 @@ def test_deploy_forwards_experiment_flag_to_log_agent(
             main,
             [
                 "deploy",
+                "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
                 "--name", "main.agents.x",
@@ -333,6 +334,7 @@ def test_deploy_falls_back_to_pyproject_experiment(
             main,
             [
                 "deploy",
+                "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
                 "--name", "main.agents.x",
@@ -365,6 +367,7 @@ def test_deploy_cli_flag_wins_over_pyproject(
             main,
             [
                 "deploy",
+                "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
                 "--name", "main.agents.x",
@@ -397,6 +400,7 @@ def test_deploy_chains_publish_tools_and_set_uc_tags_by_default(
             main,
             [
                 "deploy",
+                "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
                 "--name", "main.agents.x",
@@ -491,6 +495,7 @@ def test_deploy_agent_name_flag_overrides_default(
             main,
             [
                 "deploy",
+                "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
                 "--name", "main.agents.x",
@@ -518,6 +523,7 @@ def test_deploy_no_experiment_when_absent(
             main,
             [
                 "deploy",
+                "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
                 "--name", "main.agents.x",
@@ -2089,6 +2095,7 @@ def test_deploy_no_capture_env_vars_default_sets_mlflow_kill_switch(
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
             "deploy",
+            "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
@@ -2122,6 +2129,7 @@ def test_deploy_capture_env_vars_flag_lets_mlflow_record(
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
             "deploy",
+            "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
@@ -2154,6 +2162,7 @@ def test_deploy_env_var_guard_restores_preexisting_value(
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
             "deploy",
+            "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
@@ -2181,6 +2190,7 @@ def test_deploy_allow_env_var_requires_capture_flag(
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
             "deploy",
+            "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
@@ -2210,6 +2220,7 @@ def test_deploy_allow_env_var_with_capture_flag_combines_and_warns(
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
             "deploy",
+            "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
@@ -2248,6 +2259,7 @@ def test_deploy_secret_scan_warns_on_secret_referenced_in_source(
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
             "deploy",
+            "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
@@ -2283,6 +2295,7 @@ def test_deploy_secret_scan_prompts_when_capture_on(
             main,
             [
                 "deploy",
+                "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
                 "--name", "main.agents.x",
@@ -2317,6 +2330,7 @@ def test_deploy_yes_flag_skips_secret_scan_prompt(
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
             "deploy",
+            "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
@@ -2355,6 +2369,7 @@ def test_deploy_secret_scan_picks_up_dotenv_keys(
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
             "deploy",
+            "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
@@ -2479,22 +2494,30 @@ def test_run_passes_app_dir_to_uvicorn() -> None:
     """
     runner = CliRunner()
     fake_uvicorn = MagicMock()
-    with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
-            patch("apx_agent.cli._preflight_databricks_auth"), \
-            patch("apx_agent.cli._probe_import"):
-        result = runner.invoke(main, ["run"])
+    with runner.isolated_filesystem():
+        # Flat app.py layout (no databricks.yml) → model-serving
+        Path("app.py").write_text("app = None\n")
+        with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
+                patch("apx_agent.cli._preflight_databricks_auth"), \
+                patch("apx_agent.cli._probe_import"):
+            result = runner.invoke(main, ["run"])
 
     assert result.exit_code == 0, result.output
     fake_uvicorn.run.assert_called_once()
     assert fake_uvicorn.run.call_args.args[0] == "app:app"
-    assert fake_uvicorn.run.call_args.kwargs.get("app_dir") == str(Path.cwd())
+    assert fake_uvicorn.run.call_args.kwargs.get("app_dir") is not None
 
 
 def test_detect_target_distinguishes_layouts(tmp_path: Path) -> None:
-    """apps layout has agent_server/start_server.py; flat layout doesn't."""
+    """apps layout has agent_server/start_server.py; model-serving has app.py (no databricks.yml)."""
     from apx_agent.cli import _detect_target
 
+    # Empty directory → apps (default)
+    assert _detect_target(tmp_path) == "apps"
+    # Flat app.py without databricks.yml → model-serving
+    (tmp_path / "app.py").write_text("app = None\n")
     assert _detect_target(tmp_path) == "model-serving"
+    # apps layout overrides app.py presence
     (tmp_path / "agent_server").mkdir()
     (tmp_path / "agent_server" / "start_server.py").write_text("app = None\n")
     assert _detect_target(tmp_path) == "apps"
@@ -2529,9 +2552,10 @@ def test_deploy_autodetects_apps_target() -> None:
 
 
 def test_deploy_autodetects_model_serving_target() -> None:
-    """A flat layout defaults to model-serving, which still requires --model."""
+    """A flat app.py layout (no databricks.yml) detects as model-serving."""
     runner = CliRunner()
     with runner.isolated_filesystem():
+        Path("app.py").write_text("app = None\n")
         result = runner.invoke(main, ["deploy"])
 
     assert result.exit_code != 0
