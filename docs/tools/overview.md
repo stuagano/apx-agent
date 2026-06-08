@@ -1,113 +1,145 @@
-# Governed primitives
+# Tools
 
-## UC functions are the unlock
+Tools give agents the ability to take action — query data, call APIs, run code, and delegate to other agents. The LLM decides which tools to call and with what arguments; the framework executes them and feeds results back into the model loop.
 
-UC functions are already how data teams write and govern business logic. They define parameter types, write documentation, and apply access controls through standard UC governance. Without a UC function tool, an AI engineer duplicates that work by hand-writing a tool schema and a call implementation that mirrors what the data team already registered. The two definitions then drift apart.
+## What are tools
 
-With `uc_function_tool`, the UC function *is* the tool definition. The data team owns the logic; the AI engineer registers it in one line. Governance, access control, and documentation flow through UC the same way they do for any other data asset. Data teams ship new agent capabilities through their normal workflow — write SQL or Python, register in UC, done — without touching agent code.
-
-```sql
--- Data team writes & registers the function in UC
-CREATE OR REPLACE FUNCTION main.tools.classify_intent(query STRING)
-RETURNS STRING
-COMMENT 'Classify a customer query as: billing, technical, account, other.'
-LANGUAGE PYTHON
-AS $$
-  # ... implementation
-$$;
-
-GRANT EXECUTE ON FUNCTION main.tools.classify_intent TO `agent_consumers`;
-```
+A tool is any Python function in the `tools=[...]` list passed to `Agent`. The function's type hints become the LLM-visible parameter schema; the docstring becomes the tool description. No registration step, no schema file — type your function and it's a tool.
 
 ```python
-# AI engineer composes the agent
-from apx_agent import Agent, uc_function_tool
+from apx_agent import Agent, tool
 
-agent = Agent(tools=[
-    uc_function_tool("main.tools.classify_intent"),
-])
+@tool
+def get_order_status(order_id: str) -> str:
+    """Return the current status of a customer order."""
+    return db.query("SELECT status FROM orders WHERE id = ?", order_id)
+
+agent = Agent(
+    instructions="You are an order support assistant.",
+    tools=[get_order_status],
+)
 ```
 
-When the agent runs, the user's grants on `main.tools.classify_intent` apply. If they can't execute it directly, the agent can't either. The function's `COMMENT` becomes the tool description; parameter types become the tool schema. One source of truth.
+Tools fall into three categories:
 
-## Author tools that live in UC — `@tool`
+| Category | Examples |
+|----------|---------|
+| **Function tools** | `@tool`-decorated Python functions you write |
+| **Built-in tools** | `sql_tool`, `genie_tool`, `vector_search_tool`, `uc_function_tool`, … |
+| **Advanced tools** | `http_tool`, `openapi_tool`, `mcp_tool`, `mcp_toolkit`, `agent_tool` |
 
-When the agent author *is* the one writing the tool, `@tool` lets you author the Python function once and have it land in UC with one publish step. Type hints become parameter types; docstring becomes the function comment; `grant=[...]` enforces who can execute.
+---
+
+## Function tools — `@tool`
+
+The `@tool` decorator is the primary way to define a tool. It's optional — plain functions work too — but the decorator enables name/description overrides and UC publishing.
 
 ```python
-from apx_agent import Agent, tool, log_agent, publish_tools_to_uc
+from apx_agent import tool
 
-@tool(uc="main.tools.classify_intent", grant=["agent_consumers"])
+@tool
 def classify_intent(query: str) -> str:
     """Classify a customer query as billing/technical/account/other."""
     return "billing" if "bill" in query.lower() else "other"
-
-agent = Agent(
-    instructions="Triage the user's question.",
-    tools=[classify_intent],
-)
-
-publish_tools_to_uc(agent)   # registers + grants in UC, idempotent
-log_agent(agent, model="databricks-claude-sonnet-4-6",
-          registered_model_name="main.agents.triage")
 ```
 
-After `publish_tools_to_uc`, `main.tools.classify_intent` exists as a governed UC asset. Genie reaches it, Managed MCP exposes it, sibling agents wire it in one line via `uc_function_tool("main.tools.classify_intent")` — without redefinition. The Python function still runs in-process when *this* agent calls it; the UC function is the discovery and external-composition surface.
+### Override name and description
 
-### Pulling a whole schema of UC functions as tools — `uc_function_toolkit`
-
-When the data team has curated a schema of agent-facing UC functions, register the entire toolkit in one line. Each function's UC `comment` becomes the tool description; parameter types come from UC; the `DatabricksFunction` resource declaration is attached automatically.
+Use the parameterized form when the function name or docstring isn't what you want the LLM to see:
 
 ```python
-from apx_agent import Agent, uc_function_toolkit
-from databricks.sdk import WorkspaceClient
-
-agent = Agent(
-    instructions="Triage customer queries using the curated tools.",
-    tools=uc_function_toolkit("main.agent_tools", ws=WorkspaceClient()),
+@tool(
+    name="lookup_order",
+    description="Look up the current status of a customer order by ID.",
 )
+def get_order_status(order_id: str) -> str:
+    ...
 ```
 
-`include=[...]` and `exclude=[...]` bound the surface when the schema mixes agent-facing tools with internal helpers. The toolkit returns an empty list (with a warning) if listing fails — typically a UC permissions issue, surfaced loudly so it doesn't slip past in a deploy script.
+### Injected context — `Dependencies.*`
 
-Three rules locked in:
+Tools running inside a Databricks App receive injected parameters from FastAPI — workspace clients, SQL runners, the current user's identity. Declare them with `Dependencies.*` type aliases and they are excluded from the LLM's input schema.
 
-1. **UC-syncable iff pure.** `@tool(uc=...)` is rejected at definition time if the function has a `Dependencies.*` parameter — UC functions run server-side under the function owner, so user-scoped `WorkspaceClient` is unavailable. Tools that need the calling user's identity (lineage lookups, Genie calls, UC reads) stay Python-only.
-2. **Explicit, three-part UC names.** `catalog.schema.function`. No implicit namespacing.
-3. **Declarative grants.** `grant=[...]` is the source of truth; `publish_tools_to_uc` enforces.
+```python
+from apx_agent import tool, Dependencies
 
-Requires the `uc` extra. apx-agent isn't on PyPI yet — install from a git clone:
-
-```bash
-git clone https://github.com/stuagano/apx-agent.git
-cd apx-agent/python
-pip install -e '.[uc]'
+@tool
+def get_jobs_for_table(table_full_name: str, ws: Dependencies.Workspace) -> list[dict]:
+    """Find Databricks Jobs that write to a Unity Catalog table."""
+    return ws.jobs.list(...)
 ```
 
-## Platform tool factories
+Available injected types:
+
+| Alias | What you get |
+|-------|-------------|
+| `Dependencies.Workspace` | `WorkspaceClient` authenticated as the **current user** (OBO token) |
+| `Dependencies.Client` | `WorkspaceClient` using the app's service principal |
+| `Dependencies.Sql` | SQL runner bound to the current user |
+| `Dependencies.Principal` | Current user's username string, or `None` locally |
+| `Dependencies.Progress` | Callable to emit a progress marker into the trace |
+| `Dependencies.Request` | Raw FastAPI `Request` object |
+
+### UC-syncable tools
+
+Add `uc=` to publish the function to Unity Catalog at deploy time. This makes it callable from Genie spaces, Managed MCP, and other agents browsing the catalog — without redefinition.
+
+```python
+@tool(
+    uc="main.tools.classify_intent",
+    grant=["account users"],
+)
+def classify_intent(query: str) -> str:
+    """Classify a customer query as billing/technical/account/other."""
+    ...
+```
+
+`grant` sets `EXECUTE` on the UC function for the listed principals. It is only valid when `uc=` is set.
+
+**Constraint:** UC-syncable tools cannot use `Dependencies.*` parameters. UC functions execute server-side under the function owner's identity, so a user-scoped `WorkspaceClient` is unavailable.
+
+After defining UC-syncable tools, publish them with one call:
+
+```python
+from apx_agent import publish_tools_to_uc
+
+publish_tools_to_uc(agent)   # registers + grants in UC, idempotent
+```
+
+### Declaring custom resources
+
+When your tool accesses a specific Databricks asset, declare it so `log_agent` can include it in the Model Serving resource manifest:
+
+```python
+from apx_agent import ResourceSpec, attach_resources
+
+@tool
+def query_orders(question: str, ws: Dependencies.Workspace) -> str:
+    """Query the orders table."""
+    return ws.statement_execution.execute_statement(
+        f"SELECT * FROM main.sales.orders WHERE ..."
+    )
+
+attach_resources(query_orders, [ResourceSpec("uc_table", "main.sales.orders")])
+```
+
+---
+
+## Built-in tools — Databricks platform factories
+
+These are pre-built tools for the Databricks platform. Each factory returns a ready-to-use tool (or list of tools) and automatically attaches the required resource declaration for `log_agent`.
 
 | Factory | What it does | Resource declared |
 |---------|--------------|-------------------|
 | `uc_function_tool(name)` | Execute a registered UC function. Schema auto-derived from UC. | `DatabricksFunction` |
+| `uc_function_toolkit(schema)` | All agent-facing functions in a UC schema as tools | `DatabricksFunction` (×N) |
 | `genie_tool(space_id)` | Ask a natural-language question to a Genie space | `DatabricksGenieSpace` |
 | `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
-| `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse. Returns rows + truncation flag | `DatabricksSQLWarehouse` *(if `warehouse_id` set)* |
+| `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse | `DatabricksSQLWarehouse` |
 | `foundation_model_tool(endpoint)` | Ask a Foundation Model endpoint — agent-to-model routing | `DatabricksServingEndpoint` |
-| `lineage_tool()` | Get upstream/downstream lineage for a UC table | — *(UC REST gated by grants)* |
+| `lineage_tool()` | Get upstream/downstream lineage for a UC table | — |
 | `schema_tool()` | Describe columns of a UC table | — |
 | `catalog_tool(catalog, schema)` | List tables in a UC schema | — |
-
-Each factory attaches its resource declaration to the returned tool. `log_agent` collects them automatically.
-
-Every factory in this table can also be declared as **data** in `pyproject.toml` instead of code — the `type` key names the factory and the rest are its arguments. See [`[[tool.apx.tools]]`](../reference/configuration.md#declarative-tools--toolapxtools). For example, `genie_tool("space-abc")` is equivalent to:
-
-```toml
-[[tool.apx.tools]]
-type = "genie"
-space_id = "space-abc"
-```
-
-Use code when the tool needs custom logic; use config for plain resource references you'd rather keep out of the agent module.
 
 ```python
 from apx_agent import (
@@ -129,11 +161,93 @@ agent = Agent(
 )
 ```
 
-## Declared resources
+### UC functions as tools — `uc_function_tool` and `uc_function_toolkit`
 
-When the agent is logged to MLflow for Model Serving, its resources are declared up front:
+`uc_function_tool` is the unlock for governed data teams. UC functions are already how data teams write and govern business logic — they define parameter types, write documentation, and apply access controls through standard UC governance. With `uc_function_tool`, the UC function *is* the tool definition.
+
+```sql
+-- Data team writes & registers the function in UC
+CREATE OR REPLACE FUNCTION main.tools.classify_intent(query STRING)
+RETURNS STRING
+COMMENT 'Classify a customer query as: billing, technical, account, other.'
+LANGUAGE PYTHON
+AS $$
+  # ... implementation
+$$;
+
+GRANT EXECUTE ON FUNCTION main.tools.classify_intent TO `agent_consumers`;
+```
 
 ```python
+# AI engineer wires it into the agent in one line
+from apx_agent import Agent, uc_function_tool
+
+agent = Agent(tools=[
+    uc_function_tool("main.tools.classify_intent"),
+])
+```
+
+The function's `COMMENT` becomes the tool description; parameter types become the tool schema. The user's grants on `main.tools.classify_intent` apply at runtime.
+
+When the data team has curated an entire schema of agent-facing functions, register the whole toolkit at once:
+
+```python
+from apx_agent import Agent, uc_function_toolkit
+from databricks.sdk import WorkspaceClient
+
+agent = Agent(
+    instructions="Triage customer queries using the curated tools.",
+    tools=uc_function_toolkit("main.agent_tools", ws=WorkspaceClient()),
+)
+```
+
+Use `include=[...]` and `exclude=[...]` to bound the surface when a schema mixes agent-facing tools with internal helpers.
+
+---
+
+## Agents as tools — `agent_tool`
+
+`agent_tool` wraps any agent as a callable tool for another agent. The parent LLM decides when to delegate; the wrapped agent runs its full loop and returns a result. This is LLM-driven composition, as opposed to the fixed sequencing of `SequentialAgent` / `ParallelAgent`.
+
+```python
+from apx_agent import Agent, agent_tool
+
+specialist = Agent(
+    name="data_inspector",
+    instructions="Inspect Unity Catalog lineage.",
+    tools=[lineage_tool()],
+)
+
+orchestrator = Agent(
+    instructions="Answer data questions. Delegate lineage lookups to the specialist.",
+    tools=[
+        agent_tool(specialist,
+                   name="data_inspector",
+                   description="Inspect Unity Catalog lineage for a table."),
+    ],
+)
+```
+
+Remote agents work identically — pass a `RemoteDatabricksAgent` instead of a local one:
+
+```python
+from apx_agent import RemoteDatabricksAgent, agent_tool
+
+remote_billing = await RemoteDatabricksAgent.from_app_name("billing-agent")
+orchestrator = Agent(tools=[agent_tool(remote_billing,
+                                       name="billing",
+                                       description="Answer billing questions")])
+```
+
+---
+
+## Declared resources and `log_agent`
+
+When the agent is logged to MLflow for Model Serving, its resource requirements are declared up front. Built-in tool factories attach their resources automatically. `log_agent` collects them from the full agent tree:
+
+```python
+from apx_agent import log_agent
+
 log_agent(
     agent,
     model="databricks-claude-sonnet-4-6",
@@ -143,43 +257,79 @@ log_agent(
 #   DatabricksServingEndpoint("databricks-claude-sonnet-4-6")  # the LLM
 #   DatabricksGenieSpace("abc123")                              # from genie_tool(...)
 #   DatabricksFunction("main.tools.classify_intent")            # from uc_function_tool(...)
-#   DatabricksServingEndpoint("billing")                        # from sub_agents=[...]
 ```
 
-The platform enforces that the agent can **only** access those resources. Need to declare something the framework can't infer (a specific SQL warehouse, vector index, UC table)? Pass `extra_resources=[ResourceSpec("sql_warehouse", "wh-prod"), ...]`.
-
-## Custom tools
-
-Define tools as plain functions with type annotations. The framework generates input schemas and descriptions from type hints and docstrings.
-
-**Python** — type hints + docstrings, with `Dependencies.*` parameters injected by FastAPI:
+The platform enforces that the agent can only access the declared resources. For resources the framework can't infer automatically (a specific SQL warehouse, a UC table accessed from a raw SQL string), pass `extra_resources=[...]`:
 
 ```python
-def get_jobs_for_table(table_full_name: str, ws: Dependencies.Workspace) -> list[dict]:
-    """Find Databricks Jobs that write to a Unity Catalog table."""
-    rows = run_sql(ws, f"SELECT job_id, name FROM system.lakeflow.jobs WHERE ...")
-    return rows
+log_agent(
+    agent,
+    model="databricks-claude-sonnet-4-6",
+    registered_model_name="main.agents.data_triage",
+    extra_resources=[ResourceSpec("sql_warehouse", "wh-prod")],
+)
 ```
 
-**TypeScript** — Zod schemas + handler functions:
+---
 
-```typescript
-const getJobs = defineTool({
-  name: 'get_jobs_for_table',
-  description: 'Find Databricks Jobs that write to a UC table',
-  parameters: z.object({ tableName: z.string() }),
-  handler: async ({ tableName, ws }) => { /* ... */ },
-});
+## Declarative tools in `pyproject.toml`
+
+Every built-in factory can be declared as data in `pyproject.toml` instead of code. The `type` key names the factory; the rest are its arguments:
+
+```toml
+[[tool.apx.tools]]
+type = "genie"
+space_id = "space-abc"
+
+[[tool.apx.tools]]
+type = "sql"
+warehouse_id = "wh-prod"
 ```
 
-Custom tools can declare their own resources so `log_agent` picks them up:
+Use code when the tool needs custom logic; use config for plain resource references you'd rather keep out of the agent module. See [`[[tool.apx.tools]]`](../reference/configuration.md#declarative-tools--toolapxtools) for the full schema.
+
+---
+
+## Controlling tool use
+
+### Limit iterations
+
+By default, the agent loops until it produces a final answer. Use `max_iterations` to cap the number of model+tool steps — useful when you want a hard ceiling on latency or cost:
 
 ```python
-from apx_agent import ResourceSpec, attach_resources
-
-def query_orders(question: str, ws: Dependencies.Workspace) -> str:
-    """Query the orders Delta table."""
-    return run_sql(ws, f"SELECT ... FROM main.sales.orders WHERE ...")
-
-attach_resources(query_orders, [ResourceSpec("uc_table", "main.sales.orders")])
+agent = Agent(
+    instructions="Answer the question using the tools provided.",
+    tools=[sql_tool(warehouse_id="wh-prod"), genie_tool("space-abc")],
+    max_iterations=5,
+)
 ```
+
+### Allow or deny specific tools
+
+Use `ToolAllowlist` or `ToolDenylist` as a `before_tool` hook to restrict which tools the agent can invoke at runtime. This is a lighter-weight alternative to a Watchdog policy for a fixed, well-known set.
+
+```python
+from apx_agent import Agent, ToolAllowlist, ToolDenylist
+
+# Only allow these tools to be called
+agent = Agent(
+    tools=[sql_tool(), genie_tool("space-abc"), lineage_tool()],
+    before_tool=ToolAllowlist(["sql_tool", "genie_query"]),
+)
+
+# Or block specific tools
+agent = Agent(
+    tools=[sql_tool(), genie_tool("space-abc"), lineage_tool()],
+    before_tool=ToolDenylist(["lineage_tool"],
+                              message="Lineage lookups are disabled in production."),
+)
+```
+
+`ToolAllowlist` and `ToolDenylist` raise `PermissionError` when the policy is violated; the model receives the rejection message and can adapt its response.
+
+---
+
+## What to read next
+
+- [Custom tools](custom-tools.md) — `@tool` deep-dive, `http_tool`, `openapi_tool`, `mcp_tool`, authentication
+- [MCP — Databricks Managed MCP](mcp.md) — expose your agent's tools to external clients

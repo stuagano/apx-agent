@@ -188,7 +188,7 @@ def provision_memory_backends(
     from ._inspection import _load_agent_config  # noqa: PLC0415
     from ._defaults import _make_workspace_client  # noqa: PLC0415
 
-    cfg = _load_agent_config(pyproject_path)
+    cfg = _load_agent_config(pyproject_path=pyproject_path)
     if cfg is None or cfg.memory is None:
         return []
 
