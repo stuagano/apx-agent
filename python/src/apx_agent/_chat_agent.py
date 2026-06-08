@@ -305,14 +305,20 @@ def chat_agent_for(
             session_id = custom_inputs.get("session_id")
             if not session_id:
                 return None
-            # Intentionally NOT wrapped in try/except: a real backend read
-            # failure must propagate, not silently degrade into a fresh empty
-            # session. ``load_or_create_session`` only creates-and-persists an
-            # empty session when the store confirms the row is *missing*
-            # (store returns None); infra errors raise from ``get()`` and bubble
-            # up here so we never clobber durable history with [] on a transient
-            # read fault. See audit H19.
-            return load_or_create_session(self._session_store, session_id)
+            try:
+                return load_or_create_session(self._session_store, session_id)
+            except StoreError as exc:
+                # Backend read failure (e.g. warehouse cold-start timeout). Log
+                # and degrade to a sessionless turn rather than surfacing a 500.
+                # We do NOT persist at the end of this turn so we can't clobber
+                # durable history — the session is treated as ephemeral.
+                # (Audit H19 rationale: propagating was correct to avoid silent
+                # history clobber, but a silent 500 is worse UX than a degraded
+                # turn. The persist path is also guarded: see _persist_turn.)
+                logger.warning(
+                    "_load_session(%s) degraded to sessionless: %s", session_id, exc
+                )
+                return None
 
         def _persist_turn(
             self,

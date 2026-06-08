@@ -513,7 +513,10 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
             or os.environ.get("DEMO_CATALOG") or os.environ.get("CATALOG", "")
         )
         _env_wh = _dotenv.get("WAREHOUSE_ID") or os.environ.get("WAREHOUSE_ID", "")
-        if not _env_catalog or not _env_wh:
+        # Suppress banner when the agent already has tools — DataAgent/CoworkerAgent
+        # pre-ground their schema in code, so DEMO_CATALOG/WAREHOUSE_ID never get set.
+        _has_tools = ctx and any(t.name != "create_tool" for t in ctx.tools)
+        if (not _env_catalog or not _env_wh) and not _has_tools:
             setup_banner = (
                 '<div id="setup-banner" style="background:#1a1200;border-color:#5a3a00;color:#ffb84d">'
                 '<strong>👋 First time here?</strong> '

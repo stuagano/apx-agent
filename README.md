@@ -4,51 +4,82 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Build governed Databricks agents. Three levels — use whichever fits:
-
-| | |
-|---|---|
-| **`LlmAgent`** | The base. You own the loop: tools, hooks, guardrails, iteration cap. |
-| **`DataAgent`** | One line over a Unity Catalog schema. Grounded in real columns, runs as the calling user. |
-| **`CoworkerAgent`** | Joins two source systems. Persona, join key, objective. |
-
-Deploy to Databricks Apps or Mosaic AI Model Serving — same agent, one flag.
-
----
-
-## Quick start
-
-Python 3.11+ required.
+Build governed Databricks agents. Write a Python object — apx-agent compiles it to whichever Databricks runtime you target.
 
 ```bash
 uv add apx-agent
 uv run apx-agent scaffold my-agent
-cd my-agent && uv sync
+cd my-agent && uv run apx-agent run --reload
 ```
 
-**Run it locally:**
-
-```bash
-uv run apx-agent run --reload
-# FastAPI on http://localhost:8000 — chat at /_apx/agent, traces at /_apx/traces
-```
-
-**When it looks right, deploy:**
+Chat at `http://localhost:8000/_apx/agent`. When it looks right:
 
 ```bash
 uv run apx-agent deploy --target apps
 ```
 
+---
+
+## What is apx-agent?
+
+apx-agent is an agent framework for Databricks. You declare an agent in Python — instructions, tools, and a model — and apx-agent handles the rest: serving, tool dispatch, identity passthrough, tracing, and deployment to Databricks Apps or Mosaic AI Model Serving.
+
+Three agent types cover most use cases:
+
+| | |
+|---|---|
+| **`LlmAgent`** | The base. You own the loop: tools, hooks, guardrails, iteration cap. |
+| **`DataAgent`** | One line over a Unity Catalog schema. Grounded in real columns, runs as the calling user. |
+| **`CoworkerAgent`** | Joins two source systems on a shared key. Persona, join key, objective. |
+
+Deploy to Databricks Apps or Mosaic AI Model Serving — same agent definition, one flag changes the target.
+
+---
+
+## Quickstart
+
+Python 3.11+ required.
+
+**1. Install**
+
+```bash
+uv add apx-agent
+```
+
+**2. Scaffold a project**
+
+```bash
+uv run apx-agent scaffold my-agent
+cd my-agent && uv sync
+```
+
+The scaffold is interactive — it asks for your catalog, schema, and SQL warehouse, then bakes the schema into `.apx/schema.json` so the agent is grounded before the first question.
+
+**3. Run locally**
+
+```bash
+uv run apx-agent run --reload
+```
+
+FastAPI starts on `:8000`. Chat at `/_apx/agent`, view traces at `/_apx/traces`, inspect tools at `/_apx/tools`. Edit `agent.py` and the server reloads.
+
+**4. Deploy**
+
+```bash
+uv run apx-agent deploy --target apps
+```
+
+Bundles the project and creates a Databricks App. Prints the URL when done.
+
 > **Something not working?** Run `uv run apx-agent doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
 
-See [docs/get-started/quickstart.md](docs/get-started/quickstart.md) for the full walkthrough including prerequisites, workspace requirements, and the local dev walk.
+See [docs/get-started/quickstart.md](docs/get-started/quickstart.md) for the full walkthrough.
 
 ---
 
 ## LlmAgent — you control the loop
 
-`LlmAgent` is an LLM + tools + a loop. You decide what it can call, when it
-stops, and what happens before and after each tool call. Nothing is hidden.
+`LlmAgent` (aliased as `Agent`) is an LLM + tools + a loop. You decide what it can call, when it stops, and what happens before and after each step.
 
 ```python
 from apx_agent import LlmAgent, uc_function_tool, genie_tool
@@ -59,16 +90,23 @@ agent = LlmAgent(
         uc_function_tool("main.tools.lookup_account"),
         genie_tool("abc123", description="Answer billing questions"),
     ],
+    max_iterations=10,
     # memory="lakebase",   # pgvector semantic recall across sessions
 )
 ```
 
 Every hook is optional. None requires subclassing.
 
-**Compose loops explicitly.** `LoopAgent` iterates until a condition is met;
-`SequentialAgent` pipelines agents in order; `ParallelAgent` fans out;
-`HandoffAgent` routes conversationally. These are first-class, not hacks
-around a black-box framework.
+```python
+# Invoke the agent
+result = await agent.run([{"role": "user", "content": "Look up account 42."}])
+
+# Or stream the response
+async for chunk in agent.stream([{"role": "user", "content": "Explain the schema."}]):
+    print(chunk, end="", flush=True)
+```
+
+**Compose loops explicitly.** `LoopAgent` iterates until a condition is met; `SequentialAgent` pipelines agents in order; `ParallelAgent` fans out; `HandoffAgent` routes conversationally.
 
 ```python
 from apx_agent import SequentialAgent
@@ -91,31 +129,21 @@ from apx_agent import DataAgent
 agent = DataAgent("main", "sales")
 ```
 
-That's a working agent. It knows the tables and columns in `main.sales`
-before the first question — no `SHOW TABLES` at runtime, no discovery
-prompt, no hallucinated schema.
+That's a working agent. It knows the tables and columns in `main.sales` before the first question — no `SHOW TABLES` at runtime, no discovery prompt, no hallucinated schema.
 
-**How schema discovery works (first match wins):**
+Schema discovery priority (first match wins):
 
-1. **`apx-agent scaffold` bakes `.apx/schema.json`** at project creation time by
-   querying the UC Tables API. The manifest ships with your code, so a
-   deployed app is grounded in the real columns with no `ws=` arg and no
-   warehouse needed at startup.
-2. **`ws=WorkspaceClient()`** triggers live introspection at construction
-   time — useful when you want the freshest schema or are working outside a
-   scaffolded project.
-3. **`tables=` explicit override** — pass `{"orders": ["id(bigint)", ...]}` for
-   tests or when you already have the schema from another source.
-4. **Ungrounded fallback** — if none of the above applies, the agent falls
-   back to generic data-assistant instructions and discovers the schema with
-   its SQL tool on the first turn.
+1. **Baked schema** — `apx-agent scaffold` writes `.apx/schema.json` from the UC Tables API at project creation time. Ships with your code.
+2. **Live introspection** — pass `ws=WorkspaceClient()` for fresh schema at construction time.
+3. **Explicit override** — pass `tables={"orders": ["id(bigint)", ...]}` for tests.
+4. **Ungrounded fallback** — discovers schema with SQL on the first turn.
 
 ```python
-# Live introspection — agent knows your columns at construction time:
+# Live introspection
 from databricks.sdk import WorkspaceClient
 agent = DataAgent("main", "sales", ws=WorkspaceClient())
 
-# Add a persona, Genie, vector search, or UC functions on top:
+# Add persona, Genie space, vector search, or UC functions
 agent = DataAgent(
     "main", "sales",
     persona="a revenue analyst",
@@ -125,10 +153,7 @@ agent = DataAgent(
 )
 ```
 
-**How governance works:** deploy once, everyone runs as themselves. The app
-forwards each caller's OAuth token per request, and Unity Catalog enforces
-their grants on their data. Share the app with your team — each person queries
-their own slice. See [docs/safety/identity-passthrough.md](docs/safety/identity-passthrough.md).
+**Governance:** deploy once, everyone runs as themselves. The app forwards each caller's OAuth token per request, and Unity Catalog enforces their grants on their data. See [docs/safety/identity-passthrough.md](docs/safety/identity-passthrough.md).
 
 See [docs/agents/data-agent.md](docs/agents/data-agent.md) for the full reference.
 
@@ -136,8 +161,7 @@ See [docs/agents/data-agent.md](docs/agents/data-agent.md) for the full referenc
 
 ## CoworkerAgent — join two source systems
 
-Two source systems landed in a UC schema. One business entity links them.
-One question neither system can answer alone.
+Two source systems landed in a UC schema. One business entity links them. One question neither system can answer alone.
 
 ```python
 from apx_agent import CoworkerAgent
@@ -147,24 +171,20 @@ agent = CoworkerAgent(
     persona="a payroll operations analyst",
     join_key="employee ID",
     objective="surface mismatches between hours worked and paychecks issued",
-    # memory="persistent",  # uncomment to remember facts across sessions
+    # memory="persistent",  # remember facts across sessions
 )
 ```
 
-The `join_key` and `objective` are woven into the agent's grounded
-instructions so it always knows which field links the tables and what question
-it exists to answer. Common patterns:
+The `join_key` and `objective` are woven into the agent's grounded instructions. Common patterns:
 
 | Use case | System A | System B | Join key |
 |---|---|---|---|
 | Payroll reconciliation | Kronos (hours worked) | Workday (paychecks) | employee ID |
 | Quote-to-cash | Salesforce (deals) | NetSuite (invoices) | opportunity ID |
-| Onboarding / offboarding | Workday (employment status) | Okta (access) | employee ID |
-| Warranty & entitlement | ServiceNow (cases) | SAP (contracts, parts) | asset serial number |
+| Onboarding / offboarding | Workday (employment) | Okta (access) | employee ID |
+| Warranty & entitlement | ServiceNow (cases) | SAP (contracts) | asset serial number |
 | Order status | Oracle ERP (orders) | TMS (freight) | PO / shipment number |
 | Claims integrity | Epic (chart) | Claims system (coding) | patient encounter |
-
-Scaffold one:
 
 ```bash
 apx-agent scaffold my-coworker --template coworker
@@ -176,17 +196,11 @@ See [docs/agents/coworker.md](docs/agents/coworker.md) for the full reference.
 
 ## See what you built
 
-Every deployed agent ships with `/_apx/topology` — an interactive graph of
-agents, tools, sub-agents, and the UC / Genie / Vector Search / serving
-resources they reach. Click any node for its details.
+Every deployed agent ships with `/_apx/topology` — an interactive graph of agents, tools, sub-agents, and the UC / Genie / Vector Search / serving resources they reach. Click any node for its details.
 
 ![/_apx/topology — interactive graph of agents, tools, sub-agents, and platform resources](docs/images/topology-customer-triage.png)
 
-See [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) for the full `/_apx/*` surface (chat, traces, eval, tool inspector, probe).
-
----
-
-📚 **[Docs](docs/)** · 🧪 **[Examples](python/examples/EXAMPLES.md)** · ⚙️ **[CLI](#cli)**
+See [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) for the full `/_apx/*` surface: chat, traces, eval, tool inspector, probe.
 
 ---
 
@@ -213,6 +227,7 @@ apx-agent scaffold <name>          # scaffold a new agent project
 apx-agent run                      # local FastAPI dev server (/_apx/agent)
 apx-agent deploy --target apps     # deploy to Databricks Apps
 apx-agent eval evalset.jsonl       # run against deployed endpoint with LLM judge
+apx-agent trace --agent <name>     # recent MLflow traces filtered by apx.* attributes
 apx-agent doctor                   # diagnose auth, deps, project layout
 ```
 
@@ -224,19 +239,40 @@ See [docs/get-started/cli.md](docs/get-started/cli.md) for the full surface.
 
 | Topic | Doc |
 |---|---|
+| Quickstart | [docs/get-started/quickstart.md](docs/get-started/quickstart.md) |
+| Running agents (`run`, `stream`, `max_iterations`) | [docs/agents/llm-agent.md](docs/agents/llm-agent.md) |
 | DataAgent reference | [docs/agents/data-agent.md](docs/agents/data-agent.md) |
 | CoworkerAgent reference | [docs/agents/coworker.md](docs/agents/coworker.md) |
-| CoworkerAgent use cases | [docs/agents/coworker-use-cases.md](docs/agents/coworker-use-cases.md) |
-| Agent composition (Sequential, Parallel, Loop, agent_tool) | [docs/agents/composition.md](docs/agents/composition.md) |
+| Agent composition | [docs/agents/composition.md](docs/agents/composition.md) |
 | Routing (RouterAgent, HandoffAgent) | [docs/agents/routing.md](docs/agents/routing.md) |
+| Tools — governed primitives | [docs/tools/overview.md](docs/tools/overview.md) |
+| Tools — custom (`@tool`, MCP) | [docs/tools/custom-tools.md](docs/tools/custom-tools.md) |
+| Multi-agent (sub-agents, A2A) | [docs/multi-agent/overview.md](docs/multi-agent/overview.md) |
+| Sessions + memory | [docs/running/sessions-and-memory.md](docs/running/sessions-and-memory.md) |
+| Guardrails and callbacks | [docs/safety/callbacks.md](docs/safety/callbacks.md) |
 | Identity passthrough + OBO | [docs/safety/identity-passthrough.md](docs/safety/identity-passthrough.md) |
-| Configuration — `pyproject.toml`, declarative tools | [docs/reference/configuration.md](docs/reference/configuration.md) |
-| Sessions + memory + examples | [docs/running/sessions-and-memory.md](docs/running/sessions-and-memory.md) |
-| Apps vs Model Serving | [docs/deploy/apps-vs-model-serving.md](docs/deploy/apps-vs-model-serving.md) |
-| Governed primitives + UC functions | [docs/tools/overview.md](docs/tools/overview.md) |
-| Evaluation + MLflow | [docs/evaluate/overview.md](docs/evaluate/overview.md) |
-| Compliance — Watchdog, audit log, guards | [docs/safety/compliance.md](docs/safety/compliance.md) |
-| Dev UI | [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) |
+| Compliance (Watchdog, audit log) | [docs/safety/compliance.md](docs/safety/compliance.md) |
+| Deploy targets | [docs/deploy/apps-vs-model-serving.md](docs/deploy/apps-vs-model-serving.md) |
+| Evaluation | [docs/evaluate/overview.md](docs/evaluate/overview.md) |
+| Configuration (`pyproject.toml`) | [docs/reference/configuration.md](docs/reference/configuration.md) |
+| Coming from ADK or OpenAI Agents SDK | [docs/migration.md](docs/migration.md) |
+
+---
+
+## Coming from ADK or OpenAI Agents SDK?
+
+See [docs/migration.md](docs/migration.md) for a concept-by-concept translation. The key mappings:
+
+| ADK / OpenAI | apx-agent |
+|---|---|
+| `Agent(name, instructions, model)` | `LlmAgent(name, instructions, model)` or `Agent(...)` |
+| `Runner.run()` | `agent.run(messages)` |
+| `@function_tool` / `@tool` | `@tool` |
+| `input_guardrails=[fn]` | `input_guardrails=[fn]` (same param name) |
+| `@input_guardrail` tripwire | raise `PermissionError` in `before_agent_callback` |
+| `before_tool_callback` | `before_tool` or `before_tool_callback` (both accepted) |
+| `MemoryService` | `MemoryBank` / `MemoryStore` |
+| Handoffs | `HandoffAgent` |
 
 ---
 

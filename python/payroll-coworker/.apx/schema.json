@@ -1,0 +1,56 @@
+{
+  "catalog": "serverless_stable_qh44kx_catalog",
+  "schema": "payroll_demo",
+  "tables": {
+    "agent_memory": [
+      "id(string)",
+      "principal_id(string)",
+      "namespace(string)",
+      "content(string)",
+      "tags(array<string>)",
+      "importance(float)",
+      "embedding(array<float>)",
+      "metadata(string)",
+      "created_at(double)",
+      "updated_at(double)"
+    ],
+    "apx_payroll_coworker_memory": [
+      "id(string)",
+      "principal_id(string)",
+      "namespace(string)",
+      "content(string)",
+      "tags(array<string>)",
+      "importance(float)",
+      "embedding(array<float>)",
+      "metadata(string)",
+      "created_at(double)",
+      "updated_at(double)"
+    ],
+    "apx_payroll_coworker_sessions": [
+      "session_id(string)",
+      "history(string)",
+      "state(string)",
+      "created_at(double)",
+      "updated_at(double)"
+    ],
+    "employees": [
+      "employee_id(string)",
+      "name(string)",
+      "department(string)",
+      "location(string)",
+      "employment_type(string)",
+      "status(string)",
+      "hire_date(date)",
+      "term_date(date)"
+    ],
+    "pay_runs": [
+      "run_id(string)",
+      "period_end(date)",
+      "employee_id(string)",
+      "gross_pay(decimal(6,2))",
+      "overtime_hours(int)",
+      "deductions(decimal(6,2))",
+      "net_pay(decimal(6,2))"
+    ]
+  }
+}
