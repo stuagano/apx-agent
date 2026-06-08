@@ -2023,7 +2023,51 @@ def eval_cmd(
 # ---------------------------------------------------------------------------
 
 
+def _deploy_from_yaml(
+    yaml_path: Path,
+    profile: str | None,
+    bundle_target: str,
+    no_run: bool,
+    readyz_gate: bool,
+    json_output: bool,
+    assume_yes: bool,
+) -> None:
+    """Read *yaml_path*, generate a temp project, and deploy it via _deploy_apps."""
+    import tempfile
+    from ._yaml_spec import load_spec, SpecValidationError
+    from ._project_gen import generate_project
+
+    try:
+        config = load_spec(yaml_path)
+    except SpecValidationError as e:
+        raise click.ClickException(f"Invalid spec {yaml_path}: {e}") from e
+
+    with tempfile.TemporaryDirectory(prefix="apx_deploy_") as tmp:
+        project_dir = Path(tmp) / config.name
+        generate_project(config, project_dir)
+
+        import os
+        orig = os.getcwd()
+        try:
+            os.chdir(project_dir)
+            _deploy_apps(
+                module="agent:agent",
+                profile=profile,
+                bundle_target=bundle_target,
+                no_run=no_run,
+                auto_update_yml=True,
+                auto_build_wheel=True,
+                auto_experiment=True,
+                vars=(),
+                json_output=json_output,
+                readyz_gate=readyz_gate,
+            )
+        finally:
+            os.chdir(orig)
+
+
 @main.command()
+@click.argument("spec", required=False, default=None, metavar="[SPEC.yaml]")
 @click.option("--module", default=None, help='Agent module spec. Default '
               '"agent:agent" for both --target model-serving and '
               '--target apps (ADK-style top-level layout).')
@@ -2147,6 +2191,7 @@ def eval_cmd(
     help="Skip the secret-scan confirmation prompt. Use in CI / scripts.",
 )
 def deploy(
+    spec: str | None,
     module: str | None,
     target: str | None,
     model: str | None,
@@ -2192,6 +2237,18 @@ def deploy(
     apply to ``--target apps`` (no model version to tag). Apps tagging will
     be addressed in a follow-up.
     """
+    if spec and (spec.endswith(".yaml") or spec.endswith(".yml")):
+        _deploy_from_yaml(
+            yaml_path=Path(spec),
+            profile=profile,
+            bundle_target=bundle_target,
+            no_run=no_run,
+            readyz_gate=readyz_gate,
+            json_output=json_output,
+            assume_yes=assume_yes,
+        )
+        return
+
     if target is None:
         target = _detect_target()
         click.echo(
