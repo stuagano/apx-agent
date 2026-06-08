@@ -1631,12 +1631,14 @@ def _scaffold_to_yaml(
     type=click.Choice(["base", "data", "coworker", "list"]),
     default=None,
     help=(
-        "Agent kind: 'base' (bare LlmAgent, you bring the tools), "
-        "'data' (pre-grounded SQL agent), or 'coworker' "
-        "(DataAgent + persona). Apps target only for coworker. "
-        "Prompted interactively when omitted in a TTY."
+        "Agent kind: 'base', 'data', 'coworker', or 'list' to pick interactively. "
+        "Shorthand: --coworker / --data."
     ),
 )
+@click.option("--coworker", "use_coworker", is_flag=True, default=False,
+              help="Shorthand for --template coworker.")
+@click.option("--data", "use_data", is_flag=True, default=False,
+              help="Shorthand for --template data.")
 @click.option(
     "--interactive/--no-interactive", "interactive", default=None,
     help="Run the setup wizard (target, template, catalog, schema, persona). "
@@ -1649,7 +1651,8 @@ def _scaffold_to_yaml(
 def scaffold(
     name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
-    scaffold_template: str | None, interactive: bool | None, emit_yaml: bool,
+    scaffold_template: str | None, use_coworker: bool, use_data: bool,
+    interactive: bool | None, emit_yaml: bool,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -1688,6 +1691,13 @@ def scaffold(
     # baked into the templates must be the bare directory name, or it produces
     # an invalid PEP 508 ``[project].name`` that breaks ``uv sync``.
     project_name = Path(name).name
+
+    # Resolve shorthand template flags before any other logic.
+    if use_coworker:
+        scaffold_template = "coworker"
+    elif use_data:
+        scaffold_template = "data"
+
     if not emit_yaml:
         if target.exists() and not force:
             if any(target.iterdir()):
