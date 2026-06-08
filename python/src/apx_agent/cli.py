@@ -2727,14 +2727,17 @@ def _stage_build_manifest(
         import tomli as tomllib  # type: ignore[no-redef]
 
     pyproject = build_dir / "pyproject.toml"
-    if not pyproject.exists():
-        # Artifacts script no longer copies pyproject.toml — read from source.
-        source_pyproject = build_dir.parent / "pyproject.toml"
-        if not source_pyproject.exists():
-            return
-        import shutil
-        shutil.copy2(source_pyproject, pyproject)
-    text = pyproject.read_text()
+    # Always read from the SOURCE pyproject.toml when wheel_path is set.
+    # A stale .build/pyproject.toml from a prior deploy already has a .whl
+    # path, causing has_editable=False and skipping the rewrite — leaving
+    # the old wheel version pinned indefinitely.
+    source_pyproject = build_dir.parent / "pyproject.toml"
+    if source_pyproject.exists():
+        text = source_pyproject.read_text()
+    elif pyproject.exists():
+        text = pyproject.read_text()
+    else:
+        return
     try:
         doc = tomllib.loads(text)
     except Exception:

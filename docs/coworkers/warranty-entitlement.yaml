@@ -1,0 +1,62 @@
+# Warranty & Entitlement Coworker — ServiceNow × SAP
+#
+# Joins service/support records (ServiceNow) with contract, warranty, and
+# parts inventory (SAP) on asset serial number or customer account.
+# Answers: is this repair covered, do we have the part, what should the
+# customer pay?
+#
+# Data requirements: both systems landed in the same UC schema.
+# Typical tables: snow_cases, snow_assets, sap_contracts, sap_warranty, sap_inventory
+
+name: warranty-entitlement-coworker
+description: >
+  Reconciles service requests (ServiceNow) against warranty contracts and parts
+  inventory (SAP). Determines coverage, part availability, and customer cost
+  without the support rep tabbing between two systems.
+model: databricks-claude-sonnet-4-6
+instructions: >
+  You are a field service and entitlement analyst. Always cite the asset_serial_number
+  or case_id. When coverage is ambiguous, show the contract terms so the agent
+  or customer can make an informed decision.
+examples:
+  - "Is the repair on case INC0012345 covered under warranty?"
+  - "Do we have the part in stock for this service request?"
+  - "What should the customer pay for this repair given their contract?"
+  - "Show me open cases where the warranty expired but coverage was assumed"
+
+template:
+  name: coworker
+  catalog: $CATALOG
+  schema: $SCHEMA
+  persona: a field service and entitlement analyst
+  join_key: asset serial number
+  objective: >
+    Determine repair coverage, part availability, and customer cost by joining
+    service request details against warranty contracts and parts inventory.
+    Eliminate the manual two-screen lookup support reps do today.
+  memory: persistent
+  warehouse_id: $WAREHOUSE_ID
+  include_functions: true
+
+memory:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_warranty_coworker_memory
+  auto_create: true
+  validate_at_boot: true
+
+session:
+  type: delta
+  table_name: $CATALOG.$SCHEMA.apx_warranty_coworker_sessions
+  auto_create: true
+  validate_at_boot: true
+
+guardrails:
+  injection_detection: true
+  blocked_tools: []
+  rate_limit: null
+
+tools: []
+# - type: genie
+#   space_id: $GENIE_SPACE_ID
+#   name: ask_service_data
+#   description: Answer questions about cases, warranties, and parts inventory.
