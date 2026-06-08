@@ -34,7 +34,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import click
 
@@ -42,6 +42,26 @@ from . import _doctor as _doctor_mod
 from ._schema import introspect_schema_columns
 
 logger = logging.getLogger(__name__)
+
+
+class _ModuleSpec(NamedTuple):
+    module_path: str
+    variable: str
+
+
+class _AppNameResolution(NamedTuple):
+    bundle_key: str
+    app_name: str
+
+
+class _ReadyzResult(NamedTuple):
+    is_ready: bool
+    checks: dict[str, Any]
+
+
+class _BundleUpdateResult(NamedTuple):
+    added: list[str]
+    skipped: list[str]
 
 
 def _fix_msg(title: str, detail: str, fix: str | None) -> str:
@@ -58,7 +78,7 @@ def _fix_msg(title: str, detail: str, fix: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _parse_module_spec(spec: str) -> tuple[str, str]:
+def _parse_module_spec(spec: str) -> _ModuleSpec:
     """Parse ``"module:variable"`` into ``(module, variable)``.
 
     Raises a ``click.BadParameter`` on malformed input.
@@ -73,7 +93,7 @@ def _parse_module_spec(spec: str) -> tuple[str, str]:
         raise click.BadParameter(
             f"Both MODULE and VARIABLE must be non-empty, got {spec!r}."
         )
-    return module_path, variable
+    return _ModuleSpec(module_path=module_path, variable=variable)
 
 
 def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]:
@@ -2809,7 +2829,7 @@ def _read_databricks_yml(cwd: Path) -> dict[str, Any]:
     return data
 
 
-def _resolve_app_name(bundle_doc: dict[str, Any]) -> tuple[str, str]:
+def _resolve_app_name(bundle_doc: dict[str, Any]) -> _AppNameResolution:
     """Return ``(bundle_key, app_name)`` from a bundle document.
 
     The Databricks Asset Bundle schema lets the YAML key under
@@ -2847,7 +2867,7 @@ def _resolve_app_name(bundle_doc: dict[str, Any]) -> tuple[str, str]:
     app_name = bundle_key
     if isinstance(block, dict) and isinstance(block.get("name"), str):
         app_name = block["name"]
-    return bundle_key, app_name
+    return _AppNameResolution(bundle_key=bundle_key, app_name=app_name)
 
 
 def _ensure_apx_wheel(cwd: Path) -> Path | None:
@@ -3398,7 +3418,7 @@ def _check_readyz(
     profile: str | None,
     attempts: int = 5,
     delay_s: float = 6.0,
-) -> tuple[bool, dict[str, Any]]:
+) -> _ReadyzResult:
     """Call the deployed app's ``/readyz`` capability self-test.
 
     Mints a short-lived bearer token via ``databricks auth token`` (Databricks
@@ -3430,9 +3450,9 @@ def _check_readyz(
         if getattr(tok_proc, "returncode", 1) == 0 and tok_proc.stdout:
             token = (_json.loads(tok_proc.stdout) or {}).get("access_token")
     except Exception as exc:  # pragma: no cover — defensive
-        return False, {"error": f"could not mint token: {str(exc)[:120]}"}
+        return _ReadyzResult(is_ready=False, checks={"error": f"could not mint token: {str(exc)[:120]}"})
     if not token:
-        return False, {"error": "could not mint databricks auth token"}
+        return _ReadyzResult(is_ready=False, checks={"error": "could not mint databricks auth token"})
 
     url = app_url.rstrip("/") + "/readyz"
     last_error = "unreachable"
@@ -3461,13 +3481,33 @@ def _check_readyz(
                 checks = data.get("checks")
                 if not isinstance(checks, dict):
                     checks = {k: v for k, v in data.items() if k != "checks"}
-                return data.get("status") == "ready", checks
+                return _ReadyzResult(is_ready=data.get("status") == "ready", checks=checks)
 
         # Unreachable / unparseable — back off and retry.
         if attempt < max(1, attempts) - 1 and delay_s > 0:
             _time.sleep(delay_s)
 
-    return False, {"error": f"readyz unreachable: {last_error}"}
+    return _ReadyzResult(is_ready=False, checks={"error": f"readyz unreachable: {last_error}"})
+
+
+def _fetch_app_log_tail(app_name: str, *, profile: str | None, lines: int = 40) -> str:
+    """Return the last *lines* of app stdout/stderr, or a fallback message on error.
+
+    Never raises — called from an error path where we want best-effort context.
+    """
+    try:
+        cmd = ["databricks", "apps", "logs", app_name]
+        if profile:
+            cmd.extend(["--profile", profile])
+        import subprocess as _sp
+        proc = _sp.run(cmd, check=False, capture_output=True, text=True, timeout=15)
+        raw = (proc.stdout or "") + (proc.stderr or "")
+        tail = [ln for ln in raw.splitlines() if ln.strip()][-lines:]
+        if tail:
+            return "\n".join(f"  {ln}" for ln in tail)
+        return "  (no log output returned)"
+    except Exception as exc:
+        return f"  (could not fetch logs: {exc})"
 
 
 def _preflight_databricks_cli() -> None:
@@ -3532,10 +3572,10 @@ def _auto_update_databricks_yml(
     agent: Any,
     bundle_key: str,
     log: Any,
-) -> tuple[list[str], list[str]]:
+) -> _BundleUpdateResult:
     """Merge missing ResourceSpec entries into databricks.yml.
 
-    Returns ``(added_names, skipped_names)``. The bundle document is read,
+    Returns added_names and skipped_names. The bundle document is read,
     each ResourceSpec is mapped to a DAB resource entry via
     ``resources_to_databricks_yml``, and any entry whose ``name`` is not
     already present in ``resources.apps.<bundle_key>.resources`` is appended.
@@ -3626,7 +3666,7 @@ def _auto_update_databricks_yml(
             f"{', '.join(skipped)}")
     if not added and not skipped:
         log("  no resources to merge (agent declared none)")
-    return added, skipped
+    return _BundleUpdateResult(added=added, skipped=skipped)
 
 
 def _poll_app_ready(
@@ -3916,9 +3956,19 @@ def _deploy_apps_impl(
                 detail = "\n".join(failing) if failing else str(checks)
             else:
                 detail = str(checks)
+            log("# fetching app logs for crash context...")
+            log_tail = _fetch_app_log_tail(app_name, profile=profile)
+            logs_cmd = f"databricks apps logs {app_name}"
+            if profile:
+                logs_cmd += f" --profile {profile}"
             raise click.ClickException(
-                f"readyz gate failed — app is running but not healthy:\n{detail}\n"
-                f"Fix the issues above then re-deploy, or re-run with --no-readyz-gate to skip."
+                f"readyz gate failed — app is running but not healthy:\n{detail}\n\n"
+                f"App logs (last 40 lines):\n"
+                f"{'─' * 60}\n"
+                f"{log_tail}\n"
+                f"{'─' * 60}\n\n"
+                f"Full logs:  {logs_cmd}\n"
+                f"Re-deploy, or re-run with --no-readyz-gate to skip the gate."
             )
 
     # 7. Final report
