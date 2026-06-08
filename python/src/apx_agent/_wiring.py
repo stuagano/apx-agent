@@ -38,6 +38,10 @@ from ._models import (
 
 logger = logging.getLogger(__name__)
 
+# Env var references that fail to resolve (var not set) expand to empty string.
+# Callers are expected to check `if not resolved:` and skip/warn accordingly.
+_UNSET_ENV_EXPANSION = ""
+
 
 def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
     """Apply ``[tool.apx.agent]`` config values onto the live agent instance.
@@ -331,7 +335,7 @@ def _resolve_env_var(value: str) -> str:
     if not value.startswith("$"):
         return value
     var_name = value.lstrip("$").strip("{}")
-    return os.environ.get(var_name, "")
+    return os.environ.get(var_name, _UNSET_ENV_EXPANSION)
 
 
 async def setup_agent(

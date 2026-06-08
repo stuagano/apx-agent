@@ -39,6 +39,8 @@ from ._inspection import (
 
 logger = logging.getLogger(__name__)
 
+_UNSET_ENV = ""  # env var expansion: unset sub-agent URL vars resolve to empty
+
 
 class BaseAgent:
     """Abstract base for all agent types.
@@ -280,7 +282,7 @@ class LlmAgent(BaseAgent):
             for raw_url in self._sub_agent_urls:
                 if raw_url.startswith("$"):
                     var_name = raw_url.lstrip("$").strip("{}")
-                    url = os.environ.get(var_name, "")
+                    url = os.environ.get(var_name, _UNSET_ENV)
                     if not url:
                         logger.warning(f"sub_agent env var {var_name} not set — skipping")
                         continue

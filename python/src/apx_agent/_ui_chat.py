@@ -13,6 +13,8 @@ from ._ui_nav import _apx_nav_links, _deploy_overlay_html
 # (slug, label, iframe URL). The shell defaults to the first tab. To
 # add a tab, append here — the shell auto-renders it and the URL
 # fragment-router handles selection.
+_UNSET_ENV = ""  # optional UI env vars (catalog, warehouse) resolve to empty when not set
+
 _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
     ("chat", "Chat", "/_apx/chat"),
     ("edit", "Edit", "/_apx/edit"),
@@ -510,9 +512,9 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
                 pass
         _env_catalog = (
             _dotenv.get("DEMO_CATALOG") or _dotenv.get("CATALOG")
-            or os.environ.get("DEMO_CATALOG") or os.environ.get("CATALOG", "")
+            or os.environ.get("DEMO_CATALOG") or os.environ.get("CATALOG", _UNSET_ENV)
         )
-        _env_wh = _dotenv.get("WAREHOUSE_ID") or os.environ.get("WAREHOUSE_ID", "")
+        _env_wh = _dotenv.get("WAREHOUSE_ID") or os.environ.get("WAREHOUSE_ID", _UNSET_ENV)
         # Suppress banner when the agent already has tools — DataAgent/CoworkerAgent
         # pre-ground their schema in code, so DEMO_CATALOG/WAREHOUSE_ID never get set.
         _has_tools = ctx and any(t.name != "create_tool" for t in ctx.tools)

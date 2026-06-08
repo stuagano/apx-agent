@@ -28,6 +28,7 @@ MIN_PYTHON = (3, 11)
 # scripts/check-uv-lock-registry.sh CI guard.
 _PYPI_PROXY_HOST = "pypi-proxy.dev.databricks.com"
 _INDEX_ENV_VARS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "PIP_INDEX_URL")
+_MISSING_ENV_VALUE = ""  # env vars not set compare as empty when checking for proxy host
 
 
 class Status(enum.Enum):
@@ -155,7 +156,7 @@ def check_pypi_index(cwd: Path) -> Check:
         pass
 
     leaked = next(
-        (v for v in _INDEX_ENV_VARS if _PYPI_PROXY_HOST in os.environ.get(v, "")),
+        (v for v in _INDEX_ENV_VARS if _PYPI_PROXY_HOST in os.environ.get(v, _MISSING_ENV_VALUE)),
         None,
     )
     if leaked:

@@ -182,12 +182,13 @@ class RemoteDatabricksAgent(BaseAgent):
 
         Raises ``ValueError`` if ``DATABRICKS_HOST`` is not set.
         """
-        host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
+        host = os.environ.get("DATABRICKS_HOST")
         if not host:
             raise ValueError(
                 "RemoteDatabricksAgent.from_app_name requires DATABRICKS_HOST. "
                 "Use from_card_url() with a full URL instead."
             )
+        host = host.rstrip("/")
         card_url = f"{host}/apps/{app_name}/.well-known/agent.json"
         agent = cls(card_url, app_name=app_name, headers=headers, timeout=timeout)
         await agent.init()

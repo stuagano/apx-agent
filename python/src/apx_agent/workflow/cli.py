@@ -27,6 +27,15 @@ import concurrent.futures
 import json
 import os
 
+# Defaults for optional LoopConfig env vars — override by setting the env var before running.
+_DEFAULT_FITNESS_AGENT_URLS = ""       # empty = no fitness agents (must be set to run)
+_DEFAULT_REVIEW_TABLE = "voynich.evolution.review_queue"
+_DEFAULT_POPULATION_SIZE = "500"
+_DEFAULT_MUTATION_BATCH = "50"
+_DEFAULT_MAX_GENERATIONS = "2000"
+_DEFAULT_ESCALATION_THRESHOLD = "0.85"
+_DEFAULT_MLFLOW_EXPERIMENT = "/voynich/evolutionary_search"
+
 
 def _run_async(coro):
     """Run an async coroutine safely, even from inside a running event loop (IPython/Jupyter)."""
@@ -54,18 +63,18 @@ def _build_config_from_env():
         population_table     = os.environ["VOYNICH_POPULATION_TABLE"],
         fitness_agents       = [
             url.strip()
-            for url in os.environ.get("FITNESS_AGENT_URLS", "").split(",")
+            for url in os.environ.get("FITNESS_AGENT_URLS", _DEFAULT_FITNESS_AGENT_URLS).split(",")
             if url.strip()
         ],
         mutation_agent       = os.environ["DECIPHERER_AGENT_URL"],
         judge_agent          = os.environ["JUDGE_AGENT_URL"],
-        review_table         = os.environ.get("VOYNICH_REVIEW_TABLE", "voynich.evolution.review_queue"),
+        review_table         = os.environ.get("VOYNICH_REVIEW_TABLE", _DEFAULT_REVIEW_TABLE),
         warehouse_id         = os.environ["DATABRICKS_WAREHOUSE_ID"],
-        population_size      = int(os.environ.get("POPULATION_SIZE",    "500")),
-        mutation_batch       = int(os.environ.get("MUTATION_BATCH",     "50")),
-        max_generations      = int(os.environ.get("MAX_GENERATIONS",    "2000")),
-        escalation_threshold = float(os.environ.get("ESCALATION_THRESHOLD", "0.85")),
-        mlflow_experiment    = os.environ.get("MLFLOW_EXPERIMENT", "/voynich/evolutionary_search"),
+        population_size      = int(os.environ.get("POPULATION_SIZE",    _DEFAULT_POPULATION_SIZE)),
+        mutation_batch       = int(os.environ.get("MUTATION_BATCH",     _DEFAULT_MUTATION_BATCH)),
+        max_generations      = int(os.environ.get("MAX_GENERATIONS",    _DEFAULT_MAX_GENERATIONS)),
+        escalation_threshold = float(os.environ.get("ESCALATION_THRESHOLD", _DEFAULT_ESCALATION_THRESHOLD)),
+        mlflow_experiment    = os.environ.get("MLFLOW_EXPERIMENT", _DEFAULT_MLFLOW_EXPERIMENT),
     )
 
 

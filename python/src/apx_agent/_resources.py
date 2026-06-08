@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_UNSET_ENV = ""  # env var expansion: unset $VAR references resolve to empty
+
 
 # ---------------------------------------------------------------------------
 # Spec type
@@ -134,7 +136,7 @@ def _sub_agent_to_endpoint(raw: str) -> ResourceSpec | None:
     # Expand $VAR / ${VAR}
     if raw.startswith("$"):
         var_name = raw.lstrip("$").strip("{}")
-        expanded = os.environ.get(var_name, "")
+        expanded = os.environ.get(var_name, _UNSET_ENV)
         if not expanded:
             logger.warning("sub_agent env var %s not set — skipping", var_name)
             return None
