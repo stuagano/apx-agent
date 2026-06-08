@@ -134,9 +134,8 @@ def autolog_if_env() -> None:
     on the cheaper boot path. Set ``APX_AGENT_MLFLOW_AUTOLOG=0`` to force off
     in either case.
     """
-    if os.environ.get("APX_AGENT_MLFLOW_AUTOLOG", "").strip().lower() in (
-        "1", "true", "yes",
-    ):
+    _autolog_raw = os.environ.get("APX_AGENT_MLFLOW_AUTOLOG")
+    if _autolog_raw and _autolog_raw.strip().lower() in ("1", "true", "yes"):
         enable_langchain_autolog()
 
 
