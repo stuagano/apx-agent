@@ -604,6 +604,16 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .step-detail-label {{ font-size: 10px; color: #5b6470; text-transform: uppercase; letter-spacing: .5px; margin: 8px 0 3px; }}
   .step-detail-pre {{ margin: 0; color: #8a929b; font-size: 11px; white-space: pre-wrap;
                       font-family: ui-monospace, monospace; }}
+  .step-sql {{ display: block; color: #8a929b; font-size: 11px; white-space: pre-wrap;
+               font-family: ui-monospace, monospace; }}
+  .resp-table-wrap {{ overflow-x: auto; max-width: 100%; }}
+  .resp-table {{ border-collapse: collapse; font-size: 11px; width: 100%; margin-bottom: 4px; }}
+  .resp-table th {{ color: #60b0ff; text-align: left; padding: 3px 8px;
+                    border-bottom: 1px solid #2a2a2a; font-weight: 600; white-space: nowrap; }}
+  .resp-table td {{ color: #c9d1d9; padding: 3px 8px; border-bottom: 1px solid #1a1a1a; }}
+  .resp-table tr:last-child td {{ border-bottom: none; }}
+  .resp-meta {{ font-size: 10px; color: #4b5563; margin-top: 4px; }}
+  .trunc-note {{ color: #f59e0b; }}
 
   /* Input area */
   .input-bar {{ display: flex; gap: 10px; padding: 16px 24px; background: #111;
@@ -1564,6 +1574,37 @@ function addToolPills(trace) {{
   chat.scrollTop = chat.scrollHeight;
 }}
 
+// ── Tool detail formatters ──
+// fmtReq: if the request JSON has a `query` field, show just the SQL.
+// fmtResp: if the response JSON has a `rows` array, render an HTML table.
+function fmtReq(rawStr) {{
+  try {{
+    const obj = JSON.parse(rawStr);
+    if (typeof obj.query === 'string') {{
+      return `<code class="step-sql">${{esc(obj.query.trim())}}</code>`;
+    }}
+  }} catch {{}}
+  return `<pre class="step-detail-pre">${{esc(rawStr)}}</pre>`;
+}}
+function fmtResp(rawStr) {{
+  try {{
+    const obj = JSON.parse(rawStr);
+    if (Array.isArray(obj.rows) && obj.rows.length > 0) {{
+      const cols = Object.keys(obj.rows[0]);
+      const header = cols.map(c => `<th>${{esc(c)}}</th>`).join('');
+      const bodyRows = obj.rows.map(r =>
+        `<tr>${{cols.map(c => `<td>${{esc(String(r[c] ?? ''))}}</td>`).join('')}}</tr>`
+      ).join('');
+      const count = obj.row_count != null ? obj.row_count : obj.rows.length;
+      const note = obj.truncated ? ' <span class="trunc-note">(truncated)</span>' : '';
+      return `<div class="resp-table-wrap"><table class="resp-table">`
+        + `<thead><tr>${{header}}</tr></thead><tbody>${{bodyRows}}</tbody></table>`
+        + `<div class="resp-meta">${{count}} row${{count !== 1 ? 's' : ''}}${{note}}</div></div>`;
+    }}
+  }} catch {{}}
+  return `<pre class="step-detail-pre">${{esc(rawStr)}}</pre>`;
+}}
+
 // ── Inline thinking-steps ──
 // Live tool-call rows rendered in the transcript above the answer bubble.
 // Keyed by callId so the function_call (running) and its function_call_output
@@ -1600,11 +1641,11 @@ function renderInlineStep(stepsContainer, callId, opts) {{
   // query to show, so we skip the Request section rather than print '{{}}'.
   if (row._req != null && row._req !== '' && row._req.trim() !== '{{}}') {{
     detail.insertAdjacentHTML('beforeend',
-      `<div class="step-detail-label">Request</div><pre class="step-detail-pre">${{esc(row._req)}}</pre>`);
+      `<div class="step-detail-label">Request</div>${{fmtReq(row._req)}}`);
   }}
   if (row._resp != null) {{
     detail.insertAdjacentHTML('beforeend',
-      `<div class="step-detail-label">Response</div><pre class="step-detail-pre">${{esc(row._resp)}}</pre>`);
+      `<div class="step-detail-label">Response</div>${{fmtResp(row._resp)}}`);
   }}
   chat.scrollTop = chat.scrollHeight;
 }}
