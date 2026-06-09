@@ -105,11 +105,16 @@ class DeltaSessionStore:
         try:
             run_sql(self.ws, sql, warehouse_id=self.warehouse_id)
         except Exception as e:
+            # Surface a GRANT hint — the most common cause is the agent's
+            # principal lacking CREATE TABLE on the target schema.
+            schema_parts = self.table_path.rsplit(".", 1)[0]  # catalog.schema
             logger.warning(
-                "DeltaSessionStore: CREATE TABLE IF NOT EXISTS %s failed: %s — "
-                "subsequent reads/writes may fail until the table exists.",
-                self.table_path, e,
+                "DeltaSessionStore: CREATE TABLE IF NOT EXISTS %s failed: %s\n"
+                "  Fix: GRANT CREATE TABLE ON SCHEMA %s TO `<your-principal>`;\n"
+                "  Or pre-create the table and set auto_create=False.",
+                self.table_path, e, schema_parts,
             )
+            return  # don't set _created; let the next call retry
         self._created = True
 
     # -- SessionStore protocol ---------------------------------------------
@@ -180,7 +185,16 @@ class DeltaSessionStore:
             f"  src.session_id, src.history, src.state, src.created_at, src.updated_at"
             f")"
         )
-        run_sql(self.ws, sql, warehouse_id=self.warehouse_id)
+        try:
+            run_sql(self.ws, sql, warehouse_id=self.warehouse_id)
+        except Exception as e:
+            schema_parts = self.table_path.rsplit(".", 1)[0]
+            raise StoreError(
+                f"DeltaSessionStore.put({session.session_id!r}) failed: {e}\n"
+                f"  Fix: GRANT MODIFY ON TABLE {self.table_path} TO `<your-principal>`;\n"
+                f"  Or ensure CREATE TABLE succeeded: GRANT CREATE TABLE ON SCHEMA "
+                f"{schema_parts} TO `<your-principal>`."
+            ) from e
 
     def delete(self, session_id: str) -> None:
         self._ensure_table()

@@ -54,7 +54,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any, Callable, Generator
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable, Generator, NamedTuple
 
 from ._agents import BaseAgent
 from ._audit import AuditAttrs
@@ -74,17 +75,28 @@ _APPS_MISSING_MSG = (
 )
 
 
+@dataclass(frozen=True)
+class _ResponsesTypes:
+    request_cls: Any
+    response_cls: Any
+    stream_event_cls: Any
+
+
+class CompiledResponsesAgent(NamedTuple):
+    non_streaming: Callable[..., Any]
+    streaming: Callable[..., Generator[Any, None, None]]
+
+
 # ---------------------------------------------------------------------------
 # Lazy / best-effort imports from mlflow.genai.agent_server + mlflow.types.responses
 # ---------------------------------------------------------------------------
 
 
-def _import_responses_types() -> tuple[Any, Any, Any]:
+def _import_responses_types() -> _ResponsesTypes:
     """Best-effort import of the Responses contract types.
 
     Returns:
-        Tuple ``(ResponsesAgentRequest, ResponsesAgentResponse,
-        ResponsesAgentStreamEvent)``.
+        ``_ResponsesTypes`` with request_cls, response_cls, stream_event_cls.
 
     Raises:
         NotImplementedError: if the optional mlflow >= 3.x install is missing.
@@ -97,7 +109,11 @@ def _import_responses_types() -> tuple[Any, Any, Any]:
         )
     except ImportError as e:  # pragma: no cover
         raise NotImplementedError(_APPS_MISSING_MSG) from e
-    return ResponsesAgentRequest, ResponsesAgentResponse, ResponsesAgentStreamEvent
+    return _ResponsesTypes(
+        request_cls=ResponsesAgentRequest,
+        response_cls=ResponsesAgentResponse,
+        stream_event_cls=ResponsesAgentStreamEvent,
+    )
 
 
 def _maybe_import_request_headers() -> Callable[[], dict[str, str]] | None:
@@ -530,10 +546,15 @@ def _persist_session(
     input_items: list[dict[str, Any]],
     output_items: list[dict[str, Any]],
 ) -> None:
-    """Append the inbound items + outbound items to the session and put it back."""
+    """Append the inbound items + outbound items to the session and put it back.
+
+    On ``StoreError`` (permissions, warehouse unavailable, transient failure)
+    the turn is silently dropped rather than crashing the response — the same
+    degraded-to-ephemeral policy used by ``_load_session``.
+    """
     if store is None or session is None:
         return
-    from ._session import append_turn
+    from ._session import StoreError, append_turn
 
     append_turn(
         session,
@@ -544,7 +565,13 @@ def _persist_session(
             _item_to_history_dict(it) for it in output_items
         ],
     )
-    store.put(session)
+    try:
+        store.put(session)
+    except StoreError as exc:
+        logger.warning(
+            "_persist_session(%s) failed — session not saved (degraded to ephemeral): %s",
+            getattr(session, "session_id", "?"), exc,
+        )
 
 
 def _item_to_history_dict(item: Any) -> dict[str, Any]:
@@ -599,7 +626,7 @@ def compile_to_responses_agent(
     *,
     model: str,
     session_store: Any | None = None,
-) -> tuple[Callable[..., Any], Callable[..., Generator[Any, None, None]]]:
+) -> CompiledResponsesAgent:
     """Compile an apx-agent ``BaseAgent`` to the Databricks Apps ResponsesAgent contract.
 
     Returns two plain (undecorated) functions; the caller is responsible for
@@ -629,11 +656,10 @@ def compile_to_responses_agent(
             are not installed. The compile is lazy so a process that never
             calls this function won't trip the import.
     """
-    (
-        ResponsesAgentRequest,
-        ResponsesAgentResponse,
-        ResponsesAgentStreamEvent,
-    ) = _import_responses_types()
+    _types = _import_responses_types()
+    ResponsesAgentRequest = _types.request_cls
+    ResponsesAgentResponse = _types.response_cls
+    ResponsesAgentStreamEvent = _types.stream_event_cls
 
     # Snapshot for closure capture
     _agent = agent
@@ -819,7 +845,7 @@ def compile_to_responses_agent(
         f"apx-agent {type(agent).__name__}. Apply ``@stream()`` at module level."
     )
 
-    return non_streaming, streaming
+    return CompiledResponsesAgent(non_streaming=non_streaming, streaming=streaming)
 
 
 # ---------------------------------------------------------------------------
