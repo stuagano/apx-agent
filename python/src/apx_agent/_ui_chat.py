@@ -1886,18 +1886,40 @@ async function finalizeTrace(traceId, status, opts) {{
       return 'OTHER';
     }}
 
-    // ── Summary view: flat timeline of LLM + TOOL spans only ──
-    // Ordered by start time. Orchestration wrappers (CHAIN/AGENT/OTHER) are
-    // hidden here; when no LLM/TOOL spans exist (Responses-API format where
-    // tool calls live inside the root span output), fall back to root spans.
+    // ── Summary view ──
     const ordered = [...data.spans].sort((a,b) => (a.start_time_ns||0)-(b.start_time_ns||0));
-    let keySpans = ordered.filter(s => {{
+    const llmToolSpans = ordered.filter(s => {{
       const t = spanTypeShort(s.span_type);
       return t === 'LLM' || t === 'TOOL';
     }});
-    if (!keySpans.length) {{
-      // Responses-API path: show root spans that have inputs or outputs.
-      keySpans = ordered.filter(s => !s.parent_id && (s.inputs || s.outputs));
+    // Responses-API path: no LLM/TOOL spans exist because tool calls are
+    // embedded in the root span's output array, not as separate spans.
+    const isResponsesApi = !llmToolSpans.length;
+    const keySpans = isResponsesApi
+      ? ordered.filter(s => !s.parent_id && (s.inputs || s.outputs))
+      : llmToolSpans;
+
+    function makeStepCard(typeLabel, color, name, dur, isErr) {{
+      const card = document.createElement('div');
+      card.className = 'span-step';
+      card.style.cssText = 'margin-bottom:6px;';
+      card.innerHTML =
+        `<div class="step-header">` +
+        `<span style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;background:${{color}}22;color:${{color}}">${{typeLabel}}</span>` +
+        `<span class="who" style="color:${{color}};font-size:12px;font-weight:600;margin-left:6px">${{escHtml(name)}}</span>` +
+        (isErr ? `<span style="color:#f87171;font-size:10px;margin-left:6px">ERR</span>` : '') +
+        (dur ? `<span class="dur" style="margin-left:auto">${{dur}}</span>` : '') +
+        `</div>`;
+      return card;
+    }}
+    function addBubble(card, val, cls) {{
+      const msg = extractMsg(val);
+      if (!msg) return;
+      const b = document.createElement('div');
+      b.className = `span-bubble ${{cls}}`;
+      b.style.cssText = 'font-size:11px;margin-top:4px;';
+      b.textContent = msg.slice(0, 200) + (msg.length > 200 ? '…' : '');
+      card.appendChild(b);
     }}
 
     for (const s of keySpans) {{
@@ -1905,28 +1927,42 @@ async function finalizeTrace(traceId, status, opts) {{
       const color = SPAN_COLORS[type] || '#888';
       const dur = s.duration_ms != null ? `${{Math.round(s.duration_ms)}}ms` : '';
       const isErr = (s.status||'').toUpperCase().includes('ERR');
-      const card = document.createElement('div');
-      card.className = 'span-step';
-      card.style.cssText = 'margin-bottom:6px;';
-      card.innerHTML =
-        `<div class="step-header">` +
-        `<span style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;background:${{color}}22;color:${{color}}">${{type}}</span>` +
-        `<span class="who" style="color:${{color}};font-size:12px;font-weight:600;margin-left:6px">${{escHtml(s.name)}}</span>` +
-        (isErr ? `<span style="color:#f87171;font-size:10px;margin-left:6px">ERR</span>` : '') +
-        (dur ? `<span class="dur" style="margin-left:auto">${{dur}}</span>` : '') +
-        `</div>`;
 
-      const addBubble = (val, cls) => {{
-        const msg = extractMsg(val);
-        if (!msg) return;
-        const b = document.createElement('div');
-        b.className = `span-bubble ${{cls}}`;
-        b.style.cssText = 'font-size:11px;margin-top:4px;';
-        b.textContent = msg.slice(0, 200) + (msg.length > 200 ? '…' : '');
-        card.appendChild(b);
-      }};
-      if (s.inputs)  addBubble(s.inputs,  type === 'TOOL' ? 'tool-in' : 'agent-ask');
-      if (s.outputs) addBubble(s.outputs, type === 'TOOL' ? 'tool-out' : 'llm-reply');
+      // Responses-API: expand the output items into individual step cards.
+      if (isResponsesApi && s.outputs && s.outputs.object === 'response' &&
+          Array.isArray(s.outputs.output)) {{
+        // Show user input as a brief header card.
+        const rootCard = makeStepCard(type, color, s.name, dur, isErr);
+        addBubble(rootCard, s.inputs, 'agent-ask');
+        traceBody.appendChild(rootCard);
+        // Emit one card per function_call (paired with its function_call_output).
+        const items = s.outputs.output;
+        for (let i = 0; i < items.length; i++) {{
+          const item = items[i];
+          if (item.type === 'function_call') {{
+            const toolColor = SPAN_COLORS['TOOL'];
+            const tc = makeStepCard('TOOL', toolColor, item.name || 'tool', '', false);
+            addBubble(tc, item.arguments, 'tool-in');
+            const next = items[i + 1];
+            if (next && next.type === 'function_call_output') {{
+              addBubble(tc, next.output, 'tool-out');
+              i++; // skip the paired output item
+            }}
+            traceBody.appendChild(tc);
+          }} else if (item.type === 'message') {{
+            const msgColor = SPAN_COLORS['LLM'];
+            const mc = makeStepCard('LLM', msgColor, 'response', '', false);
+            addBubble(mc, item, 'llm-reply');
+            traceBody.appendChild(mc);
+          }}
+        }}
+        continue;
+      }}
+
+      // Standard LangChain path.
+      const card = makeStepCard(type, color, s.name, dur, isErr);
+      addBubble(card, s.inputs,  type === 'TOOL' ? 'tool-in' : 'agent-ask');
+      addBubble(card, s.outputs, type === 'TOOL' ? 'tool-out' : 'llm-reply');
       traceBody.appendChild(card);
     }}
 
