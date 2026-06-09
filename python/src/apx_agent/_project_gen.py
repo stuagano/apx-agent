@@ -65,8 +65,33 @@ def _write_toml_section(
 # ---------------------------------------------------------------------------
 
 
+def _toml_value_nested(v: Any) -> str:
+    """Render a Python value as a TOML inline value, including nested dicts.
+
+    Extends ``_toml_value`` with dict support so that tool tables with nested
+    structures (e.g. MCP tool args lists) serialise correctly.
+
+    :param v: Python value to render.
+    :returns: A TOML inline representation of *v*.
+    """
+    if isinstance(v, dict):
+        pairs = ", ".join(f"{k} = {_toml_value_nested(val)}" for k, val in v.items())
+        return "{" + pairs + "}"
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_value_nested(i) for i in v) + "]"
+    return _toml_value(v)
+
+
 def _build_pyproject(config: "AgentConfig") -> str:
-    """Build pyproject.toml content for *config*."""
+    """Build pyproject.toml content for *config*.
+
+    Serializes all ``AgentConfig`` fields that have TOML equivalents.
+    ``[[tool.apx.tools]]`` array-of-tables entries are appended for each entry
+    in ``config.tools`` and for each ``SkillConfig`` in ``config.skills``.
+
+    :param config: Validated ``AgentConfig`` to serialize.
+    :returns: Complete pyproject.toml content as a string.
+    """
     lines: list[str] = []
 
     # [project]
@@ -120,6 +145,22 @@ def _build_pyproject(config: "AgentConfig") -> str:
         sess_fields["auto_create"] = sess.auto_create
         _write_toml_section(lines, "tool.apx.agent.session", sess_fields)
 
+    # [[tool.apx.tools]] — one array entry per tool declared in the YAML
+    for tool_dict in config.tools:
+        lines.append("")
+        lines.append("[[tool.apx.tools]]")
+        for k, v in tool_dict.items():
+            lines.append(f"{k} = {_toml_value_nested(v)}")
+
+    # [[tool.apx.tools]] — one skill entry per SkillConfig; path is project-relative
+    for skill in config.skills:
+        lines.append("")
+        lines.append("[[tool.apx.tools]]")
+        lines.append(f'type = "skill"')
+        lines.append(f"name = {_toml_value(skill.name)}")
+        lines.append(f"description = {_toml_value(skill.description)}")
+        lines.append(f'path = "skills/{skill.name}.md"')
+
     return "\n".join(lines)
 
 
@@ -147,8 +188,16 @@ except Exception as exc:
 
 
 def _build_databricks_yml(config: "AgentConfig") -> str:
-    """Build databricks.yml bundle definition for *config*."""
+    """Build databricks.yml bundle definition for *config*.
+
+    Includes a ``cp -r skills .build/`` step when the config declares skills so
+    that the skill markdown files land in the deployed app's source root.
+
+    :param config: Validated ``AgentConfig`` describing the agent.
+    :returns: Complete ``databricks.yml`` content as a string.
+    """
     name = config.name
+    skills_copy = "      cp -r skills .build/ 2>/dev/null || true\n\n" if config.skills else "\n"
     return f"""\
 bundle:
   name: {name}
@@ -185,7 +234,7 @@ artifacts:
       cp -r .apx-agent .build/ 2>/dev/null || true
       cp -r .apx .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
-
+{skills_copy}
 resources:
   experiments:
     {name}_experiment:
@@ -285,15 +334,25 @@ env:
 # ---------------------------------------------------------------------------
 
 
-def generate_project(config: "AgentConfig", target_dir: Path) -> None:
+def generate_project(
+    config: "AgentConfig",
+    target_dir: Path,
+    *,
+    source_dir: Path | None = None,
+) -> None:
     """Write a deployable Databricks Apps project to *target_dir*.
 
     *target_dir* is created if it does not exist. Any files that already exist
     in the directory are overwritten.
 
-    Args:
-        config: Validated ``AgentConfig`` describing the agent.
-        target_dir: Destination directory for the generated project.
+    When ``config.skills`` is non-empty, each skill's markdown file is copied
+    from *source_dir* (or ``target_dir.parent`` when *source_dir* is ``None``)
+    into ``target_dir/skills/<skill.name>.md``.
+
+    :param config: Validated ``AgentConfig`` describing the agent.
+    :param target_dir: Destination directory for the generated project.
+    :param source_dir: Base directory for resolving relative skill paths.
+        Defaults to ``target_dir.parent`` when ``None``.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -312,3 +371,14 @@ def generate_project(config: "AgentConfig", target_dir: Path) -> None:
 
     # app.yml
     (target_dir / "app.yml").write_text(_build_app_yml(config))
+
+    # skills/ — copy each declared skill file into the project
+    if config.skills:
+        _base = source_dir if source_dir is not None else target_dir.parent
+        skills_dir = target_dir / "skills"
+        skills_dir.mkdir(exist_ok=True)
+        for skill in config.skills:
+            src = Path(skill.path)
+            if not src.is_absolute():
+                src = _base / skill.path
+            (skills_dir / f"{skill.name}.md").write_text(src.read_text())

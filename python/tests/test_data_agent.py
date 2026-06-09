@@ -187,3 +187,53 @@ class TestDataAgentBakedSchema:
         monkeypatch.chdir(tmp_path)
         agent = DataAgent("samples", "tpch")
         assert "call the SQL tool to confirm what tables" in agent._instructions
+
+
+class TestStartupWarning:
+    """Startup warehouse check warns early when no warehouse is available."""
+
+    def test_no_warehouse_logs_warning(self, caplog):
+        import logging
+        from unittest.mock import MagicMock, patch
+        from apx_agent import DataAgent
+
+        ws = MagicMock()
+        ws.warehouses.list.return_value = []
+        ws.config.host = "https://my-workspace.azuredatabricks.net"
+
+        with caplog.at_level(logging.WARNING, logger="apx_agent.data_agent"):
+            DataAgent("main", "sales", ws=ws)
+
+        assert any("SQL queries will fail" in r.message for r in caplog.records)
+        assert any("my-workspace.azuredatabricks.net" in r.message for r in caplog.records)
+
+    def test_warehouse_found_no_warning(self, caplog):
+        import logging
+        from unittest.mock import MagicMock
+        from apx_agent import DataAgent
+
+        wh = MagicMock()
+        wh.id = "abc123"
+        wh.warehouse_type = None
+        ws = MagicMock()
+        ws.warehouses.list.return_value = [wh]
+
+        with caplog.at_level(logging.WARNING, logger="apx_agent.data_agent"):
+            DataAgent("main", "sales", ws=ws)
+
+        assert not any("SQL queries will fail" in r.message for r in caplog.records)
+
+    def test_explicit_warehouse_id_skips_check(self, caplog):
+        import logging
+        from unittest.mock import MagicMock
+        from apx_agent import DataAgent
+
+        ws = MagicMock()
+        ws.warehouses.list.return_value = []
+
+        with caplog.at_level(logging.WARNING, logger="apx_agent.data_agent"):
+            DataAgent("main", "sales", warehouse_id="explicit-id", ws=ws)
+
+        # ws.warehouses.list should never be called when warehouse_id is explicit
+        ws.warehouses.list.assert_not_called()
+        assert not any("SQL queries will fail" in r.message for r in caplog.records)

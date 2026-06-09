@@ -100,32 +100,12 @@ repos:
         entry: python3 scripts/lint/lint_no_invented_env_default.py
         types: [python]
 
-      # Ban `-> tuple[X, Y]` returns — 22 violations, narrow backlog.
+      # Ban `-> tuple[X, Y]` returns — 0 remaining violations, no backlog.
       - id: no-tuple-return
         name: no `tuple[X, Y, ...]` returns
         language: system
         entry: python3 scripts/lint/lint_no_tuple_return.py
         types: [python]
-        exclude: |-
-          (?x)^(
-            python/src/apx_agent/_audit\.py$
-            |python/src/apx_agent/_chat_agent\.py$
-            |python/src/apx_agent/_dev\.py$
-            |python/src/apx_agent/_guards\.py$
-            |python/src/apx_agent/_inspection\.py$
-            |python/src/apx_agent/_managed_mcp\.py$
-            |python/src/apx_agent/_mcp\.py$
-            |python/src/apx_agent/_readyz\.py$
-            |python/src/apx_agent/_responses_agent\.py$
-            |python/src/apx_agent/_topology\.py$
-            |python/src/apx_agent/_ui_probe\.py$
-            |python/src/apx_agent/bootstrap\.py$
-            |python/src/apx_agent/cli\.py$
-            |python/src/apx_agent/data_agent\.py$
-            |python/tests/test_example_lakebase\.py$
-            |python/tests/test_memory_lakebase\.py$
-            |python/tests/test_serving_conformance\.py$
-          )
 
       # Ban unconditional @pytest.mark.skip — 0 existing violations, no backlog.
       - id: no-skipped-tests

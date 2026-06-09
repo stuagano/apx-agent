@@ -146,7 +146,6 @@ class DeltaExampleStore:
     def _ensure_table(self) -> None:
         """Idempotently create the Delta table on first use."""
         if self._created or not self._auto_create:
-            self._created = True
             return
         sql = (
             f"CREATE TABLE IF NOT EXISTS {self.table_name} ("
@@ -166,10 +165,14 @@ class DeltaExampleStore:
         try:
             self._run_sql(sql)
         except Exception as e:
+            schema_parts = self.table_name.rsplit(".", 1)[0]
             logger.warning(
-                "DeltaExampleStore: CREATE TABLE IF NOT EXISTS %s failed: %s",
-                self.table_name, e,
+                "DeltaExampleStore: CREATE TABLE IF NOT EXISTS %s failed: %s\n"
+                "  Fix: GRANT CREATE TABLE ON SCHEMA %s TO `<your-principal>`;\n"
+                "  Or pre-create the table and set auto_create=False.",
+                self.table_name, e, schema_parts,
             )
+            return  # don't set _created; let the next call retry
         self._created = True
 
     # -- MERGE SQL ----------------------------------------------------------

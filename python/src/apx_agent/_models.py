@@ -232,6 +232,27 @@ def normalize_memory_knob(
     )
 
 
+class SkillConfig(BaseModel):
+    """A loadable skill — a markdown procedure file surfaced as an on-demand tool.
+
+    Skills are declared in the ``skills:`` block of a YAML spec and compiled
+    into ``[[tool.apx.tools]]`` entries by ``generate_project``.  At runtime
+    the agent can call the skill by name to retrieve its markdown content.
+
+    :param name: Tool name the LLM will call, e.g. ``"sql_analysis"``.
+    :param description: One-sentence description shown in the tool schema,
+        e.g. ``"Best practices for writing SQL against the sales schema"``.
+    :param path: Path to the markdown file relative to the YAML spec,
+        e.g. ``"skills/sql_analysis.md"``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str
+    path: str
+
+
 class AgentConfig(BaseModel):
     """Agent configuration — loaded from [tool.apx.agent] in pyproject.toml or constructed directly."""
 
@@ -274,6 +295,39 @@ class AgentConfig(BaseModel):
 
     session: SessionBackendConfig | None = None
     """Declarative session backend — see ``[tool.apx.agent.session]``."""
+
+    tools: list[dict[str, Any]] = []
+    """Tool declarations from a YAML spec ``tools:`` block.
+
+    Each entry mirrors a ``[[tool.apx.tools]]`` TOML table:
+    ``{"type": "genie", "space_id": "abc", "name": "ask_sales"}``.
+    ``generate_project`` serializes these into the generated pyproject.toml;
+    they are not written under ``[tool.apx.agent]`` and are not read from
+    pyproject at runtime (``merge_config_tools`` reads ``[[tool.apx.tools]]``
+    directly).
+    """
+
+    skills: list[SkillConfig] = []
+    """Skill declarations from a YAML spec ``skills:`` block.
+
+    Each entry names a markdown file that the agent can load on demand.
+    ``generate_project`` copies the file into the project and emits a
+    ``[[tool.apx.tools]]`` entry with ``type = "skill"``.
+    """
+
+    executor: str = "langgraph"
+    """Harness to use for this agent.
+
+    ``'langgraph'`` (default) compiles the agent to a LangGraph
+    ``CompiledStateGraph`` via :func:`~apx_agent._compile.compile_to_langgraph`.
+    This supports all agent topologies (SequentialAgent, LoopAgent, etc.).
+
+    ``'claude-sdk'`` uses :class:`~apx_agent._claude_sdk_executor.ClaudeSDKExecutor`
+    — a native OpenAI-compatible agentic loop with no LangGraph dependency.
+    Suitable for :class:`~apx_agent._agents.LlmAgent` instances with a flat
+    tool list.  Agents with composite topologies fall back to ``'langgraph'``
+    automatically with a warning.
+    """
 
 
 class AgentTool(BaseModel):

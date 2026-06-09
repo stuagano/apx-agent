@@ -284,3 +284,52 @@ def test_delta_no_auto_create_when_disabled() -> None:
         store.get("x")
     create_sqls = [c for c in mock_run.call_args_list if "CREATE TABLE" in c.args[1]]
     assert create_sqls == []
+
+
+def test_delta_ensure_table_retries_after_create_failure() -> None:
+    """CREATE TABLE failure must not mark _created=True — next call retries."""
+    store = DeltaSessionStore(table_path="main.x.sessions", ws=MagicMock())
+    create_calls: list[str] = []
+
+    def flaky_run_sql(ws, sql, **kwargs):
+        if "CREATE TABLE" in sql:
+            create_calls.append(sql)
+            raise RuntimeError("PERMISSION_DENIED")
+        return []
+
+    with patch("apx_agent._session_delta.run_sql", side_effect=flaky_run_sql):
+        store._ensure_table()
+        assert not store._created, "_created must stay False after CREATE TABLE failure"
+        store._ensure_table()  # second call should retry CREATE TABLE
+    assert len(create_calls) == 2, "Expected two CREATE TABLE attempts"
+
+
+def test_delta_put_raises_store_error_on_sql_failure() -> None:
+    """put() wraps run_sql errors as StoreError with a GRANT hint."""
+    store = DeltaSessionStore(table_path="main.x.sessions", ws=MagicMock(), auto_create=False)
+    session = Session(session_id="s1", history=[], state={})
+
+    def fail_merge(ws, sql, **kwargs):
+        if "MERGE INTO" in sql:
+            raise RuntimeError("TABLE_OR_VIEW_NOT_FOUND: main.x.sessions")
+        return []
+
+    with patch("apx_agent._session_delta.run_sql", side_effect=fail_merge):
+        with pytest.raises(StoreError, match="GRANT"):
+            store.put(session)
+
+
+def test_persist_session_degrades_gracefully_on_store_error(caplog) -> None:
+    """_persist_session catches StoreError and logs a warning instead of crashing."""
+    import logging
+    from apx_agent._responses_agent import _persist_session
+    from apx_agent._session import Session, StoreError
+
+    store = MagicMock()
+    store.put.side_effect = StoreError("no perms")
+    session = Session(session_id="s1", history=[], state={})
+
+    with caplog.at_level(logging.WARNING):
+        _persist_session(store, session, input_items=[], output_items=[])
+
+    assert any("degraded to ephemeral" in r.message for r in caplog.records)

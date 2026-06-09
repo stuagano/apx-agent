@@ -145,9 +145,9 @@ def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
 
     from ._guards import build_config_guards, compose  # noqa: PLC0415
 
-    input_guards, before_tool_gate = build_config_guards(config.guardrails)
+    _guards = build_config_guards(config.guardrails)
 
-    if input_guards:
+    if _guards.input_guardrails:
         existing_igs = getattr(agent, "_input_guardrails", None)
         if existing_igs is None:
             logger.warning(
@@ -156,9 +156,9 @@ def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
                 type(agent).__name__,
             )
         else:
-            existing_igs.extend(input_guards)
+            existing_igs.extend(_guards.input_guardrails)
 
-    if before_tool_gate is not None:
+    if _guards.before_tool is not None:
         if not hasattr(agent, "_before_tool"):
             logger.warning(
                 "config guardrails tool rules (blocked_tools / allowed_tools / "
@@ -169,9 +169,9 @@ def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
         else:
             code_hook = getattr(agent, "_before_tool", None)
             if code_hook is not None:
-                setattr(agent, "_before_tool", compose(code_hook, before_tool_gate))
+                setattr(agent, "_before_tool", compose(code_hook, _guards.before_tool))
             else:
-                setattr(agent, "_before_tool", before_tool_gate)
+                setattr(agent, "_before_tool", _guards.before_tool)
 
     setattr(agent, "_apx_config_guards_applied", True)
 
@@ -639,11 +639,9 @@ async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
     try:
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
-        mcp_server, mcp_transport = _build_mcp_components(
-            ctx, app, ctx.config.api_prefix
-        )
-        app.state.mcp_server = mcp_server
-        app.state.mcp_transport = mcp_transport
+        _mcp = _build_mcp_components(ctx, app, ctx.config.api_prefix)
+        app.state.mcp_server = _mcp.server
+        app.state.mcp_transport = _mcp.sse_transport
         mcp_http_manager = StreamableHTTPSessionManager(mcp_server, stateless=True)
         app.state.mcp_http_manager = mcp_http_manager
         logger.info(

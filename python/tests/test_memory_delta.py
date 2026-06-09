@@ -207,6 +207,18 @@ def test_auto_create_swallows_ddl_errors(caplog: pytest.LogCaptureFixture) -> No
     assert any("CREATE TABLE" in c for c in sql.calls)
 
 
+def test_auto_create_retries_after_create_table_failure() -> None:
+    """CREATE TABLE failure must not mark _created=True — next call retries."""
+    sql = RecordingSqlExecutor(patterns=[("CREATE TABLE", RuntimeError)])
+    store = DeltaMemoryStore(run_sql=sql)
+    store._ensure_table()
+    assert not store._created, "_created must stay False after CREATE TABLE failure"
+    # A second call should still attempt CREATE TABLE
+    store._ensure_table()
+    create_calls = [c for c in sql.calls if "CREATE TABLE" in c]
+    assert len(create_calls) == 2, "Expected two CREATE TABLE attempts"
+
+
 # ---------------------------------------------------------------------------
 # add / add_batch / MERGE
 # ---------------------------------------------------------------------------

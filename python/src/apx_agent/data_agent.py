@@ -26,6 +26,7 @@ agent: use it directly, as a ``sub_agent``, or as a leaf in a
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,6 +39,12 @@ from ._schema import build_instructions_from_schema, introspect_schema, load_bak
 from ._template import template
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _DataAgentComponents:
+    tools: list[Any]
+    instructions: str
 
 
 def _build_data_tools_and_instructions(
@@ -54,8 +61,8 @@ def _build_data_tools_and_instructions(
     objective: str | None,
     tables: dict | None,
     extra_tools: list[Any] | None,
-) -> tuple[list[Any], str]:
-    """Shared builder: returns (tools, instructions) for the data agent shape."""
+) -> _DataAgentComponents:
+    """Shared builder: returns tools and instructions for the data agent shape."""
     from .genie import genie_tool
     from .sql_tools import sql_tool
     from .vector_search import vector_search_tool
@@ -88,6 +95,20 @@ def _build_data_tools_and_instructions(
     tables = resolved_tables
 
     sql = sql_tool(warehouse_id=warehouse_id)
+
+    # Startup warehouse check — surface missing warehouse in logs before any
+    # user query, not silently on the first SQL call.
+    if warehouse_id is None and ws is not None:
+        from ._sql import get_warehouse_id as _get_wh
+        try:
+            _get_wh(ws)
+        except RuntimeError as _wh_err:
+            logger.warning(
+                "DataAgent(%r, %r): %s — SQL queries will fail until a warehouse "
+                "is created. Create one in your workspace then re-deploy.",
+                catalog, schema, _wh_err,
+            )
+
     if tables:
         # The schema's tables become governed resources, declared on the SQL
         # tool so they flow through the existing tool-based resource collection.
@@ -111,7 +132,7 @@ def _build_data_tools_and_instructions(
     resolved_instructions = instructions or build_instructions_from_schema(
         catalog, schema, tables, persona=persona, objective=objective
     )
-    return tools, resolved_instructions
+    return _DataAgentComponents(tools=tools, instructions=resolved_instructions)
 
 
 class DataAgent(LlmAgent):
@@ -167,7 +188,7 @@ class DataAgent(LlmAgent):
         self.catalog = catalog
         self.schema = schema
 
-        tools, resolved_instructions = _build_data_tools_and_instructions(
+        _components = _build_data_tools_and_instructions(
             catalog=catalog,
             schema=schema,
             warehouse_id=warehouse_id,
@@ -182,8 +203,8 @@ class DataAgent(LlmAgent):
             extra_tools=extra_tools,
         )
         super().__init__(
-            tools=tools,
-            instructions=resolved_instructions,
+            tools=_components.tools,
+            instructions=_components.instructions,
             name=name or f"{schema}_data_agent",
             **kwargs,
         )

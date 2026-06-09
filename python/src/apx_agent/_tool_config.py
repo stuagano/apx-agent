@@ -63,6 +63,35 @@ def _check_allowlist(index: int, type_: str, kwargs: dict[str, Any]) -> None:
         )
 
 
+def skill_tool(name: str, description: str, path: str) -> Callable[[], str]:
+    """Return a zero-argument callable that reads and returns a skill markdown file.
+
+    The returned function is registered with the agent as a tool.  When the
+    LLM calls it, the skill's markdown content is returned as the tool result.
+    Relative *path* values are resolved from ``Path.cwd()`` at call time, which
+    in a deployed Databricks App is the ``source_code_path`` root.
+
+    :param name: Tool name exposed to the LLM, e.g. ``"sql_analysis"``.
+    :param description: One-sentence description in the tool schema,
+        e.g. ``"Best practices for writing SQL queries"``.
+    :param path: Path to the markdown file.  Relative paths are resolved from
+        ``Path.cwd()`` at invocation time, e.g. ``"skills/sql_analysis.md"``.
+    :returns: A callable with ``__name__ = name`` and ``__doc__ = description``.
+    :raises FileNotFoundError: At call time if the resolved path does not exist.
+    """
+    from pathlib import Path as _Path
+
+    skill_path = _Path(path)
+
+    def _load() -> str:
+        resolved = skill_path if skill_path.is_absolute() else _Path.cwd() / skill_path
+        return resolved.read_text()
+
+    _load.__name__ = name
+    _load.__doc__ = description
+    return _load
+
+
 def _registry() -> dict[str, Callable[..., Any]]:
     # Lazy imports keep this module cheap to import (factories pull in the SDK).
     from .catalog import (
@@ -106,6 +135,7 @@ def _registry() -> dict[str, Callable[..., Any]]:
         "jobs_history": jobs_history_tool,
         "jobs_logs": jobs_logs_tool,
         "jobs_source_paths": jobs_source_paths_tool,
+        "skill": skill_tool,
     }
 
 

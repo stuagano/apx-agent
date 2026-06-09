@@ -3129,7 +3129,8 @@ def _drive_deploy_to_gate(tmp_path, monkeypatch, *, readyz_gate, check_result):
                  "service_principal_client_id": None,
              },
          ), \
-         patch("apx_agent.cli._check_readyz", side_effect=fake_check_readyz):
+         patch("apx_agent.cli._check_readyz", side_effect=fake_check_readyz), \
+         patch("apx_agent.cli._fetch_app_log_tail", return_value="  ERROR: boom\n  Traceback..."):
         _deploy_apps_impl(
             cwd=tmp_path,
             module="agent:agent",
@@ -3150,7 +3151,7 @@ def _drive_deploy_to_gate(tmp_path, monkeypatch, *, readyz_gate, check_result):
 def test_deploy_readyz_gate_fails_when_degraded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """readyz_gate=True + degraded /readyz → ClickException; gate was called."""
+    """readyz_gate=True + degraded /readyz → ClickException with log tail."""
     import click
 
     with pytest.raises(click.ClickException) as exc:
@@ -3160,7 +3161,11 @@ def test_deploy_readyz_gate_fails_when_degraded(
             readyz_gate=True,
             check_result=(False, {"llm": "fail"}),
         )
-    assert "readyz gate failed" in str(exc.value)
+    msg = str(exc.value)
+    assert "readyz gate failed" in msg
+    # Log tail and full-logs command must be surfaced to the user.
+    assert "ERROR: boom" in msg
+    assert "databricks apps logs my-app" in msg
 
 
 def test_deploy_readyz_gate_passes_when_ready(
@@ -3187,6 +3192,27 @@ def test_deploy_no_readyz_gate_skips_check(
         check_result=(False, {"llm": "fail"}),
     )
     assert calls == []
+
+
+def test_fetch_app_log_tail_handles_missing_cli() -> None:
+    """_fetch_app_log_tail never raises even when databricks CLI is absent."""
+    from apx_agent.cli import _fetch_app_log_tail
+    with patch("subprocess.run", side_effect=FileNotFoundError("databricks not found")):
+        result = _fetch_app_log_tail("my-app", profile=None)
+    assert "could not fetch logs" in result
+
+
+def test_fetch_app_log_tail_returns_last_n_lines() -> None:
+    """_fetch_app_log_tail trims to the requested number of lines."""
+    from apx_agent.cli import _fetch_app_log_tail
+    many_lines = "\n".join(f"line {i}" for i in range(100))
+    fake_proc = SimpleNamespace(returncode=0, stdout=many_lines, stderr="")
+    with patch("subprocess.run", return_value=fake_proc):
+        result = _fetch_app_log_tail("my-app", profile=None, lines=10)
+    assert result.count("\n") == 9  # 10 lines = 9 newlines
+    assert "line 99" in result
+    assert "line 90" in result
+    assert "line 89" not in result
 
 
 # ---------------------------------------------------------------------------

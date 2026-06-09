@@ -35,7 +35,7 @@ Skips if optional extras (``langgraph``, ``eval``/mlflow) are not installed.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, NamedTuple
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -119,6 +119,11 @@ def _normalize_headers(h: Any) -> tuple[Any, ...] | None:
         return None
     token = h.token.get_secret_value() if h.token else None
     return (h.host, h.user_id, h.user_email, token)
+
+
+class _BothCaptures(NamedTuple):
+    chat: "_Capture"
+    responses: "_Capture"
 
 
 class _Capture:
@@ -231,7 +236,7 @@ def _run_both(
     custom_inputs: dict[str, Any] | None = None,
     sentinel_ws: Any | None = None,
     final_text: str = "OK",
-) -> tuple[_Capture, _Capture]:
+) -> _BothCaptures:
     """Run the SAME logical request through both adapters.
 
     Both wire shapes are supplied by hand (``chat_messages`` AND
@@ -256,7 +261,7 @@ def _run_both(
         sentinel_ws=sentinel_ws,
         final_text=final_text,
     )
-    return chat_cap, resp_cap
+    return _BothCaptures(chat=chat_cap, responses=resp_cap)
 
 
 def _responses_assistant_text(response: Any) -> str:
