@@ -7,6 +7,8 @@ Covers:
   4. agent_server/start_server.py is created.
   5. databricks.yml contains the agent name.
   6. ``module = "agent:agent"`` does NOT appear when template is set.
+  7. [[tool.apx.tools]] entries are emitted for each tools: dict.
+  8. Skills are copied to skills/ and emitted as [[tool.apx.tools]] type=skill entries.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from apx_agent._models import AgentConfig, MemoryBackendConfig, SessionBackendConfig
+from apx_agent._models import AgentConfig, MemoryBackendConfig, SessionBackendConfig, SkillConfig
 from apx_agent._project_gen import generate_project
 
 
@@ -170,3 +172,107 @@ def test_module_line_present_when_no_template(tmp_path: Path, minimal_config: Ag
     assert 'module = "agent:agent"' in content, (
         "module = 'agent:agent' should be present when no template is set"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 7: [[tool.apx.tools]] entries from config.tools
+# ---------------------------------------------------------------------------
+
+
+def test_tools_emitted_as_toml_array_of_tables(tmp_path: Path) -> None:
+    """Each entry in config.tools becomes a [[tool.apx.tools]] table."""
+    config = AgentConfig(
+        name="demo",
+        tools=[
+            {"type": "genie", "space_id": "01ef", "name": "ask_sales"},
+            {"type": "sql", "warehouse_id": "wh123"},
+        ],
+    )
+    generate_project(config, tmp_path)
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    tables = (data.get("tool") or {}).get("apx", {}).get("tools") or []
+    assert len(tables) == 2, f"Expected 2 [[tool.apx.tools]] entries, got {len(tables)}"
+    assert tables[0]["type"] == "genie"
+    assert tables[0]["space_id"] == "01ef"
+    assert tables[0]["name"] == "ask_sales"
+    assert tables[1]["type"] == "sql"
+    assert tables[1]["warehouse_id"] == "wh123"
+
+
+def test_no_tools_section_when_tools_empty(tmp_path: Path, minimal_config: AgentConfig) -> None:
+    """No [[tool.apx.tools]] entries appear when config.tools is empty."""
+    generate_project(minimal_config, tmp_path)
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    tables = (data.get("tool") or {}).get("apx", {}).get("tools")
+    assert tables is None or tables == [], "[[tool.apx.tools]] should be absent when tools=[]"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: skills copied and emitted as type=skill [[tool.apx.tools]] entries
+# ---------------------------------------------------------------------------
+
+
+def test_skill_file_copied_and_toml_entry_emitted(tmp_path: Path) -> None:
+    """Skill markdown is copied to skills/<name>.md; TOML entry uses type=skill."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "sql_guide.md").write_text("# SQL Guide\nUse explicit column names.")
+
+    config = AgentConfig(
+        name="demo",
+        skills=[
+            SkillConfig(
+                name="sql_guide",
+                description="SQL best practices",
+                path="sql_guide.md",
+            )
+        ],
+    )
+    project_dir = tmp_path / "project"
+    generate_project(config, project_dir, source_dir=source_dir)
+
+    # Skill file copied
+    skill_file = project_dir / "skills" / "sql_guide.md"
+    assert skill_file.exists(), "skills/sql_guide.md was not created"
+    assert "SQL Guide" in skill_file.read_text()
+
+    # TOML entry present
+    with open(project_dir / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    tables = (data.get("tool") or {}).get("apx", {}).get("tools") or []
+    assert len(tables) == 1
+    assert tables[0]["type"] == "skill"
+    assert tables[0]["name"] == "sql_guide"
+    assert tables[0]["description"] == "SQL best practices"
+    assert tables[0]["path"] == "skills/sql_guide.md"
+
+
+def test_skills_copy_step_in_databricks_yml(tmp_path: Path) -> None:
+    """When skills are declared, databricks.yml includes the cp -r skills step."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "guide.md").write_text("guide content")
+
+    config = AgentConfig(
+        name="demo",
+        skills=[SkillConfig(name="guide", description="A guide", path="guide.md")],
+    )
+    project_dir = tmp_path / "project"
+    generate_project(config, project_dir, source_dir=source_dir)
+
+    content = (project_dir / "databricks.yml").read_text()
+    assert "cp -r skills .build/" in content
+
+
+def test_no_skills_copy_step_when_skills_empty(tmp_path: Path, minimal_config: AgentConfig) -> None:
+    """When no skills are declared, databricks.yml omits the cp -r skills step."""
+    generate_project(minimal_config, tmp_path)
+    content = (tmp_path / "databricks.yml").read_text()
+    assert "cp -r skills" not in content

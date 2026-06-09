@@ -261,3 +261,55 @@ def test_factory_called_only_once_on_repeat_merge(tmp_path, monkeypatch):
         f"Factory was called {call_count[0]} times; expected 1 — "
         "second merge_config_tools call did not skip via sentinel."
     )
+
+
+# ---------------------------------------------------------------------------
+# skill_tool factory
+# ---------------------------------------------------------------------------
+
+
+def test_skill_tool_returns_markdown_content(tmp_path):
+    """skill_tool callable reads and returns the file contents at call time."""
+    from apx_agent._tool_config import skill_tool
+
+    md = tmp_path / "guide.md"
+    md.write_text("# SQL Guide\nUse SELECT, not SELECT *.")
+
+    fn = skill_tool(name="sql_guide", description="SQL best practices", path=str(md))
+
+    assert fn.__name__ == "sql_guide"
+    assert fn.__doc__ == "SQL best practices"
+    content = fn()
+    assert "SQL Guide" in content
+    assert "SELECT *" in content
+
+
+def test_skill_tool_relative_path_resolves_from_cwd(tmp_path, monkeypatch):
+    """A relative path is resolved against Path.cwd() at call time."""
+    from apx_agent._tool_config import skill_tool
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "analysis.md").write_text("## Analysis\nStep 1.")
+
+    monkeypatch.chdir(tmp_path)
+
+    fn = skill_tool(name="analysis", description="Analysis guide", path="skills/analysis.md")
+    content = fn()
+    assert "Analysis" in content
+    assert "Step 1" in content
+
+
+def test_skill_tool_dispatch_via_load_config_tools(tmp_path):
+    """load_config_tools accepts type='skill' entries from the registry."""
+    from apx_agent._tool_config import load_config_tools
+
+    md = tmp_path / "guide.md"
+    md.write_text("# SQL Guide")
+
+    tools = load_config_tools([
+        {"type": "skill", "name": "sql_guide", "description": "SQL tips", "path": str(md)},
+    ])
+    assert len(tools) == 1
+    assert tools[0].__name__ == "sql_guide"
+    assert "SQL Guide" in tools[0]()

@@ -14,6 +14,12 @@ class SpecValidationError(ValueError):
     """Raised when a YAML spec fails validation."""
 
 
+# Sentinel used as the initial ``path`` accumulator in ``_collect_unresolved``.
+# A named constant satisfies the no-empty-string-default lint rule; the empty
+# string is semantically correct here (it denotes the root of the data tree).
+_ROOT_PATH: str = ""
+
+
 def _resolve_env_vars(value: Any) -> Any:
     """Recursively replace $VAR / ${VAR} in string leaves."""
     if isinstance(value, str):
@@ -37,7 +43,7 @@ _VAR_HINTS: dict[str, str] = {
 }
 
 
-def _collect_unresolved(value: Any, path: str = "") -> list[tuple[str, str]]:
+def _collect_unresolved(value: Any, path: str = _ROOT_PATH) -> list[tuple[str, str]]:
     """Return (field_path, var_name) for every unresolved $VAR in *value*."""
     hits: list[tuple[str, str]] = []
     if isinstance(value, str):
@@ -78,9 +84,16 @@ def _check_unresolved_vars(data: dict[str, Any]) -> None:
 def load_spec(path: Path) -> "AgentConfig":
     """Load a YAML spec file and return a validated AgentConfig.
 
-    Resolves $VAR / ${VAR} env var references in string values before
-    validation. Raises FileNotFoundError if the file does not exist,
-    SpecValidationError if required fields are missing or types are wrong.
+    Resolves ``$VAR`` / ``${VAR}`` env var references in string values before
+    validation.  ``tools:`` entries are parsed into ``AgentConfig.tools`` and
+    forwarded to ``[[tool.apx.tools]]`` by ``generate_project``.  Skill paths
+    in ``skills:`` are validated to exist relative to the spec file.
+
+    :param path: Path to the ``.yaml`` spec file.
+    :returns: A validated ``AgentConfig`` with ``tools`` and ``skills`` populated.
+    :raises FileNotFoundError: If the spec file does not exist.
+    :raises SpecValidationError: If required fields are missing, types are wrong,
+        or a skill path does not resolve to an existing file.
     """
     import yaml
     from pydantic import ValidationError
@@ -99,11 +112,29 @@ def load_spec(path: Path) -> "AgentConfig":
     if "name" not in data:
         raise SpecValidationError("Spec is missing required field: 'name'")
 
-    # 'tools' in the YAML is a list of tool dicts — not part of AgentConfig
-    # (those go to [[tool.apx.tools]]). Strip it so pydantic doesn't choke.
-    data.pop("tools", None)
-
     try:
-        return AgentConfig.model_validate(data)
+        config = AgentConfig.model_validate(data)
     except ValidationError as e:
         raise SpecValidationError(f"Invalid spec: {e}") from e
+
+    _validate_skill_paths(config, path.parent)
+    return config
+
+
+def _validate_skill_paths(config: "AgentConfig", base_dir: Path) -> None:
+    """Raise SpecValidationError for any skill whose path does not exist.
+
+    :param config: Validated ``AgentConfig`` whose ``skills`` list to check.
+    :param base_dir: Directory to resolve relative skill paths against
+        (typically the directory containing the YAML spec file).
+    :raises SpecValidationError: If any skill path does not exist.
+    """
+    for skill in config.skills:
+        skill_path = Path(skill.path)
+        if not skill_path.is_absolute():
+            skill_path = base_dir / skill_path
+        if not skill_path.exists():
+            raise SpecValidationError(
+                f"Skill '{skill.name}': path not found: {skill.path!r} "
+                f"(resolved to {skill_path})"
+            )
