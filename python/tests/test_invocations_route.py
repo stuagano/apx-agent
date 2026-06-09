@@ -278,7 +278,7 @@ def app_with_responses():
 
     captured: dict[str, Any] = {}
 
-    def _fake_compile(agent_arg, *, model, session_store=None):
+    def _fake_compile(agent_arg, *, model, session_store=None, executor="langgraph"):
         captured["invoke"] = fake_invoke
         captured["stream"] = fake_stream
         return fake_invoke, fake_stream

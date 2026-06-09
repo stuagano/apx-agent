@@ -267,7 +267,10 @@ def mount_responses_route(
 
     try:
         _invoke_fn, _stream_fn = compile_to_responses_agent(
-            agent, model=config.model, session_store=session_store
+            agent,
+            model=config.model,
+            session_store=session_store,
+            executor=getattr(config, "executor", "langgraph"),
         )
     except Exception as exc:
         logger.warning("Cannot compile ResponsesAgent for /responses: %s", exc)
@@ -297,8 +300,7 @@ def mount_responses_route(
         try:
             from ._responses_agent import _import_responses_types
 
-            ResponsesAgentRequest, _, _ = _import_responses_types()
-            req = ResponsesAgentRequest(
+            req = _import_responses_types().request_cls(
                 input=input_items, custom_inputs=custom_inputs or None
             )
         except Exception as exc:

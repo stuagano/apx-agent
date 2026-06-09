@@ -617,6 +617,217 @@ def _item_to_history_dict(item: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Executor-seam helpers (Phase C)
+# ---------------------------------------------------------------------------
+
+
+def _lc_to_openai_messages(messages: list[Any]) -> list[dict[str, Any]]:
+    """Convert LangChain ``BaseMessage`` objects to OpenAI chat-completions dicts.
+
+    Handles the four message types that appear in apx-agent conversation history:
+    ``HumanMessage`` (``type="human"``), ``AIMessage`` (``type="ai"``),
+    ``ToolMessage`` (``type="tool"``), and ``SystemMessage`` (``type="system"``).
+    All other types fall back to ``role="user"``.
+
+    :param messages: A list of LangChain ``BaseMessage`` instances (or any
+        objects with ``type`` and ``content`` attributes).
+    :returns: A list of dicts in OpenAI chat-completions message format, e.g.
+        ``[{"role": "user", "content": "Hello"}]``.
+    """
+    import json as _json
+
+    result: list[dict[str, Any]] = []
+    for m in messages:
+        msg_type = getattr(m, "type", "human")
+        content = m.content if isinstance(m.content, str) else str(m.content)
+        if msg_type == "human":
+            result.append({"role": "user", "content": content})
+        elif msg_type == "ai":
+            tool_calls = getattr(m, "tool_calls", None) or []
+            if tool_calls:
+                tc_list = [
+                    {
+                        "id": tc.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": tc.get("name", ""),
+                            "arguments": _json.dumps(tc.get("args", {})),
+                        },
+                    }
+                    for tc in tool_calls
+                ]
+                result.append(
+                    {
+                        "role": "assistant",
+                        "content": content if content else " ",
+                        "tool_calls": tc_list,
+                    }
+                )
+            else:
+                result.append({"role": "assistant", "content": content})
+        elif msg_type == "tool":
+            result.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(getattr(m, "tool_call_id", "") or ""),
+                    "content": content,
+                }
+            )
+        elif msg_type == "system":
+            result.append({"role": "system", "content": content})
+        else:
+            result.append({"role": "user", "content": content})
+    return result
+
+
+def _run_executor_sync(executor: Any, messages: list[dict[str, Any]]) -> list[Any]:
+    """Run *executor.run_turn()* synchronously in an isolated event loop.
+
+    Launches a :class:`~concurrent.futures.ThreadPoolExecutor` thread that owns
+    a fresh asyncio event loop via :func:`asyncio.run`.  This prevents
+    ``RuntimeError: This event loop is already running`` when called from a
+    synchronous function inside an async WSGI/ASGI server (e.g. MLflow's
+    ``AgentServer`` backed by uvicorn).
+
+    :param executor: An :class:`~apx_agent._executor.Executor` instance whose
+        ``run_turn`` async generator will be drained.
+    :param messages: Conversation messages in OpenAI chat-completions format,
+        e.g. ``[{"role": "user", "content": "Hello"}]``.
+    :returns: A list of :class:`~apx_agent._executor.ExecutorEvent` objects
+        collected from the full turn, ending with
+        :class:`~apx_agent._executor.TurnComplete` or
+        :class:`~apx_agent._executor.ExecutorError`.
+    """
+    import asyncio
+    import concurrent.futures
+
+    async def _collect() -> list[Any]:
+        return [e async for e in executor.run_turn(messages, [], "", None)]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, _collect()).result()
+
+
+def _executor_events_to_items(events: list[Any]) -> list[dict[str, Any]]:
+    """Convert :class:`~apx_agent._executor.ExecutorEvent` objects to Responses output items.
+
+    Maps the executor's streaming events to the structured output-item dicts
+    expected by ``ResponsesAgentResponse.output``:
+
+    - :class:`~apx_agent._executor.TextChunk` — text is accumulated and emitted
+      as a ``message`` item when followed by a tool call or at
+      :class:`~apx_agent._executor.TurnComplete`.
+    - :class:`~apx_agent._executor.ToolCallRequest` — flushes any accumulated
+      text first, then emits a ``function_call`` item.
+    - :class:`~apx_agent._executor.ToolCallComplete` — emits a
+      ``function_call_output`` item.
+    - :class:`~apx_agent._executor.TurnComplete` — flushes remaining text; if
+      no :class:`~apx_agent._executor.TextChunk` events were seen in this
+      round, uses ``TurnComplete.response`` as the final message text.
+    - :class:`~apx_agent._executor.ExecutorError` — raises :exc:`RuntimeError`.
+
+    :param events: A flat list of executor events from one turn, as returned by
+        :func:`_run_executor_sync`.
+    :returns: A list of output-item dicts in the ``message``, ``function_call``,
+        and ``function_call_output`` shapes accepted by
+        ``ResponsesAgentResponse.output``.
+    :raises RuntimeError: If any event is an
+        :class:`~apx_agent._executor.ExecutorError`.
+    """
+    import json as _json
+
+    from ._executor import (
+        ExecutorError,
+        TextChunk,
+        ToolCallComplete,
+        ToolCallRequest,
+        TurnComplete,
+    )
+
+    output_items: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    item_index = 0
+
+    def _flush_text() -> bool:
+        """Emit accumulated text as a message item; return True if text was flushed."""
+        nonlocal text_parts, item_index
+        text = "".join(text_parts)
+        text_parts = []
+        if not text:
+            return False
+        output_items.append(
+            {
+                "type": "message",
+                "role": "assistant",
+                "id": f"msg-{item_index}",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }
+        )
+        item_index += 1
+        return True
+
+    for event in events:
+        if isinstance(event, TextChunk):
+            if event.text:
+                text_parts.append(event.text)
+        elif isinstance(event, ToolCallRequest):
+            _flush_text()
+            args = event.args if event.args is not None else {}
+            output_items.append(
+                {
+                    "type": "function_call",
+                    "call_id": event.call_id or "",
+                    "name": event.name or "",
+                    "arguments": (
+                        _json.dumps(args) if isinstance(args, dict) else str(args)
+                    ),
+                    "id": f"fc-{item_index}",
+                }
+            )
+            item_index += 1
+        elif isinstance(event, ToolCallComplete):
+            result_val = event.result if event.error is None else event.error
+            output_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": event.call_id or "",
+                    "output": (
+                        result_val
+                        if isinstance(result_val, str)
+                        else _json.dumps(result_val, default=str)
+                    ),
+                }
+            )
+        elif isinstance(event, TurnComplete):
+            had_chunks = bool(text_parts)
+            _flush_text()
+            # Fallback: if no TextChunk events were received in this round, the full
+            # response text lives only in TurnComplete.response.
+            if not had_chunks and event.response:
+                output_items.append(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "id": f"msg-{item_index}",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": event.response,
+                                "annotations": [],
+                            }
+                        ],
+                    }
+                )
+                item_index += 1
+        elif isinstance(event, ExecutorError):
+            raise RuntimeError(f"Executor error: {event.message}")
+
+    return output_items
+
+
+# ---------------------------------------------------------------------------
 # Public compile entry point
 # ---------------------------------------------------------------------------
 
@@ -626,6 +837,7 @@ def compile_to_responses_agent(
     *,
     model: str,
     session_store: Any | None = None,
+    executor: str = "langgraph",
 ) -> CompiledResponsesAgent:
     """Compile an apx-agent ``BaseAgent`` to the Databricks Apps ResponsesAgent contract.
 
@@ -643,6 +855,13 @@ def compile_to_responses_agent(
             — and prepend the session history to the request input before
             running the agent. After the run, the new output is appended and
             persisted. When the key is absent the session machinery no-ops.
+        executor: Inference backend selector.  ``"langgraph"`` (default) uses
+            the existing :func:`~apx_agent._compile.compile_to_langgraph` path.
+            ``"claude-sdk"`` uses
+            :class:`~apx_agent._claude_sdk_executor.ClaudeSDKExecutor` — a
+            direct OpenAI-compatible loop without LangGraph overhead.  Only
+            effective when *agent* is a :class:`~apx_agent._agents.LlmAgent`;
+            composite agents silently fall back to ``"langgraph"``.
 
     Returns:
         ``(non_streaming_fn, streaming_fn)``::
@@ -665,6 +884,7 @@ def compile_to_responses_agent(
     _agent = agent
     _model = model
     _session_store = session_store
+    _executor_name = executor
 
     # -----------------------------------------------------------------------
     # Non-streaming
@@ -714,30 +934,42 @@ def compile_to_responses_agent(
             lc_input = _responses_input_to_langchain(list(request.input))
             graph_input = lc_history + lc_input
 
-            # TODO(executor-seam Phase B): migrate to LangGraphExecutor.run_turn().
-            # Left as-is because:
-            # 1. non_streaming() is a synchronous def — run_turn() is async-only,
-            #    and driving it from sync code requires asyncio.run() which raises
-            #    when an event loop is already running.
-            # 2. The output contract here is per-message structured items
-            #    (_langchain_to_output_item / _flatten_output_items) rather than
-            #    a plain text string, so TurnComplete(response: str) would be lossy.
-            with safe_span(
-                "compile_to_langgraph",
-                span_type="CHAIN",
-                attributes={AuditAttrs.MODEL_ENDPOINT: effective_model},
-            ):
-                graph = compile_to_langgraph(
-                    _agent, ws=ws, model=effective_model, headers=req_headers
+            _use_sdk = _executor_name == "claude-sdk"
+            if _use_sdk:
+                from ._agents import LlmAgent as _LlmAgent
+                if not isinstance(_agent, _LlmAgent):
+                    logger.warning(
+                        "executor='claude-sdk' is only supported for LlmAgent; "
+                        "falling back to langgraph for %s",
+                        type(_agent).__name__,
+                    )
+                    _use_sdk = False
+
+            if _use_sdk:
+                from ._claude_sdk_executor import ClaudeSDKExecutor as _CSE
+                _sdk_exec = _CSE(
+                    model=effective_model,
+                    tools=list(_agent._tool_fns),
+                    instructions=_agent._instructions,
+                    ws=ws,
                 )
-
-            input_count = len(graph_input)
-            with safe_span("graph.invoke", span_type="CHAIN"):
-                result = graph.invoke({"messages": graph_input})
-
-            new_lc = result["messages"][input_count:]
-            raw_items = [_langchain_to_output_item(m, i) for i, m in enumerate(new_lc)]
-            output_items = _flatten_output_items(raw_items)
+                events = _run_executor_sync(_sdk_exec, _lc_to_openai_messages(graph_input))
+                output_items = _executor_events_to_items(events)
+            else:
+                with safe_span(
+                    "compile_to_langgraph",
+                    span_type="CHAIN",
+                    attributes={AuditAttrs.MODEL_ENDPOINT: effective_model},
+                ):
+                    graph = compile_to_langgraph(
+                        _agent, ws=ws, model=effective_model, headers=req_headers
+                    )
+                input_count = len(graph_input)
+                with safe_span("graph.invoke", span_type="CHAIN"):
+                    result = graph.invoke({"messages": graph_input})
+                new_lc = result["messages"][input_count:]
+                raw_items = [_langchain_to_output_item(m, i) for i, m in enumerate(new_lc)]
+                output_items = _flatten_output_items(raw_items)
 
             response = ResponsesAgentResponse(
                 id=f"resp-{uuid.uuid4().hex[:12]}",
@@ -804,37 +1036,59 @@ def compile_to_responses_agent(
             lc_input = _responses_input_to_langchain(list(request.input))
             graph_input = lc_history + lc_input
 
-            # TODO(executor-seam Phase B): migrate to LangGraphExecutor.run_turn().
-            # Left as-is because streaming() is a synchronous generator (def / yield)
-            # and uses the synchronous graph.stream() API. Migrating requires making
-            # this function async, which changes the MLflow @stream() contract.
-            # Additionally, the output contract emits structured ResponsesAgentStreamEvent
-            # objects, not plain text chunks, so TextChunk would be lossy.
-            graph = compile_to_langgraph(
-                _agent, ws=ws, model=effective_model, headers=req_headers
-            )
+            _use_sdk = _executor_name == "claude-sdk"
+            if _use_sdk:
+                from ._agents import LlmAgent as _LlmAgent
+                if not isinstance(_agent, _LlmAgent):
+                    logger.warning(
+                        "executor='claude-sdk' is only supported for LlmAgent; "
+                        "falling back to langgraph for %s",
+                        type(_agent).__name__,
+                    )
+                    _use_sdk = False
 
             output_items: list[dict[str, Any]] = []
             output_index = 0
 
-            for chunk in graph.stream(
-                {"messages": graph_input}, stream_mode="updates"
-            ):
-                if not isinstance(chunk, dict):
-                    continue
-                for _node_name, node_output in chunk.items():
-                    if not isinstance(node_output, dict):
+            if _use_sdk:
+                from ._claude_sdk_executor import ClaudeSDKExecutor as _CSE
+                _sdk_exec = _CSE(
+                    model=effective_model,
+                    tools=list(_agent._tool_fns),
+                    instructions=_agent._instructions,
+                    ws=ws,
+                )
+                events = _run_executor_sync(_sdk_exec, _lc_to_openai_messages(graph_input))
+                output_items = _executor_events_to_items(events)
+                for item in output_items:
+                    yield ResponsesAgentStreamEvent(
+                        type="response.output_item.done",
+                        item=item,
+                        output_index=output_index,
+                    )
+                    output_index += 1
+            else:
+                graph = compile_to_langgraph(
+                    _agent, ws=ws, model=effective_model, headers=req_headers
+                )
+                for chunk in graph.stream(
+                    {"messages": graph_input}, stream_mode="updates"
+                ):
+                    if not isinstance(chunk, dict):
                         continue
-                    for lc_msg in node_output.get("messages", []) or []:
-                        raw = _langchain_to_output_item(lc_msg, output_index)
-                        for item in _flatten_output_items([raw]):
-                            output_items.append(item)
-                            yield ResponsesAgentStreamEvent(
-                                type="response.output_item.done",
-                                item=item,
-                                output_index=output_index,
-                            )
-                            output_index += 1
+                    for _node_name, node_output in chunk.items():
+                        if not isinstance(node_output, dict):
+                            continue
+                        for lc_msg in node_output.get("messages", []) or []:
+                            raw = _langchain_to_output_item(lc_msg, output_index)
+                            for item in _flatten_output_items([raw]):
+                                output_items.append(item)
+                                yield ResponsesAgentStreamEvent(
+                                    type="response.output_item.done",
+                                    item=item,
+                                    output_index=output_index,
+                                )
+                                output_index += 1
 
             # Terminal event with the assembled response
             final_response = {
