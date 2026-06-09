@@ -112,31 +112,42 @@ def _parse_module_spec(spec: str) -> _ModuleSpec:
 def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]:
     """Read ``[tool.apx.agent]`` from ``pyproject.toml`` in cwd.
 
+    Also merges personal overrides from ``.apx.local`` (a gitignored TOML
+    file in the project root). Keys in ``.apx.local`` take precedence —
+    this is where user-specific values like ``profile`` live so they are
+    never committed to version control.
+
     Returns an empty dict if the file is missing, malformed, or doesn't
-    have the section. Used by CLI commands to read defaults like
-    ``experiment`` without forcing the user to pass them on every call.
+    have the section.
     """
-    path = pyproject_path or Path.cwd() / "pyproject.toml"
-    if not path.exists():
-        return {}
     try:
         import tomllib  # Python 3.11+
     except ImportError:  # pragma: no cover
         import tomli as tomllib  # type: ignore[no-redef]
-    try:
-        data = tomllib.loads(path.read_text())
-    except Exception:
-        return {}
-    tool = data.get("tool", {})
-    if not isinstance(tool, dict):
-        return {}
-    apx = tool.get("apx", {})
-    if not isinstance(apx, dict):
-        return {}
-    agent_cfg = apx.get("agent", {})
-    if not isinstance(agent_cfg, dict):
-        return {}
-    return agent_cfg
+
+    def _read_toml_section(path: Path) -> dict[str, Any]:
+        if not path.exists():
+            return {}
+        try:
+            data = tomllib.loads(path.read_text())
+        except Exception:
+            return {}
+        tool = data.get("tool", {})
+        if not isinstance(tool, dict):
+            return {}
+        apx = tool.get("apx", {})
+        if not isinstance(apx, dict):
+            return {}
+        agent_cfg = apx.get("agent", {})
+        return agent_cfg if isinstance(agent_cfg, dict) else {}
+
+    cwd = (pyproject_path.parent if pyproject_path else Path.cwd())
+    committed = _read_toml_section(pyproject_path or cwd / "pyproject.toml")
+
+    # .apx.local uses the same [tool.apx.agent] structure but is gitignored.
+    local_overrides = _read_toml_section(cwd / ".apx.local")
+
+    return {**committed, **local_overrides}
 
 
 def _load_agent(module_spec: str) -> Any:
@@ -255,18 +266,31 @@ def _databrickscfg_profiles() -> list[str]:
     return names
 
 
-def _save_to_pyproject(key: str, value: str) -> bool:
-    """Write ``key = "<value>"`` into ``[tool.apx.agent]`` in the local pyproject.toml.
+def _save_to_pyproject(key: str, value: str, *, local: bool = False) -> bool:
+    """Write ``key = "<value>"`` into ``[tool.apx.agent]``.
 
-    Returns True on success, False if the file doesn't exist or the section
-    isn't present (so callers can stay silent in non-project directories).
+    When ``local=True``, writes to ``.apx.local`` (gitignored) instead of
+    ``pyproject.toml``. Use ``local=True`` for personal settings like
+    ``profile`` that should not be committed to version control.
+
+    Returns True on success.
     """
-    pyproject = Path.cwd() / "pyproject.toml"
-    if not pyproject.exists():
-        return False
-    content = pyproject.read_text()
-    if "[tool.apx.agent]" not in content:
-        return False
+    if local:
+        target = Path.cwd() / ".apx.local"
+        if not target.exists():
+            # Bootstrap a minimal .apx.local with the required section.
+            target.write_text("[tool.apx.agent]\n")
+        content = target.read_text()
+        if "[tool.apx.agent]" not in content:
+            content += "\n[tool.apx.agent]\n"
+    else:
+        target = Path.cwd() / "pyproject.toml"
+        if not target.exists():
+            return False
+        content = target.read_text()
+        if "[tool.apx.agent]" not in content:
+            return False
+
     escaped = value.replace('"', '\\"')
     if re.search(rf'^\s*{re.escape(key)}\s*=', content, re.MULTILINE):
         content = re.sub(
@@ -281,12 +305,12 @@ def _save_to_pyproject(key: str, value: str) -> bool:
             f'[tool.apx.agent]\n{key} = "{escaped}"',
             content,
         )
-    pyproject.write_text(content)
+    target.write_text(content)
     return True
 
 
 def _save_profile_to_pyproject(profile: str) -> bool:
-    return _save_to_pyproject("profile", profile)
+    return _save_to_pyproject("profile", profile, local=True)
 
 
 
@@ -328,7 +352,7 @@ def _preflight_databricks_auth() -> None:
             # Offer to persist the choice so the next run skips this picker.
             if sys.stdin.isatty():
                 if _save_profile_to_pyproject(chosen):
-                    click.echo(f"  Saved profile '{chosen}' to pyproject.toml — future runs will use it automatically.\n")
+                    click.echo(f"  Saved profile '{chosen}' to .apx.local — future runs will use it automatically.\n")
                 else:
                     click.echo(f"  Using profile '{chosen}' for this session (set DATABRICKS_CONFIG_PROFILE={chosen} to make it permanent).\n")
             # Retry after setting the profile.

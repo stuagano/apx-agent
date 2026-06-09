@@ -26,7 +26,6 @@ quickstart = "scripts.quickstart:main"
 apx-agent = { path = "..", editable = true }
 
 [tool.apx.agent]
-profile = "fe-stable"
 name = "payroll-coworker"
 description = "Payroll coworker — knows employee compensation, pay runs, and workforce data."
 model = "databricks-claude-sonnet-4-6"
