@@ -24,6 +24,7 @@ quickstart = "scripts.quickstart:main"
 apx-agent = { path = "..", editable = true }
 
 [tool.apx.agent]
+profile = "fe-stable"
 name = "hello-world"
 description = "An apx-agent on Databricks Apps."
 model = "databricks-claude-sonnet-4-6"
