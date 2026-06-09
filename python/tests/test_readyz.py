@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import apx_agent._readyz as readyz_mod
 from apx_agent import Agent, mount_readyz
+from apx_agent._readyz import ProbeResult
 
 
 def _make_app(agent: Agent):
@@ -50,7 +51,7 @@ def test_readyz_ready_when_llm_and_trace_ok(monkeypatch) -> None:
     agent = Agent(tools=[_trivial_tool])
 
     def _fake_probe(_agent, _model):
-        return ("READY", "tr-abc123")
+        return ProbeResult(assistant_text="READY", trace_id="tr-abc123")
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
 
@@ -75,7 +76,7 @@ def test_readyz_ready_when_tracing_unavailable(monkeypatch) -> None:
     agent = Agent(tools=[_trivial_tool])
 
     def _fake_probe(_agent, _model):
-        return ("READY", None)
+        return ProbeResult(assistant_text="READY", trace_id=None)
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
 
@@ -100,7 +101,7 @@ def test_readyz_degraded_when_llm_empty(monkeypatch) -> None:
     agent = Agent(tools=[_trivial_tool])
 
     def _fake_probe(_agent, _model):
-        return ("", "tr-abc123")
+        return ProbeResult(assistant_text="", trace_id="tr-abc123")
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
 
@@ -157,7 +158,7 @@ class TestReadyzMemory:
         from apx_agent._readyz import mount_readyz
         import apx_agent._readyz as rz
         # Stub the canned probe so the test doesn't need a real model.
-        rz._run_canned_probe = lambda a, m: ("hi", "tr-1")  # type: ignore
+        rz._run_canned_probe = lambda a, m: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
         app = FastAPI()
         mount_readyz(app, agent)
         return TestClient(app)

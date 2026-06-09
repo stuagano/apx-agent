@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class _SubAgentRef:
+    display_name: str
+    kind: str
+
+
+@dataclass(frozen=True)
 class AgentNode:
     """One agent in the topology graph."""
 
@@ -134,9 +140,9 @@ def discover_topology(
             csv = tags.get("apx.agent.sub_agents") or ""
             sub_agents = [s.strip() for s in csv.split(",") if s.strip()]
         for raw in sub_agents:
-            target, kind = _classify_sub_agent(raw)
+            _ref = _classify_sub_agent(raw)
             edges.append(TopologyEdge(
-                source=agent_name, target=target, target_kind=kind,
+                source=agent_name, target=_ref.display_name, target_kind=_ref.kind,
             ))
 
     return Topology(nodes=tuple(nodes), edges=tuple(edges))
@@ -163,7 +169,7 @@ def _sub_agents_from_metadata(metadata_json: str | None) -> list[str]:
     return [str(s) for s in (parsed.get("sub_agents") or [])]
 
 
-def _classify_sub_agent(raw: str) -> tuple[str, str]:
+def _classify_sub_agent(raw: str) -> _SubAgentRef:
     """Split a sub_agent reference into ``(display_name, kind)``.
 
     Strips ``endpoints/`` / ``serving-endpoints/`` prefixes; treats
@@ -173,14 +179,14 @@ def _classify_sub_agent(raw: str) -> tuple[str, str]:
     raw = raw.strip()
     if "databricksapps.com" in raw:
         # Apps URL — keep the URL but tag accordingly
-        return raw, "app_url"
+        return _SubAgentRef(display_name=raw, kind="app_url")
     if raw.startswith(("endpoints/", "serving-endpoints/")):
         _, _, name = raw.partition("/")
-        return name, "endpoint"
+        return _SubAgentRef(display_name=name, kind="endpoint")
     if "://" in raw:
-        return raw, "unresolved"
+        return _SubAgentRef(display_name=raw, kind="unresolved")
     # Bare endpoint name
-    return raw, "endpoint"
+    return _SubAgentRef(display_name=raw, kind="endpoint")
 
 
 def _coerce_int(value: Any) -> int | None:

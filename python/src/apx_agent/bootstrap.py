@@ -14,9 +14,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import NamedTuple
 
 _DEFAULT_BUNDLE_TARGET = "dev"  # fall back to local dev mode when BUNDLE_TARGET not set
 _DEFAULT_MLFLOW_TRACKING_URI = "databricks"  # MLflow default for Databricks workspaces
+
+
+class ExperimentInfo(NamedTuple):
+    experiment_path: str
+    experiment_id: str
 
 
 def _resolve_user(user: str | None) -> str:
@@ -111,7 +117,7 @@ def init_apps_experiment(
     agent_name: str | None = None,
     tracking_uri: str | None = None,
     env_path: str | None = None,
-) -> tuple[str, str]:
+) -> ExperimentInfo:
     """Create the MLflow experiment for an Apps-target deploy and persist its id.
 
     Resolves identity and target with the same default order the example
@@ -146,7 +152,7 @@ def init_apps_experiment(
     resolved_env_path = Path(env_path) if env_path else Path.cwd() / ".env"
     _write_experiment_id(resolved_env_path, experiment_id)
 
-    return experiment_path, experiment_id
+    return ExperimentInfo(experiment_path=experiment_path, experiment_id=experiment_id)
 
 
 _DELTA_MEMORY_DDL = """\
