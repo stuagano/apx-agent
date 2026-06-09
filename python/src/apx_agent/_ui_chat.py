@@ -1590,7 +1590,7 @@ function extractMsg(value) {{
     return value.map(extractMsg).filter(Boolean).join(', ').slice(0, 300);
   }}
   if (typeof value === 'object') {{
-    for (const k of ['content', 'text', 'output_text', 'message']) {{
+    for (const k of ['content', 'text', 'output_text', 'message', 'messages', 'choices', 'input']) {{
       if (k in value) return extractMsg(value[k]);
     }}
     return Object.entries(value).filter(([, v]) => v != null && v !== '')
@@ -1646,13 +1646,6 @@ async function finalizeTrace(traceId, status, opts) {{
       return;
     }}
     traceBody.innerHTML = '';
-    // Build parent→children
-    const byParent = {{}};
-    const roots = [];
-    for (const s of data.spans) {{
-      if (s.parent_id) (byParent[s.parent_id] = byParent[s.parent_id] || []).push(s);
-      else roots.push(s);
-    }}
     const SPAN_COLORS = {{LLM:'#22d3ee',TOOL:'#facc15',CHAIN:'#a78bfa',AGENT:'#60b0ff',OTHER:'#94a3b8'}};
     function spanTypeShort(t) {{
       t = (t||'').toUpperCase();
@@ -1662,49 +1655,94 @@ async function finalizeTrace(traceId, status, opts) {{
       if (t === 'AGENT') return 'AGENT';
       return 'OTHER';
     }}
+
+    // ── Summary view: flat timeline of LLM + TOOL spans only ──
+    // Ordered by start time. Orchestration wrappers (CHAIN/AGENT/OTHER) are
+    // hidden here but available in the full tree toggle below.
+    const ordered = [...data.spans].sort((a,b) => (a.start_time_ns||0)-(b.start_time_ns||0));
+    const keySpans = ordered.filter(s => {{
+      const t = spanTypeShort(s.span_type);
+      return t === 'LLM' || t === 'TOOL';
+    }});
+
+    for (const s of keySpans) {{
+      const type = spanTypeShort(s.span_type);
+      const color = SPAN_COLORS[type] || '#888';
+      const dur = s.duration_ms != null ? `${{Math.round(s.duration_ms)}}ms` : '';
+      const isErr = (s.status||'').toUpperCase().includes('ERR');
+      const card = document.createElement('div');
+      card.className = 'span-step';
+      card.style.cssText = 'margin-bottom:6px;';
+      card.innerHTML =
+        `<div class="step-header">` +
+        `<span style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;background:${{color}}22;color:${{color}}">${{type}}</span>` +
+        `<span class="who" style="color:${{color}};font-size:12px;font-weight:600;margin-left:6px">${{escHtml(s.name)}}</span>` +
+        (isErr ? `<span style="color:#f87171;font-size:10px;margin-left:6px">ERR</span>` : '') +
+        (dur ? `<span class="dur" style="margin-left:auto">${{dur}}</span>` : '') +
+        `</div>`;
+
+      const addBubble = (val, cls) => {{
+        const msg = extractMsg(val);
+        if (!msg) return;
+        const b = document.createElement('div');
+        b.className = `span-bubble ${{cls}}`;
+        b.style.cssText = 'font-size:11px;margin-top:4px;';
+        b.textContent = msg.slice(0, 200) + (msg.length > 200 ? '…' : '');
+        card.appendChild(b);
+      }};
+      if (s.inputs)  addBubble(s.inputs,  type === 'TOOL' ? 'tool-in' : 'agent-ask');
+      if (s.outputs) addBubble(s.outputs, type === 'TOOL' ? 'tool-out' : 'llm-reply');
+      traceBody.appendChild(card);
+    }}
+
+    if (!keySpans.length) {{
+      traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">No LLM or tool spans found.</div>';
+    }}
+
+    // ── Full tree (collapsed by default) ──
+    const toggle = document.createElement('button');
+    toggle.textContent = '▸ Full trace';
+    toggle.style.cssText = 'margin-top:8px;background:none;border:1px solid #333;color:#666;font-size:11px;padding:2px 8px;border-radius:3px;cursor:pointer;';
+    const treeDiv = document.createElement('div');
+    treeDiv.style.display = 'none';
+    toggle.onclick = () => {{
+      const open = treeDiv.style.display !== 'none';
+      treeDiv.style.display = open ? 'none' : 'block';
+      toggle.textContent = open ? '▸ Full trace' : '▾ Full trace';
+    }};
+    traceBody.appendChild(toggle);
+    traceBody.appendChild(treeDiv);
+
+    // Build parent→children for full tree
+    const byParent = {{}};
+    const roots = [];
+    for (const s of data.spans) {{
+      if (s.parent_id) (byParent[s.parent_id] = byParent[s.parent_id] || []).push(s);
+      else roots.push(s);
+    }}
     function renderSpanNode(s, depth) {{
       const type = spanTypeShort(s.span_type);
       const color = SPAN_COLORS[type] || '#888';
-      const dur = s.duration_ms != null ? `${{s.duration_ms}}ms` : '';
+      const dur = s.duration_ms != null ? `${{Math.round(s.duration_ms)}}ms` : '';
       const isErr = (s.status||'').toUpperCase().includes('ERR');
       const wrap = document.createElement('div');
-      wrap.style.cssText = `padding-left:${{depth*14}}px;margin-bottom:3px;`;
+      wrap.style.cssText = `padding-left:${{depth*12}}px;margin-bottom:2px;`;
       const card = document.createElement('div');
       card.className = 'span-step';
-      card.style.cssText = 'position:relative;padding-left:18px;';
-      const dot = document.createElement('div');
-      dot.className = 'step-dot';
-      dot.style.cssText = `position:absolute;left:1px;top:5px;width:9px;height:9px;border-radius:50%;background:${{color}};`;
-      const content = document.createElement('div');
-      content.className = 'step-content';
-      const header = document.createElement('div');
-      header.className = 'step-header';
-      header.innerHTML =
-        `<span class="who" style="color:${{color}};font-size:12px;font-weight:600">${{escHtml(s.name)}}</span>` +
-        `<span style="font-size:10px;color:#555;font-family:monospace;margin-left:4px">${{type}}</span>` +
-        (dur ? `<span class="dur" style="margin-left:auto">${{dur}}</span>` : '') +
-        (isErr ? `<span style="color:#f87171;font-size:10px;margin-left:8px">ERR</span>` : '');
-      content.appendChild(header);
-      // Show inputs/outputs compactly
-      for (const [label, val] of [['in', s.inputs], ['out', s.outputs]]) {{
-        if (!val) continue;
-        const msg = extractMsg(val);
-        if (!msg) continue;
-        const bubble = document.createElement('div');
-        const bubbleCls = label === 'in' ? (type === 'TOOL' ? 'tool-in' : 'agent-ask') : (type === 'TOOL' ? 'tool-out' : 'llm-reply');
-        bubble.className = `span-bubble ${{bubbleCls}}`;
-        bubble.style.cssText = 'font-size:11px;margin-top:3px;';
-        bubble.textContent = msg.slice(0, 300) + (msg.length > 300 ? '…' : '');
-        content.appendChild(bubble);
-      }}
-      card.appendChild(dot); card.appendChild(content);
+      card.innerHTML =
+        `<div class="step-header">` +
+        `<span style="font-size:9px;font-weight:700;padding:1px 4px;border-radius:2px;background:${{color}}22;color:${{color}}">${{type}}</span>` +
+        `<span class="who" style="color:${{color}};font-size:11px;font-weight:600;margin-left:5px">${{escHtml(s.name)}}</span>` +
+        (isErr ? `<span style="color:#f87171;font-size:9px;margin-left:5px">ERR</span>` : '') +
+        (dur ? `<span class="dur" style="margin-left:auto;font-size:10px">${{dur}}</span>` : '') +
+        `</div>`;
       wrap.appendChild(card);
       for (const child of (byParent[s.span_id] || [])) {{
         wrap.appendChild(renderSpanNode(child, depth + 1));
       }}
       return wrap;
     }}
-    for (const root of roots) traceBody.appendChild(renderSpanNode(root, 0));
+    for (const root of roots) treeDiv.appendChild(renderSpanNode(root, 0));
 
     // Surface tool calls + results in the Events panel so it stops only
     // showing the user/assistant "one side" of the conversation. Gated on
