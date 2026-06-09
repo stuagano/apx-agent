@@ -33,10 +33,23 @@ import os
 import re
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import click
+
+# Suppress noisy third-party deprecation warnings that users can't act on.
+warnings.filterwarnings(
+    "ignore",
+    message="The default value of `allowed_objects` will change",
+    category=DeprecationWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message="The default value of `allowed_objects` will change",
+    category=PendingDeprecationWarning,
+)
 
 from . import _doctor as _doctor_mod
 from ._schema import introspect_schema_columns
