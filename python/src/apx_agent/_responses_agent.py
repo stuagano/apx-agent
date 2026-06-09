@@ -64,6 +64,7 @@ from ._mlflow_tracing import safe_span, set_span_outputs
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
+    from langchain_core.messages import BaseMessage
 
 logger = logging.getLogger(__name__)
 
@@ -616,7 +617,7 @@ def _item_to_history_dict(item: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _lc_to_openai_messages(messages: list[Any]) -> list[dict[str, Any]]:
+def _lc_to_openai_messages(messages: list["BaseMessage"]) -> list[dict[str, Any]]:
     """Convert LangChain ``BaseMessage`` objects to OpenAI chat-completions dicts.
 
     Handles the four message types that appear in apx-agent conversation history:
