@@ -1105,8 +1105,29 @@ def _ws_is_connected(ws) -> bool:
         return False
 
 
-def _list_databricks_profiles() -> list[str]:
-    """Return profile names from ~/.databrickscfg, excluding internal sections."""
+def _list_databricks_profiles() -> list[tuple[str, str, bool]]:
+    """Return (name, host, valid) for each profile via 'databricks auth profiles'.
+
+    Falls back to parsing ~/.databrickscfg (name only, valid=unknown) if the
+    CLI is unavailable.
+    """
+    import subprocess as _sp
+    try:
+        out = _sp.run(
+            ["databricks", "auth", "profiles"],
+            capture_output=True, text=True, timeout=15, check=False,
+        ).stdout
+        results = []
+        for line in out.splitlines():
+            parts = line.split()
+            # Output columns: Name  Host  Valid  (header row has no URL)
+            if len(parts) >= 3 and parts[-1] in ("YES", "NO") and parts[1].startswith("http"):
+                results.append((parts[0], parts[1], parts[-1] == "YES"))
+        if results:
+            return results
+    except Exception:
+        pass
+    # Fallback: parse ~/.databrickscfg directly
     import configparser
     cfg_path = Path.home() / ".databrickscfg"
     if not cfg_path.exists():
@@ -1114,7 +1135,8 @@ def _list_databricks_profiles() -> list[str]:
     try:
         c = configparser.ConfigParser()
         c.read(cfg_path)
-        return [s for s in c.sections() if not s.startswith("__")]
+        return [(s, c.get(s, "host", fallback=""), False)
+                for s in c.sections() if not s.startswith("__")]
     except Exception:
         return []
 
@@ -1164,31 +1186,39 @@ def _gate_workspace_for_scaffold(profile: str | None):
     while True:
         profiles = _list_databricks_profiles()
         if profiles:
-            click.echo("Existing profiles in ~/.databrickscfg:")
-            for i, p in enumerate(profiles, 1):
-                click.echo(f"  {i:2}. {p}")
-            click.echo(f"  {len(profiles) + 1:2}. Set up a new profile  (runs 'databricks configure')")
+            click.echo("Available Databricks profiles:")
+            for i, (name, host, valid) in enumerate(profiles, 1):
+                status = "✓ valid" if valid else "  expired"
+                short_host = host.replace("https://", "").split(".")[0] if host else ""
+                click.echo(f"  {i:2}. {name:<28} {status}  {short_host}")
+            new_idx = len(profiles) + 1
+            click.echo(f"  {new_idx:2}. Add / refresh a profile  (databricks auth login)")
+            default = next((i for i, (_, _, v) in enumerate(profiles, 1) if v), 1)
             idx = click.prompt(
-                "Choose a profile",
-                type=click.IntRange(1, len(profiles) + 1),
-                default=1,
+                "Choose",
+                type=click.IntRange(1, new_idx),
+                default=default,
             )
-            if idx <= len(profiles):
-                chosen = profiles[idx - 1]
+            if idx < new_idx:
+                chosen, host, valid = profiles[idx - 1]
+                if not valid:
+                    click.echo(f"  Profile '{chosen}' is expired — refreshing via 'databricks auth login --profile {chosen}'")
+                    _sp.run(["databricks", "auth", "login", "--profile", chosen], check=False)
+                    click.echo()
                 click.echo(f"  Connecting with profile '{chosen}'…", nl=False)
                 ws, info = _try_connect(chosen)
                 if ws is not None:
                     click.echo(f"\r  Connected as {info}                    ")
                     return ws
-                click.echo(f"\r  Profile '{chosen}' didn't connect: {info}")
+                click.echo(f"\r  Still couldn't connect with '{chosen}': {info}")
                 click.echo()
                 continue
         else:
-            click.echo("  No profiles found in ~/.databrickscfg.")
+            click.echo("  No profiles found.")
 
-        # "Set up new profile" path (or no profiles exist)
+        # Add / refresh path
         click.echo()
-        _sp.run(["databricks", "configure"], check=False)
+        _sp.run(["databricks", "auth", "login"], check=False)
         click.echo()
         ws, info = _try_connect(None)
         if ws is not None:
