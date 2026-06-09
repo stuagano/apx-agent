@@ -350,13 +350,18 @@ def attach_declared_memory(
                 msg = f"{mcfg.type} memory build failed — check logs for details"
             setattr(agent, "_apx_memory_degraded", msg)
         if store is not None:
+            default_principal = _resolve_default_principal(ws)
+            # Expose store + scoping info for the dev UI /_apx/memories endpoint.
+            setattr(agent, "_apx_memory_store", store)
+            setattr(agent, "_apx_memory_principal", default_principal)
+            setattr(agent, "_apx_memory_namespace", mcfg.namespace_default)
             # Config path uses the dep-principal mechanism (proved in Phase 0 Task 0.2).
             # _use_dep_principal=True emits tools with a `principal: Dependencies.Principal`
             # dep param (added in Task 1.3, which runs before this task).
             tools = make_memory_tools(
                 store=store,
                 _use_dep_principal=True,
-                default_principal_id=_resolve_default_principal(ws),
+                default_principal_id=default_principal,
                 namespace_default=mcfg.namespace_default,
                 tool_prefix=mcfg.tool_prefix,
                 include=mcfg.include,  # type: ignore[arg-type]

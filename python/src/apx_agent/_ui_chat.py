@@ -642,6 +642,7 @@ def _render_landing(ctx: AgentContext) -> str:
                 '<div class="cap-card" onclick="this.classList.toggle(&quot;open&quot;)">'
                 f'<div class="cap-name">🧠 memory{mem_link}</div>'
                 '<div class="cap-desc">Durable memory — recall past context, save new facts, or forget outdated ones.</div>'
+                '<div id="cap-mem-preview" class="cap-mem-preview"></div>'
                 f'<div class="cap-mem-ops">{mem_rows}</div>'
                 '</div>'
             )
@@ -985,6 +986,10 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .cap-card.open {{ border-color: #2f6b46; }}
   .cap-mem-link {{ color: #555; font-size: 10px; font-family: ui-monospace, monospace; text-decoration: none; margin-left: 6px; vertical-align: middle; }}
   .cap-mem-link:hover {{ color: #60b0ff; }}
+  .cap-mem-preview {{ margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }}
+  .cap-mem-preview:empty {{ display: none; }}
+  .cap-mem-row {{ font-size: 11.5px; color: #9ecbff; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .cap-mem-row-ts {{ font-size: 10px; color: #555; font-family: ui-monospace, monospace; margin-left: 4px; }}
   .cap-mem-ops {{ margin-top: 8px; padding-top: 8px; border-top: 1px solid #222; display: flex; flex-direction: column; gap: 4px; }}
   .cap-mem-op {{ display: flex; flex-direction: column; gap: 1px; }}
   .cap-mem-name {{ color: #9ecbff; font-size: 11px; font-family: ui-monospace, monospace; }}
@@ -1464,6 +1469,18 @@ let apxMemoryTable = '';
     const d = await fetch('/_apx/workspace-context').then(r => r.json());
     apxHost = d.host || '';
     apxMemoryTable = d.memory_table || '';
+  }} catch {{}}
+  // Populate the landing page memory preview with recent stored memories.
+  try {{
+    const mems = await fetch('/_apx/memories').then(r => r.json());
+    const preview = document.getElementById('cap-mem-preview');
+    if (preview && Array.isArray(mems) && mems.length) {{
+      preview.innerHTML = mems.slice(0, 3).map(m => {{
+        const ts = m.updated_at ? m.updated_at.slice(0, 10) : '';
+        const tsSpan = ts ? `<span class="cap-mem-row-ts">${{ts}}</span>` : '';
+        return `<div class="cap-mem-row" title="${{m.content.replace(/"/g, '&quot;')}}">${{m.content}}${{tsSpan}}</div>`;
+      }}).join('');
+    }}
   }} catch {{}}
 }})();
 

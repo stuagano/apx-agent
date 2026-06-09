@@ -1668,6 +1668,39 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "used_schemas": used_schemas,
         })
 
+    @router.get("/_apx/memories", include_in_schema=False)
+    async def list_memories(request: Request) -> Any:
+        """Return the most recent stored memories for the landing page preview."""
+        import asyncio as _asyncio
+        from fastapi.responses import JSONResponse
+
+        ctx = request.app.state.agent_context
+        if ctx is None:
+            return JSONResponse([])
+        agent = ctx.agent
+        store = getattr(agent, "_apx_memory_store", None)
+        if store is None:
+            return JSONResponse([])
+        principal = getattr(agent, "_apx_memory_principal", None) or ""
+        namespace = getattr(agent, "_apx_memory_namespace", None)
+        try:
+            from ._memory import MemoryFilter
+            filt = MemoryFilter(principal_id=principal, namespace=namespace, limit=5)
+            rows = await _asyncio.to_thread(store.list, filt)
+            rows = sorted(rows, key=lambda m: m.updated_at, reverse=True)[:5]
+            return JSONResponse([
+                {
+                    "id": m.id,
+                    "content": m.content,
+                    "namespace": m.namespace,
+                    "updated_at": m.updated_at,
+                }
+                for m in rows
+            ])
+        except Exception:
+            logger.exception("/_apx/memories: list failed")
+            return JSONResponse([])
+
     @router.get("/_apx/setup/catalogs", include_in_schema=False)
     async def setup_catalogs(request: Request) -> Any:
         from fastapi.responses import JSONResponse
