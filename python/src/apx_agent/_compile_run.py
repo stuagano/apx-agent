@@ -175,18 +175,18 @@ async def run_via_compile(
     Returns:
         The final assistant text.
     """
-    from ._compile import compile_to_langgraph
+    from ._executor import ExecutorConfig
+    from ._langgraph_executor import LangGraphExecutor
 
     model = _get_model(request)
     ws = _resolve_request_ws(request)
 
-    compiled = compile_to_langgraph(agent, ws=ws, model=model)
+    # Use LangGraphExecutor for compilation (caches compiled graph per model).
+    # Call ainvoke directly via the cached compiled graph — preserves the
+    # pre-seam behaviour (single synchronous result, no streaming overhead).
+    executor = LangGraphExecutor(agent, ws=ws, model=model)
+    compiled = executor._get_compiled(ExecutorConfig(model=model).model or model)
     lc_messages = _to_langchain(input_messages, system_prompt=instructions)
-
-    # Use the async graph API so the multi-step LLM + tool loop runs without
-    # blocking the event loop (H1). Compiled LangGraph graphs always expose
-    # ``ainvoke``; tool execution is already offloaded off-loop inside
-    # ``_compile._make_langchain_tool``, so we never touch the sync ``invoke``.
     result = await compiled.ainvoke({"messages": lc_messages})
     return _final_text(result.get("messages", []))
 
@@ -204,41 +204,23 @@ async def stream_via_compile(
     (matching the granularity of ``stream_mode="updates"`` in LangGraph).
     Tool-call AIMessages are skipped — only final-text AI messages stream.
     """
-    from langchain_core.messages import AIMessage
-
-    from ._compile import compile_to_langgraph
+    from ._executor import ExecutorConfig, TextChunk
+    from ._langgraph_executor import LangGraphExecutor
 
     model = _get_model(request)
     ws = _resolve_request_ws(request)
 
-    compiled = compile_to_langgraph(agent, ws=ws, model=model)
-    lc_messages = _to_langchain(input_messages, system_prompt=instructions)
-
-    def _texts_from_chunk(chunk: Any) -> list[str]:
-        """Extract user-visible text deltas from one stream_mode='updates' chunk."""
-        texts: list[str] = []
-        if not isinstance(chunk, dict):
-            return texts
-        for _node_name, node_output in chunk.items():
-            if not isinstance(node_output, dict):
-                continue
-            for msg in node_output.get("messages", []) or []:
-                if not isinstance(msg, AIMessage):
-                    continue
-                if getattr(msg, "tool_calls", None):
-                    continue  # internal step, not user-visible text
-                text = msg.content if isinstance(msg.content, str) else str(msg.content)
-                if text:
-                    texts.append(text)
-        return texts
-
-    # Stream via the async graph API so the event loop is never blocked (H1).
-    # Compiled LangGraph graphs always expose ``astream``; tool execution is
-    # already offloaded off-loop inside ``_compile``, so the sync ``stream`` is
-    # never needed.
-    async for chunk in compiled.astream({"messages": lc_messages}, stream_mode="updates"):
-        for text in _texts_from_chunk(chunk):
-            yield text
+    executor = LangGraphExecutor(agent, ws=ws, model=model)
+    async for _event in executor.run_turn(
+        messages=input_messages,
+        tools=[],
+        system_prompt=instructions,
+        config=ExecutorConfig(model=model),
+    ):
+        if isinstance(_event, TextChunk) and _event.text:
+            yield _event.text
+        # TurnComplete and ExecutorError are not yielded — callers of
+        # stream_via_compile expect str chunks only.
 
 
 def _get_model(request: "Request") -> str:
