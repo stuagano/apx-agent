@@ -933,11 +933,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 max_results=max_results,
                 order_by=["timestamp DESC"],
                 include_spans=False,
+                flush=True,  # MLflow 3.x writes async; flush before search
             )) if exp_ids else []
         except Exception:
             traces = []
         traces = _drop_warmup_traces(traces)
         rows = []
+        seen_ids: set[str] = set()
         for t in traces:
             info = t.info
             dur_ms = int(info.execution_duration / 1_000_000) if info.execution_duration else None
@@ -949,7 +951,26 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 "request_preview": info.request_preview or "",
                 "response_preview": info.response_preview or "",
             })
+            seen_ids.add(info.trace_id)
         if fmt == "json":
+            # Merge in any ring-buffer traces not yet committed to the tracking
+            # store (async write lag, or FEVM blob-egress blocked). Newest first.
+            try:
+                from ._trace_store import list_recent as _ts_list_recent
+                for tid in _ts_list_recent(max_results):
+                    if tid not in seen_ids:
+                        rows.insert(0, {
+                            "trace_id": tid,
+                            "state": "OK",
+                            "request_time_ms": None,
+                            "duration_ms": None,
+                            "request_preview": "",
+                            "response_preview": "",
+                        })
+                        seen_ids.add(tid)
+            except Exception:
+                pass
+            rows = rows[:max_results]
             return JSONResponse(rows)
         return HTMLResponse(_render_traces_list(rows, agent_name))
 
@@ -1628,12 +1649,15 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             except Exception:
                 pass
 
-        # Catalogs the agent explicitly uses (extract from resource identifiers)
-        used_catalogs: list[str] = sorted({
-            r["identifier"].split(".")[0]
-            for r in resources
+        # Catalogs + schemas the agent explicitly uses (extract from resource identifiers)
+        uc_ids = [
+            r["identifier"] for r in resources
             if r["kind"] in ("uc_table", "uc_schema", "uc_function")
             and "." in r["identifier"]
+        ]
+        used_catalogs: list[str] = sorted({i.split(".")[0] for i in uc_ids})
+        used_schemas: list[str] = sorted({
+            ".".join(i.split(".")[:2]) for i in uc_ids if i.count(".") >= 1
         })
 
         return JSONResponse({
@@ -1641,6 +1665,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "user": user_name,
             "resources": resources,
             "used_catalogs": used_catalogs,
+            "used_schemas": used_schemas,
         })
 
     @router.get("/_apx/setup/catalogs", include_in_schema=False)
