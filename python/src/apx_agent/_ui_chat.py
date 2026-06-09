@@ -55,16 +55,17 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
       --accent-bg: #0d1f38; --accent-border: #1e3a5f;
     }}
     * {{ box-sizing: border-box; }}
-    html, body {{ margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    html, body {{ margin: 0; height: 100%; display: flex; flex-direction: column;
+                  background: var(--bg); color: var(--text);
                   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; font-size: 13px; }}
-    header {{ height: 52px; padding: 0 16px; display: flex; align-items: center;
-              gap: 16px; background: var(--panel); border-bottom: 1px solid var(--border); }}
+    header {{ height: 52px; padding: 0 16px; display: flex; align-items: center; flex-shrink: 0;
+              gap: 12px; background: var(--panel); border-bottom: 1px solid var(--border); }}
     .badge {{ background: var(--accent-bg); color: var(--accent); font-size: 11px;
               font-weight: 600; padding: 3px 8px; border-radius: 4px; letter-spacing: .5px;
               text-transform: uppercase; }}
     .title {{ display: flex; flex-direction: column; gap: 1px; }}
     .agent-name {{ font-weight: 600; font-size: 14px; }}
-    .agent-desc {{ color: var(--text-muted); font-size: 11px; max-width: 480px;
+    .agent-desc {{ color: var(--text-muted); font-size: 11px; max-width: 360px;
                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
     .tabs {{ display: flex; gap: 2px; margin-left: auto; }}
     .tab {{ font: inherit; color: var(--text-muted); background: transparent;
@@ -79,7 +80,66 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
                  display: inline-flex; align-items: center; gap: 6px; }}
     .util-btn:hover {{ color: var(--text); border-color: #555; }}
     .util-btn .ico {{ font-size: 13px; line-height: 1; }}
-    main {{ height: calc(100% - 52px); background: var(--bg); }}
+    #btn-sidebar-toggle {{ background: none; border: none; color: #555; font-size: 16px;
+                           cursor: pointer; padding: 4px 8px; border-radius: 5px; line-height: 1;
+                           flex-shrink: 0; }}
+    #btn-sidebar-toggle:hover {{ color: #aaa; background: #1a1a1a; }}
+    /* Layout: sidebar + content */
+    .shell-body {{ flex: 1; display: flex; min-height: 0; }}
+    #sidebar {{ width: 220px; flex-shrink: 0; background: #0b0b0b;
+                border-right: 1px solid #1a1a1a; display: flex; flex-direction: column;
+                overflow: hidden; transition: width .18s ease; }}
+    body.sidebar-off #sidebar {{ width: 0; }}
+    #sidebar-scroll {{ flex: 1; overflow-y: auto; padding: 8px 0 16px; }}
+    /* Sidebar identity block */
+    .sb-identity {{ padding: 10px 14px 8px; border-bottom: 1px solid #141414; margin-bottom: 6px; }}
+    .sb-host {{ font-family: ui-monospace,monospace; font-size: 10px; color: #60b0ff;
+                text-decoration: none; display: block; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }}
+    .sb-host:hover {{ text-decoration: underline; }}
+    .sb-user {{ font-size: 10px; color: #444; margin-top: 2px; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }}
+    /* Section label */
+    .sb-section {{ font-size: 10px; color: #3a3a3a; text-transform: uppercase;
+                   letter-spacing: .08em; padding: 10px 14px 4px; }}
+    /* Nav items */
+    .sb-item {{ display: flex; align-items: center; gap: 10px; padding: 7px 14px;
+                cursor: pointer; border-radius: 0; user-select: none;
+                color: #666; font-size: 13px; border: none; background: none;
+                width: 100%; text-align: left; text-decoration: none; }}
+    .sb-item:hover {{ background: #141414; color: #bbb; }}
+    .sb-item.active {{ background: #0d1f38; color: var(--accent); }}
+    .sb-icon {{ width: 18px; flex-shrink: 0; text-align: center; font-size: 14px;
+                line-height: 1; opacity: .75; }}
+    .sb-item:hover .sb-icon, .sb-item.active .sb-icon {{ opacity: 1; }}
+    .sb-label {{ flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    /* Data tree inside sidebar */
+    .sb-tree {{ padding: 0 6px; }}
+    .tree-row {{ display: flex; align-items: center; gap: 7px; padding: 6px 8px;
+                 border-radius: 5px; cursor: pointer; user-select: none; }}
+    .tree-row:hover {{ background: #141414; color: #bbb; }}
+    .tree-chevron {{ flex-shrink: 0; width: 10px; color: #333; transition: transform .15s;
+                     font-size: 9px; line-height: 1; }}
+    .tree-row.open > .tree-chevron {{ transform: rotate(90deg); color: #555; }}
+    .tree-icon {{ flex-shrink: 0; font-size: 13px; line-height: 1; width: 16px;
+                  text-align: center; opacity: .8; }}
+    .tree-name {{ font-family: ui-monospace, monospace; font-size: 11px; flex: 1;
+                  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .tree-cat > .tree-name {{ color: #c9d1d9; font-weight: 500; }}
+    .tree-schemas {{ padding-left: 22px; position: relative; }}
+    .tree-schemas::before {{ content: ''; position: absolute; left: 13px; top: 0;
+                              bottom: 4px; width: 1px; background: #1e1e1e; }}
+    .tree-sch > .tree-name {{ color: #8b949e; }}
+    .tree-tables {{ padding-left: 22px; position: relative; }}
+    .tree-tables::before {{ content: ''; position: absolute; left: 13px; top: 0;
+                             bottom: 4px; width: 1px; background: #191919; }}
+    .tree-tbl {{ display: flex; align-items: center; gap: 7px; padding: 5px 8px;
+                 border-radius: 4px; cursor: pointer; user-select: none; }}
+    .tree-tbl:hover {{ background: #0f1f14; }}
+    .tree-tbl:hover > .tree-name {{ color: #4ade80; }}
+    .tree-tbl > .tree-name {{ color: #3d4a40; font-size: 10px; transition: color .1s; }}
+    .tree-loading {{ padding: 4px 8px; color: #2a2a2a; font-size: 11px; font-style: italic; }}
+    main {{ flex: 1; min-width: 0; background: var(--bg); }}
     iframe {{ width: 100%; height: 100%; border: 0; background: var(--bg); }}
     /* Topology pop-out modal */
     #topo-overlay {{ display: none; position: fixed; inset: 0; z-index: 1500;
@@ -103,6 +163,7 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
 </head>
 <body>
   <header>
+    <button id="btn-sidebar-toggle" title="Toggle sidebar">☰</button>
     <span class="badge">APX dev</span>
     <div class="title">
       <div class="agent-name">{agent_name}</div>
@@ -116,7 +177,18 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
       <span class="ico">⏱</span> Traces
     </a>
   </header>
-  <main><iframe id="dash-frame" src="{default_src}"></iframe></main>
+  <div class="shell-body">
+    <aside id="sidebar">
+      <div id="sidebar-scroll">
+        <div id="sb-identity" class="sb-identity">
+          <div class="sb-user" style="color:#333">Loading…</div>
+        </div>
+        <div class="sb-section">Data</div>
+        <div class="sb-tree"><div id="cat-tree"></div></div>
+      </div>
+    </aside>
+    <main><iframe id="dash-frame" src="{default_src}"></iframe></main>
+  </div>
   <div id="topo-overlay" role="dialog" aria-modal="true" aria-labelledby="topo-title">
     <div id="topo-modal">
       <div id="topo-head">
@@ -148,6 +220,12 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
       }});
       const initial = (location.hash || "#{default_slug}").slice(1);
       selectTab(initial);
+      window._selectTab = selectTab;
+      window._dashFrame = frame;
+      // Sidebar toggle
+      document.getElementById("btn-sidebar-toggle").addEventListener("click", () => {{
+        document.body.classList.toggle("sidebar-off");
+      }});
     }})();
     (function () {{
       const overlay = document.getElementById("topo-overlay");
@@ -167,6 +245,82 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
         if (e.key === "Escape" && overlay.classList.contains("open")) close();
       }});
     }})();
+    // ── Sidebar data ──
+    function selectTable(fqn) {{
+      if (window._selectTab) window._selectTab("chat");
+      const frame = window._dashFrame || document.getElementById("dash-frame");
+      setTimeout(() => {{
+        frame.contentWindow.postMessage({{type: "apx:table-selected", fqn}}, "*");
+      }}, 150);
+    }}
+    async function loadSidebar() {{
+      try {{
+        const d = await fetch("/_apx/workspace-context").then(r => r.json());
+        const id = document.getElementById("sb-identity");
+        if (id) {{
+          id.innerHTML = `
+            <a class="sb-host" href="${{d.host||'#'}}" target="_blank">${{(d.host||'').replace('https://','')}}</a>
+            <div class="sb-user">${{d.user||''}}</div>`;
+        }}
+        loadCatalogTree(d.used_catalogs||[], d.used_schemas||[]);
+      }} catch(e) {{
+        const id = document.getElementById("sb-identity");
+        if (id) id.innerHTML = '<div class="sb-user">Unavailable</div>';
+      }}
+    }}
+    loadSidebar();
+    function loadCatalogTree(usedCats, usedSchemas) {{
+      const tree = document.getElementById("cat-tree");
+      if (!tree) return;
+      if (!usedCats.length) {{
+        tree.innerHTML = '<div class="tree-loading">No UC resources declared</div>';
+        return;
+      }}
+      // Group schemas by catalog
+      const bycat = {{}};
+      for (const cs of usedSchemas) {{
+        const [cat, sch] = cs.split(".");
+        if (!bycat[cat]) bycat[cat] = [];
+        bycat[cat].push(sch);
+      }}
+      tree.innerHTML = usedCats.map(c => {{
+        const schemas = (bycat[c] || []).map(s => `<div>
+          <div class="tree-row tree-sch" onclick="toggleSchema(this,'${{c}}','${{s}}')">
+            <span class="tree-chevron">›</span>
+            <span class="tree-icon" style="font-size:10px">◫</span>
+            <span class="tree-name">${{s}}</span>
+          </div>
+          <div class="tree-tables" style="display:none"></div>
+        </div>`).join("");
+        return `<div>
+          <div class="tree-row tree-cat open" onclick="this.classList.toggle('open');this.nextElementSibling.style.display=this.classList.contains('open')?'block':'none'">
+            <span class="tree-chevron">›</span>
+            <span class="tree-icon">🗄</span>
+            <span class="tree-name">${{c}}</span>
+          </div>
+          <div class="tree-schemas">${{schemas}}</div>
+        </div>`;
+      }}).join("");
+    }}
+    async function toggleSchema(rowEl, catalog, schema) {{
+      rowEl.classList.toggle("open");
+      const tablesEl = rowEl.nextElementSibling;
+      if (tablesEl.style.display === "none") {{
+        tablesEl.style.display = "block";
+        if (!tablesEl.dataset.loaded) {{
+          tablesEl.dataset.loaded = "1";
+          tablesEl.innerHTML = '<div class="tree-loading">Loading…</div>';
+          try {{
+            const tables = await fetch(`/_apx/setup/tables?catalog=${{catalog}}&schema=${{schema}}`).then(r => r.json());
+            tablesEl.innerHTML = tables.length
+              ? tables.map(t => `<div class="tree-tbl" onclick="selectTable('${{catalog}}.${{schema}}.${{t}}')" title="Ask about ${{t}}"><span class="tree-icon" style="font-size:9px;color:#333">▦</span><span class="tree-name">${{t}}</span></div>`).join("")
+              : '<div class="tree-loading">no tables</div>';
+          }} catch(e) {{ tablesEl.innerHTML = '<div class="tree-loading">Error</div>'; }}
+        }}
+      }} else {{
+        tablesEl.style.display = "none";
+      }}
+    }}
   </script>
 </body>
 </html>
@@ -802,62 +956,10 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
                    cursor: pointer; text-align: left; transition: background 0.12s, border-color 0.12s; }}
   .starter-chip:hover {{ background: #1c2822; border-color: #2f6b46; }}
   .starter-chip:active {{ background: #213326; }}
-  /* ── Left context drawer ── */
-  #ctx-overlay {{ position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:90;display:none; }}
-  #ctx-overlay.open {{ display:block; }}
-  #ctx-drawer {{ position:fixed;top:0;left:0;bottom:0;width:300px;background:#0d0d0d;
-                  border-right:1px solid #1e1e1e;z-index:91;transform:translateX(-100%);
-                  transition:transform .2s ease;display:flex;flex-direction:column;overflow:hidden; }}
-  #ctx-drawer.open {{ transform:translateX(0); }}
-  #ctx-drawer-header {{ display:flex;align-items:center;justify-content:space-between;
-                          padding:14px 16px;border-bottom:1px solid #1a1a1a;flex-shrink:0; }}
-  #ctx-drawer-header span {{ font-size:13px;font-weight:600;color:#aaa; }}
-  #ctx-drawer-close {{ background:none;border:none;color:#555;font-size:18px;cursor:pointer;
-                        line-height:1;padding:2px 6px;border-radius:4px; }}
-  #ctx-drawer-close:hover {{ color:#aaa; }}
-  #ctx-body {{ flex:1;overflow-y:auto;padding:16px;font-size:12px;color:#aaa; }}
-  .ctx-section {{ margin-bottom:18px; }}
-  .ctx-label {{ font-size:10px;color:#555;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px; }}
-  .ctx-workspace-host {{ color:#60b0ff;text-decoration:none;font-family:monospace;font-size:11px;word-break:break-all; }}
-  .ctx-workspace-host:hover {{ text-decoration:underline; }}
-  /* ── Catalog tree ── */
-  .tree {{ font-size:12px;line-height:1; }}
-  .tree-row {{ display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:5px;
-               cursor:pointer;user-select:none;position:relative; }}
-  .tree-row:hover {{ background:#161616; }}
-  .tree-chevron {{ flex-shrink:0;width:12px;height:12px;display:flex;align-items:center;justify-content:center;
-                    color:#444;transition:transform .15s;font-size:9px; }}
-  .tree-row.open > .tree-chevron {{ transform:rotate(90deg);color:#666; }}
-  .tree-icon {{ flex-shrink:0;font-size:12px;line-height:1; }}
-  .tree-name {{ font-family:ui-monospace,monospace;font-size:11px;flex:1;min-width:0;
-                overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }}
-  /* catalog level */
-  .tree-cat > .tree-name {{ color:#c9d1d9;font-weight:500; }}
-  /* schema level — indented with a subtle left rail */
-  .tree-schemas {{ padding-left:20px;position:relative; }}
-  .tree-schemas::before {{ content:'';position:absolute;left:10px;top:0;bottom:4px;
-                             width:1px;background:#1e1e1e; }}
-  .tree-sch > .tree-name {{ color:#8b949e; }}
-  /* table level */
-  .tree-tables {{ padding-left:20px;position:relative; }}
-  .tree-tables::before {{ content:'';position:absolute;left:10px;top:0;bottom:4px;
-                           width:1px;background:#191919; }}
-  .tree-tbl {{ display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;
-               cursor:default;user-select:text; }}
-  .tree-tbl:hover {{ background:#141414; }}
-  .tree-tbl > .tree-name {{ color:#4b5563;font-size:10px; }}
-  .tree-loading {{ padding:4px 6px;color:#333;font-size:11px;font-style:italic; }}
-  .ctx-badge {{ font-size:9px;background:#1e3a20;color:#4ade80;border-radius:3px;
-                 padding:1px 5px;margin-left:4px;font-family:sans-serif;vertical-align:middle;flex-shrink:0; }}
-  /* hamburger button in header */
-  #btn-hamburger {{ background:none;border:none;color:#555;font-size:18px;cursor:pointer;
-                     padding:4px 8px;border-radius:5px;margin-right:4px;line-height:1; }}
-  #btn-hamburger:hover {{ color:#aaa;background:#1a1a1a; }}
 </style>
 </head>
 <body>
 <header>
-  <button id="btn-hamburger" onclick="openCtxDrawer()" title="Workspace context">☰</button>
   <span class="badge">APX dev</span>
   <h1>{agent_name}</h1>
   <span class="desc">{agent_desc}</span>
@@ -865,15 +967,6 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   <button id="btn-deploy">Deploy ▶</button>
 </header>
 
-<!-- Left context drawer -->
-<div id="ctx-overlay" onclick="closeCtxDrawer()"></div>
-<div id="ctx-drawer">
-  <div id="ctx-drawer-header">
-    <span>Workspace</span>
-    <button id="ctx-drawer-close" onclick="closeCtxDrawer()">✕</button>
-  </div>
-  <div id="ctx-body"><div style="color:#444;padding:8px 0">Loading…</div></div>
-</div>
 {setup_banner}
 <div class="main">
   <!-- Chat (left) -->
@@ -958,6 +1051,30 @@ function useExample(btn) {{
   inp.value = btn.dataset.q;
   form.requestSubmit();
 }}
+// Table selected from the workspace drawer (parent frame postMessage)
+window.addEventListener('message', (e) => {{
+  if (e.data?.type !== 'apx:table-selected') return;
+  const fqn = e.data.fqn || '';
+  const table = fqn.split('.').pop();
+  const questions = [
+    `What columns does ${{fqn}} have?`,
+    `Show me a sample of data from ${{table}}`,
+    `How many rows are in ${{table}}?`,
+    `What are the most recent records in ${{table}}?`,
+  ];
+  const chips = questions.map(q =>
+    `<button type="button" class="starter-chip" onclick="useExample(this)" data-q="${{q}}">${{q}}</button>`
+  ).join('');
+  const chatEl = document.getElementById('chat');
+  chatEl.innerHTML = `
+    <div style="padding:32px 24px 12px">
+      <div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px">Table selected</div>
+      <div style="font-family:ui-monospace,monospace;font-size:13px;color:#c9d1d9;margin-bottom:16px">${{fqn}}</div>
+      <div class="starter-chips">${{chips}}</div>
+    </div>`;
+  document.getElementById('input').placeholder = 'Ask about ${{table}}…';
+  document.getElementById('input').focus();
+}});
 const chat = document.getElementById('chat');
 const form = document.getElementById('form');
 const inputEl = document.getElementById('input');
@@ -1297,133 +1414,6 @@ document.getElementById('eval-add-btn').addEventListener('click', () => {{
   saveEvalCases();
 }});
 
-// ── Context drawer ──
-let contextLoaded = false;
-
-function openCtxDrawer() {{
-  document.getElementById('ctx-drawer').classList.add('open');
-  document.getElementById('ctx-overlay').classList.add('open');
-  loadContext();
-}}
-function closeCtxDrawer() {{
-  document.getElementById('ctx-drawer').classList.remove('open');
-  document.getElementById('ctx-overlay').classList.remove('open');
-}}
-
-async function loadContext() {{
-  if (contextLoaded) return;
-  contextLoaded = true;
-  const el = document.getElementById('ctx-body');
-  try {{
-    const r = await fetch('/_apx/workspace-context');
-    const d = await r.json();
-    if (d.error) {{ el.innerHTML = `<div style="color:#f87171">Error: ${{esc(d.error)}}</div>`; return; }}
-
-    const hostShort = d.host.replace('https://', '');
-    let html = `<div class="ctx-section">
-      <div class="ctx-label">Connected as</div>
-      <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">
-        <span style="color:#4ade80;font-size:9px">●</span>
-        <a href="${{esc(d.host)}}" target="_blank" class="ctx-workspace-host">${{esc(hostShort)}}</a>
-      </div>
-      <div style="color:#666;font-size:11px;padding-left:16px">${{esc(d.user)}}</div>
-    </div>`;
-
-    if (d.resources && d.resources.length) {{
-      const byKind = {{}};
-      for (const res of d.resources) {{
-        if (!byKind[res.kind]) byKind[res.kind] = [];
-        byKind[res.kind].push(res.identifier);
-      }}
-      html += `<div class="ctx-section"><div class="ctx-label">Agent Resources</div>`;
-      for (const [kind, ids] of Object.entries(byKind)) {{
-        html += `<div style="margin-bottom:8px"><div style="color:#666;font-size:10px;margin-bottom:3px">${{esc(kind.replace(/_/g,' '))}}</div>`;
-        for (const id of ids) {{
-          html += `<div style="font-family:monospace;color:#c9d1d9;font-size:10px;padding:2px 0;border-bottom:1px solid #161616;word-break:break-all">${{esc(id)}}</div>`;
-        }}
-        html += `</div>`;
-      }}
-      html += `</div>`;
-    }}
-
-    html += `<div class="ctx-section"><div class="ctx-label">Catalog Browser</div><div id="cat-tree"></div></div>`;
-    el.innerHTML = html;
-    await loadCatalogTree(d.used_catalogs || []);
-  }} catch(e) {{
-    el.innerHTML = `<div style="color:#f87171">Failed to load: ${{esc(String(e))}}</div>`;
-  }}
-}}
-
-async function loadCatalogTree(usedCatalogs) {{
-  const tree = document.getElementById('cat-tree');
-  if (!tree) return;
-  try {{
-    const r = await fetch('/_apx/setup/catalogs');
-    const cats = await r.json();
-    if (!cats || !cats.length) {{
-      tree.innerHTML = '<div class="tree-loading">No catalogs accessible</div>'; return;
-    }}
-    const used = new Set(usedCatalogs);
-    const sorted = [...cats].sort((a, b) => (used.has(a)?0:1)-(used.has(b)?0:1) || a.localeCompare(b));
-    tree.innerHTML = `<div class="tree">${{sorted.map(c => {{
-      const badge = used.has(c) ? `<span class="ctx-badge">used</span>` : '';
-      return `<div>
-        <div class="tree-row tree-cat" onclick="toggleCatalog(this,'${{esc(c)}}')">
-          <span class="tree-chevron">›</span>
-          <span class="tree-icon">🗄</span>
-          <span class="tree-name">${{esc(c)}}</span>${{badge}}
-        </div>
-        <div class="tree-schemas" style="display:none"></div>
-      </div>`;
-    }}).join('')}}</div>`;
-  }} catch(e) {{
-    tree.innerHTML = `<div class="tree-loading">Could not load catalogs</div>`;
-  }}
-}}
-
-async function toggleCatalog(rowEl, catalog) {{
-  const schemas = rowEl.nextElementSibling;
-  const open = rowEl.classList.toggle('open');
-  schemas.style.display = open ? 'block' : 'none';
-  if (!open || schemas.dataset.loaded) return;
-  schemas.dataset.loaded = '1';
-  schemas.innerHTML = '<div class="tree-loading">loading…</div>';
-  try {{
-    const r = await fetch(`/_apx/setup/schemas?catalog=${{encodeURIComponent(catalog)}}`);
-    const list = await r.json();
-    if (!list.length) {{ schemas.innerHTML = '<div class="tree-loading">no schemas</div>'; return; }}
-    schemas.innerHTML = list.map(s => `<div>
-      <div class="tree-row tree-sch" onclick="toggleSchema(this,'${{esc(catalog)}}','${{esc(s)}}')">
-        <span class="tree-chevron">›</span>
-        <span class="tree-icon" style="opacity:.6">◫</span>
-        <span class="tree-name">${{esc(s)}}</span>
-      </div>
-      <div class="tree-tables" style="display:none"></div>
-    </div>`).join('');
-  }} catch(e) {{ schemas.innerHTML = `<div class="tree-loading">error</div>`; }}
-}}
-
-async function toggleSchema(rowEl, catalog, schema) {{
-  const tables = rowEl.nextElementSibling;
-  const open = rowEl.classList.toggle('open');
-  tables.style.display = open ? 'block' : 'none';
-  if (!open || tables.dataset.loaded) return;
-  tables.dataset.loaded = '1';
-  tables.innerHTML = '<div class="tree-loading">loading…</div>';
-  try {{
-    const r = await fetch(`/_apx/setup/tables?catalog=${{encodeURIComponent(catalog)}}&schema=${{encodeURIComponent(schema)}}`);
-    const list = await r.json();
-    if (!list.length) {{ tables.innerHTML = '<div class="tree-loading">no tables</div>'; return; }}
-    tables.innerHTML = list.map(t => {{
-      const name = typeof t === 'string' ? t : (t.name || t);
-      return `<div class="tree-tbl">
-        <span class="tree-icon" style="font-size:10px;color:#2d333b">▦</span>
-        <span class="tree-name">${{esc(name)}}</span>
-      </div>`;
-    }}).join('');
-  }} catch(e) {{ tables.innerHTML = `<div class="tree-loading">error</div>`; }}
-}}
-
 // ── State ──
 const history = [];
 let eventCounter = 0;
@@ -1529,8 +1519,14 @@ function showDetail(ev, el) {{
   detailTitle.textContent = `#${{ev.num}} ${{ev.type}}`;
   let html = '';
   if (ev.data) {{
-    for (const [k, v] of Object.entries(ev.data)) {{
-      html += `<div class="label">${{k}}</div><pre>${{typeof v === 'string' ? v : JSON.stringify(v, null, 2)}}</pre>`;
+    if (ev.type === 'assistant' && ev.data.content) {{
+      // Render assistant responses as markdown in the detail panel.
+      try {{ html = DOMPurify.sanitize(marked.parse(ev.data.content)); }}
+      catch {{ html = `<pre>${{esc(ev.data.content)}}</pre>`; }}
+    }} else {{
+      for (const [k, v] of Object.entries(ev.data)) {{
+        html += `<div class="label">${{esc(k)}}</div><pre>${{typeof v === 'string' ? esc(v) : esc(JSON.stringify(v, null, 2))}}</pre>`;
+      }}
     }}
   }}
   detailBody.innerHTML = html;
@@ -1594,7 +1590,7 @@ function extractMsg(value) {{
     return value.map(extractMsg).filter(Boolean).join(', ').slice(0, 300);
   }}
   if (typeof value === 'object') {{
-    for (const k of ['content', 'text', 'output_text', 'message']) {{
+    for (const k of ['content', 'text', 'output_text', 'message', 'messages', 'choices', 'input']) {{
       if (k in value) return extractMsg(value[k]);
     }}
     return Object.entries(value).filter(([, v]) => v != null && v !== '')
@@ -1650,13 +1646,6 @@ async function finalizeTrace(traceId, status, opts) {{
       return;
     }}
     traceBody.innerHTML = '';
-    // Build parent→children
-    const byParent = {{}};
-    const roots = [];
-    for (const s of data.spans) {{
-      if (s.parent_id) (byParent[s.parent_id] = byParent[s.parent_id] || []).push(s);
-      else roots.push(s);
-    }}
     const SPAN_COLORS = {{LLM:'#22d3ee',TOOL:'#facc15',CHAIN:'#a78bfa',AGENT:'#60b0ff',OTHER:'#94a3b8'}};
     function spanTypeShort(t) {{
       t = (t||'').toUpperCase();
@@ -1666,49 +1655,94 @@ async function finalizeTrace(traceId, status, opts) {{
       if (t === 'AGENT') return 'AGENT';
       return 'OTHER';
     }}
+
+    // ── Summary view: flat timeline of LLM + TOOL spans only ──
+    // Ordered by start time. Orchestration wrappers (CHAIN/AGENT/OTHER) are
+    // hidden here but available in the full tree toggle below.
+    const ordered = [...data.spans].sort((a,b) => (a.start_time_ns||0)-(b.start_time_ns||0));
+    const keySpans = ordered.filter(s => {{
+      const t = spanTypeShort(s.span_type);
+      return t === 'LLM' || t === 'TOOL';
+    }});
+
+    for (const s of keySpans) {{
+      const type = spanTypeShort(s.span_type);
+      const color = SPAN_COLORS[type] || '#888';
+      const dur = s.duration_ms != null ? `${{Math.round(s.duration_ms)}}ms` : '';
+      const isErr = (s.status||'').toUpperCase().includes('ERR');
+      const card = document.createElement('div');
+      card.className = 'span-step';
+      card.style.cssText = 'margin-bottom:6px;';
+      card.innerHTML =
+        `<div class="step-header">` +
+        `<span style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;background:${{color}}22;color:${{color}}">${{type}}</span>` +
+        `<span class="who" style="color:${{color}};font-size:12px;font-weight:600;margin-left:6px">${{escHtml(s.name)}}</span>` +
+        (isErr ? `<span style="color:#f87171;font-size:10px;margin-left:6px">ERR</span>` : '') +
+        (dur ? `<span class="dur" style="margin-left:auto">${{dur}}</span>` : '') +
+        `</div>`;
+
+      const addBubble = (val, cls) => {{
+        const msg = extractMsg(val);
+        if (!msg) return;
+        const b = document.createElement('div');
+        b.className = `span-bubble ${{cls}}`;
+        b.style.cssText = 'font-size:11px;margin-top:4px;';
+        b.textContent = msg.slice(0, 200) + (msg.length > 200 ? '…' : '');
+        card.appendChild(b);
+      }};
+      if (s.inputs)  addBubble(s.inputs,  type === 'TOOL' ? 'tool-in' : 'agent-ask');
+      if (s.outputs) addBubble(s.outputs, type === 'TOOL' ? 'tool-out' : 'llm-reply');
+      traceBody.appendChild(card);
+    }}
+
+    if (!keySpans.length) {{
+      traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">No LLM or tool spans found.</div>';
+    }}
+
+    // ── Full tree (collapsed by default) ──
+    const toggle = document.createElement('button');
+    toggle.textContent = '▸ Full trace';
+    toggle.style.cssText = 'margin-top:8px;background:none;border:1px solid #333;color:#666;font-size:11px;padding:2px 8px;border-radius:3px;cursor:pointer;';
+    const treeDiv = document.createElement('div');
+    treeDiv.style.display = 'none';
+    toggle.onclick = () => {{
+      const open = treeDiv.style.display !== 'none';
+      treeDiv.style.display = open ? 'none' : 'block';
+      toggle.textContent = open ? '▸ Full trace' : '▾ Full trace';
+    }};
+    traceBody.appendChild(toggle);
+    traceBody.appendChild(treeDiv);
+
+    // Build parent→children for full tree
+    const byParent = {{}};
+    const roots = [];
+    for (const s of data.spans) {{
+      if (s.parent_id) (byParent[s.parent_id] = byParent[s.parent_id] || []).push(s);
+      else roots.push(s);
+    }}
     function renderSpanNode(s, depth) {{
       const type = spanTypeShort(s.span_type);
       const color = SPAN_COLORS[type] || '#888';
-      const dur = s.duration_ms != null ? `${{s.duration_ms}}ms` : '';
+      const dur = s.duration_ms != null ? `${{Math.round(s.duration_ms)}}ms` : '';
       const isErr = (s.status||'').toUpperCase().includes('ERR');
       const wrap = document.createElement('div');
-      wrap.style.cssText = `padding-left:${{depth*14}}px;margin-bottom:3px;`;
+      wrap.style.cssText = `padding-left:${{depth*12}}px;margin-bottom:2px;`;
       const card = document.createElement('div');
       card.className = 'span-step';
-      card.style.cssText = 'position:relative;padding-left:18px;';
-      const dot = document.createElement('div');
-      dot.className = 'step-dot';
-      dot.style.cssText = `position:absolute;left:1px;top:5px;width:9px;height:9px;border-radius:50%;background:${{color}};`;
-      const content = document.createElement('div');
-      content.className = 'step-content';
-      const header = document.createElement('div');
-      header.className = 'step-header';
-      header.innerHTML =
-        `<span class="who" style="color:${{color}};font-size:12px;font-weight:600">${{escHtml(s.name)}}</span>` +
-        `<span style="font-size:10px;color:#555;font-family:monospace;margin-left:4px">${{type}}</span>` +
-        (dur ? `<span class="dur" style="margin-left:auto">${{dur}}</span>` : '') +
-        (isErr ? `<span style="color:#f87171;font-size:10px;margin-left:8px">ERR</span>` : '');
-      content.appendChild(header);
-      // Show inputs/outputs compactly
-      for (const [label, val] of [['in', s.inputs], ['out', s.outputs]]) {{
-        if (!val) continue;
-        const msg = extractMsg(val);
-        if (!msg) continue;
-        const bubble = document.createElement('div');
-        const bubbleCls = label === 'in' ? (type === 'TOOL' ? 'tool-in' : 'agent-ask') : (type === 'TOOL' ? 'tool-out' : 'llm-reply');
-        bubble.className = `span-bubble ${{bubbleCls}}`;
-        bubble.style.cssText = 'font-size:11px;margin-top:3px;';
-        bubble.textContent = msg.slice(0, 300) + (msg.length > 300 ? '…' : '');
-        content.appendChild(bubble);
-      }}
-      card.appendChild(dot); card.appendChild(content);
+      card.innerHTML =
+        `<div class="step-header">` +
+        `<span style="font-size:9px;font-weight:700;padding:1px 4px;border-radius:2px;background:${{color}}22;color:${{color}}">${{type}}</span>` +
+        `<span class="who" style="color:${{color}};font-size:11px;font-weight:600;margin-left:5px">${{escHtml(s.name)}}</span>` +
+        (isErr ? `<span style="color:#f87171;font-size:9px;margin-left:5px">ERR</span>` : '') +
+        (dur ? `<span class="dur" style="margin-left:auto;font-size:10px">${{dur}}</span>` : '') +
+        `</div>`;
       wrap.appendChild(card);
       for (const child of (byParent[s.span_id] || [])) {{
         wrap.appendChild(renderSpanNode(child, depth + 1));
       }}
       return wrap;
     }}
-    for (const root of roots) traceBody.appendChild(renderSpanNode(root, 0));
+    for (const root of roots) treeDiv.appendChild(renderSpanNode(root, 0));
 
     // Surface tool calls + results in the Events panel so it stops only
     // showing the user/assistant "one side" of the conversation. Gated on
