@@ -1130,18 +1130,30 @@ def _gate_workspace_for_scaffold(profile: str | None):
 
     from databricks.sdk import WorkspaceClient
 
-    def _try_connect(p: str | None):
-        try:
-            ws = WorkspaceClient(profile=p) if p else WorkspaceClient()
-            me = ws.current_user.me()
-            return ws, me.user_name or ws.config.host
-        except Exception as exc:
-            return None, str(exc)
+    def _try_connect(p: str | None, timeout: int = 10):
+        import concurrent.futures
 
+        def _do():
+            try:
+                ws = WorkspaceClient(profile=p) if p else WorkspaceClient()
+                me = ws.current_user.me()
+                return ws, me.user_name or ws.config.host
+            except Exception as exc:
+                return None, str(exc)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_do)
+            try:
+                return future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                return None, f"timed out after {timeout}s — host may be unreachable"
+
+    click.echo("  Checking workspace connection…", nl=False)
     ws, info = _try_connect(profile)
     if ws is not None:
-        click.echo(f"  Connected as {info}")
+        click.echo(f"\r  Connected as {info}                    ")
         return ws
+    click.echo(f"\r  No connection ({info})")
 
     click.echo(
         "\nNo Databricks workspace connection found"
@@ -1163,11 +1175,12 @@ def _gate_workspace_for_scaffold(profile: str | None):
             )
             if idx <= len(profiles):
                 chosen = profiles[idx - 1]
+                click.echo(f"  Connecting with profile '{chosen}'…", nl=False)
                 ws, info = _try_connect(chosen)
                 if ws is not None:
-                    click.echo(f"  Connected as {info}")
+                    click.echo(f"\r  Connected as {info}                    ")
                     return ws
-                click.echo(f"  Profile '{chosen}' didn't connect: {info}")
+                click.echo(f"\r  Profile '{chosen}' didn't connect: {info}")
                 click.echo()
                 continue
         else:
