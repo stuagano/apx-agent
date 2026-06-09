@@ -206,13 +206,108 @@ def _render_traces_list(rows: list, agent_name: str | None) -> str:
 </body></html>"""
 
 
+def _normalize_responses_api_spans(span_dicts: list[dict]) -> list[dict]:
+    """Normalize Responses-API format spans to canonical chat-completions shape.
+
+    Spans whose inputs carry an ``input`` list and whose outputs carry
+    ``object == "response"`` are converted so the rest of the rendering
+    pipeline sees one format regardless of which SDK produced the trace:
+
+    * span_type  → CHAT_MODEL
+    * inputs     → {"messages": [...]}
+    * outputs    → {"choices": [{"message": {"role": "assistant", "content": ...}}]}
+    * function_call / function_call_output pairs → synthetic TOOL child spans
+
+    Returns a new list (may be longer than the input due to synthetic spans).
+    """
+    import json as _json
+
+    result: list[dict] = []
+    for span in span_dicts:
+        inputs = span.get("inputs") or {}
+        outputs = span.get("outputs") or {}
+        input_list = inputs.get("input") if isinstance(inputs, dict) else None
+        is_responses = (
+            isinstance(input_list, list)
+            and isinstance(outputs, dict)
+            and outputs.get("object") == "response"
+        )
+        if not is_responses:
+            result.append(span)
+            continue
+
+        output_items = outputs.get("output") or []
+
+        # Normalize the span itself.
+        normalized = dict(span)
+        if normalized.get("span_type") in ("UNKNOWN", "OTHER"):
+            normalized["span_type"] = "CHAT_MODEL"
+        normalized["inputs"] = {"messages": input_list}
+
+        # Final assistant text → choices format.
+        final_text = ""
+        for item in reversed(output_items):
+            if item.get("type") == "message":
+                content = item.get("content", "")
+                if isinstance(content, list):
+                    content = "\n".join(
+                        b.get("text", "")
+                        for b in content
+                        if isinstance(b, dict) and b.get("type") == "output_text"
+                    )
+                final_text = content if isinstance(content, str) else ""
+                break
+        normalized["outputs"] = (
+            {"choices": [{"message": {"role": "assistant", "content": final_text}}]}
+            if final_text else {}
+        )
+        result.append(normalized)
+
+        # Synthesize one TOOL span per function_call / function_call_output pair.
+        tool_results = {
+            item["call_id"]: item
+            for item in output_items
+            if item.get("type") == "function_call_output" and item.get("call_id")
+        }
+        for item in output_items:
+            if item.get("type") != "function_call":
+                continue
+            call_id = item.get("call_id", "")
+            result_item = tool_results.get(call_id) or {}
+            raw_args = item.get("arguments", "")
+            raw_out = result_item.get("output", "")
+            try:
+                tool_in = _json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except Exception:
+                tool_in = {"query": raw_args}
+            try:
+                tool_out = _json.loads(raw_out) if isinstance(raw_out, str) else raw_out
+            except Exception:
+                tool_out = {"result": raw_out}
+            result.append({
+                "span_id": f"synth-{call_id}",
+                "parent_id": span["span_id"],
+                "name": item.get("name", "tool"),
+                "span_type": "TOOL",
+                "status": "OK",
+                "start_time_ns": span.get("start_time_ns"),
+                "end_time_ns": span.get("end_time_ns"),
+                "duration_ms": None,
+                "inputs": tool_in,
+                "outputs": tool_out,
+                "events": [],
+            })
+
+    return result
+
+
 def _serialize_trace_spans(trace: Any) -> list[dict]:
     """Serialize an MLflow trace's spans into plain JSON-able dicts.
 
     Shared by the trace-detail route AND the in-process trace buffer
-    (``_trace_store``) so both produce IDENTICAL span dicts. Includes the
-    ``events`` field (per-span MLflow span events, e.g. ``apx.progress`` /
-    tool-call markers) added in #128.
+    (``_trace_store``) so both produce IDENTICAL span dicts. Normalizes
+    Responses-API format spans to canonical chat-completions shape via
+    ``_normalize_responses_api_spans`` so downstream renderers see one format.
     """
     spans = list(getattr(getattr(trace, "data", None), "spans", None) or [])
     span_dicts: list[dict] = []
@@ -239,7 +334,7 @@ def _serialize_trace_spans(trace: Any) -> list[dict]:
                 for e in (getattr(s, "events", None) or [])
             ],
         })
-    return span_dicts
+    return _normalize_responses_api_spans(span_dicts)
 
 
 # ---------------------------------------------------------------------------
@@ -527,42 +622,24 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
             _html.escape(s.get("span_id", ""))
             inputs_obj = s.get("inputs")
             outputs_obj = s.get("outputs")
-            # MLflow tags chat-model spans CHAT_MODEL and completion spans LLM.
-            is_llm = str(s.get("span_type", "")).upper() in ("LLM", "CHAT_MODEL")
             io_html = ""
 
             # ── Inputs ────────────────────────────────────────────────────────
-            msgs = _is_chat_messages(inputs_obj) if is_llm else None
-            resp_in = _is_responses_input(inputs_obj) if not is_llm else None
+            msgs = _is_chat_messages(inputs_obj)
             if msgs is not None:
-                # Chat-completions format: render full conversation with delta collapse.
                 io_html += (
                     '<div class="io-block"><div class="io-label">Messages</div>'
                     f'<div class="convo">{_render_messages_block(msgs, state["prev"])}</div></div>'
                 )
                 state["prev"] = msgs
-            elif resp_in is not None:
-                # Responses-API format: delta-collapse the same way chat-completions does.
-                # resp_in is the full conversation history; state["prev"] is what was
-                # shown earlier, so _render_messages_block collapses the shared prefix.
-                rows = _render_messages_block(resp_in, state["prev"])
-                state["prev"] = resp_in
-                if rows:
-                    io_html += (
-                        '<div class="io-block"><div class="io-label">Input</div>'
-                        f'<div class="convo">{rows}</div></div>'
-                    )
             elif inputs_obj and not _is_message_heavy(inputs_obj):
-                # Raw JSON fallback — strip null values to reduce noise.
                 cleaned = {k: v for k, v in inputs_obj.items() if v is not None} if isinstance(inputs_obj, dict) else inputs_obj
                 inp = _json.dumps(cleaned, indent=2)
                 io_html += f'<div class="io-block"><div class="io-label">Inputs</div><pre class="io-pre">{_html.escape(inp[:4000])}</pre></div>'
 
             # ── Outputs ───────────────────────────────────────────────────────
-            choices = _is_choices(outputs_obj) if is_llm else None
-            resp_out = _is_responses_output(outputs_obj) if not is_llm else None
+            choices = _is_choices(outputs_obj)
             if choices is not None:
-                # Chat-completions format.
                 io_html += (
                     '<div class="io-block"><div class="io-label">Response</div>'
                     f'<div class="convo">{_render_choices_block(choices)}</div></div>'
@@ -571,14 +648,6 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
                          if isinstance(c, dict) and isinstance(c.get("message"), dict)]
                 if added:
                     state["prev"] = (state["prev"] or []) + added
-            elif resp_out is not None:
-                # Responses-API format: function_call / function_call_output / message items.
-                rows = _render_responses_output(resp_out)
-                if rows:
-                    io_html += (
-                        '<div class="io-block"><div class="io-label">Output</div>'
-                        f'<div class="convo">{rows}</div></div>'
-                    )
             elif outputs_obj and not _is_message_heavy(outputs_obj):
                 cleaned = {k: v for k, v in outputs_obj.items() if v is not None} if isinstance(outputs_obj, dict) else outputs_obj
                 out = _json.dumps(cleaned, indent=2)
