@@ -236,36 +236,40 @@ def _databrickscfg_profiles() -> list[str]:
     return names
 
 
-def _save_profile_to_pyproject(profile: str) -> bool:
-    """Write ``profile = "<name>"`` into ``[tool.apx.agent]`` in the local pyproject.toml.
+def _save_to_pyproject(key: str, value: str) -> bool:
+    """Write ``key = "<value>"`` into ``[tool.apx.agent]`` in the local pyproject.toml.
 
     Returns True on success, False if the file doesn't exist or the section
     isn't present (so callers can stay silent in non-project directories).
     """
-    import re
-
     pyproject = Path.cwd() / "pyproject.toml"
     if not pyproject.exists():
         return False
     content = pyproject.read_text()
     if "[tool.apx.agent]" not in content:
         return False
-    escaped = profile.replace('"', '\\"')
-    if re.search(r'^\s*profile\s*=', content, re.MULTILINE):
+    escaped = value.replace('"', '\\"')
+    if re.search(rf'^\s*{re.escape(key)}\s*=', content, re.MULTILINE):
         content = re.sub(
-            r'^\s*profile\s*=.*$',
-            f'profile = "{escaped}"',
+            rf'^\s*{re.escape(key)}\s*=.*$',
+            f'{key} = "{escaped}"',
             content,
             flags=re.MULTILINE,
         )
     else:
         content = re.sub(
             r'(\[tool\.apx\.agent\])',
-            f'[tool.apx.agent]\nprofile = "{escaped}"',
+            f'[tool.apx.agent]\n{key} = "{escaped}"',
             content,
         )
     pyproject.write_text(content)
     return True
+
+
+def _save_profile_to_pyproject(profile: str) -> bool:
+    return _save_to_pyproject("profile", profile)
+
+
 
 
 def _preflight_databricks_auth() -> None:
@@ -4694,8 +4698,93 @@ def publish_tools_cmd(module: str, dry_run: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# publish
+# create-supervisor  /  publish
 # ---------------------------------------------------------------------------
+
+
+@main.command("create-supervisor")
+@click.option("--name", required=True, help="Display name for the supervisor (e.g. 'Acme AI Assistant').")
+@click.option("--description", default="", help="Short description shown in the Databricks UI.")
+@click.option(
+    "--instructions", default=None,
+    help="System prompt controlling how the supervisor routes queries. "
+         "Defaults to a sensible 'route to the best sub-agent' prompt.",
+)
+@click.option("--profile", default=None, help="Databricks CLI profile.")
+@click.option("--save/--no-save", default=True,
+              help="Write supervisor_id to pyproject.toml after creation (default: yes).")
+def create_supervisor(
+    name: str,
+    description: str,
+    instructions: str | None,
+    profile: str | None,
+    save: bool,
+) -> None:
+    """Create a Mosaic AI Supervisor Agent for your org's A2A registry.
+
+    Run this once per workspace. The supervisor routes user queries across all
+    agents published with ``apx-agent publish``. After creation, pin the
+    printed supervisor_id in your org's shared pyproject.toml so every agent
+    can publish with a single zero-argument command.
+
+    Requires Agent Bricks (Beta) to be enabled in your workspace.
+    Docs: https://docs.databricks.com/aws/en/generative-ai/agent-bricks/multi-agent-supervisor
+
+    \b
+      apx-agent create-supervisor --name "Acme AI Assistant"
+      # → supervisor_id = "01ef..."
+      # → writes supervisor_id to pyproject.toml automatically
+    """
+    from apx_agent import create_supervisor_agent
+
+    cfg = _read_apx_agent_config()
+    profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    if profile:
+        os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+
+    default_instructions = (
+        f"You are {name}, an AI assistant that routes questions to the best available agent. "
+        "Analyse the user's request and delegate to whichever sub-agent is most relevant. "
+        "If no sub-agent fits, answer directly using your own knowledge."
+    )
+    instructions = instructions or default_instructions
+
+    click.echo(f"\nCreating Supervisor Agent '{name}' …")
+    try:
+        result = create_supervisor_agent(
+            display_name=name,
+            description=description,
+            instructions=instructions,
+        )
+    except ImportError as exc:
+        raise click.ClickException(str(exc))
+    except Exception as exc:
+        raise click.ClickException(
+            f"Failed to create supervisor: {exc}\n"
+            "Make sure Agent Bricks is enabled in your workspace:\n"
+            "  https://docs.databricks.com/aws/en/generative-ai/agent-bricks/multi-agent-supervisor"
+        )
+
+    supervisor_id = (
+        getattr(result, "supervisor_agent_id", None)
+        or getattr(result, "id", None)
+        or (result.get("supervisor_agent_id") or result.get("id") if isinstance(result, dict) else None)
+    )
+
+    click.echo(click.style(f"\nSupervisor Agent created!", fg="green"))
+    click.echo(f"  Name          : {name}")
+    if supervisor_id:
+        click.echo(f"  supervisor_id : {supervisor_id}")
+
+    if save and supervisor_id:
+        saved = _save_to_pyproject("supervisor_id", supervisor_id)
+        if saved:
+            click.echo(f"\nSaved to pyproject.toml. Any agent in this project can now run:")
+            click.echo(f"  apx-agent publish")
+        else:
+            click.echo(f"\nAdd this to your shared pyproject.toml so every agent can publish with zero args:")
+            click.echo(f"\n  [tool.apx.agent]")
+            click.echo(f'  supervisor_id = "{supervisor_id}"')
 
 
 @main.command()
