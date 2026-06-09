@@ -226,24 +226,46 @@ def _databrickscfg_profiles() -> list[str]:
 def _preflight_databricks_auth() -> None:
     """Fail `apx-agent run`/`deploy` with dev-time guidance when auth is unresolved.
 
-    Delegates to the doctor auth checks so inline errors and `apx-agent doctor` share
-    one source of truth. Runs both the offline credential-resolution check and a
-    live workspace round-trip so expired tokens are caught here rather than
-    surfacing as confusing data errors mid-run.
+    When running in a TTY and auth fails because multiple profiles match the
+    same host, shows a profile picker and retries rather than just printing
+    instructions. Delegates to the doctor auth checks so inline errors and
+    `apx-agent doctor` share one source of truth.
     """
+    import sys
     from . import _doctor as _d
 
     result = _d.check_databricks_auth()
     if result.status is _d.Status.FAIL:
-        raise click.ClickException(
-            _fix_msg(
-                "Could not resolve Databricks authentication. This agent "
-                "connects to a workspace at startup.\n"
-                "Run `apx-agent doctor` for a full environment check.",
-                result.detail,
-                result.fix,
+        profiles = _list_databricks_profiles()
+        if profiles and sys.stdin.isatty():
+            # Auth is ambiguous or unresolved — let the user pick a profile
+            # interactively instead of just printing instructions and exiting.
+            click.echo(
+                f"Databricks auth unresolved — pick a profile to use for this session:\n"
             )
-        )
+            for i, (name, host, valid) in enumerate(profiles, 1):
+                status = "✓" if valid else " "
+                short_host = host.replace("https://", "").split(".")[0] if host else ""
+                click.echo(f"  {i:2}. {status} {name:<28} {short_host}")
+            default = next((i for i, (_, _, v) in enumerate(profiles, 1) if v), 1)
+            idx = click.prompt("\nChoose", type=click.IntRange(1, len(profiles)), default=default)
+            chosen, _, _ = profiles[idx - 1]
+            os.environ["DATABRICKS_CONFIG_PROFILE"] = chosen
+            click.echo(f"  Using profile '{chosen}' (set DATABRICKS_CONFIG_PROFILE={chosen} to make permanent)\n")
+            # Retry after setting the profile.
+            result = _d.check_databricks_auth()
+
+        if result.status is _d.Status.FAIL:
+            raise click.ClickException(
+                _fix_msg(
+                    "Could not resolve Databricks authentication. This agent "
+                    "connects to a workspace at startup.\n"
+                    "Run `apx-agent doctor` for a full environment check.",
+                    result.detail,
+                    result.fix,
+                )
+            )
+
     # Also verify the token is actually accepted by the workspace.
     live = _d.check_databricks_workspace(auth_ok=True)
     if live.status is _d.Status.FAIL:
