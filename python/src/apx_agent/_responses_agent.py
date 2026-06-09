@@ -1122,7 +1122,18 @@ def compile_to_responses_agent(
 
 
 def _resolve_model(default: str) -> str:
-    """Honour the ``APX_AGENT_MODEL_OVERRIDE`` env var (hot-swap symmetry)."""
+    """Return the effective model for this request.
+
+    Reads ``APX_AGENT_MODEL_OVERRIDE`` at runtime so operators can hot-swap
+    the LLM on a deployed endpoint without re-logging an artifact.  This is a
+    sanctioned exception to Design Principle 1 (Spec Self-Containment) — the
+    override is endpoint-scoped config written only by
+    :func:`apx_agent.hot_swap_model` via the Databricks SDK, never by ambient
+    server state.  See ``designs/DESIGN_PRINCIPLES.md`` §Sanctioned Exceptions.
+
+    :param default: The compile-time model from the agent spec.
+    :returns: ``APX_AGENT_MODEL_OVERRIDE`` if set on this endpoint, else ``default``.
+    """
     import os
 
     return os.environ.get("APX_AGENT_MODEL_OVERRIDE") or default
