@@ -802,16 +802,56 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
                    cursor: pointer; text-align: left; transition: background 0.12s, border-color 0.12s; }}
   .starter-chip:hover {{ background: #1c2822; border-color: #2f6b46; }}
   .starter-chip:active {{ background: #213326; }}
+  /* ── Left context drawer ── */
+  #ctx-overlay {{ position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:90;display:none; }}
+  #ctx-overlay.open {{ display:block; }}
+  #ctx-drawer {{ position:fixed;top:0;left:0;bottom:0;width:300px;background:#0d0d0d;
+                  border-right:1px solid #1e1e1e;z-index:91;transform:translateX(-100%);
+                  transition:transform .2s ease;display:flex;flex-direction:column;overflow:hidden; }}
+  #ctx-drawer.open {{ transform:translateX(0); }}
+  #ctx-drawer-header {{ display:flex;align-items:center;justify-content:space-between;
+                          padding:14px 16px;border-bottom:1px solid #1a1a1a;flex-shrink:0; }}
+  #ctx-drawer-header span {{ font-size:13px;font-weight:600;color:#aaa; }}
+  #ctx-drawer-close {{ background:none;border:none;color:#555;font-size:18px;cursor:pointer;
+                        line-height:1;padding:2px 6px;border-radius:4px; }}
+  #ctx-drawer-close:hover {{ color:#aaa; }}
+  #ctx-body {{ flex:1;overflow-y:auto;padding:16px;font-size:12px;color:#aaa; }}
+  .ctx-section {{ margin-bottom:18px; }}
+  .ctx-label {{ font-size:10px;color:#555;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px; }}
+  .ctx-workspace-host {{ color:#60b0ff;text-decoration:none;font-family:monospace;font-size:11px;word-break:break-all; }}
+  .ctx-workspace-host:hover {{ text-decoration:underline; }}
+  .cat-node {{ cursor:pointer;padding:4px 2px;color:#9ca3af;user-select:none; }}
+  .cat-node:hover {{ color:#ccc; }}
+  .schema-node {{ cursor:pointer;padding:3px 2px;color:#6b7280;user-select:none; }}
+  .schema-node:hover {{ color:#aaa; }}
+  .table-row {{ padding:2px 2px;color:#4b5563;font-family:monospace;font-size:10px; }}
+  .ctx-badge {{ font-size:9px;background:#1e3a20;color:#4ade80;border-radius:3px;
+                 padding:1px 5px;margin-left:6px;font-family:sans-serif;vertical-align:middle; }}
+  /* hamburger button in header */
+  #btn-hamburger {{ background:none;border:none;color:#555;font-size:18px;cursor:pointer;
+                     padding:4px 8px;border-radius:5px;margin-right:4px;line-height:1; }}
+  #btn-hamburger:hover {{ color:#aaa;background:#1a1a1a; }}
 </style>
 </head>
 <body>
 <header>
+  <button id="btn-hamburger" onclick="openCtxDrawer()" title="Workspace context">☰</button>
   <span class="badge">APX dev</span>
   <h1>{agent_name}</h1>
   <span class="desc">{agent_desc}</span>
   <nav>{_apx_nav_links("agent")}</nav>
   <button id="btn-deploy">Deploy ▶</button>
 </header>
+
+<!-- Left context drawer -->
+<div id="ctx-overlay" onclick="closeCtxDrawer()"></div>
+<div id="ctx-drawer">
+  <div id="ctx-drawer-header">
+    <span>Workspace</span>
+    <button id="ctx-drawer-close" onclick="closeCtxDrawer()">✕</button>
+  </div>
+  <div id="ctx-body"><div style="color:#444;padding:8px 0">Loading…</div></div>
+</div>
 {setup_banner}
 <div class="main">
   <!-- Chat (left) -->
@@ -844,7 +884,6 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
       <button class="active" onclick="switchTab('trace',this)">Trace</button>
       <button onclick="switchTab('events',this)">Events</button>
       <button onclick="switchTab('eval',this)">Eval</button>
-      <button onclick="switchTab('context',this);loadContext()">Context</button>
     </div>
     <div class="panel-content">
       <div id="tab-tools" class="tab-panel"></div>
@@ -871,11 +910,6 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
         <div id="eval-add" style="padding:10px 12px;border-top:1px solid #1a1a1a">
           <textarea id="eval-add-q" placeholder="Add a test question…" rows="2" style="width:100%;background:#111;border:1px solid #222;color:#ccc;border-radius:5px;padding:6px 8px;font-size:12px;resize:none;margin-bottom:6px"></textarea>
           <button id="eval-add-btn" style="background:transparent;color:#555;border:1px solid #2a2a2a;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer">+ Add</button>
-        </div>
-      </div>
-      <div id="tab-context" class="tab-panel">
-        <div id="ctx-body" style="overflow-y:auto;flex:1;padding:14px 12px;font-size:12px;color:#aaa">
-          <div style="color:#444">Loading workspace context…</div>
         </div>
       </div>
     </div>
@@ -1241,8 +1275,19 @@ document.getElementById('eval-add-btn').addEventListener('click', () => {{
   saveEvalCases();
 }});
 
-// ── Context tab ──
+// ── Context drawer ──
 let contextLoaded = false;
+
+function openCtxDrawer() {{
+  document.getElementById('ctx-drawer').classList.add('open');
+  document.getElementById('ctx-overlay').classList.add('open');
+  loadContext();
+}}
+function closeCtxDrawer() {{
+  document.getElementById('ctx-drawer').classList.remove('open');
+  document.getElementById('ctx-overlay').classList.remove('open');
+}}
+
 async function loadContext() {{
   if (contextLoaded) return;
   contextLoaded = true;
@@ -1253,119 +1298,98 @@ async function loadContext() {{
     if (d.error) {{ el.innerHTML = `<div style="color:#f87171">Error: ${{esc(d.error)}}</div>`; return; }}
 
     const hostShort = d.host.replace('https://', '');
-    let html = `
-      <div style="margin-bottom:16px">
-        <div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Workspace</div>
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-          <span style="color:#4ade80;font-size:10px">●</span>
-          <a href="${{esc(d.host)}}" target="_blank" style="color:#60b0ff;text-decoration:none;font-family:monospace;font-size:11px">${{esc(hostShort)}}</a>
-        </div>
-        <div style="color:#777;font-size:11px;padding-left:18px">${{esc(d.user)}}</div>
-      </div>`;
+    let html = `<div class="ctx-section">
+      <div class="ctx-label">Connected as</div>
+      <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">
+        <span style="color:#4ade80;font-size:9px">●</span>
+        <a href="${{esc(d.host)}}" target="_blank" class="ctx-workspace-host">${{esc(hostShort)}}</a>
+      </div>
+      <div style="color:#666;font-size:11px;padding-left:16px">${{esc(d.user)}}</div>
+    </div>`;
 
     if (d.resources && d.resources.length) {{
       const byKind = {{}};
-      for (const r of d.resources) {{
-        if (!byKind[r.kind]) byKind[r.kind] = [];
-        byKind[r.kind].push(r.identifier);
+      for (const res of d.resources) {{
+        if (!byKind[res.kind]) byKind[res.kind] = [];
+        byKind[res.kind].push(res.identifier);
       }}
-      html += `<div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Agent Resources</div>`;
+      html += `<div class="ctx-section"><div class="ctx-label">Agent Resources</div>`;
       for (const [kind, ids] of Object.entries(byKind)) {{
-        const kindLabel = kind.replace(/_/g,' ');
-        html += `<div style="margin-bottom:10px">
-          <div style="color:#888;font-size:10px;margin-bottom:4px">${{esc(kindLabel)}}</div>`;
+        html += `<div style="margin-bottom:8px"><div style="color:#666;font-size:10px;margin-bottom:3px">${{esc(kind.replace(/_/g,' '))}}</div>`;
         for (const id of ids) {{
-          const parts = id.split('.');
-          html += `<div style="display:flex;align-items:baseline;gap:6px;padding:3px 0;border-bottom:1px solid #161616">
-            <span style="font-family:monospace;color:#c9d1d9;font-size:11px;flex:1;word-break:break-all">${{esc(id)}}</span>
-          </div>`;
+          html += `<div style="font-family:monospace;color:#c9d1d9;font-size:10px;padding:2px 0;border-bottom:1px solid #161616;word-break:break-all">${{esc(id)}}</div>`;
         }}
         html += `</div>`;
       }}
-    }} else {{
-      html += `<div style="color:#444;font-size:12px;margin-bottom:16px">No declared resources found.</div>`;
+      html += `</div>`;
     }}
 
-    // Catalog browser — lazy expand
-    html += `<div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:.06em;margin-top:8px;margin-bottom:8px">Catalog Browser</div>
-      <div id="cat-tree" style="font-family:monospace;font-size:11px"></div>`;
-
+    html += `<div class="ctx-section"><div class="ctx-label">Catalog Browser</div><div id="cat-tree"></div></div>`;
     el.innerHTML = html;
     await loadCatalogTree(d.used_catalogs || []);
   }} catch(e) {{
-    el.innerHTML = `<div style="color:#f87171">Failed to load context: ${{esc(String(e))}}</div>`;
+    el.innerHTML = `<div style="color:#f87171">Failed to load: ${{esc(String(e))}}</div>`;
   }}
 }}
 
 async function loadCatalogTree(usedCatalogs) {{
   const tree = document.getElementById('cat-tree');
   if (!tree) return;
-  // Show used catalogs first, then offer to load all
   try {{
     const r = await fetch('/_apx/setup/catalogs');
     const cats = await r.json();
-    if (!cats || !cats.length) {{ tree.innerHTML = '<div style="color:#444">No catalogs accessible</div>'; return; }}
-    // Sort: used first, then alphabetical
+    if (!cats || !cats.length) {{ tree.innerHTML = '<div style="color:#444;font-size:11px">No catalogs accessible</div>'; return; }}
     const used = new Set(usedCatalogs);
-    const sorted = [...cats].sort((a, b) => {{
-      const au = used.has(a) ? 0 : 1, bu = used.has(b) ? 0 : 1;
-      return au - bu || a.localeCompare(b);
-    }});
+    const sorted = [...cats].sort((a, b) => (used.has(a)?0:1)-(used.has(b)?0:1) || a.localeCompare(b));
     tree.innerHTML = sorted.map(c => {{
-      const badge = used.has(c) ? `<span style="font-size:9px;background:#1e3a20;color:#4ade80;border-radius:3px;padding:1px 5px;margin-left:6px;font-family:sans-serif">used</span>` : '';
-      return `<div class="cat-node" data-cat="${{esc(c)}}" style="cursor:pointer;padding:4px 0;color:#9ca3af" onclick="toggleCatalog(this,'${{esc(c)}}')">
-        <span class="cat-arrow" style="color:#555;margin-right:4px">▶</span>${{esc(c)}}${{badge}}
-        <div class="schema-list" style="display:none;padding-left:14px;margin-top:2px"></div>
+      const badge = used.has(c) ? `<span class="ctx-badge">used</span>` : '';
+      return `<div class="cat-node" onclick="toggleCatalog(this,'${{esc(c)}}')">
+        <span class="cat-arrow" style="color:#444;margin-right:5px;font-size:9px">▶</span><span style="font-family:monospace">${{esc(c)}}</span>${{badge}}
+        <div class="schema-list" style="display:none;padding-left:14px;margin-top:3px"></div>
       </div>`;
     }}).join('');
   }} catch(e) {{
-    tree.innerHTML = `<div style="color:#555">Could not load catalogs</div>`;
+    tree.innerHTML = `<div style="color:#555;font-size:11px">Could not load catalogs</div>`;
   }}
 }}
 
 async function toggleCatalog(el, catalog) {{
   const list = el.querySelector('.schema-list');
   const arrow = el.querySelector('.cat-arrow');
-  if (list.style.display !== 'none') {{
-    list.style.display = 'none'; arrow.textContent = '▶'; return;
-  }}
-  arrow.textContent = '▼';
-  list.style.display = 'block';
+  if (list.style.display !== 'none') {{ list.style.display='none'; arrow.textContent='▶'; return; }}
+  arrow.textContent = '▼'; list.style.display = 'block';
   if (list.dataset.loaded) return;
   list.dataset.loaded = '1';
-  list.innerHTML = '<span style="color:#444">loading…</span>';
+  list.innerHTML = '<span style="color:#444;font-size:10px">loading…</span>';
   try {{
     const r = await fetch(`/_apx/setup/schemas?catalog=${{encodeURIComponent(catalog)}}`);
     const schemas = await r.json();
-    if (!schemas.length) {{ list.innerHTML = '<span style="color:#444">no schemas</span>'; return; }}
-    list.innerHTML = schemas.map(s => `
-      <div class="schema-node" data-cat="${{esc(catalog)}}" data-schema="${{esc(s)}}" style="cursor:pointer;padding:3px 0;color:#6b7280" onclick="toggleSchema(this,'${{esc(catalog)}}','${{esc(s)}}')">
-        <span class="schema-arrow" style="color:#444;margin-right:4px">▶</span>${{esc(s)}}
-        <div class="table-list" style="display:none;padding-left:14px;margin-top:2px"></div>
+    if (!schemas.length) {{ list.innerHTML = '<span style="color:#444;font-size:10px">no schemas</span>'; return; }}
+    list.innerHTML = schemas.map(s =>
+      `<div class="schema-node" onclick="toggleSchema(this,'${{esc(catalog)}}','${{esc(s)}}')">
+        <span class="schema-arrow" style="color:#333;margin-right:5px;font-size:9px">▶</span><span style="font-family:monospace">${{esc(s)}}</span>
+        <div class="table-list" style="display:none;padding-left:12px;margin-top:2px"></div>
       </div>`).join('');
-  }} catch(e) {{ list.innerHTML = `<span style="color:#555">error</span>`; }}
+  }} catch(e) {{ list.innerHTML = `<span style="color:#555;font-size:10px">error</span>`; }}
 }}
 
 async function toggleSchema(el, catalog, schema) {{
   const list = el.querySelector('.table-list');
   const arrow = el.querySelector('.schema-arrow');
-  if (list.style.display !== 'none') {{
-    list.style.display = 'none'; arrow.textContent = '▶'; return;
-  }}
-  arrow.textContent = '▼';
-  list.style.display = 'block';
+  if (list.style.display !== 'none') {{ list.style.display='none'; arrow.textContent='▶'; return; }}
+  arrow.textContent = '▼'; list.style.display = 'block';
   if (list.dataset.loaded) return;
   list.dataset.loaded = '1';
-  list.innerHTML = '<span style="color:#444">loading…</span>';
+  list.innerHTML = '<span style="color:#444;font-size:10px">loading…</span>';
   try {{
     const r = await fetch(`/_apx/setup/tables?catalog=${{encodeURIComponent(catalog)}}&schema=${{encodeURIComponent(schema)}}`);
     const tables = await r.json();
-    if (!tables || !tables.length) {{ list.innerHTML = '<span style="color:#444">no tables</span>'; return; }}
+    if (!tables || !tables.length) {{ list.innerHTML = '<span style="color:#444;font-size:10px">no tables</span>'; return; }}
     list.innerHTML = tables.map(t => {{
       const name = typeof t === 'string' ? t : (t.name || t);
-      return `<div style="padding:2px 0;color:#4b5563">${{esc(name)}}</div>`;
+      return `<div class="table-row">${{esc(name)}}</div>`;
     }}).join('');
-  }} catch(e) {{ list.innerHTML = `<span style="color:#555">error</span>`; }}
+  }} catch(e) {{ list.innerHTML = `<span style="color:#555;font-size:10px">error</span>`; }}
 }}
 
 // ── State ──
