@@ -466,7 +466,7 @@ def _render_landing(ctx: AgentContext) -> str:
     if examples:
         chips = "".join(
             f'<button type="button" class="starter-chip" onclick="useExample(this)" '
-            f'data-q="{_html.escape(q, quote=True)}">{_html.escape(q)} →</button>'
+            f'data-q="{_html.escape(q, quote=True)}">{_html.escape(q)}</button>'
             for q in examples
         )
         parts.append('<div class="landing-label">Try asking</div>'
@@ -798,8 +798,10 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .cap-card.open .cap-params {{ display: block; }}
   .cap-card.open {{ border-color: #2f6b46; }}
   .starter-chip {{ display: inline-block; background: #15171a; border: 1px solid #2f343a; color: #bfe9cf;
-                   border-radius: 16px; padding: 7px 13px; font-size: 12px; margin: 0 6px 7px 0; cursor: pointer; }}
-  .starter-chip:hover {{ border-color: #2f6b46; }}
+                   border-radius: 8px; padding: 9px 16px; font-size: 13px; margin: 0 8px 8px 0;
+                   cursor: pointer; text-align: left; transition: background 0.12s, border-color 0.12s; }}
+  .starter-chip:hover {{ background: #1c2822; border-color: #2f6b46; }}
+  .starter-chip:active {{ background: #213326; }}
 </style>
 </head>
 <body>
@@ -892,7 +894,7 @@ const TOOLS = {tools_json};
 function useExample(btn) {{
   const inp = document.getElementById('input');
   inp.value = btn.dataset.q;
-  inp.focus();
+  form.requestSubmit();
 }}
 const chat = document.getElementById('chat');
 const form = document.getElementById('form');
