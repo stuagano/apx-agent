@@ -4699,30 +4699,91 @@ def publish_tools_cmd(module: str, dry_run: bool) -> None:
 
 
 @main.command()
-@click.option("--endpoint", required=True, help="Serving endpoint name of the deployed sub-agent.")
-@click.option("--supervisor", "supervisor_id", required=True, help="Supervisor Agent ID.")
-@click.option("--description", required=True, help="When the supervisor should route to this sub-agent.")
-@click.option("--display-name", default=None, help="Optional human-readable name.")
-@click.option("--tool-id", default=None, help="Optional stable tool_id (idempotent re-publish).")
+@click.option("--endpoint", default=None, help="Serving endpoint name. Defaults to [tool.apx.agent].name.")
+@click.option("--supervisor", "supervisor_id", default=None,
+              help="Supervisor Agent ID to register with. Reads [tool.apx.agent].supervisor_id if omitted.")
+@click.option("--description", default=None,
+              help="Routing description (when should the supervisor call this agent). "
+                   "Defaults to [tool.apx.agent].description.")
+@click.option("--display-name", default=None, help="Human-readable name. Defaults to [tool.apx.agent].name.")
+@click.option("--tool-id", default=None, help="Stable tool_id for idempotent re-publish.")
+@click.option("--profile", default=None, help="Databricks CLI profile.")
 def publish(
-    endpoint: str,
-    supervisor_id: str,
-    description: str,
+    endpoint: str | None,
+    supervisor_id: str | None,
+    description: str | None,
     display_name: str | None,
     tool_id: str | None,
+    profile: str | None,
 ) -> None:
-    """Register a deployed serving endpoint as a Supervisor sub-agent."""
+    """Advertise this agent to the organisation via Databricks A2A.
+
+    Registers the deployed serving endpoint as a sub-agent on a Mosaic AI
+    Supervisor Agent. Once published, the supervisor can route user queries
+    to this agent alongside other org-wide agents (Genie spaces, Knowledge
+    Assistants, other apx-agents).
+
+    All values are read from [tool.apx.agent] in pyproject.toml when not
+    supplied on the command line. Store supervisor_id there so the command
+    is zero-argument for your team:
+
+    \b
+      [tool.apx.agent]
+      name        = "payroll-agent"
+      description = "Answers HR and payroll questions."
+      supervisor_id = "01ef..."      # org-wide A2A registry supervisor
+
+    Then just run:
+
+    \b
+      apx-agent deploy     # deploy to your workspace
+      apx-agent publish    # advertise to the org
+    """
+    cfg = _read_apx_agent_config()
+    profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+
+    # Resolve every parameter from config, then fall back to prompting.
+    endpoint = endpoint or cfg.get("name")
+    display_name = display_name or cfg.get("name")
+    description = description or cfg.get("description")
+    supervisor_id = supervisor_id or cfg.get("supervisor_id")
+
+    if not endpoint:
+        endpoint = click.prompt("Serving endpoint name")
+    if not description:
+        description = click.prompt("Routing description (when should the supervisor call this agent?)")
+    if not supervisor_id:
+        click.echo(
+            "\nNo supervisor_id found. Add it to pyproject.toml:\n\n"
+            "  [tool.apx.agent]\n"
+            "  supervisor_id = \"<supervisor-agent-id>\"\n\n"
+            "Or find your org's supervisor ID with: apx-agent apps --profile <profile>\n"
+        )
+        supervisor_id = click.prompt("Supervisor Agent ID")
+
+    click.echo(f"\nPublishing to org A2A registry:")
+    click.echo(f"  Agent endpoint : {endpoint}")
+    click.echo(f"  Display name   : {display_name or endpoint}")
+    click.echo(f"  Description    : {description}")
+    click.echo(f"  Supervisor ID  : {supervisor_id}")
+    click.echo()
+
     from apx_agent import publish_to_supervisor
 
-    result = publish_to_supervisor(
-        supervisor_agent_id=supervisor_id,
-        serving_endpoint=endpoint,
-        description=description,
-        display_name=display_name,
-        tool_id=tool_id,
-    )
-    click.echo(f"Registered {endpoint} as sub-agent on supervisor {supervisor_id}.")
-    click.echo(f"Result: {result}")
+    try:
+        result = publish_to_supervisor(
+            supervisor_agent_id=supervisor_id,
+            serving_endpoint=endpoint,
+            description=description,
+            display_name=display_name or endpoint,
+            tool_id=tool_id,
+        )
+    except Exception as exc:
+        raise click.ClickException(f"Publish failed: {exc}")
+
+    click.echo(click.style(f"Published. '{display_name or endpoint}' is now discoverable via the org supervisor.", fg="green"))
+    if tool_id := getattr(result, "tool_id", None) or (result.get("tool_id") if isinstance(result, dict) else None):
+        click.echo(f"  tool_id: {tool_id}  (add to pyproject.toml as tool_id = \"{tool_id}\" for idempotent re-publish)")
 
 
 # ---------------------------------------------------------------------------
