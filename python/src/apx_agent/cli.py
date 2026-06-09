@@ -2419,13 +2419,33 @@ def _identify_port_occupant(port: int, host: str) -> dict:
         except Exception:
             pass
 
-    display_name = agent_name or (
-        # Fall back to the project dir name if we can find it in the cmd.
-        next(
-            (part for part in cmd.split() if "/" in part and "python" not in part.lower()),
-            "unknown process",
-        )
-    )
+    if not agent_name and pid:
+        # Try the working directory of the process (most reliable: it's the
+        # project folder, so basename == agent name even when /info is down).
+        try:
+            cwd_result = subprocess.run(
+                ["lsof", "-p", str(pid), "-d", "cwd", "-Fn"],
+                capture_output=True, text=True, timeout=2,
+            )
+            for line in cwd_result.stdout.splitlines():
+                if line.startswith("n") and line != "n/":
+                    cwd_name = Path(line[1:]).name
+                    if cwd_name and cwd_name not in (".", "/"):
+                        agent_name = cwd_name
+                        is_apx = True
+                        break
+        except Exception:
+            pass
+
+    if not agent_name and cmd:
+        # Last resort: pull --app-dir value from the uvicorn command line.
+        parts = cmd.split()
+        for i, part in enumerate(parts):
+            if part == "--app-dir" and i + 1 < len(parts):
+                agent_name = Path(parts[i + 1]).name
+                break
+
+    display_name = agent_name or "agent"
     return {"pid": pid, "name": display_name, "cmd": cmd, "is_apx": is_apx}
 
 
