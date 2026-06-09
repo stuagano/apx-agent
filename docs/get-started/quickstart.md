@@ -59,9 +59,7 @@ Before continuing, confirm your workspace has:
 uv add apx-agent
 ```
 
-Or pin a specific version: `uv add "apx-agent==0.3.0"`. To track `main` before a release: `uv add "apx-agent @ git+https://github.com/stuagano/apx-agent.git@main#subdirectory=python"`.
-
-> **Note:** apx-agent is not yet published to PyPI. Use the git install form above until a public release is available.
+Or pin a specific version: `uv add "apx-agent==0.3.4"`. To track `main`: `uv add "apx-agent @ git+https://github.com/stuagano/apx-agent.git@main#subdirectory=python"`.
 
 ### Verify your setup
 
