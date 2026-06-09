@@ -28,6 +28,53 @@ def _resolve_env_vars(value: Any) -> Any:
     return value
 
 
+_VAR_RE = re.compile(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+# Scaffold flags that resolve common placeholder variables.
+_VAR_HINTS: dict[str, str] = {
+    "CATALOG": "pass --catalog <catalog>  or  export CATALOG=<value>",
+    "SCHEMA":  "pass --schema <schema>    or  export SCHEMA=<value>",
+}
+
+
+def _collect_unresolved(value: Any, path: str = "") -> list[tuple[str, str]]:
+    """Return (field_path, var_name) for every unresolved $VAR in *value*."""
+    hits: list[tuple[str, str]] = []
+    if isinstance(value, str):
+        for m in _VAR_RE.finditer(value):
+            hits.append((path, m.group(1) or m.group(2)))
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            hits.extend(_collect_unresolved(item, f"{path}[{i}]"))
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            hits.extend(_collect_unresolved(v, f"{path}.{k}" if path else k))
+    return hits
+
+
+def _check_unresolved_vars(data: dict[str, Any]) -> None:
+    """Raise SpecValidationError if any $VAR placeholders were not substituted."""
+    hits = _collect_unresolved(data)
+    if not hits:
+        return
+    lines = []
+    seen: set[tuple[str, str]] = set()
+    for field, var in hits:
+        key = (field, var)
+        if key in seen:
+            continue
+        seen.add(key)
+        hint = _VAR_HINTS.get(var, f"export {var}=<value>")
+        lines.append(f"  {field:<35} ${var:<20} ({hint})")
+    detail = "\n".join(lines)
+    raise SpecValidationError(
+        f"YAML contains unresolved placeholder(s) — set the variable before deploying:\n\n"
+        f"{detail}\n\n"
+        f"Tip: re-scaffold with the missing flags, e.g.:\n"
+        f"  apx scaffold --catalog <catalog> --schema <schema>"
+    )
+
+
 def load_spec(path: Path) -> "AgentConfig":
     """Load a YAML spec file and return a validated AgentConfig.
 
@@ -47,6 +94,7 @@ def load_spec(path: Path) -> "AgentConfig":
         raise SpecValidationError(f"Expected a YAML mapping at the top level, got {type(raw).__name__}")
 
     data = _resolve_env_vars(raw)
+    _check_unresolved_vars(data)
 
     if "name" not in data:
         raise SpecValidationError("Spec is missing required field: 'name'")
