@@ -627,17 +627,6 @@ def _render_landing(ctx: AgentContext) -> str:
         cards = "".join(_tool_card(t) for t in other_tools)
 
         if mem_tools:
-            def _short_tool_desc(desc: str) -> str:
-                # First sentence only, backticks stripped.
-                desc = desc.split("\n\n")[0].strip().replace("`", "")
-                end = desc.find(". ")
-                return desc[: end + 1] if end != -1 else desc
-
-            mem_rows = "".join(
-                f'<div class="cap-mem-op"><span class="cap-mem-name">{_html.escape(t.name)}</span>'
-                f'<span class="cap-mem-desc">{_html.escape(_short_tool_desc(t.description or ""))}</span></div>'
-                for t in mem_tools
-            )
             mem_table = getattr(getattr(ctx.config, "memory", None), "table_name", None) or ""
             mem_link = (
                 f' <a href="#" class="cap-mem-link" data-mem-table="{_html.escape(mem_table)}"'
@@ -645,11 +634,9 @@ def _render_landing(ctx: AgentContext) -> str:
                 if mem_table else ""
             )
             cards += (
-                '<div class="cap-card" onclick="this.classList.toggle(&quot;open&quot;)">'
+                '<div class="cap-card">'
                 f'<div class="cap-name">🧠 memory{mem_link}</div>'
-                '<div class="cap-desc">Durable memory — recall past context, save new facts, or forget outdated ones.</div>'
                 '<div id="cap-mem-preview" class="cap-mem-preview"></div>'
-                f'<div class="cap-mem-ops">{mem_rows}</div>'
                 '</div>'
             )
 
