@@ -542,8 +542,11 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
                 )
                 state["prev"] = msgs
             elif resp_in is not None:
-                # Responses-API format: render input messages directly.
-                rows = "".join(_render_message_line(m) for m in resp_in)
+                # Responses-API format: delta-collapse the same way chat-completions does.
+                # resp_in is the full conversation history; state["prev"] is what was
+                # shown earlier, so _render_messages_block collapses the shared prefix.
+                rows = _render_messages_block(resp_in, state["prev"])
+                state["prev"] = resp_in
                 if rows:
                     io_html += (
                         '<div class="io-block"><div class="io-label">Input</div>'
