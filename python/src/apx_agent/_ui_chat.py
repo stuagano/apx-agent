@@ -587,22 +587,21 @@ def _render_landing(ctx: AgentContext) -> str:
 
     schema = getattr(ctx, "schema", None)
     if schema and isinstance(schema.get("tables"), dict) and schema["tables"]:
-        fqn = f'{schema.get("catalog", "")}.{schema.get("schema", "")}'.strip(".")
+        schema_name = schema.get("schema", "") or schema.get("catalog", "")
         tbls = schema["tables"]
-        rows = ""
-        for tname, cols in list(tbls.items())[:12]:
-            col_names = [c.split("(")[0] for c in (cols or [])][:6]
-            shown = ", ".join(col_names)
-            if len(cols or []) > 6:
-                shown += " …"
-            rows += (f'<div class="data-row"><span class="data-tbl">{_html.escape(tname)}</span>'
-                     f'<span class="data-cols">{_html.escape(shown)}</span></div>')
-        more = f' <span class="data-more">(+{len(tbls) - 12} more)</span>' if len(tbls) > 12 else ""
+        shown_tbls = list(tbls.items())[:12]
+        pills = "".join(
+            f'<span class="data-pill">{_html.escape(tname)}</span>'
+            for tname, _ in shown_tbls
+        )
+        more = f'<span class="data-pill data-pill-more">+{len(tbls) - 12} more</span>' if len(tbls) > 12 else ""
+        n = len(tbls)
         parts.append(
             '<div class="data-card">'
-            f'<div class="data-card-head">I understand <code>{_html.escape(fqn)}</code> '
-            f'— {len(tbls)} table{"s" if len(tbls) != 1 else ""}{more}</div>'
-            f'{rows}</div>'
+            f'<div class="data-card-head">{_html.escape(schema_name)} &mdash; '
+            f'{n} table{"s" if n != 1 else ""}</div>'
+            f'<div class="data-pills">{pills}{more}</div>'
+            '</div>'
         )
 
     if tools:
@@ -961,12 +960,11 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .data-card {{ background: #0e1116; border: 1px solid #1f242b; border-radius: 10px;
                 padding: 12px 14px; margin: 10px 0; max-width: 680px; }}
   .data-card-head {{ font-size: 12.5px; color: #9aa3ad; margin-bottom: 8px; }}
-  .data-card-head code {{ color: #60b0ff; }}
-  .data-row {{ display: flex; gap: 10px; font-size: 12px; padding: 2px 0; }}
-  .data-tbl {{ flex: none; min-width: 110px; color: #cfe; font-family: ui-monospace, monospace; }}
-  .data-cols {{ color: #6b7280; font-family: ui-monospace, monospace; overflow: hidden;
-                text-overflow: ellipsis; white-space: nowrap; }}
-  .data-more {{ color: #6b7280; }}
+  .data-pills {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+  .data-pill {{ background: #151a20; border: 1px solid #252d35; border-radius: 5px;
+                padding: 3px 9px; font-size: 11.5px; color: #9ecbff;
+                font-family: ui-monospace, monospace; white-space: nowrap; }}
+  .data-pill-more {{ color: #6b7280; border-color: #1f242b; }}
   .landing-label {{ font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #5d646c; margin: 16px 0 8px; }}
   .cap-cards {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }}
   .cap-card {{ background: #111418; border: 1px solid #262b31; border-radius: 8px; padding: 11px 13px; cursor: pointer; }}
