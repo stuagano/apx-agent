@@ -315,6 +315,20 @@ class AgentConfig(BaseModel):
     ``[[tool.apx.tools]]`` entry with ``type = "skill"``.
     """
 
+    executor: str = "langgraph"
+    """Harness to use for this agent.
+
+    ``'langgraph'`` (default) compiles the agent to a LangGraph
+    ``CompiledStateGraph`` via :func:`~apx_agent._compile.compile_to_langgraph`.
+    This supports all agent topologies (SequentialAgent, LoopAgent, etc.).
+
+    ``'claude-sdk'`` uses :class:`~apx_agent._claude_sdk_executor.ClaudeSDKExecutor`
+    — a native OpenAI-compatible agentic loop with no LangGraph dependency.
+    Suitable for :class:`~apx_agent._agents.LlmAgent` instances with a flat
+    tool list.  Agents with composite topologies fall back to ``'langgraph'``
+    automatically with a warning.
+    """
+
 
 class AgentTool(BaseModel):
     """A tool derived from a plain Python function or a remote sub-agent."""

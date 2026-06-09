@@ -115,6 +115,12 @@ from ._executor import (
 # LangGraph executor implementation
 from ._langgraph_executor import LangGraphExecutor
 
+# Native OpenAI-compatible executor (no LangGraph dependency)
+from ._claude_sdk_executor import ClaudeSDKExecutor
+
+# Executor factory — selects executor based on AgentConfig.executor field
+from ._executor_factory import create_executor
+
 # MLflow ChatAgent wrapper (optional — requires the ``langgraph`` and ``eval`` extras)
 from ._chat_agent import chat_agent_for, compile_to_chat_agent, log_agent
 
