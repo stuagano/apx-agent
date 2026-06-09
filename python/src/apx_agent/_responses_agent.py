@@ -82,6 +82,14 @@ class _ResponsesTypes:
     stream_event_cls: Any
 
 
+@dataclass(frozen=True)
+class _WsAuth:
+    """Per-request WorkspaceClient and optional identity headers."""
+
+    ws: "WorkspaceClient"
+    headers: Any  # DatabricksAppsHeaders | None
+
+
 class CompiledResponsesAgent(NamedTuple):
     non_streaming: Callable[..., Any]
     streaming: Callable[..., Generator[Any, None, None]]
@@ -135,22 +143,9 @@ def _maybe_import_request_headers() -> Callable[[], dict[str, str]] | None:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_ws_for_request(
-    custom_inputs: dict[str, Any] | None,
-) -> "WorkspaceClient":
-    """Build the per-request WorkspaceClient using the unified OBO extractor.
-
-    Reads headers via ``mlflow.genai.agent_server.get_request_headers`` when
-    available (i.e. when actually running inside an Apps invoke). Falls back
-    to custom_inputs-only resolution when no Apps context is active (tests).
-    """
-    ws, _ = _resolve_ws_and_headers_for_request(custom_inputs)
-    return ws
-
-
 def _resolve_ws_and_headers_for_request(
     custom_inputs: dict[str, Any] | None,
-) -> "tuple[WorkspaceClient, Any]":
+) -> _WsAuth:
     """Resolve both the per-request WorkspaceClient and DatabricksAppsHeaders
     from a single :func:`extract_obo_headers` call.
 
@@ -202,7 +197,7 @@ def _resolve_ws_and_headers_for_request(
             token=SecretStr(token_raw) if token_raw else None,
         )
 
-    return ws, req_headers
+    return _WsAuth(ws=ws, headers=req_headers)
 
 
 # ---------------------------------------------------------------------------
@@ -920,12 +915,13 @@ def compile_to_responses_agent(
                 AuditAttrs.MODEL_INPUT_MESSAGES: len(request.input),
                 AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
                 AuditAttrs.SESSION_ID: (
-                    session.session_id if session is not None else ""
+                    session.session_id if session is not None else None
                 ),
                 AuditAttrs.MODEL_STREAMING: False,
             },
         ) as span:
-            ws, req_headers = _resolve_ws_and_headers_for_request(custom_inputs)
+            auth = _resolve_ws_and_headers_for_request(custom_inputs)
+            ws, req_headers = auth.ws, auth.headers
 
             # Prepend session history (if any)
             lc_history = (
@@ -1028,7 +1024,8 @@ def compile_to_responses_agent(
                 AuditAttrs.MODEL_STREAMING: True,
             },
         ):
-            ws, req_headers = _resolve_ws_and_headers_for_request(custom_inputs)
+            auth = _resolve_ws_and_headers_for_request(custom_inputs)
+            ws, req_headers = auth.ws, auth.headers
 
             lc_history = (
                 _history_to_langchain(session.history) if session is not None else []
