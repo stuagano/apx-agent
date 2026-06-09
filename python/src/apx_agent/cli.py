@@ -1826,6 +1826,22 @@ def _scaffold_apps(
         click.echo(f"  write  {path}")
 
 
+def _echo_scaffold_yaml_done(out: Path, *, catalog: str | None, schema: str | None) -> None:
+    """Print a consistent, correct post-YAML message."""
+    click.echo(f"\nSpec written to {out.name}")
+    if catalog and schema:
+        click.echo(f"\nNext steps:")
+        click.echo(f"  apx-agent run {out.name}     # run locally")
+        click.echo(f"  apx-agent deploy {out.name}  # deploy to Databricks Apps")
+    else:
+        missing = " and ".join(
+            v for v, flag in [("$CATALOG", catalog), ("$SCHEMA", schema)] if not flag
+        )
+        click.echo(f"\n  Open {out.name}, fill in {missing}, then:")
+        click.echo(f"  apx-agent run {out.name}     # run locally")
+        click.echo(f"  apx-agent deploy {out.name}  # deploy to Databricks Apps")
+
+
 def _scaffold_from_gallery(
     gallery_yaml_path: Path,
     name: str,
@@ -1854,9 +1870,7 @@ def _scaffold_from_gallery(
             data[section]["table_name"] = f"{cat}.{sch}.apx_{safe_name}_{suffix}"
     out = directory / f"{name}.yaml"
     out.write_text(_yaml.dump(data, sort_keys=False, allow_unicode=True))
-    click.echo(f"Spec written to {out}")
-    hint = "apx deploy" if catalog and schema else "fill in $CATALOG/$SCHEMA, then: apx deploy"
-    click.echo(f"  {hint} {out.name}")
+    _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
 
 
 def _scaffold_to_yaml(
@@ -1889,22 +1903,23 @@ def _scaffold_to_yaml(
             spec["template"]["objective"] = objective or ""
             spec["template"]["memory"] = "persistent"
             safe_name = name.replace("-", "_")
+            cat = catalog or "$CATALOG"
+            sch = schema or "$SCHEMA"
             spec["memory"] = {
                 "type": "delta",
-                "table_name": f"$CATALOG.$SCHEMA.apx_{safe_name}_memory",
+                "table_name": f"{cat}.{sch}.apx_{safe_name}_memory",
                 "auto_create": True,
             }
             spec["session"] = {
                 "type": "delta",
-                "table_name": f"$CATALOG.$SCHEMA.apx_{safe_name}_sessions",
+                "table_name": f"{cat}.{sch}.apx_{safe_name}_sessions",
                 "auto_create": True,
             }
     spec["guardrails"] = {"injection_detection": False}
     spec["tools"] = []
     out = directory / f"{name}.yaml"
     out.write_text(_yaml.dump(spec, sort_keys=False, allow_unicode=True))
-    click.echo(f"Spec written to {out}")
-    click.echo(f"  Fill in $CATALOG/$SCHEMA, then: apx deploy {out.name}")
+    _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
 
 
 @main.command()
@@ -2108,8 +2123,7 @@ def scaffold(
         if generated_yaml_str is not None:
             out = Path(directory) / f"{project_name}.yaml"
             out.write_text(generated_yaml_str)
-            click.echo(f"Spec written to {out}")
-            click.echo(f"  Edit $CATALOG/$SCHEMA, then: apx deploy {out.name}")
+            _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
         elif gallery_yaml_path is not None:
             _scaffold_from_gallery(
                 gallery_yaml_path=gallery_yaml_path,
