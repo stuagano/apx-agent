@@ -1105,12 +1105,26 @@ def _ws_is_connected(ws) -> bool:
         return False
 
 
+def _list_databricks_profiles() -> list[str]:
+    """Return profile names from ~/.databrickscfg, excluding internal sections."""
+    import configparser
+    cfg_path = Path.home() / ".databrickscfg"
+    if not cfg_path.exists():
+        return []
+    try:
+        c = configparser.ConfigParser()
+        c.read(cfg_path)
+        return [s for s in c.sections() if not s.startswith("__")]
+    except Exception:
+        return []
+
+
 def _gate_workspace_for_scaffold(profile: str | None):
     """Ensure we have a live workspace connection before catalog/schema prompts.
 
-    If no connection is found, offers to run ``databricks configure`` in-place
-    so the user never has to leave the wizard. Loops until connected or Ctrl-C.
-    Returns a verified WorkspaceClient.
+    If no connection is found, lists existing ~/.databrickscfg profiles to pick
+    from, or offers to run ``databricks configure`` in-place. Loops until
+    connected or Ctrl-C. Returns a verified WorkspaceClient.
     """
     import subprocess as _sp
 
@@ -1136,28 +1150,38 @@ def _gate_workspace_for_scaffold(profile: str | None):
     )
 
     while True:
-        click.echo("  1. Set up / refresh credentials now  (runs 'databricks configure')")
-        click.echo("  2. Enter an existing profile name")
-        choice = click.prompt("Choice", type=click.IntRange(1, 2), default=1)
-
-        if choice == 1:
-            click.echo()
-            _sp.run(["databricks", "configure"], check=False)
-            click.echo()
-            # After configure, re-try with whatever the default profile is now.
-            ws, info = _try_connect(None)
-            if ws is not None:
-                click.echo(f"  Connected as {info}")
-                return ws
-            click.echo("  Still no connection — try again or choose option 2 to pick a profile.")
+        profiles = _list_databricks_profiles()
+        if profiles:
+            click.echo("Existing profiles in ~/.databrickscfg:")
+            for i, p in enumerate(profiles, 1):
+                click.echo(f"  {i:2}. {p}")
+            click.echo(f"  {len(profiles) + 1:2}. Set up a new profile  (runs 'databricks configure')")
+            idx = click.prompt(
+                "Choose a profile",
+                type=click.IntRange(1, len(profiles) + 1),
+                default=1,
+            )
+            if idx <= len(profiles):
+                chosen = profiles[idx - 1]
+                ws, info = _try_connect(chosen)
+                if ws is not None:
+                    click.echo(f"  Connected as {info}")
+                    return ws
+                click.echo(f"  Profile '{chosen}' didn't connect: {info}")
+                click.echo()
+                continue
         else:
-            p = click.prompt("Profile name").strip()
-            ws, info = _try_connect(p or None)
-            if ws is not None:
-                click.echo(f"  Connected as {info}")
-                return ws
-            click.echo(f"  Profile '{p}' didn't connect: {info}")
+            click.echo("  No profiles found in ~/.databrickscfg.")
+
+        # "Set up new profile" path (or no profiles exist)
         click.echo()
+        _sp.run(["databricks", "configure"], check=False)
+        click.echo()
+        ws, info = _try_connect(None)
+        if ws is not None:
+            click.echo(f"  Connected as {info}")
+            return ws
+        click.echo("  Still no connection — try selecting a different profile.")
 
 
 def _schema_manifest_for_scaffold(
