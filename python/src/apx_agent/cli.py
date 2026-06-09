@@ -2297,7 +2297,31 @@ def refresh_schema(profile: str | None) -> None:
     click.echo(f"refreshed {out} — {n} table{'s' if n != 1 else ''} from {catalog}.{schema}")
 
 
+def _find_runnable_agents(cwd: Path) -> list[tuple[str, Path]]:
+    """Return (name, project_dir) for every runnable agent project under cwd.
+
+    Checks the cwd itself first, then one level of subdirectories. A directory
+    is "runnable" when it contains the apps layout (agent_server/start_server.py)
+    or the model-serving layout (app.py without databricks.yml).
+    """
+
+    def _is_runnable(d: Path) -> bool:
+        return (
+            (d / "agent_server" / "start_server.py").exists()
+            or ((d / "app.py").exists() and not (d / "databricks.yml").exists())
+        )
+
+    results: list[tuple[str, Path]] = []
+    if _is_runnable(cwd):
+        results.append((cwd.name, cwd))
+    for child in sorted(cwd.iterdir()):
+        if child.is_dir() and not child.name.startswith(".") and _is_runnable(child):
+            results.append((child.name, child))
+    return results
+
+
 @main.command()
+@click.argument("spec", default=None, required=False, metavar="SPEC")
 @click.option(
     "--module",
     default=None,
@@ -2308,11 +2332,12 @@ def refresh_schema(profile: str | None) -> None:
 @click.option("--port", default=8000, type=int, help="Port. Default: 8000.")
 @click.option("--host", default="127.0.0.1", help="Host. Default: 127.0.0.1.")
 @click.option("--reload", is_flag=True, help="Enable auto-reload for dev.")
-def run(module: str | None, port: int, host: str, reload: bool) -> None:
+def run(spec: str | None, module: str | None, port: int, host: str, reload: bool) -> None:
     """Run the agent locally via uvicorn against the FastAPI app.
 
-    Works for both scaffold layouts — the ASGI module is auto-detected from
-    the project unless you pass --module.
+    SPEC can be a project directory, a .yaml spec name (stem or full path), or
+    'list' to pick interactively from all available agents in this directory.
+    Omit SPEC to auto-detect the project in the current directory.
     """
     try:
         import uvicorn
@@ -2321,6 +2346,47 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
             "uvicorn is required for `apx-agent run`. Install with: "
             "uv add 'apx-agent[apps]'  (or: uv add 'uvicorn[standard]')"
         ) from e
+
+    # --- resolve SPEC to a project directory ---
+    cwd = Path.cwd()
+    if spec == "list":
+        pass  # handled below
+
+    if spec == "list":
+        agents = _find_runnable_agents(cwd)
+        if not agents:
+            raise click.ClickException(
+                "No runnable agent projects found in this directory.\n"
+                "Run 'apx-agent scaffold <name>' to create one."
+            )
+        click.echo("Available agents:")
+        for i, (name, path) in enumerate(agents, 1):
+            rel = path.relative_to(cwd) if path != cwd else Path(".")
+            click.echo(f"  {i:2}. {name}  ({rel})")
+        idx = click.prompt("Choose", type=click.IntRange(1, len(agents)), default=1)
+        _, project_dir = agents[idx - 1]
+        os.chdir(project_dir)
+    elif spec is not None:
+        # Could be a directory name, or a .yaml stem/path
+        spec_path = Path(spec)
+        candidate_dir: Path | None = None
+        if spec_path.is_dir():
+            candidate_dir = spec_path.resolve()
+        else:
+            # Strip .yaml extension → look for a matching project dir
+            stem = spec_path.stem if spec_path.suffix == ".yaml" else spec
+            for d in [cwd / stem, cwd]:
+                if d.is_dir() and _detect_target(d) in _RUN_MODULE_BY_TARGET:
+                    candidate_dir = d
+                    break
+        if candidate_dir is None:
+            raise click.ClickException(
+                f"No runnable agent project found for {spec!r}.\n"
+                f"Try 'apx-agent run list' to see what's available."
+            )
+        if candidate_dir != cwd:
+            os.chdir(candidate_dir)
+
     if module is None:
         detected = _detect_target()
         module = _RUN_MODULE_BY_TARGET[detected]
