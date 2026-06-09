@@ -175,18 +175,21 @@ async def run_via_compile(
     Returns:
         The final assistant text.
     """
-    from ._executor import ExecutorConfig
-    from ._langgraph_executor import LangGraphExecutor
+    # TODO(Phase-B): migrate to executor.run_turn() once run_via_compile's
+    # callers can tolerate the async streaming contract change.  For now this
+    # path stays unchanged from pre-seam to guarantee zero behavior change.
+    from ._compile import compile_to_langgraph
 
     model = _get_model(request)
     ws = _resolve_request_ws(request)
 
-    # Use LangGraphExecutor for compilation (caches compiled graph per model).
-    # Call ainvoke directly via the cached compiled graph — preserves the
-    # pre-seam behaviour (single synchronous result, no streaming overhead).
-    executor = LangGraphExecutor(agent, ws=ws, model=model)
-    compiled = executor._get_compiled(ExecutorConfig(model=model).model or model)
+    compiled = compile_to_langgraph(agent, ws=ws, model=model)
     lc_messages = _to_langchain(input_messages, system_prompt=instructions)
+
+    # Use the async graph API so the multi-step LLM + tool loop runs without
+    # blocking the event loop.  Compiled LangGraph graphs always expose
+    # ``ainvoke``; tool execution is already offloaded off-loop inside
+    # ``_compile._make_langchain_tool``, so we never touch the sync ``invoke``.
     result = await compiled.ainvoke({"messages": lc_messages})
     return _final_text(result.get("messages", []))
 

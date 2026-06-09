@@ -279,12 +279,16 @@ class LangGraphExecutor:
                 # astream not available on this graph — fall through to ainvoke.
                 pass
 
-            if streamed_ok and collected_texts:
-                # Streaming produced text — build TurnComplete from those chunks.
-                yield TurnComplete(response="".join(collected_texts))
+            if streamed_ok:
+                # astream ran the graph exactly once.  Use the last emitted
+                # text (matches the semantics of _final_text — last non-tool
+                # AIMessage) rather than joining all chunks, which would
+                # concatenate intermediate + final messages for multi-node
+                # graphs (Sequential, Loop, Router, Handoff, …).
+                yield TurnComplete(response=collected_texts[-1] if collected_texts else None)
             else:
-                # Streaming unavailable, yielded nothing, or astream raised —
-                # fall back to ainvoke for the authoritative final text.
+                # astream raised (graph is a sync-only stub or the provider
+                # doesn't support streaming) — fall back to ainvoke once.
                 result = await compiled.ainvoke({"messages": lc_messages})
                 final_text = _final_text_from_messages(result.get("messages", []))
                 yield TurnComplete(response=final_text)
