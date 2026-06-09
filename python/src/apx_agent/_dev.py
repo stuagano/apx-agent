@@ -1601,6 +1601,48 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         return HTMLResponse(_render_setup_ui(current, embed=embed))
 
+    @router.get("/_apx/workspace-context", include_in_schema=False)
+    async def workspace_context(request: Request) -> Any:
+        """Return workspace identity + agent resource summary for the Context tab."""
+        import asyncio as _asyncio
+        from fastapi.responses import JSONResponse
+
+        ws: WorkspaceClient = request.app.state.workspace_client
+        ctx = request.app.state.agent_context
+
+        # Workspace identity
+        host = (getattr(getattr(ws, "config", None), "host", None) or "").rstrip("/")
+        try:
+            me = await _asyncio.to_thread(ws.current_user.me)
+            user_name = getattr(me, "user_name", None) or getattr(me, "display_name", None) or "unknown"
+        except Exception:
+            user_name = "unknown"
+
+        # Agent declared resources
+        resources: list[dict] = []
+        if ctx is not None:
+            try:
+                from ._resources import collect_resource_specs
+                for spec in collect_resource_specs(ctx.agent):
+                    resources.append({"kind": spec.kind, "identifier": spec.identifier})
+            except Exception:
+                pass
+
+        # Catalogs the agent explicitly uses (extract from resource identifiers)
+        used_catalogs: list[str] = sorted({
+            r["identifier"].split(".")[0]
+            for r in resources
+            if r["kind"] in ("uc_table", "uc_schema", "uc_function")
+            and "." in r["identifier"]
+        })
+
+        return JSONResponse({
+            "host": host,
+            "user": user_name,
+            "resources": resources,
+            "used_catalogs": used_catalogs,
+        })
+
     @router.get("/_apx/setup/catalogs", include_in_schema=False)
     async def setup_catalogs(request: Request) -> Any:
         from fastapi.responses import JSONResponse
@@ -1624,6 +1666,23 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
         return JSONResponse(sorted(schemas))
+
+    @router.get("/_apx/setup/tables", include_in_schema=False)
+    async def setup_tables(request: Request) -> Any:
+        from fastapi.responses import JSONResponse
+        import asyncio as _asyncio
+        catalog = request.query_params.get("catalog", "")
+        schema = request.query_params.get("schema", "")
+        if not catalog or not schema:
+            return JSONResponse([])
+        ws: WorkspaceClient = request.app.state.workspace_client
+        try:
+            tables = await _asyncio.to_thread(
+                lambda: [t.name for t in ws.tables.list(catalog_name=catalog, schema_name=schema) if t.name]
+            )
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse(sorted(tables))
 
     @router.get("/_apx/setup/warehouses", include_in_schema=False)
     async def setup_warehouses(request: Request) -> Any:
