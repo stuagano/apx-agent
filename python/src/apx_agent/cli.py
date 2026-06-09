@@ -2653,6 +2653,117 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
 
 
 # ---------------------------------------------------------------------------
+# stop
+# ---------------------------------------------------------------------------
+
+
+def _scan_apx_ports(
+    host: str = "127.0.0.1",
+    start: int = 8000,
+    count: int = 20,
+) -> list[dict]:
+    """Return occupant info for every port in [start, start+count) that is in use."""
+    occupied = []
+    for port in range(start, start + count):
+        if not _port_is_free(port, host):
+            info = _identify_port_occupant(port, host)
+            info["port"] = port
+            occupied.append(info)
+    return occupied
+
+
+def _kill_pid(pid: int, name: str) -> bool:
+    """SIGTERM → wait up to 5 s → SIGKILL. Returns True when port eventually freed."""
+    import signal, time
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    for _ in range(20):
+        time.sleep(0.25)
+        try:
+            os.kill(pid, 0)  # still alive?
+        except ProcessLookupError:
+            return True
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return True
+
+
+@main.command()
+@click.argument("agent_name", default=None, required=False, metavar="AGENT")
+@click.option("--port", default=None, type=int, help="Target a specific port instead of searching.")
+@click.option("--host", default="127.0.0.1", help="Host. Default: 127.0.0.1.")
+@click.option("--all", "stop_all", is_flag=True, help="Stop every apx-agent process found.")
+def stop(agent_name: str | None, port: int | None, host: str, stop_all: bool) -> None:
+    """Stop a running apx-agent local server.
+
+    AGENT is the project name (e.g. 'hello-world'). When omitted, stops
+    whatever is running on --port (default: searches 8000-8019).
+
+    Examples:
+
+    \b
+      apx-agent stop                  # stop whatever is on port 8000
+      apx-agent stop hello-world      # find and stop hello-world
+      apx-agent stop --port 8001      # stop whatever is on 8001
+      apx-agent stop --all            # stop every apx-agent found
+    """
+    if port is not None:
+        # Explicit port: just kill whatever is there.
+        if _port_is_free(port, host):
+            raise click.ClickException(f"Nothing is running on port {port}.")
+        info = _identify_port_occupant(port, host)
+        info["port"] = port
+        candidates = [info]
+    else:
+        candidates = _scan_apx_ports(host)
+        if not candidates:
+            raise click.ClickException("No apx-agent processes found on ports 8000-8019.")
+
+    # Filter by name when given.
+    if agent_name:
+        slug = agent_name.lower().replace("-", "_")
+        matched = [
+            c for c in candidates
+            if slug in (c.get("name") or "").lower().replace("-", "_")
+            or slug in (c.get("cmd") or "").lower()
+        ]
+        if not matched:
+            running = ", ".join(
+                f"{c.get('name','?')} :{c['port']}" for c in candidates
+            ) or "none"
+            raise click.ClickException(
+                f"No running agent matching '{agent_name}'. Running: {running}"
+            )
+        candidates = matched
+
+    if not stop_all and len(candidates) > 1:
+        click.echo("Multiple agents running — pick one (or use --all):\n")
+        for i, c in enumerate(candidates, 1):
+            click.echo(f"  {i:2}. {c.get('name','?'):<28} :{c['port']}")
+        idx = click.prompt("\nChoose", type=click.IntRange(1, len(candidates)), default=1)
+        candidates = [candidates[idx - 1]]
+
+    for c in candidates:
+        pid = c.get("pid")
+        name = c.get("name") or "agent"
+        p = c["port"]
+        if pid:
+            click.echo(f"Stopping {name} (PID {pid}, port {p})…")
+            _kill_pid(pid, name)
+            click.echo(f"  Stopped.")
+        else:
+            click.echo(
+                f"Found process on port {p} but could not determine PID.\n"
+                f"Run: lsof -ti :{p} | xargs kill"
+            )
+
+
+# ---------------------------------------------------------------------------
 # eval
 # ---------------------------------------------------------------------------
 
@@ -2831,7 +2942,7 @@ def _deploy_from_yaml(
 
     with tempfile.TemporaryDirectory(prefix="apx_deploy_") as tmp:
         project_dir = Path(tmp) / config.name
-        generate_project(config, project_dir)
+        generate_project(config, project_dir, source_dir=yaml_path.parent)
 
         # When running inside the framework source repo, inject the editable
         # source so _ensure_apx_wheel can build and bundle the wheel.
