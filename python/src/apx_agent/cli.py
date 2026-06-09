@@ -33,15 +33,48 @@ import os
 import re
 import sys
 import time
+import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import click
+
+# Suppress noisy third-party deprecation warnings that users can't act on.
+warnings.filterwarnings(
+    "ignore",
+    message="The default value of `allowed_objects` will change",
+    category=DeprecationWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message="The default value of `allowed_objects` will change",
+    category=PendingDeprecationWarning,
+)
 
 from . import _doctor as _doctor_mod
 from ._schema import introspect_schema_columns
 
 logger = logging.getLogger(__name__)
+
+
+class _ModuleSpec(NamedTuple):
+    module_path: str
+    variable: str
+
+
+class _AppNameResolution(NamedTuple):
+    bundle_key: str
+    app_name: str
+
+
+class _ReadyzResult(NamedTuple):
+    is_ready: bool
+    checks: dict[str, Any]
+
+
+class _BundleUpdateResult(NamedTuple):
+    added: list[str]
+    skipped: list[str]
 
 
 def _fix_msg(title: str, detail: str, fix: str | None) -> str:
@@ -58,7 +91,7 @@ def _fix_msg(title: str, detail: str, fix: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _parse_module_spec(spec: str) -> tuple[str, str]:
+def _parse_module_spec(spec: str) -> _ModuleSpec:
     """Parse ``"module:variable"`` into ``(module, variable)``.
 
     Raises a ``click.BadParameter`` on malformed input.
@@ -73,37 +106,48 @@ def _parse_module_spec(spec: str) -> tuple[str, str]:
         raise click.BadParameter(
             f"Both MODULE and VARIABLE must be non-empty, got {spec!r}."
         )
-    return module_path, variable
+    return _ModuleSpec(module_path=module_path, variable=variable)
 
 
 def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]:
     """Read ``[tool.apx.agent]`` from ``pyproject.toml`` in cwd.
 
+    Also merges personal overrides from ``.apx.local`` (a gitignored TOML
+    file in the project root). Keys in ``.apx.local`` take precedence —
+    this is where user-specific values like ``profile`` live so they are
+    never committed to version control.
+
     Returns an empty dict if the file is missing, malformed, or doesn't
-    have the section. Used by CLI commands to read defaults like
-    ``experiment`` without forcing the user to pass them on every call.
+    have the section.
     """
-    path = pyproject_path or Path.cwd() / "pyproject.toml"
-    if not path.exists():
-        return {}
     try:
         import tomllib  # Python 3.11+
     except ImportError:  # pragma: no cover
         import tomli as tomllib  # type: ignore[no-redef]
-    try:
-        data = tomllib.loads(path.read_text())
-    except Exception:
-        return {}
-    tool = data.get("tool", {})
-    if not isinstance(tool, dict):
-        return {}
-    apx = tool.get("apx", {})
-    if not isinstance(apx, dict):
-        return {}
-    agent_cfg = apx.get("agent", {})
-    if not isinstance(agent_cfg, dict):
-        return {}
-    return agent_cfg
+
+    def _read_toml_section(path: Path) -> dict[str, Any]:
+        if not path.exists():
+            return {}
+        try:
+            data = tomllib.loads(path.read_text())
+        except Exception:
+            return {}
+        tool = data.get("tool", {})
+        if not isinstance(tool, dict):
+            return {}
+        apx = tool.get("apx", {})
+        if not isinstance(apx, dict):
+            return {}
+        agent_cfg = apx.get("agent", {})
+        return agent_cfg if isinstance(agent_cfg, dict) else {}
+
+    cwd = (pyproject_path.parent if pyproject_path else Path.cwd())
+    committed = _read_toml_section(pyproject_path or cwd / "pyproject.toml")
+
+    # .apx.local uses the same [tool.apx.agent] structure but is gitignored.
+    local_overrides = _read_toml_section(cwd / ".apx.local")
+
+    return {**committed, **local_overrides}
 
 
 def _load_agent(module_spec: str) -> Any:
@@ -170,6 +214,25 @@ def _detect_target(cwd: Path | None = None) -> str:
     return "apps"
 
 
+def _detect_module_spec(cwd: Path | None = None) -> str | None:
+    """Infer the agent module spec from the project layout.
+
+    Returns the most likely ``module:variable`` string for ``_load_finalized_agent``,
+    or ``None`` when no agent file is found. Used by commands that load the agent
+    but where ``--module`` is optional (e.g. ``publish``).
+    """
+    cwd = cwd or Path.cwd()
+    candidates = [
+        ("agent.py", "agent:agent"),
+        ("app.py", "app:agent"),
+        ("agent_server/agent.py", "agent_server.agent:agent"),
+    ]
+    for filename, spec in candidates:
+        if (cwd / filename).exists():
+            return spec
+    return None
+
+
 def _sanitize_uv_lock(lock_path: Path) -> bool:
     """Re-point a uv.lock's internal Databricks PyPI proxy at public PyPI.
 
@@ -203,27 +266,109 @@ def _databrickscfg_profiles() -> list[str]:
     return names
 
 
+def _save_to_pyproject(key: str, value: str, *, local: bool = False) -> bool:
+    """Write ``key = "<value>"`` into ``[tool.apx.agent]``.
+
+    When ``local=True``, writes to ``.apx.local`` (gitignored) instead of
+    ``pyproject.toml``. Use ``local=True`` for personal settings like
+    ``profile`` that should not be committed to version control.
+
+    Returns True on success.
+    """
+    if local:
+        target = Path.cwd() / ".apx.local"
+        if not target.exists():
+            # Bootstrap a minimal .apx.local with the required section.
+            target.write_text("[tool.apx.agent]\n")
+        content = target.read_text()
+        if "[tool.apx.agent]" not in content:
+            content += "\n[tool.apx.agent]\n"
+    else:
+        target = Path.cwd() / "pyproject.toml"
+        if not target.exists():
+            return False
+        content = target.read_text()
+        if "[tool.apx.agent]" not in content:
+            return False
+
+    escaped = value.replace('"', '\\"')
+    if re.search(rf'^\s*{re.escape(key)}\s*=', content, re.MULTILINE):
+        content = re.sub(
+            rf'^\s*{re.escape(key)}\s*=.*$',
+            f'{key} = "{escaped}"',
+            content,
+            flags=re.MULTILINE,
+        )
+    else:
+        content = re.sub(
+            r'(\[tool\.apx\.agent\])',
+            f'[tool.apx.agent]\n{key} = "{escaped}"',
+            content,
+        )
+    target.write_text(content)
+    return True
+
+
+def _save_profile_to_pyproject(profile: str) -> bool:
+    return _save_to_pyproject("profile", profile, local=True)
+
+
+
+
 def _preflight_databricks_auth() -> None:
     """Fail `apx-agent run`/`deploy` with dev-time guidance when auth is unresolved.
 
-    Delegates to the doctor auth checks so inline errors and `apx-agent doctor` share
-    one source of truth. Runs both the offline credential-resolution check and a
-    live workspace round-trip so expired tokens are caught here rather than
-    surfacing as confusing data errors mid-run.
+    Reads ``profile`` from ``[tool.apx.agent]`` in the local pyproject.toml
+    and applies it before the auth check so saved preferences are honoured
+    automatically. When running in a TTY and auth still fails, shows a profile
+    picker and offers to save the choice back to pyproject.toml.
     """
+    import sys
     from . import _doctor as _d
+
+    # Apply a saved profile preference before running the auth check.
+    if "DATABRICKS_CONFIG_PROFILE" not in os.environ:
+        saved_profile = _read_apx_agent_config().get("profile")
+        if saved_profile and isinstance(saved_profile, str):
+            os.environ["DATABRICKS_CONFIG_PROFILE"] = saved_profile
 
     result = _d.check_databricks_auth()
     if result.status is _d.Status.FAIL:
-        raise click.ClickException(
-            _fix_msg(
-                "Could not resolve Databricks authentication. This agent "
-                "connects to a workspace at startup.\n"
-                "Run `apx-agent doctor` for a full environment check.",
-                result.detail,
-                result.fix,
+        profiles = _list_databricks_profiles()
+        if profiles and sys.stdin.isatty():
+            # Auth is ambiguous or unresolved — let the user pick a profile
+            # interactively instead of just printing instructions and exiting.
+            click.echo(
+                "Databricks auth unresolved — pick a profile to use for this session:\n"
             )
-        )
+            for i, (name, host, valid) in enumerate(profiles, 1):
+                status = "✓" if valid else " "
+                short_host = host.replace("https://", "").split(".")[0] if host else ""
+                click.echo(f"  {i:2}. {status} {name:<28} {short_host}")
+            default = next((i for i, (_, _, v) in enumerate(profiles, 1) if v), 1)
+            idx = click.prompt("\nChoose", type=click.IntRange(1, len(profiles)), default=default)
+            chosen, _, _ = profiles[idx - 1]
+            os.environ["DATABRICKS_CONFIG_PROFILE"] = chosen
+            # Offer to persist the choice so the next run skips this picker.
+            if sys.stdin.isatty():
+                if _save_profile_to_pyproject(chosen):
+                    click.echo(f"  Saved profile '{chosen}' to .apx.local — future runs will use it automatically.\n")
+                else:
+                    click.echo(f"  Using profile '{chosen}' for this session (set DATABRICKS_CONFIG_PROFILE={chosen} to make it permanent).\n")
+            # Retry after setting the profile.
+            result = _d.check_databricks_auth()
+
+        if result.status is _d.Status.FAIL:
+            raise click.ClickException(
+                _fix_msg(
+                    "Could not resolve Databricks authentication. This agent "
+                    "connects to a workspace at startup.\n"
+                    "Run `apx-agent doctor` for a full environment check.",
+                    result.detail,
+                    result.fix,
+                )
+            )
+
     # Also verify the token is actually accepted by the workspace.
     live = _d.check_databricks_workspace(auth_ok=True)
     if live.status is _d.Status.FAIL:
@@ -1076,6 +1221,137 @@ def _make_ws_for_scaffold(profile: str | None):
         return None
 
 
+def _ws_is_connected(ws) -> bool:
+    """Lightweight liveness check — returns True if the workspace client can talk to the API."""
+    try:
+        ws.current_user.me()
+        return True
+    except Exception:
+        return False
+
+
+def _list_databricks_profiles() -> list[tuple[str, str, bool]]:
+    """Return (name, host, valid) for each profile via 'databricks auth profiles'.
+
+    Falls back to parsing ~/.databrickscfg (name only, valid=unknown) if the
+    CLI is unavailable.
+    """
+    import subprocess as _sp
+    try:
+        out = _sp.run(
+            ["databricks", "auth", "profiles"],
+            capture_output=True, text=True, timeout=15, check=False,
+        ).stdout
+        results = []
+        for line in out.splitlines():
+            parts = line.split()
+            # Output columns: Name  Host  Valid  (header row has no URL)
+            if len(parts) >= 3 and parts[-1] in ("YES", "NO") and parts[1].startswith("http"):
+                results.append((parts[0], parts[1], parts[-1] == "YES"))
+        if results:
+            return results
+    except Exception:
+        pass
+    # Fallback: parse ~/.databrickscfg directly
+    import configparser
+    cfg_path = Path.home() / ".databrickscfg"
+    if not cfg_path.exists():
+        return []
+    try:
+        c = configparser.ConfigParser()
+        c.read(cfg_path)
+        return [(s, c.get(s, "host", fallback=""), False)
+                for s in c.sections() if not s.startswith("__")]
+    except Exception:
+        return []
+
+
+def _gate_workspace_for_scaffold(profile: str | None):
+    """Ensure we have a live workspace connection before catalog/schema prompts.
+
+    If no connection is found, lists existing ~/.databrickscfg profiles to pick
+    from, or offers to run ``databricks configure`` in-place. Loops until
+    connected or Ctrl-C. Returns a verified WorkspaceClient.
+    """
+    import subprocess as _sp
+
+    from databricks.sdk import WorkspaceClient
+
+    def _try_connect(p: str | None, timeout: int = 10):
+        import concurrent.futures
+
+        def _do():
+            try:
+                ws = WorkspaceClient(profile=p) if p else WorkspaceClient()
+                me = ws.current_user.me()
+                return ws, me.user_name or ws.config.host
+            except Exception as exc:
+                return None, str(exc)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_do)
+            try:
+                return future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                return None, f"timed out after {timeout}s — host may be unreachable"
+
+    click.echo("  Checking workspace connection…", nl=False)
+    ws, info = _try_connect(profile)
+    if ws is not None:
+        click.echo(f"\r  Connected as {info}                    ")
+        return ws
+    click.echo(f"\r  No connection ({info})")
+
+    click.echo(
+        "\nNo Databricks workspace connection found"
+        + (f" (profile: {profile!r})" if profile else "")
+        + " — need to authenticate before choosing a catalog.\n"
+    )
+
+    while True:
+        profiles = _list_databricks_profiles()
+        if profiles:
+            click.echo("Available Databricks profiles:")
+            for i, (name, host, valid) in enumerate(profiles, 1):
+                status = "✓ valid" if valid else "  expired"
+                short_host = host.replace("https://", "").split(".")[0] if host else ""
+                click.echo(f"  {i:2}. {name:<28} {status}  {short_host}")
+            new_idx = len(profiles) + 1
+            click.echo(f"  {new_idx:2}. Add / refresh a profile  (databricks auth login)")
+            default = next((i for i, (_, _, v) in enumerate(profiles, 1) if v), 1)
+            idx = click.prompt(
+                "Choose",
+                type=click.IntRange(1, new_idx),
+                default=default,
+            )
+            if idx < new_idx:
+                chosen, host, valid = profiles[idx - 1]
+                if not valid:
+                    click.echo(f"  Profile '{chosen}' is expired — refreshing via 'databricks auth login --profile {chosen}'")
+                    _sp.run(["databricks", "auth", "login", "--profile", chosen], check=False)
+                    click.echo()
+                click.echo(f"  Connecting with profile '{chosen}'…", nl=False)
+                ws, info = _try_connect(chosen)
+                if ws is not None:
+                    click.echo(f"\r  Connected as {info}                    ")
+                    return ws
+                click.echo(f"\r  Still couldn't connect with '{chosen}': {info}")
+                click.echo()
+                continue
+        else:
+            click.echo("  No profiles found.")
+
+        # Add / refresh path
+        click.echo()
+        _sp.run(["databricks", "auth", "login"], check=False)
+        click.echo()
+        ws, info = _try_connect(None)
+        if ws is not None:
+            click.echo(f"  Connected as {info}")
+            return ws
+        click.echo("  Still no connection — try selecting a different profile.")
+
+
 def _schema_manifest_for_scaffold(
     catalog: str, schema: str, profile: str | None = None
 ) -> "dict | None":
@@ -1380,6 +1656,11 @@ def _scaffold_wizard(
 
     # --- catalog / schema / persona / objective / join_key (not needed for base) ---
     if template in ("data", "coworker"):
+        # Gate: require a live workspace connection before asking for catalog/schema.
+        # We extract the profile from the ws config if one was already passed in.
+        if ws is None or not _ws_is_connected(ws):
+            existing_profile = getattr(getattr(ws, "config", None), "profile", None) if ws else None
+            ws = _gate_workspace_for_scaffold(existing_profile)
         catalog, schema, persona, objective, join_key = _interactive_resolve(
             ws, catalog, schema, None, None, None, template
         )
@@ -1416,7 +1697,12 @@ def _interactive_resolve(
             )
             catalog = cat_list[idx - 1]
         else:
-            catalog = click.prompt("Catalog (e.g. main, samples)")
+            click.echo("  (no catalogs found in your workspace — enter a name manually)")
+            while True:
+                catalog = click.prompt("Catalog").strip()
+                if catalog:
+                    break
+                click.echo("  Catalog cannot be empty.")
 
     if schema is None:
         sch_list = _ws_list_schemas(ws, catalog, limit=20) if (ws is not None and catalog) else []
@@ -1430,7 +1716,12 @@ def _interactive_resolve(
             )
             schema = sch_list[idx - 1]
         else:
-            schema = click.prompt(f"Schema in {catalog}")
+            click.echo(f"  (no schemas found in {catalog} — enter a name manually)")
+            while True:
+                schema = click.prompt(f"Schema").strip()
+                if schema:
+                    break
+                click.echo("  Schema cannot be empty.")
 
     if template == "coworker":
         if persona is None:
@@ -1660,6 +1951,32 @@ def _scaffold_apps(
         click.echo(f"  write  {path}")
 
 
+def _echo_scaffold_yaml_done(out: Path, *, catalog: str | None, schema: str | None) -> None:
+    """Print a consistent, correct post-YAML message and offer to run locally."""
+    import subprocess as _sp
+    import sys
+
+    click.echo(f"\nSpec written to {out.name}")
+    if not (catalog and schema):
+        missing = " and ".join(
+            v for v, flag in [("$CATALOG", catalog), ("$SCHEMA", schema)] if not flag
+        )
+        click.echo(f"  Open {out.name} and fill in {missing} before running.")
+        click.echo(f"\n  apx-agent run {out.name}     # run locally")
+        click.echo(f"  apx-agent deploy {out.name}  # deploy to Databricks Apps")
+        return
+
+    if sys.stdin.isatty():
+        click.echo()
+        launch = click.confirm("Start the local dev server now?", default=True)
+        if launch:
+            _sp.run(["apx-agent", "run", str(out)], check=False)
+            return
+
+    click.echo(f"\n  apx-agent run {out.name}     # run locally")
+    click.echo(f"  apx-agent deploy {out.name}  # deploy to Databricks Apps")
+
+
 def _scaffold_from_gallery(
     gallery_yaml_path: Path,
     name: str,
@@ -1688,9 +2005,7 @@ def _scaffold_from_gallery(
             data[section]["table_name"] = f"{cat}.{sch}.apx_{safe_name}_{suffix}"
     out = directory / f"{name}.yaml"
     out.write_text(_yaml.dump(data, sort_keys=False, allow_unicode=True))
-    click.echo(f"Spec written to {out}")
-    hint = "apx deploy" if catalog and schema else "fill in $CATALOG/$SCHEMA, then: apx deploy"
-    click.echo(f"  {hint} {out.name}")
+    _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
 
 
 def _scaffold_to_yaml(
@@ -1723,22 +2038,23 @@ def _scaffold_to_yaml(
             spec["template"]["objective"] = objective or ""
             spec["template"]["memory"] = "persistent"
             safe_name = name.replace("-", "_")
+            cat = catalog or "$CATALOG"
+            sch = schema or "$SCHEMA"
             spec["memory"] = {
                 "type": "delta",
-                "table_name": f"$CATALOG.$SCHEMA.apx_{safe_name}_memory",
+                "table_name": f"{cat}.{sch}.apx_{safe_name}_memory",
                 "auto_create": True,
             }
             spec["session"] = {
                 "type": "delta",
-                "table_name": f"$CATALOG.$SCHEMA.apx_{safe_name}_sessions",
+                "table_name": f"{cat}.{sch}.apx_{safe_name}_sessions",
                 "auto_create": True,
             }
     spec["guardrails"] = {"injection_detection": False}
     spec["tools"] = []
     out = directory / f"{name}.yaml"
     out.write_text(_yaml.dump(spec, sort_keys=False, allow_unicode=True))
-    click.echo(f"Spec written to {out}")
-    click.echo(f"  Fill in $CATALOG/$SCHEMA, then: apx deploy {out.name}")
+    _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
 
 
 @main.command()
@@ -1845,11 +2161,8 @@ def scaffold(
         if framework_python is not None and framework_python != Path.cwd().resolve():
             new_target = framework_python / name
             click.echo(
-                f"apx-agent framework checkout detected at {framework_python.parent}.\n"
-                f"Scaffolding into python/ for the editable install:\n"
-                f"  {Path.cwd().resolve() / name}\n"
-                f"  → {new_target}\n"
-                f"(use --here to stay at the current location with a git+https install)\n",
+                f"Note: scaffolding inside the apx-agent repo → {new_target}  "
+                f"(use --here to scaffold at the current location instead)",
                 err=True,
             )
             target = new_target
@@ -1926,13 +2239,16 @@ def scaffold(
 
     join_key: str | None = None
     if interactive_mode:
+        _ws = _make_ws_for_scaffold(profile)
         scaffold_target, scaffold_template, catalog, schema, persona, objective, join_key = _scaffold_wizard(
-            ws=_make_ws_for_scaffold(profile),
+            ws=_ws,
             target=scaffold_target,
             template=scaffold_template,
             catalog=catalog,
             schema=schema,
         )
+        # Sanity-check the wizard's output the same way the --catalog list path does.
+        _scaffold_sanity_check(_ws, scaffold_template, catalog, schema)
     else:
         scaffold_target = scaffold_target or "apps"
         scaffold_template = scaffold_template or "data"
@@ -1942,8 +2258,7 @@ def scaffold(
         if generated_yaml_str is not None:
             out = Path(directory) / f"{project_name}.yaml"
             out.write_text(generated_yaml_str)
-            click.echo(f"Spec written to {out}")
-            click.echo(f"  Edit $CATALOG/$SCHEMA, then: apx deploy {out.name}")
+            _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
         elif gallery_yaml_path is not None:
             _scaffold_from_gallery(
                 gallery_yaml_path=gallery_yaml_path,
@@ -2107,7 +2422,204 @@ def refresh_schema(profile: str | None) -> None:
     click.echo(f"refreshed {out} — {n} table{'s' if n != 1 else ''} from {catalog}.{schema}")
 
 
+def _port_is_free(port: int, host: str) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def _identify_port_occupant(port: int, host: str) -> dict:
+    """Return info about the process on *port*.
+
+    Keys: ``pid`` (int|None), ``name`` (str), ``is_apx`` (bool).
+    Tries ``lsof`` + ``ps`` to get the PID/command, then a quick HTTP hit
+    to ``/info`` or ``/health`` to read the agent name when it's an apx server.
+    """
+    import subprocess, urllib.request, json
+
+    pid: int | None = None
+    cmd = ""
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"], capture_output=True, text=True, timeout=3
+        )
+        pids = [p.strip() for p in result.stdout.strip().splitlines() if p.strip()]
+        if pids:
+            pid = int(pids[0])
+            ps = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True, text=True, timeout=2,
+            )
+            cmd = ps.stdout.strip()
+    except Exception:
+        pass
+
+    is_apx = any(kw in cmd for kw in ("apx-agent", "apx_agent", "uvicorn", "start_server"))
+
+    # Try reading the agent name from a live /info endpoint.
+    agent_name: str | None = None
+    for path in ("/info", "/health"):
+        try:
+            with urllib.request.urlopen(
+                f"http://{host}:{port}{path}", timeout=1
+            ) as resp:
+                data = json.loads(resp.read())
+                agent_name = (
+                    data.get("name")
+                    or data.get("agent_name")
+                    or data.get("agent", {}).get("name")
+                )
+                if agent_name:
+                    is_apx = True
+                    break
+        except Exception:
+            pass
+
+    if not agent_name and pid:
+        # Try the working directory of the process (most reliable: it's the
+        # project folder, so basename == agent name even when /info is down).
+        try:
+            cwd_result = subprocess.run(
+                ["lsof", "-p", str(pid), "-d", "cwd", "-Fn"],
+                capture_output=True, text=True, timeout=2,
+            )
+            for line in cwd_result.stdout.splitlines():
+                if line.startswith("n") and line != "n/":
+                    cwd_name = Path(line[1:]).name
+                    if cwd_name and cwd_name not in (".", "/"):
+                        agent_name = cwd_name
+                        is_apx = True
+                        break
+        except Exception:
+            pass
+
+    if not agent_name and cmd:
+        # Last resort: pull --app-dir value from the uvicorn command line.
+        parts = cmd.split()
+        for i, part in enumerate(parts):
+            if part == "--app-dir" and i + 1 < len(parts):
+                agent_name = Path(parts[i + 1]).name
+                break
+
+    display_name = agent_name or "agent"
+    return {"pid": pid, "name": display_name, "cmd": cmd, "is_apx": is_apx}
+
+
+def _find_free_port(preferred: int, *, host: str = "127.0.0.1", max_tries: int = 10) -> int:
+    """Return a port to listen on, handling conflicts interactively when in a TTY.
+
+    - Port is free: return it immediately.
+    - Port is busy + TTY detected as apx-agent: offer kill-and-reclaim or next port.
+    - Port is busy + TTY non-apx: offer next port or kill anyway.
+    - Port is busy + non-TTY: auto-advance silently.
+    """
+    import signal, time
+
+    if _port_is_free(preferred, host):
+        return preferred
+
+    # Port is in use.
+    if sys.stdin.isatty():
+        occupant = _identify_port_occupant(preferred, host)
+        name = occupant["name"]
+        pid = occupant["pid"]
+
+        if occupant["is_apx"] and pid:
+            click.echo(f"\nPort {preferred} is running: {name} (PID {pid})")
+        elif pid:
+            click.echo(f"\nPort {preferred} is in use by: {name} (PID {pid})")
+        else:
+            click.echo(f"\nPort {preferred} is already in use.")
+
+        next_port = next(
+            (p for p in range(preferred + 1, preferred + max_tries) if _port_is_free(p, host)),
+            preferred + 1,
+        )
+        options = [f"Use port {next_port} instead"]
+        if pid:
+            options.append(f"Kill {name} (PID {pid}) and use port {preferred}")
+        click.echo()
+        for i, opt in enumerate(options, 1):
+            click.echo(f"  {i}. {opt}")
+        choice = click.prompt("\nChoose", type=click.IntRange(1, len(options)), default=1)
+
+        if choice == 1:
+            if next_port != preferred + 1:
+                click.echo(f"Using port {next_port}.", err=True)
+            return next_port
+        else:
+            # Kill the occupant and reclaim the preferred port.
+            try:
+                os.kill(pid, signal.SIGTERM)
+                click.echo(f"  Sent SIGTERM to {name} (PID {pid})…", err=True)
+                for _ in range(20):
+                    time.sleep(0.25)
+                    if _port_is_free(preferred, host):
+                        break
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            click.echo(f"  Port {preferred} is free.", err=True)
+            return preferred
+
+    # Non-interactive: silently advance.
+    for candidate in range(preferred + 1, preferred + max_tries):
+        if _port_is_free(candidate, host):
+            click.echo(
+                f"Port {preferred} is already in use — using {candidate} instead.",
+                err=True,
+            )
+            return candidate
+    return preferred
+
+
+def _find_runnable_agents(cwd: Path) -> list[tuple[str, Path]]:
+    """Return (name, project_dir) for every runnable agent project under cwd.
+
+    Searches the cwd itself, then up to two levels of subdirectories (so both
+    ./my-agent/ and ./python/my-agent/ are found). A directory is "runnable"
+    when it contains the apps layout (agent_server/start_server.py) or the
+    model-serving layout (app.py without databricks.yml).
+    """
+
+    def _is_runnable(d: Path) -> bool:
+        return (
+            (d / "agent_server" / "start_server.py").exists()
+            or ((d / "app.py").exists() and not (d / "databricks.yml").exists())
+        )
+
+    _SKIP = {"__pycache__", ".venv", "node_modules", ".git"}
+
+    results: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+
+    def _scan(d: Path, depth: int) -> None:
+        if d in seen:
+            return
+        seen.add(d)
+        if _is_runnable(d):
+            results.append((d.name, d))
+            return  # don't recurse into a runnable project
+        if depth > 0:
+            try:
+                children = sorted(d.iterdir())
+            except PermissionError:
+                return
+            for child in children:
+                if child.is_dir() and child.name not in _SKIP and not child.name.startswith("."):
+                    _scan(child, depth - 1)
+
+    _scan(cwd, depth=2)
+    return results
+
+
 @main.command()
+@click.argument("spec", default=None, required=False, metavar="SPEC")
 @click.option(
     "--module",
     default=None,
@@ -2118,11 +2630,12 @@ def refresh_schema(profile: str | None) -> None:
 @click.option("--port", default=8000, type=int, help="Port. Default: 8000.")
 @click.option("--host", default="127.0.0.1", help="Host. Default: 127.0.0.1.")
 @click.option("--reload", is_flag=True, help="Enable auto-reload for dev.")
-def run(module: str | None, port: int, host: str, reload: bool) -> None:
+def run(spec: str | None, module: str | None, port: int, host: str, reload: bool) -> None:
     """Run the agent locally via uvicorn against the FastAPI app.
 
-    Works for both scaffold layouts — the ASGI module is auto-detected from
-    the project unless you pass --module.
+    SPEC can be a project directory, a .yaml spec name (stem or full path), or
+    'list' to pick interactively from all available agents in this directory.
+    Omit SPEC to auto-detect the project in the current directory.
     """
     try:
         import uvicorn
@@ -2131,6 +2644,47 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
             "uvicorn is required for `apx-agent run`. Install with: "
             "uv add 'apx-agent[apps]'  (or: uv add 'uvicorn[standard]')"
         ) from e
+
+    # --- resolve SPEC to a project directory ---
+    cwd = Path.cwd()
+    if spec == "list":
+        pass  # handled below
+
+    if spec == "list":
+        agents = _find_runnable_agents(cwd)
+        if not agents:
+            raise click.ClickException(
+                "No runnable agent projects found in this directory.\n"
+                "Run 'apx-agent scaffold <name>' to create one."
+            )
+        click.echo("Available agents:")
+        for i, (name, path) in enumerate(agents, 1):
+            rel = path.relative_to(cwd) if path != cwd else Path(".")
+            click.echo(f"  {i:2}. {name}  ({rel})")
+        idx = click.prompt("Choose", type=click.IntRange(1, len(agents)), default=1)
+        _, project_dir = agents[idx - 1]
+        os.chdir(project_dir)
+    elif spec is not None:
+        # Could be a directory name, or a .yaml stem/path
+        spec_path = Path(spec)
+        candidate_dir: Path | None = None
+        if spec_path.is_dir():
+            candidate_dir = spec_path.resolve()
+        else:
+            # Strip .yaml extension → look for a matching project dir
+            stem = spec_path.stem if spec_path.suffix == ".yaml" else spec
+            for d in [cwd / stem, cwd]:
+                if d.is_dir() and _detect_target(d) in _RUN_MODULE_BY_TARGET:
+                    candidate_dir = d
+                    break
+        if candidate_dir is None:
+            raise click.ClickException(
+                f"No runnable agent project found for {spec!r}.\n"
+                f"Try 'apx-agent run list' to see what's available."
+            )
+        if candidate_dir != cwd:
+            os.chdir(candidate_dir)
+
     if module is None:
         detected = _detect_target()
         module = _RUN_MODULE_BY_TARGET[detected]
@@ -2174,7 +2728,204 @@ def run(module: str | None, port: int, host: str, reload: bool) -> None:
     # reports `Could not import module "app"`. app_dir also propagates to the
     # --reload subprocess, which a bare sys.path.insert here would not.
     _probe_import(module)
+    port = _find_free_port(port, host=host)
     uvicorn.run(module, host=host, port=port, reload=reload, app_dir=str(Path.cwd()))
+
+
+# ---------------------------------------------------------------------------
+# stop
+# ---------------------------------------------------------------------------
+
+
+def _scan_apx_ports(
+    host: str = "127.0.0.1",
+    start: int = 8000,
+    count: int = 20,
+) -> list[dict]:
+    """Return occupant info for every port in [start, start+count) that is in use."""
+    occupied = []
+    for port in range(start, start + count):
+        if not _port_is_free(port, host):
+            info = _identify_port_occupant(port, host)
+            info["port"] = port
+            occupied.append(info)
+    return occupied
+
+
+def _kill_pid(pid: int, name: str) -> bool:
+    """SIGTERM → wait up to 5 s → SIGKILL. Returns True when port eventually freed."""
+    import signal, time
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    for _ in range(20):
+        time.sleep(0.25)
+        try:
+            os.kill(pid, 0)  # still alive?
+        except ProcessLookupError:
+            return True
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return True
+
+
+@main.command()
+@click.argument("agent_name", default=None, required=False, metavar="AGENT")
+@click.option("--port", default=None, type=int, help="Target a specific port instead of searching.")
+@click.option("--host", default="127.0.0.1", help="Host. Default: 127.0.0.1.")
+@click.option("--all", "stop_all", is_flag=True, help="Stop every apx-agent process found.")
+def stop(agent_name: str | None, port: int | None, host: str, stop_all: bool) -> None:
+    """Stop a running apx-agent local server.
+
+    AGENT is the project name (e.g. 'hello-world'). When omitted, stops
+    whatever is running on --port (default: searches 8000-8019).
+
+    Examples:
+
+    \b
+      apx-agent stop                  # stop whatever is on port 8000
+      apx-agent stop hello-world      # find and stop hello-world
+      apx-agent stop --port 8001      # stop whatever is on 8001
+      apx-agent stop --all            # stop every apx-agent found
+    """
+    if port is not None:
+        # Explicit port: just kill whatever is there.
+        if _port_is_free(port, host):
+            raise click.ClickException(f"Nothing is running on port {port}.")
+        info = _identify_port_occupant(port, host)
+        info["port"] = port
+        candidates = [info]
+    else:
+        candidates = _scan_apx_ports(host)
+        if not candidates:
+            raise click.ClickException("No apx-agent processes found on ports 8000-8019.")
+
+    # Filter by name when given.
+    if agent_name:
+        slug = agent_name.lower().replace("-", "_")
+        matched = [
+            c for c in candidates
+            if slug in (c.get("name") or "").lower().replace("-", "_")
+            or slug in (c.get("cmd") or "").lower()
+        ]
+        if not matched:
+            running = ", ".join(
+                f"{c.get('name','?')} :{c['port']}" for c in candidates
+            ) or "none"
+            raise click.ClickException(
+                f"No running agent matching '{agent_name}'. Running: {running}"
+            )
+        candidates = matched
+
+    if not stop_all and len(candidates) > 1:
+        click.echo("Multiple agents running — pick one (or use --all):\n")
+        for i, c in enumerate(candidates, 1):
+            click.echo(f"  {i:2}. {c.get('name','?'):<28} :{c['port']}")
+        idx = click.prompt("\nChoose", type=click.IntRange(1, len(candidates)), default=1)
+        candidates = [candidates[idx - 1]]
+
+    for c in candidates:
+        pid = c.get("pid")
+        name = c.get("name") or "agent"
+        p = c["port"]
+        if pid:
+            click.echo(f"Stopping {name} (PID {pid}, port {p})…")
+            _kill_pid(pid, name)
+            click.echo(f"  Stopped.")
+        else:
+            click.echo(
+                f"Found process on port {p} but could not determine PID.\n"
+                f"Run: lsof -ti :{p} | xargs kill"
+            )
+
+
+# ---------------------------------------------------------------------------
+# apps
+# ---------------------------------------------------------------------------
+
+
+@main.command("apps")
+@click.option("--profile", default=None, help="Databricks CLI profile to use.")
+@click.option("--host", default=None, help="Workspace URL (overrides profile).")
+def apps_list(profile: str | None, host: str | None) -> None:
+    """List Databricks Apps deployed in the workspace.
+
+    Shows name, state, URL, and last-updated time for every app visible
+    to the current credentials. Use --profile to pick a specific workspace.
+
+    Examples:
+
+    \b
+      apx-agent apps                       # list apps in default workspace
+      apx-agent apps --profile fe-stable   # list apps in fe-stable workspace
+    """
+    try:
+        from databricks.sdk import WorkspaceClient
+        from databricks.sdk.config import Config
+    except ImportError:
+        raise click.ClickException(
+            "databricks-sdk is required. Install with: uv add databricks-sdk"
+        )
+
+    profile = profile or _read_apx_agent_config().get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+
+    try:
+        cfg = Config(profile=profile, host=host) if (profile or host) else Config()
+        ws = WorkspaceClient(config=cfg)
+        app_list = list(ws.apps.list())
+    except Exception as exc:
+        raise click.ClickException(f"Could not connect to workspace: {exc}")
+
+    if not app_list:
+        click.echo("No apps found in this workspace.")
+        return
+
+    # Resolve workspace host for URL construction.
+    ws_host = cfg.host.rstrip("/") if cfg.host else ""
+
+    # Header
+    click.echo(f"\n{'NAME':<32} {'STATE':<12} {'UPDATED':<20}  URL")
+    click.echo("─" * 100)
+
+    for app in sorted(app_list, key=lambda a: (a.name or "")):
+        name = app.name or "?"
+        state = (
+            (app.app_status.state.value if hasattr(app.app_status.state, "value") else str(app.app_status.state))
+            if app.app_status and app.app_status.state
+            else "UNKNOWN"
+        )
+        # Colour-code state for quick scanning.
+        state_display = {
+            "RUNNING": click.style("RUNNING", fg="green"),
+            "STARTING": click.style("STARTING", fg="yellow"),
+            "DEPLOYING": click.style("DEPLOYING", fg="yellow"),
+            "ERROR": click.style("ERROR", fg="red"),
+            "STOPPED": click.style("STOPPED", fg="red"),
+            "IDLE": click.style("IDLE", fg="blue"),
+        }.get(state, state)
+
+        updated = ""
+        if app.update_time:
+            try:
+                from datetime import datetime, timezone
+                ts = app.update_time
+                if isinstance(ts, (int, float)):
+                    ts = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                updated = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts, "strftime") else str(ts)[:16]
+            except Exception:
+                pass
+
+        url = getattr(app, "url", None) or ""
+        if not url and ws_host and name:
+            url = f"{ws_host}/apps/{name}"
+
+        click.echo(f"{name:<32} {state_display:<12} {updated:<20}  {url}")
+
+    click.echo()
 
 
 # ---------------------------------------------------------------------------
@@ -2356,7 +3107,13 @@ def _deploy_from_yaml(
 
     with tempfile.TemporaryDirectory(prefix="apx_deploy_") as tmp:
         project_dir = Path(tmp) / config.name
-        generate_project(config, project_dir)
+        generate_project(config, project_dir, source_dir=yaml_path.parent)
+
+        # When running inside the framework source repo, inject the editable
+        # source so _ensure_apx_wheel can build and bundle the wheel.
+        framework_python = _find_nearby_framework_python(Path.cwd())
+        if framework_python is not None:
+            _inject_framework_source(project_dir, framework_python)
 
         # When running inside the framework source repo, inject the editable
         # source so _ensure_apx_wheel can build and bundle the wheel.
@@ -2809,7 +3566,7 @@ def _read_databricks_yml(cwd: Path) -> dict[str, Any]:
     return data
 
 
-def _resolve_app_name(bundle_doc: dict[str, Any]) -> tuple[str, str]:
+def _resolve_app_name(bundle_doc: dict[str, Any]) -> _AppNameResolution:
     """Return ``(bundle_key, app_name)`` from a bundle document.
 
     The Databricks Asset Bundle schema lets the YAML key under
@@ -2847,7 +3604,7 @@ def _resolve_app_name(bundle_doc: dict[str, Any]) -> tuple[str, str]:
     app_name = bundle_key
     if isinstance(block, dict) and isinstance(block.get("name"), str):
         app_name = block["name"]
-    return bundle_key, app_name
+    return _AppNameResolution(bundle_key=bundle_key, app_name=app_name)
 
 
 def _ensure_apx_wheel(cwd: Path) -> Path | None:
@@ -3398,7 +4155,7 @@ def _check_readyz(
     profile: str | None,
     attempts: int = 5,
     delay_s: float = 6.0,
-) -> tuple[bool, dict[str, Any]]:
+) -> _ReadyzResult:
     """Call the deployed app's ``/readyz`` capability self-test.
 
     Mints a short-lived bearer token via ``databricks auth token`` (Databricks
@@ -3430,9 +4187,9 @@ def _check_readyz(
         if getattr(tok_proc, "returncode", 1) == 0 and tok_proc.stdout:
             token = (_json.loads(tok_proc.stdout) or {}).get("access_token")
     except Exception as exc:  # pragma: no cover — defensive
-        return False, {"error": f"could not mint token: {str(exc)[:120]}"}
+        return _ReadyzResult(is_ready=False, checks={"error": f"could not mint token: {str(exc)[:120]}"})
     if not token:
-        return False, {"error": "could not mint databricks auth token"}
+        return _ReadyzResult(is_ready=False, checks={"error": "could not mint databricks auth token"})
 
     url = app_url.rstrip("/") + "/readyz"
     last_error = "unreachable"
@@ -3461,13 +4218,33 @@ def _check_readyz(
                 checks = data.get("checks")
                 if not isinstance(checks, dict):
                     checks = {k: v for k, v in data.items() if k != "checks"}
-                return data.get("status") == "ready", checks
+                return _ReadyzResult(is_ready=data.get("status") == "ready", checks=checks)
 
         # Unreachable / unparseable — back off and retry.
         if attempt < max(1, attempts) - 1 and delay_s > 0:
             _time.sleep(delay_s)
 
-    return False, {"error": f"readyz unreachable: {last_error}"}
+    return _ReadyzResult(is_ready=False, checks={"error": f"readyz unreachable: {last_error}"})
+
+
+def _fetch_app_log_tail(app_name: str, *, profile: str | None, lines: int = 40) -> str:
+    """Return the last *lines* of app stdout/stderr, or a fallback message on error.
+
+    Never raises — called from an error path where we want best-effort context.
+    """
+    try:
+        cmd = ["databricks", "apps", "logs", app_name]
+        if profile:
+            cmd.extend(["--profile", profile])
+        import subprocess as _sp
+        proc = _sp.run(cmd, check=False, capture_output=True, text=True, timeout=15)
+        raw = (proc.stdout or "") + (proc.stderr or "")
+        tail = [ln for ln in raw.splitlines() if ln.strip()][-lines:]
+        if tail:
+            return "\n".join(f"  {ln}" for ln in tail)
+        return "  (no log output returned)"
+    except Exception as exc:
+        return f"  (could not fetch logs: {exc})"
 
 
 def _preflight_databricks_cli() -> None:
@@ -3532,10 +4309,10 @@ def _auto_update_databricks_yml(
     agent: Any,
     bundle_key: str,
     log: Any,
-) -> tuple[list[str], list[str]]:
+) -> _BundleUpdateResult:
     """Merge missing ResourceSpec entries into databricks.yml.
 
-    Returns ``(added_names, skipped_names)``. The bundle document is read,
+    Returns added_names and skipped_names. The bundle document is read,
     each ResourceSpec is mapped to a DAB resource entry via
     ``resources_to_databricks_yml``, and any entry whose ``name`` is not
     already present in ``resources.apps.<bundle_key>.resources`` is appended.
@@ -3626,7 +4403,7 @@ def _auto_update_databricks_yml(
             f"{', '.join(skipped)}")
     if not added and not skipped:
         log("  no resources to merge (agent declared none)")
-    return added, skipped
+    return _BundleUpdateResult(added=added, skipped=skipped)
 
 
 def _poll_app_ready(
@@ -3916,9 +4693,19 @@ def _deploy_apps_impl(
                 detail = "\n".join(failing) if failing else str(checks)
             else:
                 detail = str(checks)
+            log("# fetching app logs for crash context...")
+            log_tail = _fetch_app_log_tail(app_name, profile=profile)
+            logs_cmd = f"databricks apps logs {app_name}"
+            if profile:
+                logs_cmd += f" --profile {profile}"
             raise click.ClickException(
-                f"readyz gate failed — app is running but not healthy:\n{detail}\n"
-                f"Fix the issues above then re-deploy, or re-run with --no-readyz-gate to skip."
+                f"readyz gate failed — app is running but not healthy:\n{detail}\n\n"
+                f"App logs (last 40 lines):\n"
+                f"{'─' * 60}\n"
+                f"{log_tail}\n"
+                f"{'─' * 60}\n\n"
+                f"Full logs:  {logs_cmd}\n"
+                f"Re-deploy, or re-run with --no-readyz-gate to skip the gate."
             )
 
     # 7. Final report
@@ -3944,9 +4731,33 @@ def _deploy_apps_impl(
 @main.command("publish-tools")
 @click.option("--module", default="agent:agent", help='Agent module spec.')
 @click.option("--dry-run", is_flag=True, help="Report what would publish without writing.")
-def publish_tools_cmd(module: str, dry_run: bool) -> None:
-    """Publish all @tool(uc=...) decorated tools to Unity Catalog."""
+@click.option("--tools-table", default=None,
+              help="UC Delta tools registry table. Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
+@click.option("--no-registry", is_flag=True, help="Skip the tools registry write (UC publish only).")
+@click.option("--profile", default=None, help="Databricks CLI profile.")
+def publish_tools_cmd(
+    module: str,
+    dry_run: bool,
+    tools_table: str | None,
+    no_registry: bool,
+    profile: str | None,
+) -> None:
+    """Publish all @tool(uc=...) decorated tools to Unity Catalog.
+
+    Also registers each tool as a standalone entry in the org tools registry
+    (``main.apx.agent_tools`` by default) so they are discoverable by any
+    agent without being tied to a specific agent deployment.
+    """
     from apx_agent import publish_tools_to_uc
+    from apx_agent._publish import publish_standalone_tools_to_registry
+    from apx_agent._resources import _iter_tool_fns
+    from apx_agent._tool import get_tool_metadata
+
+    cfg = _read_apx_agent_config()
+    profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    if profile:
+        os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+    tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
 
     agent = _load_finalized_agent(module)
     results = publish_tools_to_uc(agent, dry_run=dry_run)
@@ -3958,37 +4769,289 @@ def publish_tools_cmd(module: str, dry_run: bool) -> None:
         grants = ", ".join(r.grants_applied) if r.grants_applied else "none"
         click.echo(f"  {prefix}  {r.uc_name}  (grants: {grants})")
 
+    # --- Write standalone rows to the tools registry ---
+    if not no_registry and not dry_run:
+        # Collect only the tool functions that were actually published to UC.
+        published_names = {r.function_name for r in results if not r.skipped}
+        tool_fns = [
+            fn for fn in _iter_tool_fns(agent)
+            if getattr(fn, "__name__", None) in published_names
+        ]
+        if tool_fns:
+            try:
+                from databricks.sdk import WorkspaceClient
+                from databricks.sdk.config import Config
+                ws_cfg = Config(profile=profile) if profile else Config()
+                ws = WorkspaceClient(config=ws_cfg)
+                n = publish_standalone_tools_to_registry(
+                    tool_fns=tool_fns,
+                    tools_table=tools_table,
+                    ws=ws,
+                )
+                click.echo(click.style(f"  ✓ Tools registry updated ({n} standalone tools → {tools_table})", fg="green"))
+            except Exception as exc:
+                click.echo(click.style(f"  ✗ Tools registry write failed: {exc}", fg="yellow"), err=True)
+
 
 # ---------------------------------------------------------------------------
-# publish
+# create-supervisor  /  publish
 # ---------------------------------------------------------------------------
+
+
+@main.command("create-supervisor")
+@click.option("--name", required=True, help="Display name for the supervisor (e.g. 'Acme AI Assistant').")
+@click.option("--description", default="", help="Short description shown in the Databricks UI.")
+@click.option(
+    "--instructions", default=None,
+    help="System prompt controlling how the supervisor routes queries. "
+         "Defaults to a sensible 'route to the best sub-agent' prompt.",
+)
+@click.option("--profile", default=None, help="Databricks CLI profile.")
+@click.option("--save/--no-save", default=True,
+              help="Write supervisor_id to pyproject.toml after creation (default: yes).")
+def create_supervisor(
+    name: str,
+    description: str,
+    instructions: str | None,
+    profile: str | None,
+    save: bool,
+) -> None:
+    """Create a Mosaic AI Supervisor Agent for your org's A2A registry.
+
+    Run this once per workspace. The supervisor routes user queries across all
+    agents published with ``apx-agent publish``. After creation, pin the
+    printed supervisor_id in your org's shared pyproject.toml so every agent
+    can publish with a single zero-argument command.
+
+    Requires Agent Bricks (Beta) to be enabled in your workspace.
+    Docs: https://docs.databricks.com/aws/en/generative-ai/agent-bricks/multi-agent-supervisor
+
+    \b
+      apx-agent create-supervisor --name "Acme AI Assistant"
+      # → supervisor_id = "01ef..."
+      # → writes supervisor_id to pyproject.toml automatically
+    """
+    from apx_agent import create_supervisor_agent
+
+    cfg = _read_apx_agent_config()
+    profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    if profile:
+        os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+
+    default_instructions = (
+        f"You are {name}, an AI assistant that routes questions to the best available agent. "
+        "Analyse the user's request and delegate to whichever sub-agent is most relevant. "
+        "If no sub-agent fits, answer directly using your own knowledge."
+    )
+    instructions = instructions or default_instructions
+
+    click.echo(f"\nCreating Supervisor Agent '{name}' …")
+    try:
+        result = create_supervisor_agent(
+            display_name=name,
+            description=description,
+            instructions=instructions,
+        )
+    except ImportError as exc:
+        raise click.ClickException(str(exc))
+    except Exception as exc:
+        raise click.ClickException(
+            f"Failed to create supervisor: {exc}\n"
+            "Make sure Agent Bricks is enabled in your workspace:\n"
+            "  https://docs.databricks.com/aws/en/generative-ai/agent-bricks/multi-agent-supervisor"
+        )
+
+    supervisor_id = (
+        getattr(result, "supervisor_agent_id", None)
+        or getattr(result, "id", None)
+        or (result.get("supervisor_agent_id") or result.get("id") if isinstance(result, dict) else None)
+    )
+
+    click.echo(click.style(f"\nSupervisor Agent created!", fg="green"))
+    click.echo(f"  Name          : {name}")
+    if supervisor_id:
+        click.echo(f"  supervisor_id : {supervisor_id}")
+
+    if save and supervisor_id:
+        saved = _save_to_pyproject("supervisor_id", supervisor_id)
+        if saved:
+            click.echo(f"\nSaved to pyproject.toml. Any agent in this project can now run:")
+            click.echo(f"  apx-agent publish")
+        else:
+            click.echo(f"\nAdd this to your shared pyproject.toml so every agent can publish with zero args:")
+            click.echo(f"\n  [tool.apx.agent]")
+            click.echo(f'  supervisor_id = "{supervisor_id}"')
 
 
 @main.command()
-@click.option("--endpoint", required=True, help="Serving endpoint name of the deployed sub-agent.")
-@click.option("--supervisor", "supervisor_id", required=True, help="Supervisor Agent ID.")
-@click.option("--description", required=True, help="When the supervisor should route to this sub-agent.")
-@click.option("--display-name", default=None, help="Optional human-readable name.")
-@click.option("--tool-id", default=None, help="Optional stable tool_id (idempotent re-publish).")
+@click.option("--endpoint", default=None, help="Serving endpoint / app name. Defaults to [tool.apx.agent].name.")
+@click.option("--supervisor", "supervisor_id", default=None,
+              help="Supervisor Agent ID. Reads [tool.apx.agent].supervisor_id if set; skipped when absent.")
+@click.option("--description", default=None,
+              help="Routing description. Defaults to [tool.apx.agent].description.")
+@click.option("--display-name", default=None, help="Human-readable name. Defaults to [tool.apx.agent].name.")
+@click.option("--tool-id", default=None, help="Stable tool_id for idempotent Supervisor re-publish.")
+@click.option("--endpoint-url", default=None, help="Full URL of the deployed agent (stored in registry table).")
+@click.option("--endpoint-type", default="apps", type=click.Choice(["apps", "model-serving"]),
+              help="Deployment type stored in registry. Default: apps.")
+@click.option("--registry-table", default=None,
+              help="UC Delta registry table. Defaults to [tool.apx.agent].registry_table or main.apx.agent_registry.")
+@click.option("--tools-table", default=None,
+              help="UC Delta tools table. Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
+@click.option("--no-registry", is_flag=True, help="Skip the Delta registry write.")
+@click.option("--no-tools", is_flag=True, help="Skip the tools registry write.")
+@click.option("--module", default=None, help="Agent module spec (e.g. agent:agent). Used to enumerate tools for the tools registry.")
+@click.option("--profile", default=None, help="Databricks CLI profile.")
 def publish(
-    endpoint: str,
-    supervisor_id: str,
-    description: str,
+    endpoint: str | None,
+    supervisor_id: str | None,
+    description: str | None,
     display_name: str | None,
     tool_id: str | None,
+    endpoint_url: str | None,
+    endpoint_type: str,
+    registry_table: str | None,
+    tools_table: str | None,
+    no_registry: bool,
+    no_tools: bool,
+    module: str | None,
+    profile: str | None,
 ) -> None:
-    """Register a deployed serving endpoint as a Supervisor sub-agent."""
-    from apx_agent import publish_to_supervisor
+    """Advertise this agent to the organisation.
 
-    result = publish_to_supervisor(
-        supervisor_agent_id=supervisor_id,
-        serving_endpoint=endpoint,
-        description=description,
-        display_name=display_name,
-        tool_id=tool_id,
-    )
-    click.echo(f"Registered {endpoint} as sub-agent on supervisor {supervisor_id}.")
-    click.echo(f"Result: {result}")
+    Always writes an entry to the UC Delta agent registry so the agent is
+    discoverable via SQL. Also catalogs each tool in a separate tools table
+    so other agents can discover and call them. Registers with the Mosaic AI
+    Supervisor Agent when ``supervisor_id`` is configured.
+
+    All values default to ``[tool.apx.agent]`` in pyproject.toml. Typical
+    one-time org setup:
+
+    \b
+      apx-agent create-supervisor --name "Acme Assistant"   # once per org
+      # → saves supervisor_id to pyproject.toml
+
+    Then for every agent:
+
+    \b
+      apx-agent deploy     # deploy to your workspace
+      apx-agent publish    # write registry + tools + wire A2A supervisor
+    """
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.config import Config
+    from apx_agent import publish_to_registry, publish_to_supervisor
+    from apx_agent._publish import publish_tools_to_registry
+
+    cfg = _read_apx_agent_config()
+    profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    if profile:
+        os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+
+    endpoint = endpoint or cfg.get("name")
+    display_name = display_name or cfg.get("name")
+    description = description or cfg.get("description")
+    supervisor_id = supervisor_id or cfg.get("supervisor_id")
+    registry_table = registry_table or cfg.get("registry_table") or "main.apx.agent_registry"
+    tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
+
+    if not endpoint:
+        endpoint = click.prompt("Serving endpoint / app name")
+    if not description:
+        description = click.prompt("What does this agent do?")
+
+    try:
+        ws_cfg = Config(profile=profile) if profile else Config()
+        ws = WorkspaceClient(config=ws_cfg)
+        ws_host = (ws_cfg.host or "").rstrip("/")
+    except Exception as exc:
+        raise click.ClickException(f"Could not connect to workspace: {exc}")
+
+    # Derive endpoint URL if not supplied.
+    if not endpoint_url and ws_host:
+        endpoint_url = f"{ws_host}/apps/{endpoint}" if endpoint_type == "apps" else f"{ws_host}/serving-endpoints/{endpoint}"
+
+    # Compute stable agent_id (same logic as publish_to_registry).
+    import re as _re
+    _host_short = (ws_host.replace("https://", "").split(".")[0]) if ws_host else ""
+    _agent_id = _re.sub(r"[^a-zA-Z0-9_]+", "_", f"{endpoint}_{_host_short}").strip("_").lower() or "agent"
+
+    click.echo(f"\nPublishing '{display_name or endpoint}':")
+    click.echo(f"  Endpoint       : {endpoint}")
+    click.echo(f"  URL            : {endpoint_url or '(unknown)'}")
+    click.echo(f"  Description    : {description}")
+    click.echo(f"  Registry table : {registry_table}")
+    click.echo(f"  Tools table    : {tools_table}")
+    click.echo(f"  Supervisor A2A : {supervisor_id or '(not configured — skipping)'}")
+    click.echo()
+
+    # --- Step 1: Delta registry (always) ---
+    if not no_registry:
+        try:
+            publish_to_registry(
+                name=endpoint,
+                description=description,
+                display_name=display_name or endpoint,
+                endpoint_url=endpoint_url,
+                endpoint_type=endpoint_type,
+                supervisor_agent_id=supervisor_id,
+                registry_table=registry_table,
+                ws=ws,
+            )
+            click.echo(click.style(f"  ✓ Registry table updated ({registry_table})", fg="green"))
+        except Exception as exc:
+            click.echo(click.style(f"  ✗ Registry write failed: {exc}", fg="yellow"), err=True)
+            click.echo("    To query the registry: SELECT * FROM " + registry_table, err=True)
+
+    # --- Step 2: Tools registry ---
+    if not no_tools:
+        _module = module or _detect_module_spec()
+        if _module:
+            try:
+                from apx_agent._resources import _iter_tool_fns
+                _agent = _load_finalized_agent(_module)
+                _tool_fns = list(_iter_tool_fns(_agent))
+                n = publish_tools_to_registry(
+                    agent_id=_agent_id,
+                    agent_name=display_name or endpoint,
+                    tool_fns=_tool_fns,
+                    tools_table=tools_table,
+                    ws=ws,
+                )
+                click.echo(click.style(f"  ✓ Tools table updated ({n} tools → {tools_table})", fg="green"))
+            except Exception as exc:
+                click.echo(click.style(f"  ✗ Tools registry write failed: {exc}", fg="yellow"), err=True)
+        else:
+            click.echo(click.style(
+                "  ~ Tools registry skipped (no --module and no agent:agent default found)",
+                fg="yellow",
+            ))
+
+    # --- Step 3: Supervisor Agent (when configured) ---
+    if supervisor_id:
+        try:
+            result = publish_to_supervisor(
+                supervisor_agent_id=supervisor_id,
+                serving_endpoint=endpoint,
+                description=description,
+                display_name=display_name or endpoint,
+                tool_id=tool_id,
+                ws=ws,
+            )
+            click.echo(click.style(f"  ✓ Registered with Supervisor Agent ({supervisor_id})", fg="green"))
+            returned_tool_id = (
+                getattr(result, "tool_id", None)
+                or (result.get("tool_id") if isinstance(result, dict) else None)
+            )
+            if returned_tool_id:
+                click.echo(f"    tool_id: {returned_tool_id}  (pin in pyproject.toml for idempotent re-publish)")
+        except ImportError as exc:
+            click.echo(click.style(f"  ✗ Supervisor registration skipped: {exc}", fg="yellow"), err=True)
+        except Exception as exc:
+            click.echo(click.style(f"  ✗ Supervisor registration failed: {exc}", fg="yellow"), err=True)
+    else:
+        click.echo(f"  Tip: run `apx-agent create-supervisor` once to enable org-wide A2A routing.")
+
+    click.echo()
 
 
 # ---------------------------------------------------------------------------

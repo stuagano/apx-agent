@@ -36,11 +36,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from ._mlflow_tracing import set_span_attribute
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ToolOutputSummary:
+    type_name: str
+    size: int
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +203,7 @@ def hash_for_audit(value: Any, *, length: int = 16) -> str:
     return hashlib.sha256(text).hexdigest()[:length]
 
 
-def output_summary(value: Any) -> tuple[str, int]:
+def output_summary(value: Any) -> ToolOutputSummary:
     """Return ``(type_name, size_estimate)`` for a tool output.
 
     Used to record ``apx.tool.output_type`` and ``apx.tool.output_size``
@@ -207,7 +214,7 @@ def output_summary(value: Any) -> tuple[str, int]:
         size = len(value)  # works for str / list / dict
     except TypeError:
         size = len(str(value))
-    return type_name, size
+    return ToolOutputSummary(type_name=type_name, size=size)
 
 
 def input_keys_summary(arguments: Any) -> str:

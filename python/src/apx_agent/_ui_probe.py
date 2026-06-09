@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -15,6 +15,16 @@ from ._ui_nav import _apx_nav_links, _deploy_overlay_html
 from ._ui_setup import _find_env_path, _read_env_file
 
 logger = logging.getLogger(__name__)
+
+
+class _WorkspaceAuthInfo(NamedTuple):
+    host: str
+    user: str
+
+
+class _MlflowReadInfo(NamedTuple):
+    trace_id: str
+    has_spans: bool
 
 
 # ---------------------------------------------------------------------------
@@ -32,14 +42,15 @@ async def _check_workspace_auth() -> dict[str, Any]:
     try:
         from databricks.sdk import WorkspaceClient
 
-        def _init() -> tuple[str, str]:
+        def _init() -> _WorkspaceAuthInfo:
             ws = WorkspaceClient()
             host = ws.config.host or "?"
             me = ws.current_user.me()
             user = getattr(me, "user_name", None) or getattr(me, "userName", "")
-            return host, user
+            return _WorkspaceAuthInfo(host=host, user=user)
 
-        host, user = await asyncio.wait_for(asyncio.to_thread(_init), timeout=_CHECK_TIMEOUT_S)
+        _auth_info = await asyncio.wait_for(asyncio.to_thread(_init), timeout=_CHECK_TIMEOUT_S)
+        host, user = _auth_info.host, _auth_info.user
         return {
             "name": "workspace_auth",
             "status": "ok",
@@ -726,7 +737,7 @@ async def _check_mlflow_read() -> dict[str, Any]:
             ),
         }
 
-    def _read() -> tuple[str, bool]:
+    def _read() -> _MlflowReadInfo:
         client = _MlflowClient()
         # Stage 1: metadata-only — works even when blob storage is blocked.
         metas = list(
@@ -737,7 +748,7 @@ async def _check_mlflow_read() -> dict[str, Any]:
             )
         )
         if not metas:
-            return ("", False)  # no traces — absence, not failure
+            return _MlflowReadInfo(trace_id="", has_spans=False)  # no traces — absence, not failure
         trace_id = metas[0].info.trace_id
         # Stage 2: span read — forces the blob fetch the canary/eval reads
         # depend on. On a blob-blocked workspace this raises (the degradation
@@ -749,12 +760,13 @@ async def _check_mlflow_read() -> dict[str, Any]:
         )
         full_list = list(full)
         has_spans = bool(full_list and getattr(full_list[0], "data", None) is not None)
-        return (trace_id, has_spans)
+        return _MlflowReadInfo(trace_id=trace_id, has_spans=has_spans)
 
     try:
-        trace_id, _ = await asyncio.wait_for(
+        _read_info = await asyncio.wait_for(
             asyncio.to_thread(_read), timeout=_CHECK_TIMEOUT_S
         )
+        trace_id = _read_info.trace_id
     except asyncio.TimeoutError:
         return {
             "name": "mlflow_read",

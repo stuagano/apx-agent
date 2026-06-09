@@ -20,7 +20,7 @@ import json as _json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -55,6 +55,12 @@ from ._ui_setup import (
 from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes, _validate_probe_url
 
 logger = logging.getLogger(__name__)
+
+
+class _JudgeOutput(NamedTuple):
+    verdict: str
+    reason: str
+
 
 _TRACE_CSS = """
   :root{--bg:#0a0a0a;--panel:#111;--border:#2a2a2a;--text:#e5e7eb;--muted:#888;
@@ -513,7 +519,7 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
 </body></html>"""
 
 
-def _parse_judge_output(text: str) -> tuple[str, str]:
+def _parse_judge_output(text: str) -> _JudgeOutput:
     """Extract verdict and reason from a judge model's output.
 
     Expected format::
@@ -527,7 +533,7 @@ def _parse_judge_output(text: str) -> tuple[str, str]:
     verdict = "FAIL"
     reason = ""
     if not text:
-        return verdict, "No output from judge model"
+        return _JudgeOutput(verdict=verdict, reason="No output from judge model")
 
     for line in text.splitlines():
         stripped = line.strip()
@@ -551,7 +557,7 @@ def _parse_judge_output(text: str) -> tuple[str, str]:
     # previous substring inference flipped "passable"/"would pass"/"COMPASSIONATE"
     # to PASS, the worst direction for an eval (audit M4).
 
-    return verdict, reason or "(no reason provided)"
+    return _JudgeOutput(verdict=verdict, reason=reason or "(no reason provided)")
 
 
 # ---------------------------------------------------------------------------
@@ -923,15 +929,17 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 else [e.experiment_id for e in client.search_experiments()]
             )
             traces = list(client.search_traces(
-                experiment_ids=exp_ids,
+                locations=exp_ids,
                 max_results=max_results,
                 order_by=["timestamp DESC"],
                 include_spans=False,
+                flush=True,  # MLflow 3.x writes async; flush before search
             )) if exp_ids else []
         except Exception:
             traces = []
         traces = _drop_warmup_traces(traces)
         rows = []
+        seen_ids: set[str] = set()
         for t in traces:
             info = t.info
             dur_ms = int(info.execution_duration / 1_000_000) if info.execution_duration else None
@@ -943,7 +951,26 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 "request_preview": info.request_preview or "",
                 "response_preview": info.response_preview or "",
             })
+            seen_ids.add(info.trace_id)
         if fmt == "json":
+            # Merge in any ring-buffer traces not yet committed to the tracking
+            # store (async write lag, or FEVM blob-egress blocked). Newest first.
+            try:
+                from ._trace_store import list_recent as _ts_list_recent
+                for tid in _ts_list_recent(max_results):
+                    if tid not in seen_ids:
+                        rows.insert(0, {
+                            "trace_id": tid,
+                            "state": "OK",
+                            "request_time_ms": None,
+                            "duration_ms": None,
+                            "request_preview": "",
+                            "response_preview": "",
+                        })
+                        seen_ids.add(tid)
+            except Exception:
+                pass
+            rows = rows[:max_results]
             return JSONResponse(rows)
         return HTMLResponse(_render_traces_list(rows, agent_name))
 
@@ -1595,6 +1622,52 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         return HTMLResponse(_render_setup_ui(current, embed=embed))
 
+    @router.get("/_apx/workspace-context", include_in_schema=False)
+    async def workspace_context(request: Request) -> Any:
+        """Return workspace identity + agent resource summary for the Context tab."""
+        import asyncio as _asyncio
+        from fastapi.responses import JSONResponse
+
+        ws: WorkspaceClient = request.app.state.workspace_client
+        ctx = request.app.state.agent_context
+
+        # Workspace identity
+        host = (getattr(getattr(ws, "config", None), "host", None) or "").rstrip("/")
+        try:
+            me = await _asyncio.to_thread(ws.current_user.me)
+            user_name = getattr(me, "user_name", None) or getattr(me, "display_name", None) or "unknown"
+        except Exception:
+            user_name = "unknown"
+
+        # Agent declared resources
+        resources: list[dict] = []
+        if ctx is not None:
+            try:
+                from ._resources import collect_resource_specs
+                for spec in collect_resource_specs(ctx.agent):
+                    resources.append({"kind": spec.kind, "identifier": spec.identifier})
+            except Exception:
+                pass
+
+        # Catalogs + schemas the agent explicitly uses (extract from resource identifiers)
+        uc_ids = [
+            r["identifier"] for r in resources
+            if r["kind"] in ("uc_table", "uc_schema", "uc_function")
+            and "." in r["identifier"]
+        ]
+        used_catalogs: list[str] = sorted({i.split(".")[0] for i in uc_ids})
+        used_schemas: list[str] = sorted({
+            ".".join(i.split(".")[:2]) for i in uc_ids if i.count(".") >= 1
+        })
+
+        return JSONResponse({
+            "host": host,
+            "user": user_name,
+            "resources": resources,
+            "used_catalogs": used_catalogs,
+            "used_schemas": used_schemas,
+        })
+
     @router.get("/_apx/setup/catalogs", include_in_schema=False)
     async def setup_catalogs(request: Request) -> Any:
         from fastapi.responses import JSONResponse
@@ -1618,6 +1691,23 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
         return JSONResponse(sorted(schemas))
+
+    @router.get("/_apx/setup/tables", include_in_schema=False)
+    async def setup_tables(request: Request) -> Any:
+        from fastapi.responses import JSONResponse
+        import asyncio as _asyncio
+        catalog = request.query_params.get("catalog", "")
+        schema = request.query_params.get("schema", "")
+        if not catalog or not schema:
+            return JSONResponse([])
+        ws: WorkspaceClient = request.app.state.workspace_client
+        try:
+            tables = await _asyncio.to_thread(
+                lambda: [t.name for t in ws.tables.list(catalog_name=catalog, schema_name=schema) if t.name]
+            )
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse(sorted(tables))
 
     @router.get("/_apx/setup/warehouses", include_in_schema=False)
     async def setup_warehouses(request: Request) -> Any:
@@ -2230,12 +2320,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             if choices:
                 msg = getattr(choices[0], "message", None)
                 text = ((getattr(msg, "content", None) or "") if msg else "").strip()
-            verdict, reason = _parse_judge_output(text)
+            _judge = _parse_judge_output(text)
             return JSONResponse({
                 "ok": True,
-                "pass": verdict == "PASS",
-                "verdict": verdict,
-                "reason": reason,
+                "pass": _judge.verdict == "PASS",
+                "verdict": _judge.verdict,
+                "reason": _judge.reason,
                 "duration_ms": elapsed,
                 "model": model,
             })

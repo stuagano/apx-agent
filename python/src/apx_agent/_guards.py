@@ -37,12 +37,17 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, NamedTuple
 
 if TYPE_CHECKING:
     from ._models import GuardrailsConfig
 
 logger = logging.getLogger(__name__)
+
+
+class _GuardComponents(NamedTuple):
+    input_guardrails: list[Any]
+    before_tool: Any
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +394,7 @@ def compose(*callbacks: Callable[..., Any]) -> Callable[..., Any]:
 
 def build_config_guards(
     cfg: "GuardrailsConfig",
-) -> tuple[list[Any], Any]:
+) -> _GuardComponents:
     """Translate a ``GuardrailsConfig`` into built-in guard callables.
 
     Returns ``(input_guardrails, before_tool_gate)`` where:
@@ -434,4 +439,4 @@ def build_config_guards(
         tool_gates.append(RateLimit(**kw))
 
     before_tool = compose(*tool_gates) if tool_gates else None
-    return input_guards, before_tool
+    return _GuardComponents(input_guardrails=input_guards, before_tool=before_tool)

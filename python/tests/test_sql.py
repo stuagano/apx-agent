@@ -43,6 +43,16 @@ class TestGetWarehouseId:
         with pytest.raises(RuntimeError, match="No SQL warehouse"):
             get_warehouse_id(ws)
 
+    def test_no_warehouse_error_includes_workspace_url_and_fix(self):
+        ws = MagicMock()
+        ws.config.host = "https://my-workspace.azuredatabricks.net"
+        ws.warehouses.list.return_value = []
+        with pytest.raises(RuntimeError) as exc:
+            get_warehouse_id(ws)
+        msg = str(exc.value)
+        assert "my-workspace.azuredatabricks.net/sql/warehouses" in msg
+        assert "Create Warehouse" in msg
+
     def test_skips_warehouses_without_id(self):
         ws = MagicMock()
         no_id = MagicMock()

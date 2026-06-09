@@ -58,6 +58,12 @@ def get(trace_id: str) -> list[dict] | None:
         return _STORE.get(trace_id)
 
 
+def list_recent(max_results: int = 50) -> list[str]:
+    """Return the most recent trace_ids in the ring buffer, newest first."""
+    with _LOCK:
+        return list(reversed(list(_STORE.keys())))[:max_results]
+
+
 # ---------------------------------------------------------------------------
 # Capture mechanism — a SpanProcessor that snapshots the trace at root-span-end
 # ---------------------------------------------------------------------------

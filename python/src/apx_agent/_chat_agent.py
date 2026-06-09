@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generator
 
 from ._agents import BaseAgent
@@ -63,6 +64,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class _WsAndHeaders:
+    ws: Any
+    headers: Any
+
+
 # ---------------------------------------------------------------------------
 # Auth resolution — closure-based, identical scheme to _defaults._make_workspace_client
 # ---------------------------------------------------------------------------
@@ -70,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 def _resolve_ws_and_headers(
     custom_inputs: dict[str, Any] | None,
-) -> tuple[Any, Any]:
+) -> _WsAndHeaders:
     """Resolve the per-request WorkspaceClient AND DatabricksAppsHeaders from
     a single :func:`extract_obo_headers` call, so ws-identity and
     memory-principal always come from the same source.
@@ -113,7 +120,7 @@ def _resolve_ws_and_headers(
             token=SecretStr(token_raw) if token_raw else None,
         )
 
-    return ws, headers
+    return _WsAndHeaders(ws=ws, headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -381,14 +388,14 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: False,
                 },
             ) as span:
-                ws, req_headers = _resolve_ws_and_headers(custom_inputs)
+                _auth = _resolve_ws_and_headers(custom_inputs)
                 with safe_span(
                     "compile_to_langgraph", span_type="CHAIN",
                     attributes={AuditAttrs.MODEL_ENDPOINT: effective_model},
                 ):
                     graph = compile_to_langgraph(
-                        self._agent, ws=ws, model=effective_model,
-                        headers=req_headers,
+                        self._agent, ws=_auth.ws, model=effective_model,
+                        headers=_auth.headers,
                     )
 
                 lc_input = _to_langchain_messages(prepended_messages)
@@ -461,10 +468,10 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: True,
                 },
             ) as span:
-                ws, req_headers = _resolve_ws_and_headers(custom_inputs)
+                _auth = _resolve_ws_and_headers(custom_inputs)
                 graph = compile_to_langgraph(
-                    self._agent, ws=ws, model=effective_model,
-                    headers=req_headers,
+                    self._agent, ws=_auth.ws, model=effective_model,
+                    headers=_auth.headers,
                 )
                 lc_input = _to_langchain_messages(prepended_messages)
                 emitted = 0

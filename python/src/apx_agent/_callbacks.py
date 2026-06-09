@@ -237,10 +237,10 @@ class _AgentCallbackHandler(BaseCallbackHandler):
             start_time = self._tool_starts.pop(run_id, None)
 
         # Record output shape + duration on the active span.
-        out_type, out_size = output_summary(output)
+        _out = output_summary(output)
         attrs: dict[str, Any] = {
-            "tool_output_type": out_type,
-            "tool_output_size": out_size,
+            "tool_output_type": _out.type_name,
+            "tool_output_size": _out.size,
         }
         if start_time is not None:
             attrs["tool_duration_ms"] = int((time.time() - start_time) * 1000)

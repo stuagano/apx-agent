@@ -64,6 +64,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _last_user_text(input_items: Any, max_len: int = 120) -> str:
+    """Extract the last user message text from a /responses or /invocations input."""
+    if isinstance(input_items, str):
+        text = input_items
+    elif isinstance(input_items, list):
+        text = ""
+        for item in reversed(input_items):
+            if not isinstance(item, dict):
+                continue
+            if item.get("role") not in ("user", None):
+                continue
+            content = item.get("content", "")
+            if isinstance(content, str):
+                text = content
+                break
+            if isinstance(content, list):
+                parts = [
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                text = " ".join(parts).strip()
+                if text:
+                    break
+    else:
+        return ""
+    text = text.strip()
+    if len(text) > max_len:
+        text = text[:max_len] + "…"
+    return text
+
+
 def mount_invocations_route(
     app: FastAPI,
     agent: BaseAgent,
@@ -112,6 +143,10 @@ def mount_invocations_route(
         messages_raw = body.get("messages", []) or []
         custom_inputs: dict[str, Any] = dict(body.get("custom_inputs") or {})
         stream = bool(body.get("stream", False))
+
+        user_text = _last_user_text(messages_raw)
+        if user_text:
+            logger.info("[user] %s", user_text)
 
         # --- context.conversation_id → custom_inputs.session_id bridge ----
         # AI Playground and Model Serving send the session key in the standard
@@ -232,7 +267,10 @@ def mount_responses_route(
 
     try:
         _invoke_fn, _stream_fn = compile_to_responses_agent(
-            agent, model=config.model, session_store=session_store
+            agent,
+            model=config.model,
+            session_store=session_store,
+            executor=getattr(config, "executor", "langgraph"),
         )
     except Exception as exc:
         logger.warning("Cannot compile ResponsesAgent for /responses: %s", exc)
@@ -249,6 +287,10 @@ def mount_responses_route(
         stream = bool(body.get("stream", False))
         custom_inputs: dict[str, Any] = dict(body.get("custom_inputs") or {})
 
+        user_text = _last_user_text(input_items)
+        if user_text:
+            logger.info("[user] %s", user_text)
+
         from ._obo import extract_obo_headers
 
         obo = extract_obo_headers(custom_inputs=custom_inputs, headers=request.headers)
@@ -258,8 +300,7 @@ def mount_responses_route(
         try:
             from ._responses_agent import _import_responses_types
 
-            ResponsesAgentRequest, _, _ = _import_responses_types()
-            req = ResponsesAgentRequest(
+            req = _import_responses_types().request_cls(
                 input=input_items, custom_inputs=custom_inputs or None
             )
         except Exception as exc:

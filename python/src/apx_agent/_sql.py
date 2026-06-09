@@ -77,7 +77,12 @@ def get_warehouse_id(ws: WorkspaceClient, *, prefer_serverless: bool = True) -> 
             fallback = wh.id
     if fallback is not None:
         return fallback
-    raise RuntimeError("No SQL warehouse available in this workspace")
+    workspace_url = getattr(getattr(ws, "config", None), "host", None) or "<your-workspace>"
+    raise RuntimeError(
+        f"No SQL warehouse available in this workspace. "
+        f"Fix: go to {workspace_url}/sql/warehouses → Create Warehouse (choose Serverless). "
+        f"Then set warehouse_id in your agent config or re-deploy."
+    )
 
 
 def _ensure_warehouse_running(

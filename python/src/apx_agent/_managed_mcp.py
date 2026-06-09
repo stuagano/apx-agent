@@ -88,6 +88,12 @@ _KIND_TO_PATH: dict[str, tuple[str, str]] = {
 }
 
 
+@dataclass(frozen=True)
+class _BuiltUrl:
+    url: str | None
+    oauth_scope: str | None
+
+
 def _normalise_host(workspace_host: str) -> str:
     """Strip trailing slash and ensure the host has a scheme."""
     host = workspace_host.rstrip("/")
@@ -96,15 +102,15 @@ def _normalise_host(workspace_host: str) -> str:
     return host
 
 
-def _build_url(kind: str, identifier: str, workspace_host: str) -> tuple[str | None, str | None]:
-    """Return ``(url, oauth_scope)`` for the kind/identifier pair, or ``(None, None)``."""
+def _build_url(kind: str, identifier: str, workspace_host: str) -> _BuiltUrl:
+    """Return url and oauth_scope for the kind/identifier pair, or None values."""
     template_scope = _KIND_TO_PATH.get(kind)
     if template_scope is None:
-        return None, None
+        return _BuiltUrl(url=None, oauth_scope=None)
     template, scope = template_scope
 
     if kind == "genie_space":
-        return f"{workspace_host}{template.format(identifier)}", scope
+        return _BuiltUrl(url=f"{workspace_host}{template.format(identifier)}", oauth_scope=scope)
 
     # UC function / vector search use three-part identifiers
     parts = identifier.split(".")
@@ -113,8 +119,8 @@ def _build_url(kind: str, identifier: str, workspace_host: str) -> tuple[str | N
             "Managed MCP URL for %s expects a three-part identifier; got %r — skipping.",
             kind, identifier,
         )
-        return None, None
-    return f"{workspace_host}{template.format(*parts)}", scope
+        return _BuiltUrl(url=None, oauth_scope=None)
+    return _BuiltUrl(url=f"{workspace_host}{template.format(*parts)}", oauth_scope=scope)
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +159,8 @@ def managed_mcp_urls(
 
     endpoints: list[ManagedMCPEndpoint] = []
     for spec in specs:
-        url, scope = _build_url(spec.kind, spec.identifier, host)
-        if url is None:
+        _built = _build_url(spec.kind, spec.identifier, host)
+        if _built.url is None:
             endpoints.append(ManagedMCPEndpoint(
                 kind=spec.kind,
                 identifier=spec.identifier,
@@ -166,8 +172,8 @@ def managed_mcp_urls(
             endpoints.append(ManagedMCPEndpoint(
                 kind=spec.kind,
                 identifier=spec.identifier,
-                url=url,
-                oauth_scope=scope,
+                url=_built.url,
+                oauth_scope=_built.oauth_scope,
                 unsupported=False,
             ))
     return endpoints

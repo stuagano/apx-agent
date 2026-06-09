@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
@@ -53,6 +54,13 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from ._agents import BaseAgent
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    assistant_text: str
+    trace_id: str | None
+
 
 # The canned prompt the self-test runs through the agent.
 _CANNED_PROMPT = "Reply with exactly: READY"
@@ -114,7 +122,7 @@ def _last_trace_id() -> str | None:
         return None
 
 
-def _run_canned_probe(agent: "BaseAgent", model: str | None) -> tuple[str, str | None]:
+def _run_canned_probe(agent: "BaseAgent", model: str | None) -> ProbeResult:
     """Run the canned prompt through the compiled agent.
 
     Returns ``(assistant_text, trace_id)``. Compiles the agent via
@@ -132,7 +140,7 @@ def _run_canned_probe(agent: "BaseAgent", model: str | None) -> tuple[str, str |
     response = non_streaming({"input": [{"role": "user", "content": _CANNED_PROMPT}]})
     text = _extract_assistant_text(response)
     trace_id = _last_trace_id()
-    return text, trace_id
+    return ProbeResult(assistant_text=text, trace_id=trace_id)
 
 
 def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None) -> None:
@@ -170,9 +178,9 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
         }
         try:
             # Module-global lookup so monkeypatch.setattr resolves at call time.
-            text, trace_id = _run_canned_probe(agent, model)
-            checks["llm"] = "ok" if text else "fail"
-            checks["tracing"] = "ok" if trace_id else "unavailable"
+            _probe = _run_canned_probe(agent, model)
+            checks["llm"] = "ok" if _probe.assistant_text else "fail"
+            checks["tracing"] = "ok" if _probe.trace_id else "unavailable"
 
             mem_ok = checks["memory"] in ("ok", None)
             ready = checks["llm"] == "ok" and checks["tracing"] in ("ok", "unavailable") and mem_ok

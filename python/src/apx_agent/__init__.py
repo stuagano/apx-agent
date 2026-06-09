@@ -100,6 +100,27 @@ from .jobs_tools import (
 # LangGraph compiler (optional — requires the ``langgraph`` extra)
 from ._compile import CompileContext, compile_to_langgraph
 
+# Executor protocol + event types (harness abstraction seam)
+from ._executor import (
+    Executor,
+    ExecutorConfig,
+    ExecutorError,
+    ExecutorEvent,
+    TextChunk,
+    ToolCallComplete,
+    ToolCallRequest,
+    TurnComplete,
+)
+
+# LangGraph executor implementation
+from ._langgraph_executor import LangGraphExecutor
+
+# Native OpenAI-compatible executor (no LangGraph dependency)
+from ._claude_sdk_executor import ClaudeSDKExecutor
+
+# Executor factory — selects executor based on AgentConfig.executor field
+from ._executor_factory import create_executor
+
 # MLflow ChatAgent wrapper (optional — requires the ``langgraph`` and ``eval`` extras)
 from ._chat_agent import chat_agent_for, compile_to_chat_agent, log_agent
 
@@ -191,7 +212,7 @@ from ._managed_mcp import (
 )
 
 # Mosaic AI Supervisor Agent publishing
-from ._publish import create_supervisor_agent, publish_to_supervisor
+from ._publish import create_supervisor_agent, publish_to_registry, publish_to_supervisor, publish_tools_to_registry, publish_standalone_tools_to_registry
 
 # Local lightweight guards — zero-latency runtime checks
 from ._guards import (
@@ -471,7 +492,10 @@ __all__ = [
     "managed_mcp_client_config",
     # Supervisor publishing
     "create_supervisor_agent",
+    "publish_to_registry",
     "publish_to_supervisor",
+    "publish_tools_to_registry",
+    "publish_standalone_tools_to_registry",
     # Local lightweight guards
     "FeatureFlagGuard",
     "RateLimit",

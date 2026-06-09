@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import contextvars
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI
 
 from ._models import AgentContext
+
+@dataclass(frozen=True)
+class _McpComponents:
+    server: Any
+    sse_transport: Any
+
 
 # Request-scoped auth context — avoids race conditions with concurrent MCP clients
 _mcp_auth_header: contextvars.ContextVar[str] = contextvars.ContextVar("_mcp_auth_header", default="")
@@ -20,10 +27,10 @@ def set_mcp_auth(auth_header: str, obo_token: str) -> None:
     _mcp_obo_token.set(obo_token)
 
 
-def _build_mcp_components(ctx: AgentContext, app: FastAPI, api_prefix: str = "/api") -> tuple[Any, Any]:
+def _build_mcp_components(ctx: AgentContext, app: FastAPI, api_prefix: str = "/api") -> _McpComponents:
     """Build an MCP Server + SseServerTransport from the agent's tool registry.
 
-    Returns (server, sse_transport) to be stored on app.state.
+    Returns server and sse_transport to be stored on app.state.
     Tool calls are dispatched via ASGI to the existing {api_prefix}/tools/<name> routes
     so they share the same FastAPI dependency injection (auth, workspace client, etc.).
     """
@@ -78,4 +85,4 @@ def _build_mcp_components(ctx: AgentContext, app: FastAPI, api_prefix: str = "/a
 
         return [mcp_types.TextContent(type="text", text=text)]
 
-    return server, sse
+    return _McpComponents(server=server, sse_transport=sse)

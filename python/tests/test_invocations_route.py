@@ -278,7 +278,7 @@ def app_with_responses():
 
     captured: dict[str, Any] = {}
 
-    def _fake_compile(agent_arg, *, model, session_store=None):
+    def _fake_compile(agent_arg, *, model, session_store=None, executor="langgraph"):
         captured["invoke"] = fake_invoke
         captured["stream"] = fake_stream
         return fake_invoke, fake_stream
@@ -332,13 +332,14 @@ class TestResponsesRoute:
 
     def test_obo_header_forwarded_to_custom_inputs(self, app_with_responses) -> None:
         client, captured = app_with_responses
-        client.post(
+        resp = client.post(
             "/responses",
             json={"input": [{"role": "user", "content": "hi"}]},
             headers={"X-Forwarded-Access-Token": "obo-tok"},
         )
-        call_kwargs = captured["invoke"].call_args[0][0]
-        # The OBO token lands in custom_inputs on the request object passed
-        # to invoke.  It's a MagicMock, so check the constructor args.
-        # Simpler: verify invoke was called at all (the route layer ran).
+        assert resp.status_code == 200
         assert captured["invoke"].called
+        # The OBO token must land in custom_inputs on the ResponsesAgentRequest
+        # passed to invoke — this is the enterprise-critical contract.
+        req_arg = captured["invoke"].call_args[0][0]
+        assert req_arg.custom_inputs["user_token"] == "obo-tok"

@@ -18,7 +18,7 @@ Covers:
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -96,14 +96,19 @@ class RecordingEngine:
 # ---------------------------------------------------------------------------
 
 
-def make_recording_embedder() -> tuple[list[list[str]], Any]:
+class _EmbedderPair(NamedTuple):
+    calls: list[list[str]]
+    fn: Any
+
+
+def make_recording_embedder() -> _EmbedderPair:
     calls: list[list[str]] = []
 
     def fn(texts: Sequence[str]) -> list[list[float]]:
         calls.append(list(texts))
         return [[1.0, 0.0, 0.0] for _ in texts]
 
-    return calls, fn
+    return _EmbedderPair(calls=calls, fn=fn)
 
 
 def _store(
