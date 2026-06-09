@@ -191,7 +191,7 @@ from ._managed_mcp import (
 )
 
 # Mosaic AI Supervisor Agent publishing
-from ._publish import create_supervisor_agent, publish_to_registry, publish_to_supervisor
+from ._publish import create_supervisor_agent, publish_to_registry, publish_to_supervisor, publish_tools_to_registry
 
 # Local lightweight guards — zero-latency runtime checks
 from ._guards import (
@@ -473,6 +473,7 @@ __all__ = [
     "create_supervisor_agent",
     "publish_to_registry",
     "publish_to_supervisor",
+    "publish_tools_to_registry",
     # Local lightweight guards
     "FeatureFlagGuard",
     "RateLimit",

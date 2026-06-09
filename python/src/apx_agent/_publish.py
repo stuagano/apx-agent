@@ -324,3 +324,164 @@ def publish_to_registry(
         warehouse_id=warehouse_id,
     )
     logger.info("Registered %s in registry table %s", name, registry_table)
+
+
+# ---------------------------------------------------------------------------
+# Agent tools registry
+# ---------------------------------------------------------------------------
+
+_TOOLS_DDL = """
+CREATE TABLE IF NOT EXISTS {table} (
+  tool_id       STRING  COMMENT 'Stable key: agent_id + tool name',
+  agent_id      STRING  COMMENT 'FK to apx_agent_registry.agent_id',
+  agent_name    STRING,
+  name          STRING,
+  description   STRING,
+  input_schema  STRING  COMMENT 'JSON string',
+  tool_type     STRING  COMMENT 'python, uc_function, sub_agent, genie, mcp, or unknown',
+  sub_agent_url STRING,
+  updated_at    DOUBLE
+) USING DELTA
+  COMMENT 'apx-agent org tools registry — all tools exposed by published agents'
+"""
+
+_TOOLS_DELETE = "DELETE FROM {table} WHERE agent_id = {agent_id}"
+
+_TOOLS_INSERT = """
+INSERT INTO {table} (
+  tool_id, agent_id, agent_name, name, description,
+  input_schema, tool_type, sub_agent_url, updated_at
+) VALUES (
+  {tool_id}, {agent_id}, {agent_name}, {name}, {description},
+  {input_schema}, {tool_type}, {sub_agent_url}, {updated_at}
+)
+"""
+
+
+def _infer_tool_type(tool_fn: Any) -> str:
+    """Best-effort classification of a tool function's backing type."""
+    try:
+        from ._tool import get_tool_metadata
+        meta = get_tool_metadata(tool_fn)
+        if meta and meta.uc_name:
+            return "uc_function"
+    except Exception:
+        pass
+    module = getattr(tool_fn, "__module__", "") or ""
+    if "genie" in module:
+        return "genie"
+    if "mcp" in module:
+        return "mcp"
+    if "http" in module or "openapi" in module:
+        return "http"
+    if "foundation_model" in module:
+        return "foundation_model"
+    if "vector_search" in module:
+        return "vector_search"
+    if "sql" in module:
+        return "sql"
+    return "python"
+
+
+def publish_tools_to_registry(
+    *,
+    agent_id: str,
+    agent_name: str,
+    tool_fns: list[Any],
+    tools_table: str = "main.apx.agent_tools",
+    ws: "WorkspaceClient | None" = None,
+    warehouse_id: str | None = None,
+) -> int:
+    """Upsert this agent's tool list into the UC Delta tools registry.
+
+    Replaces all existing rows for ``agent_id`` with a fresh snapshot so
+    the registry always reflects the currently deployed tool set.
+
+    Args:
+        agent_id: The stable agent key from ``publish_to_registry``.
+        agent_name: Human-readable agent name (denormalised for easy queries).
+        tool_fns: List of tool callables (the ``_tool_fns`` from the agent).
+        tools_table: Fully-qualified UC table, e.g. ``main.apx.agent_tools``.
+        ws: Optional ``WorkspaceClient``.
+        warehouse_id: SQL warehouse to use; auto-discovered when omitted.
+
+    Returns:
+        Number of tool rows written.
+    """
+    import json
+    import time
+
+    from ._sql import run_sql
+    from ._memory_delta import _validate_table_name
+
+    _validate_table_name(tools_table)
+    ws = _ensure_ws(ws)
+
+    # Ensure schema exists.
+    parts = tools_table.split(".")
+    if len(parts) == 3:
+        schema_fqn = f"{parts[0]}.{parts[1]}"
+        try:
+            run_sql(ws, f"CREATE SCHEMA IF NOT EXISTS {schema_fqn}", warehouse_id=warehouse_id)
+        except Exception:
+            pass
+
+    try:
+        run_sql(ws, _TOOLS_DDL.format(table=tools_table), warehouse_id=warehouse_id)
+    except Exception as e:
+        logger.warning("Could not create tools table %s: %s", tools_table, e)
+        raise
+
+    # Delete stale rows for this agent then re-insert.
+    run_sql(
+        ws,
+        _TOOLS_DELETE.format(table=tools_table, agent_id=_q(agent_id)),
+        warehouse_id=warehouse_id,
+    )
+
+    now = time.time()
+    count = 0
+    for fn in tool_fns:
+        name = getattr(fn, "__name__", None) or str(fn)
+        doc = (getattr(fn, "__doc__", None) or "").strip().splitlines()
+        description = doc[0] if doc else ""
+        tool_type = _infer_tool_type(fn)
+
+        # Best-effort: extract input schema from LangChain tool wrapper.
+        input_schema: str | None = None
+        try:
+            schema = getattr(fn, "args_schema", None)
+            if schema:
+                input_schema = json.dumps(
+                    schema.model_json_schema() if hasattr(schema, "model_json_schema") else schema.schema()
+                )
+        except Exception:
+            pass
+
+        sub_agent_url: str | None = None
+        try:
+            sub_agent_url = getattr(fn, "_sub_agent_url", None)
+        except Exception:
+            pass
+
+        tool_id = _slug(f"{agent_id}_{name}")
+        run_sql(
+            ws,
+            _TOOLS_INSERT.format(
+                table=tools_table,
+                tool_id=_q(tool_id),
+                agent_id=_q(agent_id),
+                agent_name=_q(agent_name),
+                name=_q(name),
+                description=_q(description),
+                input_schema=_q(input_schema),
+                tool_type=_q(tool_type),
+                sub_agent_url=_q(sub_agent_url),
+                updated_at=str(now),
+            ),
+            warehouse_id=warehouse_id,
+        )
+        count += 1
+
+    logger.info("Published %d tools for agent %s to %s", count, agent_name, tools_table)
+    return count

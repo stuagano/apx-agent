@@ -203,6 +203,25 @@ def _detect_target(cwd: Path | None = None) -> str:
     return "apps"
 
 
+def _detect_module_spec(cwd: Path | None = None) -> str | None:
+    """Infer the agent module spec from the project layout.
+
+    Returns the most likely ``module:variable`` string for ``_load_finalized_agent``,
+    or ``None`` when no agent file is found. Used by commands that load the agent
+    but where ``--module`` is optional (e.g. ``publish``).
+    """
+    cwd = cwd or Path.cwd()
+    candidates = [
+        ("agent.py", "agent:agent"),
+        ("app.py", "app:agent"),
+        ("agent_server/agent.py", "agent_server.agent:agent"),
+    ]
+    for filename, spec in candidates:
+        if (cwd / filename).exists():
+            return spec
+    return None
+
+
 def _sanitize_uv_lock(lock_path: Path) -> bool:
     """Re-point a uv.lock's internal Databricks PyPI proxy at public PyPI.
 
@@ -4800,7 +4819,11 @@ def create_supervisor(
               help="Deployment type stored in registry. Default: apps.")
 @click.option("--registry-table", default=None,
               help="UC Delta registry table. Defaults to [tool.apx.agent].registry_table or main.apx.agent_registry.")
+@click.option("--tools-table", default=None,
+              help="UC Delta tools table. Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
 @click.option("--no-registry", is_flag=True, help="Skip the Delta registry write.")
+@click.option("--no-tools", is_flag=True, help="Skip the tools registry write.")
+@click.option("--module", default=None, help="Agent module spec (e.g. agent:agent). Used to enumerate tools for the tools registry.")
 @click.option("--profile", default=None, help="Databricks CLI profile.")
 def publish(
     endpoint: str | None,
@@ -4811,14 +4834,18 @@ def publish(
     endpoint_url: str | None,
     endpoint_type: str,
     registry_table: str | None,
+    tools_table: str | None,
     no_registry: bool,
+    no_tools: bool,
+    module: str | None,
     profile: str | None,
 ) -> None:
     """Advertise this agent to the organisation.
 
     Always writes an entry to the UC Delta agent registry so the agent is
-    discoverable via SQL. Also registers with the Mosaic AI Supervisor Agent
-    when ``supervisor_id`` is configured — enabling native A2A routing.
+    discoverable via SQL. Also catalogs each tool in a separate tools table
+    so other agents can discover and call them. Registers with the Mosaic AI
+    Supervisor Agent when ``supervisor_id`` is configured.
 
     All values default to ``[tool.apx.agent]`` in pyproject.toml. Typical
     one-time org setup:
@@ -4831,11 +4858,12 @@ def publish(
 
     \b
       apx-agent deploy     # deploy to your workspace
-      apx-agent publish    # write registry + wire A2A supervisor
+      apx-agent publish    # write registry + tools + wire A2A supervisor
     """
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.config import Config
     from apx_agent import publish_to_registry, publish_to_supervisor
+    from apx_agent._publish import publish_tools_to_registry
 
     cfg = _read_apx_agent_config()
     profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
@@ -4847,6 +4875,7 @@ def publish(
     description = description or cfg.get("description")
     supervisor_id = supervisor_id or cfg.get("supervisor_id")
     registry_table = registry_table or cfg.get("registry_table") or "main.apx.agent_registry"
+    tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
 
     if not endpoint:
         endpoint = click.prompt("Serving endpoint / app name")
@@ -4864,11 +4893,17 @@ def publish(
     if not endpoint_url and ws_host:
         endpoint_url = f"{ws_host}/apps/{endpoint}" if endpoint_type == "apps" else f"{ws_host}/serving-endpoints/{endpoint}"
 
+    # Compute stable agent_id (same logic as publish_to_registry).
+    import re as _re
+    _host_short = (ws_host.replace("https://", "").split(".")[0]) if ws_host else ""
+    _agent_id = _re.sub(r"[^a-zA-Z0-9_]+", "_", f"{endpoint}_{_host_short}").strip("_").lower() or "agent"
+
     click.echo(f"\nPublishing '{display_name or endpoint}':")
     click.echo(f"  Endpoint       : {endpoint}")
     click.echo(f"  URL            : {endpoint_url or '(unknown)'}")
     click.echo(f"  Description    : {description}")
     click.echo(f"  Registry table : {registry_table}")
+    click.echo(f"  Tools table    : {tools_table}")
     click.echo(f"  Supervisor A2A : {supervisor_id or '(not configured — skipping)'}")
     click.echo()
 
@@ -4890,7 +4925,31 @@ def publish(
             click.echo(click.style(f"  ✗ Registry write failed: {exc}", fg="yellow"), err=True)
             click.echo("    To query the registry: SELECT * FROM " + registry_table, err=True)
 
-    # --- Step 2: Supervisor Agent (when configured) ---
+    # --- Step 2: Tools registry ---
+    if not no_tools:
+        _module = module or _detect_module_spec()
+        if _module:
+            try:
+                from apx_agent._resources import _iter_tool_fns
+                _agent = _load_finalized_agent(_module)
+                _tool_fns = list(_iter_tool_fns(_agent))
+                n = publish_tools_to_registry(
+                    agent_id=_agent_id,
+                    agent_name=display_name or endpoint,
+                    tool_fns=_tool_fns,
+                    tools_table=tools_table,
+                    ws=ws,
+                )
+                click.echo(click.style(f"  ✓ Tools table updated ({n} tools → {tools_table})", fg="green"))
+            except Exception as exc:
+                click.echo(click.style(f"  ✗ Tools registry write failed: {exc}", fg="yellow"), err=True)
+        else:
+            click.echo(click.style(
+                "  ~ Tools registry skipped (no --module and no agent:agent default found)",
+                fg="yellow",
+            ))
+
+    # --- Step 3: Supervisor Agent (when configured) ---
     if supervisor_id:
         try:
             result = publish_to_supervisor(
