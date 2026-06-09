@@ -820,13 +820,35 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .ctx-label {{ font-size:10px;color:#555;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px; }}
   .ctx-workspace-host {{ color:#60b0ff;text-decoration:none;font-family:monospace;font-size:11px;word-break:break-all; }}
   .ctx-workspace-host:hover {{ text-decoration:underline; }}
-  .cat-node {{ cursor:pointer;padding:4px 2px;color:#9ca3af;user-select:none; }}
-  .cat-node:hover {{ color:#ccc; }}
-  .schema-node {{ cursor:pointer;padding:3px 2px;color:#6b7280;user-select:none; }}
-  .schema-node:hover {{ color:#aaa; }}
-  .table-row {{ padding:2px 2px;color:#4b5563;font-family:monospace;font-size:10px; }}
+  /* ── Catalog tree ── */
+  .tree {{ font-size:12px;line-height:1; }}
+  .tree-row {{ display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:5px;
+               cursor:pointer;user-select:none;position:relative; }}
+  .tree-row:hover {{ background:#161616; }}
+  .tree-chevron {{ flex-shrink:0;width:12px;height:12px;display:flex;align-items:center;justify-content:center;
+                    color:#444;transition:transform .15s;font-size:9px; }}
+  .tree-row.open > .tree-chevron {{ transform:rotate(90deg);color:#666; }}
+  .tree-icon {{ flex-shrink:0;font-size:12px;line-height:1; }}
+  .tree-name {{ font-family:ui-monospace,monospace;font-size:11px;flex:1;min-width:0;
+                overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }}
+  /* catalog level */
+  .tree-cat > .tree-name {{ color:#c9d1d9;font-weight:500; }}
+  /* schema level — indented with a subtle left rail */
+  .tree-schemas {{ padding-left:20px;position:relative; }}
+  .tree-schemas::before {{ content:'';position:absolute;left:10px;top:0;bottom:4px;
+                             width:1px;background:#1e1e1e; }}
+  .tree-sch > .tree-name {{ color:#8b949e; }}
+  /* table level */
+  .tree-tables {{ padding-left:20px;position:relative; }}
+  .tree-tables::before {{ content:'';position:absolute;left:10px;top:0;bottom:4px;
+                           width:1px;background:#191919; }}
+  .tree-tbl {{ display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;
+               cursor:default;user-select:text; }}
+  .tree-tbl:hover {{ background:#141414; }}
+  .tree-tbl > .tree-name {{ color:#4b5563;font-size:10px; }}
+  .tree-loading {{ padding:4px 6px;color:#333;font-size:11px;font-style:italic; }}
   .ctx-badge {{ font-size:9px;background:#1e3a20;color:#4ade80;border-radius:3px;
-                 padding:1px 5px;margin-left:6px;font-family:sans-serif;vertical-align:middle; }}
+                 padding:1px 5px;margin-left:4px;font-family:sans-serif;vertical-align:middle;flex-shrink:0; }}
   /* hamburger button in header */
   #btn-hamburger {{ background:none;border:none;color:#555;font-size:18px;cursor:pointer;
                      padding:4px 8px;border-radius:5px;margin-right:4px;line-height:1; }}
@@ -1338,58 +1360,68 @@ async function loadCatalogTree(usedCatalogs) {{
   try {{
     const r = await fetch('/_apx/setup/catalogs');
     const cats = await r.json();
-    if (!cats || !cats.length) {{ tree.innerHTML = '<div style="color:#444;font-size:11px">No catalogs accessible</div>'; return; }}
+    if (!cats || !cats.length) {{
+      tree.innerHTML = '<div class="tree-loading">No catalogs accessible</div>'; return;
+    }}
     const used = new Set(usedCatalogs);
     const sorted = [...cats].sort((a, b) => (used.has(a)?0:1)-(used.has(b)?0:1) || a.localeCompare(b));
-    tree.innerHTML = sorted.map(c => {{
+    tree.innerHTML = `<div class="tree">${{sorted.map(c => {{
       const badge = used.has(c) ? `<span class="ctx-badge">used</span>` : '';
-      return `<div class="cat-node" onclick="toggleCatalog(this,'${{esc(c)}}')">
-        <span class="cat-arrow" style="color:#444;margin-right:5px;font-size:9px">▶</span><span style="font-family:monospace">${{esc(c)}}</span>${{badge}}
-        <div class="schema-list" style="display:none;padding-left:14px;margin-top:3px"></div>
+      return `<div>
+        <div class="tree-row tree-cat" onclick="toggleCatalog(this,'${{esc(c)}}')">
+          <span class="tree-chevron">›</span>
+          <span class="tree-icon">🗄</span>
+          <span class="tree-name">${{esc(c)}}</span>${{badge}}
+        </div>
+        <div class="tree-schemas" style="display:none"></div>
       </div>`;
-    }}).join('');
+    }}).join('')}}</div>`;
   }} catch(e) {{
-    tree.innerHTML = `<div style="color:#555;font-size:11px">Could not load catalogs</div>`;
+    tree.innerHTML = `<div class="tree-loading">Could not load catalogs</div>`;
   }}
 }}
 
-async function toggleCatalog(el, catalog) {{
-  const list = el.querySelector('.schema-list');
-  const arrow = el.querySelector('.cat-arrow');
-  if (list.style.display !== 'none') {{ list.style.display='none'; arrow.textContent='▶'; return; }}
-  arrow.textContent = '▼'; list.style.display = 'block';
-  if (list.dataset.loaded) return;
-  list.dataset.loaded = '1';
-  list.innerHTML = '<span style="color:#444;font-size:10px">loading…</span>';
+async function toggleCatalog(rowEl, catalog) {{
+  const schemas = rowEl.nextElementSibling;
+  const open = rowEl.classList.toggle('open');
+  schemas.style.display = open ? 'block' : 'none';
+  if (!open || schemas.dataset.loaded) return;
+  schemas.dataset.loaded = '1';
+  schemas.innerHTML = '<div class="tree-loading">loading…</div>';
   try {{
     const r = await fetch(`/_apx/setup/schemas?catalog=${{encodeURIComponent(catalog)}}`);
-    const schemas = await r.json();
-    if (!schemas.length) {{ list.innerHTML = '<span style="color:#444;font-size:10px">no schemas</span>'; return; }}
-    list.innerHTML = schemas.map(s =>
-      `<div class="schema-node" onclick="toggleSchema(this,'${{esc(catalog)}}','${{esc(s)}}')">
-        <span class="schema-arrow" style="color:#333;margin-right:5px;font-size:9px">▶</span><span style="font-family:monospace">${{esc(s)}}</span>
-        <div class="table-list" style="display:none;padding-left:12px;margin-top:2px"></div>
-      </div>`).join('');
-  }} catch(e) {{ list.innerHTML = `<span style="color:#555;font-size:10px">error</span>`; }}
+    const list = await r.json();
+    if (!list.length) {{ schemas.innerHTML = '<div class="tree-loading">no schemas</div>'; return; }}
+    schemas.innerHTML = list.map(s => `<div>
+      <div class="tree-row tree-sch" onclick="toggleSchema(this,'${{esc(catalog)}}','${{esc(s)}}')">
+        <span class="tree-chevron">›</span>
+        <span class="tree-icon" style="opacity:.6">◫</span>
+        <span class="tree-name">${{esc(s)}}</span>
+      </div>
+      <div class="tree-tables" style="display:none"></div>
+    </div>`).join('');
+  }} catch(e) {{ schemas.innerHTML = `<div class="tree-loading">error</div>`; }}
 }}
 
-async function toggleSchema(el, catalog, schema) {{
-  const list = el.querySelector('.table-list');
-  const arrow = el.querySelector('.schema-arrow');
-  if (list.style.display !== 'none') {{ list.style.display='none'; arrow.textContent='▶'; return; }}
-  arrow.textContent = '▼'; list.style.display = 'block';
-  if (list.dataset.loaded) return;
-  list.dataset.loaded = '1';
-  list.innerHTML = '<span style="color:#444;font-size:10px">loading…</span>';
+async function toggleSchema(rowEl, catalog, schema) {{
+  const tables = rowEl.nextElementSibling;
+  const open = rowEl.classList.toggle('open');
+  tables.style.display = open ? 'block' : 'none';
+  if (!open || tables.dataset.loaded) return;
+  tables.dataset.loaded = '1';
+  tables.innerHTML = '<div class="tree-loading">loading…</div>';
   try {{
     const r = await fetch(`/_apx/setup/tables?catalog=${{encodeURIComponent(catalog)}}&schema=${{encodeURIComponent(schema)}}`);
-    const tables = await r.json();
-    if (!tables || !tables.length) {{ list.innerHTML = '<span style="color:#444;font-size:10px">no tables</span>'; return; }}
-    list.innerHTML = tables.map(t => {{
+    const list = await r.json();
+    if (!list.length) {{ tables.innerHTML = '<div class="tree-loading">no tables</div>'; return; }}
+    tables.innerHTML = list.map(t => {{
       const name = typeof t === 'string' ? t : (t.name || t);
-      return `<div class="table-row">${{esc(name)}}</div>`;
+      return `<div class="tree-tbl">
+        <span class="tree-icon" style="font-size:10px;color:#2d333b">▦</span>
+        <span class="tree-name">${{esc(name)}}</span>
+      </div>`;
     }}).join('');
-  }} catch(e) {{ list.innerHTML = `<span style="color:#555;font-size:10px">error</span>`; }}
+  }} catch(e) {{ tables.innerHTML = `<div class="tree-loading">error</div>`; }}
 }}
 
 // ── State ──
