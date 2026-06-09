@@ -2362,6 +2362,29 @@ def refresh_schema(profile: str | None) -> None:
     click.echo(f"refreshed {out} — {n} table{'s' if n != 1 else ''} from {catalog}.{schema}")
 
 
+def _find_free_port(preferred: int, *, host: str = "127.0.0.1", max_tries: int = 10) -> int:
+    """Return ``preferred`` if it is free, otherwise the next free port up to ``preferred + max_tries``.
+
+    Emits a notice when the port changes so the user knows what address to open.
+    """
+    import socket
+
+    for candidate in range(preferred, preferred + max_tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind((host, candidate))
+                if candidate != preferred:
+                    click.echo(
+                        f"Port {preferred} is already in use — using {candidate} instead.",
+                        err=True,
+                    )
+                return candidate
+            except OSError:
+                continue
+    # All candidates busy — let uvicorn surface the error as usual.
+    return preferred
+
+
 def _find_runnable_agents(cwd: Path) -> list[tuple[str, Path]]:
     """Return (name, project_dir) for every runnable agent project under cwd.
 
@@ -2512,6 +2535,7 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
     # reports `Could not import module "app"`. app_dir also propagates to the
     # --reload subprocess, which a bare sys.path.insert here would not.
     _probe_import(module)
+    port = _find_free_port(port, host=host)
     uvicorn.run(module, host=host, port=port, reload=reload, app_dir=str(Path.cwd()))
 
 
