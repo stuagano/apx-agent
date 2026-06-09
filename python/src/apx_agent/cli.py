@@ -223,16 +223,54 @@ def _databrickscfg_profiles() -> list[str]:
     return names
 
 
+def _save_profile_to_pyproject(profile: str) -> bool:
+    """Write ``profile = "<name>"`` into ``[tool.apx.agent]`` in the local pyproject.toml.
+
+    Returns True on success, False if the file doesn't exist or the section
+    isn't present (so callers can stay silent in non-project directories).
+    """
+    import re
+
+    pyproject = Path.cwd() / "pyproject.toml"
+    if not pyproject.exists():
+        return False
+    content = pyproject.read_text()
+    if "[tool.apx.agent]" not in content:
+        return False
+    escaped = profile.replace('"', '\\"')
+    if re.search(r'^\s*profile\s*=', content, re.MULTILINE):
+        content = re.sub(
+            r'^\s*profile\s*=.*$',
+            f'profile = "{escaped}"',
+            content,
+            flags=re.MULTILINE,
+        )
+    else:
+        content = re.sub(
+            r'(\[tool\.apx\.agent\])',
+            f'[tool.apx.agent]\nprofile = "{escaped}"',
+            content,
+        )
+    pyproject.write_text(content)
+    return True
+
+
 def _preflight_databricks_auth() -> None:
     """Fail `apx-agent run`/`deploy` with dev-time guidance when auth is unresolved.
 
-    When running in a TTY and auth fails because multiple profiles match the
-    same host, shows a profile picker and retries rather than just printing
-    instructions. Delegates to the doctor auth checks so inline errors and
-    `apx-agent doctor` share one source of truth.
+    Reads ``profile`` from ``[tool.apx.agent]`` in the local pyproject.toml
+    and applies it before the auth check so saved preferences are honoured
+    automatically. When running in a TTY and auth still fails, shows a profile
+    picker and offers to save the choice back to pyproject.toml.
     """
     import sys
     from . import _doctor as _d
+
+    # Apply a saved profile preference before running the auth check.
+    if "DATABRICKS_CONFIG_PROFILE" not in os.environ:
+        saved_profile = _read_apx_agent_config().get("profile")
+        if saved_profile and isinstance(saved_profile, str):
+            os.environ["DATABRICKS_CONFIG_PROFILE"] = saved_profile
 
     result = _d.check_databricks_auth()
     if result.status is _d.Status.FAIL:
@@ -241,7 +279,7 @@ def _preflight_databricks_auth() -> None:
             # Auth is ambiguous or unresolved — let the user pick a profile
             # interactively instead of just printing instructions and exiting.
             click.echo(
-                f"Databricks auth unresolved — pick a profile to use for this session:\n"
+                "Databricks auth unresolved — pick a profile to use for this session:\n"
             )
             for i, (name, host, valid) in enumerate(profiles, 1):
                 status = "✓" if valid else " "
@@ -251,7 +289,12 @@ def _preflight_databricks_auth() -> None:
             idx = click.prompt("\nChoose", type=click.IntRange(1, len(profiles)), default=default)
             chosen, _, _ = profiles[idx - 1]
             os.environ["DATABRICKS_CONFIG_PROFILE"] = chosen
-            click.echo(f"  Using profile '{chosen}' (set DATABRICKS_CONFIG_PROFILE={chosen} to make permanent)\n")
+            # Offer to persist the choice so the next run skips this picker.
+            if sys.stdin.isatty():
+                if _save_profile_to_pyproject(chosen):
+                    click.echo(f"  Saved profile '{chosen}' to pyproject.toml — future runs will use it automatically.\n")
+                else:
+                    click.echo(f"  Using profile '{chosen}' for this session (set DATABRICKS_CONFIG_PROFILE={chosen} to make it permanent).\n")
             # Retry after setting the profile.
             result = _d.check_databricks_auth()
 
