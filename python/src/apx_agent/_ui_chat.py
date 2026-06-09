@@ -1807,6 +1807,10 @@ function extractMsg(value) {{
   }}
   if (typeof value === 'number') return String(value);
   if (Array.isArray(value)) {{
+    // Responses-API output array: find the last message item's text.
+    const msgs = value.filter(m => m && typeof m === 'object' && m.type === 'message');
+    if (msgs.length) return extractMsg(msgs[msgs.length - 1].content);
+    // Generic: last item with a content field.
     for (let i = value.length - 1; i >= 0; i--) {{
       const m = value[i];
       if (m && typeof m === 'object' && 'content' in m) return extractMsg(m.content);
@@ -1814,8 +1818,10 @@ function extractMsg(value) {{
     return value.map(extractMsg).filter(Boolean).join(', ').slice(0, 300);
   }}
   if (typeof value === 'object') {{
-    for (const k of ['content', 'text', 'output_text', 'message', 'messages', 'choices', 'input']) {{
-      if (k in value) return extractMsg(value[k]);
+    // Responses-API output_text block.
+    if (value.type === 'output_text' && value.text) return value.text.slice(0, 400);
+    for (const k of ['content', 'text', 'output_text', 'message', 'messages', 'choices', 'output', 'input']) {{
+      if (k in value && value[k] != null) return extractMsg(value[k]);
     }}
     return Object.entries(value).filter(([, v]) => v != null && v !== '')
       .map(([k, v]) => typeof v === 'string'
@@ -1882,12 +1888,17 @@ async function finalizeTrace(traceId, status, opts) {{
 
     // ── Summary view: flat timeline of LLM + TOOL spans only ──
     // Ordered by start time. Orchestration wrappers (CHAIN/AGENT/OTHER) are
-    // hidden here but available in the full tree toggle below.
+    // hidden here; when no LLM/TOOL spans exist (Responses-API format where
+    // tool calls live inside the root span output), fall back to root spans.
     const ordered = [...data.spans].sort((a,b) => (a.start_time_ns||0)-(b.start_time_ns||0));
-    const keySpans = ordered.filter(s => {{
+    let keySpans = ordered.filter(s => {{
       const t = spanTypeShort(s.span_type);
       return t === 'LLM' || t === 'TOOL';
     }});
+    if (!keySpans.length) {{
+      // Responses-API path: show root spans that have inputs or outputs.
+      keySpans = ordered.filter(s => !s.parent_id && (s.inputs || s.outputs));
+    }}
 
     for (const s of keySpans) {{
       const type = spanTypeShort(s.span_type);
