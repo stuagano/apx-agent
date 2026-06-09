@@ -2300,9 +2300,10 @@ def refresh_schema(profile: str | None) -> None:
 def _find_runnable_agents(cwd: Path) -> list[tuple[str, Path]]:
     """Return (name, project_dir) for every runnable agent project under cwd.
 
-    Checks the cwd itself first, then one level of subdirectories. A directory
-    is "runnable" when it contains the apps layout (agent_server/start_server.py)
-    or the model-serving layout (app.py without databricks.yml).
+    Searches the cwd itself, then up to two levels of subdirectories (so both
+    ./my-agent/ and ./python/my-agent/ are found). A directory is "runnable"
+    when it contains the apps layout (agent_server/start_server.py) or the
+    model-serving layout (app.py without databricks.yml).
     """
 
     def _is_runnable(d: Path) -> bool:
@@ -2311,12 +2312,28 @@ def _find_runnable_agents(cwd: Path) -> list[tuple[str, Path]]:
             or ((d / "app.py").exists() and not (d / "databricks.yml").exists())
         )
 
+    _SKIP = {"__pycache__", ".venv", "node_modules", ".git"}
+
     results: list[tuple[str, Path]] = []
-    if _is_runnable(cwd):
-        results.append((cwd.name, cwd))
-    for child in sorted(cwd.iterdir()):
-        if child.is_dir() and not child.name.startswith(".") and _is_runnable(child):
-            results.append((child.name, child))
+    seen: set[Path] = set()
+
+    def _scan(d: Path, depth: int) -> None:
+        if d in seen:
+            return
+        seen.add(d)
+        if _is_runnable(d):
+            results.append((d.name, d))
+            return  # don't recurse into a runnable project
+        if depth > 0:
+            try:
+                children = sorted(d.iterdir())
+            except PermissionError:
+                return
+            for child in children:
+                if child.is_dir() and child.name not in _SKIP and not child.name.startswith("."):
+                    _scan(child, depth - 1)
+
+    _scan(cwd, depth=2)
     return results
 
 
