@@ -2362,26 +2362,139 @@ def refresh_schema(profile: str | None) -> None:
     click.echo(f"refreshed {out} — {n} table{'s' if n != 1 else ''} from {catalog}.{schema}")
 
 
-def _find_free_port(preferred: int, *, host: str = "127.0.0.1", max_tries: int = 10) -> int:
-    """Return ``preferred`` if it is free, otherwise the next free port up to ``preferred + max_tries``.
-
-    Emits a notice when the port changes so the user knows what address to open.
-    """
+def _port_is_free(port: int, host: str) -> bool:
     import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return True
+        except OSError:
+            return False
 
-    for candidate in range(preferred, preferred + max_tries):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+
+def _identify_port_occupant(port: int, host: str) -> dict:
+    """Return info about the process on *port*.
+
+    Keys: ``pid`` (int|None), ``name`` (str), ``is_apx`` (bool).
+    Tries ``lsof`` + ``ps`` to get the PID/command, then a quick HTTP hit
+    to ``/info`` or ``/health`` to read the agent name when it's an apx server.
+    """
+    import subprocess, urllib.request, json
+
+    pid: int | None = None
+    cmd = ""
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"], capture_output=True, text=True, timeout=3
+        )
+        pids = [p.strip() for p in result.stdout.strip().splitlines() if p.strip()]
+        if pids:
+            pid = int(pids[0])
+            ps = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True, text=True, timeout=2,
+            )
+            cmd = ps.stdout.strip()
+    except Exception:
+        pass
+
+    is_apx = any(kw in cmd for kw in ("apx-agent", "apx_agent", "uvicorn", "start_server"))
+
+    # Try reading the agent name from a live /info endpoint.
+    agent_name: str | None = None
+    for path in ("/info", "/health"):
+        try:
+            with urllib.request.urlopen(
+                f"http://{host}:{port}{path}", timeout=1
+            ) as resp:
+                data = json.loads(resp.read())
+                agent_name = (
+                    data.get("name")
+                    or data.get("agent_name")
+                    or data.get("agent", {}).get("name")
+                )
+                if agent_name:
+                    is_apx = True
+                    break
+        except Exception:
+            pass
+
+    display_name = agent_name or (
+        # Fall back to the project dir name if we can find it in the cmd.
+        next(
+            (part for part in cmd.split() if "/" in part and "python" not in part.lower()),
+            "unknown process",
+        )
+    )
+    return {"pid": pid, "name": display_name, "cmd": cmd, "is_apx": is_apx}
+
+
+def _find_free_port(preferred: int, *, host: str = "127.0.0.1", max_tries: int = 10) -> int:
+    """Return a port to listen on, handling conflicts interactively when in a TTY.
+
+    - Port is free: return it immediately.
+    - Port is busy + TTY detected as apx-agent: offer kill-and-reclaim or next port.
+    - Port is busy + TTY non-apx: offer next port or kill anyway.
+    - Port is busy + non-TTY: auto-advance silently.
+    """
+    import signal, time
+
+    if _port_is_free(preferred, host):
+        return preferred
+
+    # Port is in use.
+    if sys.stdin.isatty():
+        occupant = _identify_port_occupant(preferred, host)
+        name = occupant["name"]
+        pid = occupant["pid"]
+
+        if occupant["is_apx"] and pid:
+            click.echo(f"\nPort {preferred} is running: {name} (PID {pid})")
+        elif pid:
+            click.echo(f"\nPort {preferred} is in use by: {name} (PID {pid})")
+        else:
+            click.echo(f"\nPort {preferred} is already in use.")
+
+        next_port = next(
+            (p for p in range(preferred + 1, preferred + max_tries) if _port_is_free(p, host)),
+            preferred + 1,
+        )
+        options = [f"Use port {next_port} instead"]
+        if pid:
+            options.append(f"Kill {name} (PID {pid}) and use port {preferred}")
+        click.echo()
+        for i, opt in enumerate(options, 1):
+            click.echo(f"  {i}. {opt}")
+        choice = click.prompt("\nChoose", type=click.IntRange(1, len(options)), default=1)
+
+        if choice == 1:
+            if next_port != preferred + 1:
+                click.echo(f"Using port {next_port}.", err=True)
+            return next_port
+        else:
+            # Kill the occupant and reclaim the preferred port.
             try:
-                s.bind((host, candidate))
-                if candidate != preferred:
-                    click.echo(
-                        f"Port {preferred} is already in use — using {candidate} instead.",
-                        err=True,
-                    )
-                return candidate
-            except OSError:
-                continue
-    # All candidates busy — let uvicorn surface the error as usual.
+                os.kill(pid, signal.SIGTERM)
+                click.echo(f"  Sent SIGTERM to {name} (PID {pid})…", err=True)
+                for _ in range(20):
+                    time.sleep(0.25)
+                    if _port_is_free(preferred, host):
+                        break
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            click.echo(f"  Port {preferred} is free.", err=True)
+            return preferred
+
+    # Non-interactive: silently advance.
+    for candidate in range(preferred + 1, preferred + max_tries):
+        if _port_is_free(candidate, host):
+            click.echo(
+                f"Port {preferred} is already in use — using {candidate} instead.",
+                err=True,
+            )
+            return candidate
     return preferred
 
 
