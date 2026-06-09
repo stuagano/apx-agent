@@ -1931,9 +1931,12 @@ async function finalizeTrace(traceId, status, opts) {{
       // Responses-API: expand the output items into individual step cards.
       if (isResponsesApi && s.outputs && s.outputs.object === 'response' &&
           Array.isArray(s.outputs.output)) {{
-        // Show user input as a brief header card.
+        // Show only the LAST user message (the current turn) — the input array
+        // contains the full conversation history; earlier turns are repetition.
+        const inputArr = Array.isArray(s.inputs && s.inputs.input) ? s.inputs.input : [];
+        const lastUser = inputArr.filter(m => m && m.role === 'user').slice(-1)[0];
         const rootCard = makeStepCard(type, color, s.name, dur, isErr);
-        addBubble(rootCard, s.inputs, 'agent-ask');
+        if (lastUser) addBubble(rootCard, lastUser.content, 'agent-ask');
         traceBody.appendChild(rootCard);
         // Emit one card per function_call (paired with its function_call_output).
         const items = s.outputs.output;
