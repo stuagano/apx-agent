@@ -20,7 +20,7 @@ import json as _json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -55,6 +55,12 @@ from ._ui_setup import (
 from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes, _validate_probe_url
 
 logger = logging.getLogger(__name__)
+
+
+class _JudgeOutput(NamedTuple):
+    verdict: str
+    reason: str
+
 
 _TRACE_CSS = """
   :root{--bg:#0a0a0a;--panel:#111;--border:#2a2a2a;--text:#e5e7eb;--muted:#888;
@@ -513,7 +519,7 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
 </body></html>"""
 
 
-def _parse_judge_output(text: str) -> tuple[str, str]:
+def _parse_judge_output(text: str) -> _JudgeOutput:
     """Extract verdict and reason from a judge model's output.
 
     Expected format::
@@ -527,7 +533,7 @@ def _parse_judge_output(text: str) -> tuple[str, str]:
     verdict = "FAIL"
     reason = ""
     if not text:
-        return verdict, "No output from judge model"
+        return _JudgeOutput(verdict=verdict, reason="No output from judge model")
 
     for line in text.splitlines():
         stripped = line.strip()
@@ -551,7 +557,7 @@ def _parse_judge_output(text: str) -> tuple[str, str]:
     # previous substring inference flipped "passable"/"would pass"/"COMPASSIONATE"
     # to PASS, the worst direction for an eval (audit M4).
 
-    return verdict, reason or "(no reason provided)"
+    return _JudgeOutput(verdict=verdict, reason=reason or "(no reason provided)")
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +929,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 else [e.experiment_id for e in client.search_experiments()]
             )
             traces = list(client.search_traces(
-                experiment_ids=exp_ids,
+                locations=exp_ids,
                 max_results=max_results,
                 order_by=["timestamp DESC"],
                 include_spans=False,
@@ -2230,12 +2236,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             if choices:
                 msg = getattr(choices[0], "message", None)
                 text = ((getattr(msg, "content", None) or "") if msg else "").strip()
-            verdict, reason = _parse_judge_output(text)
+            _judge = _parse_judge_output(text)
             return JSONResponse({
                 "ok": True,
-                "pass": verdict == "PASS",
-                "verdict": verdict,
-                "reason": reason,
+                "pass": _judge.verdict == "PASS",
+                "verdict": _judge.verdict,
+                "reason": _judge.reason,
                 "duration_ms": elapsed,
                 "model": model,
             })
