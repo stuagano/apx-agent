@@ -2797,6 +2797,91 @@ def stop(agent_name: str | None, port: int | None, host: str, stop_all: bool) ->
 
 
 # ---------------------------------------------------------------------------
+# apps
+# ---------------------------------------------------------------------------
+
+
+@main.command("apps")
+@click.option("--profile", default=None, help="Databricks CLI profile to use.")
+@click.option("--host", default=None, help="Workspace URL (overrides profile).")
+def apps_list(profile: str | None, host: str | None) -> None:
+    """List Databricks Apps deployed in the workspace.
+
+    Shows name, state, URL, and last-updated time for every app visible
+    to the current credentials. Use --profile to pick a specific workspace.
+
+    Examples:
+
+    \b
+      apx-agent apps                       # list apps in default workspace
+      apx-agent apps --profile fe-stable   # list apps in fe-stable workspace
+    """
+    try:
+        from databricks.sdk import WorkspaceClient
+        from databricks.sdk.config import Config
+    except ImportError:
+        raise click.ClickException(
+            "databricks-sdk is required. Install with: uv add databricks-sdk"
+        )
+
+    profile = profile or _read_apx_agent_config().get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+
+    try:
+        cfg = Config(profile=profile, host=host) if (profile or host) else Config()
+        ws = WorkspaceClient(config=cfg)
+        app_list = list(ws.apps.list())
+    except Exception as exc:
+        raise click.ClickException(f"Could not connect to workspace: {exc}")
+
+    if not app_list:
+        click.echo("No apps found in this workspace.")
+        return
+
+    # Resolve workspace host for URL construction.
+    ws_host = cfg.host.rstrip("/") if cfg.host else ""
+
+    # Header
+    click.echo(f"\n{'NAME':<32} {'STATE':<12} {'UPDATED':<20}  URL")
+    click.echo("─" * 100)
+
+    for app in sorted(app_list, key=lambda a: (a.name or "")):
+        name = app.name or "?"
+        state = (
+            (app.app_status.state.value if hasattr(app.app_status.state, "value") else str(app.app_status.state))
+            if app.app_status and app.app_status.state
+            else "UNKNOWN"
+        )
+        # Colour-code state for quick scanning.
+        state_display = {
+            "RUNNING": click.style("RUNNING", fg="green"),
+            "STARTING": click.style("STARTING", fg="yellow"),
+            "DEPLOYING": click.style("DEPLOYING", fg="yellow"),
+            "ERROR": click.style("ERROR", fg="red"),
+            "STOPPED": click.style("STOPPED", fg="red"),
+            "IDLE": click.style("IDLE", fg="blue"),
+        }.get(state, state)
+
+        updated = ""
+        if app.update_time:
+            try:
+                from datetime import datetime, timezone
+                ts = app.update_time
+                if isinstance(ts, (int, float)):
+                    ts = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                updated = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts, "strftime") else str(ts)[:16]
+            except Exception:
+                pass
+
+        url = getattr(app, "url", None) or ""
+        if not url and ws_host and name:
+            url = f"{ws_host}/apps/{name}"
+
+        click.echo(f"{name:<32} {state_display:<12} {updated:<20}  {url}")
+
+    click.echo()
+
+
+# ---------------------------------------------------------------------------
 # eval
 # ---------------------------------------------------------------------------
 
