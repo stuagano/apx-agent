@@ -1827,19 +1827,29 @@ def _scaffold_apps(
 
 
 def _echo_scaffold_yaml_done(out: Path, *, catalog: str | None, schema: str | None) -> None:
-    """Print a consistent, correct post-YAML message."""
+    """Print a consistent, correct post-YAML message and offer to run locally."""
+    import subprocess as _sp
+    import sys
+
     click.echo(f"\nSpec written to {out.name}")
-    if catalog and schema:
-        click.echo(f"\nNext steps:")
-        click.echo(f"  apx-agent run {out.name}     # run locally")
-        click.echo(f"  apx-agent deploy {out.name}  # deploy to Databricks Apps")
-    else:
+    if not (catalog and schema):
         missing = " and ".join(
             v for v, flag in [("$CATALOG", catalog), ("$SCHEMA", schema)] if not flag
         )
-        click.echo(f"\n  Open {out.name}, fill in {missing}, then:")
-        click.echo(f"  apx-agent run {out.name}     # run locally")
+        click.echo(f"  Open {out.name} and fill in {missing} before running.")
+        click.echo(f"\n  apx-agent run {out.name}     # run locally")
         click.echo(f"  apx-agent deploy {out.name}  # deploy to Databricks Apps")
+        return
+
+    if sys.stdin.isatty():
+        click.echo()
+        launch = click.confirm("Start the local dev server now?", default=True)
+        if launch:
+            _sp.run(["apx-agent", "run", str(out)], check=False)
+            return
+
+    click.echo(f"\n  apx-agent run {out.name}     # run locally")
+    click.echo(f"  apx-agent deploy {out.name}  # deploy to Databricks Apps")
 
 
 def _scaffold_from_gallery(
