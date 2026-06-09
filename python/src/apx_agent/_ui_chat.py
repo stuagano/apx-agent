@@ -1886,18 +1886,15 @@ async function finalizeTrace(traceId, status, opts) {{
       return 'OTHER';
     }}
 
-    // ── Summary view ──
+    // ── Summary view: LLM + TOOL spans in start-time order ──
+    // Normalization in _serialize_trace_spans ensures Responses-API traces
+    // already have CHAT_MODEL spans and synthetic TOOL children, so one path
+    // handles all formats.
     const ordered = [...data.spans].sort((a,b) => (a.start_time_ns||0)-(b.start_time_ns||0));
-    const llmToolSpans = ordered.filter(s => {{
+    const keySpans = ordered.filter(s => {{
       const t = spanTypeShort(s.span_type);
       return t === 'LLM' || t === 'TOOL';
     }});
-    // Responses-API path: no LLM/TOOL spans exist because tool calls are
-    // embedded in the root span's output array, not as separate spans.
-    const isResponsesApi = !llmToolSpans.length;
-    const keySpans = isResponsesApi
-      ? ordered.filter(s => !s.parent_id && (s.inputs || s.outputs))
-      : llmToolSpans;
 
     function makeStepCard(typeLabel, color, name, dur, isErr) {{
       const card = document.createElement('div');
@@ -1922,47 +1919,14 @@ async function finalizeTrace(traceId, status, opts) {{
       card.appendChild(b);
     }}
 
+    if (!keySpans.length) {{
+      traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">No tool or model spans found.</div>';
+    }}
     for (const s of keySpans) {{
       const type = spanTypeShort(s.span_type);
       const color = SPAN_COLORS[type] || '#888';
       const dur = s.duration_ms != null ? `${{Math.round(s.duration_ms)}}ms` : '';
       const isErr = (s.status||'').toUpperCase().includes('ERR');
-
-      // Responses-API: expand the output items into individual step cards.
-      if (isResponsesApi && s.outputs && s.outputs.object === 'response' &&
-          Array.isArray(s.outputs.output)) {{
-        // Show only the LAST user message (the current turn) — the input array
-        // contains the full conversation history; earlier turns are repetition.
-        const inputArr = Array.isArray(s.inputs && s.inputs.input) ? s.inputs.input : [];
-        const lastUser = inputArr.filter(m => m && m.role === 'user').slice(-1)[0];
-        const rootCard = makeStepCard(type, color, s.name, dur, isErr);
-        if (lastUser) addBubble(rootCard, lastUser.content, 'agent-ask');
-        traceBody.appendChild(rootCard);
-        // Emit one card per function_call (paired with its function_call_output).
-        const items = s.outputs.output;
-        for (let i = 0; i < items.length; i++) {{
-          const item = items[i];
-          if (item.type === 'function_call') {{
-            const toolColor = SPAN_COLORS['TOOL'];
-            const tc = makeStepCard('TOOL', toolColor, item.name || 'tool', '', false);
-            addBubble(tc, item.arguments, 'tool-in');
-            const next = items[i + 1];
-            if (next && next.type === 'function_call_output') {{
-              addBubble(tc, next.output, 'tool-out');
-              i++; // skip the paired output item
-            }}
-            traceBody.appendChild(tc);
-          }} else if (item.type === 'message') {{
-            const msgColor = SPAN_COLORS['LLM'];
-            const mc = makeStepCard('LLM', msgColor, 'response', '', false);
-            addBubble(mc, item, 'llm-reply');
-            traceBody.appendChild(mc);
-          }}
-        }}
-        continue;
-      }}
-
-      // Standard LangChain path.
       const card = makeStepCard(type, color, s.name, dur, isErr);
       addBubble(card, s.inputs,  type === 'TOOL' ? 'tool-in' : 'agent-ask');
       addBubble(card, s.outputs, type === 'TOOL' ? 'tool-out' : 'llm-reply');
