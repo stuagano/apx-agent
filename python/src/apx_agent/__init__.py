@@ -100,6 +100,21 @@ from .jobs_tools import (
 # LangGraph compiler (optional — requires the ``langgraph`` extra)
 from ._compile import CompileContext, compile_to_langgraph
 
+# Executor protocol + event types (harness abstraction seam)
+from ._executor import (
+    Executor,
+    ExecutorConfig,
+    ExecutorError,
+    ExecutorEvent,
+    TextChunk,
+    ToolCallComplete,
+    ToolCallRequest,
+    TurnComplete,
+)
+
+# LangGraph executor implementation
+from ._langgraph_executor import LangGraphExecutor
+
 # MLflow ChatAgent wrapper (optional — requires the ``langgraph`` and ``eval`` extras)
 from ._chat_agent import chat_agent_for, compile_to_chat_agent, log_agent
 

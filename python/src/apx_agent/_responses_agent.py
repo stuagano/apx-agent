@@ -714,6 +714,14 @@ def compile_to_responses_agent(
             lc_input = _responses_input_to_langchain(list(request.input))
             graph_input = lc_history + lc_input
 
+            # TODO(executor-seam Phase B): migrate to LangGraphExecutor.run_turn().
+            # Left as-is because:
+            # 1. non_streaming() is a synchronous def — run_turn() is async-only,
+            #    and driving it from sync code requires asyncio.run() which raises
+            #    when an event loop is already running.
+            # 2. The output contract here is per-message structured items
+            #    (_langchain_to_output_item / _flatten_output_items) rather than
+            #    a plain text string, so TurnComplete(response: str) would be lossy.
             with safe_span(
                 "compile_to_langgraph",
                 span_type="CHAIN",
@@ -796,6 +804,12 @@ def compile_to_responses_agent(
             lc_input = _responses_input_to_langchain(list(request.input))
             graph_input = lc_history + lc_input
 
+            # TODO(executor-seam Phase B): migrate to LangGraphExecutor.run_turn().
+            # Left as-is because streaming() is a synchronous generator (def / yield)
+            # and uses the synchronous graph.stream() API. Migrating requires making
+            # this function async, which changes the MLflow @stream() contract.
+            # Additionally, the output contract emits structured ResponsesAgentStreamEvent
+            # objects, not plain text chunks, so TextChunk would be lossy.
             graph = compile_to_langgraph(
                 _agent, ws=ws, model=effective_model, headers=req_headers
             )
