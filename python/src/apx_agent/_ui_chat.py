@@ -627,15 +627,21 @@ def _render_landing(ctx: AgentContext) -> str:
         cards = "".join(_tool_card(t) for t in other_tools)
 
         if mem_tools:
+            def _short_tool_desc(desc: str) -> str:
+                # First sentence only, backticks stripped.
+                desc = desc.split("\n\n")[0].strip().replace("`", "")
+                end = desc.find(". ")
+                return desc[: end + 1] if end != -1 else desc
+
             mem_rows = "".join(
                 f'<div class="cap-mem-op"><span class="cap-mem-name">{_html.escape(t.name)}</span>'
-                f'<span class="cap-mem-desc">{_html.escape(t.description or "")}</span></div>'
+                f'<span class="cap-mem-desc">{_html.escape(_short_tool_desc(t.description or ""))}</span></div>'
                 for t in mem_tools
             )
             mem_table = getattr(getattr(ctx.config, "memory", None), "table_name", None) or ""
             mem_link = (
-                f' <a href="#" class="cap-mem-link" title="{_html.escape(mem_table)}">'
-                f'↗ {_html.escape(mem_table)}</a>'
+                f' <a href="#" class="cap-mem-link" data-mem-table="{_html.escape(mem_table)}"'
+                f' title="{_html.escape(mem_table)}">↗ table</a>'
                 if mem_table else ""
             )
             cards += (
@@ -984,16 +990,16 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
                  color: #8a929b; font-size: 10.5px; white-space: pre-wrap; }}
   .cap-card.open .cap-params {{ display: block; }}
   .cap-card.open {{ border-color: #2f6b46; }}
-  .cap-mem-link {{ color: #555; font-size: 10px; font-family: ui-monospace, monospace; text-decoration: none; margin-left: 6px; vertical-align: middle; }}
-  .cap-mem-link:hover {{ color: #60b0ff; }}
+  .cap-mem-link {{ color: #60b0ff; font-size: 10px; text-decoration: none; margin-left: 6px; vertical-align: middle; opacity: .7; }}
+  .cap-mem-link:hover {{ opacity: 1; }}
   .cap-mem-preview {{ margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }}
   .cap-mem-preview:empty {{ display: none; }}
   .cap-mem-row {{ font-size: 11.5px; color: #9ecbff; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-  .cap-mem-row-ts {{ font-size: 10px; color: #555; font-family: ui-monospace, monospace; margin-left: 4px; }}
+  .cap-mem-row-ts {{ font-size: 10px; color: #667; font-family: ui-monospace, monospace; margin-left: 4px; }}
   .cap-mem-ops {{ margin-top: 8px; padding-top: 8px; border-top: 1px solid #222; display: flex; flex-direction: column; gap: 4px; }}
   .cap-mem-op {{ display: flex; flex-direction: column; gap: 1px; }}
   .cap-mem-name {{ color: #9ecbff; font-size: 11px; font-family: ui-monospace, monospace; }}
-  .cap-mem-desc {{ color: #666; font-size: 10.5px; line-height: 1.35; }}
+  .cap-mem-desc {{ color: #8a929b; font-size: 10.5px; line-height: 1.35; }}
   .starter-chip {{ display: inline-block; background: #15171a; border: 1px solid #2f343a; color: #bfe9cf;
                    border-radius: 8px; padding: 9px 16px; font-size: 13px; margin: 0 8px 8px 0;
                    cursor: pointer; text-align: left; transition: background 0.12s, border-color 0.12s; }}
@@ -1469,6 +1475,18 @@ let apxMemoryTable = '';
     const d = await fetch('/_apx/workspace-context').then(r => r.json());
     apxHost = d.host || '';
     apxMemoryTable = d.memory_table || '';
+    // Wire the ↗ table link to the actual Databricks UC explorer URL.
+    if (apxHost && apxMemoryTable) {{
+      const link = document.querySelector('.cap-mem-link[data-mem-table]');
+      if (link) {{
+        const parts = apxMemoryTable.split('.');
+        if (parts.length === 3) {{
+          link.href = `${{apxHost}}/explore/data/${{parts[0]}}/${{parts[1]}}/${{parts[2]}}`;
+          link.target = '_blank';
+          link.rel = 'noreferrer';
+        }}
+      }}
+    }}
   }} catch {{}}
   // Populate the landing page memory preview with recent stored memories.
   try {{
