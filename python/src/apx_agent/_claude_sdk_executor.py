@@ -185,6 +185,18 @@ class ClaudeSDKExecutor:
     (SequentialAgent, LoopAgent, etc.) — use
     :class:`~apx_agent._langgraph_executor.LangGraphExecutor` for those.
 
+    .. warning:: **Dependency-injected tools are not supported.**
+
+        Tools that use ``fastapi.Depends`` parameters (e.g.
+        ``Dependencies.UserClient``) will have those parameters stripped by
+        :func:`~apx_agent._inspection._inspect_tool_fn`, which means they
+        will be called *without* the required workspace client or OBO token —
+        causing a ``TypeError`` at call time.  If your tool list includes DI
+        parameters, use :class:`~apx_agent._langgraph_executor.LangGraphExecutor`
+        instead, which resolves dependencies through FastAPI's DI framework.
+        A :class:`logging.WARNING` is emitted at construction time for each
+        affected tool.
+
     :param model: Default model endpoint name, e.g.
         ``"databricks-claude-sonnet-4-6"``.  May be overridden per-turn via
         :attr:`~apx_agent._executor.ExecutorConfig.model`.
@@ -196,9 +208,10 @@ class ClaudeSDKExecutor:
         auth.  ``None`` falls back to the SDK default auth chain inside
         :func:`_make_client`.
     :param thinking: Optional extended-thinking config dict, e.g.
-        ``{"type": "enabled", "budget_tokens": 5000}``.  When set, included
-        in the litellm kwargs under the ``thinking`` key.  Only honoured by
-        Claude models that support extended thinking.
+        ``{"type": "enabled", "budget_tokens": 5000}``.  When set, passed
+        as ``extra_body={"thinking": ...}`` in the
+        :class:`~databricks_openai.AsyncDatabricksOpenAI` call kwargs.
+        Only honoured by Claude models that support extended thinking.
 
     Example::
 
@@ -241,6 +254,22 @@ class ClaudeSDKExecutor:
         self._instructions = instructions or ""
         self._ws = ws
         self._thinking = thinking
+
+        # Warn immediately if any tools have dependency-injected parameters —
+        # ClaudeSDKExecutor calls tools without DI framework support, so those
+        # parameters will be absent at call time (causing TypeError).
+        for fn in self._tools:
+            sig = _inspect_tool_fn(fn)
+            if sig.dep_param_names:
+                logger.warning(
+                    "ClaudeSDKExecutor: tool %r has dependency-injected parameters "
+                    "%r that will NOT be resolved (no FastAPI DI context). "
+                    "The tool will receive only plain LLM-supplied arguments and will "
+                    "raise TypeError if any dep param is required. "
+                    "Use LangGraphExecutor for tools with Dependencies.* parameters.",
+                    fn.__name__,
+                    sorted(sig.dep_param_names),
+                )
 
     def handles_tools_internally(self) -> bool:
         """Return ``True`` — this executor dispatches tool calls in the loop.
