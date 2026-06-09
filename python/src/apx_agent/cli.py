@@ -1096,6 +1096,70 @@ def _make_ws_for_scaffold(profile: str | None):
         return None
 
 
+def _ws_is_connected(ws) -> bool:
+    """Lightweight liveness check — returns True if the workspace client can talk to the API."""
+    try:
+        ws.current_user.me()
+        return True
+    except Exception:
+        return False
+
+
+def _gate_workspace_for_scaffold(profile: str | None):
+    """Ensure we have a live workspace connection before catalog/schema prompts.
+
+    If no connection is found, offers to run ``databricks configure`` in-place
+    so the user never has to leave the wizard. Loops until connected or Ctrl-C.
+    Returns a verified WorkspaceClient.
+    """
+    import subprocess as _sp
+
+    from databricks.sdk import WorkspaceClient
+
+    def _try_connect(p: str | None):
+        try:
+            ws = WorkspaceClient(profile=p) if p else WorkspaceClient()
+            me = ws.current_user.me()
+            return ws, me.user_name or ws.config.host
+        except Exception as exc:
+            return None, str(exc)
+
+    ws, info = _try_connect(profile)
+    if ws is not None:
+        click.echo(f"  Connected as {info}")
+        return ws
+
+    click.echo(
+        "\nNo Databricks workspace connection found"
+        + (f" (profile: {profile!r})" if profile else "")
+        + " — need to authenticate before choosing a catalog.\n"
+    )
+
+    while True:
+        click.echo("  1. Set up / refresh credentials now  (runs 'databricks configure')")
+        click.echo("  2. Enter an existing profile name")
+        choice = click.prompt("Choice", type=click.IntRange(1, 2), default=1)
+
+        if choice == 1:
+            click.echo()
+            _sp.run(["databricks", "configure"], check=False)
+            click.echo()
+            # After configure, re-try with whatever the default profile is now.
+            ws, info = _try_connect(None)
+            if ws is not None:
+                click.echo(f"  Connected as {info}")
+                return ws
+            click.echo("  Still no connection — try again or choose option 2 to pick a profile.")
+        else:
+            p = click.prompt("Profile name").strip()
+            ws, info = _try_connect(p or None)
+            if ws is not None:
+                click.echo(f"  Connected as {info}")
+                return ws
+            click.echo(f"  Profile '{p}' didn't connect: {info}")
+        click.echo()
+
+
 def _schema_manifest_for_scaffold(
     catalog: str, schema: str, profile: str | None = None
 ) -> "dict | None":
@@ -1400,6 +1464,11 @@ def _scaffold_wizard(
 
     # --- catalog / schema / persona / objective / join_key (not needed for base) ---
     if template in ("data", "coworker"):
+        # Gate: require a live workspace connection before asking for catalog/schema.
+        # We extract the profile from the ws config if one was already passed in.
+        if ws is None or not _ws_is_connected(ws):
+            existing_profile = getattr(getattr(ws, "config", None), "profile", None) if ws else None
+            ws = _gate_workspace_for_scaffold(existing_profile)
         catalog, schema, persona, objective, join_key = _interactive_resolve(
             ws, catalog, schema, None, None, None, template
         )
@@ -1436,7 +1505,12 @@ def _interactive_resolve(
             )
             catalog = cat_list[idx - 1]
         else:
-            catalog = click.prompt("Catalog (e.g. main, samples)")
+            click.echo("  (no catalogs found in your workspace — enter a name manually)")
+            while True:
+                catalog = click.prompt("Catalog").strip()
+                if catalog:
+                    break
+                click.echo("  Catalog cannot be empty.")
 
     if schema is None:
         sch_list = _ws_list_schemas(ws, catalog, limit=20) if (ws is not None and catalog) else []
@@ -1450,7 +1524,12 @@ def _interactive_resolve(
             )
             schema = sch_list[idx - 1]
         else:
-            schema = click.prompt(f"Schema in {catalog}")
+            click.echo(f"  (no schemas found in {catalog} — enter a name manually)")
+            while True:
+                schema = click.prompt(f"Schema").strip()
+                if schema:
+                    break
+                click.echo("  Schema cannot be empty.")
 
     if template == "coworker":
         if persona is None:
@@ -1865,11 +1944,8 @@ def scaffold(
         if framework_python is not None and framework_python != Path.cwd().resolve():
             new_target = framework_python / name
             click.echo(
-                f"apx-agent framework checkout detected at {framework_python.parent}.\n"
-                f"Scaffolding into python/ for the editable install:\n"
-                f"  {Path.cwd().resolve() / name}\n"
-                f"  → {new_target}\n"
-                f"(use --here to stay at the current location with a git+https install)\n",
+                f"Note: scaffolding inside the apx-agent repo → {new_target}  "
+                f"(use --here to scaffold at the current location instead)",
                 err=True,
             )
             target = new_target
@@ -1946,13 +2022,16 @@ def scaffold(
 
     join_key: str | None = None
     if interactive_mode:
+        _ws = _make_ws_for_scaffold(profile)
         scaffold_target, scaffold_template, catalog, schema, persona, objective, join_key = _scaffold_wizard(
-            ws=_make_ws_for_scaffold(profile),
+            ws=_ws,
             target=scaffold_target,
             template=scaffold_template,
             catalog=catalog,
             schema=schema,
         )
+        # Sanity-check the wizard's output the same way the --catalog list path does.
+        _scaffold_sanity_check(_ws, scaffold_template, catalog, schema)
     else:
         scaffold_target = scaffold_target or "apps"
         scaffold_template = scaffold_template or "data"
