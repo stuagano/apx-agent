@@ -606,14 +606,46 @@ def _render_landing(ctx: AgentContext) -> str:
         )
 
     if tools:
-        cards = "".join(
-            '<div class="cap-card" onclick="this.classList.toggle(&quot;open&quot;)">'
-            f'<div class="cap-name">{_html.escape(t.name)}</div>'
-            f'<div class="cap-desc">{_html.escape(t.description or "")}</div>'
-            f'<pre class="cap-params">{_html.escape(_json.dumps(t.input_schema or {"type": "object", "properties": {}}, indent=2))}</pre>'
-            '</div>'
-            for t in tools
-        )
+        _MEM_OPS = {"recall", "remember", "forget"}
+
+        def _is_mem_tool(name: str) -> bool:
+            n = name.lower()
+            return any(n == op or n.endswith("_" + op) for op in _MEM_OPS)
+
+        mem_tools = [t for t in tools if _is_mem_tool(t.name)]
+        other_tools = [t for t in tools if not _is_mem_tool(t.name)]
+
+        def _tool_card(t: "AgentTool") -> str:
+            return (
+                '<div class="cap-card" onclick="this.classList.toggle(&quot;open&quot;)">'
+                f'<div class="cap-name">{_html.escape(t.name)}</div>'
+                f'<div class="cap-desc">{_html.escape(t.description or "")}</div>'
+                f'<pre class="cap-params">{_html.escape(_json.dumps(t.input_schema or {"type": "object", "properties": {}}, indent=2))}</pre>'
+                '</div>'
+            )
+
+        cards = "".join(_tool_card(t) for t in other_tools)
+
+        if mem_tools:
+            mem_rows = "".join(
+                f'<div class="cap-mem-op"><span class="cap-mem-name">{_html.escape(t.name)}</span>'
+                f'<span class="cap-mem-desc">{_html.escape(t.description or "")}</span></div>'
+                for t in mem_tools
+            )
+            mem_table = getattr(getattr(ctx.config, "memory", None), "table_name", None) or ""
+            mem_link = (
+                f' <a href="#" class="cap-mem-link" title="{_html.escape(mem_table)}">'
+                f'↗ {_html.escape(mem_table)}</a>'
+                if mem_table else ""
+            )
+            cards += (
+                '<div class="cap-card" onclick="this.classList.toggle(&quot;open&quot;)">'
+                f'<div class="cap-name">🧠 memory{mem_link}</div>'
+                '<div class="cap-desc">Durable memory — recall past context, save new facts, or forget outdated ones.</div>'
+                f'<div class="cap-mem-ops">{mem_rows}</div>'
+                '</div>'
+            )
+
         parts.append('<div class="landing-label">What I can do</div>'
                      f'<div class="cap-cards">{cards}</div>')
 
@@ -951,6 +983,12 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
                  color: #8a929b; font-size: 10.5px; white-space: pre-wrap; }}
   .cap-card.open .cap-params {{ display: block; }}
   .cap-card.open {{ border-color: #2f6b46; }}
+  .cap-mem-link {{ color: #555; font-size: 10px; font-family: ui-monospace, monospace; text-decoration: none; margin-left: 6px; vertical-align: middle; }}
+  .cap-mem-link:hover {{ color: #60b0ff; }}
+  .cap-mem-ops {{ margin-top: 8px; padding-top: 8px; border-top: 1px solid #222; display: flex; flex-direction: column; gap: 4px; }}
+  .cap-mem-op {{ display: flex; flex-direction: column; gap: 1px; }}
+  .cap-mem-name {{ color: #9ecbff; font-size: 11px; font-family: ui-monospace, monospace; }}
+  .cap-mem-desc {{ color: #666; font-size: 10.5px; line-height: 1.35; }}
   .starter-chip {{ display: inline-block; background: #15171a; border: 1px solid #2f343a; color: #bfe9cf;
                    border-radius: 8px; padding: 9px 16px; font-size: 13px; margin: 0 8px 8px 0;
                    cursor: pointer; text-align: left; transition: background 0.12s, border-color 0.12s; }}
@@ -1419,6 +1457,15 @@ const history = [];
 let eventCounter = 0;
 let events = [];
 let eventsStarted = false;
+let apxHost = '';
+let apxMemoryTable = '';
+(async () => {{
+  try {{
+    const d = await fetch('/_apx/workspace-context').then(r => r.json());
+    apxHost = d.host || '';
+    apxMemoryTable = d.memory_table || '';
+  }} catch {{}}
+}})();
 
 // Stable session key for the dev-UI conversation.  Stored in sessionStorage so
 // a page refresh resumes the same server-side session (the user doesn't lose
@@ -1466,13 +1513,81 @@ function addEvent(type, title, subtitle, data) {{
 // Each tool call + its response are grouped into one collapsible block keyed by
 // call_id (request and response together), so you read "ran X → got Y" as a
 // unit instead of all-calls-then-all-responses interleaved. Non-tool events
-// (user/assistant) stay flat rows via addEvent. Reset per send.
-const toolGroups = {{}};  // groupId -> {{ body }}
+// (user/assistant) stay flat rows via addEvent. Memory tools (recall/remember/
+// forget) share one "memory" card regardless of how many calls there are.
+// Reset per send.
+const toolGroups = {{}};     // groupId -> {{ body }}
+const memCallBodies = {{}};  // call_id  -> sub-body within the shared memory card
+const MEM_GROUP_ID = '__apx_memory__';
+
+function isMemoryTool(name) {{
+  if (typeof name !== 'string') return false;
+  const n = name.toLowerCase();
+  return ['recall','remember','forget'].some(k => n === k || n.endsWith('_' + k));
+}}
+function memOpLabel(name) {{
+  const n = (name || '').toLowerCase();
+  if (n === 'recall'   || n.endsWith('_recall'))   return 'recall';
+  if (n === 'remember' || n.endsWith('_remember')) return 'remember';
+  if (n === 'forget'   || n.endsWith('_forget'))   return 'forget';
+  return name;
+}}
+function isRecallTool(name) {{
+  return typeof name === 'string' && (name === 'recall' || name.endsWith('_recall'));
+}}
+const RECALL_TOP_N = 3;
+function parseMemoryLines(text) {{
+  if (!text || text.trim() === 'No memories found.') return [];
+  return text.split('\\n')
+    .filter(l => l.trim().startsWith('-'))
+    .map(l => {{
+      const m = l.match(/^\\s*-\\s*\\[score=([\\d.]+)\\]\\s*(.*)/);
+      return m ? {{ score: parseFloat(m[1]), content: m[2] }}
+               : {{ score: null, content: l.replace(/^\\s*-\\s*/, '').trim() }};
+    }})
+    .filter(item => item.content);
+}}
+
 function addToolCall(groupId, name, reqText, reqData) {{
   if (!eventsStarted) {{ eventsList.innerHTML = ''; eventsStarted = true; }}
   const num = eventCounter++;
   const reqEv = {{ num, type: 'tool-call', title: name || 'tool', subtitle: reqText, data: reqData }};
   events.push(reqEv);
+
+  // Memory tools share one card.
+  if (isMemoryTool(name)) {{
+    let memGroup = toolGroups[MEM_GROUP_ID];
+    if (!memGroup) {{
+      const group = document.createElement('div');
+      group.className = 'event tool-group open';
+      const head = document.createElement('div');
+      head.className = 'tg-head';
+      head.innerHTML = `<span class="event-num">#${{num}}</span><span class="event-icon">🧠</span>`
+        + `<span class="tg-name">memory</span><span class="tg-caret">▾</span>`;
+      head.onclick = () => group.classList.toggle('open');
+      const body = document.createElement('div');
+      body.className = 'tg-body';
+      group.appendChild(head);
+      group.appendChild(body);
+      eventsList.appendChild(group);
+      toolGroups[MEM_GROUP_ID] = {{ body }};
+      memGroup = toolGroups[MEM_GROUP_ID];
+    }}
+    // Each call gets its own sub-container so its response lands in the right spot.
+    const sub = document.createElement('div');
+    sub.style.cssText = 'display: contents;';
+    memGroup.body.appendChild(sub);
+    const reqRow = document.createElement('div');
+    reqRow.className = 'tg-part';
+    reqRow.innerHTML = `<span class="tg-label">${{memOpLabel(name)}}</span>`
+      + `<span class="tg-val">${{esc(reqText || '')}}</span>`;
+    reqRow.onclick = () => showDetail(reqEv, null);
+    sub.appendChild(reqRow);
+    memCallBodies[groupId] = {{ sub, name }};
+    eventsList.scrollTop = eventsList.scrollHeight;
+    return reqEv;
+  }}
+
   const group = document.createElement('div');
   group.className = 'event tool-group open';
   group.dataset.idx = events.length - 1;
@@ -1496,7 +1611,96 @@ function addToolCall(groupId, name, reqText, reqData) {{
   toolGroups[groupId] = {{ body }};
   return reqEv;
 }}
+
+function _appendMemoryUcLink(container) {{
+  if (!apxHost || !apxMemoryTable) return;
+  const parts = apxMemoryTable.split('.');
+  const ucUrl = parts.length === 3
+    ? `${{apxHost}}/explore/data/${{parts[0]}}/${{parts[1]}}/${{parts[2]}}`
+    : `${{apxHost}}/explore/data`;
+  const a = document.createElement('a');
+  a.href = ucUrl; a.target = '_blank';
+  a.textContent = `${{apxMemoryTable}} ↗`;
+  a.style.cssText = 'font-size:11px;color:#555;font-family:ui-monospace,monospace;text-decoration:none;';
+  a.onmouseover = () => a.style.color = '#60b0ff';
+  a.onmouseout  = () => a.style.color = '#555';
+  a.onclick = e => e.stopPropagation();
+  container.appendChild(a);
+}}
+
 function addToolResponse(groupId, name, respText, respData, isErr) {{
+  // Memory tool response — route into the shared memory card's sub-container.
+  if (memCallBodies[groupId]) {{
+    const {{ sub, name: toolName }} = memCallBodies[groupId];
+    const ev = {{ num: '', type: isErr ? 'tool-error' : 'tool-result',
+                 title: toolName || 'tool', subtitle: respText, data: respData }};
+    events.push(ev);
+    const fullText = (respData && (respData.output || respData.result)) || respText || '';
+    // Recall: show top-N items with "View all" toggle + UC link.
+    if (!isErr && isRecallTool(toolName)) {{
+      const items = parseMemoryLines(fullText);
+      if (items.length > 0) {{
+        const row = document.createElement('div');
+        row.className = 'tg-part';
+        row.style.cssText = 'cursor:pointer;align-items:flex-start;';
+        row.onclick = () => showDetail(ev, null);
+        const lbl = document.createElement('span');
+        lbl.className = 'tg-label'; lbl.textContent = 'found';
+        row.appendChild(lbl);
+        const valDiv = document.createElement('div');
+        valDiv.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;';
+        const itemStyle = 'font-size:12px;color:#cbd2da;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        items.slice(0, RECALL_TOP_N).forEach(item => {{
+          const el = document.createElement('div');
+          el.style.cssText = itemStyle; el.title = item.content;
+          el.textContent = (item.score != null ? `[${{item.score.toFixed(2)}}] ` : '') + item.content;
+          valDiv.appendChild(el);
+        }});
+        const rest = items.slice(RECALL_TOP_N);
+        if (rest.length > 0) {{
+          const restDiv = document.createElement('div');
+          restDiv.style.cssText = 'display:none;flex-direction:column;gap:2px;';
+          rest.forEach(item => {{
+            const el = document.createElement('div');
+            el.style.cssText = itemStyle; el.title = item.content;
+            el.textContent = (item.score != null ? `[${{item.score.toFixed(2)}}] ` : '') + item.content;
+            restDiv.appendChild(el);
+          }});
+          valDiv.appendChild(restDiv);
+          const btn = document.createElement('button');
+          btn.textContent = `View all (${{items.length}}) ▸`;
+          btn.style.cssText = 'background:none;border:none;color:#60b0ff;font-size:11px;cursor:pointer;padding:2px 0;text-align:left;font-family:ui-monospace,monospace;';
+          btn.onclick = e => {{
+            e.stopPropagation();
+            const open = restDiv.style.display !== 'none';
+            restDiv.style.display = open ? 'none' : '';
+            btn.textContent = open ? `View all (${{items.length}}) ▸` : '▾ Collapse';
+          }};
+          valDiv.appendChild(btn);
+        }} else {{
+          const c = document.createElement('div');
+          c.style.cssText = 'font-size:11px;color:#555;font-family:ui-monospace,monospace;';
+          c.textContent = `${{items.length}} memor${{items.length === 1 ? 'y' : 'ies'}}`;
+          valDiv.appendChild(c);
+        }}
+        _appendMemoryUcLink(valDiv);
+        row.appendChild(valDiv);
+        sub.appendChild(row);
+        eventsList.scrollTop = eventsList.scrollHeight;
+        return ev;
+      }}
+    }}
+    // remember/forget: plain response row.
+    const row = document.createElement('div');
+    row.className = 'tg-part' + (isErr ? ' err' : '');
+    row.innerHTML = `<span class="tg-label">${{isErr ? 'error' : 'saved'}}</span>`
+      + `<span class="tg-val">${{esc(respText || '')}}</span>`;
+    row.onclick = () => showDetail(ev, null);
+    sub.appendChild(row);
+    eventsList.scrollTop = eventsList.scrollHeight;
+    return ev;
+  }}
+
   const g = toolGroups[groupId];
   // Unmatched response (no preceding call captured) → fall back to a flat row.
   if (!g) return addEvent(isErr ? 'tool-error' : 'tool-result', name || 'tool', respText, respData);
@@ -1915,6 +2119,7 @@ form.addEventListener('submit', async e => {{
   // Live tool steps render into their own container ABOVE the answer bubble.
   for (const k in inlineSteps) delete inlineSteps[k];   // reset per send
   for (const k in toolGroups) delete toolGroups[k];
+  for (const k in memCallBodies) delete memCallBodies[k];
   const stepsContainer = document.createElement('div');
   stepsContainer.className = 'inline-steps';
   chat.insertBefore(stepsContainer, assistantDiv);       // steps appear ABOVE the answer
