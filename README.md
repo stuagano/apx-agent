@@ -22,7 +22,40 @@ uv run apx-agent deploy --target apps
 
 ## What is apx-agent?
 
-apx-agent is an agent framework for Databricks. You declare an agent in Python — instructions, tools, and a model — and apx-agent handles the rest: serving, tool dispatch, identity passthrough, tracing, and deployment to Databricks Apps or Mosaic AI Model Serving.
+Building agents on Databricks means dealing with a stack of systems that all speak different languages: LLM APIs have incompatible wire formats, memory backends have different interfaces, conversation history looks different depending on the framework, and trace schemas differ by SDK. Wiring all of that together correctly — and keeping it working as the stack evolves — is the problem nobody wants to have.
+
+**apx-agent is the normalization layer.** You declare what your agent should be. apx-agent makes it work and makes it observable, regardless of what's underneath.
+
+```toml
+[tool.apx.agent]
+name = "payroll-coworker"
+model = "databricks/claude-3-7-sonnet"
+instructions = "You are a payroll analyst..."
+
+[tool.apx.agent.memory]
+type = "delta"
+table_name = "main.payroll.agent_memory"
+
+[tool.apx.agent.data]
+catalog = "main"
+schema = "payroll"
+```
+
+That declaration becomes: an agent grounded in its schema before the first question, durable memory that persists across sessions, a dev UI that surfaces tool calls and conversation correctly regardless of which underlying API format produced them, and a deployment target that enforces Unity Catalog grants per-caller without any per-agent configuration.
+
+**What gets normalized so you don't have to think about it:**
+
+| Layer | What apx-agent hides |
+|---|---|
+| **LLM API format** | Responses API and chat-completions traces both surface identically in the dev UI |
+| **Conversation history** | One canonical message format across all agent types and frameworks |
+| **Memory backends** | Delta Lake, Lakebase, or in-memory — same interface, declared not implemented |
+| **Observation** | Tool calls, spans, and conversation deltas normalized before they reach any renderer |
+| **Governance** | Identity passthrough, UC grants, and audit logging wired from the declaration |
+
+You write a Python object or a TOML block. The normalization work is apx-agent's job.
+
+---
 
 Three agent types cover most use cases:
 

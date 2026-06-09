@@ -155,6 +155,29 @@ from ._session import (
 from ._session_delta import DeltaSessionStore
 from ._session_lakebase import LakebaseSessionStore
 
+# Conversation store (row-per-message, cursor pagination, response_id chaining)
+from ._conversation import (
+    CompactionData,
+    Conversation,
+    ConversationItem,
+    ConversationNotFoundError,
+    ConversationStore,
+    FunctionCallData,
+    FunctionCallOutputData,
+    InMemoryConversationStore,
+    MessageData,
+    NativeToolData,
+    NewConversationItem,
+    PagedList,
+    ReasoningData,
+    compute_search_text,
+    paginate_in_memory,
+    parse_item_data,
+    synthesize_conversation_title,
+)
+from ._conversation_delta import DeltaConversationStore
+from ._conversation_lakebase import LakebaseConversationStore
+
 # Durable memory + few-shot examples
 from ._memory import (
     EmbeddingFn,
@@ -451,6 +474,26 @@ __all__ = [
     "LakebaseSessionStore",
     "append_turn",
     "load_or_create_session",
+    # Conversation store
+    "Conversation",
+    "ConversationItem",
+    "ConversationNotFoundError",
+    "ConversationStore",
+    "InMemoryConversationStore",
+    "DeltaConversationStore",
+    "LakebaseConversationStore",
+    "NewConversationItem",
+    "PagedList",
+    "MessageData",
+    "FunctionCallData",
+    "FunctionCallOutputData",
+    "ReasoningData",
+    "CompactionData",
+    "NativeToolData",
+    "compute_search_text",
+    "paginate_in_memory",
+    "parse_item_data",
+    "synthesize_conversation_title",
     # Durable memory + examples
     "EmbeddingFn",
     "InMemoryMemoryStore",
