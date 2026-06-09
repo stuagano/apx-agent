@@ -4788,14 +4788,19 @@ def create_supervisor(
 
 
 @main.command()
-@click.option("--endpoint", default=None, help="Serving endpoint name. Defaults to [tool.apx.agent].name.")
+@click.option("--endpoint", default=None, help="Serving endpoint / app name. Defaults to [tool.apx.agent].name.")
 @click.option("--supervisor", "supervisor_id", default=None,
-              help="Supervisor Agent ID to register with. Reads [tool.apx.agent].supervisor_id if omitted.")
+              help="Supervisor Agent ID. Reads [tool.apx.agent].supervisor_id if set; skipped when absent.")
 @click.option("--description", default=None,
-              help="Routing description (when should the supervisor call this agent). "
-                   "Defaults to [tool.apx.agent].description.")
+              help="Routing description. Defaults to [tool.apx.agent].description.")
 @click.option("--display-name", default=None, help="Human-readable name. Defaults to [tool.apx.agent].name.")
-@click.option("--tool-id", default=None, help="Stable tool_id for idempotent re-publish.")
+@click.option("--tool-id", default=None, help="Stable tool_id for idempotent Supervisor re-publish.")
+@click.option("--endpoint-url", default=None, help="Full URL of the deployed agent (stored in registry table).")
+@click.option("--endpoint-type", default="apps", type=click.Choice(["apps", "model-serving"]),
+              help="Deployment type stored in registry. Default: apps.")
+@click.option("--registry-table", default=None,
+              help="UC Delta registry table. Defaults to [tool.apx.agent].registry_table or main.apx.agent_registry.")
+@click.option("--no-registry", is_flag=True, help="Skip the Delta registry write.")
 @click.option("--profile", default=None, help="Databricks CLI profile.")
 def publish(
     endpoint: str | None,
@@ -4803,76 +4808,114 @@ def publish(
     description: str | None,
     display_name: str | None,
     tool_id: str | None,
+    endpoint_url: str | None,
+    endpoint_type: str,
+    registry_table: str | None,
+    no_registry: bool,
     profile: str | None,
 ) -> None:
-    """Advertise this agent to the organisation via Databricks A2A.
+    """Advertise this agent to the organisation.
 
-    Registers the deployed serving endpoint as a sub-agent on a Mosaic AI
-    Supervisor Agent. Once published, the supervisor can route user queries
-    to this agent alongside other org-wide agents (Genie spaces, Knowledge
-    Assistants, other apx-agents).
+    Always writes an entry to the UC Delta agent registry so the agent is
+    discoverable via SQL. Also registers with the Mosaic AI Supervisor Agent
+    when ``supervisor_id`` is configured — enabling native A2A routing.
 
-    All values are read from [tool.apx.agent] in pyproject.toml when not
-    supplied on the command line. Store supervisor_id there so the command
-    is zero-argument for your team:
+    All values default to ``[tool.apx.agent]`` in pyproject.toml. Typical
+    one-time org setup:
 
     \b
-      [tool.apx.agent]
-      name        = "payroll-agent"
-      description = "Answers HR and payroll questions."
-      supervisor_id = "01ef..."      # org-wide A2A registry supervisor
+      apx-agent create-supervisor --name "Acme Assistant"   # once per org
+      # → saves supervisor_id to pyproject.toml
 
-    Then just run:
+    Then for every agent:
 
     \b
       apx-agent deploy     # deploy to your workspace
-      apx-agent publish    # advertise to the org
+      apx-agent publish    # write registry + wire A2A supervisor
     """
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.config import Config
+    from apx_agent import publish_to_registry, publish_to_supervisor
+
     cfg = _read_apx_agent_config()
     profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    if profile:
+        os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
 
-    # Resolve every parameter from config, then fall back to prompting.
     endpoint = endpoint or cfg.get("name")
     display_name = display_name or cfg.get("name")
     description = description or cfg.get("description")
     supervisor_id = supervisor_id or cfg.get("supervisor_id")
+    registry_table = registry_table or cfg.get("registry_table") or "main.apx.agent_registry"
 
     if not endpoint:
-        endpoint = click.prompt("Serving endpoint name")
+        endpoint = click.prompt("Serving endpoint / app name")
     if not description:
-        description = click.prompt("Routing description (when should the supervisor call this agent?)")
-    if not supervisor_id:
-        click.echo(
-            "\nNo supervisor_id found. Add it to pyproject.toml:\n\n"
-            "  [tool.apx.agent]\n"
-            "  supervisor_id = \"<supervisor-agent-id>\"\n\n"
-            "Or find your org's supervisor ID with: apx-agent apps --profile <profile>\n"
-        )
-        supervisor_id = click.prompt("Supervisor Agent ID")
-
-    click.echo(f"\nPublishing to org A2A registry:")
-    click.echo(f"  Agent endpoint : {endpoint}")
-    click.echo(f"  Display name   : {display_name or endpoint}")
-    click.echo(f"  Description    : {description}")
-    click.echo(f"  Supervisor ID  : {supervisor_id}")
-    click.echo()
-
-    from apx_agent import publish_to_supervisor
+        description = click.prompt("What does this agent do?")
 
     try:
-        result = publish_to_supervisor(
-            supervisor_agent_id=supervisor_id,
-            serving_endpoint=endpoint,
-            description=description,
-            display_name=display_name or endpoint,
-            tool_id=tool_id,
-        )
+        ws_cfg = Config(profile=profile) if profile else Config()
+        ws = WorkspaceClient(config=ws_cfg)
+        ws_host = (ws_cfg.host or "").rstrip("/")
     except Exception as exc:
-        raise click.ClickException(f"Publish failed: {exc}")
+        raise click.ClickException(f"Could not connect to workspace: {exc}")
 
-    click.echo(click.style(f"Published. '{display_name or endpoint}' is now discoverable via the org supervisor.", fg="green"))
-    if tool_id := getattr(result, "tool_id", None) or (result.get("tool_id") if isinstance(result, dict) else None):
-        click.echo(f"  tool_id: {tool_id}  (add to pyproject.toml as tool_id = \"{tool_id}\" for idempotent re-publish)")
+    # Derive endpoint URL if not supplied.
+    if not endpoint_url and ws_host:
+        endpoint_url = f"{ws_host}/apps/{endpoint}" if endpoint_type == "apps" else f"{ws_host}/serving-endpoints/{endpoint}"
+
+    click.echo(f"\nPublishing '{display_name or endpoint}':")
+    click.echo(f"  Endpoint       : {endpoint}")
+    click.echo(f"  URL            : {endpoint_url or '(unknown)'}")
+    click.echo(f"  Description    : {description}")
+    click.echo(f"  Registry table : {registry_table}")
+    click.echo(f"  Supervisor A2A : {supervisor_id or '(not configured — skipping)'}")
+    click.echo()
+
+    # --- Step 1: Delta registry (always) ---
+    if not no_registry:
+        try:
+            publish_to_registry(
+                name=endpoint,
+                description=description,
+                display_name=display_name or endpoint,
+                endpoint_url=endpoint_url,
+                endpoint_type=endpoint_type,
+                supervisor_agent_id=supervisor_id,
+                registry_table=registry_table,
+                ws=ws,
+            )
+            click.echo(click.style(f"  ✓ Registry table updated ({registry_table})", fg="green"))
+        except Exception as exc:
+            click.echo(click.style(f"  ✗ Registry write failed: {exc}", fg="yellow"), err=True)
+            click.echo("    To query the registry: SELECT * FROM " + registry_table, err=True)
+
+    # --- Step 2: Supervisor Agent (when configured) ---
+    if supervisor_id:
+        try:
+            result = publish_to_supervisor(
+                supervisor_agent_id=supervisor_id,
+                serving_endpoint=endpoint,
+                description=description,
+                display_name=display_name or endpoint,
+                tool_id=tool_id,
+                ws=ws,
+            )
+            click.echo(click.style(f"  ✓ Registered with Supervisor Agent ({supervisor_id})", fg="green"))
+            returned_tool_id = (
+                getattr(result, "tool_id", None)
+                or (result.get("tool_id") if isinstance(result, dict) else None)
+            )
+            if returned_tool_id:
+                click.echo(f"    tool_id: {returned_tool_id}  (pin in pyproject.toml for idempotent re-publish)")
+        except ImportError as exc:
+            click.echo(click.style(f"  ✗ Supervisor registration skipped: {exc}", fg="yellow"), err=True)
+        except Exception as exc:
+            click.echo(click.style(f"  ✗ Supervisor registration failed: {exc}", fg="yellow"), err=True)
+    else:
+        click.echo(f"  Tip: run `apx-agent create-supervisor` once to enable org-wide A2A routing.")
+
+    click.echo()
 
 
 # ---------------------------------------------------------------------------

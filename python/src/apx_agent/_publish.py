@@ -178,3 +178,149 @@ def publish_to_supervisor(
         tool=tool,
         tool_id=final_tool_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# UC Delta agent registry
+# ---------------------------------------------------------------------------
+
+_REGISTRY_DDL = """
+CREATE TABLE IF NOT EXISTS {table} (
+  agent_id      STRING  COMMENT 'Stable key: name + workspace host',
+  name          STRING  COMMENT 'Serving endpoint / app name',
+  display_name  STRING,
+  description   STRING,
+  endpoint_url  STRING,
+  endpoint_type STRING  COMMENT 'apps or model-serving',
+  workspace_host STRING,
+  supervisor_agent_id STRING COMMENT 'Supervisor Agent ID if registered',
+  published_by  STRING,
+  published_at  DOUBLE,
+  updated_at    DOUBLE
+) USING DELTA
+  COMMENT 'apx-agent org registry — all published agents in this workspace'
+"""
+
+_REGISTRY_MERGE = """
+MERGE INTO {table} AS target
+USING (SELECT
+  {agent_id}   AS agent_id,
+  {name}       AS name,
+  {display_name} AS display_name,
+  {description} AS description,
+  {endpoint_url} AS endpoint_url,
+  {endpoint_type} AS endpoint_type,
+  {workspace_host} AS workspace_host,
+  {supervisor_agent_id} AS supervisor_agent_id,
+  {published_by} AS published_by,
+  {published_at} AS published_at,
+  {updated_at}  AS updated_at
+) AS src ON target.agent_id = src.agent_id
+WHEN MATCHED THEN UPDATE SET
+  name = src.name,
+  display_name = src.display_name,
+  description = src.description,
+  endpoint_url = src.endpoint_url,
+  endpoint_type = src.endpoint_type,
+  workspace_host = src.workspace_host,
+  supervisor_agent_id = COALESCE(src.supervisor_agent_id, target.supervisor_agent_id),
+  published_by = src.published_by,
+  updated_at = src.updated_at
+WHEN NOT MATCHED THEN INSERT (
+  agent_id, name, display_name, description, endpoint_url, endpoint_type,
+  workspace_host, supervisor_agent_id, published_by, published_at, updated_at
+) VALUES (
+  src.agent_id, src.name, src.display_name, src.description, src.endpoint_url,
+  src.endpoint_type, src.workspace_host, src.supervisor_agent_id,
+  src.published_by, src.published_at, src.updated_at
+)
+"""
+
+
+def _q(s: str | None) -> str:
+    """SQL-escape a string literal (single-quote doubling)."""
+    if s is None:
+        return "NULL"
+    return "'" + str(s).replace("'", "''") + "'"
+
+
+def publish_to_registry(
+    *,
+    name: str,
+    description: str,
+    display_name: str | None = None,
+    endpoint_url: str | None = None,
+    endpoint_type: str = "apps",
+    supervisor_agent_id: str | None = None,
+    registry_table: str = "main.apx.agent_registry",
+    ws: "WorkspaceClient | None" = None,
+    warehouse_id: str | None = None,
+) -> None:
+    """Upsert an agent record into the UC Delta agent registry table.
+
+    Creates the table (and schema) automatically on first use. Safe to
+    call on every ``apx-agent publish`` — MERGE is idempotent.
+
+    Args:
+        name: Serving endpoint or app name (used as the stable key with host).
+        description: What this agent does.
+        display_name: Human-readable label. Defaults to ``name``.
+        endpoint_url: Full URL of the deployed agent.
+        endpoint_type: ``"apps"`` or ``"model-serving"``.
+        supervisor_agent_id: Set when also registering with Supervisor Agent.
+        registry_table: Fully-qualified UC table, e.g. ``main.apx.agent_registry``.
+        ws: Optional ``WorkspaceClient``.
+        warehouse_id: SQL warehouse to use; auto-discovered when omitted.
+    """
+    import time
+
+    from ._sql import run_sql
+    from ._memory_delta import _validate_table_name
+
+    _validate_table_name(registry_table)
+    ws = _ensure_ws(ws)
+
+    host = getattr(getattr(ws, "config", None), "host", None) or ""
+    agent_id = _slug(f"{name}_{host.replace('https://', '').split('.')[0]}")
+
+    # Ensure the schema exists before the table.
+    parts = registry_table.split(".")
+    if len(parts) == 3:
+        schema_fqn = f"{parts[0]}.{parts[1]}"
+        try:
+            run_sql(ws, f"CREATE SCHEMA IF NOT EXISTS {schema_fqn}", warehouse_id=warehouse_id)
+        except Exception:
+            pass  # may lack CREATE SCHEMA; table creation will surface the real error
+
+    try:
+        run_sql(ws, _REGISTRY_DDL.format(table=registry_table), warehouse_id=warehouse_id)
+    except Exception as e:
+        logger.warning("Could not create registry table %s: %s", registry_table, e)
+        raise
+
+    now = time.time()
+    try:
+        me = ws.current_user.me()
+        published_by = getattr(me, "user_name", None) or getattr(me, "display_name", None) or "unknown"
+    except Exception:
+        published_by = "unknown"
+
+    run_sql(
+        ws,
+        _REGISTRY_MERGE.format(
+            table=registry_table,
+            agent_id=_q(agent_id),
+            name=_q(name),
+            display_name=_q(display_name or name),
+            description=_q(description),
+            endpoint_url=_q(endpoint_url),
+            endpoint_type=_q(endpoint_type),
+            workspace_host=_q(host),
+            supervisor_agent_id=_q(supervisor_agent_id),
+            published_by=_q(published_by),
+            published_at=str(now),
+            updated_at=str(now),
+        ),
+        warehouse_id=warehouse_id,
+    )
+    logger.info("Registered %s in registry table %s", name, registry_table)
