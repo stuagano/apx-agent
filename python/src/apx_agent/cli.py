@@ -4701,9 +4701,33 @@ def _deploy_apps_impl(
 @main.command("publish-tools")
 @click.option("--module", default="agent:agent", help='Agent module spec.')
 @click.option("--dry-run", is_flag=True, help="Report what would publish without writing.")
-def publish_tools_cmd(module: str, dry_run: bool) -> None:
-    """Publish all @tool(uc=...) decorated tools to Unity Catalog."""
+@click.option("--tools-table", default=None,
+              help="UC Delta tools registry table. Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
+@click.option("--no-registry", is_flag=True, help="Skip the tools registry write (UC publish only).")
+@click.option("--profile", default=None, help="Databricks CLI profile.")
+def publish_tools_cmd(
+    module: str,
+    dry_run: bool,
+    tools_table: str | None,
+    no_registry: bool,
+    profile: str | None,
+) -> None:
+    """Publish all @tool(uc=...) decorated tools to Unity Catalog.
+
+    Also registers each tool as a standalone entry in the org tools registry
+    (``main.apx.agent_tools`` by default) so they are discoverable by any
+    agent without being tied to a specific agent deployment.
+    """
     from apx_agent import publish_tools_to_uc
+    from apx_agent._publish import publish_standalone_tools_to_registry
+    from apx_agent._resources import _iter_tool_fns
+    from apx_agent._tool import get_tool_metadata
+
+    cfg = _read_apx_agent_config()
+    profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    if profile:
+        os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+    tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
 
     agent = _load_finalized_agent(module)
     results = publish_tools_to_uc(agent, dry_run=dry_run)
@@ -4714,6 +4738,29 @@ def publish_tools_cmd(module: str, dry_run: bool) -> None:
         prefix = "DRY-RUN" if r.skipped else "PUBLISHED"
         grants = ", ".join(r.grants_applied) if r.grants_applied else "none"
         click.echo(f"  {prefix}  {r.uc_name}  (grants: {grants})")
+
+    # --- Write standalone rows to the tools registry ---
+    if not no_registry and not dry_run:
+        # Collect only the tool functions that were actually published to UC.
+        published_names = {r.function_name for r in results if not r.skipped}
+        tool_fns = [
+            fn for fn in _iter_tool_fns(agent)
+            if getattr(fn, "__name__", None) in published_names
+        ]
+        if tool_fns:
+            try:
+                from databricks.sdk import WorkspaceClient
+                from databricks.sdk.config import Config
+                ws_cfg = Config(profile=profile) if profile else Config()
+                ws = WorkspaceClient(config=ws_cfg)
+                n = publish_standalone_tools_to_registry(
+                    tool_fns=tool_fns,
+                    tools_table=tools_table,
+                    ws=ws,
+                )
+                click.echo(click.style(f"  ✓ Tools registry updated ({n} standalone tools → {tools_table})", fg="green"))
+            except Exception as exc:
+                click.echo(click.style(f"  ✗ Tools registry write failed: {exc}", fg="yellow"), err=True)
 
 
 # ---------------------------------------------------------------------------

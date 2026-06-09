@@ -332,28 +332,30 @@ def publish_to_registry(
 
 _TOOLS_DDL = """
 CREATE TABLE IF NOT EXISTS {table} (
-  tool_id       STRING  COMMENT 'Stable key: agent_id + tool name',
-  agent_id      STRING  COMMENT 'FK to apx_agent_registry.agent_id',
-  agent_name    STRING,
+  tool_id       STRING  COMMENT 'Stable key: agent_id (or standalone) + tool name',
+  agent_id      STRING  COMMENT 'FK to apx_agent_registry.agent_id; NULL for standalone tools',
+  agent_name    STRING  COMMENT 'NULL for standalone tools',
   name          STRING,
   description   STRING,
   input_schema  STRING  COMMENT 'JSON string',
-  tool_type     STRING  COMMENT 'python, uc_function, sub_agent, genie, mcp, or unknown',
+  uc_function_name STRING COMMENT 'Fully-qualified UC function name, if applicable',
+  tool_type     STRING  COMMENT 'python, uc_function, sub_agent, genie, mcp, http, or unknown',
   sub_agent_url STRING,
   updated_at    DOUBLE
 ) USING DELTA
-  COMMENT 'apx-agent org tools registry — all tools exposed by published agents'
+  COMMENT 'apx-agent org tools registry — standalone and agent-attached tools'
 """
 
 _TOOLS_DELETE = "DELETE FROM {table} WHERE agent_id = {agent_id}"
+_TOOLS_DELETE_STANDALONE = "DELETE FROM {table} WHERE name = {name} AND agent_id IS NULL"
 
 _TOOLS_INSERT = """
 INSERT INTO {table} (
   tool_id, agent_id, agent_name, name, description,
-  input_schema, tool_type, sub_agent_url, updated_at
+  input_schema, uc_function_name, tool_type, sub_agent_url, updated_at
 ) VALUES (
   {tool_id}, {agent_id}, {agent_name}, {name}, {description},
-  {input_schema}, {tool_type}, {sub_agent_url}, {updated_at}
+  {input_schema}, {uc_function_name}, {tool_type}, {sub_agent_url}, {updated_at}
 )
 """
 
@@ -442,12 +444,40 @@ def publish_tools_to_registry(
     now = time.time()
     count = 0
     for fn in tool_fns:
+        count += _insert_tool_row(
+            ws=ws,
+            table=tools_table,
+            fn=fn,
+            agent_id=agent_id,
+            agent_name=agent_name,
+            now=now,
+            warehouse_id=warehouse_id,
+        )
+
+    logger.info("Published %d tools for agent %s to %s", count, agent_name, tools_table)
+    return count
+
+
+def _insert_tool_row(
+    *,
+    ws: Any,
+    table: str,
+    fn: Any,
+    agent_id: str | None,
+    agent_name: str | None,
+    now: float,
+    warehouse_id: str | None,
+) -> int:
+    """Insert a single tool row; returns 1 on success, 0 on failure."""
+    import json
+    from ._sql import run_sql
+
+    try:
         name = getattr(fn, "__name__", None) or str(fn)
         doc = (getattr(fn, "__doc__", None) or "").strip().splitlines()
         description = doc[0] if doc else ""
         tool_type = _infer_tool_type(fn)
 
-        # Best-effort: extract input schema from LangChain tool wrapper.
         input_schema: str | None = None
         try:
             schema = getattr(fn, "args_schema", None)
@@ -458,30 +488,115 @@ def publish_tools_to_registry(
         except Exception:
             pass
 
+        uc_function_name: str | None = None
+        try:
+            from ._tool import get_tool_metadata
+            meta = get_tool_metadata(fn)
+            if meta:
+                uc_function_name = meta.uc_name
+        except Exception:
+            pass
+
         sub_agent_url: str | None = None
         try:
             sub_agent_url = getattr(fn, "_sub_agent_url", None)
         except Exception:
             pass
 
-        tool_id = _slug(f"{agent_id}_{name}")
+        prefix = agent_id or "standalone"
+        tool_id = _slug(f"{prefix}_{name}")
         run_sql(
             ws,
             _TOOLS_INSERT.format(
-                table=tools_table,
+                table=table,
                 tool_id=_q(tool_id),
                 agent_id=_q(agent_id),
                 agent_name=_q(agent_name),
                 name=_q(name),
                 description=_q(description),
                 input_schema=_q(input_schema),
+                uc_function_name=_q(uc_function_name),
                 tool_type=_q(tool_type),
                 sub_agent_url=_q(sub_agent_url),
                 updated_at=str(now),
             ),
             warehouse_id=warehouse_id,
         )
-        count += 1
+        return 1
+    except Exception as e:
+        logger.warning("Could not insert tool row for %s: %s", getattr(fn, "__name__", fn), e)
+        return 0
 
-    logger.info("Published %d tools for agent %s to %s", count, agent_name, tools_table)
+
+def publish_standalone_tools_to_registry(
+    *,
+    tool_fns: list[Any],
+    uc_names: dict[str, str] | None = None,
+    tools_table: str = "main.apx.agent_tools",
+    ws: "WorkspaceClient | None" = None,
+    warehouse_id: str | None = None,
+) -> int:
+    """Upsert standalone (agent-independent) tools into the tools registry.
+
+    Use this when you publish UC functions that any agent can call — they
+    live in Unity Catalog independently and shouldn't be tied to a single
+    agent. Rows are written with ``agent_id = NULL``.
+
+    Args:
+        tool_fns: List of tool callables decorated with ``@tool(uc=...)``.
+        uc_names: Optional override map ``{function_name: uc_fqn}`` for cases
+            where the UC name can't be read from the function's metadata.
+        tools_table: Fully-qualified UC table.
+        ws: Optional ``WorkspaceClient``.
+        warehouse_id: SQL warehouse to use; auto-discovered when omitted.
+
+    Returns:
+        Number of tool rows written.
+    """
+    import time
+
+    from ._sql import run_sql
+    from ._memory_delta import _validate_table_name
+
+    _validate_table_name(tools_table)
+    ws = _ensure_ws(ws)
+
+    parts = tools_table.split(".")
+    if len(parts) == 3:
+        schema_fqn = f"{parts[0]}.{parts[1]}"
+        try:
+            run_sql(ws, f"CREATE SCHEMA IF NOT EXISTS {schema_fqn}", warehouse_id=warehouse_id)
+        except Exception:
+            pass
+
+    try:
+        run_sql(ws, _TOOLS_DDL.format(table=tools_table), warehouse_id=warehouse_id)
+    except Exception as e:
+        logger.warning("Could not create tools table %s: %s", tools_table, e)
+        raise
+
+    now = time.time()
+    count = 0
+    for fn in tool_fns:
+        fn_name = getattr(fn, "__name__", None) or str(fn)
+        # Delete the existing standalone row for this tool before re-inserting.
+        try:
+            run_sql(
+                ws,
+                _TOOLS_DELETE_STANDALONE.format(table=tools_table, name=_q(fn_name)),
+                warehouse_id=warehouse_id,
+            )
+        except Exception:
+            pass
+        count += _insert_tool_row(
+            ws=ws,
+            table=tools_table,
+            fn=fn,
+            agent_id=None,
+            agent_name=None,
+            now=now,
+            warehouse_id=warehouse_id,
+        )
+
+    logger.info("Published %d standalone tools to %s", count, tools_table)
     return count
