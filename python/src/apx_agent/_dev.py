@@ -128,6 +128,7 @@ _TRACE_CSS = """
   .tmsg{display:flex;gap:8px;font-size:12px;line-height:1.45;align-items:baseline;}
   .trole{flex:none;min-width:74px;color:#6b7686;font-size:10px;font-weight:600;
          text-transform:uppercase;letter-spacing:.4px;font-family:ui-monospace,monospace;}
+  .trole-tool{color:#4a9060;}
   .tcontent{color:#cbd2da;white-space:pre-wrap;word-break:break-word;
             font-family:ui-monospace,monospace;font-size:11.5px;}
   details.tsys{font-size:12px;}
@@ -272,6 +273,86 @@ def _is_choices(obj: Any) -> list | None:
         if isinstance(ch, list) and ch and all(isinstance(c, dict) for c in ch):
             return ch
     return None
+
+
+def _is_responses_input(obj: Any) -> list | None:
+    """If ``obj`` is a Responses-API input payload, return its ``input`` list, else None."""
+    if isinstance(obj, dict):
+        inp = obj.get("input")
+        if isinstance(inp, list) and inp and all(isinstance(m, dict) for m in inp):
+            return inp
+    return None
+
+
+def _is_responses_output(obj: Any) -> list | None:
+    """If ``obj`` is a Responses-API output payload, return its ``output`` list, else None."""
+    if isinstance(obj, dict) and obj.get("object") == "response":
+        out = obj.get("output")
+        if isinstance(out, list):
+            return out
+    return None
+
+
+def _render_responses_output(items: list) -> str:
+    """Render a Responses-API ``output`` list (function_call / function_call_output / message)."""
+    import html as _html
+    import json as _json
+
+    rows = ""
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        t = item.get("type", "")
+        if t == "function_call":
+            name = item.get("name", "tool")
+            args = item.get("arguments", "")
+            if not isinstance(args, str):
+                args = _json.dumps(args)
+            try:
+                args_pretty = _json.dumps(_json.loads(args), indent=2)
+            except Exception:
+                args_pretty = args
+            rows += (
+                f'<div class="tmsg">'
+                f'<span class="trole">→ {_html.escape(name)}</span>'
+                f'<span class="tcontent">{_html.escape(_truncate(args_pretty, _MSG_CONTENT_CAP))}</span>'
+                f'</div>'
+            )
+        elif t == "function_call_output":
+            raw = item.get("output", "")
+            if not isinstance(raw, str):
+                raw = _json.dumps(raw)
+            try:
+                pretty = _json.dumps(_json.loads(raw), indent=2)
+            except Exception:
+                pretty = raw
+            rows += (
+                f'<div class="tmsg">'
+                f'<span class="trole trole-tool">← result</span>'
+                f'<span class="tcontent">{_html.escape(_truncate(pretty, _MSG_CONTENT_CAP))}</span>'
+                f'</div>'
+            )
+        elif t == "message":
+            content = item.get("content", "")
+            if isinstance(content, list):
+                # List of content blocks — extract text
+                parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "output_text":
+                        parts.append(block.get("text", ""))
+                    elif isinstance(block, dict):
+                        parts.append(_json.dumps(block))
+                content = "\n".join(parts)
+            elif not isinstance(content, str):
+                content = _json.dumps(content)
+            role = item.get("role", "assistant")
+            rows += (
+                f'<div class="tmsg">'
+                f'<span class="trole">{_html.escape(role)}</span>'
+                f'<span class="tcontent">{_html.escape(_truncate(content, _MSG_CONTENT_CAP))}</span>'
+                f'</div>'
+            )
+    return rows
 
 
 def _drop_warmup_traces(traces: list) -> list:
@@ -449,25 +530,36 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
             # MLflow tags chat-model spans CHAT_MODEL and completion spans LLM.
             is_llm = str(s.get("span_type", "")).upper() in ("LLM", "CHAT_MODEL")
             io_html = ""
-            # The conversation renders only on LLM spans (uniform OpenAI shape).
-            # On wrapper spans, message-heavy payloads are suppressed — that
-            # re-log at each nesting level is the down-a-level repetition. Other
-            # (non-message) payloads still render raw on any span.
-            # Inputs
+
+            # ── Inputs ────────────────────────────────────────────────────────
             msgs = _is_chat_messages(inputs_obj) if is_llm else None
+            resp_in = _is_responses_input(inputs_obj) if not is_llm else None
             if msgs is not None:
+                # Chat-completions format: render full conversation with delta collapse.
                 io_html += (
                     '<div class="io-block"><div class="io-label">Messages</div>'
                     f'<div class="convo">{_render_messages_block(msgs, state["prev"])}</div></div>'
                 )
                 state["prev"] = msgs
+            elif resp_in is not None:
+                # Responses-API format: render input messages directly.
+                rows = "".join(_render_message_line(m) for m in resp_in)
+                if rows:
+                    io_html += (
+                        '<div class="io-block"><div class="io-label">Input</div>'
+                        f'<div class="convo">{rows}</div></div>'
+                    )
             elif inputs_obj and not _is_message_heavy(inputs_obj):
-                inp = _json.dumps(inputs_obj, indent=2)
+                # Raw JSON fallback — strip null values to reduce noise.
+                cleaned = {k: v for k, v in inputs_obj.items() if v is not None} if isinstance(inputs_obj, dict) else inputs_obj
+                inp = _json.dumps(cleaned, indent=2)
                 io_html += f'<div class="io-block"><div class="io-label">Inputs</div><pre class="io-pre">{_html.escape(inp[:4000])}</pre></div>'
-            # Outputs — assistant choices (LLM) render as message rows; append the
-            # assistant turn to ``prev`` so the next LLM input collapses it too.
+
+            # ── Outputs ───────────────────────────────────────────────────────
             choices = _is_choices(outputs_obj) if is_llm else None
+            resp_out = _is_responses_output(outputs_obj) if not is_llm else None
             if choices is not None:
+                # Chat-completions format.
                 io_html += (
                     '<div class="io-block"><div class="io-label">Response</div>'
                     f'<div class="convo">{_render_choices_block(choices)}</div></div>'
@@ -476,8 +568,17 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
                          if isinstance(c, dict) and isinstance(c.get("message"), dict)]
                 if added:
                     state["prev"] = (state["prev"] or []) + added
+            elif resp_out is not None:
+                # Responses-API format: function_call / function_call_output / message items.
+                rows = _render_responses_output(resp_out)
+                if rows:
+                    io_html += (
+                        '<div class="io-block"><div class="io-label">Output</div>'
+                        f'<div class="convo">{rows}</div></div>'
+                    )
             elif outputs_obj and not _is_message_heavy(outputs_obj):
-                out = _json.dumps(outputs_obj, indent=2)
+                cleaned = {k: v for k, v in outputs_obj.items() if v is not None} if isinstance(outputs_obj, dict) else outputs_obj
+                out = _json.dumps(cleaned, indent=2)
                 io_html += f'<div class="io-block"><div class="io-label">Outputs</div><pre class="io-pre">{_html.escape(out[:4000])}</pre></div>'
             # Progress markers (span events) render in an always-visible strip
             # so a cold-start step shows even while the body is collapsed.
