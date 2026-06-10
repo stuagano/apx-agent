@@ -5757,19 +5757,43 @@ def _require_sdk(profile: str | None = None) -> "Any":
     except ImportError as e:
         raise click.ClickException("apx-agent list requires databricks-sdk.") from e
     except Exception as e:
-        msg = str(e)
-        if profile is None and ("match" in msg or "profile" in msg.lower() or "cannot" in msg.lower()):
-            profiles = _list_databricks_profiles()
-            if profiles:
-                names = [p[0] for p in profiles if p[2]]  # valid ones first
-                names += [p[0] for p in profiles if not p[2] and p[0] not in names]
-                hint = "\n".join(f"  {n}" for n in names)
-                raise click.ClickException(
-                    f"Could not resolve Databricks authentication.\n"
-                    f"Pass --profile to choose one:\n{hint}\n\n"
-                    f"Example:  apx-agent list --profile {names[0]}"
-                ) from None
-        raise click.ClickException(f"Could not connect to Databricks: {e}") from e
+        if profile is not None:
+            raise click.ClickException(
+                f"Could not connect to Databricks with profile '{profile}': {e}"
+            ) from e
+        # No profile given — offer an interactive picker when running in a terminal.
+        profiles = _list_databricks_profiles()
+        if not profiles:
+            raise click.ClickException(
+                f"Could not resolve Databricks authentication: {e}\n"
+                "Run: databricks auth login --host <workspace-url>"
+            ) from e
+        # Prefer profiles marked valid; fall back to all if none are valid.
+        display = [(n, h) for n, h, v in profiles if v] or [(n, h) for n, h, _ in profiles]
+        if sys.stdin.isatty():
+            click.echo("\nMultiple Databricks profiles found. Pick one:\n")
+            for i, (name, host) in enumerate(display, 1):
+                click.echo(f"  {i:2}) {name}  ({host})")
+            click.echo()
+            idx = click.prompt(
+                "Profile number",
+                type=click.IntRange(1, len(display)),
+                default=1,
+            )
+            chosen = display[idx - 1][0]
+            click.echo(
+                f"\nTip: export DATABRICKS_CONFIG_PROFILE={chosen}  "
+                f"(or pass --profile {chosen}) to skip this prompt.\n"
+            )
+            return _require_sdk(chosen)
+        # Non-interactive fallback: list profiles and exit.
+        names = [n for n, _ in display]
+        hint = "\n".join(f"  {n}" for n in names)
+        raise click.ClickException(
+            f"Could not resolve Databricks authentication.\n"
+            f"Pass --profile to choose one:\n{hint}\n\n"
+            f"Example:  apx-agent list --profile {names[0]}"
+        ) from None
 
 
 @list_group.command("agents")
