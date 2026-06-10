@@ -5725,26 +5725,35 @@ def test_cmd(
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks config profile (~/.databrickscfg). "
+                   "Defaults to DATABRICKS_CONFIG_PROFILE env var.")
 @click.pass_context
 def list_group(
     ctx: click.Context,
     catalog: str | None,
     schema: str | None,
     fmt: str,
+    profile: str | None,
 ) -> None:
     """Discover workspace resources — catalogs, schemas, tables, tools, agents.
 
     With no subcommand, behaves like ``apx-agent list agents`` for backwards
     compatibility. Run ``apx-agent list --help`` to see available subcommands.
     """
+    ctx.ensure_object(dict)
+    ctx.obj["profile"] = profile
     if ctx.invoked_subcommand is None:
         ctx.invoke(list_agents_cmd, catalog=catalog, schema=schema, fmt=fmt)
 
 
-def _require_sdk() -> "Any":
+def _require_sdk(profile: str | None = None) -> "Any":
+    """Return a WorkspaceClient, optionally scoped to a named config profile."""
     try:
         from databricks.sdk import WorkspaceClient
-        return WorkspaceClient()
+        from databricks.sdk.config import Config
+        cfg = Config(profile=profile) if profile else Config()
+        return WorkspaceClient(config=cfg)
     except ImportError as e:
         raise click.ClickException("apx-agent list requires databricks-sdk.") from e
 
@@ -5758,7 +5767,8 @@ def _require_sdk() -> "Any":
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-def list_agents_cmd(catalog: str | None, schema: str | None, fmt: str) -> None:
+@click.pass_context
+def list_agents_cmd(ctx: click.Context, catalog: str | None, schema: str | None, fmt: str) -> None:
     """Discover apx-agents in the workspace by their UC tags.
 
     Looks for registered models tagged ``apx.agent.name`` — the tag
@@ -5769,7 +5779,7 @@ def list_agents_cmd(catalog: str | None, schema: str | None, fmt: str) -> None:
     if schema and not catalog:
         raise click.UsageError("--schema requires --catalog.")
 
-    ws = _require_sdk()
+    ws = _require_sdk((ctx.obj or {}).get("profile"))
 
     try:
         models_iter = ws.registered_models.list(
@@ -5824,9 +5834,10 @@ def list_agents_cmd(catalog: str | None, schema: str | None, fmt: str) -> None:
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-def list_catalogs_cmd(fmt: str) -> None:
+@click.pass_context
+def list_catalogs_cmd(ctx: click.Context, fmt: str) -> None:
     """List Unity Catalog catalogs accessible in this workspace."""
-    ws = _require_sdk()
+    ws = _require_sdk((ctx.obj or {}).get("profile"))
     catalogs = _ws_list_catalogs(ws)
 
     if fmt == "json":
@@ -5846,9 +5857,10 @@ def list_catalogs_cmd(fmt: str) -> None:
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-def list_schemas_cmd(catalog: str, fmt: str) -> None:
+@click.pass_context
+def list_schemas_cmd(ctx: click.Context, catalog: str, fmt: str) -> None:
     """List schemas in CATALOG."""
-    ws = _require_sdk()
+    ws = _require_sdk((ctx.obj or {}).get("profile"))
     schemas = _ws_list_schemas(ws, catalog)
 
     if fmt == "json":
@@ -5869,9 +5881,10 @@ def list_schemas_cmd(catalog: str, fmt: str) -> None:
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-def list_tables_cmd(catalog: str, schema: str, fmt: str) -> None:
+@click.pass_context
+def list_tables_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> None:
     """List tables in CATALOG.SCHEMA."""
-    ws = _require_sdk()
+    ws = _require_sdk((ctx.obj or {}).get("profile"))
     tables = _ws_list_tables(ws, catalog, schema)
 
     if fmt == "json":
@@ -5905,13 +5918,14 @@ def list_tables_cmd(catalog: str, schema: str, fmt: str) -> None:
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-def list_tools_cmd(catalog: str, schema: str, fmt: str) -> None:
+@click.pass_context
+def list_tools_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> None:
     """List UC functions in CATALOG.SCHEMA (available as agent tools).
 
     These are the functions ``apx-agent publish-tools`` registers and that
     DataAgent / CoworkerAgent can call when ``include_functions=True``.
     """
-    ws = _require_sdk()
+    ws = _require_sdk((ctx.obj or {}).get("profile"))
     fns = _ws_list_functions(ws, catalog, schema)
 
     if fmt == "json":
