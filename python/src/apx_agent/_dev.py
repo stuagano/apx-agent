@@ -997,6 +997,54 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             )
         )
 
+    @router.get("/_apx/conversations", include_in_schema=False)
+    async def list_conversations_api(request: Request) -> Any:
+        """Return conversations from the conversation store as JSON."""
+        from fastapi.responses import JSONResponse
+        store = getattr(request.app.state, "conversation_store", None)
+        if store is None:
+            return JSONResponse([])
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        agent_id = ctx.config.name if ctx else None
+        try:
+            paged = store.list_conversations(
+                limit=50,
+                order="desc",
+                sort_by="updated_at",
+                agent_id=agent_id,
+            )
+            return JSONResponse([
+                {
+                    "id": c.id,
+                    "title": c.title,
+                    "created_at": c.created_at,
+                    "updated_at": c.updated_at,
+                }
+                for c in paged.data
+            ])
+        except Exception:
+            return JSONResponse([])
+
+    @router.get("/_apx/conversations/{conv_id}/items", include_in_schema=False)
+    async def list_conversation_items_api(conv_id: str, request: Request) -> Any:
+        """Return items for a conversation as JSON."""
+        from fastapi.responses import JSONResponse
+        store = getattr(request.app.state, "conversation_store", None)
+        if store is None:
+            return JSONResponse([])
+        try:
+            paged = store.list_items(conv_id, limit=200, order="asc")
+            return JSONResponse([
+                {
+                    "id": item.id,
+                    "type": item.type,
+                    "data": item.data.model_dump(exclude_none=True) if item.data else {},
+                }
+                for item in paged.data
+            ])
+        except Exception:
+            return JSONResponse([])
+
     @router.get("/_apx/traces", include_in_schema=False)
     async def traces_list_ui(request: Request) -> Any:
         import os

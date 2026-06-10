@@ -824,6 +824,17 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .tab-panel.active {{ display: block; }}
   /* Trace tab uses flex column so trace-body can scroll independently */
   #tab-trace.active {{ display: flex; flex-direction: column; height: 100%; }}
+  #tab-history.active {{ display: flex; flex-direction: column; height: 100%; }}
+  .conv-toolbar {{ padding: 8px 12px; border-bottom: 1px solid #1a1a1a; display: flex; align-items: center; justify-content: flex-end; flex-shrink: 0; }}
+  .conv-new-btn {{ background: transparent; color: #60b0ff; border: 1px solid #1e3a5f; border-radius: 5px; padding: 4px 10px; font-size: 12px; cursor: pointer; }}
+  .conv-new-btn:hover {{ background: #0d1f38; }}
+  .conv-list {{ overflow-y: auto; flex: 1; }}
+  .conv-item {{ padding: 10px 12px; cursor: pointer; border-bottom: 1px solid #111; transition: background .1s; }}
+  .conv-item:hover {{ background: #131313; }}
+  .conv-item.active {{ background: #0d1f38; border-left: 2px solid #60b0ff; padding-left: 10px; }}
+  .conv-title {{ font-size: 13px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .conv-item.active .conv-title {{ color: #60b0ff; }}
+  .conv-ts {{ font-size: 11px; color: #444; margin-top: 2px; }}
 
   /* Trace tab — live span bubbles, mirrors /_apx/traces/{{id}} detail view */
   .span-step {{ position: relative; padding-left: 22px; margin-bottom: 4px; }}
@@ -1029,14 +1040,23 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
       <span id="copy-sse-ok" style="display:none;color:#4ade80">✓</span>
     </div>
     <div class="panel-tabs">
+      <button class="active" onclick="switchTab('history',this)">History</button>
       <button onclick="switchTab('tools',this)">Tools</button>
-      <button class="active" onclick="switchTab('trace',this)">Trace</button>
+      <button onclick="switchTab('trace',this)">Trace</button>
       <button onclick="switchTab('events',this)">Events</button>
       <button onclick="switchTab('eval',this)">Eval</button>
     </div>
     <div class="panel-content">
+      <div id="tab-history" class="tab-panel active">
+        <div class="conv-toolbar">
+          <button class="conv-new-btn" onclick="newConversation()">+ New</button>
+        </div>
+        <div id="conv-list" class="conv-list">
+          <div class="empty-state">No conversations yet</div>
+        </div>
+      </div>
       <div id="tab-tools" class="tab-panel"></div>
-      <div id="tab-trace" class="tab-panel active">
+      <div id="tab-trace" class="tab-panel">
         <div id="trace-header" style="padding:8px 12px;border-bottom:1px solid #1a1a1a;font-size:11px;color:#666;display:flex;justify-content:space-between;align-items:center">
           <span id="trace-status">No trace yet — send a message</span>
           <a id="trace-link" href="#" target="_blank" style="display:none;color:#60b0ff;text-decoration:none;font-size:11px">open full →</a>
@@ -1231,6 +1251,54 @@ function switchTab(name, btn) {{
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
   if (name === 'eval' && !evalLoaded) loadEvalCases();
+  if (name === 'history') loadConversationHistory();
+}}
+
+// ── History tab ──
+function loadConversationHistory() {{
+  fetch('/_apx/conversations').then(r => r.json()).then(convs => {{
+    const list = document.getElementById('conv-list');
+    if (!convs.length) {{
+      list.innerHTML = '<div class="empty-state">No conversations yet — send a message</div>';
+      return;
+    }}
+    list.innerHTML = convs.map(c => {{
+      const label = c.title || ('Conv ' + c.id.slice(-8));
+      const ts = c.updated_at ? new Date(c.updated_at).toLocaleDateString() : '';
+      const active = c.id === devThreadId ? ' active' : '';
+      return `<div class="conv-item${{active}}" data-id="${{c.id}}" onclick="switchConversation('${{c.id}}')">
+        <div class="conv-title">${{esc(label)}}</div>
+        ${{ts ? `<div class="conv-ts">${{ts}}</div>` : ''}}
+      </div>`;
+    }}).join('');
+  }}).catch(() => {{}});
+}}
+
+function newConversation() {{
+  devThreadId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
+  sessionStorage.setItem(_THREAD_KEY, devThreadId);
+  chat.innerHTML = '';
+  loadConversationHistory();
+}}
+
+async function switchConversation(id) {{
+  devThreadId = id;
+  sessionStorage.setItem(_THREAD_KEY, id);
+  chat.innerHTML = '';
+  document.querySelectorAll('.conv-item').forEach(el => {{
+    el.classList.toggle('active', el.dataset.id === id);
+  }});
+  try {{
+    const items = await fetch(`/_apx/conversations/${{id}}/items`).then(r => r.json());
+    for (const item of items) {{
+      if (item.type !== 'message') continue;
+      const role = item.data?.role;
+      if (!role) continue;
+      const blocks = item.data?.content || [];
+      const text = blocks.map(b => b.text || b.content || '').join('');
+      if (text) addMsg(role, text, false);
+    }}
+  }} catch {{}}
 }}
 
 // ── Eval tab ──
@@ -1497,6 +1565,9 @@ if (!devThreadId) {{
   sessionStorage.setItem(_THREAD_KEY, devThreadId);
 }}
 
+// Load the conversation history list on page load (History is the default tab).
+loadConversationHistory();
+
 function fmt(v) {{
   if (v === null || v === undefined) return 'null';
   if (typeof v === 'string') return v.length > 600 ? v.slice(0, 600) + '\\n…' : v;
@@ -1755,8 +1826,8 @@ function showDetail(ev, el) {{
   }}
   detailBody.innerHTML = html;
   detailPanel.classList.add('open');
-  // Auto-switch to events tab (3rd button: Tools, Trace, Events, Eval)
-  switchTab('events', document.querySelectorAll('.panel-tabs button')[2]);
+  // Auto-switch to events tab (4th button: History, Tools, Trace, Events, Eval)
+  switchTab('events', document.querySelectorAll('.panel-tabs button')[3]);
 }}
 
 function closeDetail() {{
@@ -2270,6 +2341,8 @@ form.addEventListener('submit', async e => {{
   finalizeTrace(traceId, traceStatus, {{ emitEvents: !toolEventsFromStream }});
   sendBtn.disabled = false;
   inputEl.focus();
+  // Refresh history list so the new/updated conversation appears.
+  loadConversationHistory();
 }});
 
 // ── Resizable panel ──
