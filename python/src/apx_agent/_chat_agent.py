@@ -59,6 +59,7 @@ from ._conversation import (
     FunctionCallOutputData,
     MessageData,
     NewConversationItem,
+    synthesize_conversation_title,
 )
 from ._mlflow_tracing import safe_span, set_span_outputs
 
@@ -220,10 +221,13 @@ class _ChatConvLoad:
         e.g. ``"session-abc123"``.
     :param messages: History messages already persisted for this conversation,
         converted to ``ChatAgentMessage`` format. Empty list for a new conversation.
+    :param is_new: ``True`` when the conversation row was just created (first
+        turn). Used to gate title synthesis so we only set it once.
     """
 
     conversation_id: str
     messages: list[Any]  # list[ChatAgentMessage]; Any avoids mlflow import at class-def time
+    is_new: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -480,14 +484,17 @@ def chat_agent_for(
             if not conv_id:
                 return None
             try:
-                conv = self._conversation_store.get_conversation(conv_id)
-                if conv is None:
+                existing = self._conversation_store.get_conversation(conv_id)
+                is_new = existing is None
+                if is_new:
                     self._conversation_store.create_conversation(id=conv_id)
                 page = self._conversation_store.list_items(
                     conv_id, order="asc", limit=10_000
                 )
                 history = _conv_items_to_chat_msgs(page.data)
-                return _ChatConvLoad(conversation_id=conv_id, messages=history)
+                return _ChatConvLoad(
+                    conversation_id=conv_id, messages=history, is_new=is_new
+                )
             except Exception as exc:
                 logger.warning(
                     "_load_or_create_conversation(%s) degraded to sessionless: %s",
@@ -503,6 +510,7 @@ def chat_agent_for(
             new_messages: list[ChatAgentMessage],
             model: str,
             response_id: str,
+            is_new: bool = False,
         ) -> None:
             """Append the inbound + outbound messages as ConversationStore items.
 
@@ -514,6 +522,9 @@ def chat_agent_for(
             :param new_messages: Agent-generated messages produced this turn.
             :param model: Model endpoint name, e.g. ``"databricks-claude-sonnet-4-6"``.
             :param response_id: Logical turn ID linking input and output items.
+            :param is_new: ``True`` when the conversation was just created. When
+                set, a title is synthesized from the first user message and
+                persisted via ``update_conversation``.
             """
             if conv_id is None or self._conversation_store is None:
                 return
@@ -525,6 +536,19 @@ def chat_agent_for(
             ]
             try:
                 self._conversation_store.append(conv_id, new_items)
+                if is_new:
+                    user_item = next(
+                        (it for it in new_items
+                         if it.type == "message" and isinstance(it.data, MessageData)
+                         and it.data.role == "user"),
+                        None,
+                    )
+                    if user_item is not None:
+                        title = synthesize_conversation_title(user_item.data.content)
+                        if title:
+                            self._conversation_store.update_conversation(
+                                conv_id, title=title
+                            )
             except Exception as exc:
                 logger.warning(
                     "_persist_conv_turn(%s) failed — turn not saved: %s", conv_id, exc
@@ -600,6 +624,7 @@ def chat_agent_for(
                     new_messages=new_messages,
                     model=effective_model,
                     response_id=str(uuid.uuid4()),
+                    is_new=conv.is_new if conv is not None else False,
                 )
 
                 return response
@@ -678,6 +703,7 @@ def chat_agent_for(
                     new_messages=new_messages,
                     model=effective_model,
                     response_id=str(uuid.uuid4()),
+                    is_new=conv.is_new if conv is not None else False,
                 )
 
     return _ApxChatAgent(agent, model, conversation_store=conversation_store)

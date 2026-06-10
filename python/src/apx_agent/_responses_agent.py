@@ -67,6 +67,7 @@ from ._conversation import (
     FunctionCallOutputData,
     MessageData,
     NewConversationItem,
+    synthesize_conversation_title,
 )
 from ._mlflow_tracing import safe_span, set_span_outputs
 
@@ -107,10 +108,13 @@ class _ConvLoad:
         e.g. ``"thread-abc123"``.
     :param items: Ascending-ordered ConversationItems already persisted for
         this conversation. Empty list for a brand-new conversation.
+    :param is_new: ``True`` when the conversation row was just created (first
+        turn). Used to gate title synthesis so we only set it once.
     """
 
     conversation_id: str
     items: list[ConversationItem]
+    is_new: bool = False
 
 
 class CompiledResponsesAgent(NamedTuple):
@@ -473,11 +477,12 @@ def _load_or_create_conversation(
     if not conv_id:
         return None
     try:
-        conv = store.get_conversation(conv_id)
-        if conv is None:
+        existing = store.get_conversation(conv_id)
+        is_new = existing is None
+        if is_new:
             store.create_conversation(id=conv_id)
         page = store.list_items(conv_id, order="asc", limit=10_000)
-        return _ConvLoad(conversation_id=conv_id, items=page.data)
+        return _ConvLoad(conversation_id=conv_id, items=page.data, is_new=is_new)
     except Exception as exc:
         logger.warning(
             "_load_or_create_conversation(%s) degraded to sessionless: %s", conv_id, exc
@@ -643,6 +648,7 @@ def _persist_conv_turn(
     output_items: list[Any],
     model: str,
     response_id: str,
+    is_new: bool = False,
 ) -> None:
     """Append Responses API input and output items to the ConversationStore.
 
@@ -654,6 +660,9 @@ def _persist_conv_turn(
     :param output_items: Responses API output items generated this turn.
     :param model: Model/endpoint name, e.g. ``"databricks-claude-sonnet-4-6"``.
     :param response_id: Logical turn ID linking input and output items.
+    :param is_new: ``True`` when the conversation was just created. When set,
+        a title is synthesized from the first user message and persisted via
+        ``update_conversation``.
     """
     if store is None or conv_id is None:
         return
@@ -665,6 +674,17 @@ def _persist_conv_turn(
     ]
     try:
         store.append(conv_id, new_items)
+        if is_new:
+            user_item = next(
+                (it for it in new_items
+                 if it.type == "message" and isinstance(it.data, MessageData)
+                 and it.data.role == "user"),
+                None,
+            )
+            if user_item is not None:
+                title = synthesize_conversation_title(user_item.data.content)
+                if title:
+                    store.update_conversation(conv_id, title=title)
     except Exception as exc:
         logger.warning(
             "_persist_conv_turn(%s) failed — turn not saved: %s", conv_id, exc
@@ -1040,6 +1060,7 @@ def compile_to_responses_agent(
                     output_items=output_items,
                     model=effective_model,
                     response_id=response_id,
+                    is_new=conv.is_new if conv is not None else False,
                 )
 
             return response
@@ -1169,6 +1190,7 @@ def compile_to_responses_agent(
                     output_items=output_items,
                     model=effective_model,
                     response_id=response_id,
+                    is_new=conv.is_new if conv is not None else False,
                 )
 
     streaming.__doc__ = (
