@@ -5756,6 +5756,20 @@ def _require_sdk(profile: str | None = None) -> "Any":
         return WorkspaceClient(config=cfg)
     except ImportError as e:
         raise click.ClickException("apx-agent list requires databricks-sdk.") from e
+    except Exception as e:
+        msg = str(e)
+        if profile is None and ("match" in msg or "profile" in msg.lower() or "cannot" in msg.lower()):
+            profiles = _list_databricks_profiles()
+            if profiles:
+                names = [p[0] for p in profiles if p[2]]  # valid ones first
+                names += [p[0] for p in profiles if not p[2] and p[0] not in names]
+                hint = "\n".join(f"  {n}" for n in names)
+                raise click.ClickException(
+                    f"Could not resolve Databricks authentication.\n"
+                    f"Pass --profile to choose one:\n{hint}\n\n"
+                    f"Example:  apx-agent list --profile {names[0]}"
+                ) from None
+        raise click.ClickException(f"Could not connect to Databricks: {e}") from e
 
 
 @list_group.command("agents")
