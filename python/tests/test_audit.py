@@ -145,27 +145,27 @@ def test_hash_for_audit_hex_only() -> None:
 
 
 def test_output_summary_for_str() -> None:
-    name, size = output_summary("hello world")
-    assert name == "str"
-    assert size == 11
+    result = output_summary("hello world")
+    assert result.type_name == "str"
+    assert result.size == 11
 
 
 def test_output_summary_for_list() -> None:
-    name, size = output_summary([1, 2, 3])
-    assert name == "list"
-    assert size == 3
+    result = output_summary([1, 2, 3])
+    assert result.type_name == "list"
+    assert result.size == 3
 
 
 def test_output_summary_for_dict() -> None:
-    name, size = output_summary({"a": 1, "b": 2})
-    assert name == "dict"
-    assert size == 2
+    result = output_summary({"a": 1, "b": 2})
+    assert result.type_name == "dict"
+    assert result.size == 2
 
 
 def test_output_summary_for_int_falls_back_to_str_length() -> None:
-    name, size = output_summary(42)
-    assert name == "int"
-    assert size == 2  # str(42) = "42"
+    result = output_summary(42)
+    assert result.type_name == "int"
+    assert result.size == 2  # str(42) = "42"
 
 
 # ---------------------------------------------------------------------------

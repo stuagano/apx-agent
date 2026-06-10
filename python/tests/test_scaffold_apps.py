@@ -25,6 +25,7 @@ from __future__ import annotations
 import ast
 import tomllib
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -285,7 +286,7 @@ def test_scaffold_at_framework_repo_root_redirects_into_python(
     assert result.exit_code == 0, result.output
     assert (framework_python / "myagent" / "pyproject.toml").exists()
     assert not (framework_root / "myagent").exists()
-    assert "Scaffolding into python/" in result.output
+    assert "scaffolding inside the apx-agent repo" in result.output.lower()
 
 
 def test_scaffold_inside_python_does_not_redirect(
@@ -334,21 +335,21 @@ def test_scaffold_here_overrides_auto_redirect(
 def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None:
     """Interactive coworker scaffold bakes persona into agent.py."""
     runner = CliRunner()
-    result = runner.invoke(
-        main,
-        [
-            "scaffold", "my_coworker",
-            "--dir", str(tmp_path),
-            "--target", "apps",
-            "--template", "coworker",
-            "--interactive",
-            "--no-yaml",
-        ],
-        # catalog → "main", schema → "sales", persona → role text, join_key → blank, objective → blank
-        input="main\nsales\na sales analyst who knows revenue data deeply\n\n\n",
-        catch_exceptions=False,
-        env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
-    )
+    with patch("apx_agent.cli._gate_workspace_for_scaffold", return_value=None):
+        result = runner.invoke(
+            main,
+            [
+                "scaffold", "my_coworker",
+                "--dir", str(tmp_path),
+                "--target", "apps",
+                "--template", "coworker",
+                "--interactive",
+                "--no-yaml",
+            ],
+            # catalog → "main", schema → "sales", persona → role text, join_key → blank, objective → blank
+            input="main\nsales\na sales analyst who knows revenue data deeply\n\n\n",
+            catch_exceptions=False,
+        )
     assert result.exit_code == 0, result.output
     agent_src = (tmp_path / "my_coworker" / "agent.py").read_text()
     assert "a sales analyst who knows revenue data deeply" in agent_src
@@ -358,21 +359,21 @@ def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None
 def test_scaffold_coworker_with_persona_and_objective(tmp_path: Path) -> None:
     """Interactive coworker scaffold bakes persona, join_key, and objective into agent.py."""
     runner = CliRunner()
-    result = runner.invoke(
-        main,
-        [
-            "scaffold", "fraud_agent",
-            "--dir", str(tmp_path),
-            "--target", "apps",
-            "--template", "coworker",
-            "--interactive",
-            "--no-yaml",
-        ],
-        # catalog, schema, persona, join_key, objective
-        input="main\nfraud\na fraud detection analyst\ntransaction ID\ndetect fraudulent transactions and flag anomalies\n",
-        catch_exceptions=False,
-        env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
-    )
+    with patch("apx_agent.cli._gate_workspace_for_scaffold", return_value=None):
+        result = runner.invoke(
+            main,
+            [
+                "scaffold", "fraud_agent",
+                "--dir", str(tmp_path),
+                "--target", "apps",
+                "--template", "coworker",
+                "--interactive",
+                "--no-yaml",
+            ],
+            # catalog, schema, persona, join_key, objective
+            input="main\nfraud\na fraud detection analyst\ntransaction ID\ndetect fraudulent transactions and flag anomalies\n",
+            catch_exceptions=False,
+        )
     assert result.exit_code == 0, result.output
     agent_src = (tmp_path / "fraud_agent" / "agent.py").read_text()
     assert "a fraud detection analyst" in agent_src
@@ -409,26 +410,26 @@ def test_scaffold_coworker_without_persona_omits_kwarg(tmp_path: Path) -> None:
 def test_scaffold_interactive_prompts_for_catalog_schema_persona(tmp_path: Path) -> None:
     """``--interactive`` prompts for catalog, schema, and persona for coworker.
 
-    Without a real workspace, catalog list is empty → falls to free-text prompts.
-    The runner injects "main\\n" for catalog, "sales\\n" for schema, and
-    "payroll analyst\\n" for persona.
+    Without a real workspace (gated to None), catalog list is empty → falls to
+    free-text prompts. The runner injects "main\\n" for catalog, "sales\\n" for
+    schema, and "payroll analyst\\n" for persona.
     """
     runner = CliRunner()
-    result = runner.invoke(
-        main,
-        [
-            "scaffold", "interactive_agent",
-            "--dir", str(tmp_path),
-            "--target", "apps",
-            "--template", "coworker",
-            "--interactive",
-            "--no-yaml",
-        ],
-        # catalog, schema, persona, join_key (blank), objective (blank)
-        input="main\nsales\npayroll analyst\n\n\n",
-        catch_exceptions=False,
-        env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
-    )
+    with patch("apx_agent.cli._gate_workspace_for_scaffold", return_value=None):
+        result = runner.invoke(
+            main,
+            [
+                "scaffold", "interactive_agent",
+                "--dir", str(tmp_path),
+                "--target", "apps",
+                "--template", "coworker",
+                "--interactive",
+                "--no-yaml",
+            ],
+            # catalog, schema, persona, join_key (blank), objective (blank)
+            input="main\nsales\npayroll analyst\n\n\n",
+            catch_exceptions=False,
+        )
     assert result.exit_code == 0, result.output
     agent_src = (tmp_path / "interactive_agent" / "agent.py").read_text()
     assert "payroll analyst" in agent_src

@@ -47,14 +47,15 @@ def mcp_ctx_and_app():
 class TestBuildMcpComponents:
     def test_builds_server_and_transport(self, mcp_ctx_and_app):
         ctx, app = mcp_ctx_and_app
-        server, transport = _build_mcp_components(ctx, app, "/api")
-        assert server is not None
-        assert transport is not None
+        components = _build_mcp_components(ctx, app, "/api")
+        assert components.server is not None
+        assert components.sse_transport is not None
 
     @pytest.mark.asyncio
     async def test_list_tools(self, mcp_ctx_and_app):
         ctx, app = mcp_ctx_and_app
-        server, _ = _build_mcp_components(ctx, app, "/api")
+        components = _build_mcp_components(ctx, app, "/api")
+        server = components.server
 
         handler = server.request_handlers[ListToolsRequest]
         result = await handler(MagicMock())
@@ -67,7 +68,7 @@ class TestBuildMcpComponents:
     @pytest.mark.asyncio
     async def test_call_tool(self, mcp_ctx_and_app):
         ctx, app = mcp_ctx_and_app
-        server, _ = _build_mcp_components(ctx, app, "/api")
+        server = _build_mcp_components(ctx, app, "/api").server
 
         handler = server.request_handlers[CallToolRequest]
         params = CallToolRequestParams(name="my_tool", arguments={"q": "test"})
@@ -80,7 +81,7 @@ class TestBuildMcpComponents:
     @pytest.mark.asyncio
     async def test_call_nonexistent_tool(self, mcp_ctx_and_app):
         ctx, app = mcp_ctx_and_app
-        server, _ = _build_mcp_components(ctx, app, "/api")
+        server = _build_mcp_components(ctx, app, "/api").server
 
         handler = server.request_handlers[CallToolRequest]
         params = CallToolRequestParams(name="nonexistent_tool", arguments={})

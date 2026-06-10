@@ -283,8 +283,10 @@ class TestLandingRender:
         assert "Show me sample customers" in html and "Top 5 by balance" in html  # chips
 
     def test_landing_no_tools_no_chips_still_has_greeting(self):
-        from apx_agent._ui_chat import _render_agent_ui
-        html = _render_agent_ui(self._ctx(tools=[], examples=[]))
+        # Use _render_landing directly — the full page HTML includes class="starter-chips"
+        # in a JS template string even when there are no examples to show.
+        from apx_agent._ui_chat import _render_landing
+        html = _render_landing(self._ctx(tools=[], examples=[]))
         assert 'id="landing"' in html
         assert "demo-agent" in html
         assert 'class="cap-cards"' not in html       # no capability cards
@@ -644,10 +646,10 @@ class TestLandingDataCard:
         ctx = self._ctx({"catalog": "samples", "schema": "tpch",
                          "tables": {"customer": ["c_custkey(bigint)", "c_name(string)"]}})
         html = _render_landing(ctx)
-        assert "samples.tpch" in html
-        assert "customer" in html
-        assert "c_custkey" in html
+        assert "tpch" in html       # card header shows schema name (not catalog.schema)
+        assert "customer" in html   # table name rendered as a pill
         assert "data-card" in html  # the card container styling/class
+        # column names are not rendered in the landing card (table pill view only)
 
     def test_card_omitted_without_schema(self):
         from apx_agent._ui_chat import _render_landing
