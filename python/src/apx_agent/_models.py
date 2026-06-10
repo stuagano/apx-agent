@@ -152,11 +152,7 @@ class ExampleBackendConfig(BaseModel):
 
 
 class SessionBackendConfig(BaseModel):
-    """Declarative session backend — maps to ``[tool.apx.agent.session]``.
-
-    DeltaSessionStore takes ``table_path`` (not ``table_name``); the wiring maps
-    ``table_name`` → ``table_path`` when building a delta session store.
-    """
+    """Declarative session backend — maps to ``[tool.apx.agent.session]``."""
 
     model_config = ConfigDict(extra="forbid")
 

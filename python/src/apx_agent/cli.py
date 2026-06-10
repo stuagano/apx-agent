@@ -7250,23 +7250,11 @@ def examples_list_cmd(
 
 
 # ---------------------------------------------------------------------------
-# examples mine / memory consolidate — wrap mine_examples / consolidate_memories
+# memory consolidate — wrap consolidate_memories with injectable stores/callables
 # ---------------------------------------------------------------------------
-#
-# Both subcommands wrap library calls that take injectable stores + callables.
-# We resolve each MODULE:VAR via :func:`_load_callable` (parallel to
-# :func:`_load_store` but for arbitrary callables) and pass the resolved
-# objects straight through to the library function.
 #
 # Pyproject fallback keys (under ``[tool.apx.agent]``):
 #
-#   * ``session_store``   — examples mine, --session-store
-#   * ``example_store``   — examples mine, --example-store (shared w/ examples find)
-#   * ``intent_fn``       — examples mine, --intent-fn
-#   * ``score_fn``        — examples mine, --score-fn
-#   * ``filter_fn``       — examples mine, --filter-fn
-#   * ``tags_fn``         — examples mine, --tags-fn
-#   * ``metadata_fn``     — examples mine, --metadata-fn
 #   * ``memory_store``    — memory consolidate, --store (shared w/ memory list/...)
 #   * ``summarize_fn``    — memory consolidate, --summarize-fn
 
@@ -7355,118 +7343,6 @@ def _load_store_spec(
             f"Module {module_path!r} has no attribute {variable!r}."
         )
     return getattr(module, variable)
-
-
-@examples.command("mine")
-@click.option("--session-store", "session_store_spec", default=None,
-              help="MODULE:VAR pointing at a SessionStore instance. "
-                   "Falls back to [tool.apx.agent].session_store.")
-@click.option("--example-store", "example_store_spec", default=None,
-              help="MODULE:VAR pointing at an ExampleStore instance. "
-                   "Falls back to [tool.apx.agent].example_store.")
-@click.option("--agent-id", required=True,
-              help="Agent id stamped on every mined Example.")
-@click.option("--session-ids", "session_ids_csv", default=None,
-              help="Comma-separated session ids to mine. "
-                   "Default: every session in the store.")
-@click.option("--intent-fn", "intent_fn_spec", default=None,
-              help="MODULE:VAR of a Turn -> str intent classifier.")
-@click.option("--score-fn", "score_fn_spec", default=None,
-              help="MODULE:VAR of a Turn -> float|None scorer.")
-@click.option("--filter-fn", "filter_fn_spec", default=None,
-              help="MODULE:VAR of a Turn -> bool include filter.")
-@click.option("--tags-fn", "tags_fn_spec", default=None,
-              help="MODULE:VAR of a Turn -> Sequence[str] tag extractor.")
-@click.option("--metadata-fn", "metadata_fn_spec", default=None,
-              help="MODULE:VAR of a Turn -> Mapping[str, Any] metadata fn.")
-@click.option("--limit", default=None, type=int,
-              help="Max examples to write. Default: no limit.")
-@click.option("--min-score", default=None, type=float,
-              help="Discard turns whose --score-fn returned <min-score.")
-@click.option("--dry-run", is_flag=True, default=False,
-              help="Compute Examples client-side without writing.")
-@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
-              default="json", help="Output format. Default: json.")
-def examples_mine_cmd(
-    session_store_spec: str | None,
-    example_store_spec: str | None,
-    agent_id: str,
-    session_ids_csv: str | None,
-    intent_fn_spec: str | None,
-    score_fn_spec: str | None,
-    filter_fn_spec: str | None,
-    tags_fn_spec: str | None,
-    metadata_fn_spec: str | None,
-    limit: int | None,
-    min_score: float | None,
-    dry_run: bool,
-    fmt: str,
-) -> None:
-    """Mine (user, assistant) Examples from a SessionStore's history."""
-    from ._example_mining import mine_examples
-
-    session_store = _load_store_spec(
-        session_store_spec,
-        pyproject_key="session_store",
-        label="--session-store",
-    )
-    example_store = _load_store_spec(
-        example_store_spec,
-        pyproject_key="example_store",
-        label="--example-store",
-    )
-
-    intent_fn = _load_callable(
-        intent_fn_spec, pyproject_key="intent_fn", label="--intent-fn",
-    )
-    score_fn = _load_callable(
-        score_fn_spec, pyproject_key="score_fn", label="--score-fn",
-    )
-    filter_fn = _load_callable(
-        filter_fn_spec, pyproject_key="filter_fn", label="--filter-fn",
-    )
-    tags_fn = _load_callable(
-        tags_fn_spec, pyproject_key="tags_fn", label="--tags-fn",
-    )
-    metadata_fn = _load_callable(
-        metadata_fn_spec, pyproject_key="metadata_fn", label="--metadata-fn",
-    )
-
-    session_ids: list[str] | None = None
-    if session_ids_csv:
-        session_ids = [s.strip() for s in session_ids_csv.split(",") if s.strip()]
-
-    result = mine_examples(
-        session_store=session_store,
-        example_store=example_store,
-        agent_id=agent_id,
-        session_ids=session_ids,
-        intent_fn=intent_fn,
-        score_fn=score_fn,
-        filter_fn=filter_fn,
-        tags_fn=tags_fn,
-        metadata_fn=metadata_fn,
-        limit=limit,
-        min_score=min_score,
-        dry_run=dry_run,
-    )
-
-    if fmt == "text":
-        click.echo(
-            f"Mined {len(result.examples)} examples from "
-            f"{result.sessions_scanned} sessions "
-            f"({result.turns_considered} turns considered)"
-        )
-        return
-
-    payload = {
-        "sessions_scanned": result.sessions_scanned,
-        "turns_considered": result.turns_considered,
-        "examples_added": result.examples_added,
-        "dry_run": dry_run,
-        "examples": [_example_to_dict(e) for e in result.examples],
-    }
-    click.echo(json.dumps(payload, indent=2, default=str))
 
 
 @memory.command("consolidate")

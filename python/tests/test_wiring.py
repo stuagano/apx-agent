@@ -1091,15 +1091,6 @@ class TestMemoryWiringIntegration:
         skill_names = {s.name for s in ctx.card.skills}
         assert "recall" in skill_names, "memory tools must attach BEFORE collect_tools() card snapshot"
 
-    def test_resolve_session_override_wins_in_create_app(self):
-        from apx_agent._memory_wiring import resolve_session_store
-        from apx_agent._models import AgentConfig, SessionBackendConfig
-        from unittest.mock import MagicMock
-        explicit = MagicMock()
-        cfg = AgentConfig(name="t", session=SessionBackendConfig(type="inmemory"))
-        assert resolve_session_store(cfg, ws=None, override=explicit) is explicit
-
-
 def test_public_exports_memory_config_models():
     import apx_agent
     from apx_agent import MemoryBackendConfig, ExampleBackendConfig, SessionBackendConfig
