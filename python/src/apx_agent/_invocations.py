@@ -99,7 +99,7 @@ def mount_invocations_route(
     app: FastAPI,
     agent: BaseAgent,
     config: "AgentConfig",
-    session_store: Any | None = None,
+    conversation_store: Any | None = None,
 ) -> bool:
     """Mount POST ``/invocations`` (MLflow ChatAgent protocol) onto ``app``.
 
@@ -111,8 +111,8 @@ def mount_invocations_route(
             not at mount.
         config: The ``AgentConfig`` — ``config.model`` is the serving endpoint
             the compiled graph uses for LLM calls.
-        session_store: Optional ``SessionStore`` for multi-turn memory. When
-            provided, conversation history is persisted across requests keyed
+        conversation_store: Optional ``ConversationStore`` for multi-turn memory.
+            When provided, conversation history is persisted across requests keyed
             by the ``conversation_id`` in ``context``.
 
     Returns:
@@ -131,7 +131,7 @@ def mount_invocations_route(
         )
         return False
 
-    chat_agent = chat_agent_for(agent, model=config.model, session_store=session_store)
+    chat_agent = chat_agent_for(agent, model=config.model, conversation_store=conversation_store)
 
     @app.post("/invocations", include_in_schema=False)
     async def invocations(request: Request) -> Any:
@@ -236,7 +236,7 @@ def mount_responses_route(
     app: FastAPI,
     agent: BaseAgent,
     config: "AgentConfig",
-    session_store: Any | None = None,
+    conversation_store: Any | None = None,
 ) -> bool:
     """Mount POST ``/responses`` (MLflow ResponsesAgent protocol) onto ``app``.
 
@@ -249,7 +249,7 @@ def mount_responses_route(
         app: The FastAPI app to mount the route onto.
         agent: The apx-agent ``BaseAgent`` to serve.
         config: The ``AgentConfig`` — ``config.model`` is the serving endpoint.
-        session_store: Optional ``SessionStore`` for multi-turn memory.
+        conversation_store: Optional ``ConversationStore`` for multi-turn memory.
 
     Returns:
         ``True`` if the route was mounted; ``False`` if the ``eval`` extra
@@ -269,7 +269,7 @@ def mount_responses_route(
         _invoke_fn, _stream_fn = compile_to_responses_agent(
             agent,
             model=config.model,
-            session_store=session_store,
+            conversation_store=conversation_store,
             executor=getattr(config, "executor", "langgraph"),
         )
     except Exception as exc:

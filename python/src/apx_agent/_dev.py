@@ -1066,12 +1066,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def probe_checks(request: Request) -> Any:
         from fastapi.responses import JSONResponse
         ctx: AgentContext | None = request.app.state.agent_context
-        session_store = getattr(request.app.state, "session_store", None)
+        conversation_store = getattr(request.app.state, "conversation_store", None)
         return JSONResponse(
             await _run_probe_checks(
                 ctx,
                 headers=dict(request.headers),
-                session_store=session_store,
+                conversation_store=conversation_store,
             )
         )
 

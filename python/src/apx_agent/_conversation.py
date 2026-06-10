@@ -504,6 +504,7 @@ class ConversationStore(ABC):
     @abstractmethod
     def create_conversation(
         self,
+        id: str | None = None,
         kind: str = "default",
         title: str | None = None,
         parent_conversation_id: str | None = None,
@@ -516,6 +517,8 @@ class ConversationStore(ABC):
         conversations (no ``parent_conversation_id``) it equals the new
         ``id``; for child conversations it is inherited from the parent.
 
+        :param id: Caller-specified conversation id, e.g. ``"session_abc123"``.
+            When ``None``, the store generates a unique id.
         :param kind: Conversation type. ``"default"`` for user-initiated,
             ``"sub_agent"`` for sub-agent execution conversations.
         :param title: Optional title.
@@ -721,6 +724,7 @@ class InMemoryConversationStore(ConversationStore):
 
     def create_conversation(
         self,
+        id: str | None = None,
         kind: str = "default",
         title: str | None = None,
         parent_conversation_id: str | None = None,
@@ -729,6 +733,8 @@ class InMemoryConversationStore(ConversationStore):
         """
         Create and return a new conversation.
 
+        :param id: Caller-specified conversation id, e.g. ``"session_abc123"``.
+            When ``None``, a unique id is generated.
         :param kind: Conversation kind, e.g. ``"default"``.
         :param title: Optional title.
         :param parent_conversation_id: Parent id for child conversations.
@@ -739,7 +745,7 @@ class InMemoryConversationStore(ConversationStore):
         """
         with self._lock:
             now = _now_ms()
-            cid = _new_id("conv")
+            cid = id if id is not None else _new_id("conv")
             root_id = self._resolve_root_id(cid, parent_conversation_id)
             conv = Conversation(
                 id=cid,

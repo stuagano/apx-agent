@@ -582,49 +582,49 @@ async def _check_obo(headers: dict[str, str] | None) -> dict[str, Any]:
     }
 
 
-async def _check_session_store(session_store: Any | None) -> dict[str, Any]:
-    """Ping the configured session backend with a non-destructive read."""
-    if session_store is None:
+async def _check_conversation_store(conversation_store: Any | None) -> dict[str, Any]:
+    """Ping the configured conversation backend with a non-destructive read."""
+    if conversation_store is None:
         return {
-            "name": "session_store",
+            "name": "conversation_store",
             "status": "skip",
-            "message": "No session store configured",
-            "hint": "Pass session_store= to enable multi-turn history.",
+            "message": "No conversation store configured",
+            "hint": "Pass conversation_store= to enable multi-turn history.",
         }
 
-    store_kind = type(session_store).__name__
+    store_kind = type(conversation_store).__name__
     # InMemory has no backend to reach — report it but don't ping.
-    if store_kind == "InMemorySessionStore":
+    if store_kind == "InMemoryConversationStore":
         return {
-            "name": "session_store",
+            "name": "conversation_store",
             "status": "ok",
             "message": f"{store_kind} (in-process, no backend)",
             "hint": "InMemory history is lost on restart — use Lakebase/Delta for durability.",
         }
 
     def _ping() -> None:
-        # get() of a non-existent id returns None but still exercises the
-        # backend connection (and surfaces auth/network errors).
-        session_store.get("__apx_probe_healthcheck__")
+        # get_conversation() of a non-existent id returns None but still
+        # exercises the backend connection (and surfaces auth/network errors).
+        conversation_store.get_conversation("__apx_probe_healthcheck__")
 
     try:
         await asyncio.wait_for(asyncio.to_thread(_ping), timeout=_CHECK_TIMEOUT_S)
         return {
-            "name": "session_store",
+            "name": "conversation_store",
             "status": "ok",
             "message": f"{store_kind} backend reachable",
             "hint": "",
         }
     except asyncio.TimeoutError:
         return {
-            "name": "session_store",
+            "name": "conversation_store",
             "status": "fail",
             "message": f"{store_kind} ping timed out after {_CHECK_TIMEOUT_S}s",
             "hint": "Backend is slow or unreachable — history will silently fail to load.",
         }
     except Exception as exc:  # noqa: BLE001
         return {
-            "name": "session_store",
+            "name": "conversation_store",
             "status": "fail",
             "message": f"{store_kind}: {str(exc)[:160]}",
             "hint": "Backend unreachable — verify connection settings and credentials.",
@@ -807,7 +807,7 @@ async def _run_probe_checks(
     ctx: AgentContext | None,
     *,
     headers: dict[str, str] | None = None,
-    session_store: Any | None = None,
+    conversation_store: Any | None = None,
 ) -> dict[str, Any]:
     """Run every health check in parallel and assemble a single response."""
     (
@@ -823,7 +823,7 @@ async def _run_probe_checks(
         _check_mlflow_read(),
         _check_resources(ctx),
         _check_obo(headers),
-        _check_session_store(session_store),
+        _check_conversation_store(conversation_store),
         _check_agent_source(),
     )
     checks: list[dict[str, Any]] = [  # type: ignore[list-item]

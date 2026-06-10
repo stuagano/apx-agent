@@ -259,6 +259,7 @@ class DeltaConversationStore(ConversationStore):
 
     def create_conversation(
         self,
+        id: str | None = None,
         kind: str = "default",
         title: str | None = None,
         parent_conversation_id: str | None = None,
@@ -267,6 +268,8 @@ class DeltaConversationStore(ConversationStore):
         """
         Create and persist a new conversation.
 
+        :param id: Caller-specified conversation id, e.g. ``"session_abc123"``.
+            When ``None``, a unique id is generated.
         :param kind: Conversation kind, e.g. ``"default"``.
         :param title: Optional title.
         :param parent_conversation_id: Parent id for child conversations.
@@ -277,7 +280,7 @@ class DeltaConversationStore(ConversationStore):
         """
         self._ensure_tables()
         now = _now_ms()
-        cid = _new_id("conv")
+        cid = id if id is not None else _new_id("conv")
         root_id = self._resolve_root_id(cid, parent_conversation_id)
         sql = self._build_conv_insert(cid, root_id, parent_conversation_id, kind, title, agent_id, now)
         run_sql(self.ws, sql, warehouse_id=self.warehouse_id)

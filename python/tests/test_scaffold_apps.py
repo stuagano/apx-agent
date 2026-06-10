@@ -464,6 +464,6 @@ def test_start_server_loads_agent_config_for_session(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
 
     start_server = (tmp_path / "sess_agent" / "agent_server" / "start_server.py").read_text()
-    # The config must be loaded from pyproject.toml and passed to resolve_session_store.
+    # The config must be loaded from pyproject.toml and passed to resolve_conversation_store.
     assert "_load_agent_config" in start_server
-    assert "resolve_session_store(_agent_config" in start_server
+    assert "resolve_conversation_store(_agent_config" in start_server

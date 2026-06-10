@@ -441,7 +441,115 @@ def resolve_session_store(
         return None
 
 
+def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
+    """Build a ConversationStore from SessionBackendConfig. Returns None on failure.
+
+    :param cfg: A ``SessionBackendConfig`` object with ``type``, ``table_name``,
+        ``instance_name``, ``database``, ``host``, ``warehouse_id``, and
+        ``auto_create`` fields.
+    :param ws: ``WorkspaceClient`` required for Delta and Lakebase backends.
+        ``None`` causes Delta/Lakebase to return ``None`` with a warning.
+    :returns: A :class:`ConversationStore` instance, or ``None`` when the
+        backend is unavailable.
+    :raises ValueError: If required config fields are missing or the type is unknown.
+    """
+    if cfg.type == "inmemory":
+        from ._conversation import InMemoryConversationStore  # noqa: PLC0415
+
+        return InMemoryConversationStore()
+
+    if cfg.type == "delta":
+        if ws is None:
+            logger.warning(
+                "[tool.apx.agent.session] type='delta' requires ws; "
+                "skipping conversation store (deploy with valid Databricks credentials)."
+            )
+            return None
+        if not cfg.table_name:
+            raise ValueError(
+                "[tool.apx.agent.session] type='delta' requires table_name "
+                "(three-part UC name: catalog.schema.base_prefix)."
+            )
+        from ._conversation_delta import DeltaConversationStore  # noqa: PLC0415
+
+        return DeltaConversationStore(
+            table_prefix=cfg.table_name,
+            ws=ws,
+            warehouse_id=getattr(cfg, "warehouse_id", None),
+            auto_create=cfg.auto_create,
+        )
+
+    if cfg.type == "lakebase":
+        if ws is None:
+            logger.warning(
+                "[tool.apx.agent.session] type='lakebase' requires ws; "
+                "skipping conversation store (deploy with valid Databricks credentials)."
+            )
+            return None
+        if not cfg.instance_name or not cfg.database:
+            raise ValueError(
+                "[tool.apx.agent.session] type='lakebase' requires instance_name and database."
+            )
+        from ._lakebase_engine import build_lakebase_engine  # noqa: PLC0415
+        from ._conversation_lakebase import LakebaseConversationStore  # noqa: PLC0415
+        from ._wiring import _resolve_env_var  # noqa: PLC0415
+
+        host = _resolve_env_var(cfg.host) if cfg.host else None
+        engine = build_lakebase_engine(
+            ws=ws, instance_name=cfg.instance_name, database=cfg.database, host=host
+        )
+        base = cfg.table_name or "apx"
+        return LakebaseConversationStore(
+            engine=engine,
+            conversations_table=f"{base}_conversations",
+            items_table=f"{base}_conversation_items",
+            auto_create=cfg.auto_create,
+        )
+
+    raise ValueError(
+        f"[tool.apx.agent.session] unknown type {cfg.type!r}. "
+        "Known: inmemory, delta, lakebase."
+    )
+
+
+def resolve_conversation_store(
+    config: "AgentConfig | None",
+    ws: Any | None,
+    override: Any | None = None,
+    agent: Any | None = None,
+) -> Any | None:
+    """Return a ConversationStore for this agent, or None.
+
+    Precedence: explicit ``override`` arg > config ``session`` block >
+    agent-carried ``session_config`` (e.g. CoworkerAgent) > None.
+
+    :param config: The agent config; its ``session`` block drives backend selection.
+    :param ws: ``WorkspaceClient`` for Delta/Lakebase backends. ``None`` downgrades
+        those backends to ``None`` with a warning.
+    :param override: An explicit :class:`ConversationStore` to use as-is.
+        Bypasses all config resolution when not ``None``.
+    :param agent: Optional agent; its ``session_config`` is consulted when
+        ``config.session`` is absent.
+    :returns: A :class:`ConversationStore` instance, or ``None`` when no
+        session backend is configured or available.
+    """
+    if override is not None:
+        return override
+    config_session = config.session if config is not None else None
+    scfg = config_session if config_session is not None else getattr(agent, "session_config", None)
+    if scfg is None:
+        return None
+    try:
+        return _build_conversation_store(scfg, ws)
+    except (ValueError, ImportError) as exc:
+        logger.warning(
+            "[tool.apx.agent.session] build failed — no conversation store: %s", exc
+        )
+        return None
+
+
 __all__ = [
     "attach_declared_memory",
     "resolve_session_store",
+    "resolve_conversation_store",
 ]

@@ -60,6 +60,14 @@ from typing import TYPE_CHECKING, Any, Callable, Generator, NamedTuple
 from ._agents import BaseAgent
 from ._audit import AuditAttrs
 from ._compile import compile_to_langgraph
+from ._conversation import (
+    ConversationItem,
+    ConversationStore,
+    FunctionCallData,
+    FunctionCallOutputData,
+    MessageData,
+    NewConversationItem,
+)
 from ._mlflow_tracing import safe_span, set_span_outputs
 
 if TYPE_CHECKING:
@@ -89,6 +97,20 @@ class _WsAuth:
 
     ws: "WorkspaceClient"
     headers: Any  # DatabricksAppsHeaders | None
+
+
+@dataclass(frozen=True)
+class _ConvLoad:
+    """Loaded or created conversation with its stored items.
+
+    :param conversation_id: The conversation key from ``custom_inputs``,
+        e.g. ``"thread-abc123"``.
+    :param items: Ascending-ordered ConversationItems already persisted for
+        this conversation. Empty list for a brand-new conversation.
+    """
+
+    conversation_id: str
+    items: list[ConversationItem]
 
 
 class CompiledResponsesAgent(NamedTuple):
@@ -425,93 +447,96 @@ def _flatten_output_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Session helpers (thread_id convention)
+# ConversationStore helpers (thread_id convention)
 # ---------------------------------------------------------------------------
 
 
-def _load_session(
-    store: Any | None, custom_inputs: dict[str, Any] | None
-) -> Any | None:
-    """Load (or create) the session keyed by ``custom_inputs.thread_id``.
+def _load_or_create_conversation(
+    store: ConversationStore | None, custom_inputs: dict[str, Any] | None
+) -> _ConvLoad | None:
+    """Load or create the conversation keyed by ``custom_inputs.thread_id``.
 
     Apps convention: the per-conversation key is ``thread_id`` (cf. the Model
     Serving ``session_id`` convention used by ``_chat_agent.py``). Both are
-    plumbed through ``custom_inputs`` so the apx-agent SessionStore handles
-    them identically.
+    plumbed through ``custom_inputs`` so the ConversationStore handles them.
 
-    On ``StoreError`` (warehouse cold-start, permissions, transient failure)
-    the agent degrades to sessionless rather than blocking the response.
+    On failure the agent degrades to sessionless rather than blocking the response.
+
+    :param store: The conversation store, or ``None`` for no-op.
+    :param custom_inputs: Per-request custom inputs, e.g.
+        ``{"thread_id": "my_conv_id"}``.
+    :returns: A :class:`_ConvLoad` on success; ``None`` otherwise.
     """
     if store is None or not custom_inputs:
         return None
-    thread_id = custom_inputs.get("thread_id") or custom_inputs.get("session_id")
-    if not thread_id:
+    conv_id = custom_inputs.get("thread_id") or custom_inputs.get("session_id")
+    if not conv_id:
         return None
-    from ._session import StoreError, load_or_create_session
-
     try:
-        return load_or_create_session(store, thread_id)
-    except StoreError as exc:
-        logger.warning("_load_session(%s) degraded to sessionless: %s", thread_id, exc)
+        conv = store.get_conversation(conv_id)
+        if conv is None:
+            store.create_conversation(id=conv_id)
+        page = store.list_items(conv_id, order="asc", limit=10_000)
+        return _ConvLoad(conversation_id=conv_id, items=page.data)
+    except Exception as exc:
+        logger.warning(
+            "_load_or_create_conversation(%s) degraded to sessionless: %s", conv_id, exc
+        )
         return None
 
 
-def _history_to_langchain(history: list[dict[str, Any]]) -> list[Any]:
-    """Convert a session.history (list of {role, content, ...} dicts) to LC msgs."""
-    from langchain_core.messages import (
-        AIMessage,
-        HumanMessage,
-        SystemMessage,
-        ToolMessage,
-    )
+def _conv_items_to_lc_messages(items: list[ConversationItem]) -> list[Any]:
+    """Convert ConversationStore items to langchain BaseMessages for history replay.
 
-    out: list[Any] = []
-    for m in history:
-        role = m.get("role", "user")
-        content = m.get("content", "")
-        if role == "system":
-            out.append(SystemMessage(content=content))
-        elif role == "assistant":
-            # Reconstruct tool_calls onto the AIMessage so a following
-            # ToolMessage isn't orphaned (Databricks-Claude rejects a
-            # tool_result whose tool_call_id matches no AIMessage tool call).
-            # History stamps function calls as OpenAI-shaped tool_calls — see
-            # ``_item_to_history_dict`` — mirror ``_chat_agent._to_langchain_messages``.
-            out.append(
-                AIMessage(content=content, tool_calls=_history_tool_calls(m))
-            )
-        elif role == "tool":
-            out.append(
-                ToolMessage(
-                    content=content,
-                    tool_call_id=str(m.get("tool_call_id", "")),
-                )
-            )
-        else:
-            out.append(HumanMessage(content=content))
-    return out
+    Consecutive ``function_call`` items sharing the same ``response_id`` are
+    coalesced into a single AIMessage so the LLM sees properly paired
+    tool_call/tool_result sequences.
 
-
-def _history_tool_calls(m: dict[str, Any]) -> list[dict[str, Any]]:
-    """Extract langchain-shaped tool_calls from a stored assistant history dict.
-
-    History stores tool calls in the OpenAI wire shape (``{"id", "type",
-    "function": {"name", "arguments"}}``); langchain ``AIMessage`` wants
-    ``{"name", "args", "id"}``. Mirrors ``_chat_agent._to_langchain_messages``.
+    :param items: Ascending-ordered ConversationItems from the store.
+    :returns: A list of langchain BaseMessage objects.
     """
-    tool_calls: list[dict[str, Any]] = []
-    for tc in m.get("tool_calls") or []:
-        if not isinstance(tc, dict):
-            continue
-        fn = tc.get("function", {}) if isinstance(tc.get("function"), dict) else {}
-        tool_calls.append(
-            {
-                "name": fn.get("name", ""),
-                "args": _coerce_args(fn.get("arguments")),
-                "id": tc.get("id", ""),
-            }
-        )
-    return tool_calls
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    result: list[Any] = []
+    i = 0
+    while i < len(items):
+        item = items[i]
+        if item.type == "message":
+            data: MessageData = item.data  # type: ignore[assignment]
+            text = "".join(
+                b.get("text", "") for b in data.content
+                if isinstance(b, dict) and "text" in b
+            )
+            if data.role == "user":
+                result.append(HumanMessage(content=text))
+            else:
+                result.append(AIMessage(content=text))
+            i += 1
+        elif item.type == "function_call":
+            # Coalesce consecutive function_call items with the same response_id
+            # into one AIMessage with tool_calls, to avoid orphaned ToolMessages.
+            current_rid = item.response_id
+            tool_calls: list[dict[str, Any]] = []
+            while (
+                i < len(items)
+                and items[i].type == "function_call"
+                and items[i].response_id == current_rid
+            ):
+                fc: FunctionCallData = items[i].data  # type: ignore[assignment]
+                tool_calls.append({
+                    "name": fc.name,
+                    "args": _coerce_args(fc.arguments),
+                    "id": fc.call_id,
+                })
+                i += 1
+            result.append(AIMessage(content="", tool_calls=tool_calls))
+        elif item.type == "function_call_output":
+            fco: FunctionCallOutputData = item.data  # type: ignore[assignment]
+            result.append(ToolMessage(content=fco.output, tool_call_id=fco.call_id))
+            i += 1
+        else:
+            i += 1  # skip reasoning, compaction, native_tool
+    return result
 
 
 def _coerce_args(arguments: Any) -> dict[str, Any]:
@@ -521,6 +546,10 @@ def _coerce_args(arguments: Any) -> dict[str, Any]:
     string; langchain ``AIMessage.tool_calls[*].args`` validates as a dict and
     raises on a string. Parse JSON strings; fall back to an empty dict for
     unparseable / non-dict values rather than crashing the whole conversion.
+
+    :param arguments: Raw arguments value from a function call, either a dict
+        or a JSON string, e.g. ``'{"query": "hello"}'``.
+    :returns: A dict of parsed arguments, e.g. ``{"query": "hello"}``.
     """
     import json
 
@@ -535,81 +564,111 @@ def _coerce_args(arguments: Any) -> dict[str, Any]:
     return {}
 
 
-def _persist_session(
-    store: Any | None,
-    session: Any | None,
-    *,
-    input_items: list[dict[str, Any]],
-    output_items: list[dict[str, Any]],
-) -> None:
-    """Append the inbound items + outbound items to the session and put it back.
+def _resp_item_to_new_conv_items(
+    item: Any,
+    model: str,
+    response_id: str,
+) -> list[NewConversationItem]:
+    """Convert a single Responses API item to NewConversationItem objects.
 
-    On ``StoreError`` (permissions, warehouse unavailable, transient failure)
-    the turn is silently dropped rather than crashing the response — the same
-    degraded-to-ephemeral policy used by ``_load_session``.
+    Handles message, function_call, and function_call_output item types.
+    Items that cannot be converted (unknown types) are skipped with a warning.
+
+    :param item: A Responses API item — either a Pydantic model with
+        ``model_dump()`` or a plain dict.
+    :param model: The model/endpoint name, e.g. ``"databricks-claude-sonnet-4-6"``.
+        Required for assistant-role and function_call items.
+    :param response_id: Logical turn ID linking input and output items,
+        e.g. ``"turn_abc123"``.
+    :returns: A list of :class:`NewConversationItem` objects.
     """
-    if store is None or session is None:
+    d: dict[str, Any] = item.model_dump() if hasattr(item, "model_dump") else dict(item)
+    item_type = d.get("type", "")
+
+    if item_type == "function_call":
+        return [NewConversationItem(
+            type="function_call",
+            response_id=response_id,
+            data=FunctionCallData(
+                agent=model,
+                name=d.get("name") or "",
+                arguments=d.get("arguments") or "{}",
+                call_id=d.get("call_id") or "",
+            ),
+        )]
+
+    if item_type == "function_call_output":
+        return [NewConversationItem(
+            type="function_call_output",
+            response_id=response_id,
+            data=FunctionCallOutputData(
+                call_id=d.get("call_id") or "",
+                output=str(d.get("output") or ""),
+            ),
+        )]
+
+    if item_type == "message":
+        role = d.get("role", "user")
+        if role not in ("user", "assistant"):
+            logger.warning(
+                "Skipping Responses message item with unsupported role %r", role
+            )
+            return []
+        content_raw = d.get("content", "")
+        if isinstance(content_raw, list):
+            text = "".join(
+                str(p.get("text", "")) for p in content_raw if isinstance(p, dict)
+            )
+        else:
+            text = str(content_raw)
+        content_type = "output_text" if role == "assistant" else "input_text"
+        return [NewConversationItem(
+            type="message",
+            response_id=response_id,
+            data=MessageData(
+                role=role,  # type: ignore[arg-type]
+                content=[{"type": content_type, "text": text}],
+                agent=model if role == "assistant" else None,
+            ),
+        )]
+
+    return []
+
+
+def _persist_conv_turn(
+    store: ConversationStore | None,
+    conv_id: str | None,
+    *,
+    input_items: list[Any],
+    output_items: list[Any],
+    model: str,
+    response_id: str,
+) -> None:
+    """Append Responses API input and output items to the ConversationStore.
+
+    On failure the turn is silently dropped rather than crashing the response.
+
+    :param store: The conversation store, or ``None`` for no-op.
+    :param conv_id: The conversation id to append to, or ``None`` for no-op.
+    :param input_items: Responses API input items for this turn.
+    :param output_items: Responses API output items generated this turn.
+    :param model: Model/endpoint name, e.g. ``"databricks-claude-sonnet-4-6"``.
+    :param response_id: Logical turn ID linking input and output items.
+    """
+    if store is None or conv_id is None:
         return
-    from ._session import StoreError, append_turn
-
-    append_turn(
-        session,
-        input_messages=[
-            _item_to_history_dict(it) for it in input_items
-        ],
-        new_messages=[
-            _item_to_history_dict(it) for it in output_items
-        ],
-    )
+    all_items = list(input_items) + list(output_items)
+    new_items = [
+        ci
+        for it in all_items
+        for ci in _resp_item_to_new_conv_items(it, model, response_id)
+    ]
     try:
-        store.put(session)
-    except StoreError as exc:
+        store.append(conv_id, new_items)
+    except Exception as exc:
         logger.warning(
-            "_persist_session(%s) failed — session not saved (degraded to ephemeral): %s",
-            getattr(session, "session_id", "?"), exc,
+            "_persist_conv_turn(%s) failed — turn not saved: %s", conv_id, exc
         )
-
-
-def _item_to_history_dict(item: Any) -> dict[str, Any]:
-    """Coerce any Responses input/output item to a history dict."""
-    if hasattr(item, "model_dump"):
-        d = item.model_dump()
-    elif isinstance(item, dict):
-        d = dict(item)
-    else:
-        d = {"content": str(item)}
-    # Normalize to {role, content} for storage. Function calls / outputs use
-    # the role field "tool" so the chat-agent code path can read them back.
-    if d.get("type") == "function_call":
-        return {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": d.get("call_id", ""),
-                    "type": "function",
-                    "function": {
-                        "name": d.get("name", ""),
-                        "arguments": d.get("arguments", ""),
-                    },
-                }
-            ],
-        }
-    if d.get("type") == "function_call_output":
-        return {
-            "role": "tool",
-            "content": str(d.get("output", "")),
-            "tool_call_id": d.get("call_id", ""),
-        }
-    role = d.get("role", "user")
-    content = d.get("content", "")
-    if isinstance(content, list):
-        parts: list[str] = []
-        for piece in content:
-            if isinstance(piece, dict) and "text" in piece:
-                parts.append(str(piece["text"]))
-        content = "".join(parts)
-    return {"role": role, "content": content}
 
 
 # ---------------------------------------------------------------------------
@@ -832,7 +891,7 @@ def compile_to_responses_agent(
     agent: BaseAgent,
     *,
     model: str,
-    session_store: Any | None = None,
+    conversation_store: ConversationStore | None = None,
     executor: str = "langgraph",
 ) -> CompiledResponsesAgent:
     """Compile an apx-agent ``BaseAgent`` to the Databricks Apps ResponsesAgent contract.
@@ -845,12 +904,12 @@ def compile_to_responses_agent(
         agent: The apx-agent root agent to wrap. Compiles to a LangGraph
             per-request, just like the ChatAgent path.
         model: Databricks serving endpoint name passed through to compile.
-        session_store: Optional ``SessionStore`` for multi-turn memory. When
-            set, the compiled functions read ``custom_inputs["thread_id"]``
-            (Apps convention) — falling back to ``session_id`` for symmetry
-            — and prepend the session history to the request input before
-            running the agent. After the run, the new output is appended and
-            persisted. When the key is absent the session machinery no-ops.
+        conversation_store: Optional :class:`ConversationStore` for multi-turn
+            memory. When set, the compiled functions read
+            ``custom_inputs["thread_id"]`` (Apps convention) — falling back to
+            ``session_id`` for symmetry — and prepend prior conversation items
+            before running the agent. After the run, the new output is appended
+            and persisted. When the key is absent the session machinery no-ops.
         executor: Inference backend selector.  ``"langgraph"`` (default) uses
             the existing :func:`~apx_agent._compile.compile_to_langgraph` path.
             ``"claude-sdk"`` uses
@@ -879,7 +938,7 @@ def compile_to_responses_agent(
     # Snapshot for closure capture
     _agent = agent
     _model = model
-    _session_store = session_store
+    _conversation_store = conversation_store
     _executor_name = executor
 
     # -----------------------------------------------------------------------
@@ -899,7 +958,9 @@ def compile_to_responses_agent(
         ensure_capture_processor()
 
         custom_inputs: dict[str, Any] = dict(request.custom_inputs or {})
-        session = _load_session(_session_store, custom_inputs)
+        conv = _load_or_create_conversation(_conversation_store, custom_inputs)
+        conv_id = conv.conversation_id if conv is not None else None
+        conv_items = conv.items if conv is not None else []
 
         effective_model = _resolve_model(_model)
         user_token_provided = bool(
@@ -909,25 +970,21 @@ def compile_to_responses_agent(
         with safe_span(
             "ApxResponsesAgent.invoke",
             span_type="AGENT",
-            inputs={"input": [_item_to_history_dict(i) for i in request.input]},
+            inputs={"input": [str(i) for i in request.input]},
             attributes={
                 AuditAttrs.OPERATION: "invoke",
                 AuditAttrs.MODEL_ENDPOINT: effective_model,
                 AuditAttrs.MODEL_INPUT_MESSAGES: len(request.input),
                 AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
-                AuditAttrs.SESSION_ID: (
-                    session.session_id if session is not None else None
-                ),
+                AuditAttrs.SESSION_ID: conv_id,
                 AuditAttrs.MODEL_STREAMING: False,
             },
         ) as span:
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
             ws, req_headers = auth.ws, auth.headers
 
-            # Prepend session history (if any)
-            lc_history = (
-                _history_to_langchain(session.history) if session is not None else []
-            )
+            # Prepend conversation history (if any)
+            lc_history = _conv_items_to_lc_messages(conv_items)
             lc_input = _responses_input_to_langchain(list(request.input))
             graph_input = lc_history + lc_input
 
@@ -974,13 +1031,16 @@ def compile_to_responses_agent(
             )
             set_span_outputs(span, response.model_dump())
 
-            # Persist session
-            _persist_session(
-                _session_store,
-                session,
-                input_items=list(request.input),
-                output_items=output_items,
-            )
+            if conv_id is not None:
+                response_id = str(uuid.uuid4())
+                _persist_conv_turn(
+                    _conversation_store,
+                    conv_id,
+                    input_items=list(request.input),
+                    output_items=output_items,
+                    model=effective_model,
+                    response_id=response_id,
+                )
 
             return response
 
@@ -1009,28 +1069,29 @@ def compile_to_responses_agent(
         ensure_capture_processor()
 
         custom_inputs: dict[str, Any] = dict(request.custom_inputs or {})
-        session = _load_session(_session_store, custom_inputs)
+        conv = _load_or_create_conversation(_conversation_store, custom_inputs)
+        conv_id = conv.conversation_id if conv is not None else None
+        conv_items = conv.items if conv is not None else []
         effective_model = _resolve_model(_model)
         user_token_provided = bool(_peek_user_token(custom_inputs))
 
         with safe_span(
             "ApxResponsesAgent.stream",
             span_type="AGENT",
-            inputs={"input": [_item_to_history_dict(i) for i in request.input]},
+            inputs={"input": [str(i) for i in request.input]},
             attributes={
                 AuditAttrs.OPERATION: "stream",
                 AuditAttrs.MODEL_ENDPOINT: effective_model,
                 AuditAttrs.MODEL_INPUT_MESSAGES: len(request.input),
                 AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
+                AuditAttrs.SESSION_ID: conv_id,
                 AuditAttrs.MODEL_STREAMING: True,
             },
         ):
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
             ws, req_headers = auth.ws, auth.headers
 
-            lc_history = (
-                _history_to_langchain(session.history) if session is not None else []
-            )
+            lc_history = _conv_items_to_lc_messages(conv_items)
             lc_input = _responses_input_to_langchain(list(request.input))
             graph_input = lc_history + lc_input
 
@@ -1099,12 +1160,16 @@ def compile_to_responses_agent(
                 response=final_response,
             )
 
-            _persist_session(
-                _session_store,
-                session,
-                input_items=list(request.input),
-                output_items=output_items,
-            )
+            if conv_id is not None:
+                response_id = str(uuid.uuid4())
+                _persist_conv_turn(
+                    _conversation_store,
+                    conv_id,
+                    input_items=list(request.input),
+                    output_items=output_items,
+                    model=effective_model,
+                    response_id=response_id,
+                )
 
     streaming.__doc__ = (
         "ResponsesAgent streaming handler compiled from "

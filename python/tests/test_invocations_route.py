@@ -61,7 +61,7 @@ def app_and_chat_agent():
 
     original_factory = _ca_module.chat_agent_for
 
-    def _spy_factory(agent_arg, *, model, session_store=None):
+    def _spy_factory(agent_arg, *, model, conversation_store=None):
         ca = original_factory(agent_arg, model=model)
         captured["chat_agent"] = ca
         ca.predict = MagicMock(name="mock_predict")
@@ -278,7 +278,7 @@ def app_with_responses():
 
     captured: dict[str, Any] = {}
 
-    def _fake_compile(agent_arg, *, model, session_store=None, executor="langgraph"):
+    def _fake_compile(agent_arg, *, model, conversation_store=None, executor="langgraph"):
         captured["invoke"] = fake_invoke
         captured["stream"] = fake_stream
         return fake_invoke, fake_stream

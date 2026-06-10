@@ -522,29 +522,31 @@ class TestNoOboFallbackParity:
 # bug. It is documented here rather than forced so the conformance contract is
 # honest:
 #
-#   * ChatAgent (Model Serving) ``_load_session`` reads ``session_id`` ONLY.
-#   * ResponsesAgent (Apps) ``_load_session`` reads ``thread_id`` OR
-#     ``session_id`` (Apps convention is ``thread_id``, with ``session_id`` as
-#     a symmetry fallback).
+#   * ChatAgent (Model Serving) ``_load_or_create_conversation`` reads
+#     ``session_id`` ONLY.
+#   * ResponsesAgent (Apps) ``_load_or_create_conversation`` reads ``thread_id``
+#     OR ``session_id`` (Apps convention is ``thread_id``, with ``session_id``
+#     as a symmetry fallback).
 #
-# Consequence: a request carrying ONLY ``thread_id`` loads a session on the
-# Responses path but NOT on the ChatAgent path. With ``session_id``, BOTH load.
+# Consequence: a request carrying ONLY ``thread_id`` loads a conversation on
+# the Responses path but NOT on the ChatAgent path. With ``session_id``, BOTH
+# load.
 
 
 class TestSessionKeyAsymmetryIsKnown:
     def test_session_id_loads_in_both_thread_id_only_loads_in_responses(
         self,
     ) -> None:
-        from apx_agent import InMemorySessionStore
+        from apx_agent import InMemoryConversationStore
 
         # --- session_id: both adapters load -------------------------------
-        store_chat = InMemorySessionStore()
-        store_resp = InMemorySessionStore()
+        store_chat: InMemoryConversationStore = InMemoryConversationStore()
+        store_resp: InMemoryConversationStore = InMemoryConversationStore()
         agent = _make_agent()
 
-        chat = chat_agent_for(agent, model=MODEL, session_store=store_chat)
+        chat = chat_agent_for(agent, model=MODEL, conversation_store=store_chat)
         resp_ns, _ = compile_to_responses_agent(
-            agent, model=MODEL, session_store=store_resp
+            agent, model=MODEL, conversation_store=store_resp
         )
 
         fake = MagicMock(name="g")
@@ -571,16 +573,16 @@ class TestSessionKeyAsymmetryIsKnown:
                 )
             )
 
-        # With session_id, BOTH adapters created+persisted a session.
-        assert store_chat.get("s-1") is not None
-        assert store_resp.get("s-1") is not None
+        # With session_id, BOTH adapters created+persisted a conversation.
+        assert store_chat.get_conversation("s-1") is not None
+        assert store_resp.get_conversation("s-1") is not None
 
         # --- thread_id ONLY: Responses loads, ChatAgent does NOT ----------
-        store_chat2 = InMemorySessionStore()
-        store_resp2 = InMemorySessionStore()
-        chat2 = chat_agent_for(agent, model=MODEL, session_store=store_chat2)
+        store_chat2: InMemoryConversationStore = InMemoryConversationStore()
+        store_resp2: InMemoryConversationStore = InMemoryConversationStore()
+        chat2 = chat_agent_for(agent, model=MODEL, conversation_store=store_chat2)
         resp_ns2, _ = compile_to_responses_agent(
-            agent, model=MODEL, session_store=store_resp2
+            agent, model=MODEL, conversation_store=store_resp2
         )
 
         with patch(
@@ -603,5 +605,5 @@ class TestSessionKeyAsymmetryIsKnown:
             )
 
         # KNOWN ASYMMETRY: Responses honors thread_id; ChatAgent ignores it.
-        assert store_resp2.get("t-1") is not None
-        assert store_chat2.get("t-1") is None
+        assert store_resp2.get_conversation("t-1") is not None
+        assert store_chat2.get_conversation("t-1") is None

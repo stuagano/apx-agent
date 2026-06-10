@@ -45,12 +45,21 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generator
 
 from ._agents import BaseAgent
 from ._audit import AuditAttrs, set_audit_attrs
 from ._compile import compile_to_langgraph
+from ._conversation import (
+    ConversationItem,
+    ConversationStore,
+    FunctionCallData,
+    FunctionCallOutputData,
+    MessageData,
+    NewConversationItem,
+)
 from ._mlflow_tracing import safe_span, set_span_outputs
 
 if TYPE_CHECKING:
@@ -63,11 +72,158 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ── ConversationStore ↔ ChatAgentMessage conversion ──────────────────────────
+
+
+def _chat_msg_to_new_items(
+    msg: "ChatAgentMessage",
+    model: str,
+    response_id: str,
+) -> list[NewConversationItem]:
+    """Convert a single ChatAgentMessage to one or more NewConversationItem objects.
+
+    Tool-call assistant messages expand to N ``function_call`` items sharing the
+    same ``response_id``; plain text messages become a single ``message`` item;
+    tool result messages (role ``"tool"``) become ``function_call_output`` items.
+
+    :param msg: The MLflow ChatAgentMessage to convert.
+    :param model: The model/endpoint name, e.g. ``"databricks-claude-sonnet-4-6"``.
+        Required for assistant-role items.
+    :param response_id: Logical turn ID linking input and output items,
+        e.g. ``"turn_abc123"``.
+    :returns: A list of :class:`NewConversationItem` objects (may be empty for
+        unsupported roles).
+    """
+    if msg.role == "tool":
+        return [NewConversationItem(
+            type="function_call_output",
+            response_id=response_id,
+            data=FunctionCallOutputData(
+                call_id=msg.tool_call_id or "",  # str field; ChatAgentMessage.tool_call_id is Optional
+                output=msg.content or "",        # str field; ChatAgentMessage.content is Optional
+            ),
+        )]
+
+    if msg.role == "assistant" and msg.tool_calls:
+        items: list[NewConversationItem] = []
+        for tc in msg.tool_calls:
+            tc_d = tc.model_dump() if hasattr(tc, "model_dump") else tc
+            if not isinstance(tc_d, dict):
+                continue
+            fn = tc_d.get("function") or {}
+            if not isinstance(fn, dict):
+                fn = {}
+            items.append(NewConversationItem(
+                type="function_call",
+                response_id=response_id,
+                data=FunctionCallData(
+                    agent=model,
+                    name=fn.get("name") or "",        # str field; tool_call dicts may omit name
+                    arguments=fn.get("arguments") or "{}",  # str field; default to empty JSON obj
+                    call_id=tc_d.get("id") or "",     # str field; tool_call dicts may omit id
+                ),
+            ))
+        return items
+
+    if msg.role not in ("user", "assistant"):
+        logger.warning(
+            "Skipping conversation item with unsupported role %r (only 'user', "
+            "'assistant', 'tool' are stored)", msg.role
+        )
+        return []
+
+    content_type = "output_text" if msg.role == "assistant" else "input_text"
+    return [NewConversationItem(
+        type="message",
+        response_id=response_id,
+        data=MessageData(
+            role=msg.role,  # type: ignore[arg-type]
+            content=[{"type": content_type, "text": msg.content or ""}],  # str field
+            agent=model if msg.role == "assistant" else None,
+        ),
+    )]
+
+
+def _conv_items_to_chat_msgs(items: list[ConversationItem]) -> list["ChatAgentMessage"]:
+    """Convert a list of ConversationItems to ChatAgentMessage objects for history replay.
+
+    Consecutive ``function_call`` items sharing the same ``response_id`` are
+    coalesced into a single assistant ChatAgentMessage with ``tool_calls`` set,
+    matching the format the LangGraph chat loop expects.
+
+    :param items: Ascending-ordered ConversationItems from the store.
+    :returns: A list of :class:`ChatAgentMessage` objects suitable for prepending
+        to the current turn's messages.
+    """
+    from mlflow.types.agent import ChatAgentMessage
+
+    result: list[ChatAgentMessage] = []
+    i = 0
+    while i < len(items):
+        item = items[i]
+        if item.type == "message":
+            data: MessageData = item.data  # type: ignore[assignment]
+            text = "".join(
+                b.get("text", "") for b in data.content
+                if isinstance(b, dict) and "text" in b
+            )
+            result.append(ChatAgentMessage(role=data.role, content=text, id=item.id))
+            i += 1
+        elif item.type == "function_call":
+            # Coalesce consecutive function_call items with the same response_id
+            # into one assistant message so the LLM sees paired tool_call/tool_result.
+            current_rid = item.response_id
+            tool_calls: list[dict[str, Any]] = []
+            while (
+                i < len(items)
+                and items[i].type == "function_call"
+                and items[i].response_id == current_rid
+            ):
+                fc: FunctionCallData = items[i].data  # type: ignore[assignment]
+                tool_calls.append({
+                    "id": fc.call_id,
+                    "type": "function",
+                    "function": {"name": fc.name, "arguments": fc.arguments},
+                })
+                i += 1
+            result.append(ChatAgentMessage(
+                role="assistant",
+                content="",
+                id=items[i - 1].id,
+                tool_calls=tool_calls if tool_calls else None,
+            ))
+        elif item.type == "function_call_output":
+            fco: FunctionCallOutputData = item.data  # type: ignore[assignment]
+            result.append(ChatAgentMessage(
+                role="tool",
+                content=fco.output,
+                id=item.id,
+                tool_call_id=fco.call_id,
+            ))
+            i += 1
+        else:
+            i += 1  # skip reasoning, compaction, native_tool
+    return result
+
 
 @dataclass(frozen=True)
 class _WsAndHeaders:
     ws: Any
     headers: Any
+
+
+@dataclass(frozen=True)
+class _ChatConvLoad:
+    """Loaded or created conversation with its history as ChatAgentMessages.
+
+    :param conversation_id: The conversation key from ``custom_inputs``,
+        e.g. ``"session-abc123"``.
+    :param messages: History messages already persisted for this conversation,
+        converted to ``ChatAgentMessage`` format. Empty list for a new conversation.
+    """
+
+    conversation_id: str
+    messages: list[Any]  # list[ChatAgentMessage]; Any avoids mlflow import at class-def time
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +407,7 @@ def chat_agent_for(
     agent: BaseAgent,
     *,
     model: str,
-    session_store: Any | None = None,
+    conversation_store: ConversationStore | None = None,
 ) -> Any:
     """Return an MLflow ``ChatAgent`` wrapping ``agent``.
 
@@ -259,12 +415,12 @@ def chat_agent_for(
         agent: An apx-agent ``BaseAgent`` (currently ``LlmAgent`` or
             ``SequentialAgent`` — see ``compile_to_langgraph`` for the list).
         model: Databricks serving endpoint name passed through to compile.
-        session_store: Optional ``SessionStore`` for multi-turn memory.
-            When provided, the returned ChatAgent reads ``session_id`` from
-            ``custom_inputs`` and uses it to load history before the LLM
-            sees the new turn, then appends new messages and persists.
-            When ``custom_inputs["session_id"]`` is absent, sessions are
-            silently skipped (single-turn behavior preserved).
+        conversation_store: Optional :class:`ConversationStore` for multi-turn
+            memory. When provided, the returned ChatAgent reads ``session_id``
+            from ``custom_inputs`` (or ``conversation_id`` from ``context``,
+            bridged in ``_invocations.py``) and uses it to load prior turns
+            before the LLM sees the new turn, then appends new items and persists.
+            When the key is absent, multi-turn memory is silently skipped.
 
     Returns:
         An instance of an ``mlflow.pyfunc.ChatAgent`` subclass. Usable
@@ -281,8 +437,6 @@ def chat_agent_for(
         ChatAgentResponse,
     )
 
-    from ._session import Session, append_turn, load_or_create_session
-
     class _ApxChatAgent(ChatAgent):
         """MLflow ChatAgent backed by an apx-agent declarative tree."""
 
@@ -290,11 +444,11 @@ def chat_agent_for(
             self,
             inner: BaseAgent,
             model_endpoint: str,
-            session_store: Any | None = None,
+            conversation_store: ConversationStore | None = None,
         ) -> None:
             self._agent = inner
             self._model = model_endpoint
-            self._session_store = session_store
+            self._conversation_store = conversation_store
 
         def _resolve_model(self) -> str:
             """Return the model endpoint to use for this request.
@@ -306,40 +460,75 @@ def chat_agent_for(
             """
             return os.environ.get("APX_AGENT_MODEL_OVERRIDE") or self._model
 
-        def _load_session(self, custom_inputs: dict[str, Any] | None) -> Session | None:
-            if self._session_store is None or not custom_inputs:
+        def _load_or_create_conversation(
+            self,
+            custom_inputs: dict[str, Any] | None,
+        ) -> _ChatConvLoad | None:
+            """Load the conversation and return its id and history.
+
+            Returns ``None`` when no conversation store is configured or no
+            session key is present in ``custom_inputs``. On backend failure,
+            logs a warning and returns ``None`` (degrades to a sessionless turn).
+
+            :param custom_inputs: Per-request custom inputs dict from the caller,
+                e.g. ``{"session_id": "my_session"}``.
+            :returns: A :class:`_ChatConvLoad` on success; ``None`` otherwise.
+            """
+            if self._conversation_store is None or not custom_inputs:
                 return None
-            session_id = custom_inputs.get("session_id")
-            if not session_id:
+            conv_id = custom_inputs.get("session_id")
+            if not conv_id:
                 return None
             try:
-                return load_or_create_session(self._session_store, session_id)
-            except StoreError as exc:
-                # Backend read failure (e.g. warehouse cold-start timeout). Log
-                # and degrade to a sessionless turn rather than surfacing a 500.
-                # We do NOT persist at the end of this turn so we can't clobber
-                # durable history — the session is treated as ephemeral.
-                # (Audit H19 rationale: propagating was correct to avoid silent
-                # history clobber, but a silent 500 is worse UX than a degraded
-                # turn. The persist path is also guarded: see _persist_turn.)
+                conv = self._conversation_store.get_conversation(conv_id)
+                if conv is None:
+                    self._conversation_store.create_conversation(id=conv_id)
+                page = self._conversation_store.list_items(
+                    conv_id, order="asc", limit=10_000
+                )
+                history = _conv_items_to_chat_msgs(page.data)
+                return _ChatConvLoad(conversation_id=conv_id, messages=history)
+            except Exception as exc:
                 logger.warning(
-                    "_load_session(%s) degraded to sessionless: %s", session_id, exc
+                    "_load_or_create_conversation(%s) degraded to sessionless: %s",
+                    conv_id, exc,
                 )
                 return None
 
-        def _persist_turn(
+        def _persist_conv_turn(
             self,
-            session: Session | None,
+            conv_id: str | None,
             *,
             input_messages: list[ChatAgentMessage],
             new_messages: list[ChatAgentMessage],
+            model: str,
+            response_id: str,
         ) -> None:
-            if session is None or self._session_store is None:
+            """Append the inbound + outbound messages as ConversationStore items.
+
+            No-ops when ``conv_id`` is ``None`` or no conversation store is set.
+            On backend failure, logs a warning (degrades to ephemeral turn).
+
+            :param conv_id: The conversation id to append to.
+            :param input_messages: User-sent messages for this turn.
+            :param new_messages: Agent-generated messages produced this turn.
+            :param model: Model endpoint name, e.g. ``"databricks-claude-sonnet-4-6"``.
+            :param response_id: Logical turn ID linking input and output items.
+            """
+            if conv_id is None or self._conversation_store is None:
                 return
-            input_dicts = [m.model_dump() for m in input_messages]
-            new_dicts = [m.model_dump() for m in new_messages]
-            append_turn(session, input_messages=input_dicts, new_messages=new_dicts)
-            self._session_store.put(session)
+            all_msgs = list(input_messages) + list(new_messages)
+            new_items = [
+                item
+                for msg in all_msgs
+                for item in _chat_msg_to_new_items(msg, model, response_id)
+            ]
+            try:
+                self._conversation_store.append(conv_id, new_items)
+            except Exception as exc:
+                logger.warning(
+                    "_persist_conv_turn(%s) failed — turn not saved: %s", conv_id, exc
+                )
 
         def predict(
             self,
@@ -353,23 +542,13 @@ def chat_agent_for(
             from ._trace_store import ensure_capture_processor
             ensure_capture_processor()
 
-            session = self._load_session(custom_inputs)
-            # If a session exists, prepend its history so the LLM sees prior
-            # turns. The session itself owns the history; the user just sent
-            # ``messages`` for this turn.
-            prepended_messages: list[ChatAgentMessage] = list(messages)
-            if session is not None and session.history:
-                history_msgs = [
-                    ChatAgentMessage(
-                        role=m.get("role", "user"),
-                        content=m.get("content", ""),
-                        id=m.get("id"),
-                        tool_calls=m.get("tool_calls"),
-                        tool_call_id=m.get("tool_call_id"),
-                    )
-                    for m in session.history
-                ]
-                prepended_messages = history_msgs + prepended_messages
+            conv = self._load_or_create_conversation(custom_inputs)
+            conv_id = conv.conversation_id if conv is not None else None
+            history_msgs = conv.messages if conv is not None else []
+
+            prepended_messages: list[ChatAgentMessage] = (
+                history_msgs + list(messages) if history_msgs else list(messages)
+            )
 
             user_token_provided = bool(
                 custom_inputs and custom_inputs.get("user_token")
@@ -384,7 +563,7 @@ def chat_agent_for(
                     AuditAttrs.MODEL_ENDPOINT: effective_model,
                     AuditAttrs.MODEL_INPUT_MESSAGES: len(prepended_messages),
                     AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
-                    AuditAttrs.SESSION_ID: (session.session_id if session else ""),
+                    AuditAttrs.SESSION_ID: conv_id,
                     AuditAttrs.MODEL_STREAMING: False,
                 },
             ) as span:
@@ -415,11 +594,12 @@ def chat_agent_for(
                 response = ChatAgentResponse(messages=new_messages)
                 set_span_outputs(span, response.model_dump())
 
-                # Persist the inbound turn + the new messages.
-                self._persist_turn(
-                    session,
+                self._persist_conv_turn(
+                    conv_id,
                     input_messages=messages,
                     new_messages=new_messages,
+                    model=effective_model,
+                    response_id=str(uuid.uuid4()),
                 )
 
                 return response
@@ -434,22 +614,13 @@ def chat_agent_for(
             from ._trace_store import ensure_capture_processor
             ensure_capture_processor()
 
-            session = self._load_session(custom_inputs)
-            # If a session exists, prepend its history so the LLM sees prior
-            # turns — mirrors ``predict`` and the TS ``predictStream``.
-            prepended_messages: list[ChatAgentMessage] = list(messages)
-            if session is not None and session.history:
-                history_msgs = [
-                    ChatAgentMessage(
-                        role=m.get("role", "user"),
-                        content=m.get("content", ""),
-                        id=m.get("id"),
-                        tool_calls=m.get("tool_calls"),
-                        tool_call_id=m.get("tool_call_id"),
-                    )
-                    for m in session.history
-                ]
-                prepended_messages = history_msgs + prepended_messages
+            conv = self._load_or_create_conversation(custom_inputs)
+            conv_id = conv.conversation_id if conv is not None else None
+            history_msgs = conv.messages if conv is not None else []
+
+            prepended_messages: list[ChatAgentMessage] = (
+                history_msgs + list(messages) if history_msgs else list(messages)
+            )
 
             user_token_provided = bool(
                 custom_inputs and custom_inputs.get("user_token")
@@ -464,7 +635,7 @@ def chat_agent_for(
                     AuditAttrs.MODEL_ENDPOINT: effective_model,
                     AuditAttrs.MODEL_INPUT_MESSAGES: len(prepended_messages),
                     AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
-                    AuditAttrs.SESSION_ID: (session.session_id if session else ""),
+                    AuditAttrs.SESSION_ID: conv_id,
                     AuditAttrs.MODEL_STREAMING: True,
                 },
             ) as span:
@@ -501,13 +672,15 @@ def chat_agent_for(
                 # Persist the inbound turn + the new messages — mirrors
                 # ``predict`` so streaming multi-turn conversations remember
                 # prior turns instead of forgetting them.
-                self._persist_turn(
-                    session,
+                self._persist_conv_turn(
+                    conv_id,
                     input_messages=messages,
                     new_messages=new_messages,
+                    model=effective_model,
+                    response_id=str(uuid.uuid4()),
                 )
 
-    return _ApxChatAgent(agent, model, session_store=session_store)
+    return _ApxChatAgent(agent, model, conversation_store=conversation_store)
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +692,7 @@ def compile_to_chat_agent(
     agent: BaseAgent,
     *,
     model: str,
-    session_store: Any | None = None,
+    conversation_store: ConversationStore | None = None,
 ) -> Any:
     """Canonical name for ``chat_agent_for`` — apx-agent compiles to a ChatAgent.
 
@@ -529,7 +702,7 @@ def compile_to_chat_agent(
         from apx_agent import Agent, compile_to_chat_agent
         chat = compile_to_chat_agent(my_agent, model="databricks-claude-sonnet-4-6")
     """
-    return chat_agent_for(agent, model=model, session_store=session_store)
+    return chat_agent_for(agent, model=model, conversation_store=conversation_store)
 
 
 # ---------------------------------------------------------------------------

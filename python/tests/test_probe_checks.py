@@ -85,7 +85,7 @@ class TestProbeChecks:
         assert names["mlflow_export"] == "ok"
         assert names["resources"] == "skip"
         assert names["obo_identity"] == "skip"  # not in Apps context under test
-        assert names["session_store"] == "skip"  # none configured
+        assert names["conversation_store"] == "skip"  # none configured
         assert data["overall"] == "ok"
 
     @pytest.mark.asyncio
@@ -344,36 +344,36 @@ class TestCheckObo:
         assert "OBO" in result["hint"]
 
 
-class TestCheckSessionStore:
+class TestCheckConversationStore:
     @pytest.mark.asyncio
     async def test_skips_when_none(self):
-        from apx_agent._ui_probe import _check_session_store
-        result = await _check_session_store(None)
+        from apx_agent._ui_probe import _check_conversation_store
+        result = await _check_conversation_store(None)
         assert result["status"] == "skip"
 
     @pytest.mark.asyncio
     async def test_inmemory_ok_without_ping(self):
-        from apx_agent import InMemorySessionStore
-        from apx_agent._ui_probe import _check_session_store
-        result = await _check_session_store(InMemorySessionStore())
+        from apx_agent import InMemoryConversationStore
+        from apx_agent._ui_probe import _check_conversation_store
+        result = await _check_conversation_store(InMemoryConversationStore())
         assert result["status"] == "ok"
         assert "in-process" in result["message"]
 
     @pytest.mark.asyncio
     async def test_ping_reachable(self):
-        from apx_agent._ui_probe import _check_session_store
+        from apx_agent._ui_probe import _check_conversation_store
         store = MagicMock()
-        store.get = MagicMock(return_value=None)
-        result = await _check_session_store(store)
+        store.get_conversation = MagicMock(return_value=None)
+        result = await _check_conversation_store(store)
         assert result["status"] == "ok"
-        store.get.assert_called_once()
+        store.get_conversation.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_ping_failure(self):
-        from apx_agent._ui_probe import _check_session_store
+        from apx_agent._ui_probe import _check_conversation_store
         store = MagicMock()
-        store.get = MagicMock(side_effect=Exception("connection refused"))
-        result = await _check_session_store(store)
+        store.get_conversation = MagicMock(side_effect=Exception("connection refused"))
+        result = await _check_conversation_store(store)
         assert result["status"] == "fail"
         assert "connection refused" in result["message"]
 
@@ -528,7 +528,7 @@ class TestInvocationsSessionBridge:
         mock_ca = MagicMock()
         mock_ca.predict.return_value = ChatAgentResponse(messages=[])
 
-        def _spy(agent_arg, *, model, session_store=None):
+        def _spy(agent_arg, *, model, conversation_store=None):
             captured["chat_agent"] = mock_ca
             return mock_ca
 
@@ -564,7 +564,7 @@ class TestInvocationsSessionBridge:
         mock_ca = MagicMock()
         mock_ca.predict.return_value = ChatAgentResponse(messages=[])
 
-        def _spy(agent_arg, *, model, session_store=None):
+        def _spy(agent_arg, *, model, conversation_store=None):
             captured["chat_agent"] = mock_ca
             return mock_ca
 
