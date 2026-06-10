@@ -55,11 +55,22 @@ Before continuing, confirm your workspace has:
 
 ### Step 4 — Install apx-agent
 
+**As a global CLI tool** (recommended — makes `apx-agent` available from any terminal):
+
 ```bash
-uv add apx-agent
+uv tool install apx-agent
 ```
 
-Or pin a specific version: `uv add "apx-agent==0.3.4"`. To track `main`: `uv add "apx-agent @ git+https://github.com/stuagano/apx-agent.git@main#subdirectory=python"`.
+This adds `apx-agent` to your PATH so you can run `apx-agent list`, `apx-agent doctor`, etc. from anywhere without activating a venv.
+
+> **Already have a project?** Also add it as a project dependency so your `uv.lock` pins the exact version:
+> ```bash
+> uv add apx-agent
+> ```
+
+To pin a specific version: `uv tool install "apx-agent==0.3.4"`. To track `main`: `uv tool install "apx-agent @ git+https://github.com/stuagano/apx-agent.git@main#subdirectory=python"`.
+
+> **Using `uv run` instead?** All commands in this guide also work as `uv run apx-agent <cmd>` from inside your project directory — `uv run` picks up the project's venv automatically.
 
 ### Verify your setup
 

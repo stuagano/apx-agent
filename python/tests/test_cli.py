@@ -354,6 +354,7 @@ def test_deploy_cli_flag_wins_over_pyproject(
     _write_agent_module(tmp_path)
     (tmp_path / "pyproject.toml").write_text(
         '[tool.apx.agent]\n'
+        'name = "test-agent"\n'
         'experiment = "/Users/me/agents/from-pyproject"\n'
     )
     monkeypatch.chdir(tmp_path)
@@ -993,7 +994,7 @@ def test_test_default_prompt_when_none_supplied(
 ) -> None:
     _write_agent_module(tmp_path)
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.agent]\nmodel = "databricks-claude-sonnet-4-6"\n'
+        '[tool.apx.agent]\nname = "test-agent"\nmodel = "databricks-claude-sonnet-4-6"\n'
     )
     monkeypatch.chdir(tmp_path)
 
@@ -3350,7 +3351,13 @@ class TestPublish:
 
     def test_happy_path(self):
         fake_result = {"tool_id": "tid-123", "status": "ok"}
-        with patch("apx_agent.publish_to_supervisor", return_value=fake_result) as mock_pub:
+        mock_ws = MagicMock()
+        mock_ws.config.host = "https://my-workspace.databricks.com"
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             patch("databricks.sdk.config.Config"), \
+             patch("apx_agent.publish_to_supervisor", return_value=fake_result) as mock_pub, \
+             patch("apx_agent.publish_to_registry"), \
+             patch("apx_agent._publish.publish_tools_to_registry", return_value=0):
             result = CliRunner().invoke(main, [
                 "publish",
                 "--endpoint", "my-endpoint",

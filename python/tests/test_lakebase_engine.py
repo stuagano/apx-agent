@@ -17,6 +17,7 @@ def _mock_ws(token: str = "test-tok") -> Any:
 
 
 def test_build_lakebase_engine_returns_engine():
+    pytest.importorskip("psycopg")
     sqlalchemy = pytest.importorskip("sqlalchemy")
     from apx_agent._lakebase_engine import build_lakebase_engine
     ws = _mock_ws()
@@ -27,6 +28,7 @@ def test_build_lakebase_engine_returns_engine():
 
 
 def test_do_connect_listener_mints_and_injects_token():
+    pytest.importorskip("psycopg")
     pytest.importorskip("sqlalchemy")
     from apx_agent._lakebase_engine import build_lakebase_engine
     ws = _mock_ws("fresh-tok")
@@ -43,6 +45,7 @@ def test_do_connect_listener_mints_and_injects_token():
 
 
 def test_build_lakebase_engine_host_defaults_to_provided():
+    pytest.importorskip("psycopg")
     pytest.importorskip("sqlalchemy")
     from apx_agent._lakebase_engine import build_lakebase_engine
     ws = _mock_ws()

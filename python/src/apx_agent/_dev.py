@@ -547,8 +547,13 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
             io_html = ""
 
             # ── Inputs ────────────────────────────────────────────────────────
+            # Conversation view renders only on LLM spans — CHAIN/AGENT wrappers
+            # re-log the same growing message list in a different shape, which is
+            # the "repeats itself going down" noise. Non-LLM spans with message
+            # inputs are silently suppressed (they're message-heavy, so the elif
+            # branch also skips the raw-JSON dump).
             msgs = _is_chat_messages(inputs_obj)
-            if msgs is not None:
+            if msgs is not None and st == "LLM":
                 io_html += (
                     '<div class="io-block"><div class="io-label">Messages</div>'
                     f'<div class="convo">{_render_messages_block(msgs, state["prev"])}</div></div>'
