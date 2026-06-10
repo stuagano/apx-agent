@@ -335,48 +335,6 @@ class TestAttachDeclaredMemory:
         assert "ws=None at this point" not in caplog.text
 
 
-class TestResolveSessionStore:
-    def test_override_wins_over_config(self):
-        from apx_agent._memory_wiring import resolve_session_store
-        from apx_agent._models import AgentConfig, SessionBackendConfig
-
-        explicit = MagicMock()
-        cfg = AgentConfig(name="t", session=SessionBackendConfig(type="inmemory"))
-        result = resolve_session_store(cfg, ws=None, override=explicit)
-        assert result is explicit
-
-    def test_inmemory_config_returns_session_store(self):
-        from apx_agent._memory_wiring import resolve_session_store
-        from apx_agent._session import InMemorySessionStore
-        from apx_agent._models import AgentConfig, SessionBackendConfig
-
-        cfg = AgentConfig(name="t", session=SessionBackendConfig(type="inmemory"))
-        result = resolve_session_store(cfg, ws=None, override=None)
-        assert result is not None
-        assert isinstance(result, InMemorySessionStore)
-
-    def test_no_session_config_returns_none(self):
-        from apx_agent._memory_wiring import resolve_session_store
-        from apx_agent._models import AgentConfig
-
-        cfg = AgentConfig(name="t")
-        result = resolve_session_store(cfg, ws=None, override=None)
-        assert result is None
-
-    def test_lakebase_session_with_no_ws_returns_none_with_warning(self, caplog):
-        from apx_agent._memory_wiring import resolve_session_store
-        from apx_agent._models import AgentConfig, SessionBackendConfig
-        import logging
-
-        cfg = AgentConfig(name="t", session=SessionBackendConfig(
-            type="lakebase", instance_name="inst", database="db"
-        ))
-        with caplog.at_level(logging.WARNING):
-            result = resolve_session_store(cfg, ws=None, override=None)
-        assert result is None
-        assert "ws" in caplog.text.lower() or "lakebase" in caplog.text.lower()
-
-
 # ---------------------------------------------------------------------------
 # Task 1.6 — Spec §6 MANDATORY end-to-end isolation through the
 #             config-declared finalize_agent path
@@ -632,15 +590,6 @@ class TestAgentCarriedConfig:
         attach_declared_memory(agent, cfg, ws=None)
         names = {getattr(fn, "__name__", "") for fn in getattr(agent, "_tool_fns", [])}
         assert any("recall" in n or "remember" in n for n in names)  # inmemory built (no ws needed)
-
-    def test_resolve_session_uses_agent_config_when_no_block(self):
-        from apx_agent._memory_wiring import resolve_session_store
-        from apx_agent._models import AgentConfig, SessionBackendConfig
-        agent = self._agent()
-        agent.session_config = SessionBackendConfig(type="inmemory")
-        cfg = AgentConfig(name="c", description="d")
-        store = resolve_session_store(cfg, ws=None, agent=agent)
-        assert store is not None
 
 
 class TestLocalDevPrincipal:

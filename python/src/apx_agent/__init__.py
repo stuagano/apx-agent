@@ -144,17 +144,6 @@ from ._tool import ToolMetadata, get_tool_metadata, tool
 from ._tool_factory import build_tool, resolve_description
 from ._tool_publish import PublishResult, publish_tools_to_uc
 
-# Session / multi-turn memory
-from ._session import (
-    InMemorySessionStore,
-    Session,
-    SessionStore,
-    append_turn,
-    load_or_create_session,
-)
-from ._session_delta import DeltaSessionStore
-from ._session_lakebase import LakebaseSessionStore
-
 # Conversation store (row-per-message, cursor pagination, response_id chaining)
 from ._conversation import (
     CompactionData,
@@ -211,14 +200,6 @@ from ._prompt_assembly import (
     assemble_context,
     assemble_example_context,
     assemble_memory_context,
-)
-
-# Example mining — extract few-shot examples from session history
-from ._example_mining import (
-    MineResult,
-    Turn as ExampleMiningTurn,
-    mine_examples,
-    pair_turns,
 )
 
 # Memory consolidation — LLM-summarize older memories into a rollup row
@@ -466,14 +447,6 @@ __all__ = [
     "get_tool_metadata",
     "publish_tools_to_uc",
     "PublishResult",
-    # Session / multi-turn memory
-    "Session",
-    "SessionStore",
-    "InMemorySessionStore",
-    "DeltaSessionStore",
-    "LakebaseSessionStore",
-    "append_turn",
-    "load_or_create_session",
     # Conversation store
     "Conversation",
     "ConversationItem",
@@ -521,11 +494,6 @@ __all__ = [
     "assemble_context",
     "assemble_example_context",
     "assemble_memory_context",
-    # Example mining
-    "ExampleMiningTurn",
-    "MineResult",
-    "mine_examples",
-    "pair_turns",
     # Memory consolidation
     "ConsolidateResult",
     "consolidate_memories",

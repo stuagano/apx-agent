@@ -1,6 +1,6 @@
 """Shared Lakebase (Databricks managed Postgres) engine builder.
 
-Both ``LakebaseMemoryStore`` and ``LakebaseSessionStore`` require a SQLAlchemy
+``LakebaseMemoryStore`` and ``LakebaseConversationStore`` require a SQLAlchemy
 ``Engine`` whose ``do_connect`` listener mints fresh OAuth tokens from the
 Databricks SDK. This module is the single source of truth for that.
 

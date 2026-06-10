@@ -7,8 +7,8 @@ Two entry points:
   ``agent._register_tool``.  Called from ``finalize_agent`` before the
   A2A card snapshot (``_wiring.py:229``).  Idempotent via sentinel.
 
-- ``resolve_session_store(config, ws, override=None)`` — return the
-  explicit override if provided; else build a session store from
+- ``resolve_conversation_store(config, ws, override=None)`` — return the
+  explicit override if provided; else build a conversation store from
   ``config.session``; else ``None``.  Called in the ``create_app``
   lifespan to feed ``mount_invocations_route``.
 
@@ -123,67 +123,6 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
 
     raise ValueError(
         f"[tool.apx.agent.memory] unknown type {cfg.type!r}. "
-        "Known: inmemory, delta, lakebase."
-    )
-
-
-def _build_session_store(cfg: Any, ws: Any | None) -> Any | None:
-    """Build a SessionStore from SessionBackendConfig.  Returns None on failure."""
-    if cfg.type == "inmemory":
-        from ._session import InMemorySessionStore  # noqa: PLC0415
-
-        return InMemorySessionStore()
-
-    if cfg.type == "delta":
-        if ws is None:
-            logger.warning(
-                "[tool.apx.agent.session] type='delta' requires ws; "
-                "skipping session store (deploy with valid Databricks credentials)."
-            )
-            return None
-        if not cfg.table_name:
-            raise ValueError(
-                "[tool.apx.agent.session] type='delta' requires table_name "
-                "(three-part UC name: catalog.schema.table)."
-            )
-        from ._session_delta import DeltaSessionStore  # noqa: PLC0415
-
-        # DeltaSessionStore takes `table_path` (not `table_name`); verified
-        # against _session_delta.py:72-88.
-        return DeltaSessionStore(
-            ws=ws,
-            table_path=cfg.table_name,  # table_name field → table_path param
-            warehouse_id=getattr(cfg, "warehouse_id", None),
-            auto_create=cfg.auto_create,
-        )
-
-    if cfg.type == "lakebase":
-        if ws is None:
-            logger.warning(
-                "[tool.apx.agent.session] type='lakebase' requires ws; "
-                "skipping session store (deploy with valid Databricks credentials)."
-            )
-            return None
-        if not cfg.instance_name or not cfg.database:
-            raise ValueError(
-                "[tool.apx.agent.session] type='lakebase' requires instance_name and database."
-            )
-        from ._lakebase_engine import build_lakebase_engine  # noqa: PLC0415
-        from ._session_lakebase import LakebaseSessionStore  # noqa: PLC0415
-        from ._wiring import _resolve_env_var  # noqa: PLC0415
-
-        host = _resolve_env_var(cfg.host) if cfg.host else None
-        engine = build_lakebase_engine(
-            ws=ws, instance_name=cfg.instance_name, database=cfg.database, host=host
-        )
-        return LakebaseSessionStore(
-            engine=engine,
-            table_name=cfg.table_name or "apx_sessions",
-            auto_create=cfg.auto_create,
-        )
-
-    raise ValueError(
-        f"[tool.apx.agent.session] unknown type {cfg.type!r}. "
         "Known: inmemory, delta, lakebase."
     )
 
@@ -415,32 +354,6 @@ def attach_declared_memory(
     setattr(agent, "_apx_memory_attached", True)
 
 
-def resolve_session_store(
-    config: "AgentConfig | None",
-    ws: Any | None,
-    override: Any | None = None,
-    agent: Any | None = None,
-) -> Any | None:
-    """Return a SessionStore for this agent, or None.
-
-    Precedence: explicit ``override`` arg > config ``session`` block >
-    agent-carried ``session_config`` (e.g. CoworkerAgent) > None.
-    """
-    if override is not None:
-        return override
-    config_session = config.session if config is not None else None
-    scfg = config_session if config_session is not None else getattr(agent, "session_config", None)
-    if scfg is None:
-        return None
-    try:
-        return _build_session_store(scfg, ws)
-    except (ValueError, ImportError) as exc:
-        logger.warning(
-            "[tool.apx.agent.session] build failed — no session store: %s", exc
-        )
-        return None
-
-
 def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
     """Build a ConversationStore from SessionBackendConfig. Returns None on failure.
 
@@ -550,6 +463,5 @@ def resolve_conversation_store(
 
 __all__ = [
     "attach_declared_memory",
-    "resolve_session_store",
     "resolve_conversation_store",
 ]
