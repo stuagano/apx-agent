@@ -13,7 +13,7 @@ Covers:
   4. OBO header passthrough: when ``custom_inputs.user_token`` is present, the
      compiled graph's tools see the OBO WorkspaceClient — same load-bearing
      contract as ``test_chat_agent.py`` but exercised through the Apps path.
-  5. Session/thread_id support: with a session_store + thread_id, history is
+  5. Session/thread_id support: with a conversation_store + thread_id, history is
      prepended and the new turn is persisted.
   6. Best-effort import: NotImplementedError if mlflow Responses types absent
      (we don't directly test the raise path since mlflow IS installed in CI;
@@ -45,7 +45,7 @@ from langchain_core.messages import SystemMessage  # noqa: E402
 from langchain_core.messages import ToolMessage  # noqa: E402
 
 from apx_agent import (  # noqa: E402
-    InMemorySessionStore,
+    InMemoryConversationStore,
     LlmAgent,
     compile_to_responses_agent,
 )
@@ -57,8 +57,10 @@ from apx_agent._executor import (  # noqa: E402
     TurnComplete,
 )
 from apx_agent._responses_agent import (  # noqa: E402
+    _conv_items_to_lc_messages,
     _executor_events_to_items,
     _lc_to_openai_messages,
+    _persist_conv_turn,
 )
 
 
@@ -331,9 +333,9 @@ class TestUserScopeAuth:
 class TestSessionPersistence:
     def test_thread_id_history_prepended_and_new_turn_persisted(self) -> None:
         agent = LlmAgent(tools=[_trivial_tool])
-        store = InMemorySessionStore()
+        store = InMemoryConversationStore()
         non_streaming, _ = compile_to_responses_agent(
-            agent, model="any", session_store=store
+            agent, model="any", conversation_store=store
         )
 
         # Capture the messages the graph sees so we can assert history was
@@ -366,11 +368,12 @@ class TestSessionPersistence:
         # Turn 2: at least the prior user+assistant pair plus the new user
         assert len(seen_inputs[1]) >= 3
 
-        # And the session store persisted both turns
-        session = store.get("t-1")
-        assert session is not None
+        # The conversation store persisted items for both turns
+        conv = store.get_conversation("t-1")
+        assert conv is not None
+        items = store.list_items("t-1").data
         # 2 input messages + 2 new messages from the assistant = 4
-        assert len(session.history) >= 4
+        assert len(items) >= 4
 
 
 # ---------------------------------------------------------------------------
@@ -381,9 +384,9 @@ class TestSessionPersistence:
 class TestStreamingSession:
     def test_streaming_persists_session_after_stream(self) -> None:
         agent = LlmAgent(tools=[_trivial_tool])
-        store = InMemorySessionStore()
+        store = InMemoryConversationStore()
         _, streaming = compile_to_responses_agent(
-            agent, model="any", session_store=store
+            agent, model="any", conversation_store=store
         )
 
         with patch(
@@ -395,9 +398,10 @@ class TestStreamingSession:
         ):
             list(streaming(_user_request("hi", thread_id="t-stream")))
 
-        session = store.get("t-stream")
-        assert session is not None
-        assert len(session.history) >= 2
+        conv = store.get_conversation("t-stream")
+        assert conv is not None
+        items = store.list_items("t-stream").data
+        assert len(items) >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -646,3 +650,60 @@ class TestClaudeSDKPath:
 
         assert isinstance(resp, ResponsesAgentResponse)
         assert resp.output[0].model_dump()["content"][0]["text"] == "fallback answer"
+
+
+# ---------------------------------------------------------------------------
+# Round-trip: write tool-call turn to store, read back, verify tool_calls survive
+# ---------------------------------------------------------------------------
+
+
+def test_conv_turn_tool_call_round_trip_preserves_tool_calls() -> None:
+    """Write→store→read→convert must not lose tool call data.
+
+    The risky invariant: _resp_item_to_new_conv_items emits FunctionCallData
+    items; _conv_items_to_lc_messages coalesces them into AIMessage.tool_calls.
+    A write/read asymmetry here would silently orphan the follow-on ToolMessage
+    on turn 2, causing the model to see an unmatched tool result.
+    """
+    store = InMemoryConversationStore()
+    store.create_conversation(id="trip-1")
+
+    user_msg = {"type": "message", "role": "user", "content": "call the tool"}
+    func_call = {
+        "type": "function_call",
+        "name": "do_lookup",
+        "call_id": "call-99",
+        "arguments": '{"q": "hello"}',
+    }
+    func_output = {
+        "type": "function_call_output",
+        "call_id": "call-99",
+        "output": "result-data",
+    }
+    assistant_reply = {"type": "message", "role": "assistant", "content": "all done"}
+
+    _persist_conv_turn(
+        store,
+        "trip-1",
+        input_items=[user_msg],
+        output_items=[func_call, func_output, assistant_reply],
+        model="any",
+        response_id="r-trip-1",
+    )
+
+    items = store.list_items("trip-1").data
+    assert len(items) == 4, f"Expected 4 items, got {len(items)}: {[i.type for i in items]}"
+
+    lc = _conv_items_to_lc_messages(items)
+
+    tool_call_msgs = [m for m in lc if isinstance(m, AIMessage) and m.tool_calls]
+    assert tool_call_msgs, "No AIMessage with tool_calls found after round-trip"
+    tc = tool_call_msgs[0].tool_calls[0]
+    assert tc["name"] == "do_lookup"
+    assert tc["id"] == "call-99"
+    assert tc["args"] == {"q": "hello"}
+
+    tool_msgs = [m for m in lc if isinstance(m, ToolMessage)]
+    assert tool_msgs, "No ToolMessage found after round-trip"
+    assert tool_msgs[0].tool_call_id == "call-99"
+    assert tool_msgs[0].content == "result-data"

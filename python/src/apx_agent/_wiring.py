@@ -5,7 +5,7 @@ Mounts the supported Mosaic AI surface on the agent:
   * ``POST /invocations`` — MLflow ChatAgent protocol (Model Serving, Review App,
     Agent Evaluation). OBO header bridge for user-scoped auth in Apps.
   * ``POST /responses`` — MLflow ResponsesAgent protocol (AI Playground, Apps
-    runtime). Same compiled agent, same session_store — no divergence.
+    runtime). Same compiled agent, same conversation_store — no divergence.
   * ``GET /.well-known/agent.json`` — A2A discovery card.
   * ``GET /health`` — liveness probe.
   * ``GET|POST|DELETE /mcp`` — stateless MCP HTTP transport for Genie Code
@@ -663,7 +663,7 @@ def create_app(
     agent: "BaseAgent | None" = None,
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
-    session_store: Any | None = None,
+    conversation_store: Any | None = None,
 ) -> FastAPI:
     """Create a complete FastAPI app: ``/invocations`` + discovery + MCP + dev UI.
 
@@ -671,7 +671,7 @@ def create_app(
     omitted, the config is discovered from the entry-point module's location
     or the current working directory.
 
-    ``session_store`` is an optional ``SessionStore`` (e.g. ``DeltaSessionStore``)
+    ``conversation_store`` is an optional ``ConversationStore`` (e.g. ``DeltaConversationStore``)
     for multi-turn memory. When provided, conversation history is persisted
     across requests keyed by ``conversation_id``.
 
@@ -727,29 +727,29 @@ def create_app(
                 exc,
             )
             app.state.workspace_client = None
-        app.state.session_store = session_store
+        app.state.conversation_store = conversation_store
 
         ctx = await setup_agent(
             app, agent, config, pyproject_path=pyproject_path
         )
 
         # Mount the supported /invocations + /responses routes.
-        # Both use the same resolved session_store. Best-effort — missing
+        # Both use the same resolved conversation_store. Best-effort — missing
         # optional deps log a warning and skip the affected route only.
         if ctx is not None:
             _store: Any = None
             try:
                 from ._invocations import mount_invocations_route, mount_responses_route
-                from ._memory_wiring import resolve_session_store  # noqa: PLC0415
+                from ._memory_wiring import resolve_conversation_store  # noqa: PLC0415
 
-                _store = resolve_session_store(
+                _store = resolve_conversation_store(
                     ctx.config,
                     ws=app.state.workspace_client,
-                    override=session_store,
+                    override=conversation_store,
                     agent=ctx.agent,
                 )
                 mount_invocations_route(
-                    app, ctx.agent, ctx.config, session_store=_store
+                    app, ctx.agent, ctx.config, conversation_store=_store
                 )
             except Exception as exc:
                 logger.warning("Skipping /invocations mount: %s", exc)
@@ -758,7 +758,7 @@ def create_app(
                 from ._invocations import mount_responses_route
 
                 mount_responses_route(
-                    app, ctx.agent, ctx.config, session_store=_store
+                    app, ctx.agent, ctx.config, conversation_store=_store
                 )
             except Exception as exc:
                 logger.warning("Skipping /responses mount: %s", exc)

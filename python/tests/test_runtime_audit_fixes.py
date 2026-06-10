@@ -27,31 +27,40 @@ def test_compile_run_tool_message_uses_tool_call_id() -> None:
     assert tool_msgs and tool_msgs[0].tool_call_id == "call-123"
 
 
-def test_history_to_langchain_reconstructs_tool_calls() -> None:
-    """H2: assistant history with tool_calls must rebuild AIMessage.tool_calls."""
-    from apx_agent._responses_agent import _history_to_langchain
+def test_conv_items_to_lc_messages_reconstructs_tool_calls() -> None:
+    """H2: function_call ConversationItems must rebuild AIMessage.tool_calls."""
+    from apx_agent._responses_agent import _conv_items_to_lc_messages
+    from apx_agent._conversation import (
+        ConversationItem,
+        FunctionCallData,
+        FunctionCallOutputData,
+        MessageData,
+    )
 
-    history = [
-        {"role": "user", "content": "do it"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call-7",
-                    "type": "function",
-                    "function": {"name": "lookup", "arguments": '{"q": "x"}'},
-                }
-            ],
-        },
-        {"role": "tool", "content": "answer", "tool_call_id": "call-7"},
+    items = [
+        ConversationItem(
+            id="i1", type="message", status="completed", response_id="r1",
+            created_at=0,
+            data=MessageData(role="user", content=[{"type": "input_text", "text": "do it"}]),
+        ),
+        ConversationItem(
+            id="i2", type="function_call", status="completed", response_id="r1",
+            created_at=0,
+            data=FunctionCallData(
+                agent="model", name="lookup", arguments='{"q": "x"}', call_id="call-7",
+            ),
+        ),
+        ConversationItem(
+            id="i3", type="function_call_output", status="completed", response_id="r1",
+            created_at=0,
+            data=FunctionCallOutputData(call_id="call-7", output="answer"),
+        ),
     ]
-    out = _history_to_langchain(history)
+    out = _conv_items_to_lc_messages(items)
     ai = [m for m in out if isinstance(m, AIMessage)]
     assert ai and ai[0].tool_calls
     assert ai[0].tool_calls[0]["name"] == "lookup"
     assert ai[0].tool_calls[0]["id"] == "call-7"
-    # The following ToolMessage's id references a real AIMessage tool call.
     tool = [m for m in out if isinstance(m, ToolMessage)]
     assert tool and tool[0].tool_call_id == "call-7"
 

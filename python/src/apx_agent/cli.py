@@ -894,7 +894,7 @@ from mlflow.genai.agent_server import AgentServer, invoke, stream
 from apx_agent import compile_to_responses_agent, mount_mcp_endpoints, mount_readyz
 from apx_agent._defaults import _make_workspace_client
 from apx_agent._inspection import _load_agent_config
-from apx_agent._memory_wiring import resolve_session_store
+from apx_agent._memory_wiring import resolve_conversation_store
 from apx_agent._mlflow_tracing import autolog_if_env
 from apx_agent._wiring import finalize_agent
 
@@ -914,8 +914,8 @@ _ws = _make_workspace_client()
 # not just when served via create_app().
 _agent_config = _load_agent_config()
 finalize_agent(agent, _agent_config, ws=_ws)
-_session_store = resolve_session_store(_agent_config, _ws, agent=agent)
-_invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL, session_store=_session_store)
+_conversation_store = resolve_conversation_store(_agent_config, _ws, agent=agent)
+_invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL, conversation_store=_conversation_store)
 
 
 @invoke()
@@ -937,7 +937,7 @@ mount_mcp_endpoints(app, agent)
 mount_readyz(app, agent)
 
 app.state.workspace_client = _ws
-app.state.session_store = _session_store
+app.state.conversation_store = _conversation_store
 
 
 if __name__ == "__main__":

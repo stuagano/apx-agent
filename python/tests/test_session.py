@@ -319,17 +319,17 @@ def test_delta_put_raises_store_error_on_sql_failure() -> None:
             store.put(session)
 
 
-def test_persist_session_degrades_gracefully_on_store_error(caplog) -> None:
-    """_persist_session catches StoreError and logs a warning instead of crashing."""
+def test_persist_conv_turn_degrades_gracefully_on_store_error(caplog) -> None:
+    """_persist_conv_turn catches exceptions and logs a warning instead of crashing."""
     import logging
-    from apx_agent._responses_agent import _persist_session
-    from apx_agent._session import Session, StoreError
+    from apx_agent._responses_agent import _persist_conv_turn
 
     store = MagicMock()
-    store.put.side_effect = StoreError("no perms")
-    session = Session(session_id="s1", history=[], state={})
+    store.append.side_effect = Exception("no perms")
 
     with caplog.at_level(logging.WARNING):
-        _persist_session(store, session, input_items=[], output_items=[])
+        _persist_conv_turn(
+            store, "s1", input_items=[], output_items=[], model="m", response_id="r1"
+        )
 
-    assert any("degraded to ephemeral" in r.message for r in caplog.records)
+    assert any("turn not saved" in r.message for r in caplog.records)
