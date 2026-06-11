@@ -2865,25 +2865,29 @@ def apps_list(profile: str | None, host: str | None) -> None:
       apx-agent apps                       # list apps in default workspace
       apx-agent apps --profile fe-stable   # list apps in fe-stable workspace
     """
-    try:
-        from databricks.sdk import WorkspaceClient
-        from databricks.sdk.config import Config
-    except ImportError:
-        raise click.ClickException(
-            "databricks-sdk is required. Install with: uv add databricks-sdk"
-        )
-
     profile = profile or _read_apx_agent_config().get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
 
+    # _connect_workspace handles auth errors interactively; host override goes
+    # via a separate Config when supplied.
+    if host:
+        try:
+            from databricks.sdk import WorkspaceClient
+            from databricks.sdk.config import Config
+            cfg = Config(profile=profile, host=host)
+            ws = WorkspaceClient(config=cfg)
+        except Exception as exc:
+            raise click.ClickException(f"Could not connect to {host}: {exc}")
+    else:
+        ws, cfg = _connect_workspace(profile)
+
     try:
-        cfg = Config(profile=profile, host=host) if (profile or host) else Config()
-        ws = WorkspaceClient(config=cfg)
         app_list = list(ws.apps.list())
     except Exception as exc:
-        raise click.ClickException(f"Could not connect to workspace: {exc}")
+        raise click.ClickException(f"Failed to list apps: {exc}")
 
     if not app_list:
-        click.echo("No apps found in this workspace.")
+        click.echo("No Databricks Apps found in this workspace.")
+        click.echo("Deploy one with:  apx-agent deploy")
         return
 
     # Resolve workspace host for URL construction.
@@ -4939,8 +4943,6 @@ def publish(
       apx-agent deploy     # deploy to your workspace
       apx-agent publish    # write registry + tools + wire A2A supervisor
     """
-    from databricks.sdk import WorkspaceClient
-    from databricks.sdk.config import Config
     from apx_agent import publish_to_registry, publish_to_supervisor
     from apx_agent._publish import publish_tools_to_registry
 
@@ -4961,12 +4963,8 @@ def publish(
     if not description:
         description = click.prompt("What does this agent do?")
 
-    try:
-        ws_cfg = Config(profile=profile) if profile else Config()
-        ws = WorkspaceClient(config=ws_cfg)
-        ws_host = (ws_cfg.host or "").rstrip("/")
-    except Exception as exc:
-        raise click.ClickException(f"Could not connect to workspace: {exc}")
+    ws, ws_cfg = _connect_workspace(profile)
+    ws_host = (ws_cfg.host or "").rstrip("/")
 
     # Derive endpoint URL if not supplied.
     if not endpoint_url and ws_host:
@@ -5749,15 +5747,22 @@ def list_group(
         ctx.invoke(list_agents_cmd, catalog=catalog, schema=schema, fmt=fmt)
 
 
-def _require_sdk(profile: str | None = None) -> "Any":
-    """Return a WorkspaceClient, optionally scoped to a named config profile."""
+def _connect_workspace(profile: str | None) -> "tuple[Any, Any]":
+    """Return (WorkspaceClient, Config), with an interactive profile picker on auth errors.
+
+    When no profile is given and auth is ambiguous (e.g. multiple profiles for
+    the same host), prompts the user to pick one interactively. Falls back to a
+    plain error list when stdin is not a TTY (CI / piped usage).
+    """
     try:
         from databricks.sdk import WorkspaceClient
         from databricks.sdk.config import Config
         cfg = Config(profile=profile) if profile else Config()
-        return WorkspaceClient(config=cfg)
+        return WorkspaceClient(config=cfg), cfg
     except ImportError as e:
-        raise click.ClickException("apx-agent list requires databricks-sdk.") from e
+        raise click.ClickException(
+            "databricks-sdk is required. Install with: uv add databricks-sdk"
+        ) from e
     except Exception as e:
         if profile is not None:
             raise click.ClickException(
@@ -5787,15 +5792,21 @@ def _require_sdk(profile: str | None = None) -> "Any":
                 f"\nTip: export DATABRICKS_CONFIG_PROFILE={chosen}  "
                 f"(or pass --profile {chosen}) to skip this prompt.\n"
             )
-            return _require_sdk(chosen)
-        # Non-interactive fallback: list profiles and exit.
+            return _connect_workspace(chosen)
+        # Non-interactive fallback: list profiles and exit cleanly.
         names = [n for n, _ in display]
         hint = "\n".join(f"  {n}" for n in names)
         raise click.ClickException(
             f"Could not resolve Databricks authentication.\n"
             f"Pass --profile to choose one:\n{hint}\n\n"
-            f"Example:  apx-agent list --profile {names[0]}"
+            f"Example:  apx-agent <command> --profile {names[0]}"
         ) from None
+
+
+def _require_sdk(profile: str | None = None) -> "Any":
+    """Return a WorkspaceClient, optionally scoped to a named config profile."""
+    ws, _ = _connect_workspace(profile)
+    return ws
 
 
 @list_group.command("agents")
