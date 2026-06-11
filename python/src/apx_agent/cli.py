@@ -5271,6 +5271,8 @@ def info(module: str, fmt: str) -> None:
         click.echo("\nInstructions:")
         click.echo(f"  {instructions}")
     click.echo(f"\nTools ({len(tools_info)}):")
+    if not tools_info:
+        click.echo("  (none — add tools with @tool, uc_function_tool(), or genie_tool())")
     for t in tools_info:
         line = f"  - {t['name']}"
         if t["uc_name"]:
@@ -6171,6 +6173,16 @@ def topology(
 
     ws, _ = _connect_workspace(profile)
     topo = discover_topology(ws, catalog=catalog, schema=schema)
+
+    if not topo.nodes:
+        scope = ""
+        if catalog:
+            scope = f" in {catalog}" + (f".{schema}" if schema else "")
+        click.echo(f"No apx-tagged agents found{scope}.")
+        click.echo("Agents appear here after `apx-agent deploy` writes apx.agent.* UC tags.")
+        click.echo("Deploy one with:  apx-agent deploy")
+        return
+
     text = render_topology(topo, format=fmt)
 
     if output_file:
@@ -6231,6 +6243,9 @@ def eval_chain_cmd(
     )
 
     click.echo(f"# chain-eval cases: {len(report.cases)}")
+    if not report.cases:
+        click.echo("  No cases ran. Check that the evalset file contains at least one row with a 'request' field.")
+        return
     for case in report.cases:
         subs = ", ".join(case.sub_agents_invoked) if case.sub_agents_invoked else "-"
         tools = ", ".join(case.tool_calls) if case.tool_calls else "-"
@@ -7029,6 +7044,7 @@ def memory_recall_cmd(
     def _text(rows: list[dict[str, Any]]) -> None:
         if not rows:
             click.echo(f"# memory recall for principal={principal_id!r}: no hits.")
+            click.echo(f"  Check memories exist:  apx-agent memory list --principal-id {principal_id!r}")
             return
         click.echo(f"# memory recall for principal={principal_id!r} (top {len(rows)})")
         for r in rows:
@@ -7131,6 +7147,7 @@ def memory_list_cmd(
     def _text(rows: list[dict[str, Any]]) -> None:
         if not rows:
             click.echo(f"# memory list for principal={principal_id!r}: empty.")
+            click.echo(f"  Add one with:  apx-agent memory remember --principal-id {principal_id!r} --content '...'")
             return
         click.echo(f"# memory list for principal={principal_id!r} ({len(rows)} rows)")
         for m in rows:
