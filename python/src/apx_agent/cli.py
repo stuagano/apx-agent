@@ -4768,7 +4768,11 @@ def publish_tools_cmd(
     agent = _load_finalized_agent(module)
     results = publish_tools_to_uc(agent, dry_run=dry_run)
     if not results:
-        click.echo("No @tool(uc=...) decorated tools found.")
+        click.echo("No @tool(uc=...) decorated tools found in this agent.")
+        click.echo("To publish a tool, decorate a function with @tool(uc='catalog.schema.fn_name'):")
+        click.echo("  from apx_agent import tool")
+        click.echo("  @tool(uc='main.tools.my_fn')")
+        click.echo("  def my_fn(x: str) -> str: ...")
         return
     for r in results:
         prefix = "DRY-RUN" if r.skipped else "PUBLISHED"
@@ -5348,6 +5352,10 @@ def trace(
 
     if not rows:
         click.echo("No traces matched.")
+        click.echo("Possible causes:")
+        click.echo("  • The agent hasn't handled any requests yet — send a message via the Chat UI or API.")
+        click.echo("  • Tracing isn't enabled — set MLFLOW_TRACKING_URI or configure an experiment.")
+        click.echo("  • Wrong experiment name — check [tool.apx.agent].experiment in pyproject.toml.")
         return
     click.echo(f"{'TRACE_ID':<36}  {'AGENT':<20}  {'OPERATION':<14}  {'STATUS':<8}  {'DURATION_MS':>10}")
     for r in rows:
@@ -5564,8 +5572,7 @@ def _hot_swap_model_serving(
     try:
         result = hot_swap_model(endpoint, model, wait=not no_wait)
     except Exception as e:
-        click.echo(f"hot-swap failed: {type(e).__name__}: {e}", err=True)
-        sys.exit(1)
+        raise click.ClickException(f"hot-swap failed: {type(e).__name__}: {e}") from e
 
     click.echo(f"apx-agent hot-swap: {result.endpoint_name}")
     click.echo(f"  new model:      {result.new_model}")
@@ -5606,9 +5613,7 @@ def _hot_swap_apps_cli(
             var_name=var_name or DEFAULT_LLM_VAR_NAME,
         )
     except Exception as e:
-        click.echo(f"hot-swap --target apps failed: {type(e).__name__}: {e}",
-                   err=True)
-        sys.exit(1)
+        raise click.ClickException(f"hot-swap --target apps failed: {type(e).__name__}: {e}") from e
 
     click.echo(f"apx-agent hot-swap --target apps: {result.app_name}")
     click.echo(f"  bundle target:  {result.bundle_target}")
@@ -6360,9 +6365,7 @@ def canary_deploy(
             base_target=base_target,
         )
     except Exception as e:
-        click.echo(f"canary deploy --target apps failed: {type(e).__name__}: {e}",
-                   err=True)
-        sys.exit(1)
+        raise click.ClickException(f"canary deploy --target apps failed: {type(e).__name__}: {e}") from e
     click.echo(f"Deployed canary App {cfg.canary_app_name} from version {cfg.canary_version}.")
     click.echo(f"  bundle target: {cfg.bundle_target}")
     click.echo(f"  canary URL:    {cfg.canary_app_url or '(not yet available)'}")
@@ -6435,9 +6438,7 @@ def canary_promote(
             profile=profile, prod_target=prod_target, keep_canary=keep_canary,
         )
     except Exception as e:
-        click.echo(f"canary promote --target apps failed: {type(e).__name__}: {e}",
-                   err=True)
-        sys.exit(1)
+        raise click.ClickException(f"canary promote --target apps failed: {type(e).__name__}: {e}") from e
     click.echo(f"Promoted canary {result.promoted_from_version} → prod App {result.prod_app_name}.")
     click.echo(f"  canary target removed: {result.canary_target_removed}")
 
@@ -6502,9 +6503,7 @@ def canary_rollback(
             profile=profile, prod_target=prod_target,
         )
     except Exception as e:
-        click.echo(f"canary rollback --target apps failed: {type(e).__name__}: {e}",
-                   err=True)
-        sys.exit(1)
+        raise click.ClickException(f"canary rollback --target apps failed: {type(e).__name__}: {e}") from e
     click.echo(f"Rolled back prod App {result.prod_app_name} to canary tree {result.promoted_from_version}.")
     click.echo(f"  canary target removed: {result.canary_target_removed}")
 
@@ -7091,8 +7090,10 @@ def memory_forget_cmd(memory_id: str, store_module: str | None) -> None:
     store = _load_store(store_module, store_kind="memory")
     ok = store.delete(memory_id)
     if not ok:
-        click.echo(f"# no memory with id {memory_id!r}", err=True)
-        sys.exit(1)
+        raise click.ClickException(
+            f"No memory with id {memory_id!r}. "
+            "Run `apx-agent memory list` to see available IDs."
+        )
     click.echo(json.dumps({"deleted": memory_id}))
 
 
@@ -7262,8 +7263,10 @@ def examples_remove_cmd(example_id: str, store_module: str | None) -> None:
     store = _load_store(store_module, store_kind="example")
     ok = store.delete(example_id)
     if not ok:
-        click.echo(f"# no example with id {example_id!r}", err=True)
-        sys.exit(1)
+        raise click.ClickException(
+            f"No example with id {example_id!r}. "
+            "Run `apx-agent examples list` to see available IDs."
+        )
     click.echo(json.dumps({"deleted": example_id}))
 
 
