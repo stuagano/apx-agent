@@ -4785,10 +4785,7 @@ def publish_tools_cmd(
         ]
         if tool_fns:
             try:
-                from databricks.sdk import WorkspaceClient
-                from databricks.sdk.config import Config
-                ws_cfg = Config(profile=profile) if profile else Config()
-                ws = WorkspaceClient(config=ws_cfg)
+                ws, _ = _connect_workspace(profile)
                 n = publish_standalone_tools_to_registry(
                     tool_fns=tool_fns,
                     tools_table=tools_table,
@@ -5174,8 +5171,7 @@ def logs(
         return
 
     # Endpoint path.
-    from databricks.sdk import WorkspaceClient
-    ws = WorkspaceClient()
+    ws, _ = _connect_workspace(profile)
 
     if served_model is None:
         assert endpoint is not None
@@ -6022,6 +6018,8 @@ def list_tools_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> N
               help="Lookback window in hours. Default 24.")
 @click.option("--warehouse-id", default=None,
               help="SQL warehouse to run the system-tables query on.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
 @click.option(
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
@@ -6031,6 +6029,7 @@ def cost(
     endpoint: str | None,
     hours: int,
     warehouse_id: str | None,
+    profile: str | None,
     fmt: str,
 ) -> None:
     """Report DBU + $ for an agent or serving endpoint over the lookback window.
@@ -6045,14 +6044,9 @@ def cost(
     if agent_name and endpoint:
         raise click.UsageError("--agent and --endpoint are mutually exclusive.")
 
-    try:
-        from databricks.sdk import WorkspaceClient
-    except ImportError as e:
-        raise click.ClickException("apx-agent cost requires databricks-sdk.") from e
-
     from apx_agent import cost_for_agent
 
-    ws = WorkspaceClient()
+    ws, _ = _connect_workspace(profile)
     breakdown = cost_for_agent(
         agent_name=agent_name,
         endpoint=endpoint,
@@ -6106,12 +6100,15 @@ def cost(
 @click.option("--hours", default=24, type=int, help="Lookback window in hours.")
 @click.option("--warehouse-id", default=None, help="SQL warehouse for the Delta writes.")
 @click.option("--max-traces", default=1000, type=int, help="Max traces per export run.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
 def export_traces_cmd(
     experiment: str | None,
     target_table: str,
     hours: int,
     warehouse_id: str | None,
     max_traces: int,
+    profile: str | None,
 ) -> None:
     """Export MLflow traces to a Delta table for analytics."""
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
@@ -6120,14 +6117,9 @@ def export_traces_cmd(
             "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
         )
 
-    try:
-        from databricks.sdk import WorkspaceClient
-    except ImportError as e:
-        raise click.ClickException("export-traces requires databricks-sdk.") from e
-
     from apx_agent import export_traces
 
-    ws = WorkspaceClient()
+    ws, _ = _connect_workspace(profile)
     result = export_traces(
         experiment_name=effective_experiment,
         target_table=target_table,
@@ -6157,24 +6149,22 @@ def export_traces_cmd(
 @click.option("--output", "output_file", default=None,
               type=click.Path(dir_okay=False),
               help="Write the rendered diagram to FILE instead of stdout.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
 def topology(
     catalog: str | None,
     schema: str | None,
     fmt: str,
     output_file: str | None,
+    profile: str | None,
 ) -> None:
     """Render the multi-agent endpoint graph from UC tags."""
     if schema and not catalog:
         raise click.UsageError("--schema requires --catalog.")
 
-    try:
-        from databricks.sdk import WorkspaceClient
-    except ImportError as e:
-        raise click.ClickException("apx-agent topology requires databricks-sdk.") from e
-
     from apx_agent import discover_topology, render_topology
 
-    ws = WorkspaceClient()
+    ws, _ = _connect_workspace(profile)
     topo = discover_topology(ws, catalog=catalog, schema=schema)
     text = render_topology(topo, format=fmt)
 
@@ -6263,13 +6253,14 @@ def canary() -> None:
 
 @canary.command("status")
 @click.option("--endpoint", required=True, help="Model Serving endpoint name.")
-def canary_status(endpoint: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def canary_status(endpoint: str, profile: str | None) -> None:
     """Print the endpoint's current served entities + traffic split."""
-    from databricks.sdk import WorkspaceClient
-
     from apx_agent import get_canary_config
 
-    cfg = get_canary_config(endpoint, ws=WorkspaceClient())
+    ws, _ = _connect_workspace(profile)
+    cfg = get_canary_config(endpoint, ws=ws)
     click.echo(f"# canary status: {cfg.endpoint}")
     if not cfg.served_entities:
         click.echo("  (no served entities)")
@@ -6333,16 +6324,15 @@ def canary_deploy(
             raise click.UsageError("--model is required for --target model-serving.")
         if not version:
             raise click.UsageError("--version is required for --target model-serving.")
-        from databricks.sdk import WorkspaceClient
-
         from apx_agent import deploy_canary
 
+        ws, _ = _connect_workspace(profile)
         cfg = deploy_canary(
             endpoint=endpoint,
             registered_model_name=registered_model_name,
             new_version=version,
             canary_traffic_pct=traffic_pct,
-            ws=WorkspaceClient(),
+            ws=ws,
             scale_to_zero_enabled=not no_scale_to_zero,
             workload_size=workload_size,
         )
@@ -6417,15 +6407,14 @@ def canary_promote(
                 "--endpoint, --model, and --version are required for "
                 "--target model-serving."
             )
-        from databricks.sdk import WorkspaceClient
-
         from apx_agent import promote_canary
 
+        ws, _ = _connect_workspace(profile)
         cfg = promote_canary(
             endpoint=endpoint,
             registered_model_name=registered_model_name,
             version=version,
-            ws=WorkspaceClient(),
+            ws=ws,
         )
         click.echo(f"Promoted {registered_model_name} v{version} to 100% on {endpoint}.")
         click.echo(f"Split: {cfg.traffic_split}")
@@ -6485,15 +6474,14 @@ def canary_rollback(
                 "--endpoint, --model, and --version are required for "
                 "--target model-serving."
             )
-        from databricks.sdk import WorkspaceClient
-
         from apx_agent import rollback_canary
 
+        ws, _ = _connect_workspace(profile)
         cfg = rollback_canary(
             endpoint=endpoint,
             registered_model_name=registered_model_name,
             version=version,
-            ws=WorkspaceClient(),
+            ws=ws,
         )
         click.echo(f"Rolled back to {registered_model_name} v{version} on {endpoint}.")
         click.echo(f"Split: {cfg.traffic_split}")
@@ -6535,6 +6523,8 @@ def canary_rollback(
               help="MLflow experiment to read traces from. Falls back to "
                    "[tool.apx.agent].experiment in pyproject.toml.")
 @click.option("--hours", default=24, type=int, help="Lookback window. Default 24h.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
 @click.option(
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
@@ -6545,6 +6535,7 @@ def canary_analyze(
     canary_version: str | None,
     experiment: str | None,
     hours: int,
+    profile: str | None,
     fmt: str,
 ) -> None:
     """Per-version requests / errors / latency from MLflow traces."""
@@ -6557,14 +6548,13 @@ def canary_analyze(
     if deploy_target == "model-serving":
         if not endpoint:
             raise click.UsageError("--endpoint is required for --target model-serving.")
-        from databricks.sdk import WorkspaceClient
-
         from apx_agent import analyze_canary
 
+        ws, _ = _connect_workspace(profile)
         report = analyze_canary(
             endpoint=endpoint,
             experiment=effective_experiment,
-            ws=WorkspaceClient(),
+            ws=ws,
             lookback_hours=hours,
         )
 
@@ -6708,6 +6698,8 @@ def watchdog() -> None:
 @click.option("--hours", default=24, type=int, help="Lookback window. Default 24h.")
 @click.option("--limit", default=50, type=int, help="Max rows. Default 50.")
 @click.option("--warehouse-id", default=None, help="SQL warehouse for the read.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
 @click.option(
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
@@ -6718,6 +6710,7 @@ def watchdog_violations(
     hours: int,
     limit: int,
     warehouse_id: str | None,
+    profile: str | None,
     fmt: str,
 ) -> None:
     """Recent reject / redact decisions reported by WatchdogGuard."""
@@ -6740,8 +6733,6 @@ def watchdog_violations(
     # FROM clause even though the parts are already allowlist-validated.
     quoted_table = ".".join(f"`{p}`" for p in parts)
 
-    from databricks.sdk import WorkspaceClient
-
     from apx_agent import run_sql
 
     where_parts: list[str] = [
@@ -6760,8 +6751,9 @@ def watchdog_violations(
         f"LIMIT {limit}"
     )
 
+    ws, _ = _connect_workspace(profile)
     try:
-        rows = run_sql(WorkspaceClient(), sql, warehouse_id=warehouse_id)
+        rows = run_sql(ws, sql, warehouse_id=warehouse_id)
     except Exception as e:
         raise click.ClickException(f"Failed to read violations: {e}") from e
 
