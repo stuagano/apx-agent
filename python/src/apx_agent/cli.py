@@ -5378,6 +5378,14 @@ def info(module: str, fmt: str) -> None:
               help="Filter to traces where apx.agent.name matches.")
 @click.option("--operation", default=None,
               help="Filter by apx.operation (predict, tool_call, model_call, etc.).")
+@click.option("--user", "user_filter", default=None,
+              help="Filter to traces from this user (matches apx.user or mlflow.user tag).")
+@click.option("--min-latency", "min_latency_ms", default=None, type=int,
+              help="Only show traces with duration >= MIN_LATENCY ms.")
+@click.option("--error-only", is_flag=True, default=False,
+              help="Only show traces with ERROR or FAILED status.")
+@click.option("--tag", "tag_filters", multiple=True, metavar="KEY=VAL",
+              help="Filter by an attribute tag value — KEY=VAL (repeatable).")
 @click.option("--limit", default=20, type=int, help="Max traces to return.")
 @click.option(
     "--format", "fmt", type=click.Choice(["text", "json"]),
@@ -5387,10 +5395,18 @@ def trace(
     experiment: str | None,
     agent_name: str | None,
     operation: str | None,
+    user_filter: str | None,
+    min_latency_ms: int | None,
+    error_only: bool,
+    tag_filters: tuple[str, ...],
     limit: int,
     fmt: str,
 ) -> None:
-    """Fetch recent MLflow traces for a deployed agent."""
+    """Fetch recent MLflow traces for a deployed agent.
+
+    Use --user, --min-latency, --error-only, and --tag to narrow results.
+    All filters combine with AND semantics.
+    """
     try:
         import mlflow
     except ImportError as e:
@@ -5404,6 +5420,14 @@ def trace(
             "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
         )
 
+    # Parse --tag KEY=VAL filters now; validate before hitting the API.
+    parsed_tag_filters: list[tuple[str, str]] = []
+    for kv in tag_filters:
+        if "=" not in kv:
+            raise click.UsageError(f"--tag value must be KEY=VAL, got: {kv!r}")
+        k, v = kv.split("=", 1)
+        parsed_tag_filters.append((k.strip(), v.strip()))
+
     filter_parts: list[str] = []
     if agent_name:
         filter_parts.append(f"attributes.`apx.agent.name` = '{agent_name}'")
@@ -5411,16 +5435,31 @@ def trace(
         filter_parts.append(f"attributes.`apx.operation` = '{operation}'")
     filter_string = " AND ".join(filter_parts) if filter_parts else None
 
+    # Fetch more than requested when post-filters are active so we can still
+    # return --limit rows after they trim the result set.
+    fetch_limit = limit * 4 if (user_filter or min_latency_ms or error_only or parsed_tag_filters) else limit
+
     try:
-        traces = mlflow.search_traces(  # type: ignore[attr-defined]
+        raw = mlflow.search_traces(  # type: ignore[attr-defined]
             experiment_names=[effective_experiment],
             filter_string=filter_string,
-            max_results=limit,
+            max_results=fetch_limit,
         )
     except Exception as e:
         raise click.ClickException(f"mlflow.search_traces failed: {e}") from e
 
-    rows = _normalise_trace_rows(traces)
+    rows = _normalise_trace_rows(raw)
+
+    # Post-filters (applied client-side for broad MLflow version compat).
+    if error_only:
+        rows = [r for r in rows if (r.get("status") or "").upper() in ("ERROR", "FAILED")]
+    if user_filter:
+        rows = [r for r in rows if (r.get("user") or "") == user_filter]
+    if min_latency_ms is not None:
+        rows = [r for r in rows if (r.get("duration_ms") or 0) >= min_latency_ms]
+    for tag_key, tag_val in parsed_tag_filters:
+        rows = [r for r in rows if str((r.get("tags") or {}).get(tag_key, "")) == tag_val]
+    rows = rows[:limit]
 
     if fmt == "json":
         click.echo(json.dumps(rows, indent=2, default=str))
@@ -5450,6 +5489,8 @@ def _normalise_trace_rows(traces: Any) -> list[dict[str, Any]]:
     mlflow returns either a list of Trace objects or a pandas DataFrame
     depending on the version + return_type kwarg. This helper accepts
     either and produces a flat list of dicts with the keys the CLI prints.
+    Includes ``user`` (from apx.user / mlflow.user tags) and ``tags`` for
+    client-side post-filtering in ``traces list``.
     """
     rows: list[dict[str, Any]] = []
     # DataFrame case
@@ -5464,30 +5505,241 @@ def _normalise_trace_rows(traces: Any) -> list[dict[str, Any]]:
                 "trace_id": rec.get("trace_id") or rec.get("request_id"),
                 "agent_name": attrs.get("apx.agent.name"),
                 "operation": attrs.get("apx.operation"),
+                "user": attrs.get("apx.user") or attrs.get("mlflow.user"),
                 "status": rec.get("status"),
                 "duration_ms": rec.get("execution_time_ms"),
+                "tags": attrs,
             })
         return rows
     # List-of-Trace case
     for t in traces or []:
         info = getattr(t, "info", None)
         data = getattr(t, "data", None)
-        attrs = (getattr(data, "spans", None) or [])
+        spans = getattr(data, "spans", None) or []
         # Pull root-span attributes if available; otherwise fall back to
         # trace-level tags.
         root_attrs: dict[str, Any] = {}
-        if attrs:
-            root = attrs[0]
+        if spans:
+            root = spans[0]
             root_attrs = dict(getattr(root, "attributes", {}) or {})
         tags = dict(getattr(info, "tags", {}) or {}) if info else {}
+        merged_attrs = {**tags, **root_attrs}
         rows.append({
             "trace_id": getattr(info, "trace_id", None) or getattr(info, "request_id", None),
-            "agent_name": root_attrs.get("apx.agent.name") or tags.get("apx.agent.name"),
-            "operation": root_attrs.get("apx.operation") or tags.get("apx.operation"),
+            "agent_name": merged_attrs.get("apx.agent.name"),
+            "operation": merged_attrs.get("apx.operation"),
+            "user": merged_attrs.get("apx.user") or merged_attrs.get("mlflow.user"),
             "status": getattr(info, "status", None),
             "duration_ms": getattr(info, "execution_time_ms", None),
+            "tags": merged_attrs,
         })
     return rows
+
+
+# ---------------------------------------------------------------------------
+# traces get — drill into a single trace by ID
+# ---------------------------------------------------------------------------
+
+
+@traces.command("get")
+@click.argument("trace_id")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def traces_get_cmd(trace_id: str, fmt: str) -> None:
+    """Show details and the span tree for a single trace by TRACE_ID."""
+    try:
+        import mlflow
+    except ImportError as e:
+        raise click.ClickException(
+            "apx-agent traces get requires mlflow. Install with: uv add 'apx-agent[eval]'"
+        ) from e
+
+    try:
+        trace = mlflow.get_trace(trace_id, silent=True)
+    except Exception as e:
+        raise click.ClickException(f"mlflow.get_trace failed: {e}") from e
+
+    if trace is None:
+        raise click.ClickException(
+            f"Trace {trace_id!r} not found. "
+            "Check the ID with:  apx-agent traces list"
+        )
+
+    info = getattr(trace, "info", None)
+    data = getattr(trace, "data", None)
+    spans = getattr(data, "spans", None) or []
+    tags = dict(getattr(info, "tags", {}) or {}) if info else {}
+
+    if fmt == "json":
+        span_dicts = []
+        for sp in spans:
+            span_dicts.append({
+                "name": getattr(sp, "name", None),
+                "span_id": getattr(sp, "span_id", None),
+                "parent_span_id": getattr(sp, "parent_span_id", None),
+                "start_time_ns": getattr(sp, "start_time_ns", None),
+                "end_time_ns": getattr(sp, "end_time_ns", None),
+                "status": str(getattr(sp, "status", None)),
+                "attributes": dict(getattr(sp, "attributes", {}) or {}),
+            })
+        click.echo(json.dumps({
+            "trace_id": getattr(info, "trace_id", None) or getattr(info, "request_id", None),
+            "status": str(getattr(info, "status", None)),
+            "duration_ms": getattr(info, "execution_time_ms", None),
+            "tags": tags,
+            "spans": span_dicts,
+        }, indent=2, default=str))
+        return
+
+    tid = getattr(info, "trace_id", None) or getattr(info, "request_id", trace_id)
+    status = str(getattr(info, "status", "-"))
+    duration = getattr(info, "execution_time_ms", None)
+    duration_str = f"{duration} ms" if duration is not None else "-"
+    click.echo(f"trace:    {tid}")
+    click.echo(f"status:   {status}")
+    click.echo(f"duration: {duration_str}")
+    if tags:
+        click.echo("tags:")
+        for k, v in sorted(tags.items()):
+            click.echo(f"  {k}: {v}")
+
+    if not spans:
+        click.echo("(no spans recorded)")
+        return
+
+    # Build parent→children index for tree rendering.
+    children: dict[str | None, list[Any]] = {}
+    for sp in spans:
+        pid = getattr(sp, "parent_span_id", None)
+        children.setdefault(pid, []).append(sp)
+
+    click.echo("\nspans:")
+
+    def _print_span(sp: Any, indent: int) -> None:
+        name = getattr(sp, "name", "?")
+        sid = getattr(sp, "span_id", "?")
+        sp_status = str(getattr(sp, "status", "?"))
+        start_ns = getattr(sp, "start_time_ns", None)
+        end_ns = getattr(sp, "end_time_ns", None)
+        span_ms = int((end_ns - start_ns) / 1_000_000) if (start_ns and end_ns) else None
+        span_ms_str = f"  [{span_ms} ms]" if span_ms is not None else ""
+        prefix = "  " * indent
+        click.echo(f"{prefix}├─ {name}  ({sp_status}){span_ms_str}  id={sid}")
+        for child in children.get(sid, []):
+            _print_span(child, indent + 1)
+
+    # Print top-level spans (those with no parent or whose parent is unknown).
+    known_ids = {getattr(sp, "span_id", None) for sp in spans}
+    roots = [
+        sp for sp in spans
+        if getattr(sp, "parent_span_id", None) not in known_ids
+    ]
+    for root in roots:
+        _print_span(root, 0)
+
+
+# ---------------------------------------------------------------------------
+# traces delete — purge traces
+# ---------------------------------------------------------------------------
+
+
+@traces.command("delete")
+@click.option("--trace-id", "trace_ids", multiple=True,
+              help="Specific trace IDs to delete (repeatable).")
+@click.option("--experiment", default=None,
+              help="MLflow experiment name. Falls back to [tool.apx.agent].experiment. "
+                   "Required when using --hours instead of --trace-id.")
+@click.option("--hours", default=None, type=int,
+              help="Delete traces older than HOURS hours. "
+                   "Mutually exclusive with --trace-id.")
+@click.option("--max-traces", default=None, type=int,
+              help="Cap the number of traces deleted when using --hours.")
+@click.option("--yes", "-y", "assume_yes", is_flag=True,
+              help="Skip confirmation prompt.")
+def traces_delete_cmd(
+    trace_ids: tuple[str, ...],
+    experiment: str | None,
+    hours: int | None,
+    max_traces: int | None,
+    assume_yes: bool,
+) -> None:
+    """Delete traces from the MLflow store.
+
+    Two modes:
+
+    \b
+      By ID:    apx-agent traces delete --trace-id abc123 --trace-id def456
+      By age:   apx-agent traces delete --experiment /exp/my-agent --hours 48
+    """
+    try:
+        import mlflow
+    except ImportError as e:
+        raise click.ClickException(
+            "apx-agent traces delete requires mlflow. Install with: uv add 'apx-agent[eval]'"
+        ) from e
+
+    if trace_ids and hours is not None:
+        raise click.UsageError("--trace-id and --hours are mutually exclusive.")
+    if not trace_ids and hours is None:
+        raise click.UsageError("Pass --trace-id ID [...] or --hours N to select traces.")
+
+    if trace_ids:
+        if not assume_yes:
+            click.confirm(
+                f"Delete {len(trace_ids)} trace(s)? This cannot be undone.", abort=True
+            )
+        client = mlflow.MlflowClient()
+        # delete_traces requires experiment_id; look it up from any experiment
+        # associated with these traces by fetching each one.
+        exp_ids: set[str] = set()
+        for tid in trace_ids:
+            t = mlflow.get_trace(tid, silent=True)
+            if t is None:
+                click.echo(f"  warning: trace {tid!r} not found, skipping.", err=True)
+                continue
+            info = getattr(t, "info", None)
+            eid = getattr(info, "experiment_id", None)
+            if eid:
+                exp_ids.add(eid)
+        if not exp_ids:
+            raise click.ClickException("Could not resolve experiment IDs for the given trace IDs.")
+        deleted = 0
+        for eid in exp_ids:
+            deleted += client.delete_traces(
+                experiment_id=eid,
+                trace_ids=list(trace_ids),
+            )
+        click.echo(f"Deleted {deleted} trace(s).")
+        return
+
+    # --hours mode
+    effective_experiment = experiment or _read_apx_agent_config().get("experiment")
+    if not effective_experiment:
+        raise click.UsageError(
+            "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
+        )
+    import time as _time
+    cutoff_ms = int((_time.time() - hours * 3600) * 1000)
+    if not assume_yes:
+        click.confirm(
+            f"Delete traces in {effective_experiment!r} older than {hours}h? "
+            "This cannot be undone.",
+            abort=True,
+        )
+    try:
+        exp = mlflow.get_experiment_by_name(effective_experiment)
+    except Exception as e:
+        raise click.ClickException(f"Could not find experiment {effective_experiment!r}: {e}") from e
+    if exp is None:
+        raise click.ClickException(f"Experiment {effective_experiment!r} not found.")
+    client = mlflow.MlflowClient()
+    kwargs: dict[str, Any] = {"experiment_id": exp.experiment_id, "max_timestamp_millis": cutoff_ms}
+    if max_traces is not None:
+        kwargs["max_traces"] = max_traces
+    deleted = client.delete_traces(**kwargs)
+    click.echo(f"Deleted {deleted} trace(s).")
 
 
 # ---------------------------------------------------------------------------
@@ -5932,6 +6184,108 @@ def list_agents_cmd(catalog: str | None, schema: str | None, fmt: str, profile: 
         )
 
 
+# ---------------------------------------------------------------------------
+# agents delete — remove UC model + serving endpoint + Databricks App
+# ---------------------------------------------------------------------------
+
+
+@agents.command("delete")
+@click.option(
+    "--uc-name", required=True,
+    help="Three-part UC name of the registered model (catalog.schema.model).",
+)
+@click.option(
+    "--endpoint", "endpoint_name", default=None,
+    help="Model Serving endpoint name. Auto-detected from UC tags when omitted.",
+)
+@click.option(
+    "--app", "app_name", default=None,
+    help="Databricks App name to delete (optional; only relevant for apps-target deploys).",
+)
+@click.option(
+    "--yes", "-y", "assume_yes", is_flag=True,
+    help="Skip confirmation prompt.",
+)
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def delete_agent_cmd(
+    uc_name: str,
+    endpoint_name: str | None,
+    app_name: str | None,
+    assume_yes: bool,
+    profile: str | None,
+) -> None:
+    """Delete a deployed agent — UC model registration, serving endpoint, and app.
+
+    Removes:
+
+    \b
+      1. The Model Serving endpoint (--endpoint or auto-detected from UC tags)
+      2. The registered model in Unity Catalog (--uc-name)
+      3. The Databricks App (--app, if provided)
+
+    Pass --yes to skip the interactive confirmation prompt.
+    """
+    ws, _ = _connect_workspace(profile)
+
+    # Resolve endpoint from UC tags when not explicitly given.
+    resolved_endpoint = endpoint_name
+    if not resolved_endpoint:
+        try:
+            model = ws.registered_models.get(uc_name)
+            tags = {t.key: t.value for t in (getattr(model, "tags", None) or [])}
+            resolved_endpoint = tags.get("apx.agent.model")
+        except Exception:
+            pass
+
+    # Build a summary of what will be deleted for the confirmation prompt.
+    to_delete: list[str] = [f"  • UC registered model: {uc_name}"]
+    if resolved_endpoint:
+        to_delete.append(f"  • Model Serving endpoint: {resolved_endpoint}")
+    if app_name:
+        to_delete.append(f"  • Databricks App: {app_name}")
+
+    if not assume_yes:
+        click.echo("This will permanently delete:")
+        for line in to_delete:
+            click.echo(line)
+        click.confirm("Proceed?", abort=True)
+
+    errors: list[str] = []
+
+    # 1. Delete the serving endpoint first (it holds the model version lock).
+    if resolved_endpoint:
+        try:
+            ws.serving_endpoints.delete(resolved_endpoint)
+            click.echo(f"Deleted endpoint: {resolved_endpoint}")
+        except Exception as exc:
+            errors.append(f"endpoint {resolved_endpoint!r}: {exc}")
+            click.echo(f"Warning: could not delete endpoint {resolved_endpoint!r}: {exc}", err=True)
+
+    # 2. Delete the registered model (all versions).
+    try:
+        ws.registered_models.delete(uc_name)
+        click.echo(f"Deleted UC model: {uc_name}")
+    except Exception as exc:
+        errors.append(f"UC model {uc_name!r}: {exc}")
+        click.echo(f"Warning: could not delete UC model {uc_name!r}: {exc}", err=True)
+
+    # 3. Delete the Databricks App (best-effort).
+    if app_name:
+        try:
+            ws.apps.delete(app_name)
+            click.echo(f"Deleted app: {app_name}")
+        except Exception as exc:
+            errors.append(f"app {app_name!r}: {exc}")
+            click.echo(f"Warning: could not delete app {app_name!r}: {exc}", err=True)
+
+    if errors:
+        raise click.ClickException(
+            f"{len(errors)} deletion(s) failed (see warnings above). "
+            "Resources may need manual cleanup in the workspace UI."
+        )
+
+
 @uc.command("catalogs")
 @click.option(
     "--format", "fmt", type=click.Choice(["text", "json"]),
@@ -6056,6 +6410,104 @@ def list_tools_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> N
         name = getattr(f, "name", "-") or "-"
         comment = (getattr(f, "comment", None) or "")[:70]
         click.echo(f"{name:<50}  {comment}")
+
+
+# ---------------------------------------------------------------------------
+# uc validate — check UC grants needed before deploy
+# ---------------------------------------------------------------------------
+
+
+@uc.command("validate")
+@click.option("--catalog", required=True, help="Catalog to validate.")
+@click.option("--schema", required=True, help="Schema to validate.")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+@click.pass_context
+def uc_validate_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> None:
+    """Check Unity Catalog permissions required to deploy an agent.
+
+    Verifies the current user has:
+
+    \b
+      • USE CATALOG on CATALOG
+      • USE SCHEMA on CATALOG.SCHEMA
+      • SELECT on at least one table in CATALOG.SCHEMA (DataAgent reads)
+      • CREATE MODEL on CATALOG.SCHEMA (log_agent registers a model)
+
+    Exits non-zero if any required permission appears to be missing.
+    """
+    ws = _require_sdk((ctx.obj or {}).get("profile"))
+
+    checks: list[dict[str, Any]] = []
+
+    def _check(name: str, fn: Any) -> bool:
+        try:
+            result = fn()
+            ok = bool(result)
+            checks.append({"check": name, "status": "ok" if ok else "missing", "detail": None})
+            return ok
+        except Exception as exc:
+            checks.append({"check": name, "status": "error", "detail": str(exc)})
+            return False
+
+    # USE CATALOG — enumerate catalogs and see if ours appears.
+    # _ws_list_catalogs returns plain strings; ws.catalogs.list() returns objects.
+    _check(
+        f"USE CATALOG on {catalog}",
+        lambda: catalog.lower() in [s.lower() for s in (_ws_list_catalogs(ws) or [])],
+    )
+
+    # USE SCHEMA — enumerate schemas.
+    # _ws_list_schemas returns plain strings.
+    _check(
+        f"USE SCHEMA on {catalog}.{schema}",
+        lambda: schema.lower() in [s.lower() for s in (_ws_list_schemas(ws, catalog) or [])],
+    )
+
+    # SELECT on at least one table — listing tables requires SELECT.
+    _check(
+        f"SELECT on tables in {catalog}.{schema}",
+        lambda: len(_ws_list_tables(ws, catalog, schema)) > 0,
+    )
+
+    # CREATE MODEL — try to list registered models in this schema.
+    _check(
+        f"CREATE MODEL / USE SCHEMA for model registration in {catalog}.{schema}",
+        lambda: ws.registered_models.list(catalog_name=catalog, schema_name=schema) is not None,
+    )
+
+    missing = [c for c in checks if c["status"] != "ok"]
+
+    if fmt == "json":
+        click.echo(json.dumps({
+            "catalog": catalog,
+            "schema": schema,
+            "checks": checks,
+            "all_ok": not missing,
+        }, indent=2))
+        if missing:
+            raise SystemExit(1)
+        return
+
+    all_ok = not missing
+    for c in checks:
+        icon = "✓" if c["status"] == "ok" else ("✗" if c["status"] == "missing" else "!")
+        line = f"  [{icon}] {c['check']}"
+        if c["detail"]:
+            line += f"  ({c['detail'][:80]})"
+        click.echo(line)
+
+    if all_ok:
+        click.echo(f"\nAll checks passed — {catalog}.{schema} is ready for deploy.")
+    else:
+        click.echo(
+            f"\n{len(missing)} check(s) failed. "
+            "Grant the missing privileges or re-run with --profile to use a different account.",
+            err=True,
+        )
+        raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -6306,6 +6758,134 @@ def eval_chain_cmd(
             report.sub_agent_coverage.items(), key=lambda kv: -kv[1],
         ):
             click.echo(f"  {sub}: {count}")
+
+
+# ---------------------------------------------------------------------------
+# eval report — compare eval runs across versions
+# ---------------------------------------------------------------------------
+
+
+@eval_group.command("report")
+@click.option("--experiment", default=None,
+              help="MLflow experiment name. Falls back to [tool.apx.agent].experiment.")
+@click.option("--versions", "n_versions", default=5, type=int,
+              help="Number of most-recent eval runs to compare. Default 5.")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def eval_report_cmd(
+    experiment: str | None,
+    n_versions: int,
+    fmt: str,
+) -> None:
+    """Compare eval metrics across the most-recent eval runs in an experiment.
+
+    Prints a table of run ID, start time, and key metrics (pass_rate, avg_latency_ms,
+    token_count) so you can spot regressions across versions at a glance.
+
+    Metrics are read from mlflow.search_runs — they match what ``apx-agent eval run``
+    logs via Mosaic AI Agent Evaluation (``response/llm_judged/correctness/ratio`` and
+    similar) and standard mlflow.log_metric calls.
+    """
+    try:
+        import mlflow
+    except ImportError as e:
+        raise click.ClickException(
+            "apx-agent eval report requires mlflow. Install with: uv add 'apx-agent[eval]'"
+        ) from e
+
+    effective_experiment = experiment or _read_apx_agent_config().get("experiment")
+    if not effective_experiment:
+        raise click.UsageError(
+            "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
+        )
+
+    try:
+        exp = mlflow.get_experiment_by_name(effective_experiment)
+    except Exception as e:
+        raise click.ClickException(f"Could not find experiment {effective_experiment!r}: {e}") from e
+    if exp is None:
+        raise click.ClickException(f"Experiment {effective_experiment!r} not found.")
+
+    # Candidate metric keys from Mosaic AI Agent Evaluation and apx-agent eval.
+    _METRIC_CANDIDATES = [
+        "response/llm_judged/correctness/ratio",
+        "response/llm_judged/relevance/ratio",
+        "response/llm_judged/safety/ratio",
+        "pass_rate",
+        "latency_ms",
+        "avg_latency_ms",
+    ]
+
+    try:
+        runs_df = mlflow.search_runs(  # type: ignore[attr-defined]
+            experiment_ids=[exp.experiment_id],
+            order_by=["start_time DESC"],
+            max_results=n_versions,
+        )
+    except Exception as e:
+        raise click.ClickException(f"mlflow.search_runs failed: {e}") from e
+
+    # Normalise: search_runs returns a DataFrame or list depending on version.
+    if hasattr(runs_df, "to_dict"):
+        records: list[dict[str, Any]] = runs_df.to_dict(orient="records")  # type: ignore[union-attr]
+    else:
+        records = [
+            {
+                "run_id": getattr(r, "info", r).run_id if hasattr(r, "info") else r.get("run_id"),
+                "start_time": getattr(r, "info", r).start_time if hasattr(r, "info") else r.get("start_time"),
+                **{f"metrics.{k}": v for k, v in (getattr(r, "data", {}).metrics or {}).items()},
+            }
+            for r in (runs_df or [])
+        ]
+
+    if not records:
+        click.echo(f"No eval runs found in experiment {effective_experiment!r}.")
+        click.echo("Run eval first:  apx-agent eval run EVALSET.jsonl --model <endpoint>")
+        return
+
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        run_id = rec.get("run_id") or "-"
+        start_ts = rec.get("start_time")
+        start_str = str(start_ts)[:19] if start_ts else "-"
+        metrics: dict[str, Any] = {}
+        for candidate in _METRIC_CANDIDATES:
+            col = f"metrics.{candidate}"
+            val = rec.get(col)
+            if val is not None:
+                metrics[candidate] = round(float(val), 4)
+        rows.append({"run_id": run_id, "start_time": start_str, "metrics": metrics})
+
+    if fmt == "json":
+        click.echo(json.dumps(rows, indent=2, default=str))
+        return
+
+    # Discover which metric columns are non-empty.
+    present_metrics: list[str] = [
+        m for m in _METRIC_CANDIDATES
+        if any(r["metrics"].get(m) is not None for r in rows)
+    ]
+
+    header = f"{'RUN_ID':<32}  {'START_TIME':<20}"
+    for m in present_metrics:
+        short = m.split("/")[-1][:16]
+        header += f"  {short:>16}"
+    click.echo(f"# eval report: {effective_experiment} (last {len(rows)} runs)")
+    click.echo(header)
+    for r in rows:
+        line = f"{r['run_id'][:32]:<32}  {r['start_time']:<20}"
+        for m in present_metrics:
+            v = r["metrics"].get(m)
+            line += f"  {(str(round(v, 4)) if v is not None else '-'):>16}"
+        click.echo(line)
+
+    if not present_metrics:
+        click.echo(
+            "\n(No standard eval metrics found. "
+            "Run apx-agent eval run ... to populate metrics.)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -7204,6 +7784,57 @@ def memory_list_cmd(
     _emit(payload, fmt, text_fn=_text)
 
 
+@memory.command("export")
+@click.option("--principal-id", required=True, help="Export memories for this principal.")
+@click.option("--output", "output_file", required=True,
+              help="Destination path for the JSONL file. Use '-' to write to stdout.")
+@click.option("--namespace", default=None, help="Optional namespace filter.")
+@click.option("--tags", "tags_csv", default=None, help="Comma-separated tag filter.")
+@click.option("--limit", default=10000, type=int,
+              help="Max memories to export. Default 10000.")
+@click.option("--store-module", "store_module", default=None,
+              help="MODULE:VAR pointing at a MemoryStore instance. "
+                   "Falls back to [tool.apx.agent].memory_store.")
+def memory_export_cmd(
+    principal_id: str,
+    output_file: str,
+    namespace: str | None,
+    tags_csv: str | None,
+    limit: int,
+    store_module: str | None,
+) -> None:
+    """Export memories for PRINCIPAL_ID to a JSONL file (one JSON object per line).
+
+    Use ``--output -`` to stream to stdout. The export includes all fields
+    returned by ``memory list`` — id, content, namespace, tags, importance,
+    metadata, and timestamps. Embeddings are excluded.
+
+    Example — export to file then import into a new store:
+
+    \b
+      apx-agent memory export --principal-id alice --output alice.jsonl
+    """
+    from ._memory import MemoryFilter
+
+    store = _load_store(store_module, store_kind="memory")
+    rows = store.list(
+        MemoryFilter(
+            principal_id=principal_id,
+            namespace=namespace,
+            tags=_parse_tags(tags_csv),
+            limit=limit,
+        )
+    )
+    lines = [json.dumps(_memory_to_dict(m), default=str) for m in rows]
+
+    if output_file == "-":
+        for line in lines:
+            click.echo(line)
+    else:
+        Path(output_file).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        click.echo(f"Exported {len(lines)} memories to {output_file}.")
+
+
 # --- examples group --------------------------------------------------------
 
 
@@ -7380,6 +8011,112 @@ def examples_list_cmd(
             click.echo(f"    out: {ex['output']}")
 
     _emit(payload, fmt, text_fn=_text)
+
+
+@examples.command("import")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--agent-id", required=True, help="Agent ID to assign to each imported example.")
+@click.option("--store-module", "store_module", default=None,
+              help="MODULE:VAR pointing at an ExampleStore instance. "
+                   "Falls back to [tool.apx.agent].example_store.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Parse and count rows without writing to the store.")
+@click.option(
+    "--format", "fmt", type=click.Choice(["json", "text"]),
+    default="text", help="Output format. Default: text.",
+)
+def examples_import_cmd(
+    file: str,
+    agent_id: str,
+    store_module: str | None,
+    dry_run: bool,
+    fmt: str,
+) -> None:
+    """Bulk-load examples from a CSV or JSONL file into the ExampleStore.
+
+    FILE may be:
+
+    \b
+      • A .jsonl file — one JSON object per line with keys: input, output,
+        and optionally: intent, score, tags (list), metadata (dict).
+      • A .csv file — column headers must include ``input`` and ``output``;
+        optional columns: ``intent``, ``score``, ``tags`` (comma-separated).
+
+    All rows are assigned to AGENT_ID. Existing examples are not replaced.
+    Use --dry-run to validate the file without writing.
+    """
+    import csv as _csv
+
+    path = Path(file)
+    suffix = path.suffix.lower()
+
+    raw_rows: list[dict[str, Any]] = []
+    if suffix == ".jsonl":
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                raw_rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise click.ClickException(f"Line {i}: invalid JSON — {exc}") from exc
+    elif suffix == ".csv":
+        with path.open(newline="", encoding="utf-8") as fh:
+            reader = _csv.DictReader(fh)
+            for i, row in enumerate(reader, 2):
+                raw_rows.append(dict(row))
+    else:
+        raise click.UsageError(
+            f"Unsupported file type: {suffix!r}. Pass a .jsonl or .csv file."
+        )
+
+    if not raw_rows:
+        click.echo("No rows found in the file. Nothing to import.")
+        return
+
+    # Validate required fields.
+    for i, row in enumerate(raw_rows, 1):
+        if "input" not in row or "output" not in row:
+            raise click.ClickException(
+                f"Row {i} is missing required field(s): "
+                f"{'input' if 'input' not in row else 'output'}. "
+                f"Found fields: {list(row.keys())}"
+            )
+
+    if dry_run:
+        click.echo(f"dry-run: {len(raw_rows)} row(s) would be imported for agent={agent_id!r}.")
+        return
+
+    store = _load_store(store_module, store_kind="example")
+    imported = 0
+    for row in raw_rows:
+        payload_in: dict[str, Any] = {
+            "agent_id": agent_id,
+            "input": row["input"],
+            "output": row["output"],
+        }
+        if row.get("intent"):
+            payload_in["intent"] = row["intent"]
+        if row.get("score") not in (None, ""):
+            try:
+                payload_in["score"] = float(row["score"])
+            except (ValueError, TypeError):
+                pass
+        # CSV tags may be a comma-separated string; JSONL may be a list.
+        raw_tags = row.get("tags")
+        if isinstance(raw_tags, str) and raw_tags.strip():
+            payload_in["tags"] = [t.strip() for t in raw_tags.split(",") if t.strip()]
+        elif isinstance(raw_tags, list):
+            payload_in["tags"] = raw_tags
+        if isinstance(row.get("metadata"), dict):
+            payload_in["metadata"] = row["metadata"]
+        store.add(payload_in)
+        imported += 1
+
+    if fmt == "json":
+        click.echo(json.dumps({"imported": imported, "agent_id": agent_id}))
+    else:
+        click.echo(f"Imported {imported} example(s) for agent={agent_id!r}.")
 
 
 # ---------------------------------------------------------------------------
