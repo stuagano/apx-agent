@@ -181,11 +181,23 @@ def _load_finalized_agent(module_spec: str) -> Any:
     projects (no agent.py) work via apx-agent info / lint / eval / run. Falls back
     to module-import for code-defined agents.
     """
-    from ._wiring import finalize_agent, resolve_agent, _ws_for_template
+    from ._wiring import finalize_agent, resolve_agent, _ws_for_template, TemplateConfigError
     from ._inspection import _load_agent_config
 
     config = _load_agent_config(pyproject_path=None)
-    agent = resolve_agent(module_spec, config, ws=_ws_for_template(config))
+    try:
+        agent = resolve_agent(module_spec, config, ws=_ws_for_template(config))
+    except TemplateConfigError as e:
+        raise click.ClickException(
+            f"{e}\n"
+            "Run this command from inside a scaffolded project directory, "
+            "or pass --module to point at your agent file."
+        ) from e
+    except ImportError as e:
+        raise click.ClickException(
+            f"Failed to import agent module: {e}\n"
+            "Check that your agent file has no syntax errors and all imports are available."
+        ) from e
     finalize_agent(agent, config, pyproject_path=None)
     return agent
 
