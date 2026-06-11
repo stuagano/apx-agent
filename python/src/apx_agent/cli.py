@@ -549,14 +549,44 @@ def _resolve_version() -> str:
         return "dev"
 
 
+_MOVED_COMMANDS: dict[str, str] = {
+    "scaffold":         "apx-agent agents scaffold",
+    "run":              "apx-agent agents run",
+    "stop":             "apx-agent agents stop",
+    "deploy":           "apx-agent agents deploy",
+    "apps":             "apx-agent agents apps",
+    "info":             "apx-agent agents describe",
+    "logs":             "apx-agent agents logs",
+    "cost":             "apx-agent agents cost",
+    "hot-swap":         "apx-agent agents hot-swap",
+    "refresh-schema":   "apx-agent agents refresh-schema",
+    "create-supervisor":"apx-agent agents create-supervisor",
+    "list":             "apx-agent agents list  (or  apx-agent uc catalogs/schemas/tables/tools)",
+    "trace":            "apx-agent traces list",
+    "export-traces":    "apx-agent traces export",
+    "eval-chain":       "apx-agent eval chain",
+    "lint":             "apx-agent eval lint",
+    "test":             "apx-agent eval test",
+    "topology":         "apx-agent uc topology",
+    "publish-tools":    "apx-agent uc publish",
+    "mcp-config":       "apx-agent uc mcp-config",
+    "publish":          "apx-agent agents publish",
+}
+
+
 class _ApxGroup(click.Group):
-    """click.Group that suggests the closest command on a typo."""
+    """click.Group that suggests the closest command on a typo, and gives a
+    clear redirect for commands that moved to a sub-group."""
 
     def resolve_command(self, ctx, args):
         try:
             return super().resolve_command(ctx, args)
         except click.UsageError:
             cmd_name = args[0] if args else ""
+            if cmd_name in _MOVED_COMMANDS:
+                raise click.UsageError(
+                    f"'{cmd_name}' moved.  Use:  {_MOVED_COMMANDS[cmd_name]}"
+                ) from None
             matches = difflib.get_close_matches(
                 cmd_name, self.list_commands(ctx), n=1
             )
@@ -568,6 +598,38 @@ class _ApxGroup(click.Group):
 @click.version_option(_resolve_version(), package_name="apx-agent", prog_name="apx")
 def main() -> None:
     """apx-agent — declarative agents on Databricks. See `apx-agent --help` for commands."""
+
+
+# ---------------------------------------------------------------------------
+# Sub-groups
+# ---------------------------------------------------------------------------
+
+
+@main.group(cls=_ApxGroup)
+def agents() -> None:
+    """Create, run, deploy, and manage agents."""
+
+
+@main.group(cls=_ApxGroup)
+def traces() -> None:
+    """Inspect and export MLflow traces."""
+
+
+@main.group("eval", cls=_ApxGroup)
+def eval_group() -> None:
+    """Evaluate agent quality — run evals, chain-evals, lint, and test."""
+
+
+@main.group(cls=_ApxGroup)
+@click.option(
+    "--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+    help="Databricks config profile (~/.databrickscfg).",
+)
+@click.pass_context
+def uc(ctx: click.Context, profile: str | None) -> None:
+    """Browse and publish Unity Catalog resources."""
+    ctx.ensure_object(dict)
+    ctx.obj["profile"] = profile
 
 
 # ---------------------------------------------------------------------------
@@ -2069,7 +2131,7 @@ def _scaffold_to_yaml(
     _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
 
 
-@main.command()
+@agents.command()
 @click.argument("name")
 @click.option(
     "--dir", "directory",
@@ -2400,7 +2462,7 @@ def _probe_import(module_spec: str) -> None:
             sys.path.remove(cwd)
 
 
-@main.command("refresh-schema")
+@agents.command("refresh-schema")
 @click.option("--profile", default=None,
               help="Databricks CLI profile to introspect with. "
                    "Falls back to $DATABRICKS_CONFIG_PROFILE.")
@@ -2632,7 +2694,7 @@ def _find_runnable_agents(cwd: Path) -> list[tuple[str, Path]]:
     return results
 
 
-@main.command()
+@agents.command()
 @click.argument("spec", default=None, required=False, metavar="SPEC")
 @click.option(
     "--module",
@@ -2787,7 +2849,7 @@ def _kill_pid(pid: int, name: str) -> bool:
     return True
 
 
-@main.command()
+@agents.command()
 @click.argument("agent_name", default=None, required=False, metavar="AGENT")
 @click.option("--port", default=None, type=int, help="Target a specific port instead of searching.")
 @click.option("--host", default="127.0.0.1", help="Host. Default: 127.0.0.1.")
@@ -2862,7 +2924,7 @@ def stop(agent_name: str | None, port: int | None, host: str, stop_all: bool) ->
 # ---------------------------------------------------------------------------
 
 
-@main.command("apps")
+@agents.command("apps")
 @click.option("--profile", default=None, help="Databricks CLI profile to use.")
 @click.option("--host", default=None, help="Workspace URL (overrides profile).")
 def apps_list(profile: str | None, host: str | None) -> None:
@@ -2951,7 +3013,7 @@ def apps_list(profile: str | None, host: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 
-@main.command("eval")
+@eval_group.command("run")
 @click.argument("evalset", type=click.Path(exists=True, dir_okay=False))
 @click.option(
     "--module",
@@ -3159,7 +3221,7 @@ def _deploy_from_yaml(
             os.chdir(orig)
 
 
-@main.command()
+@agents.command()
 @click.argument("spec", required=False, default=None, metavar="[SPEC.yaml]")
 @click.option("--module", default=None, help='Agent module spec. Default '
               '"agent:agent" for both --target model-serving and '
@@ -4746,7 +4808,7 @@ def _deploy_apps_impl(
 # ---------------------------------------------------------------------------
 
 
-@main.command("publish-tools")
+@uc.command("publish")
 @click.option("--module", default="agent:agent", help='Agent module spec.')
 @click.option("--dry-run", is_flag=True, help="Report what would publish without writing.")
 @click.option("--tools-table", default=None,
@@ -4817,7 +4879,7 @@ def publish_tools_cmd(
 # ---------------------------------------------------------------------------
 
 
-@main.command("create-supervisor")
+@agents.command("create-supervisor")
 @click.option("--name", required=True, help="Display name for the supervisor (e.g. 'Acme AI Assistant').")
 @click.option("--description", default="", help="Short description shown in the Databricks UI.")
 @click.option(
@@ -4902,7 +4964,7 @@ def create_supervisor(
             click.echo(f'  supervisor_id = "{supervisor_id}"')
 
 
-@main.command()
+@agents.command("publish")
 @click.option("--endpoint", default=None, help="Serving endpoint / app name. Defaults to [tool.apx.agent].name.")
 @click.option("--supervisor", "supervisor_id", default=None,
               help="Supervisor Agent ID. Reads [tool.apx.agent].supervisor_id if set; skipped when absent.")
@@ -5072,7 +5134,7 @@ def publish(
 # ---------------------------------------------------------------------------
 
 
-@main.command("mcp-config")
+@uc.command("mcp-config")
 @click.option("--module", default="agent:agent", help='Agent module spec.')
 @click.option("--host", "workspace_host", required=True, help="Databricks workspace host.")
 @click.option("--name", default="databricks", help="Prefix for the mcpServers entries.")
@@ -5132,7 +5194,7 @@ def _resolve_served_model_name(ws: Any, endpoint_name: str) -> str:
     return name
 
 
-@main.command()
+@agents.command()
 @click.option("--endpoint", default=None, help="Model Serving endpoint name.")
 @click.option("--served-model", default=None,
               help="Specific served model on the endpoint. Auto-discovered when omitted.")
@@ -5207,11 +5269,11 @@ def logs(
 
 
 # ---------------------------------------------------------------------------
-# info
+# describe (was: info)
 # ---------------------------------------------------------------------------
 
 
-@main.command()
+@agents.command("describe")
 @click.option("--module", default="agent:agent", help='Agent module spec.')
 @click.option(
     "--format", "fmt",
@@ -5304,11 +5366,11 @@ def info(module: str, fmt: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# trace — inspect MLflow traces
+# traces list — inspect MLflow traces
 # ---------------------------------------------------------------------------
 
 
-@main.command()
+@traces.command("list")
 @click.option("--experiment", default=None,
               help="MLflow experiment name/id. Falls back to "
                    "[tool.apx.agent].experiment in pyproject.toml.")
@@ -5429,11 +5491,11 @@ def _normalise_trace_rows(traces: Any) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# lint — static checks
+# eval lint — static checks
 # ---------------------------------------------------------------------------
 
 
-@main.command("lint")
+@eval_group.command("lint")
 @click.option("--module", default="agent:agent", help="Agent module spec.")
 @click.option("--model", default=None,
               help="Model endpoint to lint (in addition to any compiled into the tree).")
@@ -5494,7 +5556,7 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@main.command("hot-swap")
+@agents.command("hot-swap")
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
               default="model-serving",
@@ -5642,11 +5704,11 @@ def _hot_swap_apps_cli(
 
 
 # ---------------------------------------------------------------------------
-# test — local smoke test
+# eval test — local smoke test
 # ---------------------------------------------------------------------------
 
 
-@main.command("test")
+@eval_group.command("test")
 @click.option("--module", default="agent:agent", help="Agent module spec.")
 @click.option("--prompt", "prompts", multiple=True,
               help='Prompt to send. Repeat for multiple; defaults to one "hi" prompt.')
@@ -5731,35 +5793,7 @@ def test_cmd(
 # ---------------------------------------------------------------------------
 
 
-@main.group("list", invoke_without_command=True)
-@click.option("--catalog", default=None,
-              help="Restrict to a UC catalog. Default: any.")
-@click.option("--schema", default=None,
-              help="Restrict to a UC schema (requires --catalog).")
-@click.option(
-    "--format", "fmt", type=click.Choice(["text", "json"]),
-    default="text", help="Output format.",
-)
-@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
-              help="Databricks config profile (~/.databrickscfg). "
-                   "Defaults to DATABRICKS_CONFIG_PROFILE env var.")
-@click.pass_context
-def list_group(
-    ctx: click.Context,
-    catalog: str | None,
-    schema: str | None,
-    fmt: str,
-    profile: str | None,
-) -> None:
-    """Discover workspace resources — catalogs, schemas, tables, tools, agents.
-
-    With no subcommand, behaves like ``apx-agent list agents`` for backwards
-    compatibility. Run ``apx-agent list --help`` to see available subcommands.
-    """
-    ctx.ensure_object(dict)
-    ctx.obj["profile"] = profile
-    if ctx.invoked_subcommand is None:
-        ctx.invoke(list_agents_cmd, catalog=catalog, schema=schema, fmt=fmt)
+# (list group removed — use `apx-agent agents list` or `apx-agent uc catalogs/schemas/tables/tools`)
 
 
 def _connect_workspace(profile: str | None) -> "tuple[Any, Any]":
@@ -5824,7 +5858,7 @@ def _require_sdk(profile: str | None = None) -> "Any":
     return ws
 
 
-@list_group.command("agents")
+@agents.command("list")
 @click.option("--catalog", default=None,
               help="Restrict to a UC catalog. Default: any.")
 @click.option("--schema", default=None,
@@ -5833,8 +5867,9 @@ def _require_sdk(profile: str | None = None) -> "Any":
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-@click.pass_context
-def list_agents_cmd(ctx: click.Context, catalog: str | None, schema: str | None, fmt: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks config profile (~/.databrickscfg).")
+def list_agents_cmd(catalog: str | None, schema: str | None, fmt: str, profile: str | None) -> None:
     """Discover apx-agents in the workspace by their UC tags.
 
     Looks for registered models tagged ``apx.agent.name`` — the tag
@@ -5845,7 +5880,7 @@ def list_agents_cmd(ctx: click.Context, catalog: str | None, schema: str | None,
     if schema and not catalog:
         raise click.UsageError("--schema requires --catalog.")
 
-    ws = _require_sdk((ctx.obj or {}).get("profile"))
+    ws = _require_sdk(profile)
 
     try:
         models_iter = ws.registered_models.list(
@@ -5897,7 +5932,7 @@ def list_agents_cmd(ctx: click.Context, catalog: str | None, schema: str | None,
         )
 
 
-@list_group.command("catalogs")
+@uc.command("catalogs")
 @click.option(
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
@@ -5921,7 +5956,7 @@ def list_catalogs_cmd(ctx: click.Context, fmt: str) -> None:
         click.echo(name)
 
 
-@list_group.command("schemas")
+@uc.command("schemas")
 @click.argument("catalog")
 @click.option(
     "--format", "fmt", type=click.Choice(["text", "json"]),
@@ -5945,7 +5980,7 @@ def list_schemas_cmd(ctx: click.Context, catalog: str, fmt: str) -> None:
         click.echo(name)
 
 
-@list_group.command("tables")
+@uc.command("tables")
 @click.argument("catalog")
 @click.argument("schema")
 @click.option(
@@ -5983,7 +6018,7 @@ def list_tables_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> 
         click.echo(f"{name:<40}  {ttype:<16}  {comment}")
 
 
-@list_group.command("tools")
+@uc.command("tools")
 @click.argument("catalog")
 @click.argument("schema")
 @click.option(
@@ -6028,7 +6063,7 @@ def list_tools_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> N
 # ---------------------------------------------------------------------------
 
 
-@main.command()
+@agents.command()
 @click.option("--agent", "agent_name", default=None,
               help="Agent name. Resolves to the serving endpoint of the same name.")
 @click.option("--endpoint", default=None,
@@ -6111,7 +6146,7 @@ def cost(
 # ---------------------------------------------------------------------------
 
 
-@main.command("export-traces")
+@traces.command("export")
 @click.option("--experiment", default=None,
               help="MLflow experiment. Falls back to [tool.apx.agent].experiment.")
 @click.option("--table", "target_table", required=True,
@@ -6154,11 +6189,11 @@ def export_traces_cmd(
 
 
 # ---------------------------------------------------------------------------
-# topology
+# uc topology
 # ---------------------------------------------------------------------------
 
 
-@main.command()
+@uc.command()
 @click.option("--catalog", default=None, help="Restrict to a UC catalog.")
 @click.option("--schema", default=None, help="Restrict to a UC schema (requires --catalog).")
 @click.option(
@@ -6211,7 +6246,7 @@ def topology(
 # ---------------------------------------------------------------------------
 
 
-@main.command("eval-chain")
+@eval_group.command("chain")
 @click.argument("evalset", type=click.Path(exists=True, dir_okay=False))
 @click.option("--module", default="agent:agent", help="Agent module spec.")
 @click.option("--model", required=True, help="LLM endpoint for the supervisor.")
