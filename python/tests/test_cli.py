@@ -3624,3 +3624,598 @@ class TestCanary:
         ])
         assert result.exit_code != 0
         assert "canary-version" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent traces list` — enriched filters
+# ---------------------------------------------------------------------------
+
+
+class TestTracesListFilters:
+    """Tests for the new --user, --min-latency, --error-only, --tag filters."""
+
+    def _make_fake_search_traces(self, rows):
+        """Return a side_effect for mlflow.search_traces that yields fake rows."""
+        from apx_agent.cli import _normalise_trace_rows
+
+        class _FakeDF:
+            def to_dict(self, orient=None):
+                return rows
+
+        def _search(**kwargs):
+            return _FakeDF()
+
+        return _search
+
+    def test_error_only_filters_out_ok_traces(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+        )
+        rows = [
+            {"trace_id": "t1", "tags": {"apx.agent.name": "a"}, "status": "OK", "execution_time_ms": 100},
+            {"trace_id": "t2", "tags": {"apx.agent.name": "a"}, "status": "ERROR", "execution_time_ms": 200},
+        ]
+
+        import mlflow as _mlflow
+        with patch.object(_mlflow, "search_traces", self._make_fake_search_traces(rows)):
+            result = CliRunner().invoke(main, [
+                "traces", "list", "--error-only",
+            ])
+
+        assert result.exit_code == 0, result.output
+        # t1 (OK) must be absent; t2 (ERROR) must be present
+        assert "t2" in result.output
+        assert "t1" not in result.output
+
+    def test_min_latency_filters_fast_traces(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+        )
+        rows = [
+            {"trace_id": "fast", "tags": {}, "status": "OK", "execution_time_ms": 50},
+            {"trace_id": "slow", "tags": {}, "status": "OK", "execution_time_ms": 500},
+        ]
+
+        import mlflow as _mlflow
+        with patch.object(_mlflow, "search_traces", self._make_fake_search_traces(rows)):
+            result = CliRunner().invoke(main, [
+                "traces", "list", "--min-latency", "100",
+            ])
+
+        assert result.exit_code == 0, result.output
+        # fast (50ms) below threshold — must be absent
+        assert "slow" in result.output
+        assert "fast" not in result.output
+
+    def test_tag_filter_requires_key_val(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+        )
+        import mlflow as _mlflow
+        with patch.object(_mlflow, "search_traces", self._make_fake_search_traces([])):
+            result = CliRunner().invoke(main, [
+                "traces", "list", "--tag", "no-equals-sign",
+            ])
+
+        # Must fail with a usage error about KEY=VAL format
+        assert result.exit_code != 0
+        assert "KEY=VAL" in result.output or "key=val" in result.output.lower()
+
+    def test_missing_experiment_fails(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["traces", "list"])
+        assert result.exit_code != 0
+        assert "experiment" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent traces get`
+# ---------------------------------------------------------------------------
+
+
+class TestTracesGet:
+    def test_trace_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        import mlflow as _mlflow
+        with patch.object(_mlflow, "get_trace", return_value=None):
+            result = CliRunner().invoke(main, ["traces", "get", "nonexistent-id"])
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+    def test_happy_path_text(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        span = SimpleNamespace(
+            name="predict",
+            span_id="span1",
+            parent_span_id=None,
+            start_time_ns=1_000_000_000,
+            end_time_ns=2_000_000_000,
+            status="OK",
+            attributes={"apx.operation": "predict"},
+        )
+        fake_trace = SimpleNamespace(
+            info=SimpleNamespace(
+                trace_id="abc123",
+                request_id=None,
+                status="OK",
+                execution_time_ms=1000,
+                tags={"apx.agent.name": "my-agent"},
+            ),
+            data=SimpleNamespace(spans=[span]),
+        )
+        import mlflow as _mlflow
+        with patch.object(_mlflow, "get_trace", return_value=fake_trace):
+            result = CliRunner().invoke(main, ["traces", "get", "abc123"])
+        assert result.exit_code == 0, result.output
+        # Trace metadata must appear
+        assert "abc123" in result.output
+        assert "OK" in result.output
+        # Span must appear in the tree
+        assert "predict" in result.output
+
+    def test_happy_path_json(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        span = SimpleNamespace(
+            name="tool_call",
+            span_id="s1",
+            parent_span_id=None,
+            start_time_ns=0,
+            end_time_ns=1_000_000,
+            status="OK",
+            attributes={},
+        )
+        fake_trace = SimpleNamespace(
+            info=SimpleNamespace(
+                trace_id="trace-json-1",
+                request_id=None,
+                status="OK",
+                execution_time_ms=1,
+                tags={},
+            ),
+            data=SimpleNamespace(spans=[span]),
+        )
+        import mlflow as _mlflow
+        with patch.object(_mlflow, "get_trace", return_value=fake_trace):
+            result = CliRunner().invoke(main, ["traces", "get", "trace-json-1", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["trace_id"] == "trace-json-1"
+        assert payload["status"] == "OK"
+        # Span list must be present and non-empty
+        assert len(payload["spans"]) == 1
+        assert payload["spans"][0]["name"] == "tool_call"
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent traces delete`
+# ---------------------------------------------------------------------------
+
+
+class TestTracesDelete:
+    def test_requires_trace_id_or_hours(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["traces", "delete", "--yes"])
+        assert result.exit_code != 0
+        assert "trace-id" in result.output or "hours" in result.output.lower()
+
+    def test_trace_id_and_hours_mutually_exclusive(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, [
+            "traces", "delete", "--trace-id", "abc", "--hours", "24", "--yes",
+        ])
+        assert result.exit_code != 0
+        assert "exclusive" in result.output.lower() or "mutually" in result.output.lower()
+
+    def test_delete_by_trace_id(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        span = SimpleNamespace(attributes={})
+        fake_trace = SimpleNamespace(
+            info=SimpleNamespace(
+                trace_id="t1",
+                request_id=None,
+                experiment_id="exp-123",
+                status="OK",
+                execution_time_ms=100,
+                tags={},
+            ),
+            data=SimpleNamespace(spans=[span]),
+        )
+        fake_client = MagicMock()
+        fake_client.delete_traces.return_value = 1
+
+        import mlflow as _mlflow
+        with patch.object(_mlflow, "get_trace", return_value=fake_trace), \
+             patch.object(_mlflow, "MlflowClient", return_value=fake_client):
+            result = CliRunner().invoke(main, [
+                "traces", "delete", "--trace-id", "t1", "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "1" in result.output
+        # delete_traces must have been called with the correct trace ID
+        fake_client.delete_traces.assert_called_once()
+        call_kwargs = fake_client.delete_traces.call_args
+        assert "t1" in call_kwargs.kwargs.get("trace_ids", call_kwargs.args[1] if len(call_kwargs.args) > 1 else [])
+
+    def test_missing_experiment_for_hours_mode(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["traces", "delete", "--hours", "24", "--yes"])
+        assert result.exit_code != 0
+        assert "experiment" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent agents delete`
+# ---------------------------------------------------------------------------
+
+
+class TestAgentsDelete:
+    def test_happy_path_with_yes(self):
+        fake_ws = MagicMock()
+        # Simulate UC tags containing the endpoint name
+        fake_model = SimpleNamespace(tags=[
+            SimpleNamespace(key="apx.agent.name", value="my-agent"),
+            SimpleNamespace(key="apx.agent.model", value="my-ep"),
+        ])
+        fake_ws.registered_models.get.return_value = fake_model
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        # Endpoint delete must have been called using the UC-tag-resolved name
+        fake_ws.serving_endpoints.delete.assert_called_once_with("my-ep")
+        # Registered model delete must have been called
+        fake_ws.registered_models.delete.assert_called_once_with("main.schema.my_model")
+
+    def test_with_explicit_endpoint_and_app(self):
+        fake_ws = MagicMock()
+        fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[])
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.m",
+                "--endpoint", "explicit-ep",
+                "--app", "my-app",
+                "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        fake_ws.serving_endpoints.delete.assert_called_once_with("explicit-ep")
+        fake_ws.registered_models.delete.assert_called_once_with("main.schema.m")
+        fake_ws.apps.delete.assert_called_once_with("my-app")
+
+    def test_missing_uc_name_fails(self):
+        result = CliRunner().invoke(main, ["agents", "delete", "--yes"])
+        assert result.exit_code != 0
+        assert "uc-name" in result.output or "uc_name" in result.output
+
+    def test_endpoint_delete_failure_surfaces_error(self):
+        fake_ws = MagicMock()
+        fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[])
+        fake_ws.serving_endpoints.delete.side_effect = RuntimeError("endpoint not found")
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.m",
+                "--endpoint", "bad-ep",
+                "--yes",
+            ])
+
+        # Must exit non-zero when any deletion fails
+        assert result.exit_code != 0
+        assert "failed" in result.output.lower() or "error" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent uc validate`
+# ---------------------------------------------------------------------------
+
+
+class TestUcValidate:
+    def test_happy_path_all_checks_pass(self):
+        fake_ws = MagicMock()
+        with patch("apx_agent.cli._require_sdk", return_value=fake_ws), \
+             patch("apx_agent.cli._ws_list_catalogs", return_value=["mycat"]), \
+             patch("apx_agent.cli._ws_list_schemas", return_value=["myschema"]), \
+             patch("apx_agent.cli._ws_list_tables", return_value=[SimpleNamespace(name="t1")]), \
+             patch.object(fake_ws.registered_models, "list", return_value=iter([])):
+            result = CliRunner().invoke(main, [
+                "uc", "validate", "--catalog", "mycat", "--schema", "myschema",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "passed" in result.output.lower() or "ok" in result.output.lower()
+
+    def test_no_tables_reports_missing_select(self):
+        fake_ws = MagicMock()
+        with patch("apx_agent.cli._require_sdk", return_value=fake_ws), \
+             patch("apx_agent.cli._ws_list_catalogs", return_value=["mycat"]), \
+             patch("apx_agent.cli._ws_list_schemas", return_value=["myschema"]), \
+             patch("apx_agent.cli._ws_list_tables", return_value=[]), \
+             patch.object(fake_ws.registered_models, "list", return_value=iter([])):
+            result = CliRunner().invoke(main, [
+                "uc", "validate", "--catalog", "mycat", "--schema", "myschema",
+            ])
+
+        # SELECT check fails → non-zero exit
+        assert result.exit_code != 0
+
+    def test_missing_catalog_arg_fails(self):
+        result = CliRunner().invoke(main, ["uc", "validate", "--schema", "s"])
+        assert result.exit_code != 0
+        assert "--catalog" in result.output or "catalog" in result.output.lower()
+
+    def test_json_format(self):
+        fake_ws = MagicMock()
+        with patch("apx_agent.cli._require_sdk", return_value=fake_ws), \
+             patch("apx_agent.cli._ws_list_catalogs", return_value=["c"]), \
+             patch("apx_agent.cli._ws_list_schemas", return_value=["s"]), \
+             patch("apx_agent.cli._ws_list_tables", return_value=[SimpleNamespace(name="t")]), \
+             patch.object(fake_ws.registered_models, "list", return_value=iter([])):
+            result = CliRunner().invoke(main, [
+                "uc", "validate", "--catalog", "c", "--schema", "s", "--format", "json",
+            ])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert "checks" in payload
+        assert payload["catalog"] == "c"
+        assert payload["schema"] == "s"
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent eval report`
+# ---------------------------------------------------------------------------
+
+
+class TestEvalReport:
+    def test_missing_experiment_fails(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["eval", "report"])
+        assert result.exit_code != 0
+        assert "experiment" in result.output.lower()
+
+    def test_no_runs_shows_helpful_message(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+        )
+        fake_exp = SimpleNamespace(experiment_id="exp-1")
+
+        class _EmptyDF:
+            def to_dict(self, orient=None):
+                return []
+
+        import mlflow as _mlflow
+        with patch.object(_mlflow, "get_experiment_by_name", return_value=fake_exp), \
+             patch.object(_mlflow, "search_runs", return_value=_EmptyDF()):
+            result = CliRunner().invoke(main, ["eval", "report"])
+
+        assert result.exit_code == 0, result.output
+        assert "no eval runs" in result.output.lower()
+
+    def test_happy_path_text(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+        )
+        fake_exp = SimpleNamespace(experiment_id="exp-1")
+        runs = [
+            {
+                "run_id": "run-abc",
+                "start_time": "2026-06-10T10:00:00",
+                "metrics.pass_rate": 0.9,
+                "metrics.avg_latency_ms": 450.0,
+            },
+            {
+                "run_id": "run-def",
+                "start_time": "2026-06-09T10:00:00",
+                "metrics.pass_rate": 0.75,
+                "metrics.avg_latency_ms": None,
+            },
+        ]
+
+        class _FakeDF:
+            def to_dict(self, orient=None):
+                return runs
+
+        import mlflow as _mlflow
+        with patch.object(_mlflow, "get_experiment_by_name", return_value=fake_exp), \
+             patch.object(_mlflow, "search_runs", return_value=_FakeDF()):
+            result = CliRunner().invoke(main, ["eval", "report"])
+
+        assert result.exit_code == 0, result.output
+        # Both run IDs must appear in the table
+        assert "run-abc" in result.output
+        assert "run-def" in result.output
+        # The pass_rate metric must appear (both present)
+        assert "0.9" in result.output
+
+    def test_json_format(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+        )
+        fake_exp = SimpleNamespace(experiment_id="exp-1")
+        runs = [{"run_id": "r1", "start_time": "2026-06-10", "metrics.pass_rate": 1.0}]
+
+        class _FakeDF:
+            def to_dict(self, orient=None):
+                return runs
+
+        import mlflow as _mlflow
+        with patch.object(_mlflow, "get_experiment_by_name", return_value=fake_exp), \
+             patch.object(_mlflow, "search_runs", return_value=_FakeDF()):
+            result = CliRunner().invoke(main, ["eval", "report", "--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert isinstance(payload, list)
+        assert payload[0]["run_id"] == "r1"
+        assert payload[0]["metrics"]["pass_rate"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent memory export`
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryExport:
+    def _make_store(self, memories):
+        store = MagicMock()
+        store.list.return_value = memories
+        return store
+
+    def _make_memory(self, mid, content, principal_id="alice"):
+        return SimpleNamespace(
+            id=mid,
+            principal_id=principal_id,
+            namespace="default",
+            content=content,
+            tags=[],
+            importance=0.5,
+            metadata={},
+            created_at="2026-01-01T00:00:00",
+            updated_at="2026-01-01T00:00:00",
+        )
+
+    def test_export_to_file(self, tmp_path):
+        out = tmp_path / "out.jsonl"
+        memories = [self._make_memory("m1", "hello"), self._make_memory("m2", "world")]
+
+        with patch("apx_agent.cli._load_store", return_value=self._make_store(memories)):
+            result = CliRunner().invoke(main, [
+                "memory", "export",
+                "--principal-id", "alice",
+                "--output", str(out),
+                "--store-module", "fake:store",
+            ])
+
+        assert result.exit_code == 0, result.output
+        lines = [l for l in out.read_text().splitlines() if l.strip()]
+        # Two memories → two JSONL lines
+        assert len(lines) == 2
+        first = json.loads(lines[0])
+        assert first["id"] == "m1"
+        assert first["content"] == "hello"
+        assert "2" in result.output  # count mentioned
+
+    def test_export_to_stdout(self, tmp_path):
+        memories = [self._make_memory("m1", "hi")]
+        with patch("apx_agent.cli._load_store", return_value=self._make_store(memories)):
+            result = CliRunner().invoke(main, [
+                "memory", "export",
+                "--principal-id", "alice",
+                "--output", "-",
+                "--store-module", "fake:store",
+            ])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output.strip())
+        assert payload["id"] == "m1"
+
+    def test_missing_output_fails(self):
+        result = CliRunner().invoke(main, [
+            "memory", "export",
+            "--principal-id", "alice",
+            "--store-module", "fake:store",
+        ])
+        assert result.exit_code != 0
+        assert "--output" in result.output or "output" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent examples import`
+# ---------------------------------------------------------------------------
+
+
+class TestExamplesImport:
+    def _make_store(self):
+        store = MagicMock()
+        store.add.side_effect = lambda d: SimpleNamespace(id="new-id", **d)
+        return store
+
+    def test_happy_path_jsonl(self, tmp_path):
+        jsonl = tmp_path / "data.jsonl"
+        jsonl.write_text(
+            '{"input": "What is 2+2?", "output": "4", "intent": "math"}\n'
+            '{"input": "hi", "output": "hello"}\n'
+        )
+        store = self._make_store()
+        with patch("apx_agent.cli._load_store", return_value=store):
+            result = CliRunner().invoke(main, [
+                "examples", "import", str(jsonl),
+                "--agent-id", "agent-42",
+                "--store-module", "fake:store",
+            ])
+
+        assert result.exit_code == 0, result.output
+        # Both rows must have been added
+        assert store.add.call_count == 2
+        # 2 imported must appear in output
+        assert "2" in result.output
+
+    def test_happy_path_csv(self, tmp_path):
+        csv_file = tmp_path / "data.csv"
+        csv_file.write_text("input,output,intent\nq1,a1,qa\nq2,a2,qa\nq3,a3,qa\n")
+        store = self._make_store()
+        with patch("apx_agent.cli._load_store", return_value=store):
+            result = CliRunner().invoke(main, [
+                "examples", "import", str(csv_file),
+                "--agent-id", "ag",
+                "--store-module", "fake:store",
+            ])
+
+        assert result.exit_code == 0, result.output
+        # 3 CSV data rows → 3 add calls
+        assert store.add.call_count == 3
+
+    def test_dry_run_does_not_write(self, tmp_path):
+        jsonl = tmp_path / "data.jsonl"
+        jsonl.write_text('{"input": "q", "output": "a"}\n')
+        store = self._make_store()
+        with patch("apx_agent.cli._load_store", return_value=store):
+            result = CliRunner().invoke(main, [
+                "examples", "import", str(jsonl),
+                "--agent-id", "ag",
+                "--store-module", "fake:store",
+                "--dry-run",
+            ])
+
+        assert result.exit_code == 0, result.output
+        # Dry-run must not call store.add
+        store.add.assert_not_called()
+        assert "dry-run" in result.output or "would" in result.output.lower()
+
+    def test_missing_input_field_fails(self, tmp_path):
+        jsonl = tmp_path / "bad.jsonl"
+        jsonl.write_text('{"output": "answer"}\n')
+        with patch("apx_agent.cli._load_store", return_value=self._make_store()):
+            result = CliRunner().invoke(main, [
+                "examples", "import", str(jsonl),
+                "--agent-id", "ag",
+                "--store-module", "fake:store",
+            ])
+        assert result.exit_code != 0
+        assert "input" in result.output.lower()
+
+    def test_unsupported_file_type_fails(self, tmp_path):
+        f = tmp_path / "data.xml"
+        f.write_text("<root/>")
+        with patch("apx_agent.cli._load_store", return_value=self._make_store()):
+            result = CliRunner().invoke(main, [
+                "examples", "import", str(f),
+                "--agent-id", "ag",
+                "--store-module", "fake:store",
+            ])
+        assert result.exit_code != 0
+        assert ".xml" in result.output or "unsupported" in result.output.lower()
