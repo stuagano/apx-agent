@@ -7215,6 +7215,7 @@ def examples_find_cmd(
     def _text(rows: list[dict[str, Any]]) -> None:
         if not rows:
             click.echo(f"# examples find for agent={agent_id!r}: no hits.")
+            click.echo(f"  Check examples exist:  apx-agent examples list --agent-id {agent_id!r}")
             return
         click.echo(f"# examples find for agent={agent_id!r} (top {len(rows)})")
         for r in rows:
@@ -7321,6 +7322,7 @@ def examples_list_cmd(
     def _text(rows: list[dict[str, Any]]) -> None:
         if not rows:
             click.echo(f"# examples list for agent={agent_id!r}: empty.")
+            click.echo(f"  Add one with:  apx-agent examples save --agent-id {agent_id!r} --input '...' --output '...'")
             return
         click.echo(f"# examples list for agent={agent_id!r} ({len(rows)} rows)")
         for ex in rows:
