@@ -2405,8 +2405,10 @@ def refresh_schema(profile: str | None) -> None:
     existing = load_baked_schema(Path.cwd())
     if not existing or not existing.get("catalog") or not existing.get("schema"):
         raise click.ClickException(
-            "no .apx/schema.json found in this project — run `uv run apx-agent scaffold` first "
-            "(or create the manifest) so I know which catalog.schema to refresh."
+            "No .apx/schema.json found. This command must be run inside a scaffolded project.\n"
+            "\n"
+            "  To create one:  apx-agent scaffold <project-name>\n"
+            "  Then cd into it and run:  apx-agent refresh-schema"
         )
     catalog, schema = existing["catalog"], existing["schema"]
     manifest = _schema_manifest_for_scaffold(catalog, schema, profile=profile)
@@ -5854,7 +5856,9 @@ def list_agents_cmd(ctx: click.Context, catalog: str | None, schema: str | None,
         return
 
     if not rows:
-        click.echo("No apx-tagged registered models found.")
+        click.echo("No apx-tagged agents found in this workspace.")
+        click.echo("Deploy one with:  apx-agent deploy")
+        click.echo("Then run this command again to see it here.")
         return
     click.echo(f"{'AGENT':<28}  {'UC NAME':<40}  {'MODEL':<28}  {'TOOLS':>6}  {'RESOURCES':>9}")
     for r in rows:
@@ -5883,7 +5887,9 @@ def list_catalogs_cmd(ctx: click.Context, fmt: str) -> None:
         return
 
     if not catalogs:
-        click.echo("No catalogs found (or insufficient permissions).")
+        click.echo("No catalogs found.")
+        click.echo("Check that Unity Catalog is enabled and you have USE CATALOG on at least one catalog.")
+        click.echo("Run `apx-agent doctor` to verify workspace access.")
         return
     for name in catalogs:
         click.echo(name)
@@ -5907,6 +5913,7 @@ def list_schemas_cmd(ctx: click.Context, catalog: str, fmt: str) -> None:
 
     if not schemas:
         click.echo(f"No schemas found in {catalog}.")
+        click.echo(f"Check that you have USE SCHEMA on at least one schema in {catalog}.")
         return
     for name in schemas:
         click.echo(name)
@@ -5940,6 +5947,7 @@ def list_tables_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> 
 
     if not tables:
         click.echo(f"No tables found in {catalog}.{schema}.")
+        click.echo(f"Check that you have SELECT on at least one table in {catalog}.{schema}.")
         return
     click.echo(f"{'TABLE':<40}  {'TYPE':<16}  COMMENT")
     for t in tables:
@@ -5980,6 +5988,7 @@ def list_tools_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> N
 
     if not fns:
         click.echo(f"No UC functions found in {catalog}.{schema}.")
+        click.echo(f"Publish tools from your agent with:  apx-agent publish-tools")
         return
     click.echo(f"{'FUNCTION':<50}  COMMENT")
     for f in fns:
