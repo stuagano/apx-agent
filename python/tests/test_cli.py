@@ -118,10 +118,10 @@ def test_help_runs() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
-    assert "scaffold" in result.output
-    assert "deploy" in result.output
-    assert "publish" in result.output
-    assert "mcp-config" in result.output
+    assert "agents" in result.output
+    assert "uc" in result.output
+    assert "eval" in result.output
+    assert "traces" in result.output
 
 
 def test_version_runs() -> None:
@@ -142,7 +142,7 @@ def test_scaffold_creates_expected_files(tmp_path: Path) -> None:
     # covered by test_scaffold_apps.py.
     result = runner.invoke(
         main,
-        ["scaffold", "my_agent", "--target", "model-serving", "--dir", str(tmp_path), "--no-yaml"],
+        ["agents", "scaffold", "my_agent", "--target", "model-serving", "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code == 0, result.output
     base = tmp_path / "my_agent"
@@ -161,7 +161,7 @@ def test_scaffold_refuses_overwrite_without_force(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["scaffold", "existing", "--dir", str(tmp_path), "--no-yaml"],
+        ["agents", "scaffold", "existing", "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code != 0
     assert "already exists" in result.output
@@ -175,7 +175,7 @@ def test_scaffold_overwrites_with_force(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["scaffold", "existing", "--dir", str(tmp_path), "--force", "--no-yaml"],
+        ["agents", "scaffold", "existing", "--dir", str(tmp_path), "--force", "--no-yaml"],
     )
     assert result.exit_code == 0
     assert "# old content" not in (target / "agent.py").read_text()
@@ -195,7 +195,7 @@ def test_mcp_config_outputs_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     result = runner.invoke(
         main,
         [
-            "mcp-config",
+            "uc", "mcp-config",
             "--module", "tmp_test_agent:agent",
             "--host", "https://workspace.cloud.databricks.com",
             "--name", "triage",
@@ -225,7 +225,7 @@ def test_publish_tools_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["publish-tools", "--module", "tmp_test_agent:agent", "--dry-run"],
+        ["uc", "publish", "--module", "tmp_test_agent:agent", "--dry-run"],
     )
     sys.modules.pop("tmp_test_agent", None)
 
@@ -245,7 +245,7 @@ def test_info_text_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.chdir(tmp_path)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["info", "--module", "tmp_test_agent:agent"])
+    result = runner.invoke(main, ["agents", "describe", "--module", "tmp_test_agent:agent"])
     sys.modules.pop("tmp_test_agent", None)
 
     assert result.exit_code == 0, result.output
@@ -265,7 +265,7 @@ def test_info_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["info", "--module", "tmp_test_agent:agent", "--format", "json"],
+        ["agents", "describe", "--module", "tmp_test_agent:agent", "--format", "json"],
     )
     sys.modules.pop("tmp_test_agent", None)
 
@@ -299,7 +299,7 @@ def test_deploy_forwards_experiment_flag_to_log_agent(
         result = runner.invoke(
             main,
             [
-                "deploy",
+                "agents", "deploy",
                 "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
@@ -333,7 +333,7 @@ def test_deploy_falls_back_to_pyproject_experiment(
         result = runner.invoke(
             main,
             [
-                "deploy",
+                "agents", "deploy",
                 "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
@@ -367,7 +367,7 @@ def test_deploy_cli_flag_wins_over_pyproject(
         result = runner.invoke(
             main,
             [
-                "deploy",
+                "agents", "deploy",
                 "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
@@ -400,7 +400,7 @@ def test_deploy_chains_publish_tools_and_set_uc_tags_by_default(
         result = runner.invoke(
             main,
             [
-                "deploy",
+                "agents", "deploy",
                 "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
@@ -435,7 +435,7 @@ def test_deploy_no_publish_tools_flag_skips_publish(
         runner.invoke(
             main,
             [
-                "deploy",
+                "agents", "deploy",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
                 "--name", "main.agents.x",
@@ -465,7 +465,7 @@ def test_deploy_no_set_uc_tags_flag_skips_tag_writes(
         runner.invoke(
             main,
             [
-                "deploy",
+                "agents", "deploy",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
                 "--name", "main.agents.x",
@@ -495,7 +495,7 @@ def test_deploy_agent_name_flag_overrides_default(
         runner.invoke(
             main,
             [
-                "deploy",
+                "agents", "deploy",
                 "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
@@ -523,7 +523,7 @@ def test_deploy_no_experiment_when_absent(
         runner.invoke(
             main,
             [
-                "deploy",
+                "agents", "deploy",
                 "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
@@ -575,8 +575,10 @@ def test_watchdog_violations_falls_back_to_env_var(monkeypatch: pytest.MonkeyPat
     ]
 
     runner = CliRunner()
-    fake_ws_cls = MagicMock()
-    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+    fake_ws = MagicMock()
+    # Patch _connect_workspace directly: Config() is called before WorkspaceClient()
+    # and is not mocked, so patching only WorkspaceClient causes an auth error.
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
          patch("apx_agent.run_sql", return_value=rows) as mock_sql:
         result = runner.invoke(main, ["watchdog", "violations"])
 
@@ -587,8 +589,8 @@ def test_watchdog_violations_falls_back_to_env_var(monkeypatch: pytest.MonkeyPat
 
 def test_watchdog_violations_filters_by_agent_and_hours() -> None:
     runner = CliRunner()
-    fake_ws_cls = MagicMock()
-    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+    fake_ws = MagicMock()
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
          patch("apx_agent.run_sql", return_value=[]) as mock_sql:
         runner.invoke(main, [
             "watchdog", "violations",
@@ -606,8 +608,8 @@ def test_watchdog_violations_filters_by_agent_and_hours() -> None:
 
 def test_watchdog_violations_escapes_single_quotes_in_agent_name() -> None:
     runner = CliRunner()
-    fake_ws_cls = MagicMock()
-    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+    fake_ws = MagicMock()
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
          patch("apx_agent.run_sql", return_value=[]) as mock_sql:
         runner.invoke(main, [
             "watchdog", "violations",
@@ -630,8 +632,8 @@ def test_watchdog_violations_json_output() -> None:
     ]
 
     runner = CliRunner()
-    fake_ws_cls = MagicMock()
-    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+    fake_ws = MagicMock()
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
          patch("apx_agent.run_sql", return_value=rows):
         result = runner.invoke(main, [
             "watchdog", "violations",
@@ -646,8 +648,8 @@ def test_watchdog_violations_json_output() -> None:
 
 def test_watchdog_violations_no_rows_prints_helpful_message() -> None:
     runner = CliRunner()
-    fake_ws_cls = MagicMock()
-    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+    fake_ws = MagicMock()
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
          patch("apx_agent.run_sql", return_value=[]):
         result = runner.invoke(main, [
             "watchdog", "violations",
@@ -724,14 +726,14 @@ def test_watchdog_status_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_cost_requires_agent_or_endpoint() -> None:
     runner = CliRunner()
-    result = runner.invoke(main, ["cost"])
+    result = runner.invoke(main, ["agents", "cost"])
     assert result.exit_code != 0
     assert "Pass --agent" in result.output or "Pass --agent" in (result.stderr or "")
 
 
 def test_cost_agent_and_endpoint_mutually_exclusive() -> None:
     runner = CliRunner()
-    result = runner.invoke(main, ["cost", "--agent", "x", "--endpoint", "y"])
+    result = runner.invoke(main, ["agents", "cost", "--agent", "x", "--endpoint", "y"])
     assert result.exit_code != 0
 
 
@@ -747,11 +749,10 @@ def test_cost_text_output(monkeypatch: pytest.MonkeyPatch) -> None:
         ],
     )
 
-    fake_ws_cls = MagicMock()
     runner = CliRunner()
-    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+    with patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
          patch("apx_agent.cost_for_agent", return_value=fake_breakdown):
-        result = runner.invoke(main, ["cost", "--agent", "customer_triage"])
+        result = runner.invoke(main, ["agents", "cost", "--agent", "customer_triage"])
 
     assert result.exit_code == 0, result.output
     assert "customer_triage" in result.output
@@ -769,12 +770,11 @@ def test_cost_json_output() -> None:
         rows=[{"sku_name": "X", "usage_unit": "DBU", "dbus": 5.0, "usd": 1.0, "unit_price": 0.2}],
     )
 
-    fake_ws_cls = MagicMock()
     runner = CliRunner()
-    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+    with patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
          patch("apx_agent.cost_for_agent", return_value=fake_breakdown):
         result = runner.invoke(main, [
-            "cost", "--endpoint", "triage", "--hours", "12", "--format", "json",
+            "agents", "cost", "--endpoint", "triage", "--hours", "12", "--format", "json",
         ])
 
     assert result.exit_code == 0
@@ -789,11 +789,10 @@ def test_cost_no_usage_rows_prints_helpful_message() -> None:
     from apx_agent._cost import CostBreakdown
 
     empty = CostBreakdown(endpoint="triage", lookback_hours=24)
-    fake_ws_cls = MagicMock()
     runner = CliRunner()
-    with patch("databricks.sdk.WorkspaceClient", fake_ws_cls), \
+    with patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
          patch("apx_agent.cost_for_agent", return_value=empty):
-        result = runner.invoke(main, ["cost", "--agent", "triage"])
+        result = runner.invoke(main, ["agents", "cost", "--agent", "triage"])
 
     assert result.exit_code == 0
     assert "No usage rows" in result.output
@@ -807,7 +806,7 @@ def test_cost_no_usage_rows_prints_helpful_message() -> None:
 def test_trace_requires_experiment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)  # no pyproject -> no experiment fallback
     runner = CliRunner()
-    result = runner.invoke(main, ["trace"])
+    result = runner.invoke(main, ["traces", "list"])
     assert result.exit_code != 0
     assert "experiment" in result.output.lower()
 
@@ -823,7 +822,7 @@ def test_trace_falls_back_to_pyproject_experiment(
     fake_search = MagicMock(return_value=[])
     runner = CliRunner()
     with patch("mlflow.search_traces", fake_search):
-        result = runner.invoke(main, ["trace"])
+        result = runner.invoke(main, ["traces", "list"])
 
     assert result.exit_code == 0, result.output
     assert fake_search.call_args.kwargs["experiment_names"] == [
@@ -840,7 +839,7 @@ def test_trace_filters_by_agent_and_operation(
     runner = CliRunner()
     with patch("mlflow.search_traces", fake_search):
         runner.invoke(main, [
-            "trace",
+            "traces", "list",
             "--experiment", "/Users/me/agents/triage",
             "--agent", "triage",
             "--operation", "tool_call",
@@ -880,7 +879,7 @@ def test_trace_prints_rows_from_dataframe(
     runner = CliRunner()
     with patch("mlflow.search_traces", return_value=fake_df):
         result = runner.invoke(main, [
-            "trace",
+            "traces", "list",
             "--experiment", "/Users/me/agents/triage",
         ])
 
@@ -906,7 +905,7 @@ def test_trace_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     runner = CliRunner()
     with patch("mlflow.search_traces", return_value=fake_df):
         result = runner.invoke(main, [
-            "trace",
+            "traces", "list",
             "--experiment", "/Users/me/agents/x",
             "--format", "json",
         ])
@@ -927,7 +926,7 @@ def test_test_requires_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.chdir(tmp_path)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["test", "--module", "tmp_test_agent:agent"])
+    result = runner.invoke(main, ["eval", "test", "--module", "tmp_test_agent:agent"])
     sys.modules.pop("tmp_test_agent", None)
 
     assert result.exit_code != 0
@@ -951,7 +950,7 @@ def test_test_runs_prompts_and_reports_results(
     runner = CliRunner()
     with patch("apx_agent.compile_to_chat_agent", return_value=fake_chat):
         result = runner.invoke(main, [
-            "test",
+            "eval", "test",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
             "--prompt", "hello there",
@@ -978,7 +977,7 @@ def test_test_exits_non_zero_on_predict_failure(
     runner = CliRunner()
     with patch("apx_agent.compile_to_chat_agent", return_value=fake_chat):
         result = runner.invoke(main, [
-            "test",
+            "eval", "test",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
             "--prompt", "hi",
@@ -1004,7 +1003,7 @@ def test_test_default_prompt_when_none_supplied(
 
     runner = CliRunner()
     with patch("apx_agent.compile_to_chat_agent", return_value=fake_chat):
-        result = runner.invoke(main, ["test", "--module", "tmp_test_agent:agent"])
+        result = runner.invoke(main, ["eval", "test", "--module", "tmp_test_agent:agent"])
     sys.modules.pop("tmp_test_agent", None)
 
     assert result.exit_code == 0
@@ -1035,7 +1034,7 @@ def _make_tagged_model(
 
 def test_list_schema_requires_catalog() -> None:
     runner = CliRunner()
-    result = runner.invoke(main, ["list", "--schema", "agents"])
+    result = runner.invoke(main, ["agents", "list", "--schema", "agents"])
     assert result.exit_code != 0
     assert "--catalog" in result.output
 
@@ -1060,8 +1059,8 @@ def test_list_prints_apx_tagged_models_only() -> None:
     ]
 
     runner = CliRunner()
-    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
-        result = runner.invoke(main, ["list"])
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+        result = runner.invoke(main, ["agents", "list"])
 
     assert result.exit_code == 0, result.output
     assert "customer_triage" in result.output
@@ -1083,8 +1082,8 @@ def test_list_json_format() -> None:
     ]
 
     runner = CliRunner()
-    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
-        result = runner.invoke(main, ["list", "--format", "json"])
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+        result = runner.invoke(main, ["agents", "list", "--format", "json"])
 
     assert result.exit_code == 0
     parsed = json.loads(result.output)
@@ -1099,8 +1098,8 @@ def test_list_no_tagged_models_prints_helpful_message() -> None:
     ]
 
     runner = CliRunner()
-    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
-        result = runner.invoke(main, ["list"])
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+        result = runner.invoke(main, ["agents", "list"])
 
     assert result.exit_code == 0
     assert "No apx-tagged" in result.output
@@ -1121,14 +1120,14 @@ def _fake_endpoint_with_served_model(name: str) -> object:
 
 def test_logs_requires_endpoint_or_app() -> None:
     runner = CliRunner()
-    result = runner.invoke(main, ["logs"])
+    result = runner.invoke(main, ["agents", "logs"])
     assert result.exit_code != 0
     assert "either --endpoint" in result.output or "either --endpoint" in (result.stderr or "")
 
 
 def test_logs_endpoint_and_app_mutually_exclusive() -> None:
     runner = CliRunner()
-    result = runner.invoke(main, ["logs", "--endpoint", "x", "--app", "y"])
+    result = runner.invoke(main, ["agents", "logs", "--endpoint", "x", "--app", "y"])
     assert result.exit_code != 0
 
 
@@ -1142,8 +1141,8 @@ def test_logs_endpoint_auto_discovers_served_model_and_prints_runtime_logs() -> 
     )
 
     runner = CliRunner()
-    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
-        result = runner.invoke(main, ["logs", "--endpoint", "customer_triage"])
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+        result = runner.invoke(main, ["agents", "logs", "--endpoint", "customer_triage"])
 
     assert result.exit_code == 0, result.output
     assert "healthy" in result.output
@@ -1161,8 +1160,8 @@ def test_logs_build_flag_calls_build_logs() -> None:
     )
 
     runner = CliRunner()
-    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
-        result = runner.invoke(main, ["logs", "--endpoint", "triage", "--build"])
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+        result = runner.invoke(main, ["agents", "logs", "--endpoint", "triage", "--build"])
 
     assert result.exit_code == 0, result.output
     assert "Building" in result.output
@@ -1175,10 +1174,10 @@ def test_logs_explicit_served_model_skips_discovery() -> None:
     fake_ws.serving_endpoints.logs.return_value = SimpleNamespace(logs="ok\n")
 
     runner = CliRunner()
-    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
         result = runner.invoke(
             main,
-            ["logs", "--endpoint", "triage", "--served-model", "triage-2"],
+            ["agents", "logs", "--endpoint", "triage", "--served-model", "triage-2"],
         )
 
     assert result.exit_code == 0
@@ -1195,8 +1194,8 @@ def test_logs_endpoint_without_served_models_errors() -> None:
     )
 
     runner = CliRunner()
-    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
-        result = runner.invoke(main, ["logs", "--endpoint", "triage"])
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+        result = runner.invoke(main, ["agents", "logs", "--endpoint", "triage"])
 
     assert result.exit_code != 0
     assert "no served models" in result.output
@@ -1210,7 +1209,7 @@ def test_logs_app_shells_out_to_databricks_cli() -> None:
         stderr="",
     )
     with patch("subprocess.run", return_value=fake_completed) as mock_run:
-        result = runner.invoke(main, ["logs", "--app", "my-app", "--profile", "prod"])
+        result = runner.invoke(main, ["agents", "logs", "--app", "my-app", "--profile", "prod"])
 
     assert result.exit_code == 0, result.output
     assert "app log line 1" in result.output
@@ -1225,7 +1224,7 @@ def test_logs_app_surfaces_databricks_cli_failure() -> None:
     runner = CliRunner()
     fake_completed = SimpleNamespace(returncode=2, stdout="", stderr="app not found\n")
     with patch("subprocess.run", return_value=fake_completed):
-        result = runner.invoke(main, ["logs", "--app", "missing-app"])
+        result = runner.invoke(main, ["agents", "logs", "--app", "missing-app"])
 
     assert result.exit_code != 0
     assert "app not found" in result.output
@@ -1234,7 +1233,7 @@ def test_logs_app_surfaces_databricks_cli_failure() -> None:
 def test_logs_app_friendly_error_when_databricks_cli_missing() -> None:
     runner = CliRunner()
     with patch("subprocess.run", side_effect=FileNotFoundError):
-        result = runner.invoke(main, ["logs", "--app", "x"])
+        result = runner.invoke(main, ["agents", "logs", "--app", "x"])
 
     assert result.exit_code != 0
     assert "databricks" in result.output.lower()
@@ -1255,12 +1254,12 @@ def test_publish_tools_no_uc_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["publish-tools", "--module", "tmp_empty:agent", "--dry-run"],
+        ["uc", "publish", "--module", "tmp_empty:agent", "--dry-run"],
     )
     sys.modules.pop("tmp_empty", None)
 
     assert result.exit_code == 0
-    assert "No @tool(uc=...) decorated tools found." in result.output
+    assert "No @tool(uc=...) decorated tools found" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1849,7 +1848,7 @@ def test_deploy_no_capture_env_vars_default_sets_mlflow_kill_switch(
     with patch("apx_agent.log_agent", fake_log_agent), \
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
-            "deploy",
+            "agents", "deploy",
             "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
@@ -1883,7 +1882,7 @@ def test_deploy_capture_env_vars_flag_lets_mlflow_record(
     with patch("apx_agent.log_agent", fake_log_agent), \
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
-            "deploy",
+            "agents", "deploy",
             "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
@@ -1916,7 +1915,7 @@ def test_deploy_env_var_guard_restores_preexisting_value(
     with patch("apx_agent.log_agent", fake_log_agent), \
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
-            "deploy",
+            "agents", "deploy",
             "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
@@ -1944,7 +1943,7 @@ def test_deploy_allow_env_var_requires_capture_flag(
     with patch("apx_agent.log_agent", fake_log_agent), \
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
-            "deploy",
+            "agents", "deploy",
             "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
@@ -1974,7 +1973,7 @@ def test_deploy_allow_env_var_with_capture_flag_combines_and_warns(
     with patch("apx_agent.log_agent", fake_log_agent), \
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
-            "deploy",
+            "agents", "deploy",
             "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
@@ -2013,7 +2012,7 @@ def test_deploy_secret_scan_warns_on_secret_referenced_in_source(
     with patch("apx_agent.log_agent", fake_log_agent), \
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
-            "deploy",
+            "agents", "deploy",
             "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
@@ -2049,7 +2048,7 @@ def test_deploy_secret_scan_prompts_when_capture_on(
         result_n = runner.invoke(
             main,
             [
-                "deploy",
+                "agents", "deploy",
                 "--target", "model-serving",
                 "--module", "tmp_test_agent:agent",
                 "--model", "databricks-claude-sonnet-4-6",
@@ -2084,7 +2083,7 @@ def test_deploy_yes_flag_skips_secret_scan_prompt(
     with patch("apx_agent.log_agent", fake_log_agent), \
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
-            "deploy",
+            "agents", "deploy",
             "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
@@ -2123,7 +2122,7 @@ def test_deploy_secret_scan_picks_up_dotenv_keys(
     with patch("apx_agent.log_agent", fake_log_agent), \
          patch("mlflow.start_run"):
         result = runner.invoke(main, [
-            "deploy",
+            "agents", "deploy",
             "--target", "model-serving",
             "--module", "tmp_test_agent:agent",
             "--model", "databricks-claude-sonnet-4-6",
@@ -2158,7 +2157,7 @@ def test_eval_endpoint_url_mutex_with_model(tmp_path: Path) -> None:
 
     runner = CliRunner()
     result = runner.invoke(main, [
-        "eval", str(evalset),
+        "eval", "run", str(evalset),
         "--endpoint-url", "https://app.example.com",
         "--model", "databricks-claude-sonnet-4-6",
     ])
@@ -2173,7 +2172,7 @@ def test_eval_endpoint_url_mutex_with_module(tmp_path: Path) -> None:
 
     runner = CliRunner()
     result = runner.invoke(main, [
-        "eval", str(evalset),
+        "eval", "run", str(evalset),
         "--endpoint-url", "https://app.example.com",
         "--module", "agent:agent",
     ])
@@ -2193,7 +2192,7 @@ def test_eval_endpoint_url_with_token_parses_cleanly(tmp_path: Path) -> None:
         "apx_agent.eval_against_endpoint", return_value=fake_result,
     ) as mock_eval:
         result = runner.invoke(main, [
-            "eval", str(evalset),
+            "eval", "run", str(evalset),
             "--endpoint-url", "https://app.example.com",
             "--token", "T",
         ])
@@ -2220,7 +2219,7 @@ def test_eval_endpoint_url_no_stream_flag(tmp_path: Path) -> None:
         "apx_agent.eval_against_endpoint", return_value=fake_result,
     ) as mock_eval:
         result = runner.invoke(main, [
-            "eval", str(evalset),
+            "eval", "run", str(evalset),
             "--endpoint-url", "https://app.example.com",
             "--token", "T",
             "--no-stream",
@@ -2235,7 +2234,7 @@ def test_eval_in_process_still_requires_model(tmp_path: Path) -> None:
     evalset = _write_evalset(tmp_path)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["eval", str(evalset)])
+    result = runner.invoke(main, ["eval", "run", str(evalset)])
     assert result.exit_code != 0
     assert "--model is required" in result.output
 
@@ -2255,7 +2254,7 @@ def test_run_passes_app_dir_to_uvicorn() -> None:
         with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
                 patch("apx_agent.cli._preflight_databricks_auth"), \
                 patch("apx_agent.cli._probe_import"):
-            result = runner.invoke(main, ["run"])
+            result = runner.invoke(main, ["agents", "run"])
 
     assert result.exit_code == 0, result.output
     fake_uvicorn.run.assert_called_once()
@@ -2287,7 +2286,7 @@ def test_run_autodetects_apps_module() -> None:
             patch("apx_agent.cli._preflight_databricks_auth"):
         Path("agent_server").mkdir()
         Path("agent_server/start_server.py").write_text("app = None\n")
-        result = runner.invoke(main, ["run"])
+        result = runner.invoke(main, ["agents", "run"])
 
     assert result.exit_code == 0, result.output
     assert fake_uvicorn.run.call_args.args[0] == "agent_server.start_server:app"
@@ -2300,7 +2299,7 @@ def test_deploy_autodetects_apps_target() -> None:
             patch("apx_agent.cli._deploy_apps") as mock_apps:
         Path("agent_server").mkdir()
         Path("agent_server/start_server.py").write_text("app = None\n")
-        result = runner.invoke(main, ["deploy"])
+        result = runner.invoke(main, ["agents", "deploy"])
 
     assert result.exit_code == 0, result.output
     mock_apps.assert_called_once()
@@ -2311,7 +2310,7 @@ def test_deploy_autodetects_model_serving_target() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         Path("app.py").write_text("app = None\n")
-        result = runner.invoke(main, ["deploy"])
+        result = runner.invoke(main, ["agents", "deploy"])
 
     assert result.exit_code != 0
     assert "--model is required" in result.output
@@ -2329,7 +2328,7 @@ def test_run_friendly_error_when_auth_unresolved() -> None:
     with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
             patch("databricks.sdk.core.Config", fake_config), \
             patch("apx_agent.cli._databrickscfg_profiles", return_value=["DEFAULT", "prod"]):
-        result = runner.invoke(main, ["run"])
+        result = runner.invoke(main, ["agents", "run"])
 
     assert result.exit_code != 0
     assert "DATABRICKS_CONFIG_PROFILE" in result.output
@@ -2461,7 +2460,7 @@ def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
     """--catalog/--schema bake the default DataAgent's data source (no probe)."""
     runner = CliRunner()
     result = runner.invoke(
-        main, ["scaffold", "ag", "--catalog", "main", "--schema", "sales",
+        main, ["agents", "scaffold", "ag", "--catalog", "main", "--schema", "sales",
                "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code == 0, result.output
@@ -2493,7 +2492,7 @@ def test_run_auth_error_first_timer_points_to_login() -> None:
     with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}), \
             patch("databricks.sdk.core.Config", fake_config), \
             patch("apx_agent.cli._databrickscfg_profiles", return_value=[]):
-        result = runner.invoke(main, ["run"])
+        result = runner.invoke(main, ["agents", "run"])
     assert result.exit_code != 0
     assert "databricks auth login" in result.output
     fake_uvicorn.run.assert_not_called()
@@ -2505,7 +2504,7 @@ def test_scaffold_explicit_target_bakes_example_tool(tmp_path: Path) -> None:
     runner = CliRunner()
     with patch("apx_agent.cli._probe_first_table", return_value="trips"):
         result = runner.invoke(
-            main, ["scaffold", "ag", "--catalog", "main", "--schema", "sales",
+            main, ["agents", "scaffold", "ag", "--catalog", "main", "--schema", "sales",
                    "--dir", str(tmp_path), "--no-yaml"],
         )
     assert result.exit_code == 0, result.output
@@ -2607,10 +2606,17 @@ def test_preflight_auth_uses_check(monkeypatch):
 
 def test_unknown_command_suggests_closest():
     runner = CliRunner()
-    result = runner.invoke(main, ["deploi"])  # typo of deploy
+    result = runner.invoke(main, ["agants"])  # typo of agents
     assert result.exit_code != 0
-    assert "deploy" in result.output
+    assert "agents" in result.output
     assert "did you mean" in result.output.lower()
+
+
+def test_moved_command_gives_redirect():
+    runner = CliRunner()
+    result = runner.invoke(main, ["deploy"])  # moved to agents deploy
+    assert result.exit_code != 0
+    assert "agents deploy" in result.output
 
 
 def test_unknown_command_no_close_match():
@@ -2628,7 +2634,7 @@ def test_unknown_command_no_close_match():
 def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()
-    result = runner.invoke(main, ["scaffold", "my-agent", "--no-yaml"])
+    result = runner.invoke(main, ["agents", "scaffold", "my-agent", "--no-yaml"])
     assert result.exit_code == 0
     out = result.output
     assert "cd my-agent" in out
@@ -2655,7 +2661,7 @@ def test_run_probe_reports_broken_agent(tmp_path: Path, monkeypatch):
     with patch("apx_agent.cli._preflight_databricks_auth"), patch(
         "apx_agent._mlflow_tracing.autolog_if_env"
     ):
-        result = runner.invoke(main, ["run"])
+        result = runner.invoke(main, ["agents", "run"])
     assert result.exit_code != 0
     out = result.output
     assert "does_not_exist_xyz" in out or "start_server" in out
@@ -2997,7 +3003,7 @@ def test_apx_info_lists_config_tools(
 
     runner = CliRunner()
     result = runner.invoke(
-        main, ["info", "--module", "info_config_tools_agent:agent"]
+        main, ["agents", "describe", "--module", "info_config_tools_agent:agent"]
     )
     sys.modules.pop("info_config_tools_agent", None)
 
@@ -3148,7 +3154,7 @@ def test_lint_sees_config_declared_tools(
 
     runner = CliRunner()
     result = runner.invoke(
-        main, ["lint", "--module", f"{module_name}:agent", "--format", "json"]
+        main, ["eval", "lint", "--module", f"{module_name}:agent", "--format", "json"]
     )
     sys.modules.pop(module_name, None)
 
@@ -3187,7 +3193,7 @@ def test_apx_info_with_template_config(tmp_path, monkeypatch):
     main_mod = sys.modules.get("__main__")
     sentinel = str(tmp_path / "fake_entrypoint.py")
     monkeypatch.setattr(main_mod, "__file__", sentinel, raising=False)
-    res = CliRunner().invoke(main, ["info", "--module", "nonexistent:agent"])
+    res = CliRunner().invoke(main, ["agents", "describe", "--module", "nonexistent:agent"])
     assert res.exit_code == 0, res.output
     assert "run_sql" in res.output
 
@@ -3256,7 +3262,7 @@ class TestRefreshSchema:
             lambda c, s, profile=None: {"catalog": c, "schema": s, "tables": {"new": ["b(int)"]}},
         )
         monkeypatch.chdir(tmp_path)
-        res = CliRunner().invoke(cli.main, ["refresh-schema"])
+        res = CliRunner().invoke(cli.main, ["agents", "refresh-schema"])
         assert res.exit_code == 0, res.output
         assert json.loads((d / "schema.json").read_text())["tables"] == {"new": ["b(int)"]}
 
@@ -3264,7 +3270,7 @@ class TestRefreshSchema:
         from click.testing import CliRunner
         from apx_agent import cli
         monkeypatch.chdir(tmp_path)
-        res = CliRunner().invoke(cli.main, ["refresh-schema"])
+        res = CliRunner().invoke(cli.main, ["agents", "refresh-schema"])
         assert res.exit_code != 0
         assert "no .apx/schema.json" in res.output.lower()
 
@@ -3299,7 +3305,7 @@ class TestScaffoldCoworker:
 class TestRefreshSchema:
     def test_error_when_no_schema_json(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        result = CliRunner().invoke(main, ["refresh-schema"])
+        result = CliRunner().invoke(main, ["agents", "refresh-schema"])
         assert result.exit_code != 0
         assert "schema.json" in result.output or "scaffold" in result.output
 
@@ -3316,7 +3322,7 @@ class TestRefreshSchema:
         monkeypatch.setattr(cli, "_schema_manifest_for_scaffold",
                             lambda c, s, profile=None: new_manifest)
 
-        result = CliRunner().invoke(main, ["refresh-schema"])
+        result = CliRunner().invoke(main, ["agents", "refresh-schema"])
         assert result.exit_code == 0, result.output
         assert "refreshed" in result.output
         written = json.loads((apx_dir / "schema.json").read_text())
@@ -3334,7 +3340,7 @@ class TestRefreshSchema:
         monkeypatch.setattr(cli, "_schema_manifest_for_scaffold",
                             lambda c, s, profile=None: None)
 
-        result = CliRunner().invoke(main, ["refresh-schema"])
+        result = CliRunner().invoke(main, ["agents", "refresh-schema"])
         assert result.exit_code != 0
         assert "could not read tables" in result.output or "check your profile" in result.output
 
@@ -3346,7 +3352,7 @@ class TestRefreshSchema:
 
 class TestPublish:
     def test_missing_required_flags(self):
-        result = CliRunner().invoke(main, ["publish"])
+        result = CliRunner().invoke(main, ["agents", "publish"])
         assert result.exit_code != 0
 
     def test_happy_path(self):
@@ -3359,7 +3365,7 @@ class TestPublish:
              patch("apx_agent.publish_to_registry"), \
              patch("apx_agent._publish.publish_tools_to_registry", return_value=0):
             result = CliRunner().invoke(main, [
-                "publish",
+                "agents", "publish",
                 "--endpoint", "my-endpoint",
                 "--supervisor", "sup-456",
                 "--description", "Routes sales questions",
@@ -3378,21 +3384,21 @@ class TestPublish:
 class TestHotSwap:
     def test_model_serving_missing_endpoint(self):
         result = CliRunner().invoke(main, [
-            "hot-swap", "--model", "databricks-claude-opus-4",
+            "agents", "hot-swap", "--model", "databricks-claude-opus-4",
         ])
         assert result.exit_code != 0
         assert "endpoint" in result.output.lower()
 
     def test_model_serving_missing_model(self):
         result = CliRunner().invoke(main, [
-            "hot-swap", "--endpoint", "my-ep",
+            "agents", "hot-swap", "--endpoint", "my-ep",
         ])
         assert result.exit_code != 0
         assert "--model" in result.output
 
     def test_apps_missing_llm_endpoint(self):
         result = CliRunner().invoke(main, [
-            "hot-swap", "--target", "apps",
+            "agents", "hot-swap", "--target", "apps",
         ])
         assert result.exit_code != 0
         assert "llm-endpoint" in result.output
@@ -3406,7 +3412,7 @@ class TestHotSwap:
         )
         with patch("apx_agent._hot_swap.hot_swap_model", return_value=fake_result) as mock_hs:
             result = CliRunner().invoke(main, [
-                "hot-swap",
+                "agents", "hot-swap",
                 "--endpoint", "my-ep",
                 "--model", "databricks-claude-opus-4",
             ])
@@ -3424,7 +3430,7 @@ class TestExportTraces:
     def test_missing_experiment_and_no_config(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         result = CliRunner().invoke(main, [
-            "export-traces", "--table", "main.default.traces",
+            "traces", "export", "--table", "main.default.traces",
         ])
         assert result.exit_code != 0
         assert "experiment" in result.output.lower()
@@ -3440,10 +3446,10 @@ class TestExportTraces:
         )
         fake_ws = MagicMock()
 
-        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
              patch("apx_agent.export_traces", return_value=fake_result) as mock_et:
             result = CliRunner().invoke(main, [
-                "export-traces",
+                "traces", "export",
                 "--experiment", "/my/experiment",
                 "--table", "main.default.traces",
             ])
@@ -3461,7 +3467,7 @@ class TestExportTraces:
 class TestTopology:
     def test_schema_without_catalog_fails(self):
         result = CliRunner().invoke(main, [
-            "topology", "--schema", "myschema",
+            "uc", "topology", "--schema", "myschema",
         ])
         assert result.exit_code != 0
         assert "--catalog" in result.output or "catalog" in result.output.lower()
@@ -3470,10 +3476,10 @@ class TestTopology:
         fake_topo = SimpleNamespace(nodes=["a", "b"], edges=["a->b"])
         fake_ws = MagicMock()
 
-        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
              patch("apx_agent.discover_topology", return_value=fake_topo), \
              patch("apx_agent.render_topology", return_value="graph LR\n  a --> b"):
-            result = CliRunner().invoke(main, ["topology"])
+            result = CliRunner().invoke(main, ["uc", "topology"])
 
         assert result.exit_code == 0, result.output
         assert "graph LR" in result.output
@@ -3483,10 +3489,10 @@ class TestTopology:
         out = tmp_path / "topo.mmd"
         fake_ws = MagicMock()
 
-        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
              patch("apx_agent.discover_topology", return_value=fake_topo), \
              patch("apx_agent.render_topology", return_value="graph LR"):
-            result = CliRunner().invoke(main, ["topology", "--output", str(out)])
+            result = CliRunner().invoke(main, ["uc", "topology", "--output", str(out)])
 
         assert result.exit_code == 0, result.output
         assert out.read_text().strip() == "graph LR"
@@ -3517,7 +3523,7 @@ class TestEvalChain:
         with patch("apx_agent.cli._load_finalized_agent", return_value=fake_agent), \
              patch("apx_agent.evaluate_chain", return_value=fake_report):
             result = CliRunner().invoke(main, [
-                "eval-chain", str(evalset),
+                "eval", "chain", str(evalset),
                 "--model", "databricks-claude-opus-4",
                 "--experiment", "/exp/my-eval",
             ])
@@ -3536,7 +3542,7 @@ class TestEvalChain:
         with patch("apx_agent.cli._load_finalized_agent", return_value=fake_agent), \
              patch("apx_agent.evaluate_chain", return_value=fake_report):
             result = CliRunner().invoke(main, [
-                "eval-chain", str(evalset),
+                "eval", "chain", str(evalset),
                 "--model", "databricks-claude-opus-4",
                 "--experiment", "/exp/my-eval",
             ])
@@ -3550,7 +3556,7 @@ class TestEvalChain:
         fake_agent = MagicMock()
         with patch("apx_agent.cli._load_finalized_agent", return_value=fake_agent):
             result = CliRunner().invoke(main, [
-                "eval-chain", str(evalset),
+                "eval", "chain", str(evalset),
                 "--model", "databricks-claude-opus-4",
                 "--experiment", "/exp/my-eval",
             ])
@@ -3573,7 +3579,7 @@ class TestCanary:
         )
         fake_ws = MagicMock()
 
-        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
              patch("apx_agent.get_canary_config", return_value=fake_cfg):
             result = CliRunner().invoke(main, ["canary", "status", "--endpoint", "my-ep"])
 
