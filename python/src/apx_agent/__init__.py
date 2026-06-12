@@ -324,6 +324,12 @@ from ._canary_apps import (
     write_databricks_yml,
 )
 
+# Apps → UC registry shim — register a version manifest for a deployed App
+from ._apps_registry import (
+    AppsManifestResult,
+    register_apps_manifest,
+)
+
 # databricks-watchdog integration
 from ._watchdog import (
     WatchdogClient,
@@ -616,6 +622,9 @@ __all__ = [
     "rollback_canary_app",
     "sanitize_version",
     "write_databricks_yml",
+    # Apps → UC registry shim
+    "AppsManifestResult",
+    "register_apps_manifest",
     # Watchdog integration
     "WatchdogClient",
     "WatchdogDecision",

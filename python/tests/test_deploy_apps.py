@@ -690,3 +690,112 @@ def test_deploy_blocks_when_cli_missing(tmp_path, monkeypatch):
     assert result.exit_code != 0
     assert "Databricks CLI" in result.output
     assert "install it" in result.output
+
+
+# ---------------------------------------------------------------------------
+# UC version-manifest registration (apps → UC registry shim, P1)
+# ---------------------------------------------------------------------------
+
+
+_PYPROJECT_WITH_AGENT = (
+    '[project]\nname = "test-app"\n\n'
+    '[tool.apx.agent]\n'
+    'model = "databricks-claude-sonnet-4-6"\n'
+    'name = "My App"\n'
+)
+
+
+def test_register_uc_skips_with_notice_when_unconfigured(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bare apps deploy (no UC name / model in config) still succeeds, and the
+    skip is announced with an actionable notice — not silent."""
+    called: list[Any] = []
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.register_apps_manifest",
+        lambda *a, **k: called.append((a, k)),
+    )
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+    assert result.exit_code == 0, result.output
+    assert not called, "registrar must not run when no UC name resolves"
+    assert "UC registration skipped" in result.output
+    assert "--uc-name" in result.output  # the notice names the fix
+
+
+def test_register_uc_runs_once_when_configured(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a model in config + an explicit --uc-name, the registrar runs once,
+    with the resolved name + model, and serving is never promoted."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    calls: list[dict[str, Any]] = []
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target, agent_name=None):
+        calls.append({
+            "uc_name": uc_name, "model": model,
+            "app_name": app_name, "bundle_target": bundle_target,
+        })
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="3", app_name=app_name)
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    # Avoid importing/finalizing the stub agent — out of scope for this test.
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+
+    calls_log = _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--uc-name", "main.agents.my_app",
+    ])
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1, f"expected exactly one registration, got {calls}"
+    assert calls[0]["uc_name"] == "main.agents.my_app"
+    assert calls[0]["model"] == "databricks-claude-sonnet-4-6"
+    assert calls[0]["app_name"] == "my-app"
+    assert "registered main.agents.my_app version 3" in result.output
+    # The apps path must never promote to a serving endpoint.
+    assert not any(c[:2] == ["serving-endpoints", "create"] for c in calls_log)
+
+
+def test_register_uc_failure_is_non_fatal(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registrar exception logs a warning but the deploy still exits 0 —
+    the App is already live; a missing ledger entry must not redden a deploy."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("UC write denied")
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _boom)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--uc-name", "main.agents.my_app",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "UC registration failed" in result.output
+    assert "non-fatal" in result.output
+
+
+def test_no_register_uc_skips_the_step(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--no-register-uc elides registration entirely, even when configured."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    called: list[Any] = []
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.register_apps_manifest",
+        lambda *a, **k: called.append((a, k)),
+    )
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--uc-name", "main.agents.my_app", "--no-register-uc",
+    ])
+    assert result.exit_code == 0, result.output
+    assert not called
+    assert "skipping the UC version-manifest registration" in result.output
