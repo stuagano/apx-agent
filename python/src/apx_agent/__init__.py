@@ -228,6 +228,9 @@ from ._guards import (
     prompt_injection_heuristic,
 )
 
+# Async bridge — keep sync agent handlers off the AgentServer event loop
+from ._async_bridge import make_async_invoke, make_async_stream
+
 # Cancellable tools — interrupt long-running tool calls mid-flight
 from ._cancellation import (
     CancellationRegistry,
@@ -536,6 +539,9 @@ __all__ = [
     "ToolDenylist",
     "prompt_injection_heuristic",
     "compose",
+    # Async bridge
+    "make_async_invoke",
+    "make_async_stream",
     # Cancellable tools
     "CancellationRegistry",
     "CancelToken",
