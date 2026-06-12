@@ -474,10 +474,12 @@ def test_cli_canary_deploy_default_target_still_model_serving(
         return SimpleNamespace(traffic_split={"a-1": 90, "a-2": 10})
 
     monkeypatch.setattr("apx_agent.deploy_canary", fake_deploy)
+    # Patch the CLI's connection helper (not databricks.sdk.WorkspaceClient):
+    # _connect_workspace probes auth via Config() before constructing the
+    # client, so patching the SDK class alone still hits the auth error.
     monkeypatch.setattr(
-        "databricks.sdk.WorkspaceClient",
-        lambda *a, **k: SimpleNamespace(),
-        raising=False,
+        "apx_agent.cli._connect_workspace",
+        lambda profile=None: (SimpleNamespace(), SimpleNamespace()),
     )
     # Provide a click context.
     runner = CliRunner()
