@@ -250,6 +250,42 @@ def _build_chat_databricks(
 # ---------------------------------------------------------------------------
 
 
+def _governance_exception_middleware() -> Any:
+    """Middleware that converts governance exceptions into tool error results.
+
+    ``before_tool`` guards (Watchdog reject, PolicyGate DENY/ASK) and
+    cancellable tools signal via exceptions — ``PermissionError`` (incl.
+    ``ApprovalRequired``) and ``ToolCancelled``. Without this middleware
+    LangGraph's tool node re-raises them, which kills the WHOLE turn:
+    the user sees a dead stream instead of the agent explaining the
+    rejection and offering an alternative.
+
+    Converting them to error ``ToolMessage``s keeps the loop alive — the
+    LLM reads the reason (the exception message carries it) and can
+    respond. Genuine bugs (TypeError, KeyError, ...) still propagate and
+    fail loud.
+
+    :returns: An ``AgentMiddleware`` for ``create_agent(middleware=[...])``.
+    """
+    from langchain.agents.middleware import wrap_tool_call
+    from langchain_core.messages import ToolMessage
+
+    from ._cancellation import ToolCancelled
+
+    @wrap_tool_call
+    def _convert_governance_errors(request: Any, handler: Any) -> Any:
+        try:
+            return handler(request)
+        except (PermissionError, ToolCancelled) as exc:
+            return ToolMessage(
+                content=f"Error: {exc}",
+                tool_call_id=request.tool_call["id"],
+                status="error",
+            )
+
+    return _convert_governance_errors
+
+
 def _compile_llm_agent(agent: LlmAgent, ctx: CompileContext) -> Any:
     """Compile an ``LlmAgent`` into a ``create_agent`` runnable."""
     from langchain.agents import create_agent
@@ -266,6 +302,7 @@ def _compile_llm_agent(agent: LlmAgent, ctx: CompileContext) -> Any:
         model=llm,
         tools=tools,
         system_prompt=agent._instructions or None,
+        middleware=[_governance_exception_middleware()],
     )
     config: dict[str, Any] = {}
     handler = build_callback_handler(agent)

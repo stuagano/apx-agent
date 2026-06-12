@@ -220,3 +220,74 @@ class TestDependenciesProgress:
         ctx = CompileContext(ws=None, model="m", headers=None)  # type: ignore[arg-type]
         resolvers = _make_dep_resolvers(ctx)
         assert resolvers[_get_progress] is emit_progress
+
+
+class TestGovernanceExceptionMiddleware:
+    """The middleware that keeps the agent loop alive on governance rejects.
+
+    Without it, a PermissionError from a before_tool guard (Watchdog
+    reject, PolicyGate DENY, ApprovalRequired) or a ToolCancelled kills
+    the whole turn — the user sees a dead stream instead of the agent
+    explaining the rejection and offering an alternative. Verified live
+    2026-06-11; these tests pin the conversion behavior.
+    """
+
+    def _invoke(self, exc_or_result: Any) -> Any:
+        """Run the middleware's wrap_tool_call with a scripted handler."""
+        from apx_agent._compile import _governance_exception_middleware
+
+        mw = _governance_exception_middleware()
+
+        class _Request:
+            tool_call = {"id": "call-123"}
+
+        def handler(request: Any) -> Any:
+            if isinstance(exc_or_result, BaseException):
+                raise exc_or_result
+            return exc_or_result
+
+        return mw.wrap_tool_call(_Request(), handler)
+
+    def test_permission_error_becomes_error_tool_message(self) -> None:
+        from langchain_core.messages import ToolMessage
+
+        result = self._invoke(PermissionError("PII export blocked (W-DATA-7)"))
+        # The reject must surface as an error ToolMessage tied to the call —
+        # NOT propagate (which would kill the turn before the LLM can react).
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.tool_call_id == "call-123"
+        # The reason must reach the LLM verbatim so it can explain why and
+        # offer an alternative.
+        assert "PII export blocked (W-DATA-7)" in result.content
+
+    def test_tool_cancelled_becomes_error_tool_message(self) -> None:
+        from langchain_core.messages import ToolMessage
+
+        from apx_agent import ToolCancelled
+
+        result = self._invoke(ToolCancelled("slow_scan", "timed out after 10s"))
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "timed out after 10s" in result.content
+
+    def test_approval_required_becomes_error_tool_message(self) -> None:
+        """ApprovalRequired subclasses PermissionError — same conversion."""
+        from langchain_core.messages import ToolMessage
+
+        from apx_agent import ApprovalRequired, ApprovalStore
+
+        approval = ApprovalStore().request("send_email", {"to": "b@x.com"})
+        result = self._invoke(ApprovalRequired(approval))
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        # The approval ID must reach the LLM so it can relay it to the user.
+        assert approval.id in result.content
+
+    def test_other_exceptions_still_propagate(self) -> None:
+        # Genuine bugs must fail loud — only governance signals convert.
+        with pytest.raises(TypeError, match="real bug"):
+            self._invoke(TypeError("real bug"))
+
+    def test_successful_result_passes_through(self) -> None:
+        assert self._invoke("tool output") == "tool output"
