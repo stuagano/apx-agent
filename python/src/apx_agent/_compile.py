@@ -770,7 +770,7 @@ def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
 def compile_to_langgraph(
     agent: BaseAgent,
     *,
-    ws: "WorkspaceClient",
+    ws: "WorkspaceClient | None",
     model: str,
     headers: Any | None = None,
 ) -> Any:

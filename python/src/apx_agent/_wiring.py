@@ -642,7 +642,7 @@ async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
         _mcp = _build_mcp_components(ctx, app, ctx.config.api_prefix)
         app.state.mcp_server = _mcp.server
         app.state.mcp_transport = _mcp.sse_transport
-        mcp_http_manager = StreamableHTTPSessionManager(mcp_server, stateless=True)
+        mcp_http_manager = StreamableHTTPSessionManager(_mcp.server, stateless=True)
         app.state.mcp_http_manager = mcp_http_manager
         logger.info(
             "MCP server enabled at /mcp/sse (SSE) and /mcp (stateless HTTP)"
