@@ -988,8 +988,22 @@ _ws = _make_workspace_client()
 # not just when served via create_app().
 _agent_config = _load_agent_config()
 finalize_agent(agent, _agent_config, ws=_ws)
+# Conversation store: config-driven (Delta/Lakebase via [tool.apx.agent].session)
+# when declared; otherwise an in-process store so multi-turn threading and the
+# dev UI History panel work out of the box. In-memory state resets on restart —
+# declare a session block for durable history.
 _conversation_store = resolve_conversation_store(_agent_config, _ws, agent=agent)
-_invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL, conversation_store=_conversation_store)
+if _conversation_store is None:
+    from apx_agent import InMemoryConversationStore
+    _conversation_store = InMemoryConversationStore()
+# agent_id must match the name the dev-UI History panel filters by
+# (the pyproject [tool.apx.agent].name) or conversations stay invisible.
+_invoke_fn, _stream_fn = compile_to_responses_agent(
+    agent,
+    model=MODEL,
+    conversation_store=_conversation_store,
+    agent_id=_agent_config.name if _agent_config else None,
+)
 
 
 @invoke()

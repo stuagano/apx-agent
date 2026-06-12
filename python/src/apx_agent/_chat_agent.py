@@ -412,6 +412,7 @@ def chat_agent_for(
     *,
     model: str,
     conversation_store: ConversationStore | None = None,
+    agent_id: str | None = None,
 ) -> Any:
     """Return an MLflow ``ChatAgent`` wrapping ``agent``.
 
@@ -425,6 +426,10 @@ def chat_agent_for(
             bridged in ``_invocations.py``) and uses it to load prior turns
             before the LLM sees the new turn, then appends new items and persists.
             When the key is absent, multi-turn memory is silently skipped.
+        agent_id: Identifier bound to conversations created by this agent,
+            e.g. ``"my-agent"``. Pass the SAME name readers filter by — the
+            dev-UI History panel lists ``list_conversations(agent_id=
+            config.name)``. Falls back to ``agent.name`` when omitted.
 
     Returns:
         An instance of an ``mlflow.pyfunc.ChatAgent`` subclass. Usable
@@ -449,10 +454,14 @@ def chat_agent_for(
             inner: BaseAgent,
             model_endpoint: str,
             conversation_store: ConversationStore | None = None,
+            agent_id: str | None = None,
         ) -> None:
             self._agent = inner
             self._model = model_endpoint
             self._conversation_store = conversation_store
+            # Bound onto conversations at creation so agent-filtered readers
+            # (dev-UI History panel) can see them.
+            self._agent_id = agent_id if agent_id is not None else getattr(inner, "name", None)
 
         def _resolve_model(self) -> str:
             """Return the model endpoint to use for this request.
@@ -487,7 +496,9 @@ def chat_agent_for(
                 existing = self._conversation_store.get_conversation(conv_id)
                 is_new = existing is None
                 if is_new:
-                    self._conversation_store.create_conversation(id=conv_id)
+                    self._conversation_store.create_conversation(
+                        id=conv_id, agent_id=self._agent_id
+                    )
                 page = self._conversation_store.list_items(
                     conv_id, order="asc", limit=10_000
                 )
@@ -706,7 +717,7 @@ def chat_agent_for(
                     is_new=conv.is_new if conv is not None else False,
                 )
 
-    return _ApxChatAgent(agent, model, conversation_store=conversation_store)
+    return _ApxChatAgent(agent, model, conversation_store=conversation_store, agent_id=agent_id)
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +730,7 @@ def compile_to_chat_agent(
     *,
     model: str,
     conversation_store: ConversationStore | None = None,
+    agent_id: str | None = None,
 ) -> Any:
     """Canonical name for ``chat_agent_for`` — apx-agent compiles to a ChatAgent.
 
@@ -728,7 +740,9 @@ def compile_to_chat_agent(
         from apx_agent import Agent, compile_to_chat_agent
         chat = compile_to_chat_agent(my_agent, model="databricks-claude-sonnet-4-6")
     """
-    return chat_agent_for(agent, model=model, conversation_store=conversation_store)
+    return chat_agent_for(
+        agent, model=model, conversation_store=conversation_store, agent_id=agent_id
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -131,7 +131,12 @@ def mount_invocations_route(
         )
         return False
 
-    chat_agent = chat_agent_for(agent, model=config.model, conversation_store=conversation_store)
+    # agent_id binds created conversations to the name agent-filtered readers
+    # (dev-UI History panel) look up.
+    chat_agent = chat_agent_for(
+        agent, model=config.model, conversation_store=conversation_store,
+        agent_id=config.name,
+    )
 
     @app.post("/invocations", include_in_schema=False)
     async def invocations(request: Request) -> Any:
@@ -271,6 +276,9 @@ def mount_responses_route(
             model=config.model,
             conversation_store=conversation_store,
             executor=getattr(config, "executor", "langgraph"),
+            # Bind the SAME name the dev-UI History panel filters by, or
+            # conversations created here stay invisible to it.
+            agent_id=config.name,
         )
     except Exception as exc:
         logger.warning("Cannot compile ResponsesAgent for /responses: %s", exc)
