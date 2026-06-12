@@ -3303,6 +3303,22 @@ def _deploy_from_yaml(
          "container booted. ON by default. Only used by --target apps.",
 )
 @click.option(
+    "--register-uc/--no-register-uc", default=True,
+    help="After the app is live, register a UC model-version *manifest* for it "
+         "(log_agent + apx.* tags, tagged apx.serving=apps) so the Apps agent "
+         "gets a version ledger and shows up in apx-agent list / topology / "
+         "watchdog. NOT promoted to serving — the App serves traffic, the UC "
+         "version is a record of what it's running. Skips with a notice if no "
+         "UC name / model is configured. ON by default. Only used by "
+         "--target apps.",
+)
+@click.option(
+    "--uc-name", default=None,
+    help="UC three-part name (catalog.schema.model) to register the Apps "
+         "version manifest under. Overrides [tool.apx.agent].registered_model "
+         "and the catalog/schema-composed default. Only used by --target apps.",
+)
+@click.option(
     "--var", "vars", multiple=True,
     help="Extra `--var key=value` pairs to forward to `databricks bundle "
          "deploy + bundle run`. Repeatable. Use to override resources, "
@@ -3370,6 +3386,8 @@ def deploy(
     auto_build_wheel: bool,
     auto_experiment: bool,
     readyz_gate: bool,
+    register_uc: bool,
+    uc_name: str | None,
     vars: tuple[str, ...],
     json_output: bool,
     no_deploy: bool,
@@ -3399,10 +3417,15 @@ def deploy(
       2. databricks bundle deploy      — push the app + sync resources
       3. databricks bundle run <app>   — start the app (skipped with --no-run)
       4. databricks apps get           — poll until ACTIVE/RUNNING
+      5. register_apps_manifest(...)   — register a UC version manifest + tags
+         (skipped with --no-register-uc, or when no UC name / model resolves)
 
-    Note: the auto-derived UC tags / publish-tools flow does not currently
-    apply to ``--target apps`` (no model version to tag). Apps tagging will
-    be addressed in a follow-up.
+    The Apps version manifest (step 5) registers a UC model version tagged
+    ``apx.serving=apps`` so the Apps agent gets a version ledger and shows up in
+    ``apx agents list`` / topology / watchdog — but it is NOT promoted to a
+    serving endpoint. The App serves traffic; the UC version records what it's
+    running. It runs only when a UC name and model are configured (see
+    ``docs/engine-scope/apps-uc-registry-shim-design.md``).
     """
     if spec and (spec.endswith(".yaml") or spec.endswith(".yml")):
         _deploy_from_yaml(
@@ -3435,6 +3458,8 @@ def deploy(
             vars=vars,
             json_output=json_output,
             readyz_gate=readyz_gate,
+            register_uc=register_uc,
+            uc_name=uc_name,
         )
         return
 
@@ -4560,6 +4585,104 @@ def _poll_app_ready(
         delay = min(delay * 1.5, 15.0)
 
 
+def _resolve_apps_uc_name(
+    config: dict[str, Any], app_name: str, *, override: str | None = None,
+) -> str | None:
+    """Resolve the UC three-part name to register an Apps version manifest under.
+
+    Resolution order, first hit wins:
+
+      1. ``override`` — the ``--uc-name`` flag.
+      2. ``[tool.apx.agent].registered_model`` in pyproject.
+      3. ``<catalog>.<schema>.<app_name>`` composed from the config's catalog +
+         schema (top-level or under ``template``), with the App name sanitized
+         into a UC-legal identifier (hyphens → underscores).
+
+    Returns ``None`` when none resolve — the caller treats that as "skip
+    registration with a loud, actionable notice", not an error: a bare
+    ``apx agents deploy --target apps`` must still succeed. Placeholder
+    catalog/schema values (``$CATALOG`` / ``$SCHEMA`` from a fresh scaffold)
+    are treated as absent so an unconfigured project skips rather than
+    registering under a literal ``$CATALOG.$SCHEMA.x``.
+    """
+    if override:
+        return override
+    registered = config.get("registered_model")
+    if isinstance(registered, str) and registered.strip():
+        return registered.strip()
+
+    template = config.get("template") if isinstance(config.get("template"), dict) else {}
+    catalog = config.get("catalog") or template.get("catalog")
+    schema = config.get("schema") or template.get("schema")
+    if (
+        isinstance(catalog, str) and catalog and not catalog.startswith("$")
+        and isinstance(schema, str) and schema and not schema.startswith("$")
+    ):
+        model_id = app_name.replace("-", "_")
+        return f"{catalog}.{schema}.{model_id}"
+    return None
+
+
+def _register_apps_manifest_step(
+    *,
+    module: str,
+    config: dict[str, Any],
+    app_name: str,
+    bundle_target: str,
+    uc_name_override: str | None,
+    log: Any,
+) -> None:
+    """Register a UC version manifest for a freshly-deployed App (best-effort).
+
+    Runs AFTER the App is live. Skips with a loud, actionable stderr notice when
+    a UC name or LLM model can't be resolved (so a bare apps deploy still
+    succeeds). Treats any logging/registration failure as non-fatal — the App is
+    already running; a missing manifest must not turn a green deploy red.
+    """
+    uc_name = _resolve_apps_uc_name(config, app_name, override=uc_name_override)
+    if uc_name is None:
+        log(
+            "# UC registration skipped: no UC model name resolved. Set "
+            "[tool.apx.agent].registered_model (or a non-placeholder "
+            "catalog + schema), or pass --uc-name, to enable the Apps version "
+            "ledger (discovery in `apx agents list` / topology / watchdog). "
+            "Pass --no-register-uc to silence this."
+        )
+        return
+
+    model = config.get("model")
+    if not model:
+        log(
+            "# UC registration skipped: no LLM model in [tool.apx.agent].model "
+            f"to log {uc_name} with. Set a model, or pass --no-register-uc to "
+            "silence this."
+        )
+        return
+
+    agent_name = config.get("name") or app_name
+    try:
+        agent = _load_finalized_agent(module)
+        from ._apps_registry import register_apps_manifest
+        res = register_apps_manifest(
+            agent,
+            uc_name=uc_name,
+            model=model,
+            app_name=app_name,
+            bundle_target=bundle_target,
+            agent_name=agent_name,
+        )
+        log(
+            f"# registered {res.uc_name} version {res.version} "
+            f"(manifest for App {res.app_name}; not promoted to serving)"
+        )
+    except Exception as e:  # non-fatal: the App is live regardless
+        log(
+            f"# UC registration failed (non-fatal — App is live): {e}\n"
+            "# the App is running; only the version-ledger entry is missing. "
+            "Re-run deploy or register manually to add it."
+        )
+
+
 def _deploy_apps(
     *,
     module: str,
@@ -4572,13 +4695,16 @@ def _deploy_apps(
     vars: tuple[str, ...] = (),
     json_output: bool,
     readyz_gate: bool = True,
+    register_uc: bool = True,
+    uc_name: str | None = None,
 ) -> None:
     """Implement ``apx-agent deploy --target apps``.
 
     Routes all progress logs to stderr (so ``--json-output`` can keep stdout
     clean), runs the bundle validate → deploy → run → poll-ready sequence,
-    and prints either the app URL (default) or a single JSON summary
-    (``--json-output``) at the end.
+    registers a UC version manifest (unless ``--no-register-uc``), and prints
+    either the app URL (default) or a single JSON summary (``--json-output``) at
+    the end.
     """
     cwd = Path.cwd()
 
@@ -4593,7 +4719,8 @@ def _deploy_apps(
             auto_build_wheel=auto_build_wheel,
             auto_experiment=auto_experiment,
             vars=vars,
-            json_output=json_output, readyz_gate=readyz_gate, log=log,
+            json_output=json_output, readyz_gate=readyz_gate,
+            register_uc=register_uc, uc_name=uc_name, log=log,
         )
     except click.ClickException as e:
         if json_output:
@@ -4615,6 +4742,8 @@ def _deploy_apps_impl(
     vars: tuple[str, ...] = (),
     json_output: bool,
     readyz_gate: bool = True,
+    register_uc: bool = True,
+    uc_name: str | None = None,
     log: Any,
 ) -> None:
     """Inner body of ``_deploy_apps`` — see docstring there."""
@@ -4799,6 +4928,21 @@ def _deploy_apps_impl(
                 f"Full logs:  {logs_cmd}\n"
                 f"Re-deploy, or re-run with --no-readyz-gate to skip the gate."
             )
+
+    # 6d. Register a UC version manifest for the deployed App (best-effort).
+    # Runs after the App is live so a registration failure never blocks the
+    # deploy. Skips with a loud notice when no UC name / model is configured.
+    if register_uc:
+        _register_apps_manifest_step(
+            module=module,
+            config=_read_apx_agent_config(),
+            app_name=app_name,
+            bundle_target=bundle_target,
+            uc_name_override=uc_name,
+            log=log,
+        )
+    else:
+        log("# --no-register-uc: skipping the UC version-manifest registration")
 
     # 7. Final report
     if json_output:
