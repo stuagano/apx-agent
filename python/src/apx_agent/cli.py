@@ -1006,16 +1006,14 @@ _invoke_fn, _stream_fn = compile_to_responses_agent(
 )
 
 
-@invoke()
-def non_streaming(request):
-    """Non-streaming request handler — POST /invocations."""
-    return _invoke_fn(request)
+# Async bridge: AgentServer calls sync handlers directly ON the event
+# loop, so a slow tool would block every other request on the replica
+# (other sessions, the dev UI, /health). These wrappers run the sync
+# agent work on worker threads instead — see apx_agent._async_bridge.
+from apx_agent import make_async_invoke, make_async_stream
 
-
-@stream()
-def streaming(request):
-    """Streaming request handler — POST /invocations with stream=true."""
-    yield from _stream_fn(request)
+non_streaming = invoke()(make_async_invoke(_invoke_fn))
+streaming = stream()(make_async_stream(_stream_fn))
 
 
 server = AgentServer(agent_type="ResponsesAgent")
