@@ -1028,7 +1028,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 for c in paged.data
             ])
         except Exception:
-            return JSONResponse([])
+            # Surface the failure to the UI (history panel shows an error
+            # state) instead of silently rendering an empty list, and log
+            # it so `apx-agent run` output points at the real cause.
+            logger.exception("listing conversations failed")
+            return JSONResponse({"error": "conversation store unavailable"},
+                                status_code=503)
 
     @router.get("/_apx/conversations/{conv_id}/items", include_in_schema=False)
     async def list_conversation_items_api(conv_id: str, request: Request) -> Any:
@@ -1048,7 +1053,96 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 for item in paged.data
             ])
         except Exception:
+            logger.exception("listing items for conversation %s failed", conv_id)
+            return JSONResponse({"error": "conversation store unavailable"},
+                                status_code=503)
+
+    # ── Approvals (human-in-the-loop ASK policy) ──────────────────────────
+
+    def _find_approval_store(request: Request) -> Any:
+        """Locate the ApprovalStore serving this app, if any.
+
+        Resolution order:
+
+        1. ``app.state.approval_store`` — explicit wiring by the embedding
+           application (takes precedence so multi-agent apps can share one
+           store).
+        2. The root agent's ``before_tool`` hook: a bare
+           :class:`~apx_agent._policy.PolicyGate` exposes ``.approvals``;
+           a :func:`~apx_agent._guards.compose`-d hook exposes
+           ``.callbacks`` which is walked for a gate.
+
+        :param request: The incoming request (used for ``app.state``).
+        :returns: The :class:`~apx_agent._policy.ApprovalStore`, or
+            ``None`` when no PolicyGate is attached to this agent.
+        """
+        explicit = getattr(request.app.state, "approval_store", None)
+        if explicit is not None:
+            return explicit
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        agent = getattr(ctx, "agent", None) if ctx else None
+        hook = getattr(agent, "_before_tool", None)
+        candidates = [hook] if hook is not None else []
+        # compose() exposes .callbacks — one level of nesting is all the
+        # wiring layer produces (compose(guard, gate)), so no recursion.
+        candidates.extend(getattr(hook, "callbacks", []) or [])
+        for cand in candidates:
+            approvals = getattr(cand, "approvals", None)
+            if approvals is not None:
+                return approvals
+        return None
+
+    @router.get("/_apx/approvals", include_in_schema=False)
+    async def list_approvals_api(request: Request) -> Any:
+        """Return pending approval requests as JSON for the chat UI banner."""
+        from fastapi.responses import JSONResponse
+        store = _find_approval_store(request)
+        if store is None:
             return JSONResponse([])
+        try:
+            return JSONResponse([
+                {
+                    "id": a.id,
+                    "tool_name": a.tool_name,
+                    "arguments": a.arguments,
+                    "reason": a.reason,
+                }
+                for a in store.list_pending()
+            ])
+        except Exception:
+            logger.exception("listing approvals failed")
+            return JSONResponse({"error": "approval store unavailable"},
+                                status_code=503)
+
+    @router.post("/_apx/approvals/{approval_id}/approve", include_in_schema=False)
+    async def approve_approval_api(approval_id: str, request: Request) -> Any:
+        """Grant a pending approval — the agent's retry of the call passes."""
+        from fastapi.responses import JSONResponse
+        store = _find_approval_store(request)
+        if store is None:
+            return JSONResponse({"error": "no approval store configured"},
+                                status_code=404)
+        try:
+            approval = store.approve(approval_id)
+        except KeyError:
+            return JSONResponse({"error": f"unknown approval {approval_id}"},
+                                status_code=404)
+        return JSONResponse({"id": approval.id, "status": approval.status})
+
+    @router.post("/_apx/approvals/{approval_id}/deny", include_in_schema=False)
+    async def deny_approval_api(approval_id: str, request: Request) -> Any:
+        """Refuse a pending approval — the agent's retry becomes a hard DENY."""
+        from fastapi.responses import JSONResponse
+        store = _find_approval_store(request)
+        if store is None:
+            return JSONResponse({"error": "no approval store configured"},
+                                status_code=404)
+        try:
+            approval = store.deny(approval_id)
+        except KeyError:
+            return JSONResponse({"error": f"unknown approval {approval_id}"},
+                                status_code=404)
+        return JSONResponse({"id": approval.id, "status": approval.status})
 
     @router.get("/_apx/traces", include_in_schema=False)
     async def traces_list_ui(request: Request) -> Any:
@@ -1084,6 +1178,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 flush=True,  # MLflow 3.x writes async; flush before search
             )) if exp_ids else []
         except Exception:
+            # Keep the panel functional (ring-buffer merge below still
+            # surfaces recent traces) but log why the tracking store
+            # search failed instead of hiding it.
+            logger.exception("mlflow search_traces failed for trace panel")
             traces = []
         traces = _drop_warmup_traces(traces)
         rows = []

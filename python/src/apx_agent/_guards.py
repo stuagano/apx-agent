@@ -384,6 +384,9 @@ def compose(*callbacks: Callable[..., Any]) -> Callable[..., Any]:
                 return result
         return result
 
+    # Expose the composed parts for introspection — the dev UI walks
+    # before_tool hooks to find a PolicyGate's ApprovalStore.
+    _composed.callbacks = cb_list  # type: ignore[attr-defined]
     return _composed
 
 

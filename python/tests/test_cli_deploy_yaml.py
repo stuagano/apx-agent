@@ -40,7 +40,7 @@ def test_deploy_yaml_argument_calls_deploy_from_yaml(tmp_path):
     runner = CliRunner()
 
     with patch("apx_agent.cli._deploy_from_yaml") as mock_deploy:
-        result = runner.invoke(main, ["deploy", str(spec)], catch_exceptions=False)
+        result = runner.invoke(main, ["agents", "deploy", str(spec)], catch_exceptions=False)
 
     mock_deploy.assert_called_once()
     call_kwargs = mock_deploy.call_args
@@ -54,7 +54,7 @@ def test_deploy_yml_extension_also_routes(tmp_path):
     runner = CliRunner()
 
     with patch("apx_agent.cli._deploy_from_yaml") as mock_deploy:
-        result = runner.invoke(main, ["deploy", str(spec)], catch_exceptions=False)
+        result = runner.invoke(main, ["agents", "deploy", str(spec)], catch_exceptions=False)
 
     mock_deploy.assert_called_once()
 
@@ -73,7 +73,7 @@ def test_deploy_target_apps_no_spec_skips_deploy_from_yaml(tmp_path):
          patch("apx_agent.cli._deploy_apps") as mock_apps:
         result = runner.invoke(
             main,
-            ["deploy", "--target", "apps"],
+            ["agents", "deploy", "--target", "apps"],
             catch_exceptions=False,
         )
 
@@ -90,7 +90,7 @@ def test_deploy_no_spec_does_not_call_deploy_from_yaml(tmp_path):
         # otherwise model-serving raises UsageError before we can assert.
         runner.invoke(
             main,
-            ["deploy", "--target", "apps"],
+            ["agents", "deploy", "--target", "apps"],
             catch_exceptions=False,
         )
     mock_yaml.assert_not_called()
@@ -108,7 +108,7 @@ def test_deploy_invalid_yaml_raises_click_exception(tmp_path):
     bad_spec.write_text("description: no name here\n")
 
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", str(bad_spec)])
+    result = runner.invoke(main, ["agents", "deploy", str(bad_spec)])
 
     assert result.exit_code != 0
     # The error message must mention the file path so the user knows which

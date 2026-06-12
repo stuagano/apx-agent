@@ -1256,8 +1256,12 @@ function switchTab(name, btn) {{
 
 // ── History tab ──
 function loadConversationHistory() {{
-  fetch('/_apx/conversations').then(r => r.json()).then(convs => {{
+  fetch('/_apx/conversations').then(r => {{
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }}).then(convs => {{
     const list = document.getElementById('conv-list');
+    if (!Array.isArray(convs)) throw new Error(convs?.error || 'bad response');
     if (!convs.length) {{
       list.innerHTML = '<div class="empty-state">No conversations yet — send a message</div>';
       return;
@@ -1271,34 +1275,108 @@ function loadConversationHistory() {{
         ${{ts ? `<div class="conv-ts">${{ts}}</div>` : ''}}
       </div>`;
     }}).join('');
-  }}).catch(() => {{}});
+  }}).catch(err => {{
+    // Show the failure instead of a silently empty panel — an empty
+    // history and a broken store are very different situations.
+    const list = document.getElementById('conv-list');
+    if (list) list.innerHTML = `<div class="empty-state">History unavailable (${{esc(err.message)}}) — check the server log</div>`;
+  }});
 }}
 
 function newConversation() {{
   devThreadId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
   sessionStorage.setItem(_THREAD_KEY, devThreadId);
   chat.innerHTML = '';
+  // Reset the request payload too — without this the next send posts the
+  // PREVIOUS conversation's messages under the new thread_id.
+  history.length = 0;
   loadConversationHistory();
 }}
 
+// Monotonic token so a slow item-fetch from an earlier click can't
+// clobber the conversation the user selected last.
+let _convSwitchSeq = 0;
+
 async function switchConversation(id) {{
+  const seq = ++_convSwitchSeq;
   devThreadId = id;
   sessionStorage.setItem(_THREAD_KEY, id);
   chat.innerHTML = '';
+  history.length = 0;
   document.querySelectorAll('.conv-item').forEach(el => {{
     el.classList.toggle('active', el.dataset.id === id);
   }});
   try {{
-    const items = await fetch(`/_apx/conversations/${{id}}/items`).then(r => r.json());
+    const r = await fetch(`/_apx/conversations/${{id}}/items`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const items = await r.json();
+    if (seq !== _convSwitchSeq) return;  // user clicked another conversation meanwhile
+    if (!Array.isArray(items)) throw new Error(items?.error || 'bad response');
     for (const item of items) {{
       if (item.type !== 'message') continue;
       const role = item.data?.role;
       if (!role) continue;
       const blocks = item.data?.content || [];
       const text = blocks.map(b => b.text || b.content || '').join('');
-      if (text) addMsg(role, text, false);
+      if (text) {{
+        addMsg(role, text, false);
+        // Rebuild the request payload to match what's on screen, so the
+        // next send continues THIS conversation instead of whatever the
+        // previous in-memory history held.
+        history.push({{ role: role, content: text }});
+      }}
     }}
-  }} catch {{}}
+  }} catch (err) {{
+    if (seq !== _convSwitchSeq) return;
+    addMsg('assistant', `Could not load conversation: ${{err.message}}`, false);
+  }}
+}}
+
+// ── Approvals (ASK policy human-in-the-loop) ──
+async function checkPendingApprovals() {{
+  let pending = [];
+  try {{
+    const r = await fetch('/_apx/approvals');
+    if (!r.ok) return;
+    pending = await r.json();
+    if (!Array.isArray(pending)) return;
+  }} catch {{ return; }}
+  for (const a of pending) {{
+    // One card per approval; skip if already rendered.
+    if (document.querySelector(`[data-approval-id="${{a.id}}"]`)) continue;
+    const card = document.createElement('div');
+    card.className = 'approval-card';
+    card.dataset.approvalId = a.id;
+    card.style.cssText = 'margin:8px 0;padding:10px 12px;border:1px solid #6b4f00;border-radius:8px;background:#1a1400';
+    const argsStr = JSON.stringify(a.arguments || {{}}, null, 0);
+    card.innerHTML = `
+      <div style="font-size:12px;color:#facc15;font-weight:600;margin-bottom:4px">⏸ Approval required: ${{esc(a.tool_name)}}</div>
+      ${{a.reason ? `<div style="font-size:11px;color:#aaa;margin-bottom:4px">${{esc(a.reason)}}</div>` : ''}}
+      <div style="font-size:11px;color:#888;font-family:monospace;margin-bottom:8px;word-break:break-all">${{esc(argsStr.slice(0, 300))}}</div>
+      <button onclick="resolveApproval('${{a.id}}', true, this)" style="background:#14532d;color:#4ade80;border:1px solid #166534;border-radius:5px;padding:4px 14px;cursor:pointer;font-size:12px;margin-right:8px">Approve</button>
+      <button onclick="resolveApproval('${{a.id}}', false, this)" style="background:#2a0a0a;color:#f87171;border:1px solid #7f1d1d;border-radius:5px;padding:4px 14px;cursor:pointer;font-size:12px">Deny</button>`;
+    chat.appendChild(card);
+    chat.scrollTop = chat.scrollHeight;
+  }}
+}}
+
+async function resolveApproval(id, approved, btn) {{
+  const card = btn.closest('.approval-card');
+  try {{
+    const r = await fetch(`/_apx/approvals/${{id}}/${{approved ? 'approve' : 'deny'}}`, {{ method: 'POST' }});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  }} catch (err) {{
+    if (card) card.querySelectorAll('button').forEach(b => b.disabled = false);
+    addMsg('assistant', `Approval update failed: ${{err.message}}`, false);
+    return;
+  }}
+  if (card) card.remove();
+  // Close the loop automatically: tell the agent the decision so it
+  // retries (approved) or moves on (denied) without the user typing.
+  inputEl.value = approved
+    ? `I approved request ${{id}}. Please retry the action.`
+    : `I denied request ${{id}}. Do not retry that action.`;
+  form.dispatchEvent(new Event('submit'));
 }}
 
 // ── Eval tab ──
@@ -2343,6 +2421,8 @@ form.addEventListener('submit', async e => {{
   inputEl.focus();
   // Refresh history list so the new/updated conversation appears.
   loadConversationHistory();
+  // Surface any ASK-policy approval requests raised during this turn.
+  checkPendingApprovals();
 }});
 
 // ── Resizable panel ──

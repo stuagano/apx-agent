@@ -11,7 +11,7 @@ Each test builds a minimal scaffold under ``tmp_path``:
     agent.py                — top-level (ADK-style) defines stub `agent`
     agent_server/__init__.py — framework boilerplate dir (empty here)
 
-Then ``CliRunner.invoke(main, ["deploy", "--target", "apps", ...])`` runs
+Then ``CliRunner.invoke(main, ["agents", "deploy", "--target", "apps", ...])`` runs
 against that cwd. Subprocess outputs are stubbed by patching
 ``apx_agent.cli._run_databricks_cmd``.
 """
@@ -225,7 +225,7 @@ def test_target_apps_triggers_bundle_deploy(
     calls = _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(main, [
-        "deploy", "--target", "apps", "--bundle-target", "dev",
+        "agents", "deploy", "--target", "apps", "--bundle-target", "dev",
     ])
     assert result.exit_code == 0, result.output
     seq = [c[:2] for c in calls]
@@ -251,7 +251,7 @@ def test_preflight_fails_without_databricks_yml(
 
     _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps"])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code != 0
     assert "databricks.yml" in result.output
 
@@ -262,7 +262,7 @@ def test_validate_failure_surfaces_friendly_error(
     """A non-zero `bundle validate` exit raises ClickException + tail."""
     _install_subprocess_mock(monkeypatch, validate_rc=2)
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps"])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code != 0
     assert "bundle validate" in result.output
 
@@ -273,7 +273,7 @@ def test_no_run_skips_bundle_run(
     """--no-run elides the `databricks bundle run` subprocess."""
     calls = _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps", "--no-run"])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps", "--no-run"])
     assert result.exit_code == 0, result.output
     seq = [c[:2] for c in calls]
     assert ["bundle", "run"] not in seq
@@ -320,7 +320,7 @@ def test_auto_update_yml_adds_missing_resources(
     _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(main, [
-        "deploy", "--target", "apps", "--auto-update-yml",
+        "agents", "deploy", "--target", "apps", "--auto-update-yml",
     ])
     assert result.exit_code == 0, result.output
     doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
@@ -387,7 +387,7 @@ def test_auto_update_yml_preserves_user_added_resources(
     _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(main, [
-        "deploy", "--target", "apps", "--auto-update-yml",
+        "agents", "deploy", "--target", "apps", "--auto-update-yml",
     ])
     assert result.exit_code == 0, result.output
 
@@ -418,7 +418,7 @@ def test_polling_stops_on_active_running(
         ],
     )
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps", "--no-run"])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps", "--no-run"])
     assert result.exit_code == 0, result.output
     # Three apps get calls, then stop.
     get_calls = [c for c in calls if c[:2] == ["apps", "get"]]
@@ -445,7 +445,7 @@ def test_polling_times_out(
     monkeypatch.setattr("apx_agent.cli.time.time", lambda: next(counter))
 
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps", "--no-run"])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps", "--no-run"])
     assert result.exit_code != 0
     assert "Timed out" in result.output
 
@@ -457,7 +457,7 @@ def test_json_output_shape(
     _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(main, [
-        "deploy", "--target", "apps", "--bundle-target", "prod",
+        "agents", "deploy", "--target", "apps", "--bundle-target", "prod",
         "--json-output",
     ])
     assert result.exit_code == 0, result.output
@@ -482,7 +482,7 @@ def test_readyz_gate_fails_deploy_when_degraded(
         lambda app_url, *, profile, **_kw: (False, {"llm": "fail"}),
     )
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps"])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code != 0
     assert "readyz gate failed" in result.output
     assert "--no-readyz-gate" in result.output
@@ -502,7 +502,7 @@ def test_no_readyz_gate_skips_check(
     monkeypatch.setattr("apx_agent.cli._check_readyz", _boom)
     runner = CliRunner()
     result = runner.invoke(
-        main, ["deploy", "--target", "apps", "--no-readyz-gate"]
+        main, ["agents", "deploy", "--target", "apps", "--no-readyz-gate"]
     )
     assert result.exit_code == 0, result.output
     assert called["n"] == 0
@@ -533,7 +533,7 @@ def test_missing_responses_agent_module_surfaces_friendly_error(
 
     _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps"])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code != 0
     assert "apx-agent[eval]" in result.output
 
@@ -550,7 +550,7 @@ def test_terminal_error_state_fails_fast(
         ],
     )
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps", "--no-run"])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps", "--no-run"])
     assert result.exit_code != 0
     assert "terminal failure" in result.output.lower() or "ERROR" in result.output
 
@@ -570,7 +570,7 @@ def test_app_name_resolved_from_databricks_yml(
 
     calls = _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps"])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code == 0, result.output
     run_calls = [c for c in calls if c[:2] == ["bundle", "run"]]
     assert run_calls, "expected at least one bundle run call"
@@ -599,7 +599,7 @@ def test_bundle_key_and_app_name_can_differ(
 
     calls = _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps"])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code == 0, result.output
 
     run_calls = [c for c in calls if c[:2] == ["bundle", "run"]]
@@ -625,7 +625,7 @@ def test_json_output_on_error_path(
     _install_subprocess_mock(monkeypatch, validate_rc=2)
     runner = CliRunner()
     result = runner.invoke(main, [
-        "deploy", "--target", "apps", "--json-output",
+        "agents", "deploy", "--target", "apps", "--json-output",
     ])
     assert result.exit_code != 0
     # The last line of stdout should be the JSON envelope.
@@ -659,7 +659,7 @@ def test_profile_is_passed_through(
     )
     runner = CliRunner()
     result = runner.invoke(main, [
-        "deploy", "--target", "apps", "--profile", "demo-profile",
+        "agents", "deploy", "--target", "apps", "--profile", "demo-profile",
     ])
     assert result.exit_code == 0, result.output
     assert all(p == "demo-profile" for p in seen_profiles), seen_profiles
@@ -686,7 +686,7 @@ def test_deploy_blocks_when_cli_missing(tmp_path, monkeypatch):
     with patch("apx_agent._doctor.check_databricks_cli", return_value=warn), patch(
         "apx_agent.cli._preflight_databricks_auth"
     ):
-        result = CliRunner().invoke(main, ["deploy", "--target", "apps"])
+        result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code != 0
     assert "Databricks CLI" in result.output
     assert "install it" in result.output
