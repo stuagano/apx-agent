@@ -46,7 +46,8 @@ the single biggest source of iteration pain in the SDK today.
 | **Async background work** | No (request-bound) | Yes — same process can run background tasks, schedulers, queues |
 | **Custom routes / non-agent endpoints** | No — single predict path | Yes — health, admin, debug, batch endpoints all in the same App |
 | **MLflow tracing wiring** | Automatic — Model Serving enables tracing on every request | Automatic via `AgentServer(agent_type="ResponsesAgent")` — same OTLP exporter |
-| **Governance (UC permissions on the artifact)** | Strong — the registered model has UC ACLs | Weaker — Apps don't sit in UC; permissions are App-level |
+| **Version ledger / discovery** | Native — each `databricks.agents.deploy` mints a UC registered-model version, tagged `apx.agent.*` | Via the UC-registry shim — `apx agents deploy --target apps` registers a UC version *manifest* (tagged `apx.serving=apps`, not serving-promoted) so Apps agents get versions + show up in `apx agents list` / topology / watchdog. On by default when a UC name + model are configured; skips with a notice otherwise. See [apps-uc-registry-shim-design.md](../engine-scope/apps-uc-registry-shim-design.md) |
+| **Governance (UC permissions on the artifact)** | Strong — the registered model has UC ACLs | Improved by the shim — the UC version manifest carries UC ACLs, but the *running* surface is still the App, governed by App-level permissions |
 | **Cost model (idle)** | Cheap when scaled to zero; you pay for cold starts | Cheap when scaled to zero (auto-suspend); cold start is faster |
 | **Cost model (busy)** | DBU per compute-hour at the endpoint sku | DBU per compute-hour at the App's compute |
 | **Deletion semantics** | `databricks serving-endpoints delete` — endpoint and its versions go | `databricks apps delete` — removes the App; bundle artifact remains in workspace files |
