@@ -228,6 +228,14 @@ from ._guards import (
     prompt_injection_heuristic,
 )
 
+# Cancellable tools — interrupt long-running tool calls mid-flight
+from ._cancellation import (
+    CancellationRegistry,
+    CancelToken,
+    ToolCancelled,
+    cancellable,
+)
+
 # Policies — ALLOW / ASK / DENY governance with human-in-the-loop approvals
 from ._policy import (
     Approval,
@@ -528,6 +536,11 @@ __all__ = [
     "ToolDenylist",
     "prompt_injection_heuristic",
     "compose",
+    # Cancellable tools
+    "CancellationRegistry",
+    "CancelToken",
+    "ToolCancelled",
+    "cancellable",
     # Policies — ALLOW / ASK / DENY with human-in-the-loop approvals
     "Approval",
     "ApprovalRequired",
