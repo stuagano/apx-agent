@@ -319,9 +319,23 @@ class WatchdogGuard:
         client: WatchdogClient,
         *,
         agent_name: str | None = None,
+        cancel_registry: "Any | None" = None,
     ) -> None:
+        """
+        :param client: The :class:`WatchdogClient` to consult on each hook.
+        :param agent_name: Friendly agent name attached to every evaluate /
+            report context, e.g. ``"customer_triage"``.
+        :param cancel_registry: Optional
+            :class:`~apx_agent._cancellation.CancellationRegistry`. When
+            set, ANY reject decision from this guard also cancels every
+            in-flight :func:`~apx_agent._cancellation.cancellable` tool
+            call registered there — a violation detected on one hook
+            kills long-running work everywhere in the session, not just
+            the action that tripped it.
+        """
         self.client = client
         self.agent_name = agent_name
+        self.cancel_registry = cancel_registry
 
     def _context(self, **extra: Any) -> dict[str, Any]:
         base: dict[str, Any] = {}
@@ -329,6 +343,23 @@ class WatchdogGuard:
             base["agent_name"] = self.agent_name
         base.update(extra)
         return base
+
+    def _cancel_inflight(self, decision: "WatchdogDecision") -> None:
+        """Cancel all registered in-flight tool calls after a reject.
+
+        No-op when no registry is wired. Cancellation failures must never
+        mask the reject that triggered them, so this only logs.
+
+        :param decision: The reject decision — its reason is propagated
+            into each cancelled call's ``ToolCancelled``.
+        """
+        if self.cancel_registry is None:
+            return
+        try:
+            reason = f"Watchdog violation: {decision.reason or decision.policy_id or 'policy reject'}"
+            self.cancel_registry.cancel_all(reason)
+        except Exception:
+            logger.exception("cancel_all after Watchdog reject failed")
 
     def for_input(self) -> Callable[[Any], str | None]:
         """Return an ``input_guardrails``-compatible callable.
@@ -348,6 +379,7 @@ class WatchdogGuard:
                     decision,
                     self._context(messages=_summarise_messages(messages)),
                 )
+                self._cancel_inflight(decision)
                 return decision.reason or "Request blocked by Watchdog policy."
             return None
         return _check
@@ -368,6 +400,7 @@ class WatchdogGuard:
             _record_decision_on_span(decision, self.agent_name)
             if decision.action == "reject":
                 self.client.report_violation(decision, self._context())
+                self._cancel_inflight(decision)
                 return decision.reason or "Response blocked by Watchdog policy."
             if decision.action == "redact" and decision.redacted_content:
                 self.client.report_violation(decision, self._context())
@@ -391,6 +424,7 @@ class WatchdogGuard:
                     decision,
                     self._context(tool_name=tool_name, arguments=arguments),
                 )
+                self._cancel_inflight(decision)
                 raise PermissionError(
                     decision.reason or f"Tool {tool_name!r} blocked by Watchdog policy."
                 )
@@ -409,6 +443,7 @@ class WatchdogGuard:
             _record_decision_on_span(decision, self.agent_name)
             if decision.action == "reject":
                 self.client.report_violation(decision, self._context())
+                self._cancel_inflight(decision)
                 raise PermissionError(
                     decision.reason or "Model call blocked by Watchdog policy."
                 )
