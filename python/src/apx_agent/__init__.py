@@ -228,6 +228,20 @@ from ._guards import (
     prompt_injection_heuristic,
 )
 
+# Policies — ALLOW / ASK / DENY governance with human-in-the-loop approvals
+from ._policy import (
+    Approval,
+    ApprovalRequired,
+    ApprovalStore,
+    FunctionPolicy,
+    PolicyAction,
+    PolicyEvent,
+    PolicyGate,
+    PolicyResult,
+    PromptPolicy,
+    evaluate_policies,
+)
+
 # Cost tracking helpers
 from ._cost import CostBreakdown, cost_for_agent, cost_for_endpoint
 
@@ -514,6 +528,17 @@ __all__ = [
     "ToolDenylist",
     "prompt_injection_heuristic",
     "compose",
+    # Policies — ALLOW / ASK / DENY with human-in-the-loop approvals
+    "Approval",
+    "ApprovalRequired",
+    "ApprovalStore",
+    "FunctionPolicy",
+    "PolicyAction",
+    "PolicyEvent",
+    "PolicyGate",
+    "PolicyResult",
+    "PromptPolicy",
+    "evaluate_policies",
     # Cost tracking
     "CostBreakdown",
     "cost_for_agent",
