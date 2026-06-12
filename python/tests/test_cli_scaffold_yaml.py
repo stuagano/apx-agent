@@ -7,7 +7,7 @@ from pathlib import Path
 def test_scaffold_coworker_outputs_yaml(tmp_path):
     runner = CliRunner()
     result = runner.invoke(main, [
-        "scaffold", "payroll-coworker",
+        "agents", "scaffold", "payroll-coworker",
         "--template", "coworker",
         "--catalog", "main",
         "--schema", "payroll",
@@ -26,7 +26,7 @@ def test_scaffold_coworker_outputs_yaml(tmp_path):
 def test_scaffold_coworker_no_project_directory(tmp_path):
     runner = CliRunner()
     runner.invoke(main, [
-        "scaffold", "my-coworker",
+        "agents", "scaffold", "my-coworker",
         "--template", "coworker",
         "--catalog", "main",
         "--schema", "sales",
@@ -39,7 +39,7 @@ def test_scaffold_coworker_no_project_directory(tmp_path):
 def test_scaffold_no_yaml_flag_creates_directory(tmp_path):
     runner = CliRunner()
     result = runner.invoke(main, [
-        "scaffold", "my-agent",
+        "agents", "scaffold", "my-agent",
         "--template", "base",
         "--no-interactive",
         "--no-yaml",

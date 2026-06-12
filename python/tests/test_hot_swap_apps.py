@@ -240,7 +240,7 @@ def test_cli_hot_swap_apps_target_invokes_redeploy(
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["hot-swap", "--target", "apps",
+        ["agents", "hot-swap", "--target", "apps",
          "--llm-endpoint", "databricks-claude-opus-4-7"],
     )
     assert result.exit_code == 0, result.output
@@ -255,7 +255,7 @@ def test_cli_hot_swap_apps_requires_llm_endpoint(
 ) -> None:
     _install_mock(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, ["hot-swap", "--target", "apps"])
+    result = runner.invoke(main, ["agents", "hot-swap", "--target", "apps"])
     assert result.exit_code != 0
     assert "--llm-endpoint" in result.output
 
@@ -281,7 +281,7 @@ def test_cli_hot_swap_default_target_still_model_serving(
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["hot-swap", "--endpoint", "ep", "--model", "new-model"],
+        ["agents", "hot-swap", "--endpoint", "ep", "--model", "new-model"],
     )
     assert result.exit_code == 0, result.output
     assert captured == {"endpoint": "ep", "model": "new-model"}
@@ -293,7 +293,7 @@ def test_cli_hot_swap_model_serving_requires_endpoint(
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["hot-swap", "--target", "model-serving", "--model", "x"],
+        ["agents", "hot-swap", "--target", "model-serving", "--model", "x"],
     )
     assert result.exit_code != 0
     assert "--endpoint" in result.output
