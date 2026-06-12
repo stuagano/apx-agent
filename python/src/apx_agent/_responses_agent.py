@@ -687,7 +687,7 @@ def _persist_conv_turn(
                  and it.data.role == "user"),
                 None,
             )
-            if user_item is not None:
+            if user_item is not None and isinstance(user_item.data, MessageData):
                 title = synthesize_conversation_title(user_item.data.content)
                 if title:
                     store.update_conversation(conv_id, title=title)
@@ -1033,7 +1033,11 @@ def compile_to_responses_agent(
                     _use_sdk = False
 
             if _use_sdk:
+                from ._agents import LlmAgent as _LlmAgent
                 from ._claude_sdk_executor import ClaudeSDKExecutor as _CSE
+                # Guaranteed by the guard above (_use_sdk is set False unless
+                # _agent is an LlmAgent); narrows _agent for the type checker.
+                assert isinstance(_agent, _LlmAgent)
                 _sdk_exec = _CSE(
                     model=effective_model,
                     tools=list(_agent._tool_fns),
@@ -1144,7 +1148,11 @@ def compile_to_responses_agent(
             output_index = 0
 
             if _use_sdk:
+                from ._agents import LlmAgent as _LlmAgent
                 from ._claude_sdk_executor import ClaudeSDKExecutor as _CSE
+                # Guaranteed by the guard above (_use_sdk is set False unless
+                # _agent is an LlmAgent); narrows _agent for the type checker.
+                assert isinstance(_agent, _LlmAgent)
                 _sdk_exec = _CSE(
                     model=effective_model,
                     tools=list(_agent._tool_fns),
