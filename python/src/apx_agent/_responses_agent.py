@@ -456,7 +456,9 @@ def _flatten_output_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _load_or_create_conversation(
-    store: ConversationStore | None, custom_inputs: dict[str, Any] | None
+    store: ConversationStore | None,
+    custom_inputs: dict[str, Any] | None,
+    agent_id: str | None = None,
 ) -> _ConvLoad | None:
     """Load or create the conversation keyed by ``custom_inputs.thread_id``.
 
@@ -469,6 +471,10 @@ def _load_or_create_conversation(
     :param store: The conversation store, or ``None`` for no-op.
     :param custom_inputs: Per-request custom inputs, e.g.
         ``{"thread_id": "my_conv_id"}``.
+    :param agent_id: Agent identifier bound on conversation creation,
+        e.g. ``"my-agent"``. Readers that filter by agent (the dev-UI
+        History panel) only see conversations bound to their agent —
+        creating without it makes the conversation invisible to them.
     :returns: A :class:`_ConvLoad` on success; ``None`` otherwise.
     """
     if store is None or not custom_inputs:
@@ -480,7 +486,7 @@ def _load_or_create_conversation(
         existing = store.get_conversation(conv_id)
         is_new = existing is None
         if is_new:
-            store.create_conversation(id=conv_id)
+            store.create_conversation(id=conv_id, agent_id=agent_id)
         page = store.list_items(conv_id, order="asc", limit=10_000)
         return _ConvLoad(conversation_id=conv_id, items=page.data, is_new=is_new)
     except Exception as exc:
@@ -913,6 +919,7 @@ def compile_to_responses_agent(
     model: str,
     conversation_store: ConversationStore | None = None,
     executor: str = "langgraph",
+    agent_id: str | None = None,
 ) -> CompiledResponsesAgent:
     """Compile an apx-agent ``BaseAgent`` to the Databricks Apps ResponsesAgent contract.
 
@@ -937,6 +944,11 @@ def compile_to_responses_agent(
             direct OpenAI-compatible loop without LangGraph overhead.  Only
             effective when *agent* is a :class:`~apx_agent._agents.LlmAgent`;
             composite agents silently fall back to ``"langgraph"``.
+        agent_id: Identifier bound to conversations created by these handlers,
+            e.g. ``"my-agent"``. Pass the SAME name the reader filters by —
+            the dev-UI History panel lists ``list_conversations(agent_id=
+            config.name)``, so the pyproject ``[tool.apx.agent].name`` is the
+            right value. Falls back to ``agent.name`` when omitted.
 
     Returns:
         ``(non_streaming_fn, streaming_fn)``::
@@ -960,6 +972,7 @@ def compile_to_responses_agent(
     _model = model
     _conversation_store = conversation_store
     _executor_name = executor
+    _agent_id = agent_id if agent_id is not None else getattr(agent, "name", None)
 
     # -----------------------------------------------------------------------
     # Non-streaming
@@ -978,7 +991,7 @@ def compile_to_responses_agent(
         ensure_capture_processor()
 
         custom_inputs: dict[str, Any] = dict(request.custom_inputs or {})
-        conv = _load_or_create_conversation(_conversation_store, custom_inputs)
+        conv = _load_or_create_conversation(_conversation_store, custom_inputs, agent_id=_agent_id)
         conv_id = conv.conversation_id if conv is not None else None
         conv_items = conv.items if conv is not None else []
 
@@ -1090,7 +1103,7 @@ def compile_to_responses_agent(
         ensure_capture_processor()
 
         custom_inputs: dict[str, Any] = dict(request.custom_inputs or {})
-        conv = _load_or_create_conversation(_conversation_store, custom_inputs)
+        conv = _load_or_create_conversation(_conversation_store, custom_inputs, agent_id=_agent_id)
         conv_id = conv.conversation_id if conv is not None else None
         conv_items = conv.items if conv is not None else []
         effective_model = _resolve_model(_model)

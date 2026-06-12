@@ -160,7 +160,7 @@ class TestInvocationsRouteSpans:
         captured_chat_agent: dict[str, Any] = {}
         original_factory = _ca_module.chat_agent_for
 
-        def _spy_factory(agent_arg, *, model, conversation_store=None):
+        def _spy_factory(agent_arg, *, model, conversation_store=None, agent_id=None):
             ca = original_factory(agent_arg, model=model)
             captured_chat_agent["ca"] = ca
             ca.predict = MagicMock(return_value=ChatAgentResponse(messages=[]))
