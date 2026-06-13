@@ -50,9 +50,15 @@ App off the same source tree under a deterministic target name, running beside
 prod at its own URL.
 
 - **`deploy_canary_app(canary_version, ...)`** — write a `canary-<version>` DAB
-  target, deploy + run it. Returns `AppsCanaryConfig` (prod/canary App names +
-  URLs). `--traffic` is recorded as `traffic_hint` only — **not** a routing
-  directive.
+  target, then delegate the actual deploy to the **shared `_deploy_apps_impl`
+  pipeline** (the full sequence: validate → wheel build → `.build/` manifest
+  staging → poll for ACTIVE/RUNNING → `/readyz` capability gate → UC manifest
+  registration). The canary target is selected via an injected `deploy_fn` and
+  an `app_name_override` that routes the pipeline at the `canary-<v>` App name.
+  Returns `AppsCanaryConfig` (prod/canary App names + URLs). `--traffic` is
+  recorded as `traffic_hint` only — **not** a routing directive. The soak App
+  is a faithful preview — it cannot diverge from or bypass the prod deploy path.
+  See the [soak-promote design spec](../../python/docs/superpowers/specs/2026-06-12-apps-soak-promote-design.md).
 - **`promote_canary_app(...)`** — re-deploy `prod` off the canary's source tree
   (optionally tear down the canary target). Source-control tagging is the
   operator's job; the module doesn't manage git.

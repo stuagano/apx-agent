@@ -60,6 +60,7 @@ def register_apps_manifest(
     app_name: str,
     bundle_target: str,
     agent_name: str | None = None,
+    extra_version_tags: dict[str, str] | None = None,
     mlflow_client: Any | None = None,
 ) -> AppsManifestResult:
     """Log + register ``agent`` as a UC version manifest for a deployed App.
@@ -83,6 +84,7 @@ def register_apps_manifest(
         bundle_target: DAB target the App was deployed under, recorded as a tag.
         agent_name: Friendly name for the ``apx.agent.name`` discovery tag.
             Defaults to the agent's own name inside ``set_uc_tags_for_agent``.
+        extra_version_tags: Extra version-level tags, e.g. ``{'apx.apps.role': 'canary'}``.
         mlflow_client: Optional ``MlflowClient`` (injected in tests).
 
     Returns:
@@ -109,6 +111,9 @@ def register_apps_manifest(
         (APP_NAME_TAG, app_name),
         (BUNDLE_TARGET_TAG, bundle_target),
     ):
+        client.set_model_version_tag(uc_name, version, key, value)
+
+    for key, value in (extra_version_tags or {}).items():
         client.set_model_version_tag(uc_name, version, key, value)
 
     # Registered-model-level discovery tags (apx.agent.*) so the manifest shows

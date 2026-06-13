@@ -431,6 +431,11 @@ def analyze_canary_app(
 RunCmd = Callable[..., Any]
 
 
+# Type alias for the injected deploy seam — the CLI passes a wrapper over
+# _deploy_apps_impl so this module never imports cli (no cycle).
+DeployFn = Callable[..., Any]
+
+
 def deploy_canary_app(
     *,
     cwd: Path,
@@ -438,84 +443,42 @@ def deploy_canary_app(
     base_app_name: str,
     canary_version: str,
     traffic_hint: int,
-    run_cmd: RunCmd,
-    profile: str | None = None,
+    deploy_fn: "DeployFn",
     base_target: str = "prod",
 ) -> AppsCanaryConfig:
-    """Write the canary target into ``databricks.yml`` and run
-    ``bundle deploy`` + ``bundle run`` against it.
+    """Write the canary target, then deploy it through the SHARED deploy path.
 
-    Args:
-        cwd: Bundle root (contains ``databricks.yml``).
-        bundle_key: YAML key under ``resources.apps`` for the prod App.
-        base_app_name: Workspace App name for prod (used to derive
-            the canary App name).
-        canary_version: Operator-supplied version label. Sanitized
-            into the DAB target name.
-        traffic_hint: Recorded on the result. Not a routing directive.
-        run_cmd: Seam for ``databricks`` CLI invocations.
-        profile: ``--profile`` value, or None for default.
-        base_target: Target to inherit from (default ``"prod"``).
-
-    Returns:
-        ``AppsCanaryConfig`` describing the result.
-
-    Raises:
-        RuntimeError: if any subprocess step fails.
+    ``deploy_fn`` is the prod deploy pipeline (``_deploy_apps_impl``) injected
+    by the CLI. Delegating to it — instead of shelling out to a thin
+    deploy/run/get subset here — is what makes the soak App a faithful preview:
+    it gets the same validate → wheel build → manifest staging → poll → readyz
+    → UC registration that prod gets. See
+    docs/superpowers/specs/2026-06-12-apps-soak-promote-design.md (Phase 0).
     """
-    from . import _canary_apps  # for symmetry in tests that monkeypatch internals  # noqa: F401
-
     target_name = canary_target_name(canary_version)
     new_app_name = canary_app_name(base_app_name, canary_version)
-    yml_path = cwd / "databricks.yml"
 
     import yaml
+    yml_path = cwd / "databricks.yml"
     doc = yaml.safe_load(yml_path.read_text()) or {}
     add_canary_target_to_yml(
-        doc,
-        bundle_key=bundle_key,
-        base_app_name=base_app_name,
-        version=canary_version,
-        base_target=base_target,
+        doc, bundle_key=bundle_key, base_app_name=base_app_name,
+        version=canary_version, base_target=base_target,
     )
     write_databricks_yml(yml_path, doc)
 
-    deploy_proc = run_cmd(["bundle", "deploy", "--target", target_name], profile=profile)
-    if getattr(deploy_proc, "returncode", 0) != 0:
-        raise RuntimeError(
-            f"bundle deploy --target {target_name} failed "
-            f"(exit {deploy_proc.returncode}). stderr: "
-            f"{getattr(deploy_proc, 'stderr', '')!r}"
-        )
-
-    run_proc = run_cmd(
-        ["bundle", "run", bundle_key, "--target", target_name], profile=profile,
+    deploy_fn(
+        bundle_target=target_name,
+        app_name_override=new_app_name,
+        extra_version_tags={"apx.apps.role": "canary"},
     )
-    if getattr(run_proc, "returncode", 0) != 0:
-        # Same posture as `_deploy_apps_impl` — bundle run may return
-        # nonzero when the App is already running. Log + proceed.
-        logger.warning(
-            "bundle run for canary returned %s (continuing): %s",
-            run_proc.returncode, getattr(run_proc, "stderr", ""),
-        )
-
-    # Read the canary App URL via ``apps get``. Non-fatal if it fails.
-    canary_url = ""
-    get_proc = run_cmd(["apps", "get", new_app_name], profile=profile)
-    if getattr(get_proc, "returncode", 0) == 0:
-        try:
-            import json as _json
-            payload = _json.loads(get_proc.stdout or "{}")
-            canary_url = payload.get("url") or ""
-        except Exception:
-            canary_url = ""
 
     return AppsCanaryConfig(
         bundle_target=target_name,
         canary_version=sanitize_version(canary_version),
         prod_app_name=base_app_name,
         canary_app_name=new_app_name,
-        canary_app_url=canary_url,
+        canary_app_url="",  # URL now surfaced by the shared deploy path's output
         traffic_hint=traffic_hint,
     )
 
