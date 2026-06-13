@@ -145,3 +145,20 @@ def test_register_never_imports_databricks_agents(
         bundle_target="dev",
         mlflow_client=_FakeMlflowClient(),
     )  # no AssertionError → never called deploy
+
+
+def test_register_writes_extra_version_tags(patched: dict[str, Any]) -> None:
+    client = _FakeMlflowClient()
+    register_apps_manifest(
+        object(),
+        uc_name="main.agents.my_app",
+        model="m",
+        app_name="my-app",
+        bundle_target="canary-v42",
+        mlflow_client=client,
+        extra_version_tags={"apx.apps.role": "canary"},
+    )
+    tagged = {(key, value) for _n, _v, key, value in client.version_tags}
+    assert ("apx.apps.role", "canary") in tagged
+    # base manifest tags still written
+    assert (SERVING_TAG, "apps") in tagged
