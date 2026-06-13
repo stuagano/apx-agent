@@ -851,3 +851,25 @@ def test_register_uc_forwards_extra_version_tags(
         log=lambda *_a: None,
     )
     assert seen["tags"] == {"apx.apps.role": "canary"}
+
+
+def test_canary_deploy_apps_uses_full_path(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`apx canary deploy --target apps` runs validate + deploy + poll against
+    the canary target and the canary app name — i.e. the faithful path."""
+    calls = _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "canary", "deploy", "--target", "apps", "--canary-version", "v42",
+    ])
+    assert result.exit_code == 0, result.output
+    seq = [c for c in calls]
+    # Deployed under the canary target.
+    assert any(c[:2] == ["bundle", "deploy"] and "canary-v42" in c for c in seq), seq
+    # Validate ran (the thin canary path used to skip it).
+    assert any(c[:2] == ["bundle", "validate"] for c in seq), seq
+    # Polled the CANARY app name, not prod "my-app".
+    get_calls = [c for c in seq if c[:2] == ["apps", "get"]]
+    assert get_calls and all("my-app-canary-v42" in c for c in get_calls), get_calls
+    # canary target written into the bundle.
+    assert "canary-v42" in (scaffold / "databricks.yml").read_text()

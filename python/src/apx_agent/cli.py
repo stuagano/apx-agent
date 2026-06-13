@@ -7161,24 +7161,44 @@ def canary_deploy(
     cwd = Path.cwd()
     doc = _read_databricks_yml(cwd)
     bundle_key, base_app_name = _resolve_app_name(doc)
-    try:
-        cfg = deploy_canary_app(
+
+    def log(msg: str) -> None:
+        click.echo(msg, err=True)
+
+    def _deploy_fn(*, bundle_target: str, app_name_override: str,
+                   extra_version_tags: dict[str, str]) -> None:
+        _deploy_apps_impl(
             cwd=cwd,
-            bundle_key=bundle_key,
-            base_app_name=base_app_name,
-            canary_version=canary_version,
-            traffic_hint=traffic_pct,
-            run_cmd=_run_databricks_cmd,
+            module="agent:agent",
             profile=profile,
-            base_target=base_target,
+            bundle_target=bundle_target,
+            no_run=False,
+            auto_update_yml=False,
+            auto_build_wheel=True,
+            auto_experiment=True,
+            vars=(),
+            json_output=False,
+            readyz_gate=True,
+            register_uc=True,
+            uc_name=None,
+            app_name_override=app_name_override,
+            extra_version_tags=extra_version_tags,
+            log=log,
         )
-    except Exception as e:
-        raise click.ClickException(f"canary deploy --target apps failed: {type(e).__name__}: {e}") from e
-    click.echo(f"Deployed canary App {cfg.canary_app_name} from version {cfg.canary_version}.")
-    click.echo(f"  bundle target: {cfg.bundle_target}")
-    click.echo(f"  canary URL:    {cfg.canary_app_url or '(not yet available)'}")
-    click.echo(f"  traffic hint:  {cfg.traffic_hint}%  (Apps has no platform-level traffic split — "
-               "route via your calling code, feature flag, or DNS)")
+
+    cfg = deploy_canary_app(
+        cwd=cwd,
+        bundle_key=bundle_key,
+        base_app_name=base_app_name,
+        canary_version=canary_version,
+        traffic_hint=traffic_pct,
+        deploy_fn=_deploy_fn,
+        base_target=base_target,
+    )
+    click.echo(f"Canary App deployed: {cfg.canary_app_name}")
+    click.echo(f"  prod App:   {cfg.prod_app_name}")
+    click.echo("  soak via the full deploy path (validate->build->readyz->UC).")
+    return
 
 
 @canary.command("promote")
