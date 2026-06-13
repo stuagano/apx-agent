@@ -561,3 +561,48 @@ def test_cli_canary_promote_apps_requires_canary_version(
     )
     assert result.exit_code != 0
     assert "--canary-version" in result.output
+
+
+def test_deploy_canary_app_stamps_git_sha_tag(tmp_path: Path) -> None:
+    """P1: when git_sha is provided, it lands as apx.apps.git_sha alongside role."""
+    from apx_agent import _canary_apps
+
+    yml = tmp_path / "databricks.yml"
+    yml.write_text(
+        "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+        "targets:\n  prod:\n    default: true\n"
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_deploy_fn(*, bundle_target, app_name_override, extra_version_tags):
+        seen["tags"] = extra_version_tags
+
+    _canary_apps.deploy_canary_app(
+        cwd=tmp_path, bundle_key="my-app", base_app_name="my-app",
+        canary_version="v42", traffic_hint=10, deploy_fn=fake_deploy_fn,
+        git_sha="abc123def456",
+    )
+    assert seen["tags"] == {"apx.apps.role": "canary", "apx.apps.git_sha": "abc123def456"}
+
+
+def test_deploy_canary_app_omits_git_sha_tag_when_none(tmp_path: Path) -> None:
+    """P1: no git_sha → only the role tag (no empty/None git_sha tag)."""
+    from apx_agent import _canary_apps
+
+    yml = tmp_path / "databricks.yml"
+    yml.write_text(
+        "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+        "targets:\n  prod:\n    default: true\n"
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_deploy_fn(*, bundle_target, app_name_override, extra_version_tags):
+        seen["tags"] = extra_version_tags
+
+    _canary_apps.deploy_canary_app(
+        cwd=tmp_path, bundle_key="my-app", base_app_name="my-app",
+        canary_version="v42", traffic_hint=10, deploy_fn=fake_deploy_fn,
+        git_sha=None,
+    )
+    assert seen["tags"] == {"apx.apps.role": "canary"}
+    assert "apx.apps.git_sha" not in seen["tags"]

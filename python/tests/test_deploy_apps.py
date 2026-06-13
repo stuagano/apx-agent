@@ -916,3 +916,59 @@ def test_canary_deploy_apps_registers_role_tag_end_to_end(
     assert seen.get("app_name") == "my-app-canary-v42"
     assert seen.get("uc_name") == "main.agents.my_app"
     assert seen.get("bundle_target") == "canary-v42"
+
+
+def test_canary_deploy_apps_stamps_git_sha_end_to_end(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1 end-to-end: the captured git SHA reaches the registrar as
+    apx.apps.git_sha through the whole canary-deploy CLI path."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+    seen: dict[str, Any] = {}
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        seen["tags"] = extra_version_tags
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: "deadbeefcafe1234")
+    _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "canary", "deploy", "--target", "apps", "--canary-version", "v42",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen.get("tags") == {
+        "apx.apps.role": "canary",
+        "apx.apps.git_sha": "deadbeefcafe1234",
+    }
+
+
+def test_canary_deploy_apps_no_git_sha_still_succeeds(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1: no git SHA available (not a repo) -> deploy still succeeds, only the
+    role tag is sent (no git_sha tag), and a notice is logged."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+    seen: dict[str, Any] = {}
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        seen["tags"] = extra_version_tags
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: None)
+    _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "canary", "deploy", "--target", "apps", "--canary-version", "v42",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen.get("tags") == {"apx.apps.role": "canary"}
+    assert "no git SHA captured" in result.output

@@ -3656,6 +3656,27 @@ def _tail_lines(text: str, n: int = 50) -> str:
     return "\n".join(lines[-n:])
 
 
+def _git_head_sha(cwd: Path) -> str | None:
+    """Return the full HEAD commit SHA of the git repo at ``cwd``, or None.
+
+    Best-effort provenance capture (P1): returns None when ``cwd`` is not a git
+    repo, git isn't installed, or the call fails — callers treat a missing SHA
+    as "provenance unavailable" rather than an error.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd, capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
 def _read_databricks_yml(cwd: Path) -> dict[str, Any]:
     """Load ``databricks.yml`` from ``cwd`` and return the parsed dict.
 
@@ -7165,6 +7186,16 @@ def canary_deploy(
     def log(msg: str) -> None:
         click.echo(msg, err=True)
 
+    # P1 provenance: capture the commit the canary is deployed from so its UC
+    # manifest records it (apx.apps.git_sha). promote verifies prod ships the
+    # same commit. Best-effort — None when cwd isn't a git repo.
+    git_sha = _git_head_sha(cwd)
+    if git_sha:
+        log(f"# provenance: canary git SHA {git_sha[:12]}")
+    else:
+        log("# provenance: no git SHA captured (cwd not a git repo) — "
+            "promote won't be able to verify the soaked commit")
+
     def _deploy_fn(*, bundle_target: str, app_name_override: str,
                    extra_version_tags: dict[str, str]) -> None:
         _deploy_apps_impl(
@@ -7194,6 +7225,7 @@ def canary_deploy(
         traffic_hint=traffic_pct,
         deploy_fn=_deploy_fn,
         base_target=base_target,
+        git_sha=git_sha,
     )
     click.echo(f"Canary App deployed: {cfg.canary_app_name}")
     click.echo(f"  prod App:   {cfg.prod_app_name}")
