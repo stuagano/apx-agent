@@ -731,7 +731,8 @@ def test_register_uc_runs_once_when_configured(
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
     calls: list[dict[str, Any]] = []
 
-    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target, agent_name=None):
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
         calls.append({
             "uc_name": uc_name, "model": model,
             "app_name": app_name, "bundle_target": bundle_target,
@@ -799,3 +800,119 @@ def test_no_register_uc_skips_the_step(
     assert result.exit_code == 0, result.output
     assert not called
     assert "skipping the UC version-manifest registration" in result.output
+
+
+def test_app_name_override_polls_override_name(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When app_name_override is set, `apps get` targets the override name."""
+    from apx_agent import cli as cli_mod
+
+    calls = _install_subprocess_mock(monkeypatch)
+    logs: list[str] = []
+    cli_mod._deploy_apps_impl(
+        cwd=scaffold, module="agent:agent", profile=None,
+        bundle_target="canary-v42", no_run=False, auto_update_yml=False,
+        auto_build_wheel=False, auto_experiment=False, vars=(),
+        json_output=False, readyz_gate=False, register_uc=False,
+        uc_name=None, app_name_override="my-app-canary-v42",
+        log=logs.append,
+    )
+    get_calls = [c for c in calls if c[:2] == ["apps", "get"]]
+    assert get_calls, "expected an apps get call"
+    assert all("my-app-canary-v42" in c for c in get_calls)
+
+
+def test_register_uc_forwards_extra_version_tags(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """extra_version_tags passed to _deploy_apps_impl reach register_apps_manifest."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    seen: dict[str, Any] = {}
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        seen["tags"] = extra_version_tags
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    _install_subprocess_mock(monkeypatch)
+
+    from apx_agent import cli as cli_mod
+    cli_mod._deploy_apps_impl(
+        cwd=scaffold, module="agent:agent", profile=None, bundle_target="canary-v42",
+        no_run=False, auto_update_yml=False, auto_build_wheel=False,
+        auto_experiment=False, vars=(), json_output=False, readyz_gate=False,
+        register_uc=True, uc_name="main.agents.my_app",
+        app_name_override="my-app-canary-v42",
+        extra_version_tags={"apx.apps.role": "canary"},
+        log=lambda *_a: None,
+    )
+    assert seen["tags"] == {"apx.apps.role": "canary"}
+
+
+def test_canary_deploy_apps_uses_full_path(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`apx canary deploy --target apps` runs validate + deploy + poll against
+    the canary target and the canary app name — i.e. the faithful path."""
+    calls = _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "canary", "deploy", "--target", "apps", "--canary-version", "v42",
+    ])
+    assert result.exit_code == 0, result.output
+    seq = [c for c in calls]
+    # Deployed under the canary target.
+    assert any(c[:2] == ["bundle", "deploy"] and "canary-v42" in c for c in seq), seq
+    # Validate ran (the thin canary path used to skip it).
+    assert any(c[:2] == ["bundle", "validate"] for c in seq), seq
+    # Polled the CANARY app name, not prod "my-app".
+    get_calls = [c for c in seq if c[:2] == ["apps", "get"]]
+    assert get_calls and all("my-app-canary-v42" in c for c in get_calls), get_calls
+    # canary target written into the bundle.
+    assert "canary-v42" in (scaffold / "databricks.yml").read_text()
+
+
+_PYPROJECT_WITH_UC = (
+    '[project]\nname = "test-app"\n\n'
+    '[tool.apx.agent]\n'
+    'model = "databricks-claude-sonnet-4-6"\n'
+    'name = "My App"\n'
+    'registered_model = "main.agents.my_app"\n'
+)
+
+
+def test_canary_deploy_apps_registers_role_tag_end_to_end(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: `apx canary deploy --target apps` carries apx.apps.role=canary
+    all the way to the registrar, against the canary App name. Proves the tag
+    survives the whole CLI path (CLI -> deploy_canary_app -> deploy_fn ->
+    _deploy_apps_impl -> _register_apps_manifest_step -> register_apps_manifest),
+    not just hop-by-hop."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+    seen: dict[str, Any] = {}
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        seen.update(tags=extra_version_tags, app_name=app_name,
+                    uc_name=uc_name, bundle_target=bundle_target)
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "canary", "deploy", "--target", "apps", "--canary-version", "v42",
+    ])
+    assert result.exit_code == 0, result.output
+    # The role tag reached the registrar via the full CLI path...
+    assert seen.get("tags") == {"apx.apps.role": "canary"}
+    # ...registered against the CANARY app name + the resolved UC name + target.
+    assert seen.get("app_name") == "my-app-canary-v42"
+    assert seen.get("uc_name") == "main.agents.my_app"
+    assert seen.get("bundle_target") == "canary-v42"

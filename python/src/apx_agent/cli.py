@@ -4630,6 +4630,7 @@ def _register_apps_manifest_step(
     app_name: str,
     bundle_target: str,
     uc_name_override: str | None,
+    extra_version_tags: dict[str, str] | None = None,
     log: Any,
 ) -> None:
     """Register a UC version manifest for a freshly-deployed App (best-effort).
@@ -4670,6 +4671,7 @@ def _register_apps_manifest_step(
             app_name=app_name,
             bundle_target=bundle_target,
             agent_name=agent_name,
+            extra_version_tags=extra_version_tags,
         )
         log(
             f"# registered {res.uc_name} version {res.version} "
@@ -4697,6 +4699,7 @@ def _deploy_apps(
     readyz_gate: bool = True,
     register_uc: bool = True,
     uc_name: str | None = None,
+    app_name_override: str | None = None,
 ) -> None:
     """Implement ``apx-agent deploy --target apps``.
 
@@ -4720,7 +4723,8 @@ def _deploy_apps(
             auto_experiment=auto_experiment,
             vars=vars,
             json_output=json_output, readyz_gate=readyz_gate,
-            register_uc=register_uc, uc_name=uc_name, log=log,
+            register_uc=register_uc, uc_name=uc_name,
+            app_name_override=app_name_override, log=log,
         )
     except click.ClickException as e:
         if json_output:
@@ -4744,6 +4748,8 @@ def _deploy_apps_impl(
     readyz_gate: bool = True,
     register_uc: bool = True,
     uc_name: str | None = None,
+    app_name_override: str | None = None,
+    extra_version_tags: dict[str, str] | None = None,
     log: Any,
 ) -> None:
     """Inner body of ``_deploy_apps`` — see docstring there."""
@@ -4755,11 +4761,14 @@ def _deploy_apps_impl(
     _preflight_apps(cwd)
     _validate_responses_agent_compiler()
     doc = _read_databricks_yml(cwd)
-    bundle_key, app_name = _resolve_app_name(doc)
-    if bundle_key != app_name:
-        log(f"# resolved bundle_key={bundle_key} app_name={app_name}")
+    bundle_key, resolved_app_name = _resolve_app_name(doc)
+    app_name = app_name_override or resolved_app_name
+    if app_name_override and app_name_override != resolved_app_name:
+        log(f"# app-name override: polling {app_name} (target {bundle_target})")
+    if bundle_key != resolved_app_name:
+        log(f"# resolved bundle_key={bundle_key} app_name={resolved_app_name}")
     else:
-        log(f"# resolved app_name: {app_name}")
+        log(f"# resolved app_name: {resolved_app_name}")
 
     # 2. Optional auto-merge resources
     if auto_update_yml:
@@ -4939,6 +4948,7 @@ def _deploy_apps_impl(
             app_name=app_name,
             bundle_target=bundle_target,
             uc_name_override=uc_name,
+            extra_version_tags=extra_version_tags,
             log=log,
         )
     else:
@@ -7151,24 +7161,44 @@ def canary_deploy(
     cwd = Path.cwd()
     doc = _read_databricks_yml(cwd)
     bundle_key, base_app_name = _resolve_app_name(doc)
-    try:
-        cfg = deploy_canary_app(
+
+    def log(msg: str) -> None:
+        click.echo(msg, err=True)
+
+    def _deploy_fn(*, bundle_target: str, app_name_override: str,
+                   extra_version_tags: dict[str, str]) -> None:
+        _deploy_apps_impl(
             cwd=cwd,
-            bundle_key=bundle_key,
-            base_app_name=base_app_name,
-            canary_version=canary_version,
-            traffic_hint=traffic_pct,
-            run_cmd=_run_databricks_cmd,
+            module="agent:agent",
             profile=profile,
-            base_target=base_target,
+            bundle_target=bundle_target,
+            no_run=False,
+            auto_update_yml=False,
+            auto_build_wheel=True,
+            auto_experiment=True,
+            vars=(),
+            json_output=False,
+            readyz_gate=True,
+            register_uc=True,
+            uc_name=None,
+            app_name_override=app_name_override,
+            extra_version_tags=extra_version_tags,
+            log=log,
         )
-    except Exception as e:
-        raise click.ClickException(f"canary deploy --target apps failed: {type(e).__name__}: {e}") from e
-    click.echo(f"Deployed canary App {cfg.canary_app_name} from version {cfg.canary_version}.")
-    click.echo(f"  bundle target: {cfg.bundle_target}")
-    click.echo(f"  canary URL:    {cfg.canary_app_url or '(not yet available)'}")
-    click.echo(f"  traffic hint:  {cfg.traffic_hint}%  (Apps has no platform-level traffic split — "
-               "route via your calling code, feature flag, or DNS)")
+
+    cfg = deploy_canary_app(
+        cwd=cwd,
+        bundle_key=bundle_key,
+        base_app_name=base_app_name,
+        canary_version=canary_version,
+        traffic_hint=traffic_pct,
+        deploy_fn=_deploy_fn,
+        base_target=base_target,
+    )
+    click.echo(f"Canary App deployed: {cfg.canary_app_name}")
+    click.echo(f"  prod App:   {cfg.prod_app_name}")
+    click.echo("  soak via the full deploy path (validate->build->readyz->UC).")
+    return
 
 
 @canary.command("promote")
