@@ -972,3 +972,222 @@ def test_canary_deploy_apps_no_git_sha_still_succeeds(
     assert result.exit_code == 0, result.output
     assert seen.get("tags") == {"apx.apps.role": "canary"}
     assert "no git SHA captured" in result.output
+
+
+# ---------------------------------------------------------------------------
+# P2: gate-don't-mutate promote (apps)
+# ---------------------------------------------------------------------------
+
+
+def _setup_promote_mocks(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, *,
+    canary_sha: str | None, head_sha: str | None, dirty: bool = False,
+    canary_exists: bool = True,
+) -> dict[str, Any]:
+    """Wire the common promote mocks. Returns a dict capturing alias/teardown."""
+    from apx_agent._apps_registry import CanaryManifest
+
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+    captured: dict[str, Any] = {"alias": None, "teardown": 0, "registered": None}
+
+    cm = CanaryManifest(version="4", git_sha=canary_sha) if canary_exists else None
+    monkeypatch.setattr("apx_agent.find_latest_canary_version", lambda uc, **k: cm)
+    monkeypatch.setattr("apx_agent.get_prod_alias_version", lambda uc, **k: "2")
+    monkeypatch.setattr("apx_agent.get_latest_apps_version", lambda uc, **k: "5")
+
+    def _set_alias(uc, v, **k):
+        captured["alias"] = (uc, v)
+    monkeypatch.setattr("apx_agent.set_prod_alias_version", _set_alias)
+
+    def _teardown(**k):
+        captured["teardown"] += 1
+        return True
+    monkeypatch.setattr("apx_agent._canary_apps._teardown_canary", _teardown)
+
+    monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: head_sha)
+    monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: dirty)
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        captured["registered"] = extra_version_tags
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="5", app_name=app_name)
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    _install_subprocess_mock(monkeypatch)
+    return captured
+
+
+def test_promote_apps_refuses_when_head_mismatches_canary_sha(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = _setup_promote_mocks(scaffold, monkeypatch, canary_sha="aaa111", head_sha="bbb222")
+    result = CliRunner().invoke(main, [
+        "canary", "promote", "--target", "apps", "--canary-version", "v42",
+    ])
+    assert result.exit_code != 0
+    assert "git checkout aaa111" in result.output
+    assert cap["alias"] is None  # never moved prod
+    assert cap["teardown"] == 0  # never tore down canary
+
+
+def test_promote_apps_refuses_when_tree_dirty(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = _setup_promote_mocks(scaffold, monkeypatch, canary_sha="aaa111",
+                               head_sha="aaa111", dirty=True)
+    result = CliRunner().invoke(main, [
+        "canary", "promote", "--target", "apps", "--canary-version", "v42",
+    ])
+    assert result.exit_code != 0
+    assert "uncommitted changes" in result.output
+    assert cap["alias"] is None
+
+
+def test_promote_apps_errors_when_no_canary(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = _setup_promote_mocks(scaffold, monkeypatch, canary_sha=None,
+                               head_sha="aaa111", canary_exists=False)
+    result = CliRunner().invoke(main, [
+        "canary", "promote", "--target", "apps", "--canary-version", "v42",
+    ])
+    assert result.exit_code != 0
+    assert "No canary manifest" in result.output
+
+
+def test_promote_apps_errors_when_canary_has_no_sha(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = _setup_promote_mocks(scaffold, monkeypatch, canary_sha=None, head_sha="aaa111")
+    result = CliRunner().invoke(main, [
+        "canary", "promote", "--target", "apps", "--canary-version", "v42",
+    ])
+    assert result.exit_code != 0
+    assert "no recorded git SHA" in result.output
+
+
+def test_promote_apps_happy_path_sets_alias_and_teardown(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = _setup_promote_mocks(scaffold, monkeypatch, canary_sha="aaa111", head_sha="aaa111")
+    result = CliRunner().invoke(main, [
+        "canary", "promote", "--target", "apps", "--canary-version", "v42",
+    ])
+    assert result.exit_code == 0, result.output
+    # Prod re-deployed via the shared path, tagged role=prod + the soaked SHA.
+    assert cap["registered"] == {"apx.apps.role": "prod", "apx.apps.git_sha": "aaa111"}
+    # @prod alias moved to the new prod version; canary torn down.
+    assert cap["alias"] == ("main.agents.my_app", "5")
+    assert cap["teardown"] == 1
+    assert "Promoted canary (commit aaa111" in result.output
+
+
+def test_promote_apps_keep_canary_skips_teardown(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = _setup_promote_mocks(scaffold, monkeypatch, canary_sha="aaa111", head_sha="aaa111")
+    result = CliRunner().invoke(main, [
+        "canary", "promote", "--target", "apps", "--canary-version", "v42", "--keep-canary",
+    ])
+    assert result.exit_code == 0, result.output
+    assert cap["teardown"] == 0
+    assert cap["alias"] == ("main.agents.my_app", "5")
+
+
+# ---------------------------------------------------------------------------
+# P2: gate-don't-mutate rollback + apps status
+# ---------------------------------------------------------------------------
+
+
+def _setup_rollback_mocks(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, *,
+    version_sha: str | None, head_sha: str | None,
+) -> dict[str, Any]:
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+    captured: dict[str, Any] = {"alias": None, "registered": None}
+
+    monkeypatch.setattr("apx_agent.get_version_git_sha", lambda uc, v, **k: version_sha)
+    monkeypatch.setattr("apx_agent.get_prod_alias_version", lambda uc, **k: "5")
+    monkeypatch.setattr("apx_agent.get_latest_apps_version", lambda uc, **k: "8")
+
+    def _set_alias(uc, v, **k):
+        captured["alias"] = (uc, v)
+    monkeypatch.setattr("apx_agent.set_prod_alias_version", _set_alias)
+
+    monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: head_sha)
+    monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: False)
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        captured["registered"] = extra_version_tags
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="8", app_name=app_name)
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    _install_subprocess_mock(monkeypatch)
+    return captured
+
+
+def test_rollback_apps_requires_to_version(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _setup_rollback_mocks(scaffold, monkeypatch, version_sha="aaa", head_sha="aaa")
+    result = CliRunner().invoke(main, ["canary", "rollback", "--target", "apps"])
+    assert result.exit_code != 0
+    assert "--to-version is required" in result.output
+
+
+def test_rollback_apps_refuses_when_head_mismatches(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = _setup_rollback_mocks(scaffold, monkeypatch, version_sha="aaa111", head_sha="bbb222")
+    result = CliRunner().invoke(main, [
+        "canary", "rollback", "--target", "apps", "--to-version", "3",
+    ])
+    assert result.exit_code != 0
+    assert "git checkout aaa111" in result.output
+    assert cap["alias"] is None
+
+
+def test_rollback_apps_errors_when_version_has_no_sha(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _setup_rollback_mocks(scaffold, monkeypatch, version_sha=None, head_sha="aaa")
+    result = CliRunner().invoke(main, [
+        "canary", "rollback", "--target", "apps", "--to-version", "3",
+    ])
+    assert result.exit_code != 0
+    assert "no recorded apx.apps.git_sha" in result.output
+
+
+def test_rollback_apps_happy_path_redeploys_and_sets_alias(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = _setup_rollback_mocks(scaffold, monkeypatch, version_sha="aaa111", head_sha="aaa111")
+    result = CliRunner().invoke(main, [
+        "canary", "rollback", "--target", "apps", "--to-version", "3",
+    ])
+    assert result.exit_code == 0, result.output
+    assert cap["registered"] == {"apx.apps.role": "prod", "apx.apps.git_sha": "aaa111"}
+    assert cap["alias"] == ("main.agents.my_app", "8")
+    assert "Rolled back prod App my-app to the commit of version 3" in result.output
+
+
+def test_status_apps_shows_prod_and_canary(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent._apps_registry import CanaryManifest
+
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+    monkeypatch.setattr("apx_agent.get_prod_alias_version", lambda uc, **k: "5")
+    monkeypatch.setattr("apx_agent.get_version_git_sha", lambda uc, v, **k: "prodsha12345")
+    monkeypatch.setattr(
+        "apx_agent.find_latest_canary_version",
+        lambda uc, **k: CanaryManifest(version="8", git_sha="canarysha6789"),
+    )
+    result = CliRunner().invoke(main, ["canary", "status", "--target", "apps"])
+    assert result.exit_code == 0, result.output
+    assert "@prod  → version 5" in result.output
+    assert "canary → version 8" in result.output
+    assert "promote ships canarysha678" in result.output

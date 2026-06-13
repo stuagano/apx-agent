@@ -3677,6 +3677,26 @@ def _git_head_sha(cwd: Path) -> str | None:
     return sha or None
 
 
+def _git_is_dirty(cwd: Path) -> bool:
+    """Return True iff the git tree at ``cwd`` has uncommitted changes.
+
+    Conservative: returns True on any error (can't confirm clean → treat as
+    dirty), so the promote gate refuses rather than risk shipping unsoaked
+    changes.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=cwd, capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return True
+    if result.returncode != 0:
+        return True
+    return bool(result.stdout.strip())
+
+
 def _read_databricks_yml(cwd: Path) -> dict[str, Any]:
     """Load ``databricks.yml`` from ``cwd`` and return the parsed dict.
 
@@ -7080,29 +7100,150 @@ def eval_report_cmd(
 # ---------------------------------------------------------------------------
 
 
+def _apps_deploy_prod_at_commit(
+    *,
+    cwd: Path,
+    uc_name: str,
+    prod_app_name: str,
+    profile: str | None,
+    prod_target: str,
+    expected_sha: str,
+    prev_prod_version: str | None,
+    log: Any,
+) -> str | None:
+    """Shared gate-don't-mutate prod deploy for ``promote`` and ``rollback``.
+
+    Verifies the working tree is at ``expected_sha`` and clean (never checks
+    out), deploys prod via the shared faithful path (readyz is the gate-OUT,
+    register_uc mints a new prod manifest version tagged role=prod + the SHA),
+    then points the ``@prod`` alias at the new version. Returns the new version,
+    or None if it couldn't be resolved. Raises ``click.ClickException`` on a
+    gate failure or a failed/unhealthy prod deploy (alias left untouched).
+    """
+    from apx_agent import get_latest_apps_version, set_prod_alias_version
+
+    head = _git_head_sha(cwd)
+    if head is None:
+        raise click.ClickException(
+            "cwd is not a git repo; cannot verify the commit before deploy."
+        )
+    if head != expected_sha:
+        raise click.ClickException(
+            f"Your working tree is at {head[:12]}, but the target commit is "
+            f"{expected_sha[:12]}. To ship exactly it:\n"
+            f"    git checkout {expected_sha}\n"
+            "then re-run. (this never changes your working tree.)"
+        )
+    if _git_is_dirty(cwd):
+        raise click.ClickException(
+            "Working tree has uncommitted changes — prod would not ship exactly "
+            f"{expected_sha[:12]}. Commit or stash them, then re-run."
+        )
+
+    try:
+        _deploy_apps_impl(
+            cwd=cwd, module="agent:agent", profile=profile,
+            bundle_target=prod_target, no_run=False, auto_update_yml=False,
+            auto_build_wheel=True, auto_experiment=True, vars=(),
+            json_output=False, readyz_gate=True, register_uc=True, uc_name=uc_name,
+            app_name_override=prod_app_name,
+            extra_version_tags={"apx.apps.role": "prod", "apx.apps.git_sha": expected_sha},
+            log=log,
+        )
+    except Exception as e:
+        hint = (
+            f" Last good prod version was {prev_prod_version}; to recover: "
+            "git checkout <its commit> && apx canary rollback --target apps "
+            "--to-version <prev>." if prev_prod_version else ""
+        )
+        raise click.ClickException(
+            f"prod deploy/readyz gate failed: {type(e).__name__}: {e}. The @prod "
+            f"alias was NOT moved.{hint}"
+        ) from e
+
+    new_version = get_latest_apps_version(uc_name)
+    if new_version:
+        try:
+            set_prod_alias_version(uc_name, new_version)
+            log(f"# @prod → version {new_version}")
+        except Exception as e:
+            log(f"# warning: couldn't move @prod alias (non-fatal): {e}")
+    return new_version
+
+
 @main.group()
 def canary() -> None:
     """Canary / A-B deployment helpers — multi-version traffic split."""
 
 
 @canary.command("status")
-@click.option("--endpoint", required=True, help="Model Serving endpoint name.")
+@click.option("--target", "deploy_target",
+              type=click.Choice(["model-serving", "apps"]),
+              default="model-serving",
+              help="Deploy target. See docs/apps-canary-hotswap-design.md.")
+@click.option("--endpoint", default=None,
+              help="Model Serving endpoint name (model-serving target only).")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks CLI profile (~/.databrickscfg).")
-def canary_status(endpoint: str, profile: str | None) -> None:
-    """Print the endpoint's current served entities + traffic split."""
-    from apx_agent import get_canary_config
+def canary_status(deploy_target: str, endpoint: str | None, profile: str | None) -> None:
+    """Show the live canary/prod state — served entities + traffic split
+    (model-serving), or the @prod alias + latest canary version with their
+    commits (apps)."""
+    if deploy_target == "model-serving":
+        if not endpoint:
+            raise click.UsageError("--endpoint is required for --target model-serving.")
+        from apx_agent import get_canary_config
 
-    ws, _ = _connect_workspace(profile)
-    cfg = get_canary_config(endpoint, ws=ws)
-    click.echo(f"# canary status: {cfg.endpoint}")
-    if not cfg.served_entities:
-        click.echo("  (no served entities)")
+        ws, _ = _connect_workspace(profile)
+        cfg = get_canary_config(endpoint, ws=ws)
+        click.echo(f"# canary status: {cfg.endpoint}")
+        if not cfg.served_entities:
+            click.echo("  (no served entities)")
+            return
+        click.echo(f"{'ENTITY':<40}  {'MODEL':<32}  {'VERSION':<10}  {'TRAFFIC %':>9}")
+        for name, entity, version in cfg.served_entities:
+            pct = cfg.traffic_split.get(name, 0)
+            click.echo(f"{name:<40}  {entity:<32}  {version:<10}  {pct:>9}")
         return
-    click.echo(f"{'ENTITY':<40}  {'MODEL':<32}  {'VERSION':<10}  {'TRAFFIC %':>9}")
-    for name, entity, version in cfg.served_entities:
-        pct = cfg.traffic_split.get(name, 0)
-        click.echo(f"{name:<40}  {entity:<32}  {version:<10}  {pct:>9}")
+
+    # --target apps — read the UC ledger: which version is @prod, which is the
+    # latest canary, and the commit each shipped.
+    from apx_agent import (
+        find_latest_canary_version,
+        get_prod_alias_version,
+        get_version_git_sha,
+    )
+
+    cwd = Path.cwd()
+    doc = _read_databricks_yml(cwd)
+    _, base_app_name = _resolve_app_name(doc)
+    config = _read_apx_agent_config()
+    uc_name = _resolve_apps_uc_name(config, base_app_name)
+    if uc_name is None:
+        raise click.UsageError(
+            "status --target apps needs a UC model name; set "
+            "[tool.apx.agent].registered_model (or a non-placeholder "
+            "catalog + schema)."
+        )
+
+    click.echo(f"# canary status (apps): {uc_name}")
+    prod_v = get_prod_alias_version(uc_name)
+    prod_sha = get_version_git_sha(uc_name, prod_v) if prod_v else None
+    if prod_v:
+        click.echo(f"  @prod  → version {prod_v}  (commit {(prod_sha or '?')[:12]})")
+    else:
+        click.echo("  @prod  → (unset — nothing promoted yet)")
+
+    canary = find_latest_canary_version(uc_name)
+    if canary:
+        click.echo(
+            f"  canary → version {canary.version}  "
+            f"(commit {(canary.git_sha or '?')[:12]})"
+        )
+        if canary.git_sha and canary.git_sha != prod_sha:
+            click.echo(f"           promote ships {canary.git_sha[:12]} to prod")
+    else:
+        click.echo("  canary → (none deployed)")
 
 
 @canary.command("deploy")
@@ -7283,24 +7424,68 @@ def canary_promote(
         click.echo(f"Split: {cfg.traffic_split}")
         return
 
-    # --target apps
+    # --target apps — gate-don't-mutate promote (see
+    # docs/superpowers/specs/2026-06-12-apps-soak-promote-design.md, P2).
     if not canary_version:
-        raise click.UsageError("--canary-version is required for --target apps.")
-    from apx_agent import promote_canary_app
+        raise click.UsageError(
+            "--canary-version is required for --target apps (the deploy-time "
+            "label, used to tear down the canary App after promote)."
+        )
+    from apx_agent import find_latest_canary_version, get_prod_alias_version
+    from apx_agent._canary_apps import _teardown_canary
 
     cwd = Path.cwd()
     doc = _read_databricks_yml(cwd)
     bundle_key, base_app_name = _resolve_app_name(doc)
-    try:
-        result = promote_canary_app(
-            cwd=cwd, bundle_key=bundle_key, base_app_name=base_app_name,
-            canary_version=canary_version, run_cmd=_run_databricks_cmd,
-            profile=profile, prod_target=prod_target, keep_canary=keep_canary,
+    config = _read_apx_agent_config()
+    uc_name = _resolve_apps_uc_name(config, base_app_name)
+    if uc_name is None:
+        raise click.UsageError(
+            "promote needs the canary's UC manifest, but no UC model name "
+            "resolves. Set [tool.apx.agent].registered_model (or a "
+            "non-placeholder catalog + schema)."
         )
-    except Exception as e:
-        raise click.ClickException(f"canary promote --target apps failed: {type(e).__name__}: {e}") from e
-    click.echo(f"Promoted canary {result.promoted_from_version} → prod App {result.prod_app_name}.")
-    click.echo(f"  canary target removed: {result.canary_target_removed}")
+
+    # 1. Resolve the canary manifest + the commit it soaked.
+    canary = find_latest_canary_version(uc_name)
+    if canary is None:
+        raise click.ClickException(
+            f"No canary manifest found for {uc_name}. Deploy a canary first: "
+            "apx canary deploy --target apps --canary-version <v>."
+        )
+    if not canary.git_sha:
+        raise click.ClickException(
+            "The canary has no recorded git SHA (deployed from a non-git tree), "
+            "so promote can't verify prod ships the soaked commit. Re-deploy the "
+            "canary from a git checkout."
+        )
+
+    # 2-5. Gate-IN (verify HEAD == soaked SHA + clean) → deploy prod via the
+    #      shared faithful path (readyz gate-OUT + register_uc) → move @prod.
+    def log(msg: str) -> None:
+        click.echo(msg, err=True)
+
+    prev_prod_version = get_prod_alias_version(uc_name)
+    _apps_deploy_prod_at_commit(
+        cwd=cwd, uc_name=uc_name, prod_app_name=base_app_name, profile=profile,
+        prod_target=prod_target, expected_sha=canary.git_sha,
+        prev_prod_version=prev_prod_version, log=log,
+    )
+
+    # 6. Teardown the canary (unless --keep-canary).
+    removed = False
+    if not keep_canary:
+        try:
+            removed = _teardown_canary(
+                cwd=cwd, canary_version=canary_version,
+                run_cmd=_run_databricks_cmd, profile=profile,
+                base_app_name=base_app_name,
+            )
+        except Exception as e:
+            click.echo(f"# warning: canary teardown failed (non-fatal): {e}", err=True)
+
+    click.echo(f"Promoted canary (commit {canary.git_sha[:12]}) → prod App {base_app_name}.")
+    click.echo(f"  canary target removed: {removed}")
 
 
 @canary.command("rollback")
@@ -7314,8 +7499,9 @@ def canary_promote(
               help="Three-part UC name of the registered model (model-serving only).")
 @click.option("--version", default=None,
               help="Version to roll back to (model-serving only).")
-@click.option("--canary-version", default=None,
-              help="Prior version label to roll prod back to (apps target only).")
+@click.option("--to-version", "to_version", default=None,
+              help="UC manifest version to restore prod to (apps target only). "
+                   "Its recorded apx.apps.git_sha is the commit prod will ship.")
 @click.option("--profile", default=None, help="Databricks CLI profile (apps target only).")
 @click.option("--prod-target", default="prod",
               help="Prod DAB target name (apps target only). Default 'prod'.")
@@ -7324,11 +7510,12 @@ def canary_rollback(
     endpoint: str | None,
     registered_model_name: str | None,
     version: str | None,
-    canary_version: str | None,
+    to_version: str | None,
     profile: str | None,
     prod_target: str,
 ) -> None:
-    """Roll back to a prior version. Functionally equivalent to promote."""
+    """Roll back to a prior version. Gate-don't-mutate for apps (verifies your
+    tree is at the target version's commit before re-deploying prod)."""
     if deploy_target == "model-serving":
         if not endpoint or not registered_model_name or not version:
             raise click.UsageError(
@@ -7348,24 +7535,49 @@ def canary_rollback(
         click.echo(f"Split: {cfg.traffic_split}")
         return
 
-    # --target apps
-    if not canary_version:
-        raise click.UsageError("--canary-version is required for --target apps.")
-    from apx_agent import rollback_canary_app
+    # --target apps — gate-don't-mutate rollback: re-deploy prod from the commit
+    # a recorded UC version shipped. Same safety as promote; no canary involved.
+    if not to_version:
+        raise click.UsageError(
+            "--to-version is required for --target apps. Pass the UC manifest "
+            "version to restore prod to (see `apx canary status --target apps` "
+            "or the model's versions in Unity Catalog)."
+        )
+    from apx_agent import get_prod_alias_version, get_version_git_sha
 
     cwd = Path.cwd()
     doc = _read_databricks_yml(cwd)
     bundle_key, base_app_name = _resolve_app_name(doc)
-    try:
-        result = rollback_canary_app(
-            cwd=cwd, bundle_key=bundle_key, base_app_name=base_app_name,
-            canary_version=canary_version, run_cmd=_run_databricks_cmd,
-            profile=profile, prod_target=prod_target,
+    config = _read_apx_agent_config()
+    uc_name = _resolve_apps_uc_name(config, base_app_name)
+    if uc_name is None:
+        raise click.UsageError(
+            "rollback needs the UC manifest, but no UC model name resolves. "
+            "Set [tool.apx.agent].registered_model (or a non-placeholder "
+            "catalog + schema)."
         )
-    except Exception as e:
-        raise click.ClickException(f"canary rollback --target apps failed: {type(e).__name__}: {e}") from e
-    click.echo(f"Rolled back prod App {result.prod_app_name} to canary tree {result.promoted_from_version}.")
-    click.echo(f"  canary target removed: {result.canary_target_removed}")
+
+    target_sha = get_version_git_sha(uc_name, to_version)
+    if not target_sha:
+        raise click.ClickException(
+            f"Version {to_version} of {uc_name} has no recorded apx.apps.git_sha, "
+            "so rollback can't verify the commit. Pick a version deployed with "
+            "provenance (P1+)."
+        )
+
+    def log(msg: str) -> None:
+        click.echo(msg, err=True)
+
+    prev_prod_version = get_prod_alias_version(uc_name)
+    _apps_deploy_prod_at_commit(
+        cwd=cwd, uc_name=uc_name, prod_app_name=base_app_name, profile=profile,
+        prod_target=prod_target, expected_sha=target_sha,
+        prev_prod_version=prev_prod_version, log=log,
+    )
+    click.echo(
+        f"Rolled back prod App {base_app_name} to the commit of version "
+        f"{to_version} (commit {target_sha[:12]})."
+    )
 
 
 @canary.command("analyze")

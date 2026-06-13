@@ -162,3 +162,86 @@ def test_register_writes_extra_version_tags(patched: dict[str, Any]) -> None:
     assert ("apx.apps.role", "canary") in tagged
     # base manifest tags still written
     assert (SERVING_TAG, "apps") in tagged
+
+
+class _FakeModelVersion:
+    def __init__(self, version: str, tags: dict[str, str]) -> None:
+        self.version = version
+        self.tags = tags
+
+
+class _FakeQueryClient:
+    """Fake MlflowClient for version-search + alias helpers."""
+
+    def __init__(self, versions: list, alias_version: str | None = None) -> None:
+        self._versions = versions
+        self._alias_version = alias_version
+        self.alias_set: tuple[str, str, str] | None = None
+
+    def search_model_versions(self, filter_string: str) -> list:
+        return list(self._versions)
+
+    def get_model_version_by_alias(self, name: str, alias: str):
+        if self._alias_version is None:
+            raise RuntimeError("alias not found")
+        return _FakeModelVersion(self._alias_version, {})
+
+    def set_registered_model_alias(self, name: str, alias: str, version: str) -> None:
+        self.alias_set = (name, alias, version)
+
+
+def test_find_latest_canary_version_picks_highest_with_sha() -> None:
+    from apx_agent._apps_registry import find_latest_canary_version
+
+    client = _FakeQueryClient(versions=[
+        _FakeModelVersion("3", {"apx.apps.role": "canary", "apx.apps.git_sha": "old"}),
+        _FakeModelVersion("5", {"apx.apps.role": "canary", "apx.apps.git_sha": "new"}),
+        _FakeModelVersion("4", {"apx.serving": "apps"}),  # prod manifest, not canary
+    ])
+    cm = find_latest_canary_version("main.agents.my_app", mlflow_client=client)
+    assert cm is not None
+    assert cm.version == "5"
+    assert cm.git_sha == "new"
+
+
+def test_find_latest_canary_version_none_when_no_canary() -> None:
+    from apx_agent._apps_registry import find_latest_canary_version
+
+    client = _FakeQueryClient(versions=[
+        _FakeModelVersion("4", {"apx.serving": "apps"}),
+    ])
+    assert find_latest_canary_version("main.agents.my_app", mlflow_client=client) is None
+
+
+def test_find_latest_canary_version_sha_none_when_tag_absent() -> None:
+    from apx_agent._apps_registry import find_latest_canary_version
+
+    client = _FakeQueryClient(versions=[
+        _FakeModelVersion("2", {"apx.apps.role": "canary"}),  # no git_sha tag
+    ])
+    cm = find_latest_canary_version("main.agents.my_app", mlflow_client=client)
+    assert cm is not None and cm.version == "2" and cm.git_sha is None
+
+
+def test_prod_alias_get_and_set() -> None:
+    from apx_agent._apps_registry import get_prod_alias_version, set_prod_alias_version
+
+    client = _FakeQueryClient(versions=[], alias_version="7")
+    assert get_prod_alias_version("main.agents.my_app", mlflow_client=client) == "7"
+
+    none_client = _FakeQueryClient(versions=[], alias_version=None)
+    assert get_prod_alias_version("main.agents.my_app", mlflow_client=none_client) is None
+
+    set_prod_alias_version("main.agents.my_app", "9", mlflow_client=client)
+    assert client.alias_set == ("main.agents.my_app", "prod", "9")
+
+
+def test_get_latest_apps_version() -> None:
+    from apx_agent._apps_registry import get_latest_apps_version
+
+    client = _FakeQueryClient(versions=[
+        _FakeModelVersion("3", {}), _FakeModelVersion("10", {}), _FakeModelVersion("7", {}),
+    ])
+    assert get_latest_apps_version("main.agents.my_app", mlflow_client=client) == "10"
+    empty = _FakeQueryClient(versions=[])
+    assert get_latest_apps_version("main.agents.my_app", mlflow_client=empty) is None
