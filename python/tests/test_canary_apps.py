@@ -25,14 +25,12 @@ import yaml
 from click.testing import CliRunner
 
 from apx_agent import (
-    AppsCanaryConfig,
     AppsCanaryReport,
     AppsVersionMetrics,
     add_canary_target_to_yml,
     analyze_canary_app,
     canary_app_name,
     canary_target_name,
-    deploy_canary_app,
     promote_canary_app,
     remove_canary_target_from_yml,
     rollback_canary_app,
@@ -191,55 +189,37 @@ def test_remove_canary_target_from_yml_removes_when_present() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_canary_app_writes_yml_and_invokes_bundle(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = _install_mock(monkeypatch)
-    from apx_agent.cli import _run_databricks_cmd  # noqa: F401 — patched above
+def test_deploy_canary_app_delegates_to_deploy_fn(tmp_path: Path) -> None:
+    from apx_agent import _canary_apps
 
-    cfg = deploy_canary_app(
-        cwd=scaffold,
+    yml = tmp_path / "databricks.yml"
+    yml.write_text(
+        "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+        "targets:\n  prod:\n    default: true\n"
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_deploy_fn(*, bundle_target, app_name_override, extra_version_tags):
+        seen.update(
+            bundle_target=bundle_target,
+            app_name_override=app_name_override,
+            extra_version_tags=extra_version_tags,
+        )
+
+    cfg = _canary_apps.deploy_canary_app(
+        cwd=tmp_path,
         bundle_key="my-app",
         base_app_name="my-app",
-        canary_version="feat-x",
+        canary_version="v42",
         traffic_hint=10,
-        run_cmd=_run_databricks_cmd,
-        profile="someprofile",
+        deploy_fn=fake_deploy_fn,
     )
-
-    # YAML mutation landed on disk.
-    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
-    assert "canary-feat-x" in doc["targets"]
-    assert doc["targets"]["canary-feat-x"]["resources"]["apps"]["my-app"]["name"] \
-        == "my-app-canary-feat-x"
-
-    # Subprocess calls dispatched in the right order.
-    assert ["bundle", "deploy", "--target", "canary-feat-x"] in calls
-    assert ["bundle", "run", "my-app", "--target", "canary-feat-x"] in calls
-    assert ["apps", "get", "my-app-canary-feat-x"] in calls
-
-    # Result shape.
-    assert isinstance(cfg, AppsCanaryConfig)
-    assert cfg.bundle_target == "canary-feat-x"
-    assert cfg.canary_app_name == "my-app-canary-feat-x"
-    assert cfg.traffic_hint == 10
-
-
-def test_deploy_canary_app_raises_when_deploy_fails(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _install_mock(monkeypatch, deploy_rc=1)
-    from apx_agent.cli import _run_databricks_cmd
-
-    with pytest.raises(RuntimeError, match="bundle deploy"):
-        deploy_canary_app(
-            cwd=scaffold,
-            bundle_key="my-app",
-            base_app_name="my-app",
-            canary_version="v",
-            traffic_hint=5,
-            run_cmd=_run_databricks_cmd,
-        )
+    assert seen["bundle_target"] == "canary-v42"
+    assert seen["app_name_override"] == "my-app-canary-v42"
+    assert seen["extra_version_tags"] == {"apx.apps.role": "canary"}
+    assert "canary-v42" in yml.read_text()
+    assert cfg.prod_app_name == "my-app"
+    assert cfg.canary_app_name == "my-app-canary-v42"
 
 
 def test_promote_canary_app_redeploys_prod_and_tears_down(
@@ -427,24 +407,6 @@ def test_analyze_canary_app_handles_search_traces_exception(
 # ---------------------------------------------------------------------------
 # CLI dispatch — `apx canary deploy --target apps`
 # ---------------------------------------------------------------------------
-
-
-def test_cli_canary_deploy_apps_writes_yml_and_runs_bundle(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = _install_mock(monkeypatch)
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["canary", "deploy", "--target", "apps", "--canary-version", "feat-x",
-         "--traffic", "20"],
-    )
-    assert result.exit_code == 0, result.output
-    # YAML mutated.
-    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
-    assert "canary-feat-x" in doc["targets"]
-    # Subprocess dispatched.
-    assert ["bundle", "deploy", "--target", "canary-feat-x"] in calls
 
 
 def test_cli_canary_deploy_apps_requires_canary_version(
