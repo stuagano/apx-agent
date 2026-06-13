@@ -4630,6 +4630,7 @@ def _register_apps_manifest_step(
     app_name: str,
     bundle_target: str,
     uc_name_override: str | None,
+    extra_version_tags: dict[str, str] | None = None,
     log: Any,
 ) -> None:
     """Register a UC version manifest for a freshly-deployed App (best-effort).
@@ -4670,6 +4671,7 @@ def _register_apps_manifest_step(
             app_name=app_name,
             bundle_target=bundle_target,
             agent_name=agent_name,
+            extra_version_tags=extra_version_tags,
         )
         log(
             f"# registered {res.uc_name} version {res.version} "
@@ -4747,6 +4749,7 @@ def _deploy_apps_impl(
     register_uc: bool = True,
     uc_name: str | None = None,
     app_name_override: str | None = None,
+    extra_version_tags: dict[str, str] | None = None,
     log: Any,
 ) -> None:
     """Inner body of ``_deploy_apps`` — see docstring there."""
@@ -4945,6 +4948,7 @@ def _deploy_apps_impl(
             app_name=app_name,
             bundle_target=bundle_target,
             uc_name_override=uc_name,
+            extra_version_tags=extra_version_tags,
             log=log,
         )
     else:

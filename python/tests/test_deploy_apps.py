@@ -731,7 +731,8 @@ def test_register_uc_runs_once_when_configured(
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
     calls: list[dict[str, Any]] = []
 
-    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target, agent_name=None):
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
         calls.append({
             "uc_name": uc_name, "model": model,
             "app_name": app_name, "bundle_target": bundle_target,
@@ -820,3 +821,33 @@ def test_app_name_override_polls_override_name(
     get_calls = [c for c in calls if c[:2] == ["apps", "get"]]
     assert get_calls, "expected an apps get call"
     assert all("my-app-canary-v42" in c for c in get_calls)
+
+
+def test_register_uc_forwards_extra_version_tags(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """extra_version_tags passed to _deploy_apps_impl reach register_apps_manifest."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    seen: dict[str, Any] = {}
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        seen["tags"] = extra_version_tags
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    _install_subprocess_mock(monkeypatch)
+
+    from apx_agent import cli as cli_mod
+    cli_mod._deploy_apps_impl(
+        cwd=scaffold, module="agent:agent", profile=None, bundle_target="canary-v42",
+        no_run=False, auto_update_yml=False, auto_build_wheel=False,
+        auto_experiment=False, vars=(), json_output=False, readyz_gate=False,
+        register_uc=True, uc_name="main.agents.my_app",
+        app_name_override="my-app-canary-v42",
+        extra_version_tags={"apx.apps.role": "canary"},
+        log=lambda *_a: None,
+    )
+    assert seen["tags"] == {"apx.apps.role": "canary"}
