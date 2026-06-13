@@ -458,38 +458,20 @@ def test_cli_canary_deploy_default_target_still_model_serving(
     assert captured.get("canary_traffic_pct") == 10
 
 
-def test_cli_canary_promote_apps_dispatches_correctly(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Seed a canary block so the teardown step has something to remove.
-    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
-    add_canary_target_to_yml(
-        doc, bundle_key="my-app", base_app_name="my-app", version="feat-x",
-    )
-    (scaffold / "databricks.yml").write_text(yaml.safe_dump(doc))
-
-    calls = _install_mock(monkeypatch)
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["canary", "promote", "--target", "apps", "--canary-version", "feat-x"],
-    )
-    assert result.exit_code == 0, result.output
-    assert ["bundle", "deploy", "--target", "prod"] in calls
-    assert ["apps", "delete", "my-app-canary-feat-x"] in calls
+# NOTE: the old `test_cli_canary_promote_apps_dispatches_correctly` was removed
+# in P2. It asserted the thin promote (bare `bundle deploy --target prod` +
+# teardown). Promote is now gate-don't-mutate (resolve the canary UC manifest →
+# verify HEAD == the soaked git SHA + clean tree → deploy prod via the shared
+# faithful path → move @prod alias → teardown). That behavior is covered by the
+# `*promote_apps*` tests in test_deploy_apps.py.
 
 
-def test_cli_canary_rollback_apps_dispatches_correctly(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = _install_mock(monkeypatch)
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["canary", "rollback", "--target", "apps", "--canary-version", "prev"],
-    )
-    assert result.exit_code == 0, result.output
-    assert ["bundle", "deploy", "--target", "prod"] in calls
+# NOTE: the old `test_cli_canary_rollback_apps_dispatches_correctly` was removed
+# in P2. The CLI `canary rollback --target apps` is now gate-don't-mutate and
+# UC-version-addressed (--to-version) instead of the thin --canary-version
+# re-deploy. New behavior is covered by `*rollback_apps*` in test_deploy_apps.py.
+# (The standalone library function `rollback_canary_app` is unchanged and still
+# covered by its own function-level tests above.)
 
 
 def test_cli_canary_analyze_apps_uses_experiment_from_pyproject(
@@ -561,3 +543,48 @@ def test_cli_canary_promote_apps_requires_canary_version(
     )
     assert result.exit_code != 0
     assert "--canary-version" in result.output
+
+
+def test_deploy_canary_app_stamps_git_sha_tag(tmp_path: Path) -> None:
+    """P1: when git_sha is provided, it lands as apx.apps.git_sha alongside role."""
+    from apx_agent import _canary_apps
+
+    yml = tmp_path / "databricks.yml"
+    yml.write_text(
+        "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+        "targets:\n  prod:\n    default: true\n"
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_deploy_fn(*, bundle_target, app_name_override, extra_version_tags):
+        seen["tags"] = extra_version_tags
+
+    _canary_apps.deploy_canary_app(
+        cwd=tmp_path, bundle_key="my-app", base_app_name="my-app",
+        canary_version="v42", traffic_hint=10, deploy_fn=fake_deploy_fn,
+        git_sha="abc123def456",
+    )
+    assert seen["tags"] == {"apx.apps.role": "canary", "apx.apps.git_sha": "abc123def456"}
+
+
+def test_deploy_canary_app_omits_git_sha_tag_when_none(tmp_path: Path) -> None:
+    """P1: no git_sha → only the role tag (no empty/None git_sha tag)."""
+    from apx_agent import _canary_apps
+
+    yml = tmp_path / "databricks.yml"
+    yml.write_text(
+        "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+        "targets:\n  prod:\n    default: true\n"
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_deploy_fn(*, bundle_target, app_name_override, extra_version_tags):
+        seen["tags"] = extra_version_tags
+
+    _canary_apps.deploy_canary_app(
+        cwd=tmp_path, bundle_key="my-app", base_app_name="my-app",
+        canary_version="v42", traffic_hint=10, deploy_fn=fake_deploy_fn,
+        git_sha=None,
+    )
+    assert seen["tags"] == {"apx.apps.role": "canary"}
+    assert "apx.apps.git_sha" not in seen["tags"]
