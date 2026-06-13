@@ -3375,6 +3375,85 @@ class TestPublish:
         assert "sup-456" in result.output
         mock_pub.assert_called_once()
 
+    def test_deprecated_publish_prints_notice(self):
+        mock_ws = MagicMock()
+        mock_ws.config.host = "https://my-workspace.databricks.com"
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             patch("databricks.sdk.config.Config"), \
+             patch("apx_agent.publish_to_supervisor", return_value={}), \
+             patch("apx_agent.publish_to_registry"), \
+             patch("apx_agent._publish.publish_tools_to_registry", return_value=0):
+            result = CliRunner().invoke(main, [
+                "agents", "publish", "--endpoint", "my-endpoint",
+                "--description", "x", "--supervisor", "sup-1",
+            ])
+        assert result.exit_code == 0, result.output
+        assert "deprecated" in result.output
+
+
+class TestPublishDisambiguation:
+    """agents advertise / supervisor create / supervisor add (object-split)."""
+
+    def test_advertise_writes_registries_not_supervisor(self):
+        mock_ws = MagicMock()
+        mock_ws.config.host = "https://my-workspace.databricks.com"
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             patch("databricks.sdk.config.Config"), \
+             patch("apx_agent.publish_to_registry") as mock_reg, \
+             patch("apx_agent._publish.publish_tools_to_registry", return_value=0) as mock_tools, \
+             patch("apx_agent.publish_to_supervisor") as mock_sup:
+            result = CliRunner().invoke(main, [
+                "agents", "advertise", "--endpoint", "my-endpoint",
+                "--description", "Routes sales questions", "--no-tools",
+            ])
+        assert result.exit_code == 0, result.output
+        mock_reg.assert_called_once()
+        mock_sup.assert_not_called()  # advertise is discovery-only
+
+    def test_supervisor_add_requires_supervisor_id(self):
+        result = CliRunner().invoke(main, [
+            "supervisor", "add", "--endpoint", "my-endpoint",
+        ])
+        assert result.exit_code != 0
+        assert "supervisor" in result.output.lower()
+
+    def test_supervisor_add_calls_publish_to_supervisor(self):
+        mock_ws = MagicMock()
+        mock_ws.config.host = "https://my-workspace.databricks.com"
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             patch("databricks.sdk.config.Config"), \
+             patch("apx_agent.publish_to_supervisor", return_value={"tool_id": "t1"}) as mock_sup, \
+             patch("apx_agent.publish_to_registry") as mock_reg:
+            result = CliRunner().invoke(main, [
+                "supervisor", "add", "--endpoint", "my-endpoint",
+                "--supervisor", "sup-456", "--description", "x",
+            ])
+        assert result.exit_code == 0, result.output
+        mock_sup.assert_called_once()
+        mock_reg.assert_not_called()  # add is routing-only, no registry write
+
+    def test_supervisor_create_calls_create_supervisor_agent(self):
+        with patch("apx_agent.create_supervisor_agent",
+                   return_value={"supervisor_agent_id": "sup-new"}) as mock_create, \
+             patch("apx_agent.cli._save_to_pyproject", return_value=False):
+            result = CliRunner().invoke(main, [
+                "supervisor", "create", "--name", "Acme Assistant", "--no-save",
+            ])
+        assert result.exit_code == 0, result.output
+        mock_create.assert_called_once()
+        assert "sup-new" in result.output
+
+    def test_deprecated_create_supervisor_delegates(self):
+        with patch("apx_agent.create_supervisor_agent",
+                   return_value={"supervisor_agent_id": "sup-x"}) as mock_create, \
+             patch("apx_agent.cli._save_to_pyproject", return_value=False):
+            result = CliRunner().invoke(main, [
+                "agents", "create-supervisor", "--name", "Acme", "--no-save",
+            ])
+        assert result.exit_code == 0, result.output
+        assert "deprecated" in result.output
+        mock_create.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # `apx-agent hot-swap`
