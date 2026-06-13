@@ -4697,6 +4697,7 @@ def _deploy_apps(
     readyz_gate: bool = True,
     register_uc: bool = True,
     uc_name: str | None = None,
+    app_name_override: str | None = None,
 ) -> None:
     """Implement ``apx-agent deploy --target apps``.
 
@@ -4720,7 +4721,8 @@ def _deploy_apps(
             auto_experiment=auto_experiment,
             vars=vars,
             json_output=json_output, readyz_gate=readyz_gate,
-            register_uc=register_uc, uc_name=uc_name, log=log,
+            register_uc=register_uc, uc_name=uc_name,
+            app_name_override=app_name_override, log=log,
         )
     except click.ClickException as e:
         if json_output:
@@ -4744,6 +4746,7 @@ def _deploy_apps_impl(
     readyz_gate: bool = True,
     register_uc: bool = True,
     uc_name: str | None = None,
+    app_name_override: str | None = None,
     log: Any,
 ) -> None:
     """Inner body of ``_deploy_apps`` — see docstring there."""
@@ -4755,11 +4758,14 @@ def _deploy_apps_impl(
     _preflight_apps(cwd)
     _validate_responses_agent_compiler()
     doc = _read_databricks_yml(cwd)
-    bundle_key, app_name = _resolve_app_name(doc)
-    if bundle_key != app_name:
-        log(f"# resolved bundle_key={bundle_key} app_name={app_name}")
+    bundle_key, resolved_app_name = _resolve_app_name(doc)
+    app_name = app_name_override or resolved_app_name
+    if app_name_override and app_name_override != resolved_app_name:
+        log(f"# app-name override: polling {app_name} (target {bundle_target})")
+    if bundle_key != resolved_app_name:
+        log(f"# resolved bundle_key={bundle_key} app_name={resolved_app_name}")
     else:
-        log(f"# resolved app_name: {app_name}")
+        log(f"# resolved app_name: {resolved_app_name}")
 
     # 2. Optional auto-merge resources
     if auto_update_yml:

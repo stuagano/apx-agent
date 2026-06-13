@@ -799,3 +799,24 @@ def test_no_register_uc_skips_the_step(
     assert result.exit_code == 0, result.output
     assert not called
     assert "skipping the UC version-manifest registration" in result.output
+
+
+def test_app_name_override_polls_override_name(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When app_name_override is set, `apps get` targets the override name."""
+    from apx_agent import cli as cli_mod
+
+    calls = _install_subprocess_mock(monkeypatch)
+    logs: list[str] = []
+    cli_mod._deploy_apps_impl(
+        cwd=scaffold, module="agent:agent", profile=None,
+        bundle_target="canary-v42", no_run=False, auto_update_yml=False,
+        auto_build_wheel=False, auto_experiment=False, vars=(),
+        json_output=False, readyz_gate=False, register_uc=False,
+        uc_name=None, app_name_override="my-app-canary-v42",
+        log=logs.append,
+    )
+    get_calls = [c for c in calls if c[:2] == ["apps", "get"]]
+    assert get_calls, "expected an apps get call"
+    assert all("my-app-canary-v42" in c for c in get_calls)
