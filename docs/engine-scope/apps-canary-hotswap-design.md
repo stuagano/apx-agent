@@ -72,6 +72,34 @@ The honest limitation: there is no 90/10 split. You get two live Apps and a
 comparison; sending real users to one or the other is your router's problem, not
 the platform's.
 
+### 3a. Provenance + gate-don't-mutate promote/rollback (P1/P2)
+
+The CLI `apx canary {deploy,promote,rollback,status} --target apps` adds a
+version ledger and a **gate-don't-mutate** workflow on top of the library
+functions above (full design:
+[apps-soak-promote-design.md](../../python/docs/superpowers/specs/2026-06-12-apps-soak-promote-design.md)):
+
+- **deploy** runs the *same* `_deploy_apps_impl` path as prod (faithful soak)
+  and stamps the deploy commit on the canary's UC manifest version as
+  `apx.apps.git_sha` (P1 provenance).
+- **promote** resolves the canary manifest, then **verifies the working tree is
+  at the soaked commit and clean** — refusing with a `git checkout <sha>`
+  instruction rather than ever mutating the tree — before re-deploying prod via
+  the shared faithful path (readyz is the gate-OUT), moving the `@prod` UC
+  alias, and tearing down the canary. Failure leaves `@prod` and the canary in
+  place with a guided rollback hint.
+- **rollback** is the same gate, addressed by `--to-version <N>`: it restores
+  the commit a recorded version shipped (verify HEAD, redeploy, move `@prod`).
+- **status** reads the ledger: the `@prod` version + commit and the latest
+  canary version + commit.
+
+Helpers live in `_apps_registry.py` (`find_latest_canary_version`,
+`get_version_git_sha`, `get_prod_alias_version` / `set_prod_alias_version`,
+`get_latest_apps_version`); the gate→deploy→alias step is shared between promote
+and rollback (`cli._apps_deploy_prod_at_commit`). The standalone library
+`promote_canary_app` / `rollback_canary_app` are unchanged (thin re-deploy off
+the current tree) and remain available for programmatic callers.
+
 ## 4. Hot-swap — Model Serving (`_hot_swap.py`)
 
 Change a deployed agent's **LLM** without re-logging the artifact. The runtime

@@ -327,7 +327,13 @@ from ._canary_apps import (
 # Apps → UC registry shim — register a version manifest for a deployed App
 from ._apps_registry import (
     AppsManifestResult,
+    CanaryManifest,
+    find_latest_canary_version,
+    get_latest_apps_version,
+    get_prod_alias_version,
+    get_version_git_sha,
     register_apps_manifest,
+    set_prod_alias_version,
 )
 
 # databricks-watchdog integration
@@ -624,7 +630,13 @@ __all__ = [
     "write_databricks_yml",
     # Apps → UC registry shim
     "AppsManifestResult",
+    "CanaryManifest",
+    "find_latest_canary_version",
+    "get_latest_apps_version",
+    "get_prod_alias_version",
+    "get_version_git_sha",
     "register_apps_manifest",
+    "set_prod_alias_version",
     # Watchdog integration
     "WatchdogClient",
     "WatchdogDecision",

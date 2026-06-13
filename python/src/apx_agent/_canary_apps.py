@@ -445,6 +445,7 @@ def deploy_canary_app(
     traffic_hint: int,
     deploy_fn: "DeployFn",
     base_target: str = "prod",
+    git_sha: str | None = None,
 ) -> AppsCanaryConfig:
     """Write the canary target, then deploy it through the SHARED deploy path.
 
@@ -453,7 +454,13 @@ def deploy_canary_app(
     deploy/run/get subset here — is what makes the soak App a faithful preview:
     it gets the same validate → wheel build → manifest staging → poll → readyz
     → UC registration that prod gets. See
-    docs/superpowers/specs/2026-06-12-apps-soak-promote-design.md (Phase 0).
+    docs/superpowers/specs/2026-06-12-apps-soak-promote-design.md (Phase 0/P1).
+
+    ``git_sha`` (P1 provenance): when provided, it is stamped on the canary's
+    UC manifest version as the ``apx.apps.git_sha`` tag — the exact commit the
+    soak App was deployed from. ``promote`` reads it to verify prod ships the
+    same commit (gate-don't-mutate). ``None`` when the deploy tree isn't a git
+    repo; the tag is simply omitted.
     """
     target_name = canary_target_name(canary_version)
     new_app_name = canary_app_name(base_app_name, canary_version)
@@ -467,10 +474,14 @@ def deploy_canary_app(
     )
     write_databricks_yml(yml_path, doc)
 
+    version_tags = {"apx.apps.role": "canary"}
+    if git_sha:
+        version_tags["apx.apps.git_sha"] = git_sha
+
     deploy_fn(
         bundle_target=target_name,
         app_name_override=new_app_name,
-        extra_version_tags={"apx.apps.role": "canary"},
+        extra_version_tags=version_tags,
     )
 
     return AppsCanaryConfig(
