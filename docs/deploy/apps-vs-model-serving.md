@@ -245,7 +245,7 @@ A few things that bite in practice:
 - **Apps + Lakebase = same security boundary.** When the App has a database
   resource declared, the App SP can mint Postgres credentials directly via
   the Databricks SDK. Model-Serving endpoints can do the same, but the
-  pattern is less common — see [`lakebase-recipe.md`](./lakebase-recipe.md)
+  pattern is less common — see [`lakebase-recipe.md`](../running/lakebase-recipe.md)
   for the wiring.
 - **Trace export is identical.** Both targets emit MLflow traces to the
   experiment recorded in `MLFLOW_EXPERIMENT_NAME` / `MLFLOW_EXPERIMENT_ID`.
