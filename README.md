@@ -288,13 +288,13 @@ See [docs/get-started/cli.md](docs/get-started/cli.md) for the full surface.
 | Deploy targets | [docs/deploy/apps-vs-model-serving.md](docs/deploy/apps-vs-model-serving.md) |
 | Evaluation | [docs/evaluate/overview.md](docs/evaluate/overview.md) |
 | Configuration (`pyproject.toml`) | [docs/reference/configuration.md](docs/reference/configuration.md) |
-| Coming from ADK or OpenAI Agents SDK | [docs/migration.md](docs/migration.md) |
+| Coming from ADK or OpenAI Agents SDK | [docs/get-started/migration.md](docs/get-started/migration.md) |
 
 ---
 
 ## Coming from ADK or OpenAI Agents SDK?
 
-See [docs/migration.md](docs/migration.md) for a concept-by-concept translation. The key mappings:
+See [docs/get-started/migration.md](docs/get-started/migration.md) for a concept-by-concept translation. The key mappings:
 
 | ADK / OpenAI | apx-agent |
 |---|---|
