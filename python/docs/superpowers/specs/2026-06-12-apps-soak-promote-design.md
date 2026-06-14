@@ -3,7 +3,7 @@
 **Date:** 2026-06-12
 **Status:** Implemented (P0 faithful path, P1 provenance, P2 gate-don't-mutate promote/rollback + apps status). One refinement during build: P2 promote/rollback **gate** on the working tree being at the soaked commit (refuse + instruct `git checkout`) rather than auto-checking-out — safer, never mutates the tree.
 **Location:** `src/apx_agent/_canary_apps.py`, `src/apx_agent/cli.py`
-**Related:** [apps-canary-hotswap-design.md](../../../docs/engine-scope/apps-canary-hotswap-design.md) · [apps-uc-registry-shim-design.md](../../../docs/engine-scope/apps-uc-registry-shim-design.md)
+**Related:** [apps-canary-hotswap-design.md](../../../../docs/engine-scope/apps-canary-hotswap-design.md) · [apps-uc-registry-shim-design.md](../../../../docs/engine-scope/apps-uc-registry-shim-design.md)
 
 ## Goal
 

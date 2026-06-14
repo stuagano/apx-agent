@@ -53,6 +53,25 @@ For multi-turn sessions, pass a `session_id` in `custom_inputs` — the framewor
 
 ---
 
+## Streaming and iteration limits
+
+`agent.run()` returns the final text; `agent.stream()` yields chunks as they arrive:
+
+```python
+# apx-agent — streaming
+async for chunk in agent.stream([{"role": "user", "content": "Explain the schema."}]):
+    print(chunk, end="", flush=True)
+```
+
+| ADK | OpenAI Agents SDK | apx-agent |
+|-----|-------------------|-----------|
+| runner iteration limit | `MaxTurnsExceeded` / `max_turns` | `max_iterations` (default 10) |
+| `adk run` / `adk web` | _(no built-in runner CLI)_ | `apx run` (dev server), `apx test --prompt "..."` |
+
+`max_iterations` caps the tool-calling loop — the agent stops when it's reached. Lower it for cost-sensitive agents, raise it for complex multi-step work.
+
+---
+
 ## `@tool` is `@function_tool` (OpenAI) and `FunctionTool` (ADK)
 
 ```python
@@ -109,6 +128,32 @@ Both short names (`before_tool`, `after_tool`, `before_model`, `after_model`) an
 
 ---
 
+## Handoffs and composition
+
+| ADK | OpenAI Agents SDK | apx-agent |
+|-----|-------------------|-----------|
+| `AgentTool` | `handoff(agent)` / `handoffs=[...]` | `HandoffAgent`, `agent_tool(agent)` |
+| `SequentialAgent` / `ParallelAgent` / `LoopAgent` | _(manual)_ | `SequentialAgent` / `ParallelAgent` / `LoopAgent` |
+| routing-instruction agent | triage agent pattern | `RouterAgent` (description-driven) |
+
+```python
+# OpenAI Agents SDK
+from agents import Agent, handoff
+triage = Agent(name="triage", handoffs=[billing_agent, support_agent])
+
+# apx-agent equivalent
+from apx_agent import HandoffAgent
+triage = HandoffAgent(
+    name="triage",
+    instructions="Route to billing or support based on the question.",
+    agents=[billing_agent, support_agent],
+)
+```
+
+See [routing.md](../agents/routing.md) and [composition.md](../agents/composition.md).
+
+---
+
 ## Sessions
 
 All three frameworks support multi-turn conversations — the wiring differs:
@@ -156,6 +201,23 @@ agent = Agent(
 
 ---
 
+## Observability and tracing
+
+| ADK | OpenAI Agents SDK | apx-agent |
+|-----|-------------------|-----------|
+| `adk web` traces view | built-in tracing, 25+ integrations | MLflow autolog + `/_apx/traces` dev UI |
+| structured span output | `trace_id` / `group_id` on `RunConfig` | `apx.*` span attributes on every trace |
+| `adk eval` | _(none)_ | `apx eval evalset.jsonl` (LLM-as-judge) |
+
+Tracing is on by default — every run produces an MLflow span tree (LLM call, tool call, SQL, response):
+
+- **Dev UI:** `/_apx/traces` (e.g. `http://localhost:8000/_apx/traces`)
+- **CLI:** `apx trace --agent <name>`
+- **Export:** `apx export-traces --table <catalog.schema.table> --hours 24`
+- **Workspace:** Machine Learning → Experiments → your agent's experiment
+
+---
+
 ## Deployment — Databricks-specific
 
 Neither ADK nor the OpenAI Agents SDK has a built-in deploy story. apx-agent adds `apx deploy` to ship to Databricks Apps or Model Serving from a single command:
@@ -189,3 +251,21 @@ These have no equivalent in ADK or the OpenAI Agents SDK:
 | `apx publish-tools` | Syncs `@tool(uc=...)` functions to Unity Catalog |
 
 See [data-agent.md](../agents/data-agent.md), [coworker.md](../agents/coworker.md), [tools/overview.md](../tools/overview.md), and [identity-passthrough.md](../safety/identity-passthrough.md).
+
+---
+
+## Full parameter mapping
+
+| ADK / OpenAI param | apx-agent param | Notes |
+|--------------------|-----------------|-------|
+| `instruction` (ADK) | `instructions` | Both spellings accepted |
+| `model` | `model` | Must be a Databricks serving endpoint name |
+| `tools` | `tools` | `@tool` functions, governed primitives, or `agent_tool(agent)` wrappers |
+| `before_tool_callback` (ADK) | `before_tool_callback` or `before_tool` | Both accepted; ADK form takes precedence |
+| `after_tool_callback` (ADK) | `after_tool_callback` or `after_tool` | Both accepted |
+| `before_model_callback` (ADK) | `before_model_callback` or `before_model` | Both accepted |
+| `input_guardrails` (OpenAI) | `input_guardrails` | Same parameter name |
+| `output_guardrails` (OpenAI) | `output_guardrails` | Same parameter name |
+| `handoffs` (OpenAI) | `agents` on `HandoffAgent` | |
+| `max_turns` (OpenAI) | `max_iterations` | Default 10 |
+| `description` | `description` | Used in routing context and A2A discovery |
