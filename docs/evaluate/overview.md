@@ -4,7 +4,7 @@
 
 Each agent gets its own experiment so runs, traces, and eval results stay organized. Set the experiment at three layers, in priority order:
 
-1. **CLI flag** — `apx deploy --experiment ...`, `apx eval --experiment ...`
+1. **CLI flag** — `apx-agent agents deploy --experiment ...`, `apx-agent eval --experiment ...`
 2. **`[tool.apx.agent]` in pyproject** — `experiment = "/Users/me/agents/my_agent"`
 3. **Direct kwarg** — `log_agent(..., experiment=...)`, `evaluate(..., experiment=...)`
 

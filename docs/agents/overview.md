@@ -97,7 +97,7 @@ async for chunk in agent.stream([{"role": "user", "content": "Explain the schema
 From the CLI:
 
 ```bash
-uv run apx-agent run --reload        # local server with hot reload
+uv run apx-agent agents run --reload        # local server with hot reload
 ```
 
 Open `http://localhost:8000` for the browser-based dev UI with Chat, Traces, Topology, and Eval tabs.

@@ -224,7 +224,7 @@ Each `http_tool` covers one fixed operation. To expose multiple operations from 
 
 ### Declaring the connection resource
 
-In `pyproject.toml`, declare the UC HTTP connection so `apx-agent deploy` wires the `USE_CONNECTION` grant:
+In `pyproject.toml`, declare the UC HTTP connection so `apx-agent agents deploy` wires the `USE_CONNECTION` grant:
 
 ```toml
 [[tool.apx.agent.resources]]

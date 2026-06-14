@@ -48,13 +48,13 @@ order (first match wins):
    schema from another source
 2. **`ws=` live introspection** — discovers tables and columns from the
    workspace at construction time
-3. **`.apx/schema.json`** — the baked schema manifest written by `apx scaffold`
+3. **`.apx/schema.json`** — the baked schema manifest written by `apx-agent agents scaffold`
    (same catalog+schema); survives deploy without a `ws` arg
 4. **Ungrounded fallback** — generic data-assistant instructions; still
    functional, just not schema-aware
 
 For most production deployments (Databricks Apps), use the baked manifest
-path: `apx scaffold` writes `.apx/schema.json`, the framework loads it at
+path: `apx-agent agents scaffold` writes `.apx/schema.json`, the framework loads it at
 startup, no `ws` needed at construction.
 
 ### Identity passthrough

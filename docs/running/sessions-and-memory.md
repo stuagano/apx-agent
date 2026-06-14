@@ -230,10 +230,10 @@ print(f"Added {result.examples_added} examples from {result.sessions_scanned} se
 ## CLI
 
 ```bash
-apx memory recall   --principal-id user:alice --query "notification preferences" -k 3
-apx memory remember --principal-id user:alice --content "..." --importance 0.8
-apx examples find   --agent-id triage --query "why is my bill high?" -k 5
-apx examples save   --agent-id triage --input "..." --output "..." --score 0.9
+apx-agent memory recall   --principal-id user:alice --query "notification preferences" -k 3
+apx-agent memory remember --principal-id user:alice --content "..." --importance 0.8
+apx-agent examples find   --agent-id triage --query "why is my bill high?" -k 5
+apx-agent examples save   --agent-id triage --input "..." --output "..." --score 0.9
 ```
 
 Store loaded via `--store-module MODULE:VAR` or `[tool.apx.agent].memory_store` / `example_store` in `pyproject.toml`.

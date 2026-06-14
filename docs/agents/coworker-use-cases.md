@@ -39,7 +39,7 @@ agent = CoworkerAgent(
 The declarative surface is **TOML, not YAML**: `[tool.apx.agent]` in
 `pyproject.toml`. Two ways to get a coworker:
 
-- **Code-first** — `apx scaffold --template coworker` generates an `agent.py`
+- **Code-first** — `apx-agent agents scaffold --template coworker` generates an `agent.py`
   with the one-liner above.
 - **Config-first (template-as-config)** — `CoworkerTemplate`
   (`name = "coworker"`) exposes a pydantic `Spec` (`catalog`, `schema`,

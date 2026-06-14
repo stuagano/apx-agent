@@ -115,7 +115,7 @@ survive restarts.
 ## What scaffold generates
 
 ```bash
-apx scaffold my-coworker --template coworker
+apx-agent agents scaffold my-coworker --template coworker
 ```
 
 Writes two files you care about:
@@ -230,7 +230,7 @@ cheaper every turn.
 `CoworkerAgent` is the runtime agent — the Python object that answers
 questions. You instantiate it directly in `agent.py`.
 
-`CoworkerTemplate` is the factory registration — it's what `apx scaffold
+`CoworkerTemplate` is the factory registration — it's what `apx-agent agents scaffold
 --template coworker` resolves, and what would let the framework build a
 coworker from TOML alone without any Python. Today every coworker is a
 Python one-liner; the template machinery is the seam for future config-only

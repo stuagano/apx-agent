@@ -7,14 +7,14 @@ apx-agent compiles the same agent to either runtime. Pick by workload; swap with
 The default. `compile_to_chat_agent` produces an MLflow `ChatAgent` with declared resources; `log_agent` registers it in Unity Catalog; `databricks.agents.deploy` promotes it to a serving endpoint. Recognized natively by AI Playground, Review App, Agent Evaluation, MLflow tracing, and Supervisor Agent as a sub-agent.
 
 ```bash
-apx deploy --model databricks-claude-sonnet-4-6 \
+apx-agent agents deploy --model databricks-claude-sonnet-4-6 \
            --name main.agents.my_agent
 ```
 
 - **Pay-per-request** — scale-to-zero, no idle cost
 - **Identity passthrough** automatic from Playground / Genie / Supervisor (via `customInputs.user_token`)
 - **Stateless** — request/response only; no persistent state between calls
-- **Production patterns** — canary deploys (`apx canary deploy/promote/rollback`), traffic-split, hot-swap LLM (`apx hot-swap`)
+- **Production patterns** — canary deploys (`apx-agent canary deploy/promote/rollback`), traffic-split, hot-swap LLM (`apx-agent agents hot-swap`)
 - **Container build** — 5–30 min on first deploy; subsequent deploys reuse cached layers
 - **Best for** — production agents the platform routes traffic to (Supervisor sub-agents, AI Playground, Knowledge Assistants)
 
@@ -23,9 +23,9 @@ apx deploy --model databricks-claude-sonnet-4-6 \
 The MLflow GenAI Agent Server path. `compile_to_responses_agent` produces a `ResponsesAgent` with `@invoke` / `@stream` decorated functions; `databricks bundle deploy + bundle run` pushes code and restarts the app. No container build. The deploy is a code push.
 
 ```bash
-apx scaffold my_agent --target apps   # scaffolds agent_server/ + databricks.yml + pyproject.toml + quickstart
+apx-agent agents scaffold my_agent --target apps   # scaffolds agent_server/ + databricks.yml + pyproject.toml + quickstart
 cd my_agent
-apx deploy --target apps              # one command — builds wheel, stages .build,
+apx-agent agents deploy --target apps              # one command — builds wheel, stages .build,
                                        # auto-resolves MLflow experiment, bundle deploy + run
 ```
 

@@ -53,10 +53,10 @@ async for chunk in agent.stream([{"role": "user", "content": "Explain the schema
     print(chunk, end="", flush=True)
 ```
 
-From the CLI, use `apx-agent run` for the local development server:
+From the CLI, use `apx-agent agents run` for the local development server:
 
 ```bash
-uv run apx-agent run --reload    # starts FastAPI on :8000 with hot reload
+uv run apx-agent agents run --reload    # starts FastAPI on :8000 with hot reload
 ```
 
 Open `http://localhost:8000` for the dev UI — Chat, Traces, Topology, and Eval tabs. See [../get-started/dev-ui.md](../get-started/dev-ui.md) for the full dev UI reference.
