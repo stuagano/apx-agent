@@ -56,7 +56,7 @@ warehouse_id = "$SQL_WAREHOUSE_ID"
 
 `type` accepts any platform factory: `genie`, `genie_query`, `vector_search`, `uc_function`, `uc_function_toolkit`, `catalog`, `schema`, `lineage`, `sql`, `http`, `openapi`, `mcp_tool`, `mcp_toolkit`, `foundation_model`, `jobs`, `jobs_for_table`, `jobs_history`, `jobs_logs`, `jobs_source_paths`. (`uc_function_toolkit`, `jobs`, and `mcp_toolkit` each return several tools.)
 
-Config tools are **additive** and are merged onto the agent on every runtime — serve, deploy/log, model-serving predict, and `apx info` / `lint` / `eval`. Their resource grants (Genie space, warehouse, …) are auto-declared at log time, exactly like code-wired tools. A code-wired tool with the same `name` wins (the config entry is ignored, with a warning), so config is purely additive over code.
+Config tools are **additive** and are merged onto the agent on every runtime — serve, deploy/log, model-serving predict, and `apx-agent agents describe` / `eval lint` / `eval`. Their resource grants (Genie space, warehouse, …) are auto-declared at log time, exactly like code-wired tools. A code-wired tool with the same `name` wins (the config entry is ignored, with a warning), so config is purely additive over code.
 
 **Trust & failure controls (environment variables):**
 
@@ -124,15 +124,15 @@ The `template` inline-table selects a registered template by `name` and passes t
 
 **Interaction with `[tool.apx.agent.guardrails]`** (E3c): the full finalize order is resolve (build-from-template) → apply_config_knobs (persona compose) → merge_config_tools → apply_config_guardrails.
 
-**No `agent.py` required (for introspection and deploy):** With a `template` configured, the introspection and deploy runtimes — `apx info`, `apx lint`, `apx eval`, and `apx deploy` — build the agent from TOML alone; the `module` key is optional for them. **`apx run` is the exception:** it serves an ASGI app module (`app:app`), so a template-only project still needs a minimal `app.py` that calls `create_app()` without importing a code agent — e.g. `create_app(agent=None)`, which resolves the template at startup. Generating that `app.py` automatically for template-only projects is a planned scaffold follow-up.
+**No `agent.py` required (for introspection and deploy):** With a `template` configured, the introspection and deploy runtimes — `apx-agent agents describe`, `apx-agent eval lint`, `apx-agent eval`, and `apx-agent agents deploy` — build the agent from TOML alone; the `module` key is optional for them. **`apx-agent agents run` is the exception:** it serves an ASGI app module (`app:app`), so a template-only project still needs a minimal `app.py` that calls `create_app()` without importing a code agent — e.g. `create_app(agent=None)`, which resolves the template at startup. Generating that `app.py` automatically for template-only projects is a planned scaffold follow-up.
 
-**Precedence when both `template` and a code agent are present:** on the CLI and deploy paths (`apx info`, `apx lint`, `apx eval`, `apx deploy`), `template` wins — `resolve_agent` checks `config.template` before falling through to the module import. On the serve path, an explicit `create_app(agent=...)` wins because `resolve_agent` is skipped entirely when a pre-built agent is supplied. The practical consequence: a project with both a `template` field and an `agent.py` will get the template agent from `apx deploy`/`apx info` but the code agent from `apx run` (if `app.py` imports it) — a silent divergence. For a clean setup, use *either* a `template` *or* a code `agent.py`, not both.
+**Precedence when both `template` and a code agent are present:** on the CLI and deploy paths (`apx-agent agents describe`, `apx-agent eval lint`, `apx-agent eval`, `apx-agent agents deploy`), `template` wins — `resolve_agent` checks `config.template` before falling through to the module import. On the serve path, an explicit `create_app(agent=...)` wins because `resolve_agent` is skipped entirely when a pre-built agent is supplied. The practical consequence: a project with both a `template` field and an `agent.py` will get the template agent from `apx-agent agents deploy`/`apx-agent agents describe` but the code agent from `apx-agent agents run` (if `app.py` imports it) — a silent divergence. For a clean setup, use *either* a `template` *or* a code `agent.py`, not both.
 
 **Cross-repo templates:** Third-party templates register via the `apx_agent.templates` Python entry-point group — they appear in the registry after `pip install`. See the E1 spec and the `Template` protocol for authoring a template.
 
 ## Declarative memory — `[tool.apx.agent.memory]`
 
-> Python only. Declares a memory backend auto-attached on all runtimes (serve, log/deploy, `apx info`). Memory tools are additive over code-wired tools; code-wired tools win on name collision.
+> Python only. Declares a memory backend auto-attached on all runtimes (serve, log/deploy, `apx-agent agents describe`). Memory tools are additive over code-wired tools; code-wired tools win on name collision.
 
 ```toml
 [tool.apx.agent]

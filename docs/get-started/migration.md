@@ -27,8 +27,8 @@ apx-agent is structurally aligned with both Google ADK and the OpenAI Agents SDK
 | Wrap agent as tool | `AgentTool` | `agents_as_tools(...)` | `agent_tool(sub_agent)` |
 | Sessions (in-conversation) | `Session` + `SessionService` | `session` strategy / `conversation_id` | `SessionStore` — pass `session_id` in `custom_inputs` |
 | Cross-session memory | `MemoryService` | `to_input_list()` + external store | `MemoryBank` — `make_memory_tools` or `assemble_memory_context` |
-| Deploy agent | _(separate infra)_ | _(separate infra)_ | `apx deploy` — Apps or Model Serving |
-| Scaffold new agent | _(manual)_ | _(manual)_ | `apx scaffold my-agent` |
+| Deploy agent | _(separate infra)_ | _(separate infra)_ | `apx-agent agents deploy` — Apps or Model Serving |
+| Scaffold new agent | _(manual)_ | _(manual)_ | `apx-agent agents scaffold my-agent` |
 | Governed data access | _(manual)_ | _(manual)_ | `DataAgent`, `genie_tool`, `uc_function_tool` |
 | Two-system join pattern | _(manual)_ | _(manual)_ | `CoworkerAgent` |
 | Identity passthrough | _(manual)_ | _(manual)_ | OBO token — see [identity-passthrough.md](../safety/identity-passthrough.md) |
@@ -66,7 +66,7 @@ async for chunk in agent.stream([{"role": "user", "content": "Explain the schema
 | ADK | OpenAI Agents SDK | apx-agent |
 |-----|-------------------|-----------|
 | runner iteration limit | `MaxTurnsExceeded` / `max_turns` | `max_iterations` (default 10) |
-| `adk run` / `adk web` | _(no built-in runner CLI)_ | `apx run` (dev server), `apx test --prompt "..."` |
+| `adk run` / `adk web` | _(no built-in runner CLI)_ | `apx-agent agents run` (dev server), `apx-agent eval test --prompt "..."` |
 
 `max_iterations` caps the tool-calling loop — the agent stops when it's reached. Lower it for cost-sensitive agents, raise it for complex multi-step work.
 
@@ -207,27 +207,27 @@ agent = Agent(
 |-----|-------------------|-----------|
 | `adk web` traces view | built-in tracing, 25+ integrations | MLflow autolog + `/_apx/traces` dev UI |
 | structured span output | `trace_id` / `group_id` on `RunConfig` | `apx.*` span attributes on every trace |
-| `adk eval` | _(none)_ | `apx eval evalset.jsonl` (LLM-as-judge) |
+| `adk eval` | _(none)_ | `apx-agent eval run evalset.jsonl` (LLM-as-judge) |
 
 Tracing is on by default — every run produces an MLflow span tree (LLM call, tool call, SQL, response):
 
 - **Dev UI:** `/_apx/traces` (e.g. `http://localhost:8000/_apx/traces`)
-- **CLI:** `apx trace --agent <name>`
-- **Export:** `apx export-traces --table <catalog.schema.table> --hours 24`
+- **CLI:** `apx-agent traces list --agent <name>`
+- **Export:** `apx-agent traces export --table <catalog.schema.table> --hours 24`
 - **Workspace:** Machine Learning → Experiments → your agent's experiment
 
 ---
 
 ## Deployment — Databricks-specific
 
-Neither ADK nor the OpenAI Agents SDK has a built-in deploy story. apx-agent adds `apx deploy` to ship to Databricks Apps or Model Serving from a single command:
+Neither ADK nor the OpenAI Agents SDK has a built-in deploy story. apx-agent adds `apx-agent agents deploy` to ship to Databricks Apps or Model Serving from a single command:
 
 ```bash
 # apx-agent — no equivalent in ADK or OpenAI SDK
-apx scaffold my-agent       # creates project structure, bakes UC schema
-apx run                     # local dev server with hot reload
-apx deploy                  # bundles + deploys to Databricks Apps
-apx deploy --target model-serving --name main.agents.my_agent
+apx-agent agents scaffold my-agent   # creates project structure, bakes UC schema
+apx-agent agents run                 # local dev server with hot reload
+apx-agent agents deploy              # bundles + deploys to Databricks Apps
+apx-agent agents deploy --target model-serving --name main.agents.my_agent
 ```
 
 See [quickstart.md](quickstart.md) for the full flow from scaffold to live endpoint.
@@ -246,9 +246,9 @@ These have no equivalent in ADK or the OpenAI Agents SDK:
 | `uc_function_tool(...)` | Calls a Unity Catalog SQL function as a tool |
 | `vector_search_tool(...)` | Databricks Vector Search index as a retrieval tool |
 | OBO identity passthrough | The calling user's OAuth token is forwarded to all tool calls, UC functions, and sub-agents — no service principal needed |
-| `apx deploy` | One-command deploy to Databricks Apps or Model Serving |
-| `apx scaffold` | Interactive project generation with UC schema baking |
-| `apx publish-tools` | Syncs `@tool(uc=...)` functions to Unity Catalog |
+| `apx-agent agents deploy` | One-command deploy to Databricks Apps or Model Serving |
+| `apx-agent agents scaffold` | Interactive project generation with UC schema baking |
+| `apx-agent uc publish` | Syncs `@tool(uc=...)` functions to Unity Catalog |
 
 See [data-agent.md](../agents/data-agent.md), [coworker.md](../agents/coworker.md), [tools/overview.md](../tools/overview.md), and [identity-passthrough.md](../safety/identity-passthrough.md).
 

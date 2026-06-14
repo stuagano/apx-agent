@@ -21,8 +21,8 @@ Queries `system.billing.usage` joined to `system.billing.list_prices` (best-effo
 Same surface from the CLI:
 
 ```bash
-apx cost --agent customer_triage --hours 24
-apx cost --endpoint my-endpoint --hours 168 --format json
+apx-agent agents cost --agent customer_triage --hours 24
+apx-agent agents cost --endpoint my-endpoint --hours 168 --format json
 ```
 
 Requires the `system.billing` share to be enabled in the workspace.

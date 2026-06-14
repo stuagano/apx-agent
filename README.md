@@ -8,14 +8,14 @@ Build governed Databricks agents. Write a Python object — apx-agent compiles i
 
 ```bash
 uv add apx-agent
-uv run apx-agent scaffold my-agent
-cd my-agent && uv run apx-agent run --reload
+uv run apx-agent agents scaffold my-agent
+cd my-agent && uv run apx-agent agents run --reload
 ```
 
 Chat at `http://localhost:8000/_apx/agent`. When it looks right:
 
 ```bash
-uv run apx-agent deploy --target apps
+uv run apx-agent agents deploy --target apps
 ```
 
 ---
@@ -82,7 +82,7 @@ uv add apx-agent
 **2. Scaffold a project**
 
 ```bash
-uv run apx-agent scaffold my-agent
+uv run apx-agent agents scaffold my-agent
 cd my-agent && uv sync
 ```
 
@@ -91,7 +91,7 @@ The scaffold is interactive — it asks for your catalog, schema, and SQL wareho
 **3. Run locally**
 
 ```bash
-uv run apx-agent run --reload
+uv run apx-agent agents run --reload
 ```
 
 FastAPI starts on `:8000`. Chat at `/_apx/agent`, view traces at `/_apx/traces`, inspect tools at `/_apx/tools`. Edit `agent.py` and the server reloads.
@@ -99,7 +99,7 @@ FastAPI starts on `:8000`. Chat at `/_apx/agent`, view traces at `/_apx/traces`,
 **4. Deploy**
 
 ```bash
-uv run apx-agent deploy --target apps
+uv run apx-agent agents deploy --target apps
 ```
 
 Bundles the project and creates a Databricks App. Prints the URL when done.
@@ -166,7 +166,7 @@ That's a working agent. It knows the tables and columns in `main.sales` before t
 
 Schema discovery priority (first match wins):
 
-1. **Baked schema** — `apx-agent scaffold` writes `.apx/schema.json` from the UC Tables API at project creation time. Ships with your code.
+1. **Baked schema** — `apx-agent agents scaffold` writes `.apx/schema.json` from the UC Tables API at project creation time. Ships with your code.
 2. **Live introspection** — pass `ws=WorkspaceClient()` for fresh schema at construction time.
 3. **Explicit override** — pass `tables={"orders": ["id(bigint)", ...]}` for tests.
 4. **Ungrounded fallback** — discovers schema with SQL on the first turn.
@@ -220,7 +220,7 @@ The `join_key` and `objective` are woven into the agent's grounded instructions.
 | Claims integrity | Epic (chart) | Claims system (coding) | patient encounter |
 
 ```bash
-apx-agent scaffold my-coworker --template coworker
+apx-agent agents scaffold my-coworker --template coworker
 ```
 
 See [docs/agents/coworker.md](docs/agents/coworker.md) for the full reference.
@@ -256,11 +256,11 @@ See [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) for the full `/_apx
 ## CLI
 
 ```bash
-apx-agent scaffold <name>          # scaffold a new agent project
-apx-agent run                      # local FastAPI dev server (/_apx/agent)
-apx-agent deploy --target apps     # deploy to Databricks Apps
-apx-agent eval evalset.jsonl       # run against deployed endpoint with LLM judge
-apx-agent trace --agent <name>     # recent MLflow traces filtered by apx.* attributes
+apx-agent agents scaffold <name>   # scaffold a new agent project
+apx-agent agents run               # local FastAPI dev server (/_apx/agent)
+apx-agent agents deploy --target apps  # deploy to Databricks Apps
+apx-agent eval run evalset.jsonl   # run against deployed endpoint with LLM judge
+apx-agent traces list --agent <name>   # recent MLflow traces filtered by apx.* attributes
 apx-agent doctor                   # diagnose auth, deps, project layout
 ```
 

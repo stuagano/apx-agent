@@ -1,44 +1,44 @@
 # CLI reference
 
-`apx` is the command-line wrapper. Every command maps to a single library primitive — the CLI is ergonomics, not logic.
+`apx-agent` is the command-line wrapper. Every command maps to a single library primitive — the CLI is ergonomics, not logic.
 
 ```bash
-apx scaffold my_agent                       # generate a Model Serving project (default)
-apx scaffold my_agent --target apps         # generate a Databricks Apps project
+apx-agent agents scaffold my_agent          # generate a Model Serving project (default)
+apx-agent agents scaffold my_agent --target apps  # generate a Databricks Apps project
 cd my_agent && uv sync
-apx run                            # uvicorn against app.py:app
-apx publish-tools --dry-run        # preview UC function registrations
-apx publish-tools                  # actually register
-apx deploy --model databricks-claude-sonnet-4-6 \
+apx-agent agents run               # uvicorn against app.py:app
+apx-agent uc publish --dry-run     # preview UC function registrations
+apx-agent uc publish               # actually register
+apx-agent agents deploy --model databricks-claude-sonnet-4-6 \
            --name main.agents.my_agent              # default: --target model-serving
-apx deploy --target apps                            # bundle deploy + bundle run, no container build
-apx publish --endpoint my_agent --supervisor sa-12345 \
-            --description "Handles X for users asking about Y"
-apx mcp-config --host https://workspace.cloud.databricks.com
-apx eval evalset.jsonl --model databricks-claude-sonnet-4-6
-apx logs --endpoint my_agent                # runtime logs from Model Serving
-apx logs --endpoint my_agent --build        # build-time logs
-apx logs --app my-app --profile prod        # Databricks Apps logs (via the CLI)
-apx info                                    # introspect tools, sub-agents, declared resources
-apx lint                                    # static checks: instructions, docstrings, env vars, model names
-apx test --prompt "what's the lineage?"     # local smoke test against a sample prompt
-apx trace --agent customer_triage           # recent MLflow traces, filtered by apx.* attrs
-apx list                                    # discover deployed apx-agents via UC tag scan
-apx cost --agent customer_triage --hours 24 # DBU + $ over a lookback window
-apx export-traces --table main.agents.traces --hours 24    # MLflow traces → Delta
-apx topology --format mermaid > topology.mmd               # multi-agent graph
-apx eval-chain evalset.jsonl --model X --experiment /Users/me/...  # per-prompt sub-agent coverage
-apx hot-swap --endpoint customer_triage --model databricks-claude-opus-4-7  # change LLM without re-logging
-apx canary deploy --endpoint customer_triage --model main.agents.x --version 42 --traffic 10
-apx canary analyze --endpoint customer_triage --hours 24    # per-version requests / errors / latency
-apx canary promote --endpoint customer_triage --model main.agents.x --version 42
-apx canary rollback --endpoint customer_triage --model main.agents.x --version 41
-apx watchdog violations --hours 24       # recent reject/redact decisions from the UC table
-apx watchdog status --agent customer_triage  # current posture via watchdog's MCP tool
-apx memory recall --principal-id user:alice --query "notification preferences"  # semantic recall
-apx memory remember --principal-id user:alice --content "..." --importance 0.8
-apx examples find --agent-id triage --query "why is my bill high?" -k 5
-apx examples save --agent-id triage --input "..." --output "..." --score 0.9
+apx-agent agents deploy --target apps               # bundle deploy + bundle run, no container build
+apx-agent agents advertise --description "Handles X for users asking about Y"
+apx-agent supervisor add --endpoint my_agent --supervisor sa-12345
+apx-agent uc mcp-config --host https://workspace.cloud.databricks.com
+apx-agent eval run evalset.jsonl --model databricks-claude-sonnet-4-6
+apx-agent agents logs --endpoint my_agent           # runtime logs from Model Serving
+apx-agent agents logs --endpoint my_agent --build   # build-time logs
+apx-agent agents logs --app my-app --profile prod   # Databricks Apps logs (via the CLI)
+apx-agent agents describe                   # introspect tools, sub-agents, declared resources
+apx-agent eval lint                         # static checks: instructions, docstrings, env vars, model names
+apx-agent eval test --prompt "what's the lineage?"  # local smoke test against a sample prompt
+apx-agent traces list --agent customer_triage       # recent MLflow traces, filtered by apx.* attrs
+apx-agent agents list                       # discover deployed apx-agents via UC tag scan
+apx-agent agents cost --agent customer_triage --hours 24 # DBU + $ over a lookback window
+apx-agent traces export --table main.agents.traces --hours 24    # MLflow traces → Delta
+apx-agent uc topology --format mermaid > topology.mmd            # multi-agent graph
+apx-agent eval chain evalset.jsonl --model X --experiment /Users/me/...  # per-prompt sub-agent coverage
+apx-agent agents hot-swap --endpoint customer_triage --model databricks-claude-opus-4-7  # change LLM without re-logging
+apx-agent canary deploy --endpoint customer_triage --model main.agents.x --version 42 --traffic 10
+apx-agent canary analyze --endpoint customer_triage --hours 24    # per-version requests / errors / latency
+apx-agent canary promote --endpoint customer_triage --model main.agents.x --version 42
+apx-agent canary rollback --endpoint customer_triage --model main.agents.x --version 41
+apx-agent watchdog violations --hours 24       # recent reject/redact decisions from the UC table
+apx-agent watchdog status --agent customer_triage  # current posture via watchdog's MCP tool
+apx-agent memory recall --principal-id user:alice --query "notification preferences"  # semantic recall
+apx-agent memory remember --principal-id user:alice --content "..." --importance 0.8
+apx-agent examples find --agent-id triage --query "why is my bill high?" -k 5
+apx-agent examples save --agent-id triage --input "..." --output "..." --score 0.9
 ```
 
 All commands that take an agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`).
