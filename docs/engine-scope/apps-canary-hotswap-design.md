@@ -1,12 +1,12 @@
 # Canary & hot-swap across deploy targets — design
 
-**Status:** implemented · **Scope:** `apx canary *`, `apx agents hot-swap`
+**Status:** implemented · **Scope:** `apx-agent canary *`, `apx-agent agents hot-swap`
 
 apx-agent ships two deploy targets — Model Serving and Databricks Apps — with
 different platform primitives underneath. Canary rollout and LLM hot-swap mean
 different things on each. This doc is the rationale the source modules point at
 (`_canary.py`, `_canary_apps.py`, `_hot_swap.py`, `_hot_swap_apps.py`, and the
-`apx canary` / `apx agents hot-swap` CLI groups).
+`apx-agent canary` / `apx-agent agents hot-swap` CLI groups).
 
 Related: [apps-vs-model-serving.md](../deploy/apps-vs-model-serving.md) ·
 [apps-uc-registry-shim-design.md](./apps-uc-registry-shim-design.md).
@@ -74,7 +74,7 @@ the platform's.
 
 ### 3a. Provenance + gate-don't-mutate promote/rollback (P1/P2)
 
-The CLI `apx canary {deploy,promote,rollback,status} --target apps` adds a
+The CLI `apx-agent canary {deploy,promote,rollback,status} --target apps` adds a
 version ledger and a **gate-don't-mutate** workflow on top of the library
 functions above (full design:
 [apps-soak-promote-design.md](../../python/docs/superpowers/specs/2026-06-12-apps-soak-promote-design.md)):
@@ -128,11 +128,11 @@ rewrite), which is inherent to the target.
 
 ## 6. CLI surface
 
-- `apx canary status --endpoint E` — served entities + traffic split.
-- `apx canary deploy [--target model-serving|apps] ...` — model-serving adds a
+- `apx-agent canary status --endpoint E` — served entities + traffic split.
+- `apx-agent canary deploy [--target model-serving|apps] ...` — model-serving adds a
   served entity at N%; apps writes a `canary-<label>` target and deploys a
   sibling App.
-- `apx agents hot-swap [--target model-serving|apps] ...` — model-serving
+- `apx-agent agents hot-swap [--target model-serving|apps] ...` — model-serving
   rewrites the override env var; apps re-deploys with a swapped bundle var.
 
 `promote` / `rollback` / `analyze` follow the same `--target` convention,

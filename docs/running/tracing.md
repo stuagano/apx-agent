@@ -20,7 +20,7 @@ Tracing is **always on** when MLflow is installed. It never adds overhead that b
 
 ## Dev UI — `/_apx/traces`
 
-During local development (`apx run`), a trace browser is available at `/_apx/traces`:
+During local development (`apx-agent agents run`), a trace browser is available at `/_apx/traces`:
 
 ```
 http://localhost:8000/_apx/traces
@@ -45,15 +45,15 @@ If no experiment is set, MLflow uses its currently-active experiment. See [Evalu
 
 ## Deep LangGraph tracing
 
-apx-agent emits a focused span set by default (agent, tools, model calls). `apx run` automatically enables full LangGraph-level spans for the dev loop — each graph node, edge, and conditional branch appears in `/_apx/traces` without any configuration.
+apx-agent emits a focused span set by default (agent, tools, model calls). `apx-agent agents run` automatically enables full LangGraph-level spans for the dev loop — each graph node, edge, and conditional branch appears in `/_apx/traces` without any configuration.
 
 Production deploys leave deep tracing off. The reason: `mlflow.langchain.autolog()` logs the full LangGraph model as an MLflow artifact, not just traces — that serialization adds ~30s to the first request. The focused span set captures everything useful for the trace browser without that cost.
 
 To force deep tracing on in production, or off in dev:
 
 ```bash
-APX_AGENT_MLFLOW_AUTOLOG=1 apx run   # already the default in dev — explicit override
-APX_AGENT_MLFLOW_AUTOLOG=0 apx run   # force off, even in dev
+APX_AGENT_MLFLOW_AUTOLOG=1 apx-agent agents run   # already the default in dev — explicit override
+APX_AGENT_MLFLOW_AUTOLOG=0 apx-agent agents run   # force off, even in dev
 ```
 
 To remove tracing entirely, don't install the `eval` extra — tracing is a no-op when MLflow isn't installed:
@@ -120,7 +120,7 @@ These attributes flow into `system.access.audit_logs` and workspace-level trace 
 For analytics — cost rollups, tool-call frequency, latency P95, prompt heatmaps — export traces to a Delta table:
 
 ```bash
-apx export-traces \
+apx-agent traces export \
   --experiment "/Users/me@company.com/agents/customer_triage" \
   --table main.analytics.agent_traces \
   --hours 24

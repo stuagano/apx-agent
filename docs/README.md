@@ -4,7 +4,7 @@
 
 - [get-started/quickstart.md](get-started/quickstart.md) — install, scaffold, run locally, first deploy
 - [get-started/migration.md](get-started/migration.md) — **Coming from ADK or OpenAI Agents SDK?** concept-mapping table and translation guide
-- [get-started/cli.md](get-started/cli.md) — full CLI reference (`apx scaffold`, `apx run`, `apx deploy`, `apx eval`, ...)
+- [get-started/cli.md](get-started/cli.md) — full CLI reference (`apx-agent agents scaffold`, `apx-agent agents run`, `apx-agent agents deploy`, `apx-agent eval`, ...)
 - [get-started/dev-ui.md](get-started/dev-ui.md) — built-in tooling at `/_apx/*` (chat, traces, topology, probe)
 
 ## Agents
@@ -49,7 +49,7 @@
 ## Observability
 
 - [running/tracing.md](running/tracing.md) — automatic MLflow tracing, `/_apx/traces` dev UI, `apx.*` span schema, Delta export
-- [reference/cost-tracking.md](reference/cost-tracking.md) — `apx cost`, `cost_for_agent`, DBU tracking
+- [reference/cost-tracking.md](reference/cost-tracking.md) — `apx-agent agents cost`, `cost_for_agent`, DBU tracking
 
 ## Deploy
 
@@ -59,13 +59,13 @@
 
 ## Evaluate
 
-- [evaluate/overview.md](evaluate/overview.md) — MLflow evaluation, `apx eval`, LLM-as-judge, `eval-chain`
+- [evaluate/overview.md](evaluate/overview.md) — MLflow evaluation, `apx-agent eval`, LLM-as-judge, `eval chain`
 
 ## Reference
 
 - [reference/configuration.md](reference/configuration.md) — full `[tool.apx.agent]` field reference
 - [reference/pyproject-toml.md](reference/pyproject-toml.md) — `pyproject.toml` shape
-- [reference/cost-tracking.md](reference/cost-tracking.md) — `cost_for_agent`, `apx cost` CLI
+- [reference/cost-tracking.md](reference/cost-tracking.md) — `cost_for_agent`, `apx-agent agents cost` CLI
 - [reference/ecosystem.md](reference/ecosystem.md) — ecosystem integrations
 - [reference/hub.md](reference/hub.md) — apx Hub
 - [reference/ci-smoke-test.md](reference/ci-smoke-test.md) — CI smoke test recipe

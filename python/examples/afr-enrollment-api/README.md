@@ -278,7 +278,7 @@ env:
 ### Step 2: Deploy
 
 ```bash
-uv run apx-agent deploy
+uv run apx-agent agents deploy
 ```
 
 ### Step 3: Verify

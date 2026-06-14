@@ -68,10 +68,10 @@ final stored memory count for alice: 6
 
 ```bash
 cd python/examples/memory_demo
-apx-agent deploy --target apps
+apx-agent agents deploy --target apps
 ```
 
-One command. `apx-agent deploy --target apps` does it all:
+One command. `apx-agent agents deploy --target apps` does it all:
 
 1. Builds the apx-agent wheel from the parent source tree
 2. Stages `.build/` (source + wheel), rewrites the staged `pyproject.toml`

@@ -1,6 +1,6 @@
-# Deployment troubleshooting — `apx deploy` failure modes and how to read them
+# Deployment troubleshooting — `apx-agent agents deploy` failure modes and how to read them
 
-Real-world failure modes observed when running `apx deploy` against Databricks workspaces, in the order you're most likely to hit them. Every diagnosis here came from an actual deploy that broke, not from speculation — if a section reads thin it's because that mode hasn't been seen yet in practice.
+Real-world failure modes observed when running `apx-agent agents deploy` against Databricks workspaces, in the order you're most likely to hit them. Every diagnosis here came from an actual deploy that broke, not from speculation — if a section reads thin it's because that mode hasn't been seen yet in practice.
 
 Sibling docs:
 
@@ -9,21 +9,21 @@ Sibling docs:
 
 ## 1. Pre-flight checklist
 
-Run these in order before `apx deploy`. Five minutes here saves the 20–40 minute round-trip on a failed deployment.
+Run these in order before `apx-agent agents deploy`. Five minutes here saves the 20–40 minute round-trip on a failed deployment.
 
 ```bash
-# 1. apx lint — static checks against your agent definition.
+# 1. apx-agent eval lint — static checks against your agent definition.
 #    Catches missing instructions, unknown model endpoints, env-var refs
 #    that aren't set, tools that reference UC objects that don't exist.
-apx lint --module agent:agent
+apx-agent eval lint --module agent:agent
 
-# 2. apx test — run a real prompt against the agent locally.
+# 2. apx-agent eval test — run a real prompt against the agent locally.
 #    If this fails locally, deploy will fail too.
-apx test --module agent:agent --prompt "ping"
+apx-agent eval test --module agent:agent --prompt "ping"
 
-# 3. apx info — show the resource list MLflow will record on the model.
+# 3. apx-agent agents describe — show the resource list MLflow will record on the model.
 #    Compare against what UC / Genie / Vector Search actually has.
-apx info --module agent:agent
+apx-agent agents describe --module agent:agent
 
 # 4. Confirm workspace profile works.
 databricks --profile prod current-user me
@@ -48,11 +48,11 @@ The serving endpoint will pick up secrets through Databricks Secrets / serving e
 
 ### `RESOURCE_DOES_NOT_EXIST: Could not find experiment with ID None`
 
-**Symptom.** `apx deploy` crashes inside `mlflow.start_run()` before any model logging happens. Stack trace points at `mlflow.tracking.client._get_experiment` returning a `None`-id experiment.
+**Symptom.** `apx-agent agents deploy` crashes inside `mlflow.start_run()` before any model logging happens. Stack trace points at `mlflow.tracking.client._get_experiment` returning a `None`-id experiment.
 
 **Diagnosis.** `MLFLOW_TRACKING_URI=databricks` (the default in a workspace shell) requires an active experiment context. The outer `mlflow.start_run()` in the CLI runs *before* `log_agent`'s internal `mlflow.set_experiment(...)` call — so the outer run has nowhere to land.
 
-**Fix.** Already patched in `apx deploy` as of commit `41e82eee` (CLI now calls `mlflow.set_experiment(effective_experiment)` before the outer `start_run`).
+**Fix.** Already patched in `apx-agent agents deploy` as of commit `41e82eee` (CLI now calls `mlflow.set_experiment(effective_experiment)` before the outer `start_run`).
 
 Still possible if **you** pass `--experiment` pointing at a path that doesn't exist:
 
@@ -93,7 +93,7 @@ If the deploy succeeds on retry against an empty queue but consistently fails wh
 
 ### `ModuleNotFoundError: No module named 'databricks.agents'`
 
-**Symptom.** `apx deploy` raises a `ClickException` saying "databricks-agents is required for deployment".
+**Symptom.** `apx-agent agents deploy` raises a `ClickException` saying "databricks-agents is required for deployment".
 
 **Diagnosis.** `databricks-agents` is not in `apx-agent`'s base dependencies — it's a Databricks-only package and pulls in a large transitive closure. The CLI imports it lazily so dev installs stay light.
 
@@ -118,7 +118,7 @@ pip install '.[deploy]'
 **Fix.**
 
 ```bash
-# Before running apx deploy:
+# Before running apx-agent agents deploy:
 export MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING=false
 ```
 
@@ -149,7 +149,7 @@ databricks --profile prod schemas get-permissions main.agents \
 
 **Symptom.** Deploy succeeds, first `predict` against the endpoint returns `RESOURCE_DOES_NOT_EXIST` or `ENDPOINT_NOT_FOUND` from inside the agent.
 
-**Diagnosis.** The `--model` value passed to `apx deploy` is a **serving endpoint name**, not a UC path or a foundation-model alias. `databricks-claude-sonnet-4-6` is an endpoint name. `system.ai.claude-sonnet-4-6` is not — that's a UC function reference and won't work here.
+**Diagnosis.** The `--model` value passed to `apx-agent agents deploy` is a **serving endpoint name**, not a UC path or a foundation-model alias. `databricks-claude-sonnet-4-6` is an endpoint name. `system.ai.claude-sonnet-4-6` is not — that's a UC function reference and won't work here.
 
 **Fix.**
 
@@ -159,22 +159,22 @@ databricks --profile prod serving-endpoints get databricks-claude-sonnet-4-6 \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['ready'])"
 
 # If it returns READY, use that exact string for --model.
-apx deploy --module agent:agent \
+apx-agent agents deploy --module agent:agent \
   --model databricks-claude-sonnet-4-6 \
   --name main.agents.my_agent
 ```
 
-If you need to swap the model on a deployed agent without re-logging, use `apx hot-swap-model` — see `python/src/apx_agent/cli.py` for the command.
+If you need to swap the model on a deployed agent without re-logging, use `apx-agent agents hot-swap` — see `python/src/apx_agent/cli.py` for the command.
 
 ### Apps mode vs Mosaic AI mode — which one am I deploying?
 
-`apx deploy` chains `databricks.agents.deploy(...)` and produces a **Mosaic AI Agents serving endpoint**. That's the right path when the agent is going to be:
+`apx-agent agents deploy` chains `databricks.agents.deploy(...)` and produces a **Mosaic AI Agents serving endpoint**. That's the right path when the agent is going to be:
 
 - Called via `/invocations` from another service.
 - Evaluated by `mlflow.evaluate` against a UC eval table.
-- Tagged + tracked in `apx list` / topology / watchdog.
+- Tagged + tracked in `apx-agent agents list` / topology / watchdog.
 
-It is **not** the path when the agent is the backend of a Databricks App (FastAPI on Apps compute). For that path you don't run `apx deploy` at all — you run the agent inside a FastAPI app and deploy *that* with `databricks apps deploy`. The two surfaces are independent: the same agent can be served via both, but you only run `apx deploy` for the Mosaic AI side.
+It is **not** the path when the agent is the backend of a Databricks App (FastAPI on Apps compute). For that path you don't run `apx-agent agents deploy` at all — you run the agent inside a FastAPI app and deploy *that* with `databricks apps deploy`. The two surfaces are independent: the same agent can be served via both, but you only run `apx-agent agents deploy` for the Mosaic AI side.
 
 ## 3. Build queue and provisioning
 
@@ -240,13 +240,13 @@ def lookup_customer(customer_id: str) -> dict:
     # ... rest of the tool
 ```
 
-### `apx export-traces` needs a reachable MLflow experiment
+### `apx-agent traces export` needs a reachable MLflow experiment
 
-`apx export-traces --experiment <path>` queries MLflow's tracking server. If you're running it from a shell that has `MLFLOW_TRACKING_URI=file://...` set (a stale local override), it'll silently target your local store and find no traces.
+`apx-agent traces export --experiment <path>` queries MLflow's tracking server. If you're running it from a shell that has `MLFLOW_TRACKING_URI=file://...` set (a stale local override), it'll silently target your local store and find no traces.
 
 ```bash
 # Force the workspace tracking URI for one command:
-MLFLOW_TRACKING_URI=databricks apx export-traces --experiment /Users/you@databricks.com/apx-smoke
+MLFLOW_TRACKING_URI=databricks apx-agent traces export --experiment /Users/you@databricks.com/apx-smoke
 ```
 
 ## 5. Cleaning up after a failed deploy
@@ -261,7 +261,7 @@ databricks --profile prod serving-endpoints delete <endpoint-name>
 databricks --profile prod registered-models delete-version main.agents.my_agent --version N
 
 # 3. The MLflow run can stay. It documents the attempt, costs nothing, and
-#    `apx eval --run-id` later can compare a healthy run against the failed
+#    `apx-agent eval --run-id` later can compare a healthy run against the failed
 #    one to find what changed.
 ```
 
@@ -272,5 +272,5 @@ Do **not** delete the registered model (`main.agents.my_agent` without `--versio
 - Lakebase / durable state: [`docs/running/lakebase-recipe.md`](../running/lakebase-recipe.md)
 - TypeScript surface: [`typescript/README.md`](../../typescript/README.md)
 - CLI source: [`python/src/apx_agent/cli.py`](../../python/src/apx_agent/cli.py)
-- The `apx deploy` flow (publish-tools → log_agent → agents.deploy → set_uc_tags): commit `7a857b75`
+- The `apx-agent agents deploy` flow (publish-tools → log_agent → agents.deploy → set_uc_tags): commit `7a857b75`
 - The `mlflow.set_experiment` ordering fix: commit `41e82eee`

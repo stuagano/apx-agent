@@ -36,7 +36,7 @@ brew tap databricks/tap && brew install databricks
 
 ```bash
 databricks auth login --host https://<workspace>.cloud.databricks.com --profile <name>
-databricks current-user me --profile <name>   # must succeed before apx-agent run
+databricks current-user me --profile <name>   # must succeed before apx-agent agents run
 ```
 
 If you have multiple profiles:
@@ -51,7 +51,7 @@ Before continuing, confirm your workspace has:
 
 - A model serving endpoint accessible to your user (e.g. `databricks-claude-sonnet-4-6`). Check under **Serving**.
 - A SQL warehouse (Classic, Pro, or Serverless) — needed for `DataAgent` queries.
-- Databricks Apps enabled — check under **Workspace Settings → Apps**. Without this, `apx-agent deploy` will fail. If Apps isn't available, you can use `--target model-serving` instead.
+- Databricks Apps enabled — check under **Workspace Settings → Apps**. Without this, `apx-agent agents deploy` will fail. If Apps isn't available, you can use `--target model-serving` instead.
 
 ### Step 4 — Install apx-agent
 
@@ -61,7 +61,7 @@ Before continuing, confirm your workspace has:
 uv tool install apx-agent
 ```
 
-This adds `apx-agent` to your PATH so you can run `apx-agent list`, `apx-agent doctor`, etc. from anywhere without activating a venv.
+This adds `apx-agent` to your PATH so you can run `apx-agent agents list`, `apx-agent doctor`, etc. from anywhere without activating a venv.
 
 > **Already have a project?** Also add it as a project dependency so your `uv.lock` pins the exact version:
 > ```bash
@@ -88,13 +88,13 @@ uv run apx-agent doctor --offline  # skip the live workspace round-trip (CI / of
 ### Step 5 — Scaffold a project
 
 ```bash
-uv run apx-agent scaffold my-agent
+uv run apx-agent agents scaffold my-agent
 cd my-agent && uv sync
 ```
 
 The scaffold is interactive — it asks for a catalog, schema, and SQL warehouse, then bakes the real column names into `.apx/schema.json`. The agent is grounded before the first question: no `SHOW TABLES` at runtime, no hallucinated schema.
 
-> **Skip interactive prompts:** `uv run apx-agent scaffold my-agent --no-interactive` uses defaults (the `samples.nyctaxi` schema). You can reconfigure later by re-running scaffold or editing `.env`.
+> **Skip interactive prompts:** `uv run apx-agent agents scaffold my-agent --no-interactive` uses defaults (the `samples.nyctaxi` schema). You can reconfigure later by re-running scaffold or editing `.env`.
 
 > **Project location:** scaffold creates the project in the current directory. `cd` to your preferred parent directory first.
 
@@ -104,7 +104,7 @@ The scaffold is interactive — it asks for a catalog, schema, and SQL warehouse
 my-agent/
 ├── agent.py                  ← the one file you edit
 ├── pyproject.toml            ← deps + [tool.apx.agent] config
-├── databricks.yml            ← Databricks bundle (used by apx-agent deploy)
+├── databricks.yml            ← Databricks bundle (used by apx-agent agents deploy)
 ├── .env.example              ← copy to .env for local secrets
 ├── .gitignore
 ├── README.md
@@ -129,7 +129,7 @@ That's a working agent. It knows the schema. When you're ready, point it at your
 ### Step 6 — Run locally
 
 ```bash
-uv run apx-agent run --reload
+uv run apx-agent agents run --reload
 ```
 
 This starts FastAPI on `:8000` with file-watch reload. Leave it running in one terminal; edit `agent.py` in your IDE in the other.
@@ -159,12 +159,12 @@ The scaffolded agent is grounded against `samples.nyctaxi` by default. Walk thro
 From inside `my-agent/`:
 
 ```bash
-uv run apx-agent deploy
+uv run apx-agent agents deploy
 ```
 
-This bundles the project and creates a Databricks App. `apx-agent deploy` prints the URL when it finishes.
+This bundles the project and creates a Databricks App. `apx-agent agents deploy` prints the URL when it finishes.
 
-> **Deploy to Model Serving instead:** `uv run apx-agent deploy --target model-serving --name <catalog.schema.model>`
+> **Deploy to Model Serving instead:** `uv run apx-agent agents deploy --target model-serving --name <catalog.schema.model>`
 
 ### Step 9 — Confirm the deploy is live
 
@@ -178,7 +178,7 @@ If the app shows a 502 or `/readyz` returns an error, run `uv run apx-agent doct
 
 ## Updating your agent
 
-After the initial deploy, `apx-agent deploy` uploads your code to a path in your Databricks workspace. To update without redeploying from the CLI:
+After the initial deploy, `apx-agent agents deploy` uploads your code to a path in your Databricks workspace. To update without redeploying from the CLI:
 
 1. Go to your workspace → **Apps** → select your app
 2. Click **Edit source** to open `agent.py` in the workspace editor
@@ -219,7 +219,7 @@ agent = Agent(
 )
 ```
 
-Run it the same way: `uv run apx-agent run --reload`.
+Run it the same way: `uv run apx-agent agents run --reload`.
 
 > **If you know ADK or OpenAI Agents SDK:** `Agent(name, instructions, tools)` maps directly — same shape, same idea. `agent.run(messages)` is the runner. See [migration.md](migration.md) for the full mapping.
 
@@ -239,7 +239,7 @@ agent = CoworkerAgent(
 Scaffold one with:
 
 ```bash
-apx-agent scaffold my-coworker --template coworker
+apx-agent agents scaffold my-coworker --template coworker
 ```
 
 See [../agents/coworker.md](../agents/coworker.md) for the full reference.
@@ -288,11 +288,11 @@ uv run apx-agent doctor --offline  # skip the network check (CI / offline)
 uv run apx-agent doctor --json     # machine-readable output
 ```
 
-**Auth errors** (`Could not resolve Databricks authentication`) — re-run `databricks auth login --profile <name>` and confirm with `databricks current-user me --profile <name>`, then restart `apx-agent run`.
+**Auth errors** (`Could not resolve Databricks authentication`) — re-run `databricks auth login --profile <name>` and confirm with `databricks current-user me --profile <name>`, then restart `apx-agent agents run`.
 
 **Warehouse stopped** — open the Probe tab at `/_apx/probe/checks`. It shows warehouse status and a link to start it.
 
-**`apx-agent deploy` fails with Apps error** — confirm Apps is enabled under **Workspace Settings → Apps**. If not available, use `--target model-serving` instead.
+**`apx-agent agents deploy` fails with Apps error** — confirm Apps is enabled under **Workspace Settings → Apps**. If not available, use `--target model-serving` instead.
 
 For deploy failures, see [../deploy/troubleshooting.md](../deploy/troubleshooting.md).
 

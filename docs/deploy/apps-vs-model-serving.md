@@ -38,21 +38,21 @@ the single biggest source of iteration pain in the SDK today.
 | **Async / WebSocket support** | No — request/response only | Yes — full FastAPI surface, SSE, WebSocket if you want it |
 | **Co-located UI** | No (separate app or AI Playground) | Yes — front the same App with a SPA, same auth context |
 | **Traffic split / canary** | Native (Model Serving served entities + traffic config) | Not built in — handle at app/route level or via two Apps + a router |
-| **Canary deploy CLI** | `apx canary deploy` (default) — adds a served entity at N% traffic via `databricks.agents.deploy` | `apx canary deploy --target apps --canary-version X` — writes a `canary-X` DAB target and deploys a sibling App. Soak-environment semantics; no platform traffic split. See [apps-canary-hotswap-design.md](../engine-scope/apps-canary-hotswap-design.md) |
-| **Hot-swap LLM endpoint** | `apx hot-swap` (default) — rewrites `APX_AGENT_MODEL_OVERRIDE` env_var on the served entity | `apx hot-swap --target apps --llm-endpoint NEW` — re-deploys with `--var llm_endpoint_name=NEW`. App restarts off the new env. See [apps-canary-hotswap-design.md](../engine-scope/apps-canary-hotswap-design.md) |
+| **Canary deploy CLI** | `apx-agent canary deploy` (default) — adds a served entity at N% traffic via `databricks.agents.deploy` | `apx-agent canary deploy --target apps --canary-version X` — writes a `canary-X` DAB target and deploys a sibling App. Soak-environment semantics; no platform traffic split. See [apps-canary-hotswap-design.md](../engine-scope/apps-canary-hotswap-design.md) |
+| **Hot-swap LLM endpoint** | `apx-agent agents hot-swap` (default) — rewrites `APX_AGENT_MODEL_OVERRIDE` env_var on the served entity | `apx-agent agents hot-swap --target apps --llm-endpoint NEW` — re-deploys with `--var llm_endpoint_name=NEW`. App restarts off the new env. See [apps-canary-hotswap-design.md](../engine-scope/apps-canary-hotswap-design.md) |
 | **Review App integration** | Native — `agent_evaluation` Review App reads from a registered model | Indirect — log traces to MLflow, evaluate offline |
-| **Mosaic AI Supervisor publish** | Native via `apx publish --supervisor <id>` | Not supported as of 2026-05 — Supervisor consumes Model-Serving endpoints |
+| **Mosaic AI Supervisor publish** | Native via `apx-agent supervisor add --supervisor <id>` | Not supported as of 2026-05 — Supervisor consumes Model-Serving endpoints |
 | **Autoscale model** | Per-endpoint, scale-to-zero with cold-start cost | Per-app, manual `min/max` workers; scale-to-zero supported via auto-suspend |
 | **Async background work** | No (request-bound) | Yes — same process can run background tasks, schedulers, queues |
 | **Custom routes / non-agent endpoints** | No — single predict path | Yes — health, admin, debug, batch endpoints all in the same App |
 | **MLflow tracing wiring** | Automatic — Model Serving enables tracing on every request | Automatic via `AgentServer(agent_type="ResponsesAgent")` — same OTLP exporter |
-| **Version ledger / discovery** | Native — each `databricks.agents.deploy` mints a UC registered-model version, tagged `apx.agent.*` | Via the UC-registry shim — `apx agents deploy --target apps` registers a UC version *manifest* (tagged `apx.serving=apps`, not serving-promoted) so Apps agents get versions + show up in `apx agents list` / topology / watchdog. On by default when a UC name + model are configured; skips with a notice otherwise. See [apps-uc-registry-shim-design.md](../engine-scope/apps-uc-registry-shim-design.md) |
+| **Version ledger / discovery** | Native — each `databricks.agents.deploy` mints a UC registered-model version, tagged `apx.agent.*` | Via the UC-registry shim — `apx-agent agents deploy --target apps` registers a UC version *manifest* (tagged `apx.serving=apps`, not serving-promoted) so Apps agents get versions + show up in `apx-agent agents list` / topology / watchdog. On by default when a UC name + model are configured; skips with a notice otherwise. See [apps-uc-registry-shim-design.md](../engine-scope/apps-uc-registry-shim-design.md) |
 | **Governance (UC permissions on the artifact)** | Strong — the registered model has UC ACLs | Improved by the shim — the UC version manifest carries UC ACLs, but the *running* surface is still the App, governed by App-level permissions |
 | **Cost model (idle)** | Cheap when scaled to zero; you pay for cold starts | Cheap when scaled to zero (auto-suspend); cold start is faster |
 | **Cost model (busy)** | DBU per compute-hour at the endpoint sku | DBU per compute-hour at the App's compute |
 | **Deletion semantics** | `databricks serving-endpoints delete` — endpoint and its versions go | `databricks apps delete` — removes the App; bundle artifact remains in workspace files |
 | **Logs surface** | Model Serving logs UI; CLI: `databricks serving-endpoints query-logs` | App logs UI; CLI: `databricks apps logs <app>` |
-| **Local-dev parity** | Approximate — `apx run` runs FastAPI, but the ChatAgent wrapper is bypassed | High — `apx run` wraps `uvicorn agent_server.start_server:app`, the same command `databricks.yml` runs in prod |
+| **Local-dev parity** | Approximate — `apx-agent agents run` runs FastAPI, but the ChatAgent wrapper is bypassed | High — `apx-agent agents run` wraps `uvicorn agent_server.start_server:app`, the same command `databricks.yml` runs in prod |
 
 ### Pick **Apps** when
 
@@ -114,7 +114,7 @@ migrate — both targets read the same agent definition.
    compile_to_chat_agent(agent, …)              compile_to_responses_agent(agent, …)
    └─► mlflow.pyfunc.log_model                   └─► @invoke()/@stream() decorators
        └─► register UC, deploy endpoint              └─► AgentServer FastAPI app
-           apx deploy --target model-serving             apx deploy --target apps
+           apx-agent agents deploy --target model-serving             apx-agent agents deploy --target apps
 ```
 
 A single agent definition compiles to either target. Switching is a CLI flag,
@@ -179,18 +179,18 @@ features are in your hot path:
 
 ```bash
 # Old:
-apx deploy --module my_agent.app:agent \
+apx-agent agents deploy --module my_agent.app:agent \
            --model databricks-claude-sonnet-4-6 \
            --name main.agents.mine
 
 # New — scaffold an Apps project alongside, then deploy:
-apx scaffold my_agent_apps --target apps
+apx-agent agents scaffold my_agent_apps --target apps
 # Copy your existing agent.py contents into agent_server/agent.py
 # (the Agent definition is byte-identical; only request entry points change).
-apx deploy --target apps
+apx-agent agents deploy --target apps
 ```
 
-The `apx scaffold --target apps` command lays down the file tree shown in
+The `apx-agent agents scaffold --target apps` command lays down the file tree shown in
 [`memory_demo`](../python/examples/memory_demo/) — `agent_server/`,
 `scripts/`, `databricks.yml`, `pyproject.toml`. Drop your existing agent
 module into `agent_server/agent.py`, wrap the entry points with the
@@ -208,7 +208,7 @@ When you need canary or Supervisor publish:
 
 ```bash
 # Re-target. Your agent module is reused as-is.
-apx deploy --target model-serving \
+apx-agent agents deploy --target model-serving \
            --module agent_server.agent:agent \
            --name main.agents.mine
 ```
@@ -259,10 +259,10 @@ A few things that bite in practice:
 
 | You want… | Run |
 |---|---|
-| Deploy a new agent to Apps | `apx scaffold X --target apps && apx deploy --target apps` |
-| Deploy a new agent to Model Serving | `apx scaffold X && apx deploy --name <uc-three-part>` |
-| Move an existing agent from Model Serving to Apps | `apx scaffold X_apps --target apps`, then drop agent module in, then `apx deploy --target apps` |
-| Move an existing agent from Apps to Model Serving | `apx deploy --target model-serving --module agent_server.agent:agent --name <uc-three-part>` |
+| Deploy a new agent to Apps | `apx-agent agents scaffold X --target apps && apx-agent agents deploy --target apps` |
+| Deploy a new agent to Model Serving | `apx-agent agents scaffold X && apx-agent agents deploy --name <uc-three-part>` |
+| Move an existing agent from Model Serving to Apps | `apx-agent agents scaffold X_apps --target apps`, then drop agent module in, then `apx-agent agents deploy --target apps` |
+| Move an existing agent from Apps to Model Serving | `apx-agent agents deploy --target model-serving --module agent_server.agent:agent --name <uc-three-part>` |
 | Validate Apps bundle without deploying | `databricks bundle validate --target dev --profile <profile>` |
 | Tail Apps logs | `databricks apps logs <app-name> --profile <profile>` |
 | Tail Model Serving logs | `databricks serving-endpoints query-logs <endpoint>` |

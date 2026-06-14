@@ -1,6 +1,6 @@
 # Shimming Apps into the UC Model Registry — versioning design
 
-**Status:** proposal · **Date:** 2026-06-12 · **Scope:** `apx agents deploy --target apps`
+**Status:** proposal · **Date:** 2026-06-12 · **Scope:** `apx-agent agents deploy --target apps`
 
 The Apps deploy target has no version spine. Model Serving inherits one for free
 from Unity Catalog: every `databricks.agents.deploy` mints a registered-model
@@ -41,7 +41,7 @@ This *is* that follow-up.
 
 ## 2. What the shim buys
 
-> **Conditional, on by default.** Registration runs on every `apx agents deploy
+> **Conditional, on by default.** Registration runs on every `apx-agent agents deploy
 > --target apps` **when a UC name and model are resolvable** — i.e. the project
 > has `[tool.apx.agent].model` plus either `registered_model`, a non-placeholder
 > `catalog`+`schema`, or an explicit `--uc-name`. A fresh scaffold ships
@@ -50,9 +50,9 @@ This *is* that follow-up.
 > apps deploy still succeeds. Configure UC once and every subsequent deploy mints
 > a version.
 
-- **A real version spine for Apps** — a configured `apx agents deploy --target
+- **A real version spine for Apps** — a configured `apx-agent agents deploy --target
   apps` mints a `v1/v2/v3` UC integer with lineage back to the run.
-- **Discovery parity** — Apps agents finally appear in `apx agents list`,
+- **Discovery parity** — Apps agents finally appear in `apx-agent agents list`,
   topology, and the watchdog crawler, all of which read `apx.agent.*` UC tags.
 - **Promote / rollback bookkeeping** via UC model **aliases** (`@prod`,
   `@canary`) — the alias records which version a live App is running.
@@ -96,7 +96,7 @@ def _register_apps_manifest_step(*, module, config, app_name,
 Key points:
 
 - **Skip, don't error — but loudly.** When no UC name or model resolves, the step
-  skips with an actionable stderr notice naming the fix. A bare `apx agents
+  skips with an actionable stderr notice naming the fix. A bare `apx-agent agents
   deploy --target apps` must still exit 0; erroring on a default-on step would be
   a hostile regression. The notice (not silence) is what makes the skip correct —
   see [the anti-silent-failure principle in the dev-UI work].
@@ -107,7 +107,7 @@ Key points:
   succeeds — the App is already serving; a missing ledger entry must not redden a
   green deploy.
 - **`apx.serving=apps` tag** marks these versions as manifests, not
-  serving-promoted — so `apx agents list` / analyze can distinguish them and
+  serving-promoted — so `apx-agent agents list` / analyze can distinguish them and
   never try to `agents.deploy` them.
 - **Opt-out flag** (`--no-register-uc`) for tight dev loops where the extra
   `log_model` packaging cost (§6.4) isn't worth it.
@@ -133,15 +133,15 @@ the same graceful fallback it already has for older deployments.
 
 UC model aliases give Apps the bookkeeping half of a promotion workflow:
 
-- `apx canary promote --target apps --version N` → set alias `@prod` → version N
+- `apx-agent canary promote --target apps --version N` → set alias `@prod` → version N
   (and re-point the prod App's `APX_MODEL_VERSION` if needed).
-- `apx canary rollback --target apps` → move `@prod` back to its prior version.
+- `apx-agent canary rollback --target apps` → move `@prod` back to its prior version.
 - `canary status --target apps` reads aliases + `apx.apps.*` version tags to show
   which version each App is running.
 
 The alias is the **source of truth for intent**; the running App is the
 **fact**. Reconciling the two (App is running a version the alias doesn't point
-at) is a useful `apx doctor` check.
+at) is a useful `apx-agent doctor` check.
 
 ## 6. What this does NOT solve — read before building
 
@@ -170,14 +170,14 @@ at) is a useful `apx doctor` check.
 - **P2 — correlation.** `APX_MODEL_VERSION` env var + `apx.model_version` audit
   attribute + `analyze_canary` partition support. Delivers per-version compare.
 - **P3 — promotion.** Alias-based `promote`/`rollback`/`status` for `--target
-  apps`, plus an `apx doctor` reconcile check (alias vs. running App).
+  apps`, plus an `apx-agent doctor` reconcile check (alias vs. running App).
 
 ## 8. Open questions
 
 - **UC naming for Apps.** Reuse `<catalog>.<schema>.<app_name>`, or a dedicated
   `apps` schema so manifest models are visibly separate from serving-promoted
-  ones? Leaning dedicated schema for a clean `apx agents list` filter.
+  ones? Leaning dedicated schema for a clean `apx-agent agents list` filter.
 - **Async logging.** Is post-deploy async registration worth the added failure
   mode (App live, UC version missing) versus blocking the deploy a bit longer?
-- **Drift policy.** When `apx doctor` finds App-vs-alias drift, warn only, or
+- **Drift policy.** When `apx-agent doctor` finds App-vs-alias drift, warn only, or
   offer to re-point / re-register?
