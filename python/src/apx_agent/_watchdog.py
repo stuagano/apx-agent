@@ -631,8 +631,10 @@ def set_uc_tags_for_agent(
             MLflow tracking URI).
 
     Returns:
-        The dict of tag keys-values that were written. Useful for logging
-        and for tests.
+        The dict of tag key-values that were **successfully** written — a
+        subset of the intended tags if any individual writes failed (each
+        failure is logged). Callers should report based on this, not assume
+        all intended tags landed.
 
     Raises:
         ImportError: if mlflow isn't installed (``apx-agent[eval]`` extra).
@@ -649,17 +651,28 @@ def set_uc_tags_for_agent(
     metadata = emit_agent_metadata(agent, name=name, model=model)
     tags = _build_uc_tag_payload(metadata)
 
+    written: dict[str, str] = {}
+    failed: list[str] = []
     for key, value in tags.items():
         try:
             client.set_registered_model_tag(
                 name=registered_model_name, key=key, value=value,
             )
+            written[key] = value
         except Exception as e:
+            failed.append(key)
             logger.warning(
                 "Failed to write UC tag %s on %s: %s — continuing with remaining tags.",
                 key, registered_model_name, e,
             )
-    return tags
+    if failed:
+        logger.warning(
+            "set_uc_tags_for_agent: wrote %d/%d UC tags on %s; failed: %s",
+            len(written), len(tags), registered_model_name, ", ".join(failed),
+        )
+    # Return ONLY the tags that were actually written, so callers can report
+    # honestly instead of claiming success for swallowed write failures.
+    return written
 
 
 # ---------------------------------------------------------------------------
