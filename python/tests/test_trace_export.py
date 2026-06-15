@@ -103,7 +103,7 @@ def test_export_traces_runs_create_table_when_auto_create() -> None:
     ws = MagicMock()
     fake_traces = SimpleNamespace(to_dict=lambda orient: [])
 
-    with patch("mlflow.search_traces", return_value=fake_traces), \
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=fake_traces), \
          patch("apx_agent._trace_export.run_sql") as mock_sql:
         export_traces(
             experiment_name="exp",
@@ -119,7 +119,7 @@ def test_export_traces_skips_create_table_when_disabled() -> None:
     ws = MagicMock()
     fake_traces = SimpleNamespace(to_dict=lambda orient: [])
 
-    with patch("mlflow.search_traces", return_value=fake_traces), \
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=fake_traces), \
          patch("apx_agent._trace_export.run_sql") as mock_sql:
         export_traces(
             experiment_name="exp",
@@ -149,7 +149,7 @@ def test_export_traces_writes_merge_with_normalised_rows() -> None:
         },
     ])
 
-    with patch("mlflow.search_traces", return_value=fake_traces), \
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=fake_traces), \
          patch("apx_agent._trace_export.run_sql") as mock_sql:
         result = export_traces(
             experiment_name="exp",
@@ -182,7 +182,7 @@ def test_export_traces_returns_zero_written_on_sql_failure() -> None:
             raise RuntimeError("merge denied")
         return []
 
-    with patch("mlflow.search_traces", return_value=fake_traces), \
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=fake_traces), \
          patch("apx_agent._trace_export.run_sql", side_effect=_fail_on_merge):
         result = export_traces(
             experiment_name="exp",
@@ -202,7 +202,7 @@ def test_export_traces_counts_unusable_traces_as_skipped() -> None:
         {"trace_id": "tr-2", "tags": {"apx.agent.name": "x"}, "status": "OK"},
     ])
 
-    with patch("mlflow.search_traces", return_value=fake_traces), \
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=fake_traces), \
          patch("apx_agent._trace_export.run_sql"):
         result = export_traces(
             experiment_name="exp",

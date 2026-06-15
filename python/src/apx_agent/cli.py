@@ -5793,9 +5793,11 @@ def trace(
     # return --limit rows after they trim the result set.
     fetch_limit = limit * 4 if (user_filter or min_latency_ms or error_only or parsed_tag_filters) else limit
 
+    from ._mlflow_tracing import search_traces_for_experiment
+
     try:
-        raw = mlflow.search_traces(  # type: ignore[attr-defined]
-            experiment_names=[effective_experiment],
+        raw = search_traces_for_experiment(
+            effective_experiment,
             filter_string=filter_string,
             max_results=fetch_limit,
         )

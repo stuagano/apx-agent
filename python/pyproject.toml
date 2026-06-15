@@ -26,7 +26,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-eval = ["mlflow>=2.0"]
+# mlflow>=3.6: search_traces uses `locations=` (the `experiment_ids` selector was
+# deprecated at 3.6.0, and `experiment_names` never existed — see _mlflow_tracing).
+eval = ["mlflow>=3.6"]
 uc = [
     "unitycatalog-ai>=0.1.0",
 ]
@@ -92,16 +94,12 @@ exclude = [
   "src/apx_agent/_dev.py",
   # --- type-debt registry (remove as fixed) ---
   "src/apx_agent/_callbacks.py",
-  "src/apx_agent/_canary.py",
-  "src/apx_agent/_canary_apps.py",
   "src/apx_agent/_chat_agent.py",
   "src/apx_agent/_compile.py",
-  "src/apx_agent/_eval_chain.py",
   "src/apx_agent/_memory_delta.py",
   "src/apx_agent/_publish.py",
   "src/apx_agent/_remote.py",
   "src/apx_agent/_topology.py",
-  "src/apx_agent/_trace_export.py",
   "src/apx_agent/bootstrap.py",
   "src/apx_agent/catalog.py",
   "src/apx_agent/cli.py",

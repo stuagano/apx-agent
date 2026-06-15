@@ -821,13 +821,12 @@ def test_trace_falls_back_to_pyproject_experiment(
 
     fake_search = MagicMock(return_value=[])
     runner = CliRunner()
-    with patch("mlflow.search_traces", fake_search):
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", fake_search):
         result = runner.invoke(main, ["traces", "list"])
 
     assert result.exit_code == 0, result.output
-    assert fake_search.call_args.kwargs["experiment_names"] == [
-        "/Users/me/agents/triage"
-    ]
+    # The helper takes the experiment name/id as its first positional arg.
+    assert fake_search.call_args.args[0] == "/Users/me/agents/triage"
 
 
 def test_trace_filters_by_agent_and_operation(
@@ -837,7 +836,7 @@ def test_trace_filters_by_agent_and_operation(
     fake_search = MagicMock(return_value=[])
 
     runner = CliRunner()
-    with patch("mlflow.search_traces", fake_search):
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", fake_search):
         runner.invoke(main, [
             "traces", "list",
             "--experiment", "/Users/me/agents/triage",
@@ -877,7 +876,7 @@ def test_trace_prints_rows_from_dataframe(
         ],
     )
     runner = CliRunner()
-    with patch("mlflow.search_traces", return_value=fake_df):
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=fake_df):
         result = runner.invoke(main, [
             "traces", "list",
             "--experiment", "/Users/me/agents/triage",
@@ -903,7 +902,7 @@ def test_trace_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         ],
     )
     runner = CliRunner()
-    with patch("mlflow.search_traces", return_value=fake_df):
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=fake_df):
         result = runner.invoke(main, [
             "traces", "list",
             "--experiment", "/Users/me/agents/x",
@@ -3714,14 +3713,15 @@ class TestTracesListFilters:
     """Tests for the new --user, --min-latency, --error-only, --tag filters."""
 
     def _make_fake_search_traces(self, rows):
-        """Return a side_effect for mlflow.search_traces that yields fake rows."""
-        from apx_agent.cli import _normalise_trace_rows
+        """Return a stand-in for search_traces_for_experiment yielding fake rows.
+
+        Accepts the helper's positional ``experiment`` arg plus any kwargs."""
 
         class _FakeDF:
             def to_dict(self, orient=None):
                 return rows
 
-        def _search(**kwargs):
+        def _search(*args, **kwargs):
             return _FakeDF()
 
         return _search
@@ -3737,7 +3737,7 @@ class TestTracesListFilters:
         ]
 
         import mlflow as _mlflow
-        with patch.object(_mlflow, "search_traces", self._make_fake_search_traces(rows)):
+        with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", self._make_fake_search_traces(rows)):
             result = CliRunner().invoke(main, [
                 "traces", "list", "--error-only",
             ])
@@ -3758,7 +3758,7 @@ class TestTracesListFilters:
         ]
 
         import mlflow as _mlflow
-        with patch.object(_mlflow, "search_traces", self._make_fake_search_traces(rows)):
+        with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", self._make_fake_search_traces(rows)):
             result = CliRunner().invoke(main, [
                 "traces", "list", "--min-latency", "100",
             ])
@@ -3774,7 +3774,7 @@ class TestTracesListFilters:
             '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
         )
         import mlflow as _mlflow
-        with patch.object(_mlflow, "search_traces", self._make_fake_search_traces([])):
+        with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", self._make_fake_search_traces([])):
             result = CliRunner().invoke(main, [
                 "traces", "list", "--tag", "no-equals-sign",
             ])

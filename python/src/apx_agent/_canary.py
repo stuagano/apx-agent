@@ -437,13 +437,15 @@ def analyze_canary(
     start_time_ms = int((time.time() - lookback_hours * 3600) * 1000)
     filter_string = f"timestamp_ms > {start_time_ms}"
 
+    from ._mlflow_tracing import search_traces_for_experiment
+
     try:
         # include_spans=False keeps this a metadata-only read so it works even
         # when blob storage is unreachable (private-link / FEVM workspaces
         # where *.storage.cloud.databricks.com is blocked). We only read
         # trace-level tags / status / latency below, never span data.
-        traces_raw = mlflow.search_traces(  # type: ignore[attr-defined]
-            experiment_names=[experiment],
+        traces_raw = search_traces_for_experiment(
+            experiment,
             filter_string=filter_string,
             max_results=max_traces,
             include_spans=False,

@@ -322,6 +322,8 @@ def test_analyze_canary_app_partitions_by_app_tag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mlflow_stub = SimpleNamespace()
+    # search_traces_for_experiment resolves the experiment name -> id first.
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
     fake_rows = [
         _trace_dict("my-app", 100),
         _trace_dict("my-app", 200),
@@ -363,6 +365,8 @@ def test_analyze_canary_app_returns_zero_buckets_when_no_traces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mlflow_stub = SimpleNamespace()
+    # search_traces_for_experiment resolves the experiment name -> id first.
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
     mlflow_stub.search_traces = lambda **_: []  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "mlflow", mlflow_stub)
 
@@ -382,6 +386,8 @@ def test_analyze_canary_app_handles_search_traces_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mlflow_stub = SimpleNamespace()
+    # search_traces_for_experiment resolves the experiment name -> id first.
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
 
     def _raise(**_: Any) -> Any:
         raise RuntimeError("transient")
@@ -479,6 +485,8 @@ def test_cli_canary_analyze_apps_uses_experiment_from_pyproject(
 ) -> None:
     # Stub mlflow before invoking.
     mlflow_stub = SimpleNamespace()
+    # search_traces_for_experiment resolves the experiment name -> id first.
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
     mlflow_stub.search_traces = lambda **_: [  # type: ignore[attr-defined]
         _trace_dict("my-app", 100),
         _trace_dict("my-app-canary-x", 50),
@@ -508,6 +516,8 @@ def test_cli_canary_analyze_apps_json_output(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mlflow_stub = SimpleNamespace()
+    # search_traces_for_experiment resolves the experiment name -> id first.
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
     mlflow_stub.search_traces = lambda **_: [  # type: ignore[attr-defined]
         _trace_dict("my-app", 100),
     ]

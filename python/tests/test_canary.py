@@ -355,7 +355,7 @@ def test_analyze_canary_partitions_by_version() -> None:
         _trace(version="2", latency_ms=110),
     ]
 
-    with patch("mlflow.search_traces", return_value=_df(rows)):
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=_df(rows)):
         report = analyze_canary(
             endpoint="triage",
             experiment="/x",
@@ -376,7 +376,7 @@ def test_analyze_canary_counts_errors() -> None:
         _trace(version="1", status="FAILED"),
     ]
 
-    with patch("mlflow.search_traces", return_value=_df(rows)):
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=_df(rows)):
         report = analyze_canary(
             endpoint="triage", experiment="/x", ws=MagicMock(),
         )
@@ -391,7 +391,7 @@ def test_analyze_canary_computes_latency_percentiles() -> None:
     # 100 traces at 100ms each — easier to assert percentile shape.
     rows = [_trace(version="1", latency_ms=100 + i) for i in range(100)]
 
-    with patch("mlflow.search_traces", return_value=_df(rows)):
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=_df(rows)):
         report = analyze_canary(
             endpoint="triage", experiment="/x", ws=MagicMock(),
         )
@@ -407,7 +407,7 @@ def test_analyze_canary_filters_to_endpoint() -> None:
         _trace(version="1", endpoint="other-endpoint"),  # different endpoint, dropped
     ]
 
-    with patch("mlflow.search_traces", return_value=_df(rows)):
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=_df(rows)):
         report = analyze_canary(
             endpoint="triage", experiment="/x", ws=MagicMock(),
         )
@@ -418,7 +418,7 @@ def test_analyze_canary_filters_to_endpoint() -> None:
 def test_analyze_canary_unknown_version_when_attribute_missing() -> None:
     rows = [{"trace_id": "tr-1", "tags": {}, "status": "OK", "execution_time_ms": 50}]
 
-    with patch("mlflow.search_traces", return_value=_df(rows)):
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=_df(rows)):
         report = analyze_canary(
             endpoint="triage", experiment="/x", ws=MagicMock(),
         )
@@ -431,7 +431,7 @@ def test_analyze_canary_returns_empty_report_when_search_traces_fails() -> None:
     # report (which reads as "no errors observed" and could greenlight a bad
     # model). The failure is surfaced as a RuntimeError that names the
     # experiment and chains the original cause.
-    with patch("mlflow.search_traces", side_effect=RuntimeError("backend down")):
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", side_effect=RuntimeError("backend down")):
         with pytest.raises(RuntimeError, match="search_traces failed") as exc_info:
             analyze_canary(
                 endpoint="triage", experiment="/x", ws=MagicMock(),
