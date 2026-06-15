@@ -37,3 +37,96 @@ def parse_where(exprs: list[str]) -> dict[str, str]:
         key, value = expr.split("=", 1)
         out[key.strip()] = value.strip()
     return out
+
+
+from dataclasses import dataclass, field
+from fnmatch import fnmatch
+from typing import Any
+
+
+@dataclass
+class ResolvedAgent:
+    """One agent selected by the fleet resolver."""
+    uc_name: str
+    name: str
+    model: str | None
+    app_name: str | None
+    tags: dict[str, str] = field(default_factory=dict)
+    labels: dict[str, str] = field(default_factory=dict)
+
+
+def _tags_dict(model: Any) -> dict[str, str]:
+    return {t.key: t.value for t in (getattr(model, "tags", None) or [])}
+
+
+def _uc_name(model: Any) -> str:
+    full = getattr(model, "full_name", None)
+    if full:
+        return str(full)
+    return (
+        f"{getattr(model, 'catalog_name', '')}."
+        f"{getattr(model, 'schema_name', '')}."
+        f"{getattr(model, 'name', '')}"
+    )
+
+
+def _matches_where(tags: dict[str, str], where: dict[str, str]) -> bool:
+    for key, value in where.items():
+        candidates = {tags.get(key), tags.get(to_label_key(key))}
+        if value not in candidates:
+            return False
+    return True
+
+
+def resolve_agents(
+    models: Any,
+    *,
+    catalog: str | None = None,
+    schema: str | None = None,
+    name_glob: str | None = None,
+    where: dict[str, str] | None = None,
+    uc_names: list[str] | None = None,
+) -> list[ResolvedAgent]:
+    """Filter registered-model objects into ``ResolvedAgent`` records.
+
+    Only models carrying the ``apx.agent.name`` tag are considered. When
+    ``uc_names`` is given, it selects exactly those models and bypasses the
+    scope/glob/where filters. Otherwise all of ``catalog``/``schema``/
+    ``name_glob``/``where`` are AND-ed.
+    """
+    where = where or {}
+    wanted = set(uc_names or [])
+    out: list[ResolvedAgent] = []
+    for model in models:
+        tags = _tags_dict(model)
+        if NAME_TAG not in tags:
+            continue
+        uc = _uc_name(model)
+        if wanted:
+            if uc not in wanted:
+                continue
+        else:
+            if catalog and getattr(model, "catalog_name", None) != catalog:
+                continue
+            if schema and getattr(model, "schema_name", None) != schema:
+                continue
+            if name_glob and not fnmatch(tags.get(NAME_TAG, ""), name_glob):
+                continue
+            if where and not _matches_where(tags, where):
+                continue
+        labels = {
+            k[len(LABEL_PREFIX):]: v
+            for k, v in tags.items()
+            if k.startswith(LABEL_PREFIX)
+        }
+        out.append(
+            ResolvedAgent(
+                uc_name=uc,
+                name=tags.get(NAME_TAG, ""),
+                model=tags.get(MODEL_TAG),
+                app_name=tags.get(APP_NAME_TAG),
+                tags=tags,
+                labels=labels,
+            )
+        )
+    return out
