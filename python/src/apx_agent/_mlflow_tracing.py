@@ -98,6 +98,48 @@ def is_mlflow_available() -> bool:
     return True
 
 
+def _resolve_experiment_id(experiment: str) -> str:
+    """Resolve an experiment name/path (or id) to an experiment id.
+
+    Raises ``ValueError`` if ``experiment`` is neither a known experiment name
+    nor a valid experiment id, so a mistyped/missing experiment surfaces as an
+    error rather than mis-reporting a failed read as "no traces".
+    """
+    import mlflow
+
+    by_name = mlflow.get_experiment_by_name(experiment)
+    if by_name is not None:
+        return by_name.experiment_id
+    # Not a known name — maybe it's already an id. Validate it exists.
+    try:
+        exp = mlflow.get_experiment(experiment)
+    except Exception:
+        exp = None
+    if exp is not None:
+        return exp.experiment_id
+    raise ValueError(
+        f"MLflow experiment {experiment!r} not found "
+        "(neither a known experiment name nor a valid experiment id)"
+    )
+
+
+def search_traces_for_experiment(experiment: str, **kwargs: Any) -> Any:
+    """Search MLflow traces scoped to one experiment, given its name or id.
+
+    Resolves ``experiment`` to an id and calls
+    ``mlflow.search_traces(locations=[id], **kwargs)``. The ``locations``
+    selector matters: mlflow 3.x ``search_traces`` has **no**
+    ``experiment_names`` parameter (passing it raises ``TypeError``), and
+    ``experiment_ids`` is deprecated in favour of ``locations``. Pass-through
+    kwargs (``filter_string``, ``max_results``, ``include_spans``, …) are
+    forwarded unchanged, so callers keep full control of the query.
+    """
+    import mlflow
+
+    exp_id = _resolve_experiment_id(experiment)
+    return mlflow.search_traces(locations=[exp_id], **kwargs)
+
+
 def enable_langchain_autolog() -> bool:
     """Turn on ``mlflow.langchain.autolog()`` for deep auto-tracing.
 
