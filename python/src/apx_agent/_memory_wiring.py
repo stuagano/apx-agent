@@ -277,8 +277,12 @@ def attach_declared_memory(
                 "[tool.apx.agent.memory] build failed — skipping memory tools: %s",
                 exc,
             )
-        if store is None and mcfg.type in ("lakebase", "delta"):
-            if ws is None:
+        if store is None:
+            # A declared memory that produced no store marks the agent degraded
+            # so /readyz reports it honestly — for ANY backend type. Previously
+            # this only fired for delta/lakebase, so a different type that failed
+            # to build would leave /readyz reporting memory="ok" with no store.
+            if mcfg.type in ("lakebase", "delta") and ws is None:
                 logger.warning(
                     "[tool.apx.agent.memory] type=%r requires ws; ws=None at this point "
                     "(deploy with valid Databricks credentials). Memory tools will be absent.",
