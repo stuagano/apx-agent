@@ -32,9 +32,11 @@ them in bulk*, with one shared selection model and a uniform safety posture.
   there is no second object to tag.
 - **`fleet redeploy` can only work from workspace state.** The workspace
   exposes the deployed artifact + tags, not the source project `deploy` builds
-  from. So v1 redeploy re-promotes each agent to its **latest registered UC
-  model version**; git-rebuild-from-`apx.apps.git_sha` and config-only patching
-  are explicitly deferred to v2.
+  from. So v1 redeploy re-promotes each agent's `@prod` alias to its **latest
+  prod-tagged version** (`_apps_registry.get_latest_prod_version`) — never a
+  canary; promoting an un-soaked canary mid-soak is exactly the hazard PR #176
+  fixed for the single-agent path. Agents with no prod manifest are skipped.
+  Git-rebuild-from-`apx.apps.git_sha` and config-only patching are deferred to v2.
 - **Backfill is inherently partial.** Identity/discovery tags
   (`apx.agent.name`, `apx.apps.app_name`, `apx.serving`) can be reconstructed
   from observable workspace state; rich metadata (`apx.agent.tools`,
@@ -120,9 +122,10 @@ tags were stamped and notes the metadata it could not reconstruct. Mutating →
 dry-run by default.
 
 ### `fleet redeploy`
-For each selected agent: find its latest registered UC model version and
-re-promote the serving endpoint / app to it. Reports `old → new` version per
-agent. v1 source of truth is workspace state only (no git rebuild, no config
+For each selected agent: find its latest **prod-tagged** version
+(`get_latest_prod_version`, never a canary) and point the `@prod` alias at it.
+Reports `old → new` version per agent. v1 source of truth is workspace state
+only (no git rebuild, no config
 patch). Mutating → dry-run by default; additionally honors `--fail-fast`.
 
 ## Safety (uniform across all mutating commands)
