@@ -6481,6 +6481,50 @@ def _require_sdk(profile: str | None = None) -> "Any":
     return ws
 
 
+def _fleet_resolve(
+    ws: Any,
+    *,
+    catalog: str | None,
+    schema: str | None,
+    name_glob: str | None,
+    where_exprs: tuple[str, ...],
+    uc_names: tuple[str, ...],
+) -> list[Any]:
+    """List registered models and resolve them with the fleet selector."""
+    from apx_agent import _fleet
+
+    try:
+        models = list(ws.registered_models.list(
+            catalog_name=catalog, schema_name=schema, include_browse=False,
+        ))
+    except TypeError:
+        models = list(ws.registered_models.list())  # type: ignore[call-arg]
+    try:
+        where = _fleet.parse_where(list(where_exprs))
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+    return _fleet.resolve_agents(
+        models, catalog=catalog, schema=schema, name_glob=name_glob,
+        where=where, uc_names=list(uc_names) or None,
+    )
+
+
+def _fleet_select_options(f: Any) -> Any:
+    """Reusable selection options shared by every fleet command."""
+    f = click.option("--catalog", default=None, help="Restrict to a UC catalog.")(f)
+    f = click.option("--schema", default=None,
+                     help="Restrict to a UC schema (requires --catalog).")(f)
+    f = click.option("--name", "name_glob", default=None,
+                     help="Glob match against apx.agent.name (e.g. 'payroll-*').")(f)
+    f = click.option("--where", "where_exprs", multiple=True,
+                     help="Tag predicate key=value (repeatable, AND-ed).")(f)
+    f = click.option("--uc-name", "uc_names", multiple=True,
+                     help="Explicit registered-model name; bypasses filters.")(f)
+    f = click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+                     help="Databricks config profile.")(f)
+    return f
+
+
 @agents.command("list")
 @click.option("--catalog", default=None,
               help="Restrict to a UC catalog. Default: any.")
@@ -7347,6 +7391,54 @@ def _apps_deploy_prod_at_commit(
             "(app is live, but not version-tracked)."
         )
     return new_version
+
+
+@main.group(cls=_ApxGroup)
+def fleet() -> None:
+    """Workspace-scoped bulk operations across many apx-agents.
+
+    Select a set of agents (by --catalog/--schema scope, --name glob,
+    --where tag predicates, or explicit --uc-name) and act on them in bulk.
+    Mutating commands are dry-run by default; pass --apply to execute.
+    """
+
+
+@fleet.command("list")
+@_fleet_select_options
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]),
+              default="text", help="Output format.")
+def fleet_list_cmd(
+    catalog: str | None,
+    schema: str | None,
+    name_glob: str | None,
+    where_exprs: tuple[str, ...],
+    uc_names: tuple[str, ...],
+    profile: str | None,
+    fmt: str,
+) -> None:
+    """Resolve a selection and print the matching agents (read-only)."""
+    if schema and not catalog:
+        raise click.UsageError("--schema requires --catalog.")
+    ws = _require_sdk(profile)
+    agents_ = _fleet_resolve(
+        ws, catalog=catalog, schema=schema, name_glob=name_glob,
+        where_exprs=where_exprs, uc_names=uc_names,
+    )
+    if fmt == "json":
+        click.echo(json.dumps([
+            {"agent_name": a.name, "uc_name": a.uc_name, "model": a.model,
+             "app_name": a.app_name, "labels": a.labels}
+            for a in agents_
+        ], indent=2, default=str))
+        return
+    if not agents_:
+        click.echo("No agents matched the selection.")
+        return
+    click.echo(f"{'AGENT':<24}  {'UC NAME':<40}  {'APP':<22}  LABELS")
+    for a in agents_:
+        labels = ",".join(f"{k}={v}" for k, v in sorted(a.labels.items())) or "-"
+        click.echo(f"{(a.name or '-'):<24}  {a.uc_name:<40}  "
+                   f"{(a.app_name or '-'):<22}  {labels}")
 
 
 @main.group()

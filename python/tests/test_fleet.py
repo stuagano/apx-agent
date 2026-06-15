@@ -139,3 +139,39 @@ def test_summary_marks_dry_run():
         [_fleet.AgentOutcome("a.b.c", "ok", "would tag")], apply=False,
     )
     assert "dry-run" in text.lower()
+
+
+from unittest.mock import MagicMock, patch
+from click.testing import CliRunner
+
+from apx_agent.cli import main
+
+
+def _fake_ws(models):
+    ws = MagicMock()
+    ws.registered_models.list.return_value = iter(models)
+    return ws
+
+
+@pytest.mark.unit
+def test_fleet_list_prints_selected_agents():
+    ws = _fake_ws([
+        _model("a", **{_fleet.NAME_TAG: "payroll", "apx.label.team": "revops"}),
+        _model("b", **{_fleet.NAME_TAG: "other"}),
+    ])
+    with patch("apx_agent.cli._require_sdk", return_value=ws):
+        result = CliRunner().invoke(
+            main, ["fleet", "list", "--where", "team=revops"],
+        )
+    assert result.exit_code == 0, result.output
+    assert "payroll" in result.output
+    assert "other" not in result.output
+
+
+@pytest.mark.unit
+def test_fleet_list_json_format():
+    ws = _fake_ws([_model("a", **{_fleet.NAME_TAG: "payroll"})])
+    with patch("apx_agent.cli._require_sdk", return_value=ws):
+        result = CliRunner().invoke(main, ["fleet", "list", "--format", "json"])
+    assert result.exit_code == 0, result.output
+    assert '"payroll"' in result.output
