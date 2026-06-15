@@ -742,7 +742,7 @@ async def _check_mlflow_read() -> dict[str, Any]:
         # Stage 1: metadata-only — works even when blob storage is blocked.
         metas = list(
             client.search_traces(
-                experiment_ids=[experiment_id],
+                locations=[experiment_id],
                 max_results=1,
                 include_spans=False,
             )
@@ -754,7 +754,7 @@ async def _check_mlflow_read() -> dict[str, Any]:
         # depend on. On a blob-blocked workspace this raises (the degradation
         # H9 is about); the metadata read above already succeeded.
         full = client.search_traces(
-            experiment_ids=[experiment_id],
+            locations=[experiment_id],
             max_results=1,
             include_spans=True,
         )
