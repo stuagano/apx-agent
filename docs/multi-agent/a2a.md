@@ -23,7 +23,7 @@ On Model Serving, UC + the Mosaic AI registry are the equivalent discovery surfa
 
 When sub-agents are deployed as sibling Apps (not Model Serving endpoints), the orchestrator's calls go through the Databricks Apps SSO gateway:
 
-1. **Routes under `/api/`** accept bearer tokens; other routes trigger interactive SSO. apx-agent mounts every endpoint at both its natural path and an `/api/` mirror.
+1. **Routes under `/api/`** accept bearer tokens; other routes trigger interactive SSO. apx-agent only mounts its tool/MCP/dev-UI routes under the `/api` (`api_prefix`) path. The agent invocation endpoints — `/invocations` and `/responses` — mount only at their natural paths; there is no `/api/` mirror for them.
 2. **Each app has a service principal.** The platform creates one automatically. M2M credentials authenticate outbound calls.
 3. **CAN_USE permission** on the callee app for the caller's SP. Without it, the gateway returns 401.
 4. **FMAPI uses the app's own identity.** When app A calls app B, B's internal LLM calls use B's own SP token, not A's.
@@ -54,7 +54,7 @@ databricks api patch /api/2.0/permissions/apps/<sub-agent-name> \
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| 302 redirect (HTML login page) | Calling `/responses` instead of `/api/responses` | Use `/api/` prefix for programmatic calls |
+| 302 redirect (HTML login page) | SSO gateway intercepted an unauthenticated call | Send a bearer token; A2A calls hit `/invocations` (or `/responses`) at the natural path — there is no `/api/` variant |
 | 401 Unauthorized | Caller's SP lacks CAN_USE on callee | Grant via permissions API |
 | FMAPI 401 inside sub-agent | Sub-agent using caller's OBO for LLM calls | Set `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET` on the sub-agent |
 | `invalid_client` on M2M | Wrong SP secret (app recreated, SP changed) | Mint a new secret for the current SP |

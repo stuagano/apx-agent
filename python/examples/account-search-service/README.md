@@ -62,7 +62,7 @@ The service ships with synthetic utility account data so you can test it before 
 ```bash
 cd account-search-service
 uv sync
-DEMO_MODE=true uv run uvicorn account_search_service.backend.app:app --reload
+DEMO_MODE=true uv run uvicorn app:app --reload
 ```
 
 Then:
@@ -82,9 +82,9 @@ Expected response (demo data):
   "candidates": [
     {
       "account_id": "acct-001",
-      "first_name": "Jane",
-      "last_name": "Smith",
+      "name": "Jane Smith",
       "address": "123 Maple Ave",
+      "account_number": "acct-001",
       "score": 0.94
     }
   ]
@@ -100,7 +100,6 @@ When you're ready to connect to real data, follow Parts 1–3 below.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DEMO_MODE` | No | `"true"` → synthetic data, no live Databricks needed |
-| `VS_ENDPOINT` | Yes (live) | Vector Search endpoint name |
 | `VS_INDEX_FULL` | Yes (live) | `catalog.schema.utility_account_entities_full_idx` |
 | `VS_INDEX_LAST_ADDR` | Yes (live) | `catalog.schema.utility_account_entities_last_addr_idx` |
 | `VS_INDEX_FIRST_EMAIL` | Yes (live) | `catalog.schema.utility_account_entities_first_email_idx` |
@@ -142,7 +141,6 @@ DATABRICKS_CONFIG_PROFILE=my-workspace
 DEMO_MODE=false
 
 # Vector Search (created in Part 1 of entity-resolution-agent)
-VS_ENDPOINT=entity-resolution
 VS_INDEX_FULL=<catalog>.<schema>.utility_account_entities_full_idx
 VS_INDEX_LAST_ADDR=<catalog>.<schema>.utility_account_entities_last_addr_idx
 VS_INDEX_FIRST_EMAIL=<catalog>.<schema>.utility_account_entities_first_email_idx
@@ -180,7 +178,7 @@ tests/test_search.py::test_search_routes_to_sql_for_initials PASSED
 ### Step 5: Run locally against live data
 
 ```bash
-uv run uvicorn account_search_service.backend.app:app --reload
+uv run uvicorn app:app --reload
 ```
 
 Test a live search:
@@ -203,15 +201,13 @@ Replace the `PLACEHOLDER` values with the names from Part 1:
 ```yaml
 command:
   - uvicorn
-  - account_search_service.backend.app:app
+  - app:app
   - --workers
   - "2"
 
 env:
   - name: DEMO_MODE
     value: "false"
-  - name: VS_ENDPOINT
-    value: "entity-resolution"
   - name: VS_INDEX_FULL
     value: "catalog.schema.utility_account_entities_full_idx"
   - name: VS_INDEX_LAST_ADDR
@@ -271,9 +267,9 @@ Copy the deployed app URL — you'll need it as `SEARCH_SERVICE_URL` when deploy
   "candidates": [
     {
       "account_id": "acct-001",
-      "first_name": "Jane",
-      "last_name": "Smith",
+      "name": "Jane Smith",
       "address": "123 Main Street Denver",
+      "account_number": "acct-001",
       "score": 0.92
     }
   ]
@@ -292,17 +288,14 @@ Copy the deployed app URL — you'll need it as `SEARCH_SERVICE_URL` when deploy
 
 ```
 account-search-service/
+├── app.py                                     # FastAPI app entry point (uvicorn target: app:app)
+├── api.py                                     # HTTP route: POST /api/search
+├── models.py                                  # Pydantic models: SearchRequest, SearchResponse, Candidate
+├── search.py                                  # normalize, search, vector_search, sql_search
+├── demo_data.py                               # Synthetic accounts for DEMO_MODE
 ├── app.yml                                    # Runtime command + env vars
 ├── pyproject.toml                             # Package config and deps
 ├── databricks.yml                             # Databricks Asset Bundle config
-├── src/account_search_service/
-│   └── backend/
-│       ├── app.py                             # FastAPI app entry point
-│       ├── router.py                          # HTTP routes: /version, /current-user
-│       ├── models.py                          # Pydantic models: SearchRequest, SearchResponse
-│       └── core/
-│           ├── search.py                      # normalize, search, vector_search, sql_search
-│           └── demo_data.py                   # Synthetic accounts for DEMO_MODE
 └── tests/
     ├── conftest.py                            # Shared fixtures and mock helpers
     └── test_search.py                         # normalize, vector_search, sql_search, routing tests

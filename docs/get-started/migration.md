@@ -9,11 +9,11 @@ apx-agent is structurally aligned with both Google ADK and the OpenAI Agents SDK
 | Concept | ADK | OpenAI Agents SDK | apx-agent |
 |---------|-----|-------------------|-----------|
 | Agent definition | `LlmAgent` | `Agent` | `Agent` (alias: `LlmAgent`) |
-| Run an agent | `runner.run()` | `Runner.run()` | `agent.run(messages)` — no Runner class |
+| Run an agent | `runner.run()` | `Runner.run()` | `run_once(agent, prompt)` — no Runner class |
 | System prompt | `instruction=` | `instructions=` | `instructions=` (also accepts `instruction=`) |
 | Tool decorator | `@FunctionTool` / `tool_function` | `@function_tool` | `@tool` |
 | Tool list | `tools=[...]` | `tools=[...]` | `tools=[...]` |
-| LLM model | `model=` in `LlmAgent` | `model=` in `Agent` | `model=` in `Agent` |
+| LLM model | `model=` in `LlmAgent` | `model=` in `Agent` | `[tool.apx.agent].model` in TOML (or `model=` on `run_once` / `compile_to_chat_agent`) |
 | Callbacks — before tool | `before_tool_callback` | `@tool_input_guardrail` | `before_tool` / `before_tool_callback` |
 | Callbacks — after tool | `after_tool_callback` | _(output guardrail)_ | `after_tool` / `after_tool_callback` |
 | Callbacks — before model | `before_model_callback` | `@input_guardrail` | `before_model` / `before_model_callback` |
@@ -25,8 +25,8 @@ apx-agent is structurally aligned with both Google ADK and the OpenAI Agents SDK
 | Parallel execution | `ParallelAgent` | Parallel `Runner.run()` calls | `ParallelAgent` |
 | Retry/loop | `LoopAgent` | _(manual)_ | `LoopAgent` |
 | Wrap agent as tool | `AgentTool` | `agents_as_tools(...)` | `agent_tool(sub_agent)` |
-| Sessions (in-conversation) | `Session` + `SessionService` | `session` strategy / `conversation_id` | `SessionStore` — pass `session_id` in `custom_inputs` |
-| Cross-session memory | `MemoryService` | `to_input_list()` + external store | `MemoryBank` — `make_memory_tools` or `assemble_memory_context` |
+| Sessions (in-conversation) | `Session` + `SessionService` | `session` strategy / `conversation_id` | `ConversationStore` — pass `session_id` in `custom_inputs` |
+| Cross-session memory | `MemoryService` | `to_input_list()` + external store | `MemoryStore` — `make_memory_tools` or `assemble_memory_context` |
 | Deploy agent | _(separate infra)_ | _(separate infra)_ | `apx-agent agents deploy` — Apps or Model Serving |
 | Scaffold new agent | _(manual)_ | _(manual)_ | `apx-agent agents scaffold my-agent` |
 | Governed data access | _(manual)_ | _(manual)_ | `DataAgent`, `genie_tool`, `uc_function_tool` |
@@ -37,7 +37,7 @@ apx-agent is structurally aligned with both Google ADK and the OpenAI Agents SDK
 
 ## No Runner class
 
-**OpenAI Agents SDK developers:** There is no `Runner` class in apx-agent. Call `agent.run()` directly:
+**OpenAI Agents SDK developers:** There is no `Runner` class in apx-agent. Call `run_once()` directly:
 
 ```python
 # OpenAI Agents SDK
@@ -45,8 +45,8 @@ from agents import Agent, Runner
 result = await Runner.run(agent, input="What tables exist?")
 
 # apx-agent — same result, no Runner
-from apx_agent import Agent
-result = await agent.run([{"role": "user", "content": "What tables exist?"}])
+from apx_agent import Agent, run_once
+result = run_once(agent, "What tables exist?")
 ```
 
 For multi-turn sessions, pass a `session_id` in `custom_inputs` — the framework handles history loading and persistence automatically.
@@ -55,12 +55,18 @@ For multi-turn sessions, pass a `session_id` in `custom_inputs` — the framewor
 
 ## Streaming and iteration limits
 
-`agent.run()` returns the final text; `agent.stream()` yields chunks as they arrive:
+`run_once()` returns the final text; the compiled chat agent's `predict_stream()` yields chunks as they arrive:
 
 ```python
 # apx-agent — streaming
-async for chunk in agent.stream([{"role": "user", "content": "Explain the schema."}]):
-    print(chunk, end="", flush=True)
+from apx_agent import compile_to_chat_agent
+from mlflow.types.agent import ChatAgentMessage
+
+chat = compile_to_chat_agent(agent, model="databricks-claude-sonnet-4-6")
+for chunk in chat.predict_stream(
+    messages=[ChatAgentMessage(role="user", content="Explain the schema.")]
+):
+    print(chunk.delta.content, end="", flush=True)
 ```
 
 | ADK | OpenAI Agents SDK | apx-agent |
@@ -176,13 +182,13 @@ chat.predict(
 )
 ```
 
-Store options: `InMemorySessionStore` (dev), `DeltaSessionStore` (UC-governed Delta), `LakebaseSessionStore` (low-latency Postgres). See [sessions-and-memory.md](../running/sessions-and-memory.md).
+Store options: `InMemoryConversationStore` (dev), `DeltaConversationStore` (UC-governed Delta), `LakebaseConversationStore` (low-latency Postgres). See [sessions-and-memory.md](../running/sessions-and-memory.md).
 
 ---
 
 ## Memory
 
-ADK `MemoryService` and apx-agent `MemoryBank` are both cross-session knowledge stores with semantic retrieval. The OpenAI SDK has no built-in equivalent — it leaves cross-session state to the application.
+ADK `MemoryService` and apx-agent `MemoryStore` are both cross-session knowledge stores with semantic retrieval. The OpenAI SDK has no built-in equivalent — it leaves cross-session state to the application.
 
 ```python
 # ADK — MemoryService with built-in tools
@@ -190,10 +196,10 @@ memory_service.add_session_to_memory(session)  # extract + store
 # PreloadMemory tool auto-retrieves each turn in the agent
 
 # apx-agent — MemoryStore with make_memory_tools
-store.add(principal_id="user:alice", content="...", namespace="profile")
+store.add({"principal_id": "user:alice", "content": "...", "namespace": "profile"})
 agent = Agent(
     instructions="...",
-    tools=[*make_memory_tools(store, principal_id_resolver=lambda ctx: ctx.user_id)],
+    tools=[*make_memory_tools(store, principal_id_resolver=lambda: "user:alice")],
 )
 ```
 
@@ -259,7 +265,7 @@ See [data-agent.md](../agents/data-agent.md), [coworker.md](../agents/coworker.m
 | ADK / OpenAI param | apx-agent param | Notes |
 |--------------------|-----------------|-------|
 | `instruction` (ADK) | `instructions` | Both spellings accepted |
-| `model` | `model` | Must be a Databricks serving endpoint name |
+| `model` | `[tool.apx.agent].model` (or `model=` on `run_once` / `compile_to_chat_agent`) | Databricks serving endpoint name; not an `Agent` constructor arg |
 | `tools` | `tools` | `@tool` functions, governed primitives, or `agent_tool(agent)` wrappers |
 | `before_tool_callback` (ADK) | `before_tool_callback` or `before_tool` | Both accepted; ADK form takes precedence |
 | `after_tool_callback` (ADK) | `after_tool_callback` or `after_tool` | Both accepted |

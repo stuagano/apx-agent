@@ -83,13 +83,18 @@ Each agent's `description` becomes the transfer tool's description visible to th
 
 Routes without an LLM call. Use when the routing rule is a keyword match and you want deterministic, zero-latency routing.
 
+Pass `(name, agent, [keywords])` triples and a required `default` agent. The first branch whose keywords appear in the latest user message wins; if none match, the `default` agent handles it.
+
 ```python
 from apx_agent import KeywordRouter, Agent
 
-router = KeywordRouter([
-    (["invoice", "payment", "bill"], billing_agent),
-    (["error", "config", "setup"], tech_agent),
-])
+router = KeywordRouter(
+    branches=[
+        ("billing", billing_agent, ["invoice", "payment", "bill"]),
+        ("technical", tech_agent, ["error", "config", "setup"]),
+    ],
+    default=general_agent,
+)
 ```
 
 ## Decision guide

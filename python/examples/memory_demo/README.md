@@ -1,6 +1,6 @@
 # memory_demo
 
-A self-contained worked example showing how to wire **MemoryBank** + **ExampleStore**
+A self-contained worked example showing how to wire **MemoryStore** + **ExampleStore**
 into an `apx-agent` end-to-end.
 
 `memory_demo` ships in two run modes:
@@ -25,10 +25,11 @@ iteration suffers. The full tradeoff write-up is in
 - `app.py` — the canonical in-process demo. Seeds the stores, builds the
   system prompt, runs the `recall` / `remember` tools synchronously, and
   prints the round-trip to stdout. No LLM, no infra.
-- `agent_server/agent.py` — the same wiring, plus `compile_to_responses_agent`
-  and `@invoke()`/`@stream()` registrations for the Databricks Apps target.
-- `agent_server/start_server.py` — FastAPI entry point. Databricks Apps
-  runs this file via uvicorn.
+- `agent.py` — the same `Agent` + memory/example-store wiring, shared with the
+  local demo.
+- `agent_server/start_server.py` — FastAPI entry point, plus
+  `compile_to_responses_agent` and the `@invoke()`/`@stream()` registrations for
+  the Databricks Apps target. Databricks Apps runs this file via uvicorn.
 - `databricks.yml` — Asset Bundle config. Declares the App + the
   serving-endpoint resource the App connects to.
 - `pyproject.toml` — apps-shape dependencies (apx-agent, mlflow, fastapi, uvicorn).

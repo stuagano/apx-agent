@@ -47,7 +47,7 @@ Slack   → this handler injects X-Forwarded-Access-Token          → /response
 
 `Dependencies.UserClient` always reads `X-Forwarded-Access-Token` from request headers. For browser requests, the Databricks Apps proxy sets it automatically. For Slack, we set it ourselves after retrieving the stored user token. Same mechanism, different source — the agent code sees no difference.
 
-The moment where this becomes visible, in `slack_router.py`:
+The moment where this becomes visible, in `webhook.py`:
 
 ```python
 # Databricks Apps injects X-Forwarded-Access-Token automatically for browser requests.
@@ -153,7 +153,7 @@ SLACK_BOT_TOKEN=xoxb-...
 
 ```bash
 uv sync
-uv run uvicorn app:app --reload
+uv run uvicorn agent_server.start_server:app --reload
 ```
 
 ### Step 3: Connect your Databricks account
@@ -192,19 +192,22 @@ uv run apx-agent agents deploy
 ### Step 4: Verify
 
 ```bash
-databricks apps get slack-agent
+databricks apps get mcp-slack-agent
 # look for "state": "RUNNING"
 ```
 
 ## File Structure
 
 ```
-src/slack_agent/backend/
-├── app.py           # create_app(agent) + include slack_router
-├── agent_router.py  # LlmAgent with who_am_i tool
-├── slack_router.py  # /slack/install, /slack/oauth/callback, /slack/events
-├── token_store.py   # dict[str, str] keyed by Slack user ID
-└── config.py        # pydantic-settings BaseSettings
+slack-agent/
+├── agent.py                    # the agent with who_am_i tool
+├── webhook.py                  # /slack/install, /slack/oauth/callback, /slack/events
+├── token_store.py              # dict[str, str] keyed by Slack user ID
+├── config.py                   # pydantic-settings BaseSettings
+├── agent_server/
+│   └── start_server.py         # FastAPI entry point — mounts the webhook next to /invocations + /mcp
+├── databricks.yml              # Asset Bundle (bundle name: mcp-slack-agent)
+└── pyproject.toml
 ```
 
 ## Testing

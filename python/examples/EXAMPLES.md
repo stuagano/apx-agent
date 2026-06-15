@@ -18,7 +18,7 @@ Quick index — what each example does and which direction data/auth flows.
 | [agent-hub](./agent-hub/) | Central registry + chat UI for all deployed apx-agent apps |
 | [account-search-service](./account-search-service/) | Standalone fuzzy account lookup API — callable by other agents |
 | [afr-enrollment-api](./afr-enrollment-api/) | Deterministic AFR enrollment pipeline — no LLM, high throughput |
-| [memory_demo](./memory_demo/) | **MemoryBank + ExampleStore** — seeded memories, few-shot examples, recall/remember tools, system prompt assembled per turn. Two run modes: local in-process (`app.py`) + Databricks Apps deploy (`agent_server/` + `databricks.yml`). Verified live on fe-stable. |
+| [memory_demo](./memory_demo/) | **MemoryStore + ExampleStore** — seeded memories, few-shot examples, recall/remember tools, system prompt assembled per turn. Two run modes: local in-process (`app.py`) + Databricks Apps deploy (`agent_server/` + `databricks.yml`). Verified live on fe-stable. |
 | [customer_triage](./customer_triage/) | **HandoffAgent** over four LlmAgents (triage / billing / account / technical) with memory wired into the account specialist. Demonstrates the full apx-agent surface: `@tool(uc=...)` decorator, `Dependencies.Workspace` for OBO, `genie_tool` / `vector_search_tool`, peer handoffs, principal-keyed memory recall across handoffs. Apps-target deploy verified live on fe-stable. |
 
 ## Experimental
@@ -31,7 +31,7 @@ Quick index — what each example does and which direction data/auth flows.
 
 | Example | What it does |
 |---------|-------------|
-| [databricks-mcp-server](./databricks-mcp-server/) | Exposes 71 Databricks operations as MCP tools over SSE |
+| [databricks-mcp-server](./databricks-mcp-server/) | Exposes ~44 Databricks operations as MCP tools over stdio |
 | [databricks-skills](./databricks-skills/) | Claude Code skills for Databricks workflows |
 | [databricks-tools-core](./databricks-tools-core/) | Core Databricks auth and tool primitives shared across examples |
 

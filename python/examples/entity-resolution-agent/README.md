@@ -78,7 +78,7 @@ from apx_agent import LlmAgent, HandoffAgent, Dependencies
 # One agent with a tool list
 supervisor = LlmAgent(
     tools=[normalize_record, search_accounts],
-    system_prompt=SUPERVISOR_INSTRUCTIONS,
+    instructions=SUPERVISOR_INSTRUCTIONS,
 )
 
 # Coordinator that routes between multiple agents
@@ -89,7 +89,7 @@ agent = HandoffAgent(
 )
 ```
 
-`LlmAgent` wraps Claude with a tool list and system prompt. `HandoffAgent` coordinates multiple `LlmAgent`s using a handoff protocol — the active agent can transfer control to a named sibling agent.
+`LlmAgent` wraps Claude with a tool list and instructions. `HandoffAgent` coordinates multiple `LlmAgent`s using a handoff protocol — the active agent can transfer control to a named sibling agent.
 
 `Dependencies.Workspace` is a type alias for the Databricks SDK `WorkspaceClient`. Tool functions that declare it as a parameter receive a per-request client automatically — no manual token handling.
 
@@ -151,7 +151,7 @@ The agent uses a **Supervisor → Evaluator** pattern:
 4. The enrollment decision (`EXACT` / `HIGH_CONFIDENCE` / `LOW_CONFIDENCE` / `NO_MATCH`) is written to the decisions table and returned.
 
 Entry point:
-- **`POST /api/chat`** — LLM-powered reasoning for ambiguous edge cases
+- **`POST /responses`** — invoke the agent (streaming SSE or blocking JSON); the Supervisor → Evaluator HandoffAgent handles reasoning for ambiguous edge cases
 
 ---
 
@@ -181,16 +181,16 @@ The chat interface opens at `http://localhost:8000`. Try:
 
 > *Match: "Jon Smyth, 123 Maple Ave Denver"*
 
-The agent will normalize the input, call the demo search functions backed by `core/demo_data.py`, and return a confidence-scored decision — no VS index, no SQL warehouse, no Databricks connection needed.
+The agent will normalize the input, call the demo search functions backed by `demo_data.py`, and return a confidence-scored decision — no VS index, no SQL warehouse, no Databricks connection needed.
 
-To test the deterministic endpoint in demo mode:
+To invoke the agent directly over HTTP in demo mode:
 
 ```bash
 DEMO_MODE=true uv run uvicorn app:app --reload &
 
-curl -s -X POST http://localhost:8000/api/enroll \
+curl -s -X POST http://localhost:8000/responses \
   -H "Content-Type: application/json" \
-  -d '{"applicant_name": "J. Williams", "address": "55 Oak St"}' \
+  -d '{"input": "Match: J. Williams, 55 Oak St"}' \
   | python3 -m json.tool
 ```
 
@@ -476,7 +476,7 @@ curl -s https://<your-app-url>/api/version \
 
 ## API reference
 
-### POST /api/chat
+### POST /responses
 
 LLM-powered reasoning via the Supervisor → Evaluator HandoffAgent. Use for ambiguous edge cases — nicknames (Liz → Elizabeth), maiden names, multi-account households, or when the deterministic `afr-enrollment-api` returns `LOW_CONFIDENCE`.
 
@@ -632,16 +632,16 @@ afr-enrollment-api/             ← sibling: deterministic enrollment pipeline
 The top-level wiring. Calls `create_app(agent)` to get the A2A protocol surface (`POST /responses`, `GET /.well-known/agent.json`, `GET /health`), then attaches additional routers:
 
 ```python
-app = create_app(agent)          # A2A protocol surface
-app.include_router(router)       # /api/version, /api/current-user
+app = create_app(agent)              # A2A protocol surface
+app.include_router(api_router)        # /api/version, /api/current-user
 app.include_router(build_dev_ui_router())  # /_apx/agent dev UI
 ```
 
 The optional custom SPA (served at `/`) is mounted at the end — after the protocol routes — so `POST /responses` always takes precedence. If no built client exists, `/` redirects to the APX dev UI.
 
-**`agent_router.py` — HandoffAgent wiring**
+**`agent.py` — HandoffAgent wiring**
 
-Instantiates the two `LlmAgent`s and assembles them into the `HandoffAgent`:
+Imports the two `LlmAgent`s from `sub_agents/` and assembles them into the `HandoffAgent`:
 
 ```python
 agent = HandoffAgent(
@@ -653,36 +653,32 @@ agent = HandoffAgent(
 
 This is the object passed to `create_app`. One file, one responsibility: the agent topology.
 
-**`router.py` — Application-specific routes**
+**`api.py` — Application-specific routes**
 
-Optional HTTP routes that aren't part of the A2A protocol surface:
+Optional HTTP routes that aren't part of the A2A protocol surface (mounted under `/api`):
 
 - `GET /api/version` — returns the package version (useful for verifying which build is running)
 - `GET /api/current-user` — proxies the Databricks `current-user.me()` API using the caller's OAuth token, so the UI can display who's logged in
 
-These use `Dependencies.UserClient` — a per-request `WorkspaceClient` scoped to the *caller's* identity (not the app's service principal). You can add more routes here or remove these entirely without affecting the agent.
+`GET /api/current-user` uses `Dependencies.UserClient` — a per-request `WorkspaceClient` scoped to the *caller's* identity (not the app's service principal). You can add more routes here or remove these entirely without affecting the agent.
 
-**`models.py` — Pydantic models**
+**`sub_agents/supervisor/agent.py`** — `normalize_record` and `search_accounts` tools, plus the `supervisor` `LlmAgent`. Handles VS fan-out, SQL fallback for initials/acronyms, and DEMO_MODE.
 
-Pydantic response schemas for the routes in `router.py`. Currently just `VersionOut`. Add models here when you add routes that need structured response validation.
+**`sub_agents/evaluator/agent.py`** — `evaluate_candidates` and `log_decision` tools, plus the `evaluator` `LlmAgent`. Scores candidates, detects familial accounts, writes the decision to the AFR table.
 
-**`core/supervisor.py`** — `normalize_record` and `search_accounts` tools. Handles VS fan-out, SQL fallback for initials/acronyms, and DEMO_MODE.
-
-**`core/evaluator.py`** — `evaluate_candidates` and `log_decision` tools. Scores candidates, detects familial accounts, writes the decision to the AFR table.
-
-**`core/demo_data.py`** — Synthetic utility accounts returned in DEMO_MODE. No Databricks connection needed.
+**`demo_data.py`** — Synthetic utility accounts returned in DEMO_MODE. No Databricks connection needed.
 
 ```
-src/entity_resolution_agent/
-└── backend/
-    ├── app.py          ← entry point: create_app + route assembly
-    ├── agent_router.py ← HandoffAgent: supervisor → evaluator
-    ├── router.py       ← /api/version, /api/current-user
-    ├── models.py       ← Pydantic schemas for router.py
-    └── core/
-        ├── supervisor.py   ← normalize_record, search_accounts
-        ├── evaluator.py    ← evaluate_candidates, log_decision
-        └── demo_data.py    ← synthetic accounts for DEMO_MODE
+entity-resolution-agent/
+├── app.py                  ← entry point: create_app + route assembly
+├── agent.py                ← HandoffAgent: supervisor → evaluator
+├── api.py                  ← /api/version, /api/current-user
+├── demo_data.py            ← synthetic accounts for DEMO_MODE
+└── sub_agents/
+    ├── supervisor/
+    │   └── agent.py        ← normalize_record, search_accounts, supervisor
+    └── evaluator/
+        └── agent.py        ← evaluate_candidates, log_decision, evaluator
 tests/
 ├── conftest.py              ← shared fixtures, mock VS client
 ├── test_agent_wiring.py     ← HandoffAgent smoke tests
@@ -707,7 +703,7 @@ One or more of `VS_INDEX_FULL`, `VS_INDEX_LAST_ADDR`, `VS_INDEX_FIRST_EMAIL` is 
 `UTILITY_ACCOUNT_TABLE` isn't accessible from the SQL warehouse. Confirm the table exists (`DESCRIBE TABLE <table>`) and your service principal has `SELECT` permission.
 
 **Low match rates**
-`databricks-gte-large-en` is optimized for semantic similarity, not character-level fuzzy matching. Common gaps: nicknames (Bob / Robert), single-character-off typos. To extend, add a nickname expansion map to `evaluate_candidates` — see the `EVALUATOR_INSTRUCTIONS` comment in `core/evaluator.py`.
+`databricks-gte-large-en` is optimized for semantic similarity, not character-level fuzzy matching. Common gaps: nicknames (Bob / Robert), single-character-off typos. To extend, add a nickname expansion map to `evaluate_candidates` — see the `EVALUATOR_INSTRUCTIONS` comment in `sub_agents/evaluator/agent.py`.
 
 **Index sync lag after bulk imports**
 With `pipeline_type: TRIGGERED`, the index doesn't auto-sync. Trigger manually after large data loads:

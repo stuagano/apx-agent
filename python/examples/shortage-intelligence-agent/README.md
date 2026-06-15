@@ -12,7 +12,7 @@ The agent runs a five-step sequential investigation:
 
 1. **Demand Cluster Detection** — scans internal orders for components requested by multiple customers within 48 hours
 2. **Historical Pattern Analysis** — looks up prior shortage events, price deltas, and average duration
-3. **Market Signal Validation** — queries a Knowledge Assistant to confirm signals against industry news
+3. **Market Signal Validation** — queries a Databricks Vector Search index to confirm signals against industry news
 4. **Vendor Pricing** — checks DigiKey for live price, stock quantity, and lead time; finds spec-matched alternative parts
 5. **Dual Report Generation** — synthesizes findings into separate reports for the sourcing and sales teams
 
@@ -73,7 +73,7 @@ The five steps are strictly ordered and each builds on prior output:
 | Unity Catalog demand orders table | Step 1 (primary) | `DEMAND_ORDERS_TABLE` |
 | Databricks Genie space | Step 1 (fallback if no table) | `DEMAND_GENIE_SPACE_ID` |
 | Unity Catalog historical table | Step 2 | `HISTORICAL_DEMAND_TABLE` |
-| Knowledge Assistant endpoint | Step 3 | `KA_ENDPOINT` |
+| Vector Search index | Step 3 | `VS_ENDPOINT`, `VS_INDEX` |
 | DigiKey API | Step 4 | `DIGIKEY_CLIENT_ID`, `DIGIKEY_CLIENT_SECRET` |
 | Unity Catalog parts catalog | Step 4 (alternatives) | `PARTS_CATALOG_TABLE` |
 
@@ -138,16 +138,15 @@ If you don't have a structured `demand_orders` table yet, a Genie space backed b
 
 > If both `DEMAND_ORDERS_TABLE` and `DEMAND_GENIE_SPACE_ID` are set, the table takes precedence.
 
-### Step 3: (Optional) Set up a Knowledge Assistant endpoint
+### Step 3: (Optional) Set up a Vector Search index
 
-The market signal validation step (Step 3) queries a Knowledge Assistant loaded with industry reports, supplier bulletins, or internal market intelligence documents.
+The market signal validation step (Step 3) queries a Databricks Vector Search index built over industry reports, supplier bulletins, or internal market intelligence documents. The tool calls `ws.vector_search_indexes.query_index` and expects the index to expose `chunk_id`, `source_file`, and `content` columns.
 
-1. In the Databricks UI, go to **AI/BI → Knowledge Assistants**
-2. Create a new endpoint and upload your document corpus
-3. Copy the endpoint URL
-4. Set `KA_ENDPOINT` to this URL
+1. In the Databricks UI, go to **Compute → Vector Search** and create (or reuse) a Vector Search endpoint
+2. Create an index over your document corpus, including `chunk_id`, `source_file`, and `content` columns
+3. Set `VS_ENDPOINT` to the endpoint name and `VS_INDEX` to the full index name (`catalog.schema.index`)
 
-If `KA_ENDPOINT` is not configured, Step 3 returns a stub and the agent continues with Steps 4 and 5.
+If `VS_ENDPOINT` and `VS_INDEX` are not configured, Step 3 returns a low-confidence stub and the agent continues with Steps 4 and 5.
 
 ### Step 4: (Optional) Get DigiKey API credentials
 
@@ -219,7 +218,7 @@ databricks current-user me --profile my-workspace
 
 ```env
 DATABRICKS_CONFIG_PROFILE=my-workspace
-AGENT_MODEL=databricks-claude-sonnet-4-6
+AGENT_MODEL=databricks-claude-opus-4-7
 
 # Unity Catalog tables (from Step 1)
 DEMAND_ORDERS_TABLE=catalog.schema.demand_orders
@@ -228,7 +227,8 @@ PARTS_CATALOG_TABLE=catalog.schema.parts_catalog
 
 # Optional integrations
 # DEMAND_GENIE_SPACE_ID=01ef...
-# KA_ENDPOINT=https://<workspace>.databricks.com/api/2.0/knowledge-assistants/endpoints/<name>/query
+# VS_ENDPOINT=<vector-search-endpoint-name>
+# VS_INDEX=catalog.schema.market_intelligence_idx
 # DIGIKEY_CLIENT_ID=...
 # DIGIKEY_CLIENT_SECRET=...
 # SLACK_WEBHOOK_SOURCING=https://hooks.slack.com/services/...
@@ -277,7 +277,7 @@ Replace the empty strings with the names from Part 1:
 ```yaml
 env:
   - name: AGENT_MODEL
-    value: "databricks-claude-sonnet-4-6"
+    value: "databricks-claude-opus-4-7"
   - name: DEMAND_ORDERS_TABLE
     value: "catalog.schema.demand_orders"
   - name: HISTORICAL_DEMAND_TABLE
@@ -287,7 +287,9 @@ env:
   # Optional — leave empty to skip that step
   - name: DEMAND_GENIE_SPACE_ID
     value: ""
-  - name: KA_ENDPOINT
+  - name: VS_ENDPOINT
+    value: ""
+  - name: VS_INDEX
     value: ""
   - name: DIGIKEY_CLIENT_ID
     value: ""
@@ -335,11 +337,12 @@ If Slack webhooks are not configured, reports are logged to the job run output i
 
 | Variable | Description |
 |----------|-------------|
-| `AGENT_MODEL` | Databricks model serving endpoint name (default: `databricks-claude-sonnet-4-6`) |
+| `AGENT_MODEL` | Databricks model serving endpoint name (default: `databricks-claude-opus-4-7`) |
 | `DEMAND_ORDERS_TABLE` | UC table for demand orders (`catalog.schema.table`) |
 | `DEMAND_GENIE_SPACE_ID` | Genie space ID — used if `DEMAND_ORDERS_TABLE` is not set |
 | `HISTORICAL_DEMAND_TABLE` | UC table for historical shortage events |
-| `KA_ENDPOINT` | Knowledge Assistant endpoint URL |
+| `VS_ENDPOINT` | Vector Search endpoint name for market intelligence validation |
+| `VS_INDEX` | Vector Search index full name (`catalog.schema.index`) |
 | `PARTS_CATALOG_TABLE` | UC table for parts catalog and alternative lookup |
 | `DIGIKEY_CLIENT_ID` | DigiKey OAuth2 client ID |
 | `DIGIKEY_CLIENT_SECRET` | DigiKey OAuth2 client secret |
@@ -404,7 +407,7 @@ Migration status:
 | Deploy via `apx-agent agents deploy` (chains publish-tools + log_agent + agents.deploy + set_uc_tags) | ✅ shipped |
 | `evalset.jsonl` for `apx-agent eval chain` | ✅ shipped |
 | Extract `classify_shortage_severity` as `@tool(uc=...)` (worked UC-function example) | ✅ shipped |
-| Wire `DeltaSessionStore` (multi-turn) | ✅ shipped 2026-05-25 |
+| Wire `DeltaConversationStore` (multi-turn) | ✅ shipped 2026-05-25 |
 | Wire `WatchdogGuard` + local guards | ✅ shipped 2026-05-25 |
 | Move data-fetching tools to `@tool(uc=...)` | ❌ blocked — needs user-scoped OBO |
 
@@ -413,7 +416,7 @@ Migration status:
 ```bash
 apx-agent agents deploy \
   --module agent:agent \
-  --model databricks-claude-sonnet-4-6 \
+  --model databricks-claude-opus-4-7 \
   --name main.agents.shortage_intelligence \
   --agent-name shortage_intelligence \
   --experiment /Users/me@company.com/agents/shortage_intelligence
