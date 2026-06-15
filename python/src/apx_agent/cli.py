@@ -7500,6 +7500,64 @@ def fleet_tag_cmd(
         raise SystemExit(code)
 
 
+@fleet.command("backfill")
+@click.option("--uc-name", "uc_names", multiple=True, required=True,
+              help="Registered-model name to backfill (repeatable, required).")
+@click.option("--name", "agent_name", default=None,
+              help="apx.agent.name to stamp. Defaults to the model name.")
+@click.option("--app", "app_name", default=None,
+              help="Workspace App name to stamp as apx.apps.app_name.")
+@click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks config profile.")
+def fleet_backfill_cmd(
+    uc_names: tuple[str, ...],
+    agent_name: str | None,
+    app_name: str | None,
+    apply: bool,
+    profile: str | None,
+) -> None:
+    """Stamp missing identity/discovery tags onto agents that predate tagging.
+
+    Partial by design: stamps apx.agent.name, apx.serving, and (with --app)
+    apx.apps.app_name. It cannot reconstruct apx.agent.tools/resources/metadata.
+    """
+    from apx_agent import _fleet
+
+    from mlflow.tracking import MlflowClient
+    client = MlflowClient()
+
+    outcomes: list[_fleet.AgentOutcome] = []
+    for uc in uc_names:
+        try:
+            existing = {t.key: t.value
+                        for t in (getattr(client.get_registered_model(uc), "tags", None) or [])}
+            want = {
+                _fleet.NAME_TAG: agent_name or uc.split(".")[-1],
+                "apx.serving": "apps",
+            }
+            if app_name:
+                want[_fleet.APP_NAME_TAG] = app_name
+            missing = {k: v for k, v in want.items() if k not in existing}
+            if not missing:
+                outcomes.append(_fleet.AgentOutcome(uc, "skipped", "already tagged"))
+                continue
+            if apply:
+                for k, v in missing.items():
+                    client.set_registered_model_tag(uc, k, v)
+            detail = "stamp " + ",".join(sorted(missing))
+            outcomes.append(_fleet.AgentOutcome(uc, "ok", detail))
+        except Exception as e:
+            outcomes.append(_fleet.AgentOutcome(uc, "failed", str(e)))
+
+    text, code = _fleet.render_summary(outcomes, apply=apply)
+    click.echo(text)
+    if not apply:
+        click.echo("Note: backfill cannot reconstruct tools/resources/metadata.")
+    if code:
+        raise SystemExit(code)
+
+
 @main.group()
 def canary() -> None:
     """Canary / A-B deployment helpers — multi-version traffic split."""

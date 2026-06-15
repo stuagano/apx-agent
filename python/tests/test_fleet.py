@@ -232,3 +232,47 @@ def test_fleet_tag_refuses_reserved_namespace():
         )
     assert result.exit_code != 0
     assert "reserved" in result.output.lower()
+
+
+def _fake_mlflow_model(tags: dict):
+    return SimpleNamespace(
+        tags=[SimpleNamespace(key=k, value=v) for k, v in tags.items()],
+    )
+
+
+@pytest.mark.unit
+def test_fleet_backfill_stamps_missing_identity_tags():
+    client = MagicMock()
+    client.get_registered_model.return_value = _fake_mlflow_model({})  # no tags
+    with patch("mlflow.tracking.MlflowClient", return_value=client):
+        result = CliRunner().invoke(
+            main, ["fleet", "backfill", "--uc-name", "cat.sch.payroll",
+                   "--name", "payroll", "--app", "payroll-app", "--apply"],
+        )
+    assert result.exit_code == 0, result.output
+    calls = {c.args[1]: c.args[2]
+             for c in client.set_registered_model_tag.call_args_list}
+    assert calls["apx.agent.name"] == "payroll"
+    assert calls["apx.apps.app_name"] == "payroll-app"
+    assert calls["apx.serving"] == "apps"
+
+
+@pytest.mark.unit
+def test_fleet_backfill_dry_run_writes_nothing():
+    client = MagicMock()
+    client.get_registered_model.return_value = _fake_mlflow_model({})
+    with patch("mlflow.tracking.MlflowClient", return_value=client):
+        result = CliRunner().invoke(
+            main, ["fleet", "backfill", "--uc-name", "cat.sch.payroll",
+                   "--name", "payroll"],
+        )
+    assert result.exit_code == 0, result.output
+    assert "dry-run" in result.output.lower()
+    client.set_registered_model_tag.assert_not_called()
+
+
+@pytest.mark.unit
+def test_fleet_backfill_requires_uc_name():
+    result = CliRunner().invoke(main, ["fleet", "backfill", "--name", "x"])
+    assert result.exit_code != 0
+    assert "uc-name" in result.output.lower()
