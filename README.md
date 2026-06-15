@@ -260,6 +260,7 @@ apx-agent agents run               # local FastAPI dev server (/_apx/agent)
 apx-agent agents deploy --target apps  # deploy to Databricks Apps
 apx-agent eval run evalset.jsonl   # run against deployed endpoint with LLM judge
 apx-agent traces list --agent <name>   # recent MLflow traces filtered by apx.* attributes
+apx-agent fleet list --where team=revops   # bulk ops across many agents (tag/backfill/redeploy; dry-run by default)
 apx-agent doctor                   # diagnose auth, deps, project layout
 ```
 
