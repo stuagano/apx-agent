@@ -37,9 +37,9 @@ def test_remember_tool_claim_matches_reality() -> None:
 
     # The write tool CLAIMS success...
     claim = remember(content="the deploy target is apps")
-    expect(claim).contains("Saved memory")
+    expect(claim).contains("Saved memory").verify()
 
     # ...claim-vs-reality: the memory must actually be recallable through the
     # tool, not just reported as saved.
     out = recall(query="deploy target")
-    expect(out).contains("apps")
+    expect(out).contains("apps").verify()
