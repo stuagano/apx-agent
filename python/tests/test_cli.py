@@ -4298,3 +4298,34 @@ class TestExamplesImport:
             ])
         assert result.exit_code != 0
         assert ".xml" in result.output or "unsupported" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# Regression: coworker-gen must pass ChatMessage objects to serving_endpoints.query,
+# not raw dicts. The SDK calls .as_dict() on each message, so dicts AttributeError
+# at runtime — the bug this guards (path was previously untested).
+# ---------------------------------------------------------------------------
+
+
+def test_generate_coworker_yaml_passes_chatmessage_not_dicts() -> None:
+    from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+
+    from apx_agent.cli import _generate_coworker_yaml
+
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="name: demo\n"))]
+    )
+    answers = iter(["Salesforce", "deals", "NetSuite", "invoices", "account_id", "RevOps", "unbilled deals"])
+
+    with patch("apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)), patch(
+        "databricks.sdk.WorkspaceClient", return_value=fake_ws
+    ):
+        out = _generate_coworker_yaml(None)
+
+    assert out == "name: demo"
+    msgs = fake_ws.serving_endpoints.query.call_args.kwargs["messages"]
+    assert msgs and all(isinstance(m, ChatMessage) for m in msgs), (
+        f"messages must be ChatMessage objects (SDK calls .as_dict()); got {[type(m).__name__ for m in msgs]}"
+    )
+    assert msgs[0].role == ChatMessageRole.USER
