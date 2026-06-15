@@ -276,3 +276,60 @@ def test_fleet_backfill_requires_uc_name():
     result = CliRunner().invoke(main, ["fleet", "backfill", "--name", "x"])
     assert result.exit_code != 0
     assert "uc-name" in result.output.lower()
+
+
+@pytest.mark.unit
+def test_fleet_redeploy_promotes_when_latest_differs():
+    ws = _fake_ws([_model("a", catalog="cat", schema="sch",
+                          **{_fleet.NAME_TAG: "payroll"})])
+    with patch("apx_agent.cli._require_sdk", return_value=ws), \
+         patch("apx_agent._apps_registry.get_latest_apps_version", return_value="5"), \
+         patch("apx_agent._apps_registry.get_prod_alias_version", return_value="3"), \
+         patch("apx_agent._apps_registry.set_prod_alias_version") as setp:
+        result = CliRunner().invoke(main, ["fleet", "redeploy", "--apply"])
+    assert result.exit_code == 0, result.output
+    setp.assert_called_once_with("cat.sch.a", "5")
+    assert "3" in result.output and "5" in result.output
+
+
+@pytest.mark.unit
+def test_fleet_redeploy_skips_when_already_latest():
+    ws = _fake_ws([_model("a", catalog="cat", schema="sch",
+                          **{_fleet.NAME_TAG: "payroll"})])
+    with patch("apx_agent.cli._require_sdk", return_value=ws), \
+         patch("apx_agent._apps_registry.get_latest_apps_version", return_value="5"), \
+         patch("apx_agent._apps_registry.get_prod_alias_version", return_value="5"), \
+         patch("apx_agent._apps_registry.set_prod_alias_version") as setp:
+        result = CliRunner().invoke(main, ["fleet", "redeploy", "--apply"])
+    assert result.exit_code == 0, result.output
+    setp.assert_not_called()
+    assert "skipped" in result.output.lower()
+
+
+@pytest.mark.unit
+def test_fleet_redeploy_dry_run_writes_nothing():
+    ws = _fake_ws([_model("a", catalog="cat", schema="sch",
+                          **{_fleet.NAME_TAG: "payroll"})])
+    with patch("apx_agent.cli._require_sdk", return_value=ws), \
+         patch("apx_agent._apps_registry.get_latest_apps_version", return_value="5"), \
+         patch("apx_agent._apps_registry.get_prod_alias_version", return_value="3"), \
+         patch("apx_agent._apps_registry.set_prod_alias_version") as setp:
+        result = CliRunner().invoke(main, ["fleet", "redeploy"])
+    assert result.exit_code == 0, result.output
+    setp.assert_not_called()
+    assert "dry-run" in result.output.lower()
+
+
+@pytest.mark.unit
+def test_fleet_redeploy_fail_fast_stops_at_first_error():
+    ws = _fake_ws([
+        _model("a", catalog="cat", schema="sch", **{_fleet.NAME_TAG: "a"}),
+        _model("b", catalog="cat", schema="sch", **{_fleet.NAME_TAG: "b"}),
+    ])
+    with patch("apx_agent.cli._require_sdk", return_value=ws), \
+         patch("apx_agent._apps_registry.get_latest_apps_version",
+               side_effect=RuntimeError("boom")), \
+         patch("apx_agent._apps_registry.get_prod_alias_version", return_value="1"):
+        result = CliRunner().invoke(main, ["fleet", "redeploy", "--apply", "--fail-fast"])
+    assert result.exit_code == 1
+    assert result.output.count("failed") >= 1

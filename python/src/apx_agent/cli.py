@@ -7558,6 +7558,61 @@ def fleet_backfill_cmd(
         raise SystemExit(code)
 
 
+@fleet.command("redeploy")
+@_fleet_select_options
+@click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
+@click.option("--fail-fast", is_flag=True, help="Stop at the first failure.")
+def fleet_redeploy_cmd(
+    catalog: str | None,
+    schema: str | None,
+    name_glob: str | None,
+    where_exprs: tuple[str, ...],
+    uc_names: tuple[str, ...],
+    profile: str | None,
+    apply: bool,
+    fail_fast: bool,
+) -> None:
+    """Re-promote each selected agent's @prod alias to its latest version."""
+    from apx_agent import _apps_registry, _fleet
+
+    if schema and not catalog:
+        raise click.UsageError("--schema requires --catalog.")
+    ws = _require_sdk(profile)
+    agents_ = _fleet_resolve(
+        ws, catalog=catalog, schema=schema, name_glob=name_glob,
+        where_exprs=where_exprs, uc_names=uc_names,
+    )
+    if not agents_:
+        click.echo("No agents matched the selection.")
+        return
+
+    outcomes: list[_fleet.AgentOutcome] = []
+    for a in agents_:
+        try:
+            latest = _apps_registry.get_latest_apps_version(a.uc_name)
+            current = _apps_registry.get_prod_alias_version(a.uc_name)
+            if latest is None:
+                outcomes.append(_fleet.AgentOutcome(a.uc_name, "skipped", "no versions"))
+                continue
+            if latest == current:
+                outcomes.append(_fleet.AgentOutcome(
+                    a.uc_name, "skipped", f"already @{latest}"))
+                continue
+            if apply:
+                _apps_registry.set_prod_alias_version(a.uc_name, latest)
+            outcomes.append(_fleet.AgentOutcome(
+                a.uc_name, "ok", f"{current or '-'} -> {latest}"))
+        except Exception as e:
+            outcomes.append(_fleet.AgentOutcome(a.uc_name, "failed", str(e)))
+            if fail_fast:
+                break
+
+    text, code = _fleet.render_summary(outcomes, apply=apply)
+    click.echo(text)
+    if code:
+        raise SystemExit(code)
+
+
 @main.group()
 def canary() -> None:
     """Canary / A-B deployment helpers — multi-version traffic split."""
