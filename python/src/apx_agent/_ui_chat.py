@@ -1325,7 +1325,59 @@ function newConversation() {{
   devThreadId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
   sessionStorage.setItem(_THREAD_KEY, devThreadId);
   chat.innerHTML = '';
+  history.length = 0;  // reset request payload so a new conversation starts clean
   loadConversationHistory();
+}}
+
+// ── Approvals (ASK policy human-in-the-loop) ──
+// Backend: GET /_apx/approvals, POST /_apx/approvals/{{id}}/approve|deny (see _dev.py).
+// ASK policy is non-blocking/retry-based: a gated tool is refused for the turn,
+// the turn ends, the card surfaces here, and approving auto-submits a retry turn.
+async function checkPendingApprovals() {{
+  let pending = [];
+  try {{
+    const r = await fetch('/_apx/approvals');
+    if (!r.ok) return;
+    pending = await r.json();
+    if (!Array.isArray(pending)) return;
+  }} catch {{ return; }}
+  for (const a of pending) {{
+    // One card per approval; skip if already rendered.
+    if (document.querySelector(`[data-approval-id="${{a.id}}"]`)) continue;
+    const card = document.createElement('div');
+    card.className = 'approval-card';
+    card.dataset.approvalId = a.id;
+    card.style.cssText = 'margin:8px 0;padding:10px 12px;border:1px solid #6b4f00;border-radius:8px;background:#1a1400';
+    const argsStr = JSON.stringify(a.arguments || {{}}, null, 0);
+    card.innerHTML = `
+      <div style="font-size:12px;color:#facc15;font-weight:600;margin-bottom:4px">⏸ Approval required: ${{esc(a.tool_name)}}</div>
+      ${{a.reason ? `<div style="font-size:11px;color:#aaa;margin-bottom:4px">${{esc(a.reason)}}</div>` : ''}}
+      <div style="font-size:11px;color:#888;font-family:monospace;margin-bottom:8px;word-break:break-all">${{esc(argsStr.slice(0, 300))}}</div>
+      <button onclick="resolveApproval('${{a.id}}', true, this)" style="background:#14532d;color:#4ade80;border:1px solid #166534;border-radius:5px;padding:4px 14px;cursor:pointer;font-size:12px;margin-right:8px">Approve</button>
+      <button onclick="resolveApproval('${{a.id}}', false, this)" style="background:#2a0a0a;color:#f87171;border:1px solid #7f1d1d;border-radius:5px;padding:4px 14px;cursor:pointer;font-size:12px">Deny</button>`;
+    chat.appendChild(card);
+    chat.scrollTop = chat.scrollHeight;
+  }}
+}}
+
+async function resolveApproval(id, approved, btn) {{
+  const card = btn.closest('.approval-card');
+  if (card) card.querySelectorAll('button').forEach(b => b.disabled = true);
+  try {{
+    const r = await fetch(`/_apx/approvals/${{id}}/${{approved ? 'approve' : 'deny'}}`, {{ method: 'POST' }});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  }} catch (err) {{
+    if (card) card.querySelectorAll('button').forEach(b => b.disabled = false);
+    addMsg('assistant', `Approval update failed: ${{err.message}}`, false);
+    return;
+  }}
+  if (card) card.remove();
+  // Close the loop: tell the agent the decision so it retries (approved) or
+  // moves on (denied) without the user retyping.
+  inputEl.value = approved
+    ? `I approved request ${{id}}. Please retry the action.`
+    : `I denied request ${{id}}. Do not retry that action.`;
+  form.requestSubmit();
 }}
 
 async function promoteToEval(convId, label) {{
@@ -1350,6 +1402,7 @@ async function switchConversation(id) {{
   devThreadId = id;
   sessionStorage.setItem(_THREAD_KEY, id);
   chat.innerHTML = '';
+  history.length = 0;  // reset request payload so the switched-to conversation starts clean
   document.querySelectorAll('.conv-item').forEach(el => {{
     el.classList.toggle('active', el.dataset.id === id);
   }});
@@ -1632,6 +1685,8 @@ if (!devThreadId) {{
 
 // Load the conversation history list on page load (History is the default tab).
 loadConversationHistory();
+// Surface any approvals already pending when the UI is (re)opened.
+checkPendingApprovals();
 
 function fmt(v) {{
   if (v === null || v === undefined) return 'null';
@@ -2487,6 +2542,8 @@ form.addEventListener('submit', async e => {{
   inputEl.focus();
   // Refresh history list so the new/updated conversation appears.
   loadConversationHistory();
+  // Surface any ASK-policy approval requests raised during this turn.
+  checkPendingApprovals();
 }});
 
 // ── Resizable panel ──
