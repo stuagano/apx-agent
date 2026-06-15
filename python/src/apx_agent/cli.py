@@ -35,7 +35,7 @@ import sys
 import time
 import warnings
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple, cast
 
 import click
 
@@ -1604,7 +1604,10 @@ def _generate_coworker_yaml(profile: "str | None") -> str:
             ],
             max_tokens=1200,
         )
-        return response.choices[0].message.content.strip()
+        choices = response.choices
+        if not choices or choices[0].message is None or choices[0].message.content is None:
+            raise click.ClickException("LLM returned an empty response.")
+        return choices[0].message.content.strip()
     except Exception as exc:
         raise click.ClickException(
             f"LLM generation failed: {exc}\n"
@@ -2313,7 +2316,7 @@ def scaffold(
             catalog = _pick_from_list(_ws_list_catalogs(ws), "Select catalog")
         if schema == "list":
             click.echo(f"\nAvailable schemas in {catalog}:")
-            schema = _pick_from_list(_ws_list_schemas(ws, catalog), "Select schema")
+            schema = _pick_from_list(_ws_list_schemas(ws, catalog or ""), "Select schema")
         click.echo(f"\n→ apx scaffold {name} --template {scaffold_template or 'coworker'} --catalog {catalog} --schema {schema}\n")
         _scaffold_sanity_check(ws, scaffold_template or "coworker", catalog, schema)
     elif scaffold_template and (catalog or schema):
@@ -3013,7 +3016,7 @@ def apps_list(profile: str | None, host: str | None) -> None:
                 ts = app.update_time
                 if isinstance(ts, (int, float)):
                     ts = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-                updated = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts, "strftime") else str(ts)[:16]
+                updated = ts.strftime("%Y-%m-%d %H:%M") if isinstance(ts, datetime) else str(ts)[:16]
             except Exception:
                 pass
 
@@ -4665,7 +4668,8 @@ def _resolve_apps_uc_name(
     if isinstance(registered, str) and registered.strip():
         return registered.strip()
 
-    template = config.get("template") if isinstance(config.get("template"), dict) else {}
+    _tmpl = config.get("template")
+    template: dict[str, Any] = _tmpl if isinstance(_tmpl, dict) else {}
     catalog = config.get("catalog") or template.get("catalog")
     schema = config.get("schema") or template.get("schema")
     if (
@@ -5058,6 +5062,7 @@ def publish_tools_cmd(
     if profile:
         os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
     tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
+    assert tools_table is not None
 
     agent = _load_finalized_agent(module)
     results = publish_tools_to_uc(agent, dry_run=dry_run)
@@ -5184,6 +5189,8 @@ def _do_advertise(
         endpoint = click.prompt("Serving endpoint / app name")
     if not description:
         description = click.prompt("What does this agent do?")
+    assert endpoint is not None and description is not None
+    assert registry_table is not None and tools_table is not None
 
     ws, ws_cfg = _connect_workspace(profile)
     ws_host = (ws_cfg.host or "").rstrip("/")
@@ -5253,7 +5260,7 @@ def _do_supervisor_add(
     try:
         result = publish_to_supervisor(
             supervisor_agent_id=supervisor_id, serving_endpoint=endpoint,
-            description=description, display_name=display_name or endpoint,
+            description=description or "", display_name=display_name or endpoint,
             tool_id=tool_id, ws=ws,
         )
         click.echo(click.style(f"  ✓ Registered with Supervisor Agent ({supervisor_id})", fg="green"))
@@ -5375,6 +5382,7 @@ def supervisor_add(
         )
     if not endpoint:
         endpoint = click.prompt("Serving endpoint / app name")
+    assert endpoint is not None
     ws, _ = _connect_workspace(profile)
     click.echo(f"\nAdding '{display_name or endpoint}' to Supervisor {supervisor_id}:")
     _do_supervisor_add(
@@ -6083,6 +6091,7 @@ def traces_delete_cmd(
             "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
         )
     import time as _time
+    assert hours is not None
     cutoff_ms = int((_time.time() - hours * 3600) * 1000)
     if not assume_yes:
         click.confirm(
@@ -7044,7 +7053,7 @@ def topology(
         click.echo("Deploy one with:  apx-agent deploy")
         return
 
-    text = render_topology(topo, format=fmt)
+    text = render_topology(topo, format=cast("Literal['mermaid', 'graphviz']", fmt))
 
     if output_file:
         with open(output_file, "w") as f:
@@ -7197,9 +7206,9 @@ def eval_report_cmd(
             {
                 "run_id": getattr(r, "info", r).run_id if hasattr(r, "info") else r.get("run_id"),
                 "start_time": getattr(r, "info", r).start_time if hasattr(r, "info") else r.get("start_time"),
-                **{f"metrics.{k}": v for k, v in (getattr(r, "data", {}).metrics or {}).items()},
+                **{f"metrics.{k}": v for k, v in (getattr(getattr(r, "data", None), "metrics", None) or {}).items()},
             }
-            for r in (runs_df or [])
+            for r in cast("list[Any]", runs_df or [])
         ]
 
     if not records:
@@ -8113,7 +8122,7 @@ def watchdog_status(
 
 
 def _load_store(
-    module_spec: str,
+    module_spec: str | None,
     *,
     store_kind: str,  # "memory" or "example", used for the pyproject key
 ) -> Any:
