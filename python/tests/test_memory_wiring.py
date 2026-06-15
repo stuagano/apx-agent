@@ -297,6 +297,24 @@ class TestAttachDeclaredMemory:
         attach_declared_memory(agent, cfg, ws=None)
         assert agent._tool_fns == []
 
+    def test_failed_build_marks_degraded_regardless_of_type(self):
+        """Claim-vs-reality: a declared memory that yields no store must set the
+        _apx_memory_degraded sentinel so /readyz reports it honestly — for ANY
+        backend type, not just delta/lakebase. Otherwise /readyz would claim
+        memory="ok" with no store attached.
+        """
+        from apx_agent._memory_wiring import attach_declared_memory
+
+        agent = Agent(tools=[])
+        cfg = self._minimal_config(type="inmemory")  # a type the old guard didn't cover
+        with patch("apx_agent._memory_wiring._build_memory_store", return_value=None):
+            attach_declared_memory(agent, cfg, ws=None)
+
+        # Reality: no memory tools were attached...
+        assert "recall" not in {fn.__name__ for fn in agent._tool_fns}
+        # ...so the claim must be "degraded", never silently "ok".
+        assert getattr(agent, "_apx_memory_degraded", None)
+
     def test_lakebase_type_requires_ws_or_warns(self, caplog):
         """lakebase with ws=None logs a warning and skips (no crash)."""
         from apx_agent._memory_wiring import attach_declared_memory
