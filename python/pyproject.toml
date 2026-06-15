@@ -94,7 +94,6 @@ exclude = [
   "src/apx_agent/_dev.py",
   # --- type-debt registry (remove as fixed) ---
   "src/apx_agent/catalog.py",
-  "src/apx_agent/cli.py",
 ]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
