@@ -6548,34 +6548,23 @@ def list_agents_cmd(catalog: str | None, schema: str | None, fmt: str, profile: 
         raise click.UsageError("--schema requires --catalog.")
 
     ws = _require_sdk(profile)
-
-    try:
-        models_iter = ws.registered_models.list(
-            catalog_name=catalog,
-            schema_name=schema,
-            include_browse=False,
-        )
-        models = list(models_iter)
-    except TypeError:
-        models = list(ws.registered_models.list())  # type: ignore[call-arg]
-
+    agents_ = _fleet_resolve(
+        ws, catalog=catalog, schema=schema, name_glob=None,
+        where_exprs=(), uc_names=(),
+    )
     rows: list[dict[str, Any]] = []
-    for m in models:
-        tags = {t.key: t.value for t in (getattr(m, "tags", None) or [])}
-        if "apx.agent.name" not in tags:
-            continue
+    for a in agents_:
         resource_count = 0
         try:
-            metadata_json = tags.get("apx.agent.metadata") or "{}"
-            parsed = json.loads(metadata_json)
-            resource_count = len(parsed.get("resources") or [])
+            resource_count = len(json.loads(a.tags.get("apx.agent.metadata") or "{}")
+                                 .get("resources") or [])
         except Exception:
             pass
         rows.append({
-            "agent_name": tags.get("apx.agent.name"),
-            "model_endpoint": tags.get("apx.agent.model"),
-            "uc_name": getattr(m, "full_name", None) or f"{getattr(m, 'catalog_name','')}.{getattr(m, 'schema_name','')}.{getattr(m, 'name','')}",
-            "tool_count": tags.get("apx.agent.tool_count"),
+            "agent_name": a.name,
+            "model_endpoint": a.model,
+            "uc_name": a.uc_name,
+            "tool_count": a.tags.get("apx.agent.tool_count"),
             "resource_count": resource_count,
         })
 

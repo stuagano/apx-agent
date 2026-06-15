@@ -175,3 +175,17 @@ def test_fleet_list_json_format():
         result = CliRunner().invoke(main, ["fleet", "list", "--format", "json"])
     assert result.exit_code == 0, result.output
     assert '"payroll"' in result.output
+
+
+@pytest.mark.unit
+def test_agents_list_still_discovers_by_name_tag():
+    ws = _fake_ws([
+        _model("a", **{_fleet.NAME_TAG: "payroll", _fleet.MODEL_TAG: "ep",
+                       "apx.agent.tool_count": "3"}),
+        _model("b"),  # untagged -> excluded
+    ])
+    with patch("apx_agent.cli._require_sdk", return_value=ws):
+        result = CliRunner().invoke(main, ["agents", "list"])
+    assert result.exit_code == 0, result.output
+    assert "payroll" in result.output
+    assert "ep" in result.output
