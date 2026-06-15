@@ -243,7 +243,7 @@ def uc_function_tool(
     _comment_desc: str | None = None
     if ws is not None and description is None:
         try:
-            func_info = ws.functions.get(full_name=function_name)
+            func_info = ws.functions.get(function_name)
             comment = getattr(func_info, "comment", None)
             if comment:
                 _comment_desc = comment.strip()
@@ -269,7 +269,7 @@ def uc_function_tool(
         """Placeholder doc — overwritten below."""
         # Fetch and cache function definition on first call
         if not _cache:
-            func_info = ws.functions.get(full_name=function_name)
+            func_info = ws.functions.get(function_name)
             raw_params = getattr(getattr(func_info, "input_params", None), "parameters", None) or []
             _cache["parameters"] = sorted(
                 [

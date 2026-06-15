@@ -1592,10 +1592,16 @@ def _generate_coworker_yaml(profile: "str | None") -> str:
     click.echo("\nGenerating coworker YAML...\n")
     try:
         from databricks.sdk import WorkspaceClient
+        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
         ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
         response = ws.serving_endpoints.query(
             name="databricks-claude-sonnet-4-6",
-            messages=[{"role": "user", "content": _COWORKER_GEN_PROMPT.format(spec=spec)}],
+            messages=[
+                ChatMessage(
+                    role=ChatMessageRole.USER,
+                    content=_COWORKER_GEN_PROMPT.format(spec=spec),
+                )
+            ],
             max_tokens=1200,
         )
         return response.choices[0].message.content.strip()
@@ -3921,7 +3927,7 @@ def _ensure_apx_wheel(cwd: Path) -> Path | None:
         src_ver = str(src_doc.get("project", {}).get("version") or "")
     except Exception:
         src_ver = ""
-    if src_ver and src_ver not in expected_name:
+    if src_ver and expected_name and src_ver not in expected_name:
         raise click.ClickException(
             f"apx-agent source root at {source_root} has version "
             f"{src_ver!r}, but pyproject.toml at {pyproject_path} "
