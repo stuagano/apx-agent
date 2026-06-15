@@ -93,8 +93,6 @@ exclude = [
   "src/apx_agent/_ui_*.py",
   "src/apx_agent/_dev.py",
   # --- type-debt registry (remove as fixed) ---
-  "src/apx_agent/_publish.py",
-  "src/apx_agent/_topology.py",
   "src/apx_agent/catalog.py",
   "src/apx_agent/cli.py",
 ]
