@@ -97,7 +97,6 @@ exclude = [
   "src/apx_agent/_chat_agent.py",
   "src/apx_agent/_compile.py",
   "src/apx_agent/_eval_chain.py",
-  "src/apx_agent/_example_mining.py",
   "src/apx_agent/_memory_delta.py",
   "src/apx_agent/_publish.py",
   "src/apx_agent/_remote.py",
@@ -108,7 +107,6 @@ exclude = [
   "src/apx_agent/cli.py",
   "src/apx_agent/vector_search.py",
   "src/apx_agent/workflow/engine_delta.py",
-  "src/apx_agent/workflow/loop_agent.py",
   "src/apx_agent/workflow/population_store.py",
 ]
 pythonVersion = "3.11"
