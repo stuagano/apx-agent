@@ -47,7 +47,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generator
+from typing import TYPE_CHECKING, Any, Generator, cast
 
 from ._agents import BaseAgent
 from ._audit import AuditAttrs, set_audit_attrs
@@ -191,7 +191,7 @@ def _conv_items_to_chat_msgs(items: list[ConversationItem]) -> list["ChatAgentMe
                 role="assistant",
                 content="",
                 id=items[i - 1].id,
-                tool_calls=tool_calls if tool_calls else None,
+                tool_calls=cast("Any", tool_calls) if tool_calls else None,
             ))
         elif item.type == "function_call_output":
             fco: FunctionCallOutputData = item.data  # type: ignore[assignment]
@@ -439,7 +439,7 @@ def chat_agent_for(
     compile the agent. Compilation happens per request inside ``predict`` so
     the per-request user-scoped WorkspaceClient can be threaded through.
     """
-    from mlflow.pyfunc import ChatAgent
+    from mlflow.pyfunc import ChatAgent  # type: ignore[attr-defined]  # re-exported from mlflow.pyfunc.model; stub omits it
     from mlflow.types.agent import (
         ChatAgentChunk,
         ChatAgentMessage,
@@ -555,6 +555,7 @@ def chat_agent_for(
                         None,
                     )
                     if user_item is not None:
+                        assert isinstance(user_item.data, MessageData)
                         title = synthesize_conversation_title(user_item.data.content)
                         if title:
                             self._conversation_store.update_conversation(
@@ -857,7 +858,7 @@ def log_agent(
         python_model=chat_agent,
         resources=resources,
         registered_model_name=registered_model_name,
-        input_example=input_example,
+        input_example=cast("Any", input_example),
         pip_requirements=pip_requirements,
         **log_model_kwargs,
     )

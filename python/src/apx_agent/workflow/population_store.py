@@ -239,6 +239,7 @@ class PopulationStore:
         ])
 
         spark = self._get_spark()
+        assert spark is not None, "write_hypotheses_spark requires a SparkSession"
         rows  = [h.to_dict() for h in hypotheses]
 
         # Ensure JSON fields are strings (to_dict() already does this, but be safe)
@@ -328,6 +329,7 @@ class PopulationStore:
 
         if self._has_spark():
             spark = self._get_spark()
+            assert spark is not None  # guaranteed by _has_spark()
             updates = spark.createDataFrame([
                 {
                     "id": h.id,
@@ -449,12 +451,15 @@ class PopulationStore:
             statement=sql.strip(),
             wait_timeout="50s",
         )
+        assert resp.status is not None  # SDK always populates status
         if resp.status.state == StatementState.FAILED:
+            assert resp.status.error is not None  # populated when state is FAILED
             raise RuntimeError(
                 f"SQL failed [{resp.status.error.error_code}]: {resp.status.error.message}\n"
                 f"SQL: {sql[:200]}"
             )
         if not resp.result or not resp.result.data_array:
             return []
+        assert resp.manifest is not None and resp.manifest.schema is not None and resp.manifest.schema.columns is not None
         cols = [c.name for c in resp.manifest.schema.columns]
         return [dict(zip(cols, row)) for row in resp.result.data_array]
