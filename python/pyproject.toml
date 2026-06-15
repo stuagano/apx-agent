@@ -70,6 +70,15 @@ packages = ["src/apx_agent"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# .ctk/ vendors the claude-test-kit helpers (library only — not packaged into the
+# wheel, which ships only src/apx_agent). Makes `from ctk import run, expect,
+# verify` work in the same uv env the app runs in. The fixtures + error-log guard
+# are opt-in via ctk.pytest_plugin (see .ctk/README.md), so this does not change
+# behaviour for the existing suite.
+pythonpath = [".ctk"]
+markers = [
+    "allow_error_logs: do not fail the test if it logs at ERROR/CRITICAL level (ctk guard)",
+]
 
 [tool.pyright]
 include = ["src/apx_agent"]
