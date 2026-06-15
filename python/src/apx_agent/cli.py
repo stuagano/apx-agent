@@ -3614,14 +3614,21 @@ def deploy(
     if set_uc_tags:
         try:
             from apx_agent import set_uc_tags_for_agent
-            set_uc_tags_for_agent(
+            written = set_uc_tags_for_agent(
                 agent,
                 registered_model_name=registered_model_name,
                 model=model,
                 name=effective_agent_name,
             )
-            click.echo(f"  apx.agent.* tags written on {registered_model_name} "
-                       f"(agent_name={effective_agent_name})")
+            if written:
+                click.echo(f"  {len(written)} apx.agent.* tags written on {registered_model_name} "
+                           f"(agent_name={effective_agent_name})")
+            else:
+                click.echo(
+                    f"# set-uc-tags: 0 tags written on {registered_model_name} "
+                    f"— check UC permissions on the registered model (see warnings)",
+                    err=True,
+                )
         except Exception as e:
             click.echo(f"# set-uc-tags failed: {e}", err=True)
 
