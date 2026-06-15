@@ -86,14 +86,10 @@ markers = [
 [tool.pyright]
 include = ["src/apx_agent"]
 # Everything under src/apx_agent is type-checked and gated in CI. The former
-# type-debt registry (pre-existing errors from #85, see #183–#188) is fully
-# paid down; only the two entries below stay excluded by design:
-#   _ui_*.py / _dev.py — dev-only dynamic UI glue, not worth strict typing.
-# Don't re-add a module here to dodge an error — fix it or it gates CI.
-exclude = [
-  "src/apx_agent/_ui_*.py",
-  "src/apx_agent/_dev.py",
-]
+# type-debt registry (pre-existing errors from #85, see #183–#189) is fully
+# paid down — including the _ui_*.py / _dev.py dev-UI glue, which turned out to
+# carry only 2 real errors across ~10k lines. There is no exclude list any more.
+# Don't add one to dodge an error — fix it or it gates CI.
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 reportMissingImports = "warning"

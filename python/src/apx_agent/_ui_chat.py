@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from ._models import AgentContext
+from ._models import AgentContext, AgentTool
 from ._ui_nav import _apx_nav_links, _deploy_overlay_html
 
 
@@ -649,7 +649,7 @@ def _render_landing(ctx: AgentContext) -> str:
         mem_tools = [t for t in tools if _is_mem_tool(t.name)]
         other_tools = [t for t in tools if not _is_mem_tool(t.name)]
 
-        def _tool_card(t: "AgentTool") -> str:
+        def _tool_card(t: AgentTool) -> str:
             return (
                 '<div class="cap-card" onclick="this.classList.toggle(&quot;open&quot;)">'
                 f'<div class="cap-name">{_html.escape(t.name)}</div>'
