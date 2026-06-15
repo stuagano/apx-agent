@@ -6481,6 +6481,50 @@ def _require_sdk(profile: str | None = None) -> "Any":
     return ws
 
 
+def _fleet_resolve(
+    ws: Any,
+    *,
+    catalog: str | None,
+    schema: str | None,
+    name_glob: str | None,
+    where_exprs: tuple[str, ...],
+    uc_names: tuple[str, ...],
+) -> list[Any]:
+    """List registered models and resolve them with the fleet selector."""
+    from apx_agent import _fleet
+
+    try:
+        models = list(ws.registered_models.list(
+            catalog_name=catalog, schema_name=schema, include_browse=False,
+        ))
+    except TypeError:
+        models = list(ws.registered_models.list())  # type: ignore[call-arg]
+    try:
+        where = _fleet.parse_where(list(where_exprs))
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+    return _fleet.resolve_agents(
+        models, catalog=catalog, schema=schema, name_glob=name_glob,
+        where=where, uc_names=list(uc_names) or None,
+    )
+
+
+def _fleet_select_options(f: Any) -> Any:
+    """Reusable selection options shared by every fleet command."""
+    f = click.option("--catalog", default=None, help="Restrict to a UC catalog.")(f)
+    f = click.option("--schema", default=None,
+                     help="Restrict to a UC schema (requires --catalog).")(f)
+    f = click.option("--name", "name_glob", default=None,
+                     help="Glob match against apx.agent.name (e.g. 'payroll-*').")(f)
+    f = click.option("--where", "where_exprs", multiple=True,
+                     help="Tag predicate key=value (repeatable, AND-ed).")(f)
+    f = click.option("--uc-name", "uc_names", multiple=True,
+                     help="Explicit registered-model name; bypasses filters.")(f)
+    f = click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+                     help="Databricks config profile.")(f)
+    return f
+
+
 @agents.command("list")
 @click.option("--catalog", default=None,
               help="Restrict to a UC catalog. Default: any.")
@@ -6504,34 +6548,23 @@ def list_agents_cmd(catalog: str | None, schema: str | None, fmt: str, profile: 
         raise click.UsageError("--schema requires --catalog.")
 
     ws = _require_sdk(profile)
-
-    try:
-        models_iter = ws.registered_models.list(
-            catalog_name=catalog,
-            schema_name=schema,
-            include_browse=False,
-        )
-        models = list(models_iter)
-    except TypeError:
-        models = list(ws.registered_models.list())  # type: ignore[call-arg]
-
+    agents_ = _fleet_resolve(
+        ws, catalog=catalog, schema=schema, name_glob=None,
+        where_exprs=(), uc_names=(),
+    )
     rows: list[dict[str, Any]] = []
-    for m in models:
-        tags = {t.key: t.value for t in (getattr(m, "tags", None) or [])}
-        if "apx.agent.name" not in tags:
-            continue
+    for a in agents_:
         resource_count = 0
         try:
-            metadata_json = tags.get("apx.agent.metadata") or "{}"
-            parsed = json.loads(metadata_json)
-            resource_count = len(parsed.get("resources") or [])
+            resource_count = len(json.loads(a.tags.get("apx.agent.metadata") or "{}")
+                                 .get("resources") or [])
         except Exception:
             pass
         rows.append({
-            "agent_name": tags.get("apx.agent.name"),
-            "model_endpoint": tags.get("apx.agent.model"),
-            "uc_name": getattr(m, "full_name", None) or f"{getattr(m, 'catalog_name','')}.{getattr(m, 'schema_name','')}.{getattr(m, 'name','')}",
-            "tool_count": tags.get("apx.agent.tool_count"),
+            "agent_name": a.name,
+            "model_endpoint": a.model,
+            "uc_name": a.uc_name,
+            "tool_count": a.tags.get("apx.agent.tool_count"),
             "resource_count": resource_count,
         })
 
@@ -7347,6 +7380,243 @@ def _apps_deploy_prod_at_commit(
             "(app is live, but not version-tracked)."
         )
     return new_version
+
+
+@main.group(cls=_ApxGroup)
+def fleet() -> None:
+    """Workspace-scoped bulk operations across many apx-agents.
+
+    Select a set of agents (by --catalog/--schema scope, --name glob,
+    --where tag predicates, or explicit --uc-name) and act on them in bulk.
+    Mutating commands are dry-run by default; pass --apply to execute.
+    """
+
+
+@fleet.command("list")
+@_fleet_select_options
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]),
+              default="text", help="Output format.")
+def fleet_list_cmd(
+    catalog: str | None,
+    schema: str | None,
+    name_glob: str | None,
+    where_exprs: tuple[str, ...],
+    uc_names: tuple[str, ...],
+    profile: str | None,
+    fmt: str,
+) -> None:
+    """Resolve a selection and print the matching agents (read-only)."""
+    if schema and not catalog:
+        raise click.UsageError("--schema requires --catalog.")
+    ws = _require_sdk(profile)
+    agents_ = _fleet_resolve(
+        ws, catalog=catalog, schema=schema, name_glob=name_glob,
+        where_exprs=where_exprs, uc_names=uc_names,
+    )
+    if fmt == "json":
+        click.echo(json.dumps([
+            {"agent_name": a.name, "uc_name": a.uc_name, "model": a.model,
+             "app_name": a.app_name, "labels": a.labels}
+            for a in agents_
+        ], indent=2, default=str))
+        return
+    if not agents_:
+        click.echo("No agents matched the selection.")
+        return
+    click.echo(f"{'AGENT':<24}  {'UC NAME':<40}  {'APP':<22}  LABELS")
+    for a in agents_:
+        labels = ",".join(f"{k}={v}" for k, v in sorted(a.labels.items())) or "-"
+        click.echo(f"{(a.name or '-'):<24}  {a.uc_name:<40}  "
+                   f"{(a.app_name or '-'):<22}  {labels}")
+
+
+@fleet.command("tag")
+@_fleet_select_options
+@click.option("--set", "set_pairs", multiple=True,
+              help="Label to set: key=value (repeatable). Writes apx.label.<key>.")
+@click.option("--remove", "remove_keys", multiple=True,
+              help="Label key to remove (repeatable).")
+@click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
+def fleet_tag_cmd(
+    catalog: str | None,
+    schema: str | None,
+    name_glob: str | None,
+    where_exprs: tuple[str, ...],
+    uc_names: tuple[str, ...],
+    profile: str | None,
+    set_pairs: tuple[str, ...],
+    remove_keys: tuple[str, ...],
+    apply: bool,
+) -> None:
+    """Set or remove user labels (apx.label.*) across the selection."""
+    from apx_agent import _fleet
+
+    if schema and not catalog:
+        raise click.UsageError("--schema requires --catalog.")
+    if not set_pairs and not remove_keys:
+        raise click.UsageError("Pass at least one --set or --remove.")
+    try:
+        sets = _fleet.parse_where(list(set_pairs))
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+    # Reject reserved namespaces before touching the workspace.
+    for key in list(sets) + list(remove_keys):
+        if _fleet.is_reserved(key):
+            raise click.UsageError(
+                f"Refusing to modify reserved system tag '{key}'. "
+                "fleet tag only writes user labels (apx.label.*)."
+            )
+
+    ws = _require_sdk(profile)
+    agents_ = _fleet_resolve(
+        ws, catalog=catalog, schema=schema, name_glob=name_glob,
+        where_exprs=where_exprs, uc_names=uc_names,
+    )
+    if not agents_:
+        click.echo("No agents matched the selection.")
+        return
+
+    from mlflow.tracking import MlflowClient
+    client = MlflowClient() if apply else None
+
+    outcomes: list[_fleet.AgentOutcome] = []
+    for a in agents_:
+        changes = [f"+{_fleet.to_label_key(k)}={v}" for k, v in sets.items()]
+        changes += [f"-{_fleet.to_label_key(k)}" for k in remove_keys]
+        try:
+            if apply:
+                assert client is not None
+                for k, v in sets.items():
+                    client.set_registered_model_tag(a.uc_name, _fleet.to_label_key(k), v)
+                for k in remove_keys:
+                    client.delete_registered_model_tag(a.uc_name, _fleet.to_label_key(k))
+            outcomes.append(_fleet.AgentOutcome(a.uc_name, "ok", " ".join(changes)))
+        except Exception as e:  # continue + report
+            outcomes.append(_fleet.AgentOutcome(a.uc_name, "failed", str(e)))
+
+    text, code = _fleet.render_summary(outcomes, apply=apply)
+    click.echo(text)
+    if code:
+        raise SystemExit(code)
+
+
+@fleet.command("backfill")
+@click.option("--uc-name", "uc_names", multiple=True, required=True,
+              help="Registered-model name to backfill (repeatable, required).")
+@click.option("--name", "agent_name", default=None,
+              help="apx.agent.name to stamp. Defaults to the model name.")
+@click.option("--app", "app_name", default=None,
+              help="Workspace App name to stamp as apx.apps.app_name.")
+@click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks config profile.")
+def fleet_backfill_cmd(
+    uc_names: tuple[str, ...],
+    agent_name: str | None,
+    app_name: str | None,
+    apply: bool,
+    profile: str | None,
+) -> None:
+    """Stamp missing identity/discovery tags onto agents that predate tagging.
+
+    Partial by design: stamps apx.agent.name, apx.serving, and (with --app)
+    apx.apps.app_name. It cannot reconstruct apx.agent.tools/resources/metadata.
+    """
+    from apx_agent import _fleet
+
+    from mlflow.tracking import MlflowClient
+    client = MlflowClient()
+
+    outcomes: list[_fleet.AgentOutcome] = []
+    for uc in uc_names:
+        try:
+            existing = {t.key: t.value
+                        for t in (getattr(client.get_registered_model(uc), "tags", None) or [])}
+            want = {
+                _fleet.NAME_TAG: agent_name or uc.split(".")[-1],
+                "apx.serving": "apps",
+            }
+            if app_name:
+                want[_fleet.APP_NAME_TAG] = app_name
+            missing = {k: v for k, v in want.items() if k not in existing}
+            if not missing:
+                outcomes.append(_fleet.AgentOutcome(uc, "skipped", "already tagged"))
+                continue
+            if apply:
+                for k, v in missing.items():
+                    client.set_registered_model_tag(uc, k, v)
+            detail = "stamp " + ",".join(sorted(missing))
+            outcomes.append(_fleet.AgentOutcome(uc, "ok", detail))
+        except Exception as e:
+            outcomes.append(_fleet.AgentOutcome(uc, "failed", str(e)))
+
+    text, code = _fleet.render_summary(outcomes, apply=apply)
+    click.echo(text)
+    if not apply:
+        click.echo("Note: backfill cannot reconstruct tools/resources/metadata.")
+    if code:
+        raise SystemExit(code)
+
+
+@fleet.command("redeploy")
+@_fleet_select_options
+@click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
+@click.option("--fail-fast", is_flag=True, help="Stop at the first failure.")
+def fleet_redeploy_cmd(
+    catalog: str | None,
+    schema: str | None,
+    name_glob: str | None,
+    where_exprs: tuple[str, ...],
+    uc_names: tuple[str, ...],
+    profile: str | None,
+    apply: bool,
+    fail_fast: bool,
+) -> None:
+    """Re-promote each selected agent's @prod alias to its latest prod version.
+
+    "Latest" means the highest version carrying a prod manifest tag — never a
+    canary. Mirrors the single-agent prod-promote path and avoids pointing @prod
+    at an un-soaked canary (see _apps_registry.get_latest_prod_version). Agents
+    with no prod manifest (canary-only or non-apps) are skipped.
+    """
+    from apx_agent import _apps_registry, _fleet
+
+    if schema and not catalog:
+        raise click.UsageError("--schema requires --catalog.")
+    ws = _require_sdk(profile)
+    agents_ = _fleet_resolve(
+        ws, catalog=catalog, schema=schema, name_glob=name_glob,
+        where_exprs=where_exprs, uc_names=uc_names,
+    )
+    if not agents_:
+        click.echo("No agents matched the selection.")
+        return
+
+    outcomes: list[_fleet.AgentOutcome] = []
+    for a in agents_:
+        try:
+            latest = _apps_registry.get_latest_prod_version(a.uc_name)
+            current = _apps_registry.get_prod_alias_version(a.uc_name)
+            if latest is None:
+                outcomes.append(_fleet.AgentOutcome(a.uc_name, "skipped", "no prod versions"))
+                continue
+            if latest == current:
+                outcomes.append(_fleet.AgentOutcome(
+                    a.uc_name, "skipped", f"already @{latest}"))
+                continue
+            if apply:
+                _apps_registry.set_prod_alias_version(a.uc_name, latest)
+            outcomes.append(_fleet.AgentOutcome(
+                a.uc_name, "ok", f"{current or '-'} -> {latest}"))
+        except Exception as e:
+            outcomes.append(_fleet.AgentOutcome(a.uc_name, "failed", str(e)))
+            if fail_fast:
+                break
+
+    text, code = _fleet.render_summary(outcomes, apply=apply)
+    click.echo(text)
+    if code:
+        raise SystemExit(code)
 
 
 @main.group()
