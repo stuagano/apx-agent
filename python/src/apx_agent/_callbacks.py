@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from langchain_core.outputs import LLMResult
 
 try:
-    from langchain_core.callbacks import BaseCallbackHandler
+    from langchain_core.callbacks import BaseCallbackHandler  # type: ignore[assignment]
     _LC_AVAILABLE = True
 except ImportError:  # pragma: no cover — exercised only without langchain
     _LC_AVAILABLE = False

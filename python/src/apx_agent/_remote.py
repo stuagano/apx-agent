@@ -31,7 +31,7 @@ import json as _json
 import logging
 import os
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from fastapi import Request
@@ -391,10 +391,12 @@ class RemoteDatabricksAgent(BaseAgent):
         # list of InputContent parts and drops a plain string.
         response = await client.responses.create(
             model=f"apps/{self._app_name}",
-            input=[
-                {"role": m.role, "content": m.content}
-                for m in messages
-            ],
+            # The EasyInputMessage dict form (above comment) is intentional; the
+            # openai stub types `input` narrowly, so cast past it.
+            input=cast(
+                Any,
+                [{"role": m.role, "content": m.content} for m in messages],
+            ),
         )
         return response.output_text
 

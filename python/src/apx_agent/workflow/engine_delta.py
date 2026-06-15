@@ -368,13 +368,17 @@ class DeltaEngine(WorkflowEngine):
             statement=sql.strip(),
             wait_timeout="50s",
         )
+        assert resp.status is not None  # synchronous execute_statement always returns status
         if resp.status.state == StatementState.FAILED:
             err = resp.status.error
+            error_code = err.error_code if err else None
+            message = err.message if err else None
             raise RuntimeError(
-                f"Databricks SQL failed [{err.error_code}]: {err.message}\n"
+                f"Databricks SQL failed [{error_code}]: {message}\n"
                 f"SQL: {sql[:200]}"
             )
         if not resp.result or not resp.result.data_array:
             return []
-        cols = [c.name for c in resp.manifest.schema.columns]
+        assert resp.manifest is not None and resp.manifest.schema is not None
+        cols = [c.name for c in (resp.manifest.schema.columns or [])]
         return [dict(zip(cols, row)) for row in resp.result.data_array]
