@@ -130,3 +130,30 @@ def resolve_agents(
             )
         )
     return out
+
+
+@dataclass
+class AgentOutcome:
+    """Result of one per-agent action in a bulk command."""
+    uc_name: str
+    status: str  # "ok" | "skipped" | "failed"
+    detail: str = ""
+
+
+def render_summary(outcomes: list[AgentOutcome], *, apply: bool) -> tuple[str, int]:
+    """Render a per-agent result table + summary line.
+
+    Returns ``(text, exit_code)``. ``exit_code`` is 1 if any outcome failed,
+    else 0. When ``apply`` is False the header marks the run as a dry-run.
+    """
+    lines: list[str] = []
+    header = "Fleet plan (dry-run — nothing changed; pass --apply to execute):" if not apply \
+        else "Fleet result:"
+    lines.append(header)
+    for o in outcomes:
+        lines.append(f"  [{o.status:<7}] {o.uc_name}" + (f"  {o.detail}" if o.detail else ""))
+    n_ok = sum(1 for o in outcomes if o.status == "ok")
+    n_skip = sum(1 for o in outcomes if o.status == "skipped")
+    n_fail = sum(1 for o in outcomes if o.status == "failed")
+    lines.append(f"Summary: {n_ok} ok, {n_skip} skipped, {n_fail} failed")
+    return "\n".join(lines), (1 if n_fail else 0)

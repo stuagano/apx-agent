@@ -108,3 +108,34 @@ def test_resolved_agent_exposes_labels_and_app():
     assert r.model == "ep"
     assert r.app_name == "app-a"
     assert r.labels == {"team": "revops"}
+
+
+@pytest.mark.unit
+def test_summary_exit_code_zero_when_all_ok():
+    outcomes = [
+        _fleet.AgentOutcome("a.b.c", "ok", "tagged"),
+        _fleet.AgentOutcome("a.b.d", "skipped", "no change"),
+    ]
+    text, code = _fleet.render_summary(outcomes, apply=True)
+    assert code == 0
+    assert "1 ok" in text and "1 skipped" in text
+
+
+@pytest.mark.unit
+def test_summary_exit_code_nonzero_on_failure():
+    outcomes = [
+        _fleet.AgentOutcome("a.b.c", "ok", "tagged"),
+        _fleet.AgentOutcome("a.b.d", "failed", "boom"),
+    ]
+    text, code = _fleet.render_summary(outcomes, apply=True)
+    assert code == 1
+    assert "1 failed" in text
+    assert "boom" in text
+
+
+@pytest.mark.unit
+def test_summary_marks_dry_run():
+    text, _ = _fleet.render_summary(
+        [_fleet.AgentOutcome("a.b.c", "ok", "would tag")], apply=False,
+    )
+    assert "dry-run" in text.lower()
