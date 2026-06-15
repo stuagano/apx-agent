@@ -136,15 +136,15 @@ def _collect_chain_cases(
     lookback_traces: int,
 ) -> list[ChainCaseResult]:
     """Walk recent MLflow traces and align them to evalset rows by request text."""
-    import mlflow
+    from ._mlflow_tracing import search_traces_for_experiment
 
     try:
         # This path needs span data (sub-agent / tool attributes live on
         # child spans), so include_spans stays default-True. We must NOT
         # swallow a read failure into an empty list — that reads as "no
         # sub-agents fired" and silently produces a wrong coverage report.
-        traces_raw = mlflow.search_traces(  # type: ignore[attr-defined]
-            experiment_names=[experiment],
+        traces_raw = search_traces_for_experiment(
+            experiment,
             max_results=lookback_traces,
         )
     except Exception as e:

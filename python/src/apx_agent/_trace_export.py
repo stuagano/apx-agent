@@ -246,9 +246,11 @@ def export_traces(
                 target_table, e,
             )
 
+    from ._mlflow_tracing import search_traces_for_experiment
+
     try:
-        traces_raw = mlflow.search_traces(  # type: ignore[attr-defined]
-            experiment_names=[experiment_name],
+        traces_raw = search_traces_for_experiment(
+            experiment_name,
             max_results=max_traces,
         )
     except Exception as e:
