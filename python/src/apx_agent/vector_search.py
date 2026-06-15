@@ -68,7 +68,7 @@ def vector_search_tool(
             result = ws.vector_search_indexes.query_index(
                 index_name=index_name,
                 query_text=query,
-                columns=columns,
+                columns=columns,  # type: ignore[arg-type]  # SDK stub types columns as required List[str]; runtime omits the field when None (returns all columns)
                 num_results=num_results,
                 filters_json=filters_json,
             )

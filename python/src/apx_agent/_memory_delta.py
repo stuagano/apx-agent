@@ -204,7 +204,7 @@ def _row_to_memory(row: Mapping[str, Any]) -> Memory:
         namespace=str(row.get("namespace") or "default"),
         content=str(row.get("content") or ""),
         tags=tags,
-        importance=float(row.get("importance") if row.get("importance") is not None else 0.5),
+        importance=float(_imp if (_imp := row.get("importance")) is not None else 0.5),
         embedding=embedding,
         metadata=metadata,
         created_at=_epoch_to_iso(row.get("created_at")),

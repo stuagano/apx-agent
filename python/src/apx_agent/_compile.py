@@ -34,13 +34,12 @@ from fastapi import params
 # Hoisted so TypedDicts defined inside compile functions (e.g. LoopState) can
 # reference ``Annotated[list, add_messages]``. ``get_type_hints`` evaluates the
 # class body in the module's globals later, not in the function's local scope.
+from typing_extensions import Annotated, TypedDict
+
 try:  # pragma: no cover — defensive guard
     from langgraph.graph.message import add_messages
-    from typing_extensions import Annotated, TypedDict
 except ImportError:  # pragma: no cover — let downstream code raise on use
     add_messages = None  # type: ignore[assignment]
-    Annotated = None  # type: ignore[assignment]
-    TypedDict = None  # type: ignore[assignment]
 
 from ._agents import (
     BaseAgent,
@@ -517,7 +516,7 @@ def _compile_loop_agent(agent: LoopAgent, ctx: CompileContext) -> Any:
 
     graph = StateGraph(LoopState)
     graph.add_node("agent", inner_node)
-    graph.add_node("check", _check_done_node)
+    graph.add_node("check", _check_done_node)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
     graph.add_edge(START, "agent")
     graph.add_edge("agent", "check")
     graph.add_conditional_edges("check", _route, {"agent": "agent", END: END})
@@ -573,7 +572,7 @@ def _compile_router_agent(agent: RouterAgent, ctx: CompileContext) -> Any:
         return {"chosen": chosen}
 
     graph = StateGraph(RouterState)
-    graph.add_node("router", _router_decision)
+    graph.add_node("router", _router_decision)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
     for name, _, sub in routes:
         graph.add_node(name, _compile_any(sub, ctx))
         graph.add_edge(name, END)
@@ -618,7 +617,7 @@ def _compile_keyword_router(agent: KeywordRouter, ctx: CompileContext) -> Any:
         return {"chosen": chosen}
 
     graph = StateGraph(KeywordRouterState)
-    graph.add_node("router", _keyword_match)
+    graph.add_node("router", _keyword_match)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
     for name, sub, _ in branches:
         graph.add_node(name, _compile_any(sub, ctx))
         graph.add_edge(name, END)
@@ -726,9 +725,9 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
         return END
 
     graph = StateGraph(HandoffState)
-    graph.add_node("__check__", _check_handoff)
+    graph.add_node("__check__", _check_handoff)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
     for name in names:
-        graph.add_node(name, _build_node(name))
+        graph.add_node(name, _build_node(name))  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
         graph.add_edge(name, "__check__")
     graph.add_edge(START, start_name)
     graph.add_conditional_edges(
@@ -816,5 +815,9 @@ def compile_to_langgraph(
         )
         result = graph.invoke({"messages": [HumanMessage(content=prompt)]})
     """
+    if ws is None:
+        from ._defaults import _make_workspace_client
+
+        ws = _make_workspace_client()
     ctx = CompileContext(ws=ws, model=model, headers=headers)
     return _compile_any(agent, ctx)

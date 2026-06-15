@@ -71,7 +71,7 @@ def _ensure_experiment(experiment_path: str, tracking_uri: str) -> str:
     (tests, doc tooling).
     """
     try:
-        import mlflow
+        import mlflow.tracking
     except ImportError as exc:
         raise SystemExit("mlflow is required. Install with: uv sync") from exc
 
