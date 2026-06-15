@@ -253,6 +253,33 @@ def test_promote_canary_sets_100_pct_to_target() -> None:
     assert split == {"triage-1": 0, "triage-2": 100}
 
 
+def test_promote_canary_returns_requested_split_not_stale_read() -> None:
+    """Claim-vs-reality: update_config is async, so a re-read returns the still-active
+    (pre-update) split. The returned CanaryConfig — which the CLI echoes as the new
+    split — must reflect what was REQUESTED, not the stale read.
+    """
+    ws = MagicMock()
+    # The mock `get` returns the OLD 90/10 split on every call, including the
+    # post-mutation re-read (the real async-update staleness).
+    ws.serving_endpoints.get.return_value = _endpoint_response(
+        served_entities=[
+            _se("triage-1", "main.agents.triage", "1"),
+            _se("triage-2", "main.agents.triage", "2"),
+        ],
+        routes=[_route("triage-1", 90), _route("triage-2", 10)],
+    )
+
+    cfg = promote_canary(
+        endpoint="triage",
+        registered_model_name="main.agents.triage",
+        version=2,
+        ws=ws,
+    )
+
+    # Must be the requested split (100% to v2), NOT the stale 90/10 re-read.
+    assert cfg.traffic_split == {"triage-1": 0, "triage-2": 100}
+
+
 def test_promote_canary_refuses_unknown_target() -> None:
     ws = MagicMock()
     ws.serving_endpoints.get.return_value = _endpoint_response(
