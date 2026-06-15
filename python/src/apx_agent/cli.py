@@ -7430,6 +7430,76 @@ def fleet_list_cmd(
                    f"{(a.app_name or '-'):<22}  {labels}")
 
 
+@fleet.command("tag")
+@_fleet_select_options
+@click.option("--set", "set_pairs", multiple=True,
+              help="Label to set: key=value (repeatable). Writes apx.label.<key>.")
+@click.option("--remove", "remove_keys", multiple=True,
+              help="Label key to remove (repeatable).")
+@click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
+def fleet_tag_cmd(
+    catalog: str | None,
+    schema: str | None,
+    name_glob: str | None,
+    where_exprs: tuple[str, ...],
+    uc_names: tuple[str, ...],
+    profile: str | None,
+    set_pairs: tuple[str, ...],
+    remove_keys: tuple[str, ...],
+    apply: bool,
+) -> None:
+    """Set or remove user labels (apx.label.*) across the selection."""
+    from apx_agent import _fleet
+
+    if schema and not catalog:
+        raise click.UsageError("--schema requires --catalog.")
+    if not set_pairs and not remove_keys:
+        raise click.UsageError("Pass at least one --set or --remove.")
+    try:
+        sets = _fleet.parse_where(list(set_pairs))
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+    # Reject reserved namespaces before touching the workspace.
+    for key in list(sets) + list(remove_keys):
+        if _fleet.is_reserved(key):
+            raise click.UsageError(
+                f"Refusing to modify reserved system tag '{key}'. "
+                "fleet tag only writes user labels (apx.label.*)."
+            )
+
+    ws = _require_sdk(profile)
+    agents_ = _fleet_resolve(
+        ws, catalog=catalog, schema=schema, name_glob=name_glob,
+        where_exprs=where_exprs, uc_names=uc_names,
+    )
+    if not agents_:
+        click.echo("No agents matched the selection.")
+        return
+
+    from mlflow.tracking import MlflowClient
+    client = MlflowClient() if apply else None
+
+    outcomes: list[_fleet.AgentOutcome] = []
+    for a in agents_:
+        changes = [f"+{_fleet.to_label_key(k)}={v}" for k, v in sets.items()]
+        changes += [f"-{_fleet.to_label_key(k)}" for k in remove_keys]
+        try:
+            if apply:
+                assert client is not None
+                for k, v in sets.items():
+                    client.set_registered_model_tag(a.uc_name, _fleet.to_label_key(k), v)
+                for k in remove_keys:
+                    client.delete_registered_model_tag(a.uc_name, _fleet.to_label_key(k))
+            outcomes.append(_fleet.AgentOutcome(a.uc_name, "ok", " ".join(changes)))
+        except Exception as e:  # continue + report
+            outcomes.append(_fleet.AgentOutcome(a.uc_name, "failed", str(e)))
+
+    text, code = _fleet.render_summary(outcomes, apply=apply)
+    click.echo(text)
+    if code:
+        raise SystemExit(code)
+
+
 @main.group()
 def canary() -> None:
     """Canary / A-B deployment helpers — multi-version traffic split."""

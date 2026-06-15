@@ -189,3 +189,46 @@ def test_agents_list_still_discovers_by_name_tag():
     assert result.exit_code == 0, result.output
     assert "payroll" in result.output
     assert "ep" in result.output
+
+
+@pytest.mark.unit
+def test_fleet_tag_dry_run_writes_nothing():
+    ws = _fake_ws([_model("a", **{_fleet.NAME_TAG: "payroll"})])
+    client = MagicMock()
+    with patch("apx_agent.cli._require_sdk", return_value=ws), \
+         patch("mlflow.tracking.MlflowClient", return_value=client):
+        result = CliRunner().invoke(
+            main, ["fleet", "tag", "--name", "payroll", "--set", "team=revops"],
+        )
+    assert result.exit_code == 0, result.output
+    assert "dry-run" in result.output.lower()
+    client.set_registered_model_tag.assert_not_called()
+
+
+@pytest.mark.unit
+def test_fleet_tag_apply_sets_label():
+    ws = _fake_ws([_model("a", catalog="cat", schema="sch",
+                          **{_fleet.NAME_TAG: "payroll"})])
+    client = MagicMock()
+    with patch("apx_agent.cli._require_sdk", return_value=ws), \
+         patch("mlflow.tracking.MlflowClient", return_value=client):
+        result = CliRunner().invoke(
+            main, ["fleet", "tag", "--name", "payroll",
+                   "--set", "team=revops", "--apply"],
+        )
+    assert result.exit_code == 0, result.output
+    client.set_registered_model_tag.assert_called_once_with(
+        "cat.sch.a", "apx.label.team", "revops",
+    )
+
+
+@pytest.mark.unit
+def test_fleet_tag_refuses_reserved_namespace():
+    ws = _fake_ws([_model("a", **{_fleet.NAME_TAG: "payroll"})])
+    with patch("apx_agent.cli._require_sdk", return_value=ws):
+        result = CliRunner().invoke(
+            main, ["fleet", "tag", "--name", "payroll",
+                   "--set", "apx.agent.name=x", "--apply"],
+        )
+    assert result.exit_code != 0
+    assert "reserved" in result.output.lower()
