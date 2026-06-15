@@ -7267,7 +7267,7 @@ def _apps_deploy_prod_at_commit(
     or None if it couldn't be resolved. Raises ``click.ClickException`` on a
     gate failure or a failed/unhealthy prod deploy (alias left untouched).
     """
-    from apx_agent import get_latest_apps_version, set_prod_alias_version
+    from apx_agent import get_latest_prod_version, set_prod_alias_version
 
     head = _git_head_sha(cwd)
     if head is None:
@@ -7308,13 +7308,27 @@ def _apps_deploy_prod_at_commit(
             f"alias was NOT moved.{hint}"
         ) from e
 
-    new_version = get_latest_apps_version(uc_name)
-    if new_version:
+    # Only consider prod-tagged versions, so a swallowed manifest registration
+    # can never point @prod at the canary version (get_latest_apps_version took
+    # the max over ALL roles). Compare against the prior prod version to avoid
+    # claiming a move when no new prod manifest was actually registered.
+    new_version = get_latest_prod_version(uc_name)
+    if new_version and new_version != prev_prod_version:
         try:
             set_prod_alias_version(uc_name, new_version)
             log(f"# @prod → version {new_version}")
         except Exception as e:
             log(f"# warning: couldn't move @prod alias (non-fatal): {e}")
+    elif new_version:
+        log(
+            f"# @prod unchanged at version {new_version} — no new prod manifest "
+            f"registered this deploy (app is live, but not version-tracked)."
+        )
+    else:
+        log(
+            "# warning: no prod manifest version found — @prod not moved "
+            "(app is live, but not version-tracked)."
+        )
     return new_version
 
 

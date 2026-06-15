@@ -194,6 +194,30 @@ def set_prod_alias_version(
     client.set_registered_model_alias(uc_name, PROD_ALIAS, version)
 
 
+def get_latest_prod_version(
+    uc_name: str, *, mlflow_client: Any | None = None,
+) -> str | None:
+    """Return the highest version tagged ``apx.apps.role=prod``, or None.
+
+    Unlike ``get_latest_apps_version`` (max over ALL roles), this considers only
+    prod manifests. Used after a prod re-deploy to move ``@prod``: if the deploy's
+    manifest registration didn't create a new prod version, this returns the
+    previous prod version (not the canary), so ``@prod`` is never pointed at a
+    canary version.
+    """
+    from mlflow.tracking import MlflowClient
+
+    client = mlflow_client or MlflowClient()
+    versions = client.search_model_versions(f"name='{uc_name}'")
+    prods = [
+        v for v in versions
+        if (getattr(v, "tags", None) or {}).get(ROLE_TAG) == "prod"
+    ]
+    if not prods:
+        return None
+    return str(max(prods, key=lambda v: int(v.version)).version)
+
+
 def get_latest_apps_version(
     uc_name: str, *, mlflow_client: Any | None = None,
 ) -> str | None:
