@@ -6,3 +6,6 @@ __pycache__/
 mlruns/
 .databricks/
 .apx-builder.json
+# uv re-resolves against the internal pypi-proxy and poisons this lock with
+# private registry URLs; the demo project is tracked without a committed lock.
+uv.lock
