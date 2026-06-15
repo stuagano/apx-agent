@@ -176,6 +176,28 @@ def _entity_name(model_full_name: str, version: int | str) -> str:
     return f"{short}-{version}"
 
 
+def _applied_config(endpoint: str, ws: "WorkspaceClient", routes: list[Any]) -> CanaryConfig:
+    """Snapshot after an ``update_config``, with ``traffic_split`` set to the split
+    we just *requested*.
+
+    ``update_config`` is async: a re-read returns the still-active (pre-update)
+    ``config`` until the change applies, with the new split only in
+    ``pending_config`` — so echoing ``get_canary_config().traffic_split`` right
+    after a mutation reports a STALE split. Report the requested split instead so
+    the return value (and the CLI echo) matches what was actually submitted.
+    """
+    from dataclasses import replace
+
+    snapshot = get_canary_config(endpoint, ws=ws)
+    return replace(
+        snapshot,
+        traffic_split={
+            getattr(r, "served_entity_name", ""): getattr(r, "traffic_percentage", 0)
+            for r in routes
+        },
+    )
+
+
 def deploy_canary(
     *,
     endpoint: str,
@@ -260,7 +282,7 @@ def deploy_canary(
             "deploy_canary: no existing served entities on %s — routing 100%% to %s",
             endpoint, new_entity_name,
         )
-        return get_canary_config(endpoint, ws=ws)
+        return _applied_config(endpoint, ws, routes_only)
 
     # Redistribute traffic — existing entities share (100 - canary_traffic_pct),
     # weighted by their current allocation; canary gets canary_traffic_pct.
@@ -306,7 +328,7 @@ def deploy_canary(
         "deploy_canary: %s %% to %s on %s",
         canary_traffic_pct, new_entity_name, endpoint,
     )
-    return get_canary_config(endpoint, ws=ws)
+    return _applied_config(endpoint, ws, routes)
 
 
 def promote_canary(
@@ -347,7 +369,7 @@ def promote_canary(
         traffic_config=TrafficConfig(routes=routes),
     )
     logger.info("promote_canary: 100%% to %s on %s", target, endpoint)
-    return get_canary_config(endpoint, ws=ws)
+    return _applied_config(endpoint, ws, routes)
 
 
 def rollback_canary(
