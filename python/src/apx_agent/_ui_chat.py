@@ -247,7 +247,10 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
     }})();
     // ── Sidebar data ──
     function selectTable(fqn) {{
-      if (window._selectTab) window._selectTab("chat");
+      // Stay on Eval if it's active (it handles apx:table-selected directly).
+      // For all other tabs, navigate to Chat first.
+      const activeSlug = (location.hash || "#{default_slug}").slice(1);
+      if (activeSlug !== "eval" && window._selectTab) window._selectTab("chat");
       const frame = window._dashFrame || document.getElementById("dash-frame");
       setTimeout(() => {{
         frame.contentWindow.postMessage({{type: "apx:table-selected", fqn}}, "*");
@@ -560,6 +563,38 @@ document.getElementById('add-btn').addEventListener('click', async () => {{
 }});
 
 render();
+
+// Handle table selection from the parent shell's sidebar.
+window.addEventListener('message', (e) => {{
+  if (e.data?.type !== 'apx:table-selected') return;
+  const fqn = e.data.fqn || '';
+  const table = fqn.split('.').pop();
+  const suggestions = [
+    `How many rows are in ${{fqn}}?`,
+    `What are the most recent records in ${{table}}?`,
+    `Show me a sample of data from ${{table}}`,
+    `What are the column names and types in ${{table}}?`,
+  ];
+  // Pre-seed suggested eval cases for the selected table.
+  let added = 0;
+  for (const q of suggestions) {{
+    if (!rows.some(r => r.question === q)) {{
+      rows.push({{question: q, expected_judge: '', status: 'pending', response: ''}});
+      added++;
+    }}
+  }}
+  if (added) {{
+    render(); save();
+    document.querySelector('.meta').textContent = rows.length + ' case' + (rows.length === 1 ? '' : 's');
+  }}
+  // Scroll to + highlight the add-question box for any manual additions.
+  const addQ = document.getElementById('add-q');
+  if (addQ) {{
+    addQ.value = `Ask about ${{table}}: `;
+    addQ.focus();
+    document.querySelector('.add-section').scrollIntoView({{behavior: 'smooth'}});
+  }}
+}});
 </script>
 </body>
 </html>
@@ -1040,14 +1075,14 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
       <span id="copy-sse-ok" style="display:none;color:#4ade80">✓</span>
     </div>
     <div class="panel-tabs">
-      <button class="active" onclick="switchTab('history',this)">History</button>
+      <button onclick="switchTab('history',this)">History</button>
       <button onclick="switchTab('tools',this)">Tools</button>
       <button onclick="switchTab('trace',this)">Trace</button>
-      <button onclick="switchTab('events',this)">Events</button>
+      <button class="active" onclick="switchTab('events',this)">Events</button>
       <button onclick="switchTab('eval',this)">Eval</button>
     </div>
     <div class="panel-content">
-      <div id="tab-history" class="tab-panel active">
+      <div id="tab-history" class="tab-panel">
         <div class="conv-toolbar">
           <button class="conv-new-btn" onclick="newConversation()">+ New</button>
         </div>
@@ -1063,7 +1098,7 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
         </div>
         <div id="trace-body" style="overflow-y:auto;flex:1;padding:12px"></div>
       </div>
-      <div id="tab-events" class="tab-panel">
+      <div id="tab-events" class="tab-panel active">
         <div id="events-list" class="empty-state">Send a message to see events</div>
       </div>
       <div id="tab-eval" class="tab-panel">
@@ -1196,7 +1231,8 @@ async function runTool(btn, name) {{
     msSpan.textContent = ms + 'ms';
     const ct = resp.headers.get('content-type') || '';
     const data = ct.includes('application/json') ? await resp.json() : await resp.text();
-    resultBox.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    const raw = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    resultBox.innerHTML = fmtResp(raw);
     if (resp.status >= 400) resultBox.classList.add('err');
   }} catch (err) {{
     resultBox.textContent = 'Error: ' + err.message;
@@ -1255,13 +1291,15 @@ function switchTab(name, btn) {{
 }}
 
 // ── History tab ──
+let _convHistoryTimer = null;
 function loadConversationHistory() {{
-  fetch('/_apx/conversations').then(r => {{
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.json();
-  }}).then(convs => {{
+  if (_convHistoryTimer) clearTimeout(_convHistoryTimer);
+  _convHistoryTimer = setTimeout(_doLoadConversationHistory, 120);
+}}
+function _doLoadConversationHistory() {{
+  _convHistoryTimer = null;
+  fetch('/_apx/conversations').then(r => r.json()).then(convs => {{
     const list = document.getElementById('conv-list');
-    if (!Array.isArray(convs)) throw new Error(convs?.error || 'bad response');
     if (!convs.length) {{
       list.innerHTML = '<div class="empty-state">No conversations yet — send a message</div>';
       return;
@@ -1271,112 +1309,61 @@ function loadConversationHistory() {{
       const ts = c.updated_at ? new Date(c.updated_at).toLocaleDateString() : '';
       const active = c.id === devThreadId ? ' active' : '';
       return `<div class="conv-item${{active}}" data-id="${{c.id}}" onclick="switchConversation('${{c.id}}')">
-        <div class="conv-title">${{esc(label)}}</div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div class="conv-title" style="flex:1">${{esc(label)}}</div>
+          <button onclick="event.stopPropagation();promoteToEval('${{c.id}}',${{JSON.stringify(label)}})"
+            title="Promote to Eval"
+            style="background:transparent;border:1px solid #2a2a2a;border-radius:3px;color:#555;font-size:9px;padding:1px 5px;cursor:pointer;flex-shrink:0;margin-left:4px">→ Eval</button>
+        </div>
         ${{ts ? `<div class="conv-ts">${{ts}}</div>` : ''}}
       </div>`;
     }}).join('');
-  }}).catch(err => {{
-    // Show the failure instead of a silently empty panel — an empty
-    // history and a broken store are very different situations.
-    const list = document.getElementById('conv-list');
-    if (list) list.innerHTML = `<div class="empty-state">History unavailable (${{esc(err.message)}}) — check the server log</div>`;
-  }});
+  }}).catch(() => {{}});
 }}
 
 function newConversation() {{
   devThreadId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
   sessionStorage.setItem(_THREAD_KEY, devThreadId);
   chat.innerHTML = '';
-  // Reset the request payload too — without this the next send posts the
-  // PREVIOUS conversation's messages under the new thread_id.
-  history.length = 0;
   loadConversationHistory();
 }}
 
-// Monotonic token so a slow item-fetch from an earlier click can't
-// clobber the conversation the user selected last.
-let _convSwitchSeq = 0;
+async function promoteToEval(convId, label) {{
+  try {{
+    const items = await fetch(`/_apx/conversations/${{convId}}/items`).then(r => r.json());
+    // Find the first user message and the first assistant response
+    const userMsg = items.find(it => it.type === 'message' && it.data && it.data.role === 'user');
+    const assistantMsg = items.find(it => it.type === 'message' && it.data && it.data.role === 'assistant');
+    const question = userMsg ? (Array.isArray(userMsg.data.content)
+      ? userMsg.data.content.map(p => p.text || '').join('') : userMsg.data.content || '') : label;
+    const response = assistantMsg ? (Array.isArray(assistantMsg.data.content)
+      ? assistantMsg.data.content.map(p => p.text || '').join('') : assistantMsg.data.content || '') : '';
+    if (!evalLoaded) {{ await loadEvalCases(); }}
+    evalRows.push({{ question: question.trim(), expected_judge: '', response: response.trim(), status: 'pending' }});
+    saveEvalCases();
+    switchTab('eval', document.querySelectorAll('.panel-tabs button')[4]);
+    renderEval();
+  }} catch(e) {{ alert('Failed to promote: ' + e.message); }}
+}}
 
 async function switchConversation(id) {{
-  const seq = ++_convSwitchSeq;
   devThreadId = id;
   sessionStorage.setItem(_THREAD_KEY, id);
   chat.innerHTML = '';
-  history.length = 0;
   document.querySelectorAll('.conv-item').forEach(el => {{
     el.classList.toggle('active', el.dataset.id === id);
   }});
   try {{
-    const r = await fetch(`/_apx/conversations/${{id}}/items`);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const items = await r.json();
-    if (seq !== _convSwitchSeq) return;  // user clicked another conversation meanwhile
-    if (!Array.isArray(items)) throw new Error(items?.error || 'bad response');
+    const items = await fetch(`/_apx/conversations/${{id}}/items`).then(r => r.json());
     for (const item of items) {{
       if (item.type !== 'message') continue;
       const role = item.data?.role;
       if (!role) continue;
       const blocks = item.data?.content || [];
       const text = blocks.map(b => b.text || b.content || '').join('');
-      if (text) {{
-        addMsg(role, text, false);
-        // Rebuild the request payload to match what's on screen, so the
-        // next send continues THIS conversation instead of whatever the
-        // previous in-memory history held.
-        history.push({{ role: role, content: text }});
-      }}
+      if (text) addMsg(role, text, false);
     }}
-  }} catch (err) {{
-    if (seq !== _convSwitchSeq) return;
-    addMsg('assistant', `Could not load conversation: ${{err.message}}`, false);
-  }}
-}}
-
-// ── Approvals (ASK policy human-in-the-loop) ──
-async function checkPendingApprovals() {{
-  let pending = [];
-  try {{
-    const r = await fetch('/_apx/approvals');
-    if (!r.ok) return;
-    pending = await r.json();
-    if (!Array.isArray(pending)) return;
-  }} catch {{ return; }}
-  for (const a of pending) {{
-    // One card per approval; skip if already rendered.
-    if (document.querySelector(`[data-approval-id="${{a.id}}"]`)) continue;
-    const card = document.createElement('div');
-    card.className = 'approval-card';
-    card.dataset.approvalId = a.id;
-    card.style.cssText = 'margin:8px 0;padding:10px 12px;border:1px solid #6b4f00;border-radius:8px;background:#1a1400';
-    const argsStr = JSON.stringify(a.arguments || {{}}, null, 0);
-    card.innerHTML = `
-      <div style="font-size:12px;color:#facc15;font-weight:600;margin-bottom:4px">⏸ Approval required: ${{esc(a.tool_name)}}</div>
-      ${{a.reason ? `<div style="font-size:11px;color:#aaa;margin-bottom:4px">${{esc(a.reason)}}</div>` : ''}}
-      <div style="font-size:11px;color:#888;font-family:monospace;margin-bottom:8px;word-break:break-all">${{esc(argsStr.slice(0, 300))}}</div>
-      <button onclick="resolveApproval('${{a.id}}', true, this)" style="background:#14532d;color:#4ade80;border:1px solid #166534;border-radius:5px;padding:4px 14px;cursor:pointer;font-size:12px;margin-right:8px">Approve</button>
-      <button onclick="resolveApproval('${{a.id}}', false, this)" style="background:#2a0a0a;color:#f87171;border:1px solid #7f1d1d;border-radius:5px;padding:4px 14px;cursor:pointer;font-size:12px">Deny</button>`;
-    chat.appendChild(card);
-    chat.scrollTop = chat.scrollHeight;
-  }}
-}}
-
-async function resolveApproval(id, approved, btn) {{
-  const card = btn.closest('.approval-card');
-  try {{
-    const r = await fetch(`/_apx/approvals/${{id}}/${{approved ? 'approve' : 'deny'}}`, {{ method: 'POST' }});
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-  }} catch (err) {{
-    if (card) card.querySelectorAll('button').forEach(b => b.disabled = false);
-    addMsg('assistant', `Approval update failed: ${{err.message}}`, false);
-    return;
-  }}
-  if (card) card.remove();
-  // Close the loop automatically: tell the agent the decision so it
-  // retries (approved) or moves on (denied) without the user typing.
-  inputEl.value = approved
-    ? `I approved request ${{id}}. Please retry the action.`
-    : `I denied request ${{id}}. Do not retry that action.`;
-  form.dispatchEvent(new Event('submit'));
+  }} catch {{}}
 }}
 
 // ── Eval tab ──
@@ -1777,7 +1764,7 @@ function addToolCall(groupId, name, reqText, reqData) {{
   group.appendChild(body);
   eventsList.appendChild(group);
   eventsList.scrollTop = eventsList.scrollHeight;
-  toolGroups[groupId] = {{ body }};
+  toolGroups[groupId] = {{ body, callEv: reqEv }};
   return reqEv;
 }}
 
@@ -1876,10 +1863,39 @@ function addToolResponse(groupId, name, respText, respData, isErr) {{
   const ev = {{ num: '', type: isErr ? 'tool-error' : 'tool-result',
                title: name || 'tool', subtitle: respText, data: respData }};
   events.push(ev);
+  // For SQL tools: update the request row and call event detail to show SQL.
+  // respData.result may be a parsed object (trace replay) or string (live stream).
+  let respDisplay = respText || '';
+  if (!isErr && respData) {{
+    const rawResult = respData.output || respData.result;
+    if (rawResult) {{
+      try {{
+        const parsed = typeof rawResult === 'string' ? JSON.parse(rawResult) : rawResult;
+        if (parsed._sql) {{
+          // Update compact request row with SQL preview
+          const reqPart = g.body.querySelector('.tg-part');
+          if (reqPart) {{
+            const valEl = reqPart.querySelector('.tg-val');
+            if (valEl) valEl.textContent = parsed._sql.replace(/\\s+/g, ' ').trim().slice(0, 160);
+          }}
+          // Inject SQL into the call event so the detail panel can show it
+          if (g.callEv && g.callEv.data) g.callEv.data._sql = parsed._sql;
+          // Build a clean response summary: "N rows · query took Xs"
+          const rowCount = Array.isArray(parsed.data) ? parsed.data.length : null;
+          const timingRaw = parsed._timing || '';
+          const timing = timingRaw.replace(/^\\[|\\]$/g, '');
+          respDisplay = [
+            rowCount != null ? `${{rowCount}} row${{rowCount !== 1 ? 's' : ''}}` : null,
+            timing || null
+          ].filter(Boolean).join(' · ');
+        }}
+      }} catch {{}}
+    }}
+  }}
   const row = document.createElement('div');
   row.className = 'tg-part' + (isErr ? ' err' : '');
   row.innerHTML = `<span class="tg-label">${{isErr ? 'error' : 'response'}}</span>`
-    + `<span class="tg-val">${{esc(respText || '')}}</span>`;
+    + `<span class="tg-val">${{esc(respDisplay)}}</span>`;
   row.onclick = () => showDetail(ev, null);
   g.body.appendChild(row);
   eventsList.scrollTop = eventsList.scrollHeight;
@@ -1897,8 +1913,21 @@ function showDetail(ev, el) {{
       try {{ html = DOMPurify.sanitize(marked.parse(ev.data.content)); }}
       catch {{ html = `<pre>${{esc(ev.data.content)}}</pre>`; }}
     }} else {{
-      for (const [k, v] of Object.entries(ev.data)) {{
-        html += `<div class="label">${{esc(k)}}</div><pre>${{typeof v === 'string' ? esc(v) : esc(JSON.stringify(v, null, 2))}}</pre>`;
+      // For tool events use the same formatters as inline steps: SQL gets a
+      // code block, row arrays get a table — everything else falls back to <pre>.
+      const isCallKey = k => k === 'arguments' || k === 'inputs' || k === 'args';
+      const isRespKey = k => k === 'result' || k === 'outputs' || k === 'output';
+      // For tool-call events: show SQL as the request when available (set
+      // retroactively by addToolResponse once the result arrives).
+      if (ev.type === 'tool-call' && ev.data._sql) {{
+        html = `<div class="label">request</div>${{fmtSql(ev.data._sql)}}`;
+      }} else {{
+        for (const [k, v] of Object.entries(ev.data)) {{
+          if (k === '_sql') continue;  // already shown above or handled in fmtResp
+          const raw = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+          const body = isCallKey(k) ? fmtReq(raw) : isRespKey(k) ? fmtResp(raw) : `<pre>${{esc(raw)}}</pre>`;
+          html += `<div class="label">${{esc(k)}}</div>${{body}}`;
+        }}
       }}
     }}
   }}
@@ -2189,32 +2218,60 @@ function addToolPills(trace) {{
 }}
 
 // ── Tool detail formatters ──
-// fmtReq: if the request JSON has a `query` field, show just the SQL.
-// fmtResp: if the response JSON has a `rows` array, render an HTML table.
+// SQL keyword highlighter.
+function sqlHL(sql) {{
+  const kws = /\\b(SELECT|FROM|WHERE|AND|OR|NOT|NULL|TRUE|FALSE|AS|IN|ON|JOIN|LEFT|RIGHT|INNER|ORDER|BY|LIMIT|GROUP|HAVING|DISTINCT|CASE|WHEN|THEN|ELSE|END|INSERT|UPDATE|DELETE|CREATE|DROP|TABLE|VIEW|WITH|IS|LIKE|BETWEEN|EXISTS|ALL|ANY|UNION|VALUES|SET|INTO|OUTER|CROSS|FULL|ASC|DESC|CAST|OVER|PARTITION|NULLIF|COALESCE|COUNT|SUM|AVG|MIN|MAX|RANK)\\b/gi;
+  return sql.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/('(?:[^']|'')*')/g, s => `<span style="color:#ce9178">${{s}}</span>`)
+    .replace(kws, k => `<span style="color:#569cd6;font-weight:600">${{k}}</span>`);
+}}
+function fmtSql(sql) {{
+  return `<pre style="background:#1e1e1e;font-family:ui-monospace,monospace;font-size:11px;line-height:1.6;padding:10px 12px;border-radius:4px;overflow:auto;margin:0">${{sqlHL(sql)}}</pre>`;
+}}
+function fmtTable(rows) {{
+  if (!rows || !rows.length) return '<div style="color:#555;font-size:12px;padding:8px">No rows returned.</div>';
+  const cols = Object.keys(rows[0]);
+  const th = cols.map(c => `<th style="padding:4px 8px;text-align:left;border-bottom:1px solid #2a2a2a;color:#9cdcfe;font-weight:500;white-space:nowrap">${{esc(c)}}</th>`).join('');
+  const trs = rows.map(r =>
+    `<tr>${{cols.map(c => `<td style="padding:3px 8px;border-bottom:1px solid #1a1a1a;color:#ccc;white-space:nowrap">${{esc(String(r[c] ?? ''))}}</td>`).join('')}}</tr>`
+  ).join('');
+  return `<div style="overflow:auto"><table style="border-collapse:collapse;font-family:ui-monospace,monospace;font-size:11px;width:100%"><thead><tr>${{th}}</tr></thead><tbody>${{trs}}</tbody></table><div style="color:#555;font-size:11px;padding:4px 8px">${{rows.length}} row${{rows.length !== 1 ? 's' : ''}}</div></div>`;
+}}
 function fmtReq(rawStr) {{
   try {{
     const obj = JSON.parse(rawStr);
-    if (typeof obj.query === 'string') {{
-      return `<code class="step-sql">${{esc(obj.query.trim())}}</code>`;
-    }}
+    const pretty = JSON.stringify(obj, null, 2);
+    return `<pre style="background:#1e1e1e;font-family:ui-monospace,monospace;font-size:11px;line-height:1.5;padding:10px 12px;border-radius:4px;overflow:auto;margin:0;color:#ccc">${{esc(pretty)}}</pre>`;
   }} catch {{}}
   return `<pre class="step-detail-pre">${{esc(rawStr)}}</pre>`;
 }}
 function fmtResp(rawStr) {{
   try {{
     const obj = JSON.parse(rawStr);
-    if (Array.isArray(obj.rows) && obj.rows.length > 0) {{
-      const cols = Object.keys(obj.rows[0]);
-      const header = cols.map(c => `<th>${{esc(c)}}</th>`).join('');
-      const bodyRows = obj.rows.map(r =>
-        `<tr>${{cols.map(c => `<td>${{esc(String(r[c] ?? ''))}}</td>`).join('')}}</tr>`
-      ).join('');
-      const count = obj.row_count != null ? obj.row_count : obj.rows.length;
-      const note = obj.truncated ? ' <span class="trunc-note">(truncated)</span>' : '';
-      return `<div class="resp-table-wrap"><table class="resp-table">`
-        + `<thead><tr>${{header}}</tr></thead><tbody>${{bodyRows}}</tbody></table>`
-        + `<div class="resp-meta">${{count}} row${{count !== 1 ? 's' : ''}}${{note}}</div></div>`;
+    if (obj._sql || Array.isArray(obj.data)) {{
+      let html = '';
+      if (obj._sql) {{
+        // UC function link header (SQL itself is shown in the Request section)
+        const ucMatch = obj._sql.match(/FROM\\s+([\\w]+)\\.([\\w]+)\\.([\\w]+)\\s*\\(/i);
+        if (ucMatch) {{
+          const [, cat, schema, fn] = ucMatch;
+          const fqn = `${{cat}}.${{schema}}.${{fn}}`;
+          // Link to schema page — function URLs return "table not found" in UC explorer
+          const ucUrl = apxHost ? `${{apxHost}}/explore/data/${{cat}}/${{schema}}` : null;
+          const fnLink = ucUrl
+            ? `<a href="${{ucUrl}}" target="_blank" style="color:#60b0ff;font-family:ui-monospace,monospace;font-size:11px;text-decoration:none;margin-left:8px">${{esc(fqn)}} ↗</a>`
+            : `<span style="color:#9cdcfe;font-family:ui-monospace,monospace;font-size:11px;margin-left:8px">${{esc(fqn)}}</span>`;
+          const sqlHeader = '<span style="color:#555;font-size:10px;text-transform:uppercase;letter-spacing:.05em">Unity Catalog Function</span>' + fnLink;
+          html += `<div style="display:flex;align-items:center;padding:8px 0 4px">${{sqlHeader}}</div>`;
+        }}
+      }}
+      if (Array.isArray(obj.data)) html += `<div style="color:#555;font-size:10px;text-transform:uppercase;letter-spacing:.05em;padding:8px 0 4px">Results${{obj._timing ? ' · ' + obj._timing : ''}}</div>${{fmtTable(obj.data)}}`;
+      return html;
     }}
+  }} catch {{}}
+  try {{
+    const pretty = JSON.stringify(JSON.parse(rawStr), null, 2);
+    return `<pre style="background:#1e1e1e;font-family:ui-monospace,monospace;font-size:11px;line-height:1.5;padding:10px 12px;border-radius:4px;overflow:auto;margin:0;color:#ccc">${{esc(pretty)}}</pre>`;
   }} catch {{}}
   return `<pre class="step-detail-pre">${{esc(rawStr)}}</pre>`;
 }}
@@ -2254,8 +2311,17 @@ function renderInlineStep(stepsContainer, callId, opts) {{
   // Show the request unless it's empty/no-arg ('{{}}'): a no-arg tool has no
   // query to show, so we skip the Request section rather than print '{{}}'.
   if (row._req != null && row._req !== '' && row._req.trim() !== '{{}}') {{
+    // For SQL tools: show the generated query as the request (not the raw args JSON)
+    let reqBody = '';
+    if (row._resp) {{
+      try {{
+        const rp = JSON.parse(row._resp);
+        if (rp._sql) reqBody = fmtSql(rp._sql);
+      }} catch {{}}
+    }}
+    if (!reqBody) reqBody = fmtReq(row._req);
     detail.insertAdjacentHTML('beforeend',
-      `<div class="step-detail-label">Request</div>${{fmtReq(row._req)}}`);
+      `<div class="step-detail-label">Request</div>${{reqBody}}`);
   }}
   if (row._resp != null) {{
     detail.insertAdjacentHTML('beforeend',
@@ -2421,8 +2487,6 @@ form.addEventListener('submit', async e => {{
   inputEl.focus();
   // Refresh history list so the new/updated conversation appears.
   loadConversationHistory();
-  // Surface any ASK-policy approval requests raised during this turn.
-  checkPendingApprovals();
 }});
 
 // ── Resizable panel ──
