@@ -7572,7 +7572,13 @@ def fleet_redeploy_cmd(
     apply: bool,
     fail_fast: bool,
 ) -> None:
-    """Re-promote each selected agent's @prod alias to its latest version."""
+    """Re-promote each selected agent's @prod alias to its latest prod version.
+
+    "Latest" means the highest version carrying a prod manifest tag — never a
+    canary. Mirrors the single-agent prod-promote path and avoids pointing @prod
+    at an un-soaked canary (see _apps_registry.get_latest_prod_version). Agents
+    with no prod manifest (canary-only or non-apps) are skipped.
+    """
     from apx_agent import _apps_registry, _fleet
 
     if schema and not catalog:
@@ -7589,10 +7595,10 @@ def fleet_redeploy_cmd(
     outcomes: list[_fleet.AgentOutcome] = []
     for a in agents_:
         try:
-            latest = _apps_registry.get_latest_apps_version(a.uc_name)
+            latest = _apps_registry.get_latest_prod_version(a.uc_name)
             current = _apps_registry.get_prod_alias_version(a.uc_name)
             if latest is None:
-                outcomes.append(_fleet.AgentOutcome(a.uc_name, "skipped", "no versions"))
+                outcomes.append(_fleet.AgentOutcome(a.uc_name, "skipped", "no prod versions"))
                 continue
             if latest == current:
                 outcomes.append(_fleet.AgentOutcome(

@@ -283,7 +283,7 @@ def test_fleet_redeploy_promotes_when_latest_differs():
     ws = _fake_ws([_model("a", catalog="cat", schema="sch",
                           **{_fleet.NAME_TAG: "payroll"})])
     with patch("apx_agent.cli._require_sdk", return_value=ws), \
-         patch("apx_agent._apps_registry.get_latest_apps_version", return_value="5"), \
+         patch("apx_agent._apps_registry.get_latest_prod_version", return_value="5"), \
          patch("apx_agent._apps_registry.get_prod_alias_version", return_value="3"), \
          patch("apx_agent._apps_registry.set_prod_alias_version") as setp:
         result = CliRunner().invoke(main, ["fleet", "redeploy", "--apply"])
@@ -297,7 +297,7 @@ def test_fleet_redeploy_skips_when_already_latest():
     ws = _fake_ws([_model("a", catalog="cat", schema="sch",
                           **{_fleet.NAME_TAG: "payroll"})])
     with patch("apx_agent.cli._require_sdk", return_value=ws), \
-         patch("apx_agent._apps_registry.get_latest_apps_version", return_value="5"), \
+         patch("apx_agent._apps_registry.get_latest_prod_version", return_value="5"), \
          patch("apx_agent._apps_registry.get_prod_alias_version", return_value="5"), \
          patch("apx_agent._apps_registry.set_prod_alias_version") as setp:
         result = CliRunner().invoke(main, ["fleet", "redeploy", "--apply"])
@@ -311,7 +311,7 @@ def test_fleet_redeploy_dry_run_writes_nothing():
     ws = _fake_ws([_model("a", catalog="cat", schema="sch",
                           **{_fleet.NAME_TAG: "payroll"})])
     with patch("apx_agent.cli._require_sdk", return_value=ws), \
-         patch("apx_agent._apps_registry.get_latest_apps_version", return_value="5"), \
+         patch("apx_agent._apps_registry.get_latest_prod_version", return_value="5"), \
          patch("apx_agent._apps_registry.get_prod_alias_version", return_value="3"), \
          patch("apx_agent._apps_registry.set_prod_alias_version") as setp:
         result = CliRunner().invoke(main, ["fleet", "redeploy"])
@@ -327,9 +327,27 @@ def test_fleet_redeploy_fail_fast_stops_at_first_error():
         _model("b", catalog="cat", schema="sch", **{_fleet.NAME_TAG: "b"}),
     ])
     with patch("apx_agent.cli._require_sdk", return_value=ws), \
-         patch("apx_agent._apps_registry.get_latest_apps_version",
+         patch("apx_agent._apps_registry.get_latest_prod_version",
                side_effect=RuntimeError("boom")), \
          patch("apx_agent._apps_registry.get_prod_alias_version", return_value="1"):
         result = CliRunner().invoke(main, ["fleet", "redeploy", "--apply", "--fail-fast"])
     assert result.exit_code == 1
     assert result.output.count("failed") >= 1
+
+
+@pytest.mark.unit
+def test_fleet_redeploy_uses_prod_version_not_any_role():
+    """Regression guard: @prod must advance to the latest PROD version, never
+    a canary. fleet redeploy must use get_latest_prod_version, not
+    get_latest_apps_version (which maxes over all roles incl. canary)."""
+    ws = _fake_ws([_model("a", catalog="cat", schema="sch",
+                          **{_fleet.NAME_TAG: "payroll"})])
+    with patch("apx_agent.cli._require_sdk", return_value=ws), \
+         patch("apx_agent._apps_registry.get_latest_apps_version") as any_role, \
+         patch("apx_agent._apps_registry.get_latest_prod_version", return_value="4"), \
+         patch("apx_agent._apps_registry.get_prod_alias_version", return_value="2"), \
+         patch("apx_agent._apps_registry.set_prod_alias_version") as setp:
+        result = CliRunner().invoke(main, ["fleet", "redeploy", "--apply"])
+    assert result.exit_code == 0, result.output
+    any_role.assert_not_called()
+    setp.assert_called_once_with("cat.sch.a", "4")
