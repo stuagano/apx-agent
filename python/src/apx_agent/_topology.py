@@ -28,6 +28,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -351,7 +352,7 @@ def _instructions_for(agent: "BaseAgent") -> str:
     """Pull instructions string from any agent type; empty if not present."""
     instr = getattr(agent, "_instructions", "")
     if not instr and hasattr(agent, "_inner"):
-        instr = getattr(agent._inner, "_instructions", "")
+        instr = getattr(getattr(agent, "_inner"), "_instructions", "")
     return str(instr or "")
 
 
@@ -463,12 +464,18 @@ def _tool_has_obo_dep(fn: Any) -> bool:
     return any(_is_dependency_param(annotation) for annotation in hints.values())
 
 
-def _resource_url_for(kind: str, identifier: str) -> str | None:
-    """Best-effort Managed MCP URL for a resource — None when not applicable."""
+def _resource_url_for(kind: str, identifier: str, workspace_host: str | None) -> str | None:
+    """Best-effort Managed MCP URL for a resource — None when not applicable.
+
+    ``workspace_host`` is the Databricks workspace host (e.g. from
+    ``DATABRICKS_HOST``); without it the URL can't be built, so return None.
+    """
+    if not workspace_host:
+        return None
     try:
         from ._managed_mcp import managed_mcp_url_for_resource
 
-        return managed_mcp_url_for_resource(kind, identifier)
+        return managed_mcp_url_for_resource(kind, identifier, workspace_host=workspace_host)
     except Exception:
         return None
 
@@ -701,7 +708,7 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
         "resourceKind": detail_kind,
         "identifier": identifier,
     }
-    url = _resource_url_for(kind, identifier)
+    url = _resource_url_for(kind, identifier, os.environ.get("DATABRICKS_HOST"))
     if url:
         resource_details["url"] = url
     return {

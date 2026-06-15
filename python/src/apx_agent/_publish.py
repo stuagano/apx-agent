@@ -52,7 +52,7 @@ _SUPERVISOR_SDK_MISSING = (
 def _load_supervisor_sdk() -> Any:
     """Return the supervisoragents service module, or raise a friendly ImportError."""
     try:
-        from databricks.sdk.service import supervisoragents
+        from databricks.sdk.service import supervisoragents  # pyright: ignore[reportAttributeAccessIssue]
     except ImportError as e:  # pragma: no cover — exercised only on older SDKs
         raise ImportError(_SUPERVISOR_SDK_MISSING) from e
     return supervisoragents
@@ -98,7 +98,7 @@ def create_supervisor_agent(
     SupervisorAgent = sdk.SupervisorAgent  # noqa: N806
 
     ws = _ensure_ws(ws)
-    return ws.supervisor_agents.create_supervisor_agent(
+    return ws.supervisor_agents.create_supervisor_agent(  # pyright: ignore[reportAttributeAccessIssue]
         supervisor_agent=SupervisorAgent(
             display_name=display_name,
             description=description,
@@ -173,7 +173,7 @@ def publish_to_supervisor(
         "(tool_id=%s, display_name=%s)",
         serving_endpoint, supervisor_agent_id, final_tool_id, name,
     )
-    return ws.supervisor_agents.create_tool(
+    return ws.supervisor_agents.create_tool(  # pyright: ignore[reportAttributeAccessIssue]
         parent=f"supervisor-agents/{supervisor_agent_id}",
         tool=tool,
         tool_id=final_tool_id,
