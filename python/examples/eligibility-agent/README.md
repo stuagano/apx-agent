@@ -192,7 +192,7 @@ tests/test_reasoning_trail.py::test_trail_contains_all_inputs PASSED
 ### Step 5: Run locally
 
 ```bash
-uv run uvicorn eligibility_agent.app:app --reload
+uv run uvicorn app:app --reload
 ```
 
 The agent is available at `http://localhost:8000`. Open `/_apx/agent` to chat. Try:
@@ -333,17 +333,18 @@ A production deployment should read thresholds from an authoritative benefits-ru
 eligibility-agent/
 ├── app.yml                              # Databricks Apps runtime config
 ├── databricks.yml                       # Asset Bundle — build, deploy, app resource
-├── src/eligibility_agent/
-│   ├── app.py                           # FastAPI app entry point
-│   ├── config.py                        # Settings (catalog, schema, state, program)
-│   ├── prompts.py                       # LLM system prompt
-│   └── tools/
-│       ├── get_household.py             # UC lookup: household + applicant records
-│       ├── parse_documents.py           # PDF vision extraction
-│       ├── compute_income.py            # Annual income aggregation + discrepancy flag
-│       ├── check_residency.py           # Address match + recency check
-│       ├── assess_eligibility.py        # FPL-tier decision
-│       └── reasoning_trail.py          # Markdown audit output
+├── pyproject.toml                       # Package + dependencies
+├── app.py                               # FastAPI app entry point (uvicorn app:app)
+├── agent.py                             # Agent definition (tools + prompt)
+├── config.py                            # Settings (catalog, schema, state, program)
+├── prompts.py                           # LLM system prompt
+├── tools/
+│   ├── get_household.py                 # UC lookup: household + applicant records
+│   ├── parse_documents.py               # PDF vision extraction
+│   ├── compute_income.py               # Annual income aggregation + discrepancy flag
+│   ├── check_residency.py              # Address match + recency check
+│   ├── assess_eligibility.py           # FPL-tier decision
+│   └── reasoning_trail.py              # Markdown audit output
 └── tests/
     ├── test_get_household.py
     ├── test_parse_documents.py

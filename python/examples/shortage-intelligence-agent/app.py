@@ -1,7 +1,7 @@
 import logging
 import os
 
-from apx_agent import LakebaseSessionStore, create_app
+from apx_agent import LakebaseConversationStore, create_app
 from apx_agent._defaults import _make_workspace_client
 from apx_agent._dev import build_dev_ui_router
 from apx_agent._models import AgentConfig
@@ -43,12 +43,12 @@ if _settings.lakebase_connection_url and _settings.lakebase_instance_name:
         )
         kwargs["password"] = cred.token
 
-    _session_store = LakebaseSessionStore(
+    _session_store = LakebaseConversationStore(
         engine=_engine,
-        table_name=_settings.lakebase_table,
+        conversations_table=_settings.lakebase_table,
     )
 
-app = create_app(agent, config=_agent_config, session_store=_session_store)
+app = create_app(agent, config=_agent_config, conversation_store=_session_store)
 app.include_router(router)
 
 try:

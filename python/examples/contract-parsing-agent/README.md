@@ -194,7 +194,7 @@ tests/test_tools_summarize_contract.py::test_summarize_returns_dict PASSED
 ### Step 5: Run locally
 
 ```bash
-uv run uvicorn contract_parsing_agent.backend.app:app --reload
+uv run uvicorn app:app --reload
 ```
 
 The chat interface opens at `http://localhost:8000`. Try:

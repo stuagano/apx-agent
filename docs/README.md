@@ -37,7 +37,7 @@
 
 ## Sessions and memory
 
-- [running/sessions-and-memory.md](running/sessions-and-memory.md) — session stores, memory stores, `MemoryBank`, `ExampleStore`
+- [running/sessions-and-memory.md](running/sessions-and-memory.md) — session stores, memory stores, `MemoryStore`, `ExampleStore`
 - [running/lakebase-recipe.md](running/lakebase-recipe.md) — persistent pgvector memory on Lakebase
 
 ## Guardrails and safety

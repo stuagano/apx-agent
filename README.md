@@ -124,19 +124,18 @@ agent = LlmAgent(
         genie_tool("abc123", description="Answer billing questions"),
     ],
     max_iterations=10,
-    # memory="lakebase",   # pgvector semantic recall across sessions
+    # memory="persistent",   # durable semantic recall across sessions
 )
 ```
 
 Every hook is optional. None requires subclassing.
 
 ```python
-# Invoke the agent
-result = await agent.run([{"role": "user", "content": "Look up account 42."}])
+from apx_agent import run_once
 
-# Or stream the response
-async for chunk in agent.stream([{"role": "user", "content": "Explain the schema."}]):
-    print(chunk, end="", flush=True)
+# Invoke the agent (no HTTP request needed)
+result = run_once(agent, "Look up account 42.")
+print(result)
 ```
 
 **Compose loops explicitly.** `LoopAgent` iterates until a condition is met; `SequentialAgent` pipelines agents in order; `ParallelAgent` fans out; `HandoffAgent` routes conversationally.
@@ -246,7 +245,7 @@ See [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) for the full `/_apx
 | **customer_triage** | `HandoffAgent` + memory + UC tools |
 | **data-triage-agent** | 6-step `SequentialAgent` (presence → lineage → pipeline → genie → code → synthesis) |
 | **entity-resolution-agent** | Fuzzy account match via Vector Search + `HandoffAgent` |
-| **memory_demo** | `MemoryBank` + `ExampleStore` — recall across handoffs |
+| **memory_demo** | `MemoryStore` + `ExampleStore` — recall across handoffs |
 | **voynich** | `LoopAgent` + 5-agent evolutionary population |
 | **slack-agent** | Slack-initiated runs as the Slack user's Databricks identity |
 | + 7 more | data-inspector, eligibility-agent, contract-parsing, shortage-intelligence, explain-my-bill, apx-builder, agent-hub |
@@ -298,13 +297,13 @@ See [docs/get-started/migration.md](docs/get-started/migration.md) for a concept
 
 | ADK / OpenAI | apx-agent |
 |---|---|
-| `Agent(name, instructions, model)` | `LlmAgent(name, instructions, model)` or `Agent(...)` |
-| `Runner.run()` | `agent.run(messages)` |
+| `Agent(name, instructions, model)` | `LlmAgent(name, instructions)` or `Agent(...)` — set the model via the `[tool.apx.agent]` `model` field in `pyproject.toml` |
+| `Runner.run()` | `run_once(agent, "prompt")` |
 | `@function_tool` / `@tool` | `@tool` |
 | `input_guardrails=[fn]` | `input_guardrails=[fn]` (same param name) |
 | `@input_guardrail` tripwire | raise `PermissionError` in `before_agent_callback` |
 | `before_tool_callback` | `before_tool` or `before_tool_callback` (both accepted) |
-| `MemoryService` | `MemoryBank` / `MemoryStore` |
+| `MemoryService` | `MemoryStore` |
 | Handoffs | `HandoffAgent` |
 
 ---

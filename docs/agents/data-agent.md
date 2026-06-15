@@ -85,7 +85,7 @@ Or compose it as a sub-agent inside a router:
 ```python
 from apx_agent import RouterAgent, DataAgent
 
-agent = RouterAgent(sub_agents=[
+agent = RouterAgent([
     DataAgent("main", "sales",   name="sales"),
     DataAgent("main", "support", name="support"),
 ])

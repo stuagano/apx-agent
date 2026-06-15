@@ -188,4 +188,4 @@ type = "inmemory"
 # or lakebase: type="lakebase", instance_name="...", database="..."
 ```
 
-**Precedence:** An explicit `create_app(session_store=X)` arg wins over config session (code is more specific intent). Config session is the fallback (e.g. template-only projects). `DeltaSessionStore` takes a three-part UC `table_path`; the wiring maps `table_name` → `table_path` automatically.
+**Precedence:** An explicit `create_app(conversation_store=X)` arg wins over config session (code is more specific intent). Config session is the fallback (e.g. template-only projects). `DeltaConversationStore` takes a three-part UC `table_prefix` (used as the base for the `_conversations` and `_items` tables); the wiring maps config `table_name` → `table_prefix` automatically.

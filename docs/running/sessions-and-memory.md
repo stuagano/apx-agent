@@ -1,8 +1,8 @@
 # Sessions, memory, and example banks
 
-> **Coming from ADK?** Sessions ≈ ADK `Session` + `SessionService`. MemoryBank ≈ ADK `MemoryService` (cross-session). ExampleBank has no direct ADK equivalent — it's few-shot retrieval from real session history.
+> **Coming from ADK?** Sessions ≈ ADK `Session` + `SessionService`. MemoryStore ≈ ADK `MemoryService` (cross-session). ExampleBank has no direct ADK equivalent — it's few-shot retrieval from real session history.
 >
-> **Coming from OpenAI Agents SDK?** Sessions ≈ `session` strategy (persistent store) or `conversation_id` (server-managed). MemoryBank is the cross-session equivalent of `to_input_list()` with a vector index on top.
+> **Coming from OpenAI Agents SDK?** Sessions ≈ `session` strategy (persistent store) or `conversation_id` (server-managed). MemoryStore is the cross-session equivalent of `to_input_list()` with a vector index on top.
 
 ---
 
@@ -29,11 +29,11 @@ Three stores cover the main workloads:
 
 | Store | Best for | Latency |
 |-------|----------|---------|
-| `InMemorySessionStore` | Tests, dev, single-process Apps | in-process |
-| `DeltaSessionStore` | UC-governed Delta table; durable across long-idle sessions | ~100–500 ms/turn |
-| `LakebaseSessionStore` | Chat UIs and high-frequency turns (Lakebase managed Postgres) | ~1–10 ms/turn |
+| `InMemoryConversationStore` | Tests, dev, single-process Apps | in-process |
+| `DeltaConversationStore` | UC-governed Delta table; durable across long-idle sessions | ~100–500 ms/turn |
+| `LakebaseConversationStore` | Chat UIs and high-frequency turns (Lakebase managed Postgres) | ~1–10 ms/turn |
 
-Custom stores satisfy the `SessionStore` protocol (`get`/`put`/`delete`) — bring your own Redis, Memcached, etc.
+Custom stores satisfy the `ConversationStore` protocol (the abstract `create_conversation` / `get_conversation` / `append` / `list_items` / `update_conversation` / `delete_conversation` / `list_conversations` / `search` methods) — bring your own Redis, Memcached, etc.
 
 ### Wiring a session store
 
@@ -41,20 +41,20 @@ Pass the store to `compile_to_chat_agent` and include `session_id` in `custom_in
 
 ```python
 from apx_agent import (
-    Agent, compile_to_chat_agent, DeltaSessionStore,
+    Agent, compile_to_chat_agent, DeltaConversationStore,
 )
 from databricks.sdk import WorkspaceClient
 
 ws = WorkspaceClient()
 
-session_store = DeltaSessionStore(
-    table_path="main.agents.sessions",
+conversation_store = DeltaConversationStore(
+    table_prefix="main.agents.apx_conv",
     ws=ws,
     warehouse_id="wh-prod",   # explicit warehouse for predictable cost
 )
 
 agent = Agent(instructions="You help debug data pipelines.", tools=[...])
-chat = compile_to_chat_agent(agent, model="databricks-claude-sonnet-4-6", session_store=session_store)
+chat = compile_to_chat_agent(agent, model="databricks-claude-sonnet-4-6", conversation_store=conversation_store)
 
 # Turn 1
 chat.predict(
@@ -73,12 +73,12 @@ When `custom_inputs["session_id"]` is absent the framework silently runs single-
 
 ### Lakebase session store
 
-`LakebaseSessionStore` takes a SQLAlchemy `Engine`. Always use the OBO token pattern — never a static password in the connection URL:
+`LakebaseConversationStore` takes a SQLAlchemy `Engine`. Always use the OBO token pattern — never a static password in the connection URL:
 
 ```python
 from sqlalchemy import create_engine, event
 from databricks.sdk import WorkspaceClient
-from apx_agent import LakebaseSessionStore
+from apx_agent import LakebaseConversationStore
 
 ws = WorkspaceClient()
 instance = ws.database.get_database_instance(name="my-lakebase-instance")
@@ -97,7 +97,7 @@ def _refresh_token(_dialect, _record, _args, kwargs):
     )
     kwargs["password"] = cred.token
 
-session_store = LakebaseSessionStore(engine=engine)
+conversation_store = LakebaseConversationStore(engine=engine)
 ```
 
 `do_connect` fires before every new connection is opened from the pool, so the password is always a fresh token. `pool_recycle=1800` ensures connections are dropped and re-opened before the token expires — never keep a connection alive across the full TTL.
@@ -110,7 +110,7 @@ Install the lakebase extra: `pip install 'apx-agent[lakebase]'`.
 
 ## Memory bank — long-lived recall across conversations
 
-Sessions hold a single conversation. **MemoryBank** holds durable facts per principal (user, customer, agent) with semantic recall — it persists across sessions and is searched by meaning, not by recency.
+Sessions hold a single conversation. **MemoryStore** holds durable facts per principal (user, customer, agent) with semantic recall — it persists across sessions and is searched by meaning, not by recency.
 
 ```
 Memory access patterns
@@ -158,7 +158,7 @@ hits = store.recall(
 )
 ```
 
-### Three ways to use MemoryBank
+### Three ways to use MemoryStore
 
 **1. As tools the LLM calls**
 
@@ -207,7 +207,7 @@ def build_instructions(user_id: str, query: str) -> str:
 
 ## Example bank — few-shot retrieval
 
-Same shape as MemoryBank, different scope key: `agent_id` + `intent`. Stores per-agent input/output exemplars for in-context learning. `findSimilar` ranks by similarity of the *input* field — "examples whose inputs look like this query" — not by recency.
+Same shape as MemoryStore, different scope key: `agent_id` + `intent`. Stores per-agent input/output exemplars for in-context learning. `findSimilar` ranks by similarity of the *input* field — "examples whose inputs look like this query" — not by recency.
 
 ```python
 from apx_agent import LakebaseExampleStore, mine_examples
@@ -216,7 +216,7 @@ store = LakebaseExampleStore(engine=engine, embedding_fn=embed, embedding_dim=10
 
 # Cold-start from real session history
 result = mine_examples(
-    session_store=session_store,
+    conversation_store=conversation_store,
     example_store=store,
     agent_id="triage",
     score_fn=lambda turn: heuristic_score(turn),  # optional quality filter
@@ -246,9 +246,9 @@ A worked example lives in [`python/examples/memory_demo/`](../python/examples/me
 
 | Need | Use |
 |------|-----|
-| Within-conversation history | Session store — pass `session_id` |
-| Cross-session facts (user preferences, past decisions) | MemoryBank — `make_memory_tools` or `assemble_memory_context` |
+| Within-conversation history | Conversation store — pass `session_id` |
+| Cross-session facts (user preferences, past decisions) | MemoryStore — `make_memory_tools` or `assemble_memory_context` |
 | Few-shot examples for a specific agent | ExampleBank — `mine_examples` to seed from history |
-| Fast dev/test, single process | `InMemorySessionStore` / `InMemoryMemoryStore` |
-| Durable, Unity Catalog governed | `DeltaSessionStore` / `DeltaMemoryStore` |
-| Low-latency chat (high turns/sec) | `LakebaseSessionStore` / `LakebaseMemoryStore` |
+| Fast dev/test, single process | `InMemoryConversationStore` / `InMemoryMemoryStore` |
+| Durable, Unity Catalog governed | `DeltaConversationStore` / `DeltaMemoryStore` |
+| Low-latency chat (high turns/sec) | `LakebaseConversationStore` / `LakebaseMemoryStore` |

@@ -133,9 +133,11 @@ the same graceful fallback it already has for older deployments.
 
 UC model aliases give Apps the bookkeeping half of a promotion workflow:
 
-- `apx-agent canary promote --target apps --version N` → set alias `@prod` → version N
-  (and re-point the prod App's `APX_MODEL_VERSION` if needed).
-- `apx-agent canary rollback --target apps` → move `@prod` back to its prior version.
+- `apx-agent canary promote --target apps --canary-version <label>` → auto-resolves
+  the latest canary version, then moves alias `@prod` → that version (and re-points
+  the prod App's `APX_MODEL_VERSION` if needed).
+- `apx-agent canary rollback --target apps --to-version <N>` → move `@prod` back to
+  version N (`--to-version` is required).
 - `canary status --target apps` reads aliases + `apx.apps.*` version tags to show
   which version each App is running.
 

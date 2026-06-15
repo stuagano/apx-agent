@@ -185,19 +185,19 @@ account_memory_tools = make_memory_tools(
 
 ## Sessions
 
-To turn this into a multi-turn conversational agent, wire a `SessionStore` at deploy time:
+To turn this into a multi-turn conversational agent, wire a `ConversationStore` at deploy time:
 
 ```python
-from apx_agent import compile_to_chat_agent, DeltaSessionStore
+from apx_agent import compile_to_chat_agent, DeltaConversationStore
 from databricks.sdk import WorkspaceClient
 
 ws = WorkspaceClient()
-session_store = DeltaSessionStore(
-    table_path="main.agents.customer_triage_sessions",
+conversation_store = DeltaConversationStore(
+    table_prefix="main.agents.customer_triage_sessions",
     ws=ws,
     warehouse_id="wh-prod",
 )
-chat = compile_to_chat_agent(agent, model="...", session_store=session_store)
+chat = compile_to_chat_agent(agent, model="...", conversation_store=conversation_store)
 ```
 
 Then `predict(messages, custom_inputs={"session_id": "user:alice:thread-7"})` carries history across turns automatically.

@@ -8,9 +8,6 @@ env:
   - name: DEMO_MODE
     value: "false"   # set to "true" to return synthetic data — no VS index or SQL warehouse needed
 
-  - name: VS_ENDPOINT
-    value: "PLACEHOLDER — your Vector Search endpoint name"
-
   - name: VS_INDEX_FULL
     value: "PLACEHOLDER — catalog.schema.utility_account_entities_full_idx"
 
