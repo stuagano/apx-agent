@@ -112,11 +112,12 @@ def lineage_tool(
 
     async def _get_lineage(table_name: str, ws: UserClientDependency) -> dict[str, Any]:  # type: ignore[valid-type]
         """Placeholder doc — overwritten below."""
-        result: dict[str, Any] = ws.api_client.do(
+        result = ws.api_client.do(
             "GET",
             "/api/2.1/unity-catalog/lineage-tracking/table-lineage",
             query={"table_name": table_name},
         )
+        assert isinstance(result, dict)
         upstreams = [
             {
                 "full_name": u.get("tableInfo", {}).get("name", ""),
@@ -285,9 +286,10 @@ def uc_function_tool(
             _cache["data_type"] = str(getattr(func_info, "data_type", "") or "")
 
         # Build positional SQL args from param dict
+        cached_params: list[dict[str, Any]] = _cache["parameters"]
         sql_args = [
             _to_sql_literal(params.get(p["name"]), p["type_name"])
-            for p in _cache["parameters"]
+            for p in cached_params
         ]
         sql = (
             f"SELECT {function_name}()"
