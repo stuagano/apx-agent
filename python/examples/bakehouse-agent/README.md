@@ -46,7 +46,7 @@ apx-agent agents deploy --target apps
 ## Upgrade — semantic review search (optional)
 The default `reviews_agent` keyword-searches the review text with SQL — zero
 infra, but no semantic ranking. For production-grade retrieval, point a Vector
-Search agent at the pre-chunked reviews (`samples.bakehouse.media_gold_reviews_chunked`):
+Search agent at the reviews table (`samples.bakehouse.media_customer_reviews`):
 
 1. **One-time:** create a Vector Search index over the chunked reviews (UI or
    SQL — see docs.databricks.com → Vector Search). This provisions a VS

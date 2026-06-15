@@ -14,7 +14,7 @@ An agent is a *module* either way — the question is whether it lives in the sa
 
 |                       | Local (same process)                              | Remote (A2A)                                       |
 |-----------------------|---------------------------------------------------|----------------------------------------------------|
-| **Deterministic edge** | `SequentialAgent` / `ParallelAgent` / `LoopAgent` | `RemoteAgent` inside a workflow                    |
+| **Deterministic edge** | `SequentialAgent` / `ParallelAgent` / `LoopAgent` | `RemoteDatabricksAgent` inside a workflow          |
 | **LLM-driven edge**    | `agent_tool(sub_agent)`                           | `sub_agents=[url]`                                 |
 
 Pick the deploy boundary by **lifecycle and consumers**, not by agent count. Six agents that always run together, version together, and have no external caller belong in one app composed locally. One agent that has multiple callers, evolves independently, or has a different scaling shape belongs in its own app reached over A2A.
@@ -125,13 +125,12 @@ See [composition.md](../agents/composition.md) for the full reference with examp
 
 ## Durable execution
 
-`SequentialAgent`, `LoopAgent`, and `EvolutionaryAgent` can persist each step's output through a pluggable `WorkflowEngine` — a run can resume after a crash, redeploy, or pause.
+`SequentialAgent` and `LoopAgent` can persist each step's output through a pluggable `WorkflowEngine` — a run can resume after a crash, redeploy, or pause.
 
 | Backend | When to use |
 |---------|-------------|
 | `InMemoryEngine` | Default — tests, dev, short interactive runs |
 | `DeltaEngine` | Production — SQL Statements API against a Delta table; survives restarts |
-| `InngestEngine` | Optional adapter — when you already run Inngest as your orchestrator |
 
 Durable workflows generally need Apps hosting — Model Serving is stateless and short-lived per request.
 

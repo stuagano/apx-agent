@@ -12,11 +12,6 @@ frontier, repeat.
 
 ```
 voynich/
-├── loop_agent/              # LoopAgent — new apx-agent workflow primitive
-│   ├── __init__.py          # Public API
-│   ├── loop_agent.py        # LoopAgent, Hypothesis, LoopConfig, GenerationResult
-│   └── population_store.py  # Delta Lake R/W (Spark bulk + SQL fallback)
-│
 ├── agents/
 │   ├── decipherer/          # Hypothesis mutation and cipher application
 │   ├── historian/           # Medieval RAG — period plausibility scoring
@@ -54,11 +49,12 @@ a fixed fitness function at scale.
 ### LoopAgent primitive
 
 `LoopAgent` extends apx-agent's workflow vocabulary (`Sequential`, `Parallel`,
-`Loop`, `Router`, `Handoff`) with generation-level population management:
+`Loop`, `Router`, `Handoff`) with generation-level population management. It ships
+in the library at `apx_agent.workflow`:
 
 ```python
 from apx_agent import create_app
-from loop_agent import LoopAgent, LoopConfig
+from apx_agent.workflow import LoopAgent, LoopConfig
 
 loop = LoopAgent(config=LoopConfig(
     population_table  = "voynich.evolution.population",
@@ -80,7 +76,10 @@ app = create_app(loop)  # standard apx-agent pattern
 - Model Serving endpoints for each agent
 - Databricks Apps enabled
 
-### 1. Install the loop_agent package
+### 1. Install dependencies
+
+`LoopAgent` ships in the `apx_agent.workflow` library — no local package to
+install. Just install the project's dependencies:
 
 ```bash
 pip install -e ".[dev]"
@@ -163,7 +162,7 @@ Or trigger a single generation batch manually via the Orchestrator:
 pytest tests/ -v
 
 # Type check
-pyright loop_agent/
+pyright agents/ tests/
 
 # Dev server (orchestrator)
 cd agents/orchestrator

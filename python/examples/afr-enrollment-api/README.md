@@ -69,7 +69,7 @@ The service ships with synthetic utility account data so you can test it before 
 ```bash
 cd afr-enrollment-api
 uv sync
-DEMO_MODE=true uv run uvicorn afr_enrollment_api.backend.app:app --reload
+DEMO_MODE=true uv run uvicorn app:app --reload
 ```
 
 Then:
@@ -208,7 +208,7 @@ tests/test_enroll.py::test_demo_mode_enroll PASSED
 ### Step 5: Run locally against live data
 
 ```bash
-uv run uvicorn afr_enrollment_api.backend.app:app --reload
+uv run uvicorn app:app --reload
 ```
 
 Test an enrollment:
@@ -250,7 +250,7 @@ Replace the `PLACEHOLDER` values. Set `SEARCH_SERVICE_URL` to the URL of your de
 ```yaml
 command:
   - uvicorn
-  - afr_enrollment_api.backend.app:app
+  - app:app
   - --workers
   - "2"
 
@@ -347,15 +347,12 @@ afr-enrollment-api/
 ├── app.yml                                    # Runtime command + env vars
 ├── pyproject.toml                             # Package config and deps
 ├── databricks.yml                             # Databricks Asset Bundle config
-├── src/afr_enrollment_api/
-│   └── backend/
-│       ├── app.py                             # FastAPI app entry point
-│       ├── router.py                          # HTTP routes: /api/enroll, /version
-│       ├── models.py                          # Pydantic models: EnrollRequest, EnrollResponse
-│       └── core/
-│           ├── search_client.py               # HTTP client for account-search-service (or local fallback)
-│           ├── evaluator.py                   # Candidate scoring: confidence, category, familial detection
-│           └── demo_data.py                   # Synthetic accounts for DEMO_MODE
+├── app.py                                     # FastAPI app entry point (uvicorn app:app)
+├── api.py                                     # HTTP routes: /api/enroll
+├── models.py                                  # Pydantic models: EnrollRequest, EnrollmentDecision
+├── evaluator.py                               # Candidate scoring: confidence, category, familial detection
+├── search_client.py                           # HTTP client for account-search-service (or local fallback)
+├── demo_data.py                               # Synthetic accounts for DEMO_MODE
 └── tests/
     ├── conftest.py                            # Shared fixtures and mock helpers
     └── test_enroll.py                         # POST /api/enroll happy path, no-match, 422, demo mode

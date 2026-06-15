@@ -1,6 +1,6 @@
 # Lakebase recipe — provisioning + pgvector + apx-agent wiring
 
-End-to-end recipe for running apx-agent's session, memory, and few-shot example stores on Databricks Lakebase (managed Postgres) with pgvector. Every snippet here is copy-paste-adapt: real CLI invocations, real DDL, real wiring code that matches the actual store APIs in `python/src/apx_agent/_session_lakebase.py`, `_memory_lakebase.py`, and `_example_lakebase.py`.
+End-to-end recipe for running apx-agent's session, memory, and few-shot example stores on Databricks Lakebase (managed Postgres) with pgvector. Every snippet here is copy-paste-adapt: real CLI invocations, real DDL, real wiring code that matches the actual store APIs in `python/src/apx_agent/_conversation_lakebase.py`, `_memory_lakebase.py`, and `_example_lakebase.py`.
 
 ## 1. Why Lakebase for agent state
 
@@ -8,7 +8,7 @@ apx-agent has three durable stores, each with a Lakebase variant:
 
 | Store | What it holds | Access pattern |
 |---|---|---|
-| `LakebaseSessionStore` | Per-conversation history + state | Point lookup by `session_id`, frequent UPSERT |
+| `LakebaseConversationStore` | Per-conversation history + state | Point lookup by `session_id`, frequent UPSERT |
 | `LakebaseMemoryStore` | Per-principal long-lived facts | Vector recall + tag/namespace filter |
 | `LakebaseExampleStore` | Per-agent few-shot examples | Vector retrieval over `(input, output)` pairs |
 
@@ -20,7 +20,7 @@ Why Postgres over Delta for these:
 
 Cost model differs: Delta scales storage independently and is cheap when conversations idle for days. Lakebase charges for the running instance — pick by workload.
 
-Delta variants (`DeltaSessionStore`, `DeltaMemoryStore`, `DeltaExampleStore`) satisfy the same protocols and drop in cleanly when the latency budget doesn't justify the always-on cost.
+Delta variants (`DeltaConversationStore`, `DeltaMemoryStore`, `DeltaExampleStore`) satisfy the same protocols and drop in cleanly when the latency budget doesn't justify the always-on cost.
 
 ## 2. One-time provisioning
 
@@ -104,22 +104,23 @@ Pool tuning notes:
 - `pool_pre_ping=True` adds a cheap `SELECT 1` on checkout; the round-trip cost is in the single-digit ms range and avoids the "connection died while idle" failure mode at the cost of one extra packet per checkout.
 - `pool_size` + `max_overflow` should reflect the agent's parallelism. For a Mosaic AI Model Serving endpoint with a 4-replica scale, `pool_size=5, max_overflow=10` per replica is a safe baseline.
 
-## 4. Wire `LakebaseSessionStore`
+## 4. Wire `LakebaseConversationStore`
 
 ```python
-from apx_agent import LakebaseSessionStore, compile_to_chat_agent
+from apx_agent import LakebaseConversationStore, compile_to_chat_agent
 
-session_store = LakebaseSessionStore(
+conversation_store = LakebaseConversationStore(
     engine=engine,
-    table_name="apx_sessions",   # quoted as a SQL identifier; can be schema-qualified
-    auto_create=True,            # CREATE TABLE IF NOT EXISTS on first use
+    conversations_table="apx_conversations",   # quoted as SQL identifiers; can be schema-qualified
+    items_table="apx_conversation_items",
+    auto_create=True,                          # CREATE TABLE IF NOT EXISTS on first use
 )
 
 chat = compile_to_chat_agent(my_agent, model="databricks-claude-sonnet-4-6",
-                             session_store=session_store)
+                             conversation_store=conversation_store)
 ```
 
-At deploy time, `predict(messages, custom_inputs={"session_id": "user:alice:thread-7"})` carries history automatically. Sessions get a single TEXT primary-key column for `session_id`; history and state are JSON-encoded TEXT.
+At deploy time, `predict(messages, custom_inputs={"session_id": "user:alice:thread-7"})` carries history automatically. Conversation rows are keyed by `conversation_id`; per-turn items are stored in the companion items table.
 
 ## 5. Wire `LakebaseMemoryStore`
 
@@ -274,7 +275,7 @@ The same shape works for `LakebaseExampleStore` — swap principal for `agent_id
 
 ## Cross-references
 
-- Python store source: [`python/src/apx_agent/_session_lakebase.py`](../../python/src/apx_agent/_session_lakebase.py), [`_memory_lakebase.py`](../../python/src/apx_agent/_memory_lakebase.py), [`_example_lakebase.py`](../../python/src/apx_agent/_example_lakebase.py)
+- Python store source: [`python/src/apx_agent/_conversation_lakebase.py`](../../python/src/apx_agent/_conversation_lakebase.py), [`_memory_lakebase.py`](../../python/src/apx_agent/_memory_lakebase.py), [`_example_lakebase.py`](../../python/src/apx_agent/_example_lakebase.py)
 - TypeScript equivalents: [`typescript/src/session-lakebase.ts`](../../typescript/src/session-lakebase.ts), [`memory-lakebase.ts`](../../typescript/src/memory-lakebase.ts), [`example-lakebase.ts`](../../typescript/src/example-lakebase.ts)
 - Worked example with `InMemoryMemoryStore` ready to swap: [`python/examples/customer_triage/`](../../python/examples/customer_triage/)
-- Full MemoryBank narrative: [root README](../../README.md#memory-bank--long-lived-recall-across-conversations)
+- Full MemoryStore narrative: [root README](../../README.md)

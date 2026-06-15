@@ -30,9 +30,10 @@ agent = Agent(
     name="my_agent",
     instructions="You are a helpful assistant.",
     tools=[my_tool],
-    model="databricks-meta-llama-3-3-70b-instruct",
 )
 ```
+
+The model is not a constructor argument — set it via `[tool.apx.agent]` in `pyproject.toml` (e.g. `model = "databricks-meta-llama-3-3-70b-instruct"`).
 
 `DataAgent` is the recommended starting point when the agent needs to query Databricks data:
 
@@ -83,16 +84,16 @@ Need to combine multiple agents?
 
 ## Running agents
 
-Agents are invoked programmatically via the `run` and `stream` methods, or interactively via the CLI and dev UI:
+Agents are invoked programmatically with `run_once`, or interactively via the CLI and dev UI:
 
 ```python
-# Single-turn (returns final text)
-result = await agent.run([{"role": "user", "content": "What tables exist?"}])
+from apx_agent import run_once
 
-# Streaming (yields text chunks)
-async for chunk in agent.stream([{"role": "user", "content": "Explain the schema."}]):
-    print(chunk, end="", flush=True)
+# Single-turn (returns final assistant text)
+result = run_once(agent, "What tables exist?")
 ```
+
+`agent.run`/`agent.stream` exist too, but they take a `request` argument (they run inside the served FastAPI app). For script-level invocation outside an HTTP request, use `run_once`.
 
 From the CLI:
 

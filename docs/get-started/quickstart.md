@@ -221,7 +221,7 @@ agent = Agent(
 
 Run it the same way: `uv run apx-agent agents run --reload`.
 
-> **If you know ADK or OpenAI Agents SDK:** `Agent(name, instructions, tools)` maps directly — same shape, same idea. `agent.run(messages)` is the runner. See [migration.md](migration.md) for the full mapping.
+> **If you know ADK or OpenAI Agents SDK:** `Agent(name, instructions, tools)` maps directly — same shape, same idea. `run_once(agent, "prompt")` is the no-HTTP runner. See [migration.md](migration.md) for the full mapping.
 
 ### CoworkerAgent — join two source systems
 
