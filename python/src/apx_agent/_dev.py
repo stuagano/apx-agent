@@ -1166,7 +1166,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             # experiments when no MLFLOW_EXPERIMENT_ID is set so the dev loop
             # surfaces its traces. In the deployed runtime MLFLOW_EXPERIMENT_ID
             # is always set and this branch is a no-op.
-            exp_ids = (
+            exp_ids: list[str] = (
                 [experiment_id] if experiment_id
                 else [e.experiment_id for e in client.search_experiments()]
             )
