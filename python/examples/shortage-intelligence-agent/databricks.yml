@@ -21,8 +21,10 @@ resources:
             value: ${var.agent_model}
           - name: DEMAND_GENIE_SPACE_ID
             value: ${var.demand_genie_space_id}
-          - name: KA_ENDPOINT
-            value: ${var.ka_endpoint}
+          - name: VS_ENDPOINT
+            value: ${var.vs_endpoint}
+          - name: VS_INDEX
+            value: ${var.vs_index}
           - name: HISTORICAL_DEMAND_TABLE
             value: ${var.historical_demand_table}
           - name: DEMAND_ORDERS_TABLE
@@ -64,8 +66,11 @@ variables:
   demand_genie_space_id:
     description: Genie space ID for internal demand order data
     default: ""
-  ka_endpoint:
-    description: Knowledge Assistant endpoint URL for market report validation
+  vs_endpoint:
+    description: Vector Search endpoint name for market report validation
+    default: ""
+  vs_index:
+    description: Vector Search index (catalog.schema.index) for market report validation
     default: ""
   historical_demand_table:
     description: "Unity Catalog table for historical shortage/pricing data (catalog.schema.table)"

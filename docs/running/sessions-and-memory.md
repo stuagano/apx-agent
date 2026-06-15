@@ -210,20 +210,24 @@ def build_instructions(user_id: str, query: str) -> str:
 Same shape as MemoryStore, different scope key: `agent_id` + `intent`. Stores per-agent input/output exemplars for in-context learning. `findSimilar` ranks by similarity of the *input* field — "examples whose inputs look like this query" — not by recency.
 
 ```python
-from apx_agent import LakebaseExampleStore, mine_examples
+from apx_agent import LakebaseExampleStore, make_example_tools
 
 store = LakebaseExampleStore(engine=engine, embedding_fn=embed, embedding_dim=1024)
 
-# Cold-start from real session history
-result = mine_examples(
-    conversation_store=conversation_store,
-    example_store=store,
-    agent_id="triage",
-    score_fn=lambda turn: heuristic_score(turn),  # optional quality filter
-    min_score=0.6,
-)
-print(f"Added {result.examples_added} examples from {result.sessions_scanned} sessions")
+# Seed exemplars — one mapping each, or add_batch for many.
+store.add_batch([
+    {"agent_id": "triage", "input": "why is my bill so high?",
+     "output": "Checked usage vs. plan — the overage was roaming data.", "score": 0.9},
+    {"agent_id": "triage", "input": "I think I was double charged",
+     "output": "Found the duplicate authorization and reversed it.", "score": 0.9},
+])
+
+# Wire recall as an agent tool (ranks by similarity of the input field).
+tools = make_example_tools(store=store, agent_id_resolver=lambda: "triage")
 ```
+
+You can also seed from the CLI (`apx-agent examples save ...`, below) or let the
+agent capture its own exemplars at runtime via the `save_example` tool.
 
 ---
 
@@ -248,7 +252,7 @@ A worked example lives in [`python/examples/memory_demo/`](../python/examples/me
 |------|-----|
 | Within-conversation history | Conversation store — pass `session_id` |
 | Cross-session facts (user preferences, past decisions) | MemoryStore — `make_memory_tools` or `assemble_memory_context` |
-| Few-shot examples for a specific agent | ExampleBank — `mine_examples` to seed from history |
+| Few-shot examples for a specific agent | `ExampleStore` — seed with `store.add`/`add_batch` (or `examples save`), recall via `make_example_tools` |
 | Fast dev/test, single process | `InMemoryConversationStore` / `InMemoryMemoryStore` |
 | Durable, Unity Catalog governed | `DeltaConversationStore` / `DeltaMemoryStore` |
 | Low-latency chat (high turns/sec) | `LakebaseConversationStore` / `LakebaseMemoryStore` |
