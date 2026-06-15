@@ -359,3 +359,31 @@ def test_inspect_node_returns_none_for_unknown_id() -> None:
     assert inspect_node(ctx, "tool:agent:root:missing") is None
     assert inspect_node(ctx, "") is None
     assert inspect_node(ctx, "unknownprefix:foo") is None
+
+
+def test_inspect_node_adds_resource_url_when_host_set(monkeypatch) -> None:
+    """Regression: the Managed MCP resource URL must actually populate.
+
+    _resource_url_for previously imported a never-written function and always
+    returned None, so the topology 'url' field was silently dead. With
+    DATABRICKS_HOST set it must now resolve.
+    """
+    monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.cloud.databricks.com")
+    classify = _uc_tool("classify_intent", "main.tools.classify_intent")
+    ctx = _make_ctx(Agent(tools=[classify], instructions="x"))
+
+    node = inspect_node(ctx, "uc:main.tools.classify_intent")
+    assert node is not None
+    assert node["resource"]["url"] == (
+        "https://workspace.cloud.databricks.com/api/2.0/mcp/functions/main/tools/classify_intent"
+    )
+
+
+def test_inspect_node_omits_resource_url_without_host(monkeypatch) -> None:
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    classify = _uc_tool("classify_intent", "main.tools.classify_intent")
+    ctx = _make_ctx(Agent(tools=[classify], instructions="x"))
+
+    node = inspect_node(ctx, "uc:main.tools.classify_intent")
+    assert node is not None
+    assert "url" not in node["resource"]

@@ -179,6 +179,19 @@ def managed_mcp_urls(
     return endpoints
 
 
+def managed_mcp_url_for_resource(
+    kind: str, identifier: str, *, workspace_host: str
+) -> str | None:
+    """Return the Managed MCP URL for a single ``kind``/``identifier``, or None.
+
+    Thin per-resource wrapper over the same URL builder ``managed_mcp_urls``
+    uses — for callers that have one resource in hand (e.g. topology node
+    rendering) rather than a whole agent to walk. Returns None for kinds with
+    no Managed MCP equivalent or malformed identifiers.
+    """
+    return _build_url(kind, identifier, _normalise_host(workspace_host)).url
+
+
 def managed_mcp_client_config(
     endpoints: list[ManagedMCPEndpoint],
     *,
