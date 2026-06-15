@@ -35,7 +35,7 @@ def test_scaffold_outputs_are_real_not_just_present(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    expect(result.output).nonempty()
+    expect(result.output).nonempty().verify()
 
     base = tmp_path / "my_agent"
     # Reality, not just existence: non-empty AND actually wired.
