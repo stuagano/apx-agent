@@ -2,9 +2,15 @@
 
 ``/health`` is a *liveness* probe — it returns 200 as soon as the server
 process has booted. ``/readyz`` is a *readiness* probe: it proves the agent
-can actually answer a canned prompt and that an MLflow trace was recorded for
-the run. ``apx-agent deploy`` later calls this endpoint as a deploy gate (Slice C),
-so a green deploy means the agent really responds and traces.
+can actually answer a canned prompt, and reports whether a trace span was
+recorded **in-process** for that run. ``apx-agent deploy`` calls this endpoint
+as a deploy gate (Slice C), so a green deploy means the agent really responds.
+
+Tracing caveat: ``tracing="ok"`` means a span was opened in-process during the
+run — it does NOT verify the trace was *exported* to or is *readable* from the
+MLflow backend (those can fail silently on blob-blocked workspaces; see
+``_check_mlflow_read`` in ``_ui_probe.py`` for the real export/read check).
+Tracing is therefore informational and never gates readiness on its own.
 
 Design:
 
