@@ -993,7 +993,7 @@ def _setup_promote_mocks(
     cm = CanaryManifest(version="4", git_sha=canary_sha) if canary_exists else None
     monkeypatch.setattr("apx_agent.find_latest_canary_version", lambda uc, **k: cm)
     monkeypatch.setattr("apx_agent.get_prod_alias_version", lambda uc, **k: "2")
-    monkeypatch.setattr("apx_agent.get_latest_apps_version", lambda uc, **k: "5")
+    monkeypatch.setattr("apx_agent.get_latest_prod_version", lambda uc, **k: "5")
 
     def _set_alias(uc, v, **k):
         captured["alias"] = (uc, v)
@@ -1109,7 +1109,7 @@ def _setup_rollback_mocks(
 
     monkeypatch.setattr("apx_agent.get_version_git_sha", lambda uc, v, **k: version_sha)
     monkeypatch.setattr("apx_agent.get_prod_alias_version", lambda uc, **k: "5")
-    monkeypatch.setattr("apx_agent.get_latest_apps_version", lambda uc, **k: "8")
+    monkeypatch.setattr("apx_agent.get_latest_prod_version", lambda uc, **k: "8")
 
     def _set_alias(uc, v, **k):
         captured["alias"] = (uc, v)

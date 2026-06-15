@@ -245,3 +245,24 @@ def test_get_latest_apps_version() -> None:
     assert get_latest_apps_version("main.agents.my_app", mlflow_client=client) == "10"
     empty = _FakeQueryClient(versions=[])
     assert get_latest_apps_version("main.agents.my_app", mlflow_client=empty) is None
+
+
+def test_get_latest_prod_version_filters_to_prod_role() -> None:
+    """The @prod alias must never point at a canary version: only prod-tagged
+    versions count, even when a canary version is numerically higher (which is
+    exactly what get_latest_apps_version's max-over-all-roles would have returned)."""
+    from apx_agent._apps_registry import get_latest_prod_version
+
+    client = _FakeQueryClient(versions=[
+        _FakeModelVersion("4", {"apx.apps.role": "prod"}),
+        _FakeModelVersion("9", {"apx.apps.role": "canary"}),   # higher, but canary
+        _FakeModelVersion("6", {"apx.apps.role": "prod"}),
+    ])
+    # Highest PROD version is 6 — not the canary 9.
+    assert get_latest_prod_version("main.agents.my_app", mlflow_client=client) == "6"
+
+    # No prod manifest → None (so @prod is left untouched, never set to a canary).
+    no_prod = _FakeQueryClient(versions=[
+        _FakeModelVersion("9", {"apx.apps.role": "canary"}),
+    ])
+    assert get_latest_prod_version("main.agents.my_app", mlflow_client=no_prod) is None
