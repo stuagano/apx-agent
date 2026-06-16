@@ -9,9 +9,6 @@ Model Serving deployments use AI Playground as the equivalent surface.
 ### `/_apx/agent` — Chat
 Interactive chat interface for testing the running agent. Streams responses, surfaces tool calls inline, and shows a setup banner if `[tool.apx.agent]` isn't configured. Use this to exercise the agent end-to-end while iterating.
 
-### `/_apx/tools` — Tool inspector
-Lists every tool exposed by the agent (typed Python tools, `uc_function_tool`, `genie_tool`, `vector_search_tool`, etc.) with their JSON Schemas and a live "invoke" form for each. Useful for verifying tool wiring without going through the LLM.
-
 ### `/_apx/topology` — Interactive topology graph
 
 ![topology view of customer_triage — HandoffAgent + 4 specialists + 8 tools + serving endpoint](images/topology-customer-triage.png)
@@ -24,6 +21,8 @@ Data is served from `GET /_apx/topology.json` (full graph) and `GET /_apx/topolo
 
 ### `/_apx/edit` — Edit agent source
 Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file; restart `apx-agent agents run` to load the new code (there is no live hot-reload — the agent is compiled at startup).
+
+Tool authoring also lives here: the **New Tool** modal scaffolds a tool into the source — including a natural-language generator (`POST /_apx/tools/suggest`) that drafts the tool from a description. (The standalone `/_apx/tools` inspector page has been retired; `/_apx/tools` now redirects here.)
 
 ### `/_apx/probe` — Outbound connectivity tester
 Pass `?url=<url>` to verify outbound network reachability from the App. Pairs with `/_apx/probe/checks` for a curated list of common Databricks endpoints (control plane, model serving, UC, Genie). Useful when an App can't reach a managed MCP / vector index / endpoint.
@@ -44,12 +43,14 @@ npm install                 # one-time
 npm run build               # tsc --noEmit + vite build
 ```
 
-The build outputs to `python/src/apx_agent/_static/topology/` (`index.html`, `assets/*.js`, `assets/*.css`). The wheel ships that directory via `hatch`'s `force-include`:
+The build outputs to `python/src/apx_agent/_static/topology/` (`index.html`, `assets/*.js`, `assets/*.css`). The wheel ships that directory automatically — `packages` already includes every file under `src/apx_agent/`, data files and all:
 
 ```toml
-[tool.hatch.build.targets.wheel.force-include]
-"src/apx_agent/_static/topology" = "apx_agent/_static/topology"
+[tool.hatch.build.targets.wheel]
+packages = ["src/apx_agent"]
 ```
+
+Do **not** add a `force-include` for `_static/topology`: it maps the same files to the same wheel paths a second time, which newer `hatchling` rejects with a hard `ValueError` (failing the wheel build, and thus any `git+https` install).
 
 End users get a working UI from `pip install apx-agent` without needing Node installed.
 
