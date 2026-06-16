@@ -41,6 +41,6 @@ apx-agent examples find --agent-id triage --query "why is my bill high?" -k 5
 apx-agent examples save --agent-id triage --input "..." --output "..." --score 0.9
 ```
 
-All commands that take an agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`).
+Commands that load the agent — `agents scaffold`, `agents deploy`, `agents describe`, `agents cost`, the `uc publish` / `uc mcp-config` commands, and the `eval run` / `eval lint` / `eval test` / `eval chain` commands — accept `--module module:variable` to point at the agent (defaults to `agent:agent`).
 
 A worked example exercising the full surface — `@tool(uc=...)`, `genie_tool`, `vector_search_tool`, `sql`-style tools, and `HandoffAgent` routing — lives in [`python/examples/customer_triage/`](../python/examples/customer_triage/). Read its README for the end-to-end flow from scaffold to deploy to publish.
