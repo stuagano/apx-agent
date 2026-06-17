@@ -2530,6 +2530,18 @@ def refresh_schema(profile: str | None) -> None:
             f"could not read tables for {catalog}.{schema} — check your profile "
             f"and Unity Catalog grants."
         )
+    apx = Path.cwd() / APX_DIR
+    okf_root = apx / "okf"
+    if okf_root.is_dir():
+        from datetime import datetime, timezone
+        from ._okf import refresh_okf_schema, okf_manifest
+        refresh_okf_schema(okf_root, manifest, timestamp=datetime.now(timezone.utc).isoformat())
+        regen = okf_manifest(okf_root)
+        if regen is not None:
+            (apx / SCHEMA_MANIFEST_NAME).write_text(_json.dumps(regen, indent=2))
+        n = len(regen["tables"]) if regen else 0
+        click.echo(f"refreshed {okf_root} (+ schema.json cache) — {n} table{'s' if n != 1 else ''} from {catalog}.{schema}")
+        return
     out = Path.cwd() / APX_DIR / SCHEMA_MANIFEST_NAME
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(_json.dumps(manifest, indent=2))
