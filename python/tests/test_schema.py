@@ -173,3 +173,30 @@ class TestLoadBakedSchemaOKF:
         with caplog.at_level(logging.WARNING):
             assert load_baked_schema(tmp_path) == m
         assert not any("did not parse" in r.message for r in caplog.records)
+
+
+class TestLoadOKFGrounding:
+    def _write_enriched_okf(self, root):
+        from apx_agent._okf import write_okf_bundle
+        import shutil
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        tmp = root / "okf_tmp"
+        write_okf_bundle(m, tmp, timestamp="z")
+        (tmp / "tables" / "pay_runs.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Overview\nPay records.\n\n# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) |  |\n"
+        )
+        dest = root / ".apx" / "okf"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(tmp), str(dest))
+
+    def test_returns_enrichment_when_present(self, tmp_path):
+        from apx_agent._schema import load_okf_grounding
+        self._write_enriched_okf(tmp_path)
+        g = load_okf_grounding(tmp_path)
+        assert g is not None and g["pay_runs"]["description"] == "Pay records."
+
+    def test_returns_none_when_no_okf(self, tmp_path):
+        from apx_agent._schema import load_okf_grounding
+        assert load_okf_grounding(tmp_path) is None

@@ -54,6 +54,27 @@ def load_baked_schema(start: "Path | str | None" = None) -> "dict | None":
     return None
 
 
+def load_okf_grounding(start: "Path | str | None" = None) -> "dict | None":
+    """Harvest optional OKF enrichment for the first ``.apx/okf/`` found.
+
+    Walks up from ``start`` (default cwd) like ``load_baked_schema``. Returns the
+    per-table enrichment payload (see ``_okf.okf_grounding``) or ``None`` when no
+    bundle is found or none carries enrichment. Totalised — never raises.
+    """
+    here = Path(start) if start is not None else Path.cwd()
+    here = here.resolve()
+    for d in [here, *here.parents]:
+        okf_root = d / APX_DIR / "okf"
+        if okf_root.is_dir():
+            try:
+                from ._okf import okf_grounding
+
+                return okf_grounding(okf_root)
+            except Exception:
+                return None
+    return None
+
+
 def introspect_schema(
     ws: Any,
     catalog: str,
