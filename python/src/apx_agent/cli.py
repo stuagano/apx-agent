@@ -2630,15 +2630,18 @@ def pull_comments(profile: str | None, overwrite: bool) -> None:
             f"Could not connect to a workspace to read comments for {catalog}.{schema}."
         )
     comments: dict = {}
-    for t in ws.tables.list(catalog_name=catalog, schema_name=schema):
-        name = getattr(t, "name", None)
-        if not name:
-            continue
-        cmap: dict = {"_table": getattr(t, "comment", None) or ""}
-        for c in (getattr(t, "columns", None) or []):
-            if getattr(c, "name", None):
-                cmap[c.name] = getattr(c, "comment", None) or ""
-        comments[name] = cmap
+    try:
+        for t in ws.tables.list(catalog_name=catalog, schema_name=schema):
+            name = getattr(t, "name", None)
+            if not name:
+                continue
+            cmap: dict = {"_table": getattr(t, "comment", None) or ""}
+            for c in (getattr(t, "columns", None) or []):
+                if getattr(c, "name", None):
+                    cmap[c.name] = getattr(c, "comment", None) or ""
+            comments[name] = cmap
+    except Exception as e:
+        raise click.ClickException(f"Could not read comments for {catalog}.{schema}: {e}")
     n = apply_uc_comments(okf_root, comments, overwrite=overwrite)
     click.echo(
         f"pull-comments: enriched {n} table{'s' if n != 1 else ''} in {okf_root} "
