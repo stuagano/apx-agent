@@ -91,6 +91,7 @@ class CoworkerTemplate:
         genie_space: str | None = None
         vector_index: str | None = None
         include_functions: bool = True
+        knowledge: str | None = None
 
     def build(self, spec: "CoworkerTemplate.Spec", *, ws: Any | None = None) -> CoworkerAgent:
         return CoworkerAgent(
@@ -105,4 +106,5 @@ class CoworkerTemplate:
             include_functions=spec.include_functions,
             genie_space=spec.genie_space,
             vector_index=spec.vector_index,
+            knowledge=spec.knowledge,
         )

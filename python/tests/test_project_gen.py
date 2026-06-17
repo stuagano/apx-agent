@@ -9,6 +9,8 @@ Covers:
   6. ``module = "agent:agent"`` does NOT appear when template is set.
   7. [[tool.apx.tools]] entries are emitted for each tools: dict.
   8. Skills are copied to skills/ and emitted as [[tool.apx.tools]] type=skill entries.
+  9. knowledge= is NOT auto-emitted by generate_project (no bundle produced here);
+     explicit config.knowledge IS emitted when set.
 """
 
 from __future__ import annotations
@@ -276,3 +278,67 @@ def test_no_skills_copy_step_when_skills_empty(tmp_path: Path, minimal_config: A
     generate_project(minimal_config, tmp_path)
     content = (tmp_path / "databricks.yml").read_text()
     assert "cp -r skills" not in content
+
+
+# ---------------------------------------------------------------------------
+# Test 9: knowledge= coherence for generate_project
+#
+# generate_project writes NO .apx/ artifact, so it must NOT auto-emit
+# knowledge = "./.apx/okf" (that would create a dangling config knob).
+# Explicit config.knowledge IS emitted when the caller sets it, because that
+# means they're shipping their own bundle via other means.
+# ---------------------------------------------------------------------------
+
+
+def test_knowledge_not_auto_emitted_for_template_with_catalog_and_schema(
+    tmp_path: Path, coworker_config: AgentConfig
+) -> None:
+    """knowledge must NOT appear in [tool.apx.agent] for a template agent via generate_project.
+
+    generate_project writes no .apx/okf bundle, so auto-emitting the knob
+    would create a dangling reference.  The CLI scaffold path (apx-agent scaffold)
+    is responsible for emitting knowledge= together with the bundle it writes.
+    """
+    generate_project(coworker_config, tmp_path)
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    agent_section = data.get("tool", {}).get("apx", {}).get("agent", {})
+    assert agent_section.get("knowledge") is None, (
+        "generate_project must not auto-emit knowledge= (no bundle produced); "
+        f"got: {agent_section.get('knowledge')!r}"
+    )
+
+
+def test_knowledge_not_emitted_for_plain_module_agent(
+    tmp_path: Path, minimal_config: AgentConfig
+) -> None:
+    """knowledge must NOT appear in [tool.apx.agent] for a plain agent with no template."""
+    generate_project(minimal_config, tmp_path)
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    agent_section = data.get("tool", {}).get("apx", {}).get("agent", {})
+    assert agent_section.get("knowledge") is None, (
+        f"knowledge should be absent for a plain agent, got: {agent_section.get('knowledge')!r}"
+    )
+
+
+def test_explicit_knowledge_is_emitted_by_generate_project(tmp_path: Path) -> None:
+    """When config.knowledge is explicitly set, generate_project DOES emit it.
+
+    This covers the case where the user sets ``knowledge:`` in their YAML spec
+    and ships their own bundle separately.
+    """
+    config = AgentConfig(name="my-agent", knowledge="./.apx/okf")
+    generate_project(config, tmp_path)
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    agent_section = data.get("tool", {}).get("apx", {}).get("agent", {})
+    assert agent_section.get("knowledge") == "./.apx/okf", (
+        f"Explicit config.knowledge must be emitted, got: {agent_section.get('knowledge')!r}"
+    )

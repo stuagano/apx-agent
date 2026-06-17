@@ -283,6 +283,13 @@ class AgentConfig(BaseModel):
     afterward via ``finalize_agent`` as usual — template builds the leaf, persona
     overlays.
     """
+    knowledge: str | None = None
+    """Path to an OKF bundle directory used to ground this agent.
+
+    ``[tool.apx.agent] knowledge = "./.apx/okf"``. When set, grounding loads
+    directly from this bundle (highest-priority baked source) instead of the
+    cwd upward-walk. Relative to the project root."""
+
     memory: MemoryBackendConfig | None = None
     """Declarative memory backend — see ``[tool.apx.agent.memory]``."""
 
