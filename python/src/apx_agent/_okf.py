@@ -342,6 +342,56 @@ def _schema_block_md(cols: list[str], descriptions: "dict | None" = None) -> str
     return "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n" + rows
 
 
+def apply_uc_comments(
+    okf_root: "Path | str",
+    comments: dict,
+    *,
+    overwrite: bool = False,
+) -> int:
+    """Fill OKF table bodies from Unity Catalog comments (read-side enrichment).
+
+    ``comments`` = ``{table: {"_table": <table comment>, <col>: <col comment>}}``.
+    Fills empty ``# Schema`` Description cells and a missing ``# Overview`` from
+    the table comment; with ``overwrite`` it replaces curated values too. Never
+    changes column names/types (``okf_manifest`` is unaffected). Returns the
+    number of table concepts modified. Totalised per-table: a bad/unknown table
+    is skipped, never raises out."""
+    root = Path(okf_root)
+    tdir = root / "tables"
+    modified = 0
+    for table, cmap in comments.items():
+        path = tdir / f"{table}.md"
+        if not path.is_file():
+            continue
+        try:
+            doc = OKFDocument.parse(path.read_text())
+            rows = _schema_rows_with_desc(doc.body)
+            new_desc: dict[str, str] = {}
+            changed = False
+            for r in rows:
+                cur = r["description"]
+                uc = cmap.get(r["name"], "")
+                if uc and (overwrite or not cur):
+                    new_desc[r["name"]] = uc
+                    changed = changed or uc != cur
+                else:
+                    new_desc[r["name"]] = cur
+            if changed:
+                cols = [f"{r['name']}({r['type']})" for r in rows]
+                doc.body = _replace_section(doc.body, "Schema", _schema_block_md(cols, new_desc))
+            tcomment = cmap.get("_table", "")
+            existing_overview = _extract_section(doc.body, "Overview").strip()
+            if tcomment and (overwrite or not existing_overview):
+                doc.body = _replace_section(doc.body, "Overview", f"# Overview\n{tcomment}")
+                changed = True
+            if changed:
+                path.write_text(doc.serialize())
+                modified += 1
+        except Exception:
+            continue
+    return modified
+
+
 def refresh_okf_schema(
     okf_root: "Path | str", manifest: dict, *, timestamp: str, prune: bool = False
 ) -> None:
