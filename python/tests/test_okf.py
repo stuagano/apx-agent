@@ -44,3 +44,46 @@ class TestOKFDocument:
             frontmatter={"type": "X", "title": "t", "description": "d", "timestamp": "z"},
             body="",
         ).validate()
+
+
+class TestParseSchemaColumns:
+    def test_pipe_table_extracts_col_and_type(self):
+        from apx_agent._okf import parse_schema_columns
+        body = (
+            "# Schema\n"
+            "| Column | Type | Description |\n"
+            "| --- | --- | --- |\n"
+            "| `run_id` | string |  |\n"
+            "| `gross_pay` | decimal(6,2) | Gross pay. |\n"
+            "| `tags` | array<string> |  |\n"
+        )
+        assert parse_schema_columns(body) == [
+            "run_id(string)",
+            "gross_pay(decimal(6,2))",
+            "tags(array<string>)",
+        ]
+
+    def test_fk_link_in_description_does_not_pollute_name(self):
+        from apx_agent._okf import parse_schema_columns
+        body = (
+            "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `employee_id` | string | FK -> [`employees`](/tables/employees.md) |\n"
+        )
+        assert parse_schema_columns(body) == ["employee_id(string)"]
+
+    def test_missing_schema_section_returns_empty(self):
+        from apx_agent._okf import parse_schema_columns
+        assert parse_schema_columns("# Overview\nno schema here") == []
+
+    def test_stops_at_next_heading(self):
+        from apx_agent._okf import parse_schema_columns
+        body = (
+            "# Schema\n| Column | Type |\n| --- | --- |\n| `a` | int |\n"
+            "# Joins\n| `not_a_col` | nope |\n"
+        )
+        assert parse_schema_columns(body) == ["a(int)"]
+
+    def test_bullet_form_best_effort(self):
+        from apx_agent._okf import parse_schema_columns
+        body = "# Schema\n- `event_date` (STRING): the date\n"
+        assert parse_schema_columns(body) == ["event_date(STRING)"]
