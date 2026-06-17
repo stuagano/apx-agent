@@ -166,3 +166,79 @@ class TestUcCommentToolErrorSurfacing:
         assert "MODIFY" in result["message"]
         # The statement that was attempted should also be surfaced
         assert "statement" in result
+
+
+# ---------------------------------------------------------------------------
+# Integration: build via the declarative config path + opt-in assertion
+# ---------------------------------------------------------------------------
+
+
+class TestUcCommentWriterConfigIntegration:
+    """Verify end-to-end: config-path build + real invocation + opt-in guarantee."""
+
+    def test_build_via_load_config_tools(self):
+        """load_config_tools dispatches type='uc_comment_writer' to uc_comment_tool."""
+        from apx_agent._tool_config import load_config_tools
+
+        tools = load_config_tools([
+            {
+                "type": "uc_comment_writer",
+                "catalog": "main",
+                "schema": "sales",
+                "warehouse_id": "wh1",
+            }
+        ])
+        assert len(tools) == 1
+        assert callable(tools[0])
+        assert tools[0].__name__ == "update_uc_comment"
+
+    @pytest.mark.asyncio
+    async def test_config_built_tool_writes_table_comment(self):
+        """The config-built tool coroutine produces the correct SQL statement.
+
+        This drives the exact same path as a real deployment: TOML entry →
+        load_config_tools → uc_comment_tool → async invocation.
+        """
+        from apx_agent._tool_config import load_config_tools
+
+        tools = load_config_tools([
+            {
+                "type": "uc_comment_writer",
+                "catalog": "main",
+                "schema": "sales",
+                "warehouse_id": "wh1",
+            }
+        ])
+        tool = tools[0]
+        ws = MagicMock()
+        captured = {}
+
+        def _fake_run_sql(ws_arg, stmt, *, warehouse_id=None):
+            captured["stmt"] = stmt
+            captured["warehouse_id"] = warehouse_id
+            return []
+
+        with patch("apx_agent.uc_comment.run_sql", _fake_run_sql):
+            result = await tool(table="orders", comment="One row per order.", ws=ws)
+
+        assert result["status"] == "ok"
+        assert captured["stmt"] == (
+            "COMMENT ON TABLE `main`.`sales`.`orders` IS 'One row per order.'"
+        )
+        assert captured["warehouse_id"] == "wh1"
+
+    def test_opt_in_not_present_in_non_uc_comment_config(self):
+        """uc_comment_writer is opt-in: declaring a different tool does not include it.
+
+        Building from a non-empty [[tool.apx.tools]] config that omits
+        uc_comment_writer must produce tools — proving the absence is meaningful
+        (not a vacuous empty build) — without including update_uc_comment.
+        """
+        from apx_agent._tool_config import load_config_tools
+
+        tools = load_config_tools([{"type": "sql", "warehouse_id": "wh1"}])
+        names = [t.__name__ for t in tools]
+        assert names, "sql config should produce at least one tool (absence is not vacuous)"
+        assert "update_uc_comment" not in names, (
+            "uc_comment_writer must not appear unless explicitly declared"
+        )

@@ -54,7 +54,7 @@ type = "sql"
 warehouse_id = "$SQL_WAREHOUSE_ID"
 ```
 
-`type` accepts any platform factory: `genie`, `genie_query`, `vector_search`, `uc_function`, `uc_function_toolkit`, `catalog`, `schema`, `lineage`, `sql`, `http`, `openapi`, `mcp_tool`, `mcp_toolkit`, `foundation_model`, `jobs`, `jobs_for_table`, `jobs_history`, `jobs_logs`, `jobs_source_paths`. (`uc_function_toolkit`, `jobs`, and `mcp_toolkit` each return several tools.)
+`type` accepts any platform factory: `genie`, `genie_query`, `vector_search`, `uc_function`, `uc_function_toolkit`, `catalog`, `schema`, `lineage`, `sql`, `http`, `openapi`, `mcp_tool`, `mcp_toolkit`, `foundation_model`, `jobs`, `jobs_for_table`, `jobs_history`, `jobs_logs`, `jobs_source_paths`, `uc_comment_writer`. (`uc_function_toolkit`, `jobs`, and `mcp_toolkit` each return several tools.)
 
 Config tools are **additive** and are merged onto the agent on every runtime — serve, deploy/log, model-serving predict, and `apx-agent agents describe` / `eval lint` / `eval`. Their resource grants (Genie space, warehouse, …) are auto-declared at log time, exactly like code-wired tools. A code-wired tool with the same `name` wins (the config entry is ignored, with a warning), so config is purely additive over code.
 
@@ -62,6 +62,32 @@ Config tools are **additive** and are merged onto the agent on every runtime —
 
 - `APX_TOOLS_ALLOWED_HOSTS` — comma-separated host allow-list. When set, `openapi` / `mcp_tool` / `mcp_toolkit` tools may only point at those hosts; an out-of-list host is a hard error. Unset (the default) means no restriction.
 - `APX_TOOLS_STRICT=1` — promote a tool whose factory fails at load time (e.g. an unreachable MCP server) to a hard error. The default is to skip that tool with a warning so one bad endpoint doesn't take the whole agent down.
+
+### `type = "uc_comment_writer"` — governed UC COMMENT writes
+
+Writes a Unity Catalog `COMMENT` on a table or column via the SQL warehouse, running as the **calling user** (OBO token). The calling user must hold the `MODIFY` privilege on the target table; the write is audited through Unity Catalog. Permission errors are returned to the agent as a structured error message — they are never silently swallowed.
+
+**Opt-in only.** This tool is present only when declared via `[[tool.apx.tools]]`. It is never wired by default. Any config that omits a `uc_comment_writer` entry will not include it.
+
+**Scoped.** The `catalog` and `schema` are fixed at declaration time. The agent supplies only `table` (within that schema), an optional `column`, and the `comment` text. Identifiers are validated against a safe-identifier pattern and the comment text is SQL-literal-escaped before execution.
+
+```toml
+[[tool.apx.tools]]
+type = "uc_comment_writer"
+catalog = "main"
+schema = "sales"
+warehouse_id = "abc123"
+```
+
+| Key | Required | Description |
+|---|---|---|
+| `catalog` | yes | UC catalog that scopes the writes |
+| `schema` | yes | UC schema within `catalog` |
+| `warehouse_id` | yes | SQL warehouse to execute the `COMMENT` statement |
+| `name` | no | Tool name exposed to the LLM (default: `"update_uc_comment"`) |
+| `description` | no | Override the auto-generated tool description |
+
+**OKF tie-in.** An OKF-grounded agent can use `uc_comment_writer` to push curated table and column descriptions back to Unity Catalog under full UC governance — closing the loop from read-time grounding to write-time curation.
 
 ## Declarative guardrails — `[tool.apx.agent.guardrails]`
 
