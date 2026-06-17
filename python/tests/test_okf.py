@@ -244,3 +244,16 @@ class TestOKFGrounding:
         (okf.parent / "datasets").mkdir()
         (okf.parent / "datasets" / "s.md").write_text("---\n: bad: yaml\n---\n")
         assert okf_grounding(okf.parent) is None
+
+    def test_examples_without_fence_yields_empty(self, tmp_path):
+        from apx_agent._okf import okf_grounding
+        body = (
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) | Gross. |\n\n"
+            "# Examples\njust prose, no code fence\n"
+        )
+        okf = self._bundle(tmp_path, body)
+        g = okf_grounding(okf)
+        # the table is still enriched (col description present) but examples is ''
+        assert g["pay_runs"]["examples"] == ""

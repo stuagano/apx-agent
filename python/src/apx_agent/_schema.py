@@ -190,12 +190,12 @@ def _format_grounded_schema_block(
         if not enr:
             continue
         if enr.get("description"):
-            lines.append(f"    {enr['description']}")
+            lines.append(f"    {enr['description'].splitlines()[0]}")
         described = [c for c in enr.get("columns", []) if c.get("description")][:max_cols]
         for c in described:
             lines.append(f"    - {c['name']}: {c['description']}")
         if enr.get("joins"):
-            lines.append(f"    Joins: {enr['joins']}")
+            lines.append(f"    Joins: {enr['joins'].splitlines()[0]}")
         if enr.get("examples"):
             ex_lines = enr["examples"].strip().splitlines()[:6]
             lines.append("    Example:")

@@ -263,7 +263,7 @@ def _schema_rows_with_desc(body: str) -> list[dict]:
 def _first_code_block(section: str) -> str:
     """Body of the first fenced ``` block in a section, or ''."""
     m = re.search(r"```[a-zA-Z]*\n(.*?)```", section, re.DOTALL)
-    return m.group(1).strip() if m else section.strip()
+    return m.group(1).strip() if m else ""
 
 
 def okf_grounding(okf_root: "Path | str") -> "dict | None":

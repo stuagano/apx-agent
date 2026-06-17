@@ -231,3 +231,16 @@ class TestGroundedInstructions:
         assert "    - gross_pay: Gross." in out
         assert "    Joins: Join employees on employee_id." in out
         assert "SELECT * FROM pay_runs" in out
+
+    def test_multiline_description_and_joins_are_first_line_only(self):
+        from apx_agent._schema import build_instructions_from_schema
+        tables = {"pay_runs": ["gross_pay(decimal(6,2))"]}
+        grounding = {"pay_runs": {
+            "description": "Line one.\nLine two should not leak.",
+            "columns": [], "joins": "Join A.\nJoin B should not leak.", "examples": "",
+        }}
+        out = build_instructions_from_schema("c", "s", tables, grounding=grounding)
+        assert "    Line one." in out
+        assert "Line two should not leak." not in out
+        assert "    Joins: Join A." in out
+        assert "Join B should not leak." not in out

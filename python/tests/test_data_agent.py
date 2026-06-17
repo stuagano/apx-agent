@@ -279,3 +279,28 @@ class TestDataAgentOKFGrounding:
             objective=None, tables={"pay_runs": ["gross_pay(decimal(6,2))"]}, extra_tools=None,
         )
         assert "Should not appear." not in comp.instructions
+
+    def test_live_introspect_does_not_pull_grounding(self, tmp_path, monkeypatch):
+        import apx_agent.data_agent as da
+        from apx_agent._okf import write_okf_bundle
+        from apx_agent.data_agent import _build_data_tools_and_instructions
+
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        okf = tmp_path / ".apx" / "okf"
+        write_okf_bundle(m, okf, timestamp="z")
+        (okf / "tables" / "pay_runs.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Overview\nShould not appear via introspect.\n\n# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) |  |\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        # Fake live introspection: non-None ws + introspect returns tables -> baked path skipped.
+        ws = MagicMock()
+        ws.warehouses.list.return_value = [MagicMock(id="wh1", warehouse_type=None)]
+        monkeypatch.setattr(da, "introspect_schema", lambda ws, c, s, w: {"pay_runs": ["gross_pay(decimal(6,2))"]})
+        comp = _build_data_tools_and_instructions(
+            catalog="c", schema="s", warehouse_id=None, ws=ws, include_functions=False,
+            genie_space=None, vector_index=None, instructions=None, persona=None,
+            objective=None, tables=None, extra_tools=None,
+        )
+        assert "Should not appear via introspect." not in comp.instructions
