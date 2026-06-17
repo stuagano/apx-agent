@@ -90,6 +90,9 @@ def _build_data_tools_and_instructions(
             and isinstance(km.get("tables"), dict)
         ):
             resolved_tables = km["tables"]
+            # knowledge_was_source takes priority in the grounding-selection if-elif below,
+            # so baked_was_source is never reached for this branch — kept only as a marker
+            # meaning "a baked source won" for any future consumer that inspects that flag.
             baked_was_source = True
             knowledge_was_source = True
             explicit_grounding = kg

@@ -734,7 +734,7 @@ name = "{name}"
 description = "An apx-agent."
 model = "databricks-claude-sonnet-4-6"
 instructions = "You are a helpful assistant."
-
+{knowledge_line}
 # Optional: declare resource tools as data (no code needed). `type` selects a
 # platform factory; remaining keys are its arguments. See docs/configuration.md
 # for the full type list and the APX_TOOLS_* trust controls.
@@ -842,7 +842,7 @@ name = "<APP_NAME>"
 description = "An apx-agent on Databricks Apps."
 model = "databricks-claude-sonnet-4-6"
 instructions = "You are a helpful assistant."
-# ADK-style layout: the user's agent definition lives at top-level
+<KNOWLEDGE_LINE># ADK-style layout: the user's agent definition lives at top-level
 # ``agent.py``. ``agent_server/start_server.py`` is framework boilerplate
 # that imports + wraps it for the Databricks Apps runtime.
 module = "agent:agent"
@@ -1879,8 +1879,9 @@ def _scaffold_model_serving(
 
     import json as _json
     manifest = _schema_manifest_for_scaffold(catalog, schema)
+    knowledge_line = 'knowledge = "./.apx/okf"\n' if manifest is not None else ""
     files = {
-        "pyproject.toml": _SCAFFOLD_PYPROJECT.format(name=name),
+        "pyproject.toml": _SCAFFOLD_PYPROJECT.format(name=name, knowledge_line=knowledge_line),
         "agent.py": _SCAFFOLD_AGENT.format(
             name=name, catalog=catalog, schema=schema,
             example_tool=prelude, extra_tools=extra_tools,
@@ -2013,6 +2014,10 @@ def _scaffold_apps(
     import re as _re
     name_slug = _re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
 
+    # Emit the knowledge knob iff the bundle is actually being written (manifest is not None).
+    # This keeps pyproject.toml coherent: the knob resolves iff the bundle exists on disk.
+    knowledge_line = 'knowledge = "./.apx/okf"\n' if manifest is not None else ""
+
     def _sub(template: str) -> str:
         return (
             template.replace("<APP_NAME>", name)
@@ -2026,6 +2031,7 @@ def _scaffold_apps(
             .replace("<JOIN_KEY_ARG>", join_key_arg)
             .replace("<APX_AGENT_DEP>", apx_dep)
             .replace("<APX_AGENT_SOURCE>", apx_source)
+            .replace("<KNOWLEDGE_LINE>", knowledge_line)
         )
 
     # Inject commented-out memory block when a UC catalog/schema is known (coworker / data agents).

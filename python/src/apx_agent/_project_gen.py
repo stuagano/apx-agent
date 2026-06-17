@@ -114,15 +114,13 @@ def _build_pyproject(config: "AgentConfig") -> str:
     if config.instructions:
         lines.append(f"instructions = {_toml_value(config.instructions)}")
 
-    # knowledge — explicit value wins; fall back to the baked OKF bundle path
-    # when the template anchors a specific catalog+schema (the same condition
-    # under which scaffold writes .apx/okf/).
-    knowledge = config.knowledge
-    if knowledge is None and config.template:
-        if config.template.get("catalog") and config.template.get("schema"):
-            knowledge = "./.apx/okf"
-    if knowledge is not None:
-        lines.append(f"knowledge = {_toml_value(knowledge)}")
+    # knowledge — emit only when the caller explicitly set it in the AgentConfig.
+    # The auto-default "./.apx/okf" was removed: generate_project writes no .apx/
+    # artifact, so auto-emitting a knob pointing at a non-existent bundle would be
+    # incoherent. The bundle-writing path (apx-agent scaffold) emits the knob there
+    # instead, gated on manifest-is-not-None, so knob ⟺ bundle is always satisfied.
+    if config.knowledge is not None:
+        lines.append(f"knowledge = {_toml_value(config.knowledge)}")
 
     # Only write module when there is no template — template replaces it
     if not config.template:
