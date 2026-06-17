@@ -4402,3 +4402,38 @@ class TestRefreshSchemaPreservesOKF:
         assert "Enriched narrative." in body          # body preserved
         assert "decimal(10,2)" in body                # schema refreshed
         assert json.loads((apx / "schema.json").read_text())["tables"]["pay_runs"] == ["gross_pay(decimal(10,2))"]
+
+    def _two_table_bundle(self, tmp_path):
+        from apx_agent._okf import write_okf_bundle
+        apx = tmp_path / ".apx"
+        m = {"catalog": "c", "schema": "s", "tables": {"keep": ["x(int)"], "gone": ["y(int)"]}}
+        write_okf_bundle(m, apx / "okf", timestamp="z")
+        (apx / "schema.json").write_text(json.dumps(m))
+        return apx
+
+    def test_default_refresh_keeps_table_missing_from_live_schema(self, tmp_path, monkeypatch):
+        # Live introspection no longer returns `gone`; default refresh must NOT drop it.
+        from apx_agent import cli
+        from apx_agent.cli import agents
+        apx = self._two_table_bundle(tmp_path)
+        live = {"catalog": "c", "schema": "s", "tables": {"keep": ["x(int)"]}}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: live)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["refresh-schema"])
+        assert result.exit_code == 0, result.output
+        assert (apx / "okf" / "tables" / "gone.md").is_file()   # preserved by default
+        assert set(json.loads((apx / "schema.json").read_text())["tables"]) == {"keep", "gone"}
+
+    def test_prune_flag_removes_table_missing_from_live_schema(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        from apx_agent.cli import agents
+        apx = self._two_table_bundle(tmp_path)
+        live = {"catalog": "c", "schema": "s", "tables": {"keep": ["x(int)"]}}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: live)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["refresh-schema", "--prune-missing-tables"])
+        assert result.exit_code == 0, result.output
+        assert not (apx / "okf" / "tables" / "gone.md").exists()  # dropped on opt-in
+        assert set(json.loads((apx / "schema.json").read_text())["tables"]) == {"keep"}

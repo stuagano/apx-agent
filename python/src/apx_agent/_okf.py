@@ -14,10 +14,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import json
 import re
 
 REQUIRED_FRONTMATTER_KEYS = ("type", "title", "description", "timestamp")
 OKF_VERSION = "0.1"
+
+
+def dump_schema_cache(manifest: dict) -> str:
+    """Canonical serialization of the derived ``schema.json`` cache.
+
+    The single writer shared by the CLI lifecycle commands (scaffold,
+    refresh-schema, migrate-to-okf) and the pre-commit regen hook, so the two
+    never emit byte-different caches that rewrite each other on every run (no
+    flip-flop). ``indent=2``, no trailing newline — matches the committed
+    caches already in the tree, so adopting it churns nothing.
+    """
+    return json.dumps(manifest, indent=2)
+
 
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.DOTALL)
 
@@ -328,11 +342,19 @@ def _schema_block_md(cols: list[str], descriptions: "dict | None" = None) -> str
     return "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n" + rows
 
 
-def refresh_okf_schema(okf_root: "Path | str", manifest: dict, *, timestamp: str) -> None:
+def refresh_okf_schema(
+    okf_root: "Path | str", manifest: dict, *, timestamp: str, prune: bool = False
+) -> None:
     """Update an OKF bundle's ``# Schema`` tables to match ``manifest`` while
-    preserving enriched bodies and per-column descriptions. Adds new tables,
-    removes table concepts not in the manifest, refreshes the dataset concept and
-    ``tables/index.md``. Caller regenerates the ``schema.json`` cache afterwards."""
+    preserving enriched bodies and per-column descriptions.
+
+    NON-DESTRUCTIVE by default: only the ``# Schema`` section of each live table
+    is rewritten (Overview/Joins/Examples and other hand-authored sections are
+    kept), and table concepts present in the bundle but ABSENT from ``manifest``
+    (local-only / hand-authored tables) are LEFT IN PLACE and still listed in the
+    indexes. Pass ``prune=True`` to delete those dropped-table concepts — the
+    explicit opt-in behind ``refresh-schema --prune-missing-tables``. Caller
+    regenerates the ``schema.json`` cache afterwards."""
     root = Path(okf_root)
     catalog, schema = manifest["catalog"], manifest["schema"]
     tables = manifest.get("tables", {})
@@ -359,17 +381,25 @@ def refresh_okf_schema(okf_root: "Path | str", manifest: dict, *, timestamp: str
             doc.validate()
             path.write_text(doc.serialize())
 
-    for p in list(tdir.glob("*.md")):
+    # Table concepts on disk that the live schema no longer lists. With prune
+    # they are deleted; by default they are preserved (local-only / hand-authored)
+    # and kept in the indexes so nothing the user wrote silently vanishes.
+    local_only: list[str] = []
+    for p in sorted(tdir.glob("*.md")):
         if p.name in _RESERVED:
             continue
-        stem_name = OKFDocument.parse(p.read_text()).frontmatter.get("title") or p.stem
-        if stem_name not in tables:
-            p.unlink()
+        title = OKFDocument.parse(p.read_text()).frontmatter.get("title") or p.stem
+        if title not in tables:
+            if prune:
+                p.unlink()
+            else:
+                local_only.append(p.stem)
 
+    listed = list(tables) + local_only
     ds_path = root / "datasets" / f"{schema}.md"
     if ds_path.is_file():
         ds = OKFDocument.parse(ds_path.read_text())
         ds.frontmatter["timestamp"] = timestamp
-        ds.body = "# Tables\n" + "".join(f"* [{t}](../tables/{t}.md)\n" for t in tables)
+        ds.body = "# Tables\n" + "".join(f"* [{t}](../tables/{t}.md)\n" for t in listed)
         ds_path.write_text(ds.serialize())
-    (tdir / "index.md").write_text("# Tables\n" + "".join(f"* [{t}]({t}.md)\n" for t in tables))
+    (tdir / "index.md").write_text("# Tables\n" + "".join(f"* [{t}]({t}.md)\n" for t in listed))

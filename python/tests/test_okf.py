@@ -290,11 +290,46 @@ class TestRefreshOKFSchema:
         assert "Gross before deductions." in doc.body  # surviving col description carried over
         assert okf_manifest(okf)["tables"]["pay_runs"] == ["gross_pay(decimal(10,2))", "net_pay(decimal(10,2))"]
 
-    def test_refresh_removes_dropped_table(self, tmp_path):
-        from apx_agent._okf import write_okf_bundle, refresh_okf_schema
+    def test_refresh_default_preserves_dropped_table(self, tmp_path):
+        # Non-destructive default: a table no longer in the live schema is kept,
+        # and stays listed in the indexes so it doesn't silently disappear.
+        from apx_agent._okf import write_okf_bundle, refresh_okf_schema, okf_manifest
         m = {"catalog": "c", "schema": "s", "tables": {"a": ["x(int)"], "b": ["y(int)"]}}
         okf = tmp_path / "okf"
         write_okf_bundle(m, okf, timestamp="z")
         refresh_okf_schema(okf, {"catalog": "c", "schema": "s", "tables": {"a": ["x(int)"]}}, timestamp="z2")
         assert (okf / "tables" / "a.md").is_file()
+        assert (okf / "tables" / "b.md").is_file()  # preserved
+        # both still discoverable via the regenerated manifest + index
+        assert set(okf_manifest(okf)["tables"]) == {"a", "b"}
+        assert "[b](b.md)" in (okf / "tables" / "index.md").read_text()
+
+    def test_refresh_preserves_local_only_hand_authored_table(self, tmp_path):
+        # A table the user wrote by hand (never in any introspection) survives a
+        # default refresh, body and all.
+        from apx_agent._okf import write_okf_bundle, refresh_okf_schema, OKFDocument
+        m = {"catalog": "c", "schema": "s", "tables": {"a": ["x(int)"]}}
+        okf = tmp_path / "okf"
+        write_okf_bundle(m, okf, timestamp="z")
+        (okf / "tables" / "local_notes.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: local_notes\ndescription: hand\ntimestamp: z\n---\n\n"
+            "# Overview\nHand-authored, never introspected.\n"
+        )
+        refresh_okf_schema(okf, m, timestamp="z2")
+        assert (okf / "tables" / "local_notes.md").is_file()
+        body = OKFDocument.parse((okf / "tables" / "local_notes.md").read_text()).body
+        assert "Hand-authored, never introspected." in body
+
+    def test_refresh_prune_removes_dropped_table(self, tmp_path):
+        # Explicit opt-in: prune=True deletes the dropped-table concept.
+        from apx_agent._okf import write_okf_bundle, refresh_okf_schema
+        m = {"catalog": "c", "schema": "s", "tables": {"a": ["x(int)"], "b": ["y(int)"]}}
+        okf = tmp_path / "okf"
+        write_okf_bundle(m, okf, timestamp="z")
+        refresh_okf_schema(
+            okf, {"catalog": "c", "schema": "s", "tables": {"a": ["x(int)"]}},
+            timestamp="z2", prune=True,
+        )
+        assert (okf / "tables" / "a.md").is_file()
         assert not (okf / "tables" / "b.md").exists()
+        assert "[b](b.md)" not in (okf / "tables" / "index.md").read_text()
