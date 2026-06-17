@@ -158,3 +158,83 @@ def okf_manifest(okf_root: "Path | str") -> "dict | None":
         return {"catalog": catalog, "schema": schema, "tables": tables}
     except Exception:
         return None
+
+
+def _split_col(col: str) -> "tuple[str, str]":
+    """``'gross_pay(decimal(6,2))'`` -> ``('gross_pay', 'decimal(6,2)')``.
+
+    Splits on the FIRST ``(`` (col names never contain ``(``) and the LAST ``)``
+    so nested-paren types survive.
+    """
+    i = col.find("(")
+    if i == -1:
+        return col, ""
+    j = col.rfind(")")
+    return col[:i], (col[i + 1:j] if j > i else col[i + 1:])
+
+
+def _schema_row(col: str, comment: str = "") -> str:
+    name, type_text = _split_col(col)
+    type_text = type_text.replace("|", r"\|")  # F9
+    comment = (comment or "").replace("\n", " ").replace("|", r"\|")
+    return f"| `{name}` | {type_text} | {comment} |\n"
+
+
+def write_okf_bundle(
+    manifest: dict,
+    okf_root: "Path | str",
+    *,
+    timestamp: str,
+    descriptions: "dict | None" = None,
+) -> None:
+    """Emit an OKF v0.1 bundle from a ``{catalog, schema, tables}`` manifest.
+
+    ``descriptions`` is an optional ``{table: {col: comment}}`` map (Phase-2
+    enrichment seed; comments are blank in Phase 1). Every concept is validated
+    emit-side and carries all REQUIRED_FRONTMATTER_KEYS.
+    """
+    root = Path(okf_root)
+    (root / "datasets").mkdir(parents=True, exist_ok=True)
+    (root / "tables").mkdir(parents=True, exist_ok=True)
+    catalog, schema = manifest["catalog"], manifest["schema"]
+    tables = manifest.get("tables", {})
+    descriptions = descriptions or {}
+
+    ds = OKFDocument(
+        frontmatter={
+            "type": "Databricks Schema",
+            "title": schema,
+            "description": f"{schema} schema for the agent.",
+            "resource": f"{catalog}.{schema}",
+            "catalog": catalog,
+            "schema": schema,
+            "timestamp": timestamp,
+        },
+        body="# Tables\n" + "".join(f"* [{t}](../tables/{t}.md)\n" for t in tables),
+    )
+    ds.validate()
+    (root / "datasets" / f"{schema}.md").write_text(ds.serialize())
+
+    for t, cols in tables.items():
+        col_comments = descriptions.get(t, {})
+        rows = "".join(_schema_row(c, col_comments.get(_split_col(c)[0], "")) for c in cols)
+        doc = OKFDocument(
+            frontmatter={
+                "type": "Unity Catalog Table",
+                "title": t,
+                "description": f"{t} table.",
+                "resource": f"{catalog}.{schema}.{t}",
+                "timestamp": timestamp,
+            },
+            body="# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n" + rows,
+        )
+        doc.validate()
+        (root / "tables" / f"{t}.md").write_text(doc.serialize())
+
+    (root / "tables" / "index.md").write_text(
+        "# Tables\n" + "".join(f"* [{t}]({t}.md)\n" for t in tables)
+    )
+    (root / "index.md").write_text(
+        f'---\nokf_version: "{OKF_VERSION}"\n---\n\n'
+        "# Subdirectories\n* [datasets](datasets/)\n* [tables](tables/)\n"
+    )

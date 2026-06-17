@@ -134,3 +134,37 @@ class TestOKFManifest:
         (okf / "datasets").mkdir(parents=True)
         (okf / "datasets" / "x.md").write_text("---\nnot: : valid: yaml\n: -\n---\n")
         assert okf_manifest(okf) is None
+
+
+class TestWriteOKFBundle:
+    def test_roundtrip_manifest(self, tmp_path):
+        from apx_agent._okf import write_okf_bundle, okf_manifest
+        manifest = {
+            "catalog": "serverless_stable_qh44kx_catalog",
+            "schema": "payroll_demo",
+            "tables": {
+                "employees": ["employee_id(string)", "hire_date(date)"],
+                "pay_runs": ["gross_pay(decimal(6,2))", "tags(array<string>)"],
+            },
+        }
+        okf = tmp_path / ".apx" / "okf"
+        write_okf_bundle(manifest, okf, timestamp="2026-06-16T00:00:00+00:00")
+        assert okf_manifest(okf) == manifest
+
+    def test_emitted_concepts_are_okf_conformant(self, tmp_path):
+        from apx_agent._okf import write_okf_bundle, OKFDocument, REQUIRED_FRONTMATTER_KEYS
+        write_okf_bundle(
+            {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)"]}},
+            tmp_path, timestamp="z",
+        )
+        for md in (tmp_path / "tables").glob("*.md"):
+            if md.name in {"index.md", "log.md"}:
+                continue
+            fm = OKFDocument.parse(md.read_text()).frontmatter
+            assert all(fm.get(k) for k in REQUIRED_FRONTMATTER_KEYS)
+
+    def test_pipe_in_comment_is_escaped(self, tmp_path):
+        from apx_agent._okf import write_okf_bundle, okf_manifest
+        m = {"catalog": "c", "schema": "s", "tables": {"t": ["x(string)"]}}
+        write_okf_bundle(m, tmp_path, timestamp="z", descriptions={"t": {"x": "a | b"}})
+        assert okf_manifest(tmp_path)["tables"]["t"] == ["x(string)"]
