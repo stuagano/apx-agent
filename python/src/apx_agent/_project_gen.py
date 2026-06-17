@@ -114,6 +114,14 @@ def _build_pyproject(config: "AgentConfig") -> str:
     if config.instructions:
         lines.append(f"instructions = {_toml_value(config.instructions)}")
 
+    # knowledge — emit only when the caller explicitly set it in the AgentConfig.
+    # The auto-default "./.apx/okf" was removed: generate_project writes no .apx/
+    # artifact, so auto-emitting a knob pointing at a non-existent bundle would be
+    # incoherent. The bundle-writing path (apx-agent scaffold) emits the knob there
+    # instead, gated on manifest-is-not-None, so knob ⟺ bundle is always satisfied.
+    if config.knowledge is not None:
+        lines.append(f"knowledge = {_toml_value(config.knowledge)}")
+
     # Only write module when there is no template — template replaces it
     if not config.template:
         lines.append('module = "agent:agent"')

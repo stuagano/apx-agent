@@ -75,6 +75,22 @@ def load_okf_grounding(start: "Path | str | None" = None) -> "dict | None":
     return None
 
 
+def load_grounding_from_path(okf_root: "Path | str") -> "tuple[dict | None, dict | None]":
+    """Load ``(manifest, grounding)`` directly from an explicit OKF bundle dir.
+
+    Bypasses the cwd upward-walk — used by the ``knowledge =`` envelope knob.
+    Returns ``(None, None)`` on any miss/error (totalised)."""
+    from ._okf import okf_manifest, okf_grounding
+
+    try:
+        root = Path(okf_root)
+        if not root.is_dir():
+            return None, None
+        return okf_manifest(root), okf_grounding(root)
+    except Exception:
+        return None, None
+
+
 def introspect_schema(
     ws: Any,
     catalog: str,

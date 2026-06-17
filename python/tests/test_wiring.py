@@ -486,6 +486,26 @@ class TestGuardrailsConfig:
 
 
 # ---------------------------------------------------------------------------
+# AgentConfig knowledge field (Phase-4 Part-A Task 1)
+# ---------------------------------------------------------------------------
+
+
+class TestAgentConfigKnowledgeField:
+    def test_defaults_none(self):
+        assert AgentConfig(name="x").knowledge is None
+
+    def test_accepts_path_string(self):
+        assert AgentConfig(name="x", knowledge="./.apx/okf").knowledge == "./.apx/okf"
+
+    def test_knowledge_round_trips_via_toml(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text('[tool.apx.agent]\nname = "grounded"\nknowledge = "./.apx/okf"\n')
+        config = _load_agent_config(pyproject_path=str(pp))
+        assert config is not None
+        assert config.knowledge == "./.apx/okf"
+
+
+# ---------------------------------------------------------------------------
 # apply_config_guardrails (E3c Task 3)
 # ---------------------------------------------------------------------------
 
@@ -1102,3 +1122,62 @@ def test_public_exports_memory_config_models():
     assert cfg_s.type == "inmemory"
     cfg_e = ExampleBackendConfig(type="inmemory")
     assert cfg_e.agent_id is None
+
+
+# ---------------------------------------------------------------------------
+# Phase-4 Part-A Task 2 — thread knowledge= through resolve_agent
+# ---------------------------------------------------------------------------
+
+
+class TestResolveAgentThreadsKnowledge:
+    def test_knowledge_injected_into_template_spec(self, monkeypatch):
+        from apx_agent import _wiring
+        from apx_agent._models import AgentConfig
+        from apx_agent import _template
+
+        captured: dict = {}
+
+        def fake_build(name, spec, *, ws=None):
+            captured["name"] = name
+            captured["spec"] = spec
+            return object()
+
+        monkeypatch.setattr(_template.template_registry, "build", fake_build)
+
+        cfg = AgentConfig(name="x", template={"name": "data", "catalog": "c", "schema": "s"}, knowledge="./.apx/okf")
+        _wiring.resolve_agent(None, cfg, ws=None)
+        assert captured["name"] == "data"
+        assert captured["spec"].get("knowledge") == "./.apx/okf"
+        assert "name" not in captured["spec"]  # name is stripped as before
+
+    def test_explicit_template_knowledge_not_overwritten(self, monkeypatch):
+        from apx_agent import _wiring, _template
+        from apx_agent._models import AgentConfig
+
+        captured: dict = {}
+        monkeypatch.setattr(
+            _template.template_registry,
+            "build",
+            lambda name, spec, *, ws=None: captured.update(spec=spec) or object(),
+        )
+        cfg = AgentConfig(
+            name="x",
+            template={"name": "data", "catalog": "c", "schema": "s", "knowledge": "./explicit"},
+            knowledge="./envelope",
+        )
+        _wiring.resolve_agent(None, cfg, ws=None)
+        assert captured["spec"]["knowledge"] == "./explicit"  # template value wins
+
+    def test_no_knowledge_leaves_spec_clean(self, monkeypatch):
+        from apx_agent import _wiring, _template
+        from apx_agent._models import AgentConfig
+
+        captured: dict = {}
+        monkeypatch.setattr(
+            _template.template_registry,
+            "build",
+            lambda name, spec, *, ws=None: captured.update(spec=spec) or object(),
+        )
+        cfg = AgentConfig(name="x", template={"name": "data", "catalog": "c", "schema": "s"})
+        _wiring.resolve_agent(None, cfg, ws=None)
+        assert "knowledge" not in captured["spec"]

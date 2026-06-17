@@ -292,6 +292,8 @@ def resolve_agent(
                 f"Got: {template_dict!r}"
             )
         spec = {k: v for k, v in template_dict.items() if k != "name"}
+        if config is not None and config.knowledge is not None and "knowledge" not in spec:
+            spec["knowledge"] = config.knowledge
         return template_registry.build(tname, spec, ws=ws)
 
     if not module_spec:
