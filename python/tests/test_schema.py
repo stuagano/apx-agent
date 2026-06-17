@@ -244,32 +244,3 @@ class TestGroundedInstructions:
         assert "Line two should not leak." not in out
         assert "    Joins: Join A." in out
         assert "Join B should not leak." not in out
-
-
-class TestLoadGroundingFromPath:
-    def test_reads_manifest_and_grounding_from_explicit_bundle(self, tmp_path):
-        from apx_agent._okf import write_okf_bundle
-        from apx_agent._schema import load_grounding_from_path
-        m = {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)"]}}
-        write_okf_bundle(m, tmp_path / "okf", timestamp="z")
-        manifest, grounding = load_grounding_from_path(tmp_path / "okf")
-        assert manifest == m
-        assert grounding is None  # bare bundle, no enrichment
-
-    def test_reads_enrichment_when_present(self, tmp_path):
-        from apx_agent._okf import write_okf_bundle
-        from apx_agent._schema import load_grounding_from_path
-        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
-        write_okf_bundle(m, tmp_path / "okf", timestamp="z")
-        (tmp_path / "okf" / "tables" / "pay_runs.md").write_text(
-            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
-            "# Overview\nPay records.\n\n# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
-            "| `gross_pay` | decimal(6,2) |  |\n"
-        )
-        manifest, grounding = load_grounding_from_path(tmp_path / "okf")
-        assert manifest["tables"] == {"pay_runs": ["gross_pay(decimal(6,2))"]}
-        assert grounding is not None and grounding["pay_runs"]["description"] == "Pay records."
-
-    def test_missing_path_returns_none_none(self, tmp_path):
-        from apx_agent._schema import load_grounding_from_path
-        assert load_grounding_from_path(tmp_path / "nope") == (None, None)

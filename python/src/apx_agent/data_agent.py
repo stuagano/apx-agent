@@ -76,8 +76,6 @@ def _build_data_tools_and_instructions(
     #   5) {} -> generic, ungrounded instructions
     resolved_tables: dict = tables or {}
     baked_was_source = False
-    knowledge_was_source = False
-    explicit_grounding = None
     if not resolved_tables and ws:
         resolved_tables = introspect_schema(ws, catalog, schema, warehouse_id)
     if not resolved_tables and knowledge:
@@ -151,12 +149,7 @@ def _build_data_tools_and_instructions(
     if extra_tools:
         tools += extra_tools
 
-    if knowledge_was_source:
-        grounding = explicit_grounding
-    elif baked_was_source:
-        grounding = load_okf_grounding()
-    else:
-        grounding = None
+    grounding = load_okf_grounding() if baked_was_source else None
     resolved_instructions = instructions or build_instructions_from_schema(
         catalog, schema, tables, persona=persona, objective=objective, grounding=grounding
     )

@@ -82,6 +82,7 @@ from .catalog import (
     uc_function_tool,
     uc_function_toolkit,
 )
+from .uc_comment import uc_comment_tool
 
 # Platform tool factories
 from .vector_search import vector_search_tool
@@ -447,6 +448,7 @@ __all__ = [
     "schema_tool",
     "uc_function_tool",
     "uc_function_toolkit",
+    "uc_comment_tool",
     "vector_search_tool",
     "sql_tool",
     "http_tool",
