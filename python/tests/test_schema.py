@@ -154,3 +154,22 @@ class TestLoadBakedSchemaOKF:
         okf.mkdir(parents=True)
         (okf / "x.md").write_text("---\n: bad: yaml\n---\n")
         assert load_baked_schema(tmp_path) == cache
+
+    def test_warns_on_okf_parse_failure(self, tmp_path, caplog):
+        import logging
+        cache = {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)"]}}
+        _write_manifest(tmp_path, cache)
+        okf = tmp_path / ".apx" / "okf" / "datasets"
+        okf.mkdir(parents=True)
+        (okf / "x.md").write_text("---\n: bad: yaml\n---\n")
+        with caplog.at_level(logging.WARNING):
+            assert load_baked_schema(tmp_path) == cache
+        assert any("did not parse" in r.message for r in caplog.records)
+
+    def test_no_warning_on_happy_path(self, tmp_path, caplog):
+        import logging
+        m = {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)"]}}
+        self._write_okf(tmp_path, m)
+        with caplog.at_level(logging.WARNING):
+            assert load_baked_schema(tmp_path) == m
+        assert not any("did not parse" in r.message for r in caplog.records)

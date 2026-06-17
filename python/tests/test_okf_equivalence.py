@@ -38,3 +38,13 @@ def test_prompt_string_identity(tmp_path):
     before = build_instructions_from_schema(m["catalog"], m["schema"], m["tables"])
     after = build_instructions_from_schema(m["catalog"], m["schema"], okf_tables)
     assert after == before  # byte-identical (order-sensitive _format_schema_block)
+
+
+def test_committed_bundle_matches_committed_cache():
+    # The shipped payroll-coworker OKF bundle must round-trip to its committed
+    # schema.json derived cache — guards against bundle/cache drift.
+    from apx_agent._okf import okf_manifest
+
+    okf_root = REAL_MANIFEST.parent / "okf"
+    assert okf_root.is_dir(), f"payroll OKF bundle missing at {okf_root}"
+    assert okf_manifest(okf_root) == _load_real()

@@ -168,3 +168,28 @@ class TestWriteOKFBundle:
         m = {"catalog": "c", "schema": "s", "tables": {"t": ["x(string)"]}}
         write_okf_bundle(m, tmp_path, timestamp="z", descriptions={"t": {"x": "a | b"}})
         assert okf_manifest(tmp_path)["tables"]["t"] == ["x(string)"]
+
+
+class TestNonAlphabeticalOrder:
+    def test_index_md_pins_non_alphabetical_order(self, tmp_path):
+        from apx_agent._okf import write_okf_bundle, okf_manifest
+        from apx_agent._schema import build_instructions_from_schema
+
+        # pay_runs BEFORE employees — deliberately NOT sorted() order.
+        m = {
+            "catalog": "c",
+            "schema": "s",
+            "tables": {
+                "pay_runs": ["gross_pay(decimal(6,2))"],
+                "employees": ["employee_id(string)"],
+            },
+        }
+        okf = tmp_path / "okf"
+        write_okf_bundle(m, okf, timestamp="z")
+        out = okf_manifest(okf)
+        # tables/index.md (written in manifest order) must pin the non-alpha order,
+        # overriding sorted() which would give [employees, pay_runs].
+        assert list(out["tables"].keys()) == ["pay_runs", "employees"]
+        before = build_instructions_from_schema(m["catalog"], m["schema"], m["tables"])
+        after = build_instructions_from_schema(m["catalog"], m["schema"], out["tables"])
+        assert after == before  # order-sensitive prompt stays byte-identical

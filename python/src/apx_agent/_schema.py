@@ -9,7 +9,10 @@ from __future__ import annotations
 from typing import Any
 
 import json
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 APX_DIR = ".apx"
 SCHEMA_MANIFEST_NAME = "schema.json"
@@ -37,7 +40,10 @@ def load_baked_schema(start: "Path | str | None" = None) -> "dict | None":
                 parsed = None
             if parsed is not None:
                 return parsed
-            # OKF parse-miss -> fall through to schema.json at the SAME level
+            logger.warning(
+                "OKF bundle at %s did not parse; falling back to schema.json cache.",
+                okf_root,
+            )
         candidate = d / APX_DIR / SCHEMA_MANIFEST_NAME
         if candidate.is_file():
             try:
