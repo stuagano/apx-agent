@@ -16,3 +16,14 @@ timestamp: '2026-06-17T03:06:48.231159+00:00'
 | `overtime_hours` | int |  |
 | `deductions` | decimal(6,2) |  |
 | `net_pay` | decimal(6,2) |  |
+
+# Overview
+One row per employee per pay period; the core payroll fact table.
+
+# Joins
+Join to [`employees`](/tables/employees.md) on `employee_id` to attribute pay to a worker.
+
+# Examples
+```sql
+SELECT employee_id, gross_pay FROM pay_runs WHERE period_end = '2026-05-31'
+```
