@@ -1111,6 +1111,7 @@ artifacts:
       # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts README.md .build/ 2>/dev/null || true
       cp -r .apx-agent .build/ 2>/dev/null || true
+      cp -r .apx .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
       # pyproject.toml and uv.lock are written by apx-agent deploy (wheel-pinned).
       # Do NOT copy them here — bundle deploy re-runs this script and would
