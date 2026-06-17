@@ -486,6 +486,26 @@ class TestGuardrailsConfig:
 
 
 # ---------------------------------------------------------------------------
+# AgentConfig knowledge field (Phase-4 Part-A Task 1)
+# ---------------------------------------------------------------------------
+
+
+class TestAgentConfigKnowledgeField:
+    def test_defaults_none(self):
+        assert AgentConfig(name="x").knowledge is None
+
+    def test_accepts_path_string(self):
+        assert AgentConfig(name="x", knowledge="./.apx/okf").knowledge == "./.apx/okf"
+
+    def test_knowledge_round_trips_via_toml(self, tmp_path):
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text('[tool.apx.agent]\nname = "grounded"\nknowledge = "./.apx/okf"\n')
+        config = _load_agent_config(pyproject_path=str(pp))
+        assert config is not None
+        assert config.knowledge == "./.apx/okf"
+
+
+# ---------------------------------------------------------------------------
 # apply_config_guardrails (E3c Task 3)
 # ---------------------------------------------------------------------------
 
