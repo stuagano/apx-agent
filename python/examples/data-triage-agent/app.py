@@ -1,7 +1,7 @@
 """data-triage-agent: FastAPI app for local dev.
 
 The Apps-target deployment uses ``agent_server/start_server.py``. This file
-is what ``apx dev`` (or ``uvicorn app:app``) runs locally — adds the apx dev
+is what ``apx-agent dev`` (or ``uvicorn app:app``) runs locally — adds the apx-agent dev
 UI, the ``/api/*`` routes, the Jira webhook, and CORS for workspace MCP clients.
 """
 from __future__ import annotations

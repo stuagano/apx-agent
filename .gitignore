@@ -19,6 +19,7 @@ typescript/deploy/*/app.yaml
 
 # Claude / agent IDE state
 .claude/
+.antigravitycli/
 
 # Git worktrees
 .worktrees/
@@ -40,7 +41,23 @@ mlruns/
 **/_version.py
 
 # Local reference clones (not part of the project)
-reference/
+/reference/
+
+# Local scaffold sandboxes (developer's own apx-agent scratch projects)
+python/apxshared/
+python/my-agent/
+python/my_coworker/
+my-agent.yaml
+python/my-payroll.yaml
+
+# Local MLflow tracking DBs (created by dev runs / smoke tests)
+**/mlflow.db
+
+# Playwright MCP scratch (console logs / page snapshots)
+.playwright-mcp/
+
+# Dev-UI scratch screenshots
+devui-*.png
 
 # Apps deploy artifacts — built from source by `databricks bundle deploy`
 **/.build/
@@ -55,3 +72,8 @@ package-lock.json
 # direnv per-shell env (personal — pins gh account for git push)
 .envrc
 .envrc.local
+.apx.local
+
+# Personal/internal use-case writeup (not for the public repo)
+docs/Built on APX-Agent UseCase.md
+docs/omniagent/

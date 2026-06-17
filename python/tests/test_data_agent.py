@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from apx_agent import Agent, DataAgent, LlmAgent
+from apx_agent import Agent, DataAgent, DataTemplate, LlmAgent, template_registry
 from apx_agent._resources import collect_resource_specs
 
 
@@ -116,3 +116,191 @@ class TestTopology:
 
         # Recognized as its own type (not falling back to the generic "Agent").
         assert _agent_class_to_node_type(DataAgent("main", "sales")) == "DataAgent"
+
+
+class TestDataTemplate:
+    def test_registered_in_global_registry(self):
+        assert template_registry.get("data").name == "data"
+
+    def test_build_returns_dataagent_equivalent_to_constructor(self):
+        ws = _ws_with_schema({"orders": ["id(INT)", "total(DOUBLE)"]})
+        spec = DataTemplate.Spec(catalog="main", schema="sales")
+        built = DataTemplate().build(spec, ws=ws)
+        direct = DataAgent("main", "sales", ws=ws)
+        assert type(built) is DataAgent
+        assert built._instructions == direct._instructions
+        assert [t.__name__ for t in built._tool_fns] == [t.__name__ for t in direct._tool_fns]
+
+    def test_build_from_dict_via_registry_alias(self):
+        agent = template_registry.build("data", {"catalog": "main", "schema": "sales"})
+        assert type(agent) is DataAgent
+        assert agent.schema == "sales"
+
+    def test_topology_node_type_still_dataagent_for_built(self):
+        from apx_agent._topology import _agent_class_to_node_type
+        agent = DataTemplate().build(DataTemplate.Spec(catalog="main", schema="sales"))
+        assert _agent_class_to_node_type(agent) == "DataAgent"
+
+
+class TestDataAgentBakedSchema:
+    def test_explicit_tables_ground_instructions(self):
+        from apx_agent import DataAgent
+        agent = DataAgent(
+            "samples", "tpch",
+            tables={"customer": ["c_custkey(bigint)", "c_name(string)"]},
+        )
+        instr = agent._instructions
+        assert "customer" in instr and "c_custkey(bigint)" in instr
+        assert "call the SQL tool to confirm what tables" not in instr
+
+    def test_auto_discovers_manifest(self, tmp_path, monkeypatch):
+        import json
+        from apx_agent._schema import APX_DIR, SCHEMA_MANIFEST_NAME
+        from apx_agent import DataAgent
+        d = tmp_path / APX_DIR
+        d.mkdir()
+        (d / SCHEMA_MANIFEST_NAME).write_text(json.dumps({
+            "catalog": "samples", "schema": "tpch",
+            "tables": {"orders": ["o_orderkey(bigint)"]},
+        }))
+        monkeypatch.chdir(tmp_path)
+        agent = DataAgent("samples", "tpch")
+        assert "orders" in agent._instructions and "o_orderkey(bigint)" in agent._instructions
+        assert "call the SQL tool to confirm what tables" not in agent._instructions
+
+    def test_manifest_for_other_schema_ignored(self, tmp_path, monkeypatch):
+        import json
+        from apx_agent._schema import APX_DIR, SCHEMA_MANIFEST_NAME
+        from apx_agent import DataAgent
+        d = tmp_path / APX_DIR
+        d.mkdir()
+        (d / SCHEMA_MANIFEST_NAME).write_text(json.dumps({
+            "catalog": "other", "schema": "elsewhere",
+            "tables": {"x": ["a(int)"]},
+        }))
+        monkeypatch.chdir(tmp_path)
+        agent = DataAgent("samples", "tpch")  # different schema → ignore manifest
+        assert "call the SQL tool to confirm what tables" in agent._instructions
+
+    def test_no_manifest_falls_back(self, tmp_path, monkeypatch):
+        from apx_agent import DataAgent
+        monkeypatch.chdir(tmp_path)
+        agent = DataAgent("samples", "tpch")
+        assert "call the SQL tool to confirm what tables" in agent._instructions
+
+
+class TestStartupWarning:
+    """Startup warehouse check warns early when no warehouse is available."""
+
+    def test_no_warehouse_logs_warning(self, caplog):
+        import logging
+        from unittest.mock import MagicMock, patch
+        from apx_agent import DataAgent
+
+        ws = MagicMock()
+        ws.warehouses.list.return_value = []
+        ws.config.host = "https://my-workspace.azuredatabricks.net"
+
+        with caplog.at_level(logging.WARNING, logger="apx_agent.data_agent"):
+            DataAgent("main", "sales", ws=ws)
+
+        assert any("SQL queries will fail" in r.message for r in caplog.records)
+        assert any("my-workspace.azuredatabricks.net" in r.message for r in caplog.records)
+
+    def test_warehouse_found_no_warning(self, caplog):
+        import logging
+        from unittest.mock import MagicMock
+        from apx_agent import DataAgent
+
+        wh = MagicMock()
+        wh.id = "abc123"
+        wh.warehouse_type = None
+        ws = MagicMock()
+        ws.warehouses.list.return_value = [wh]
+
+        with caplog.at_level(logging.WARNING, logger="apx_agent.data_agent"):
+            DataAgent("main", "sales", ws=ws)
+
+        assert not any("SQL queries will fail" in r.message for r in caplog.records)
+
+    def test_explicit_warehouse_id_skips_check(self, caplog):
+        import logging
+        from unittest.mock import MagicMock
+        from apx_agent import DataAgent
+
+        ws = MagicMock()
+        ws.warehouses.list.return_value = []
+
+        with caplog.at_level(logging.WARNING, logger="apx_agent.data_agent"):
+            DataAgent("main", "sales", warehouse_id="explicit-id", ws=ws)
+
+        # ws.warehouses.list should never be called when warehouse_id is explicit
+        ws.warehouses.list.assert_not_called()
+        assert not any("SQL queries will fail" in r.message for r in caplog.records)
+
+
+class TestDataAgentOKFGrounding:
+    def test_baked_grounding_reaches_instructions(self, tmp_path, monkeypatch):
+        from apx_agent._okf import write_okf_bundle
+        from apx_agent.data_agent import _build_data_tools_and_instructions
+
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        okf = tmp_path / ".apx" / "okf"
+        write_okf_bundle(m, okf, timestamp="z")
+        (okf / "tables" / "pay_runs.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Overview\nPay records narrative.\n\n# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) |  |\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        comp = _build_data_tools_and_instructions(
+            catalog="c", schema="s", warehouse_id=None, ws=None, include_functions=False,
+            genie_space=None, vector_index=None, instructions=None, persona=None,
+            objective=None, tables=None, extra_tools=None,
+        )
+        assert "Pay records narrative." in comp.instructions
+
+    def test_tables_override_does_not_pull_grounding(self, tmp_path, monkeypatch):
+        from apx_agent._okf import write_okf_bundle
+        from apx_agent.data_agent import _build_data_tools_and_instructions
+
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        okf = tmp_path / ".apx" / "okf"
+        write_okf_bundle(m, okf, timestamp="z")
+        (okf / "tables" / "pay_runs.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Overview\nShould not appear.\n\n# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) |  |\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        comp = _build_data_tools_and_instructions(
+            catalog="c", schema="s", warehouse_id=None, ws=None, include_functions=False,
+            genie_space=None, vector_index=None, instructions=None, persona=None,
+            objective=None, tables={"pay_runs": ["gross_pay(decimal(6,2))"]}, extra_tools=None,
+        )
+        assert "Should not appear." not in comp.instructions
+
+    def test_live_introspect_does_not_pull_grounding(self, tmp_path, monkeypatch):
+        import apx_agent.data_agent as da
+        from apx_agent._okf import write_okf_bundle
+        from apx_agent.data_agent import _build_data_tools_and_instructions
+
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        okf = tmp_path / ".apx" / "okf"
+        write_okf_bundle(m, okf, timestamp="z")
+        (okf / "tables" / "pay_runs.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Overview\nShould not appear via introspect.\n\n# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) |  |\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        # Fake live introspection: non-None ws + introspect returns tables -> baked path skipped.
+        ws = MagicMock()
+        ws.warehouses.list.return_value = [MagicMock(id="wh1", warehouse_type=None)]
+        monkeypatch.setattr(da, "introspect_schema", lambda ws, c, s, w: {"pay_runs": ["gross_pay(decimal(6,2))"]})
+        comp = _build_data_tools_and_instructions(
+            catalog="c", schema="s", warehouse_id=None, ws=ws, include_functions=False,
+            genie_space=None, vector_index=None, instructions=None, persona=None,
+            objective=None, tables=None, extra_tools=None,
+        )
+        assert "Should not appear via introspect." not in comp.instructions

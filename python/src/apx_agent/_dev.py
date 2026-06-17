@@ -15,18 +15,24 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import logging
 import os
-from typing import Any
+from pathlib import Path
+from typing import Any, NamedTuple
 
 from databricks.sdk import WorkspaceClient
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from ._models import AgentContext, AgentTool
 from ._topology import build_topology, inspect_node
-from ._ui_chat import _render_agent_ui, _render_unified_shell, _build_apx_openapi_spec
+from ._ui_chat import (
+    _render_agent_ui,
+    _render_unified_shell,
+    _build_apx_openapi_spec,
+)
 from ._ui_edit import (
     _find_agent_router_path,
     _find_deploy_root,
@@ -46,10 +52,15 @@ from ._ui_setup import (
     _write_env_file,
     _render_setup_ui,
 )
-from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes
-from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
+from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes, _validate_probe_url
 
 logger = logging.getLogger(__name__)
+
+
+class _JudgeOutput(NamedTuple):
+    verdict: str
+    reason: str
+
 
 _TRACE_CSS = """
   :root{--bg:#0a0a0a;--panel:#111;--border:#2a2a2a;--text:#e5e7eb;--muted:#888;
@@ -112,6 +123,29 @@ _TRACE_CSS = """
              padding:8px 10px;font-size:11px;font-family:monospace;
              color:#aaa;white-space:pre-wrap;word-break:break-all;
              max-height:240px;overflow-y:auto;}
+  /* Compact, deduped conversation view (chat payloads) */
+  .convo{display:flex;flex-direction:column;gap:5px;}
+  .tmsg{display:flex;gap:8px;font-size:12px;line-height:1.45;align-items:baseline;}
+  .trole{flex:none;min-width:74px;color:#6b7686;font-size:10px;font-weight:600;
+         text-transform:uppercase;letter-spacing:.4px;font-family:ui-monospace,monospace;}
+  .trole-tool{color:#4a9060;}
+  .tcontent{color:#cbd2da;white-space:pre-wrap;word-break:break-word;
+            font-family:ui-monospace,monospace;font-size:11.5px;}
+  details.tsys{font-size:12px;}
+  details.tsys>summary,details.tprefix>summary{cursor:pointer;color:#6b7686;font-size:11px;
+            list-style:none;padding:1px 0;}
+  details.tsys>summary::-webkit-details-marker,
+  details.tprefix>summary::-webkit-details-marker{display:none;}
+  details.tsys>summary::before,details.tprefix>summary::before{content:"▸ ";color:#4b5563;}
+  details.tsys[open]>summary::before,details.tprefix[open]>summary::before{content:"▾ ";}
+  details.tprefix{border-left:2px solid #1e1e1e;padding-left:8px;margin:2px 0;}
+  details.tprefix[open]{display:flex;flex-direction:column;gap:5px;}
+  pre.tpre{background:#0d0d0d;border:1px solid #1e1e1e;border-radius:5px;margin:4px 0 0;
+           padding:8px 10px;font-size:11px;font-family:monospace;color:#9aa3ad;
+           white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;}
+  .span-event{font-size:11px;color:#888;padding:3px 14px 3px 30px;
+              border-top:1px solid #161616;font-family:monospace;
+              white-space:pre-wrap;word-break:break-word;}
   .indent{border-left:2px solid var(--border);padding-left:16px;margin-top:4px;}
   .err-banner{background:#2a0f0f;border:1px solid #7f1d1d;border-radius:6px;
               padding:12px 16px;color:#fda4af;margin-bottom:16px;}
@@ -132,7 +166,7 @@ def _span_type_css(span_type: str) -> str:
 
 
 def _render_traces_list(rows: list, agent_name: str | None) -> str:
-    import json as _json, html as _html
+    import html as _html
 
     title = f"{agent_name} — traces" if agent_name else "Traces"
     if not rows:
@@ -172,8 +206,312 @@ def _render_traces_list(rows: list, agent_name: str | None) -> str:
 </body></html>"""
 
 
+def _normalize_responses_api_spans(span_dicts: list[dict]) -> list[dict]:
+    """Normalize Responses-API format spans to canonical chat-completions shape.
+
+    Spans whose inputs carry an ``input`` list and whose outputs carry
+    ``object == "response"`` are converted so the rest of the rendering
+    pipeline sees one format regardless of which SDK produced the trace:
+
+    * span_type  → CHAT_MODEL
+    * inputs     → {"messages": [...]}
+    * outputs    → {"choices": [{"message": {"role": "assistant", "content": ...}}]}
+    * function_call / function_call_output pairs → synthetic TOOL child spans
+
+    Returns a new list (may be longer than the input due to synthetic spans).
+    """
+    import json as _json
+
+    result: list[dict] = []
+    for span in span_dicts:
+        inputs = span.get("inputs") or {}
+        outputs = span.get("outputs") or {}
+        input_list = inputs.get("input") if isinstance(inputs, dict) else None
+        is_responses = (
+            isinstance(input_list, list)
+            and isinstance(outputs, dict)
+            and outputs.get("object") == "response"
+        )
+        if not is_responses:
+            result.append(span)
+            continue
+
+        output_items = outputs.get("output") or []
+
+        # Normalize the span itself.
+        normalized = dict(span)
+        if normalized.get("span_type") in ("UNKNOWN", "OTHER"):
+            normalized["span_type"] = "CHAT_MODEL"
+        normalized["inputs"] = {"messages": input_list}
+
+        # Final assistant text → choices format.
+        final_text = ""
+        for item in reversed(output_items):
+            if item.get("type") == "message":
+                content = item.get("content", "")
+                if isinstance(content, list):
+                    content = "\n".join(
+                        b.get("text", "")
+                        for b in content
+                        if isinstance(b, dict) and b.get("type") == "output_text"
+                    )
+                final_text = content if isinstance(content, str) else ""
+                break
+        normalized["outputs"] = (
+            {"choices": [{"message": {"role": "assistant", "content": final_text}}]}
+            if final_text else {}
+        )
+        result.append(normalized)
+
+        # Synthesize one TOOL span per function_call / function_call_output pair.
+        tool_results = {
+            item["call_id"]: item
+            for item in output_items
+            if item.get("type") == "function_call_output" and item.get("call_id")
+        }
+        for item in output_items:
+            if item.get("type") != "function_call":
+                continue
+            call_id = item.get("call_id", "")
+            result_item = tool_results.get(call_id) or {}
+            raw_args = item.get("arguments", "")
+            raw_out = result_item.get("output", "")
+            try:
+                tool_in = _json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except Exception:
+                tool_in = {"query": raw_args}
+            try:
+                tool_out = _json.loads(raw_out) if isinstance(raw_out, str) else raw_out
+            except Exception:
+                tool_out = {"result": raw_out}
+            result.append({
+                "span_id": f"synth-{call_id}",
+                "parent_id": span["span_id"],
+                "name": item.get("name", "tool"),
+                "span_type": "TOOL",
+                "status": "OK",
+                "start_time_ns": span.get("start_time_ns"),
+                "end_time_ns": span.get("end_time_ns"),
+                "duration_ms": None,
+                "inputs": tool_in,
+                "outputs": tool_out,
+                "events": [],
+            })
+
+    return result
+
+
+def _serialize_trace_spans(trace: Any) -> list[dict]:
+    """Serialize an MLflow trace's spans into plain JSON-able dicts.
+
+    Shared by the trace-detail route AND the in-process trace buffer
+    (``_trace_store``) so both produce IDENTICAL span dicts. Normalizes
+    Responses-API format spans to canonical chat-completions shape via
+    ``_normalize_responses_api_spans`` so downstream renderers see one format.
+    """
+    spans = list(getattr(getattr(trace, "data", None), "spans", None) or [])
+    span_dicts: list[dict] = []
+    for s in spans:
+        span_dicts.append({
+            "span_id": s.span_id,
+            "parent_id": s.parent_id,
+            "name": s.name,
+            "span_type": s.span_type.value if hasattr(s.span_type, "value") else str(s.span_type),
+            "status": s.status.status_code.value if hasattr(getattr(s.status, "status_code", None), "value") else str(s.status),
+            "start_time_ns": s.start_time_ns,
+            "end_time_ns": s.end_time_ns,
+            "duration_ms": round((s.end_time_ns - s.start_time_ns) / 1_000_000, 1) if s.end_time_ns and s.start_time_ns else None,
+            "inputs": s.inputs,
+            "outputs": s.outputs,
+            "events": [
+                {
+                    "name": getattr(e, "name", ""),
+                    "attributes": {
+                        k: str(v)
+                        for k, v in (getattr(e, "attributes", None) or {}).items()
+                    },
+                }
+                for e in (getattr(s, "events", None) or [])
+            ],
+        })
+    return _normalize_responses_api_spans(span_dicts)
+
+
+# ---------------------------------------------------------------------------
+# Chat-payload rendering for the trace detail.
+#
+# LLM spans log their full ``{"messages": [...]}`` input and ``{"choices": [...]}``
+# output. Because each step re-sends the whole conversation, dumping the raw
+# JSON re-prints the system prompt + every prior turn at every level — the
+# trace reads as if it repeats itself as you descend. These helpers render the
+# payloads as a compact, role-labeled conversation and elide the prefix already
+# shown one level up, so each span shows only what's *new*.
+# ---------------------------------------------------------------------------
+
+_MSG_CONTENT_CAP = 600  # truncate a single message body in the conversation view
+_SYS_PREVIEW = 80       # chars of a folded system prompt shown in its summary line
+
+
+def _is_chat_messages(obj: Any) -> list | None:
+    """If ``obj`` is a chat-input payload, return its ``messages`` list, else None."""
+    if isinstance(obj, dict):
+        msgs = obj.get("messages")
+        if isinstance(msgs, list) and msgs and all(isinstance(m, dict) for m in msgs):
+            return msgs
+    return None
+
+
+def _is_choices(obj: Any) -> list | None:
+    """If ``obj`` is a chat-output payload, return its ``choices`` list, else None."""
+    if isinstance(obj, dict):
+        ch = obj.get("choices")
+        if isinstance(ch, list) and ch and all(isinstance(c, dict) for c in ch):
+            return ch
+    return None
+
+
+
+
+def _drop_warmup_traces(traces: list) -> list:
+    """Filter out the startup ``apx.trace_capture.warmup`` self-test traces.
+
+    That trace materializes the OTel provider at startup and carries a single
+    internal span — opened from the list it reads as an empty trace, so it's
+    confusing noise. Identified by the ``mlflow.traceName`` tag. Tolerant of
+    missing/None tags (keeps the trace).
+    """
+    from ._trace_store import WARMUP_SPAN_NAME
+
+    out = []
+    for t in traces:
+        tags = getattr(getattr(t, "info", None), "tags", None) or {}
+        if tags.get("mlflow.traceName") == WARMUP_SPAN_NAME:
+            continue
+        out.append(t)
+    return out
+
+
+def _is_message_heavy(obj: Any) -> bool:
+    """True if ``obj`` is (or wraps) a chat message list.
+
+    The conversation lives uniformly on the LLM spans. The CHAIN/AGENT wrapper
+    spans (LangGraph, model, tools) re-log the same growing message list in a
+    different (LangChain ``type``) shape at every nesting level — that re-log IS
+    the "repeats itself as you go down a level" noise. We detect such payloads
+    so they can be suppressed on non-LLM spans and shown once, on the LLM span.
+    """
+    if _is_chat_messages(obj) is not None or _is_choices(obj) is not None:
+        return True
+    if isinstance(obj, dict):
+        # LangGraph state updates: {"update": {"messages": [...]}, "goto": ...}
+        for v in obj.values():
+            if isinstance(v, dict) and isinstance(v.get("messages"), list):
+                return True
+    if (
+        isinstance(obj, list) and obj and isinstance(obj[0], dict)
+        and ("args" in obj[0] or "tool_calls" in obj[0])
+    ):
+        return True  # the bare tool_call list logged on `tools` wrapper spans
+    return False
+
+
+def _common_prefix_len(a: list, b: list) -> int:
+    """Number of leading elements ``a`` and ``b`` share (by equality)."""
+    n = 0
+    for x, y in zip(a, b):
+        if x == y:
+            n += 1
+        else:
+            break
+    return n
+
+
+def _truncate(text: str, cap: int) -> str:
+    if len(text) <= cap:
+        return text
+    return text[:cap] + f" … (+{len(text) - cap} chars)"
+
+
+def _render_message_line(m: dict) -> str:
+    """Render one chat message as a compact role-labeled row.
+
+    System prompts fold behind a native ``<details>`` disclosure (they're long
+    and identical across calls); assistant tool calls render as
+    ``→ run_sql({...})``; everything else shows a truncated one-liner.
+    """
+    import html as _html
+    import json as _json
+
+    role = str(m.get("role") or "?")
+    content = m.get("content")
+    tool_calls = m.get("tool_calls")
+
+    if role == "system" and isinstance(content, str):
+        n = len(content)
+        preview = _html.escape(content[:_SYS_PREVIEW].replace("\n", " "))
+        return (
+            f'<details class="tmsg tsys"><summary>'
+            f'<span class="trole">system</span> {preview}… ({n} chars)'
+            f'</summary><pre class="tpre">{_html.escape(content)}</pre></details>'
+        )
+
+    if tool_calls and isinstance(tool_calls, list):
+        rows = ""
+        for tc in tool_calls:
+            fn = (tc or {}).get("function") if isinstance(tc, dict) else None
+            name = (fn or {}).get("name", "tool") if isinstance(fn, dict) else "tool"
+            args = (fn or {}).get("arguments", "") if isinstance(fn, dict) else ""
+            if not isinstance(args, str):
+                args = _json.dumps(args)
+            rows += (
+                f'<div class="tmsg"><span class="trole">→ {_html.escape(str(name))}</span>'
+                f'<span class="tcontent">{_html.escape(_truncate(args, _MSG_CONTENT_CAP))}</span></div>'
+            )
+        return rows
+
+    if content is None:
+        content = ""
+    if not isinstance(content, str):
+        content = _json.dumps(content)
+    return (
+        f'<div class="tmsg"><span class="trole">{_html.escape(role)}</span>'
+        f'<span class="tcontent">{_html.escape(_truncate(content, _MSG_CONTENT_CAP))}</span></div>'
+    )
+
+
+def _render_messages_block(messages: list, prev: list | None) -> str:
+    """Render a ``messages`` list, collapsing the prefix shared with ``prev``.
+
+    The shared leading messages (system prompt + prior turns already shown one
+    level up) fold into a single expandable ``↳ + N earlier messages`` line;
+    only the new tail renders expanded.
+    """
+    k = _common_prefix_len(prev or [], messages)
+    html = ""
+    if k > 0:
+        earlier = "".join(_render_message_line(m) for m in messages[:k])
+        plural = "s" if k != 1 else ""
+        html += (
+            f'<details class="tprefix"><summary>↳ + {k} earlier message{plural} '
+            f'(same as above)</summary>{earlier}</details>'
+        )
+    html += "".join(_render_message_line(m) for m in messages[k:])
+    return html
+
+
+def _render_choices_block(choices: list) -> str:
+    """Render assistant output ``choices`` as compact message rows."""
+    html = ""
+    for ch in choices:
+        msg = ch.get("message") if isinstance(ch, dict) else None
+        if isinstance(msg, dict):
+            html += _render_message_line(msg)
+    return html
+
+
 def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -> str:
-    import json as _json, html as _html
+    import json as _json
+    import html as _html
 
     err_html = f'<div class="err-banner">{_html.escape(error or "Unknown error")}</div>' if error else ""
 
@@ -190,30 +528,74 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
             else:
                 roots.append(s)
 
+        # Running conversation state across the depth-first walk: the last
+        # messages list rendered. A nested LLM span re-sends the whole
+        # conversation, so we collapse the prefix it shares with what was shown
+        # one step earlier and render only the new tail (the "show what's new"
+        # delta view) — DFS order matches execution order.
+        state: dict = {"prev": None}
+
         def _render_span(s: dict, depth: int = 0) -> str:
             st = _span_type_css(s.get("span_type", ""))
             dur = f"{s['duration_ms']}ms" if s.get("duration_ms") is not None else "—"
             status = s.get("status", "")
             st_cls = "sstatus-ok" if "OK" in status.upper() else "sstatus-err"
             name = _html.escape(s.get("name", ""))
-            sid = _html.escape(s.get("span_id", ""))
-            inp = _json.dumps(s.get("inputs"), indent=2) if s.get("inputs") else None
-            out = _json.dumps(s.get("outputs"), indent=2) if s.get("outputs") else None
+            _html.escape(s.get("span_id", ""))
+            inputs_obj = s.get("inputs")
+            outputs_obj = s.get("outputs")
             io_html = ""
-            if inp:
+
+            # ── Inputs ────────────────────────────────────────────────────────
+            # Conversation view renders only on LLM spans — CHAIN/AGENT wrappers
+            # re-log the same growing message list in a different shape, which is
+            # the "repeats itself going down" noise. Non-LLM spans with message
+            # inputs are silently suppressed (they're message-heavy, so the elif
+            # branch also skips the raw-JSON dump).
+            msgs = _is_chat_messages(inputs_obj)
+            if msgs is not None and st == "LLM":
+                io_html += (
+                    '<div class="io-block"><div class="io-label">Messages</div>'
+                    f'<div class="convo">{_render_messages_block(msgs, state["prev"])}</div></div>'
+                )
+                state["prev"] = msgs
+            elif inputs_obj and not _is_message_heavy(inputs_obj):
+                cleaned = {k: v for k, v in inputs_obj.items() if v is not None} if isinstance(inputs_obj, dict) else inputs_obj
+                inp = _json.dumps(cleaned, indent=2)
                 io_html += f'<div class="io-block"><div class="io-label">Inputs</div><pre class="io-pre">{_html.escape(inp[:4000])}</pre></div>'
-            if out:
+
+            # ── Outputs ───────────────────────────────────────────────────────
+            choices = _is_choices(outputs_obj)
+            if choices is not None:
+                io_html += (
+                    '<div class="io-block"><div class="io-label">Response</div>'
+                    f'<div class="convo">{_render_choices_block(choices)}</div></div>'
+                )
+                added = [c["message"] for c in choices
+                         if isinstance(c, dict) and isinstance(c.get("message"), dict)]
+                if added:
+                    state["prev"] = (state["prev"] or []) + added
+            elif outputs_obj and not _is_message_heavy(outputs_obj):
+                cleaned = {k: v for k, v in outputs_obj.items() if v is not None} if isinstance(outputs_obj, dict) else outputs_obj
+                out = _json.dumps(cleaned, indent=2)
                 io_html += f'<div class="io-block"><div class="io-label">Outputs</div><pre class="io-pre">{_html.escape(out[:4000])}</pre></div>'
+            # Progress markers (span events) render in an always-visible strip
+            # so a cold-start step shows even while the body is collapsed.
+            events_html = ""
+            for ev in (s.get("events") or []):
+                msg = (ev.get("attributes") or {}).get("message") or ev.get("name", "")
+                events_html += f'<div class="span-event">▸ {_html.escape(msg)}</div>'
             kids = "".join(_render_span(c, depth + 1) for c in children.get(s.get("span_id", ""), []))
             indent = f'<div class="indent">{kids}</div>' if kids else ""
             return (
                 f'<div class="span-card">'
-                f'<div class="span-head" onclick="this.nextSibling.classList.toggle(\'open\')">'
+                f'<div class="span-head" onclick="this.parentElement.querySelector(\'.span-body\').classList.toggle(\'open\')">'
                 f'<span class="stype stype-{st}">{st}</span>'
                 f'<span class="sname">{name}</span>'
                 f'<span class="sdur">{dur}</span>'
                 f'<span class="sstatus {st_cls}">{status}</span>'
                 f'</div>'
+                f'{events_html}'
                 f'<div class="span-body">{io_html}</div>'
                 f'</div>'
                 f'{indent}'
@@ -237,7 +619,7 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
 </body></html>"""
 
 
-def _parse_judge_output(text: str) -> tuple[str, str]:
+def _parse_judge_output(text: str) -> _JudgeOutput:
     """Extract verdict and reason from a judge model's output.
 
     Expected format::
@@ -251,7 +633,7 @@ def _parse_judge_output(text: str) -> tuple[str, str]:
     verdict = "FAIL"
     reason = ""
     if not text:
-        return verdict, "No output from judge model"
+        return _JudgeOutput(verdict=verdict, reason="No output from judge model")
 
     for line in text.splitlines():
         stripped = line.strip()
@@ -270,13 +652,98 @@ def _parse_judge_output(text: str) -> tuple[str, str]:
                 reason = stripped
                 break
 
-    # If we never saw a VERDICT line, infer from the text body.
-    if verdict == "FAIL" and "VERDICT:" not in text.upper():
-        upper = text.upper()
-        if "PASS" in upper and "FAIL" not in upper:
-            verdict = "PASS"
+    # No VERDICT line at all → keep FAIL. An eval harness must fail closed on
+    # unclear judge output (the docstring's "fall back to FAIL" contract); the
+    # previous substring inference flipped "passable"/"would pass"/"COMPASSIONATE"
+    # to PASS, the worst direction for an eval (audit M4).
 
-    return verdict, reason or "(no reason provided)"
+    return _JudgeOutput(verdict=verdict, reason=reason or "(no reason provided)")
+
+
+# ---------------------------------------------------------------------------
+# Dev-UI write authorization (audit H17/H18)
+#
+# The dev router hosts code-write/RCE-equivalent endpoints (POST /_apx/edit,
+# /_apx/tools/new, /_apx/tools/suggest, /_apx/replay/*, save_setup, env writes,
+# DELETE /_apx/tools/{name}) and an SSRF probe (/_apx/setup/probe-json). Those
+# write/probe endpoints must not be reachable by every authorized App viewer.
+#
+# Posture:
+#   * Local ``apx-agent run`` (no DATABRICKS_APP_PORT) → writes allowed (the dev loop).
+#   * Deployed Databricks App (DATABRICKS_APP_PORT set):
+#       - APX_DEV_UI_TOKEN unset  → writes DENIED (safe default).
+#       - APX_DEV_UI_TOKEN set    → require a matching ``X-APX-Dev-Token`` header
+#                                   (or ``token`` query param); 403 otherwise.
+#
+# A dedicated header is used rather than Authorization/Bearer so it never
+# collides with the platform's ``Authorization`` / ``X-Forwarded-Access-Token``.
+# The guard is attached once at the router level and only enforces on
+# state-changing methods plus the SSRF probe, so read GETs stay open.
+# ---------------------------------------------------------------------------
+
+_DEV_TOKEN_HEADER = "x-apx-dev-token"
+_DEV_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _is_deployed_app() -> bool:
+    """True when running inside a deployed Databricks App.
+
+    Env-only (``DATABRICKS_APP_PORT``) deliberately — a local ``apx-agent run`` that
+    happens to sit behind a proxy must not be locked out, so the X-Forwarded-*
+    heuristic used elsewhere is not consulted here.
+    """
+    return bool(os.environ.get("DATABRICKS_APP_PORT"))
+
+
+def _enforce_dev_write_auth(request: Request) -> None:
+    """Authorize a dev-UI write/probe request, or raise 403.
+
+    See the module-level posture comment for the full decision table.
+    """
+    import hmac
+
+    raw = os.environ.get("APX_DEV_UI_TOKEN")
+    token = raw.strip() if raw else ""
+
+    if not token:
+        # No token configured. Allow locally; deny on a deployed App so the
+        # code-write/probe surface is never open to authorized App viewers.
+        if _is_deployed_app():
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Dev-UI write endpoints are disabled on deployed Apps. "
+                    "Set the APX_DEV_UI_TOKEN env var and send it as the "
+                    "X-APX-Dev-Token header to enable them."
+                ),
+            )
+        return
+
+    supplied = request.headers.get(_DEV_TOKEN_HEADER) or request.query_params.get("token") or ""
+    if not (supplied and hmac.compare_digest(supplied, token)):
+        raise HTTPException(
+            status_code=403,
+            detail="Missing or invalid X-APX-Dev-Token for dev-UI write endpoint.",
+        )
+
+
+async def _dev_write_guard(request: Request) -> None:
+    """Router-level dependency: gate state-changing methods + the SSRF probe.
+
+    Attached at router construction so it covers every current and future
+    write route (edit, tools/new, tools/suggest, replay/*, setup writes,
+    DELETE tools) without per-route annotations that could miss one. Read GETs
+    (chat, traces, topology, probe/checks, setup/catalogs, …) fall through.
+    """
+    # Two side-effecting GETs need gating too: the SSRF probe and
+    # /_apx/deploy/stream, which spawns ``apx-agent deploy`` as a subprocess
+    # (privileged, state-changing — same threat class as the write endpoints).
+    path = request.url.path
+    is_side_effecting_get = path.endswith("/setup/probe-json") or path.endswith(
+        "/deploy/stream"
+    )
+    if request.method in _DEV_WRITE_METHODS or is_side_effecting_get:
+        _enforce_dev_write_auth(request)
 
 
 def inject_create_tool_meta(ctx: AgentContext) -> None:
@@ -286,7 +753,7 @@ def inject_create_tool_meta(ctx: AgentContext) -> None:
         description=(
             "Create a new tool for this agent from a natural language description. "
             "Call this when the user asks to add a new capability, tool, or function to the agent. "
-            "After creation, the tool is live after hot-reload (a few seconds)."
+            "The tool is appended to agent.py; restart `apx-agent run` (or redeploy) to load it."
         ),
         input_schema={
             "type": "object",
@@ -305,7 +772,7 @@ def inject_create_tool_meta(ctx: AgentContext) -> None:
         "\n\n[DEV MODE] You have a special `create_tool` capability. "
         "When the user asks you to add a new tool, capability, or function, "
         "call `create_tool` with a detailed description of what it should do. "
-        "The tool will be generated, inserted into agent_router.py, and live after hot-reload."
+        "The tool will be generated and inserted into agent_router.py; restart `apx-agent run` to load it."
     )
     ctx.config.instructions = (ctx.config.instructions or "") + _dev_addendum
     logger.info("Dev mode: create_tool meta-tool injected into agent context")
@@ -379,11 +846,97 @@ async def _ws_upload_agent_file(request: Request, local_path: "Path", content: s
         pass
 
 
+def _pick_workspace_defaults(ws: WorkspaceClient) -> "dict[str, str]":
+    """Best-effort: pick a sensible (DEMO_CATALOG, DEMO_SCHEMA, WAREHOUSE_ID)
+    for the Setup page when the user hasn't configured one yet.
+
+    Strategy:
+    - Catalog/schema: scan user-accessible catalogs and pick the first one
+      with a non-empty, non-system schema. The ``samples`` demo catalog is
+      kept as a fallback so a brand-new workspace still lands on something
+      readable, but any *real* user catalog wins over ``samples``.
+    - Warehouse: prefer a ``RUNNING`` one (no cold-start hit), else any
+      serverless one, else just the first warehouse.
+
+    All SDK calls are blocking — call this from a thread pool via
+    ``asyncio.to_thread``. Returns ``{}`` if the workspace can't be probed.
+    """
+    out: dict[str, str] = {}
+    skip_cat = {"system", "__databricks_internal"}
+    skip_sch = {"information_schema"}
+
+    try:
+        catalogs = list(ws.catalogs.list())
+    except Exception:
+        catalogs = []
+
+    samples_cat = next((c for c in catalogs if c.name == "samples"), None)
+
+    chosen_cat: str | None = None
+    chosen_sch: str | None = None
+    for cat in catalogs:
+        cname = cat.name or ""
+        if not cname or cname in skip_cat or cname == "samples":
+            continue
+        try:
+            schemas = list(ws.schemas.list(catalog_name=cname))
+        except Exception:
+            continue
+        for sch in schemas:
+            sname = sch.name or ""
+            if not sname or sname in skip_sch:
+                continue
+            chosen_cat, chosen_sch = cname, sname
+            break
+        if chosen_cat:
+            break
+
+    if not chosen_cat and samples_cat is not None:
+        chosen_cat = "samples"
+        try:
+            schemas = list(ws.schemas.list(catalog_name="samples"))
+            for sch in schemas:
+                if sch.name and sch.name not in skip_sch:
+                    chosen_sch = sch.name
+                    if sch.name == "nyctaxi":
+                        break
+        except Exception:
+            chosen_sch = "nyctaxi"
+
+    if chosen_cat:
+        out["DEMO_CATALOG"] = chosen_cat
+    if chosen_sch:
+        out["DEMO_SCHEMA"] = chosen_sch
+
+    try:
+        warehouses = list(ws.warehouses.list())
+    except Exception:
+        warehouses = []
+
+    def _running(w: Any) -> bool:
+        return getattr(getattr(w, "state", None), "value", str(getattr(w, "state", ""))) == "RUNNING"
+
+    def _serverless(w: Any) -> bool:
+        return bool(getattr(w, "enable_serverless_compute", False))
+
+    pick = next((w for w in warehouses if w.id and _running(w)), None)
+    if pick is None:
+        pick = next((w for w in warehouses if w.id and _serverless(w)), None)
+    if pick is None:
+        pick = next((w for w in warehouses if w.id), None)
+    if pick is not None and pick.id:
+        out["WAREHOUSE_ID"] = pick.id
+
+    return out
+
+
 def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     """Build the /_apx/* dev UI routes."""
     from fastapi.responses import RedirectResponse
 
-    router = APIRouter()
+    # Router-level guard: enforces auth on write methods + the SSRF probe.
+    # See _dev_write_guard / _enforce_dev_write_auth for the posture (H17/H18).
+    router = APIRouter(dependencies=[Depends(_dev_write_guard)])
 
     @router.get("/", include_in_schema=False)
     async def root_redirect() -> RedirectResponse:
@@ -440,14 +993,156 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def probe_checks(request: Request) -> Any:
         from fastapi.responses import JSONResponse
         ctx: AgentContext | None = request.app.state.agent_context
-        session_store = getattr(request.app.state, "session_store", None)
+        conversation_store = getattr(request.app.state, "conversation_store", None)
         return JSONResponse(
             await _run_probe_checks(
                 ctx,
                 headers=dict(request.headers),
-                session_store=session_store,
+                conversation_store=conversation_store,
             )
         )
+
+    @router.get("/_apx/conversations", include_in_schema=False)
+    async def list_conversations_api(request: Request) -> Any:
+        """Return conversations from the conversation store as JSON."""
+        from fastapi.responses import JSONResponse
+        store = getattr(request.app.state, "conversation_store", None)
+        if store is None:
+            return JSONResponse([])
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        agent_id = ctx.config.name if ctx else None
+        try:
+            paged = store.list_conversations(
+                limit=50,
+                order="desc",
+                sort_by="updated_at",
+                agent_id=agent_id,
+            )
+            return JSONResponse([
+                {
+                    "id": c.id,
+                    "title": c.title,
+                    "created_at": c.created_at,
+                    "updated_at": c.updated_at,
+                }
+                for c in paged.data
+            ])
+        except Exception:
+            # Surface the failure to the UI (history panel shows an error
+            # state) instead of silently rendering an empty list, and log
+            # it so `apx-agent run` output points at the real cause.
+            logger.exception("listing conversations failed")
+            return JSONResponse({"error": "conversation store unavailable"},
+                                status_code=503)
+
+    @router.get("/_apx/conversations/{conv_id}/items", include_in_schema=False)
+    async def list_conversation_items_api(conv_id: str, request: Request) -> Any:
+        """Return items for a conversation as JSON."""
+        from fastapi.responses import JSONResponse
+        store = getattr(request.app.state, "conversation_store", None)
+        if store is None:
+            return JSONResponse([])
+        try:
+            paged = store.list_items(conv_id, limit=200, order="asc")
+            return JSONResponse([
+                {
+                    "id": item.id,
+                    "type": item.type,
+                    "data": item.data.model_dump(exclude_none=True) if item.data else {},
+                }
+                for item in paged.data
+            ])
+        except Exception:
+            logger.exception("listing items for conversation %s failed", conv_id)
+            return JSONResponse({"error": "conversation store unavailable"},
+                                status_code=503)
+
+    # ── Approvals (human-in-the-loop ASK policy) ──────────────────────────
+
+    def _find_approval_store(request: Request) -> Any:
+        """Locate the ApprovalStore serving this app, if any.
+
+        Resolution order:
+
+        1. ``app.state.approval_store`` — explicit wiring by the embedding
+           application (takes precedence so multi-agent apps can share one
+           store).
+        2. The root agent's ``before_tool`` hook: a bare
+           :class:`~apx_agent._policy.PolicyGate` exposes ``.approvals``;
+           a :func:`~apx_agent._guards.compose`-d hook exposes
+           ``.callbacks`` which is walked for a gate.
+
+        :param request: The incoming request (used for ``app.state``).
+        :returns: The :class:`~apx_agent._policy.ApprovalStore`, or
+            ``None`` when no PolicyGate is attached to this agent.
+        """
+        explicit = getattr(request.app.state, "approval_store", None)
+        if explicit is not None:
+            return explicit
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        agent = getattr(ctx, "agent", None) if ctx else None
+        hook = getattr(agent, "_before_tool", None)
+        candidates = [hook] if hook is not None else []
+        # compose() exposes .callbacks — one level of nesting is all the
+        # wiring layer produces (compose(guard, gate)), so no recursion.
+        candidates.extend(getattr(hook, "callbacks", []) or [])
+        for cand in candidates:
+            approvals = getattr(cand, "approvals", None)
+            if approvals is not None:
+                return approvals
+        return None
+
+    @router.get("/_apx/approvals", include_in_schema=False)
+    async def list_approvals_api(request: Request) -> Any:
+        """Return pending approval requests as JSON for the chat UI banner."""
+        from fastapi.responses import JSONResponse
+        store = _find_approval_store(request)
+        if store is None:
+            return JSONResponse([])
+        try:
+            return JSONResponse([
+                {
+                    "id": a.id,
+                    "tool_name": a.tool_name,
+                    "arguments": a.arguments,
+                    "reason": a.reason,
+                }
+                for a in store.list_pending()
+            ])
+        except Exception:
+            logger.exception("listing approvals failed")
+            return JSONResponse({"error": "approval store unavailable"},
+                                status_code=503)
+
+    @router.post("/_apx/approvals/{approval_id}/approve", include_in_schema=False)
+    async def approve_approval_api(approval_id: str, request: Request) -> Any:
+        """Grant a pending approval — the agent's retry of the call passes."""
+        from fastapi.responses import JSONResponse
+        store = _find_approval_store(request)
+        if store is None:
+            return JSONResponse({"error": "no approval store configured"},
+                                status_code=404)
+        try:
+            approval = store.approve(approval_id)
+        except KeyError:
+            return JSONResponse({"error": f"unknown approval {approval_id}"},
+                                status_code=404)
+        return JSONResponse({"id": approval.id, "status": approval.status})
+
+    @router.post("/_apx/approvals/{approval_id}/deny", include_in_schema=False)
+    async def deny_approval_api(approval_id: str, request: Request) -> Any:
+        """Refuse a pending approval — the agent's retry becomes a hard DENY."""
+        from fastapi.responses import JSONResponse
+        store = _find_approval_store(request)
+        if store is None:
+            return JSONResponse({"error": "no approval store configured"},
+                                status_code=404)
+        try:
+            approval = store.deny(approval_id)
+        except KeyError:
+            return JSONResponse({"error": f"unknown approval {approval_id}"},
+                                status_code=404)
+        return JSONResponse({"id": approval.id, "status": approval.status})
 
     @router.get("/_apx/traces", include_in_schema=False)
     async def traces_list_ui(request: Request) -> Any:
@@ -459,22 +1154,38 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         max_results = int(request.query_params.get("max", "50"))
         experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
         try:
-            import mlflow as _mlflow
             # include_spans=False skips artifact download — works even when
             # the blob-storage endpoint is unreachable (e.g. private-link
             # workspaces where *.storage.cloud.databricks.com is blocked).
             from mlflow.tracking import MlflowClient as _MlflowClient
             client = _MlflowClient()
-            paged = client.search_traces(
-                experiment_ids=[experiment_id] if experiment_id else None,
+            # MLflow's search_traces(experiment_ids=None) trips on the local
+            # sqlite store ("'NoneType' object is not iterable"), which is the
+            # default backend for local `apx-agent run` — so the Trace panel sees
+            # nothing even when traces are being recorded. Resolve to all
+            # experiments when no MLFLOW_EXPERIMENT_ID is set so the dev loop
+            # surfaces its traces. In the deployed runtime MLFLOW_EXPERIMENT_ID
+            # is always set and this branch is a no-op.
+            exp_ids: list[str] = (
+                [experiment_id] if experiment_id
+                else [e.experiment_id for e in client.search_experiments()]
+            )
+            traces = list(client.search_traces(
+                locations=exp_ids,
                 max_results=max_results,
                 order_by=["timestamp DESC"],
                 include_spans=False,
-            )
-            traces = list(paged)
+                flush=True,  # MLflow 3.x writes async; flush before search
+            )) if exp_ids else []
         except Exception:
+            # Keep the panel functional (ring-buffer merge below still
+            # surfaces recent traces) but log why the tracking store
+            # search failed instead of hiding it.
+            logger.exception("mlflow search_traces failed for trace panel")
             traces = []
+        traces = _drop_warmup_traces(traces)
         rows = []
+        seen_ids: set[str] = set()
         for t in traces:
             info = t.info
             dur_ms = int(info.execution_duration / 1_000_000) if info.execution_duration else None
@@ -486,40 +1197,91 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 "request_preview": info.request_preview or "",
                 "response_preview": info.response_preview or "",
             })
+            seen_ids.add(info.trace_id)
         if fmt == "json":
+            # Merge in any ring-buffer traces not yet committed to the tracking
+            # store (async write lag, or FEVM blob-egress blocked). Newest first.
+            try:
+                from ._trace_store import list_recent as _ts_list_recent
+                for tid in _ts_list_recent(max_results):
+                    if tid not in seen_ids:
+                        rows.insert(0, {
+                            "trace_id": tid,
+                            "state": "OK",
+                            "request_time_ms": None,
+                            "duration_ms": None,
+                            "request_preview": "",
+                            "response_preview": "",
+                        })
+                        seen_ids.add(tid)
+            except Exception:
+                pass
+            rows = rows[:max_results]
             return JSONResponse(rows)
         return HTMLResponse(_render_traces_list(rows, agent_name))
 
     @router.get("/_apx/traces/{trace_id:path}", include_in_schema=False)
     async def trace_detail_ui(trace_id: str, request: Request) -> Any:
         from fastapi.responses import JSONResponse
+        from ._trace_store import get as _ts_get, put as _ts_put
+
         fmt = request.query_params.get("fmt")
-        try:
-            import mlflow as _mlflow
-            trace = _mlflow.get_trace(trace_id)
-        except Exception as exc:
+
+        # 1) Buffer hit — serve from the in-process ring buffer (captured at
+        #    root-span-end, no blob fetch). This is the FEVM/private-link path:
+        #    recent traces are served from memory and never touch get_trace.
+        buffered = _ts_get(trace_id)
+        if buffered is not None:
             if fmt == "json":
-                return JSONResponse({"error": str(exc)}, status_code=404)
-            return HTMLResponse(_render_trace_detail(trace_id, None, str(exc)))
+                return JSONResponse({"trace_id": trace_id, "spans": buffered})
+            return HTMLResponse(_render_trace_detail(trace_id, buffered, None))
+
+        # 2) Buffer miss — fall through to mlflow.get_trace under a worker-thread
+        #    TIMEOUT so a blocked blob fetch fails fast instead of hanging. The
+        #    executor is NOT used as a context manager: its __exit__ would
+        #    shutdown(wait=True) and re-join the still-hung worker, undoing the
+        #    timeout. On timeout we abandon the orphaned thread.
+        import concurrent.futures as _futures
+
+        _GET_TRACE_TIMEOUT_S = 5.0
+        unavailable = (
+            "span data unavailable on this workspace (artifact-storage egress "
+            "blocked) — recent traces are served from memory"
+        )
+
+        def _fetch() -> Any:
+            import mlflow as _mlflow
+            return _mlflow.get_trace(trace_id)
+
+        executor = _futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            fut = executor.submit(_fetch)
+            try:
+                trace = fut.result(timeout=_GET_TRACE_TIMEOUT_S)
+            except _futures.TimeoutError:
+                executor.shutdown(wait=False, cancel_futures=True)
+                if fmt == "json":
+                    return JSONResponse({"error": unavailable}, status_code=200)
+                return HTMLResponse(_render_trace_detail(trace_id, None, unavailable))
+            except Exception as exc:
+                executor.shutdown(wait=False, cancel_futures=True)
+                if fmt == "json":
+                    return JSONResponse({"error": str(exc)}, status_code=404)
+                return HTMLResponse(_render_trace_detail(trace_id, None, str(exc)))
+        finally:
+            # Non-blocking shutdown — never wait on a possibly-hung worker.
+            executor.shutdown(wait=False)
+
         if trace is None:
             if fmt == "json":
                 return JSONResponse({"error": "not found"}, status_code=404)
             return HTMLResponse(_render_trace_detail(trace_id, None, "Trace not found"))
-        spans = list(getattr(trace.data, "spans", None) or [])
-        span_dicts = []
-        for s in spans:
-            span_dicts.append({
-                "span_id": s.span_id,
-                "parent_id": s.parent_id,
-                "name": s.name,
-                "span_type": s.span_type.value if hasattr(s.span_type, "value") else str(s.span_type),
-                "status": s.status.status_code.value if hasattr(getattr(s.status, "status_code", None), "value") else str(s.status),
-                "start_time_ns": s.start_time_ns,
-                "end_time_ns": s.end_time_ns,
-                "duration_ms": round((s.end_time_ns - s.start_time_ns) / 1_000_000, 1) if s.end_time_ns and s.start_time_ns else None,
-                "inputs": s.inputs,
-                "outputs": s.outputs,
-            })
+
+        # 3) Success — serve AND opportunistically populate the buffer so the
+        #    next view (and the FEVM path) hits memory.
+        span_dicts = _serialize_trace_spans(trace)
+        if span_dicts:
+            _ts_put(trace_id, span_dicts)
         if fmt == "json":
             return JSONResponse({"trace_id": trace_id, "spans": span_dicts})
         return HTMLResponse(_render_trace_detail(trace_id, span_dicts, None))
@@ -572,6 +1334,20 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if target.is_file():
             return FileResponse(target)
         raise HTTPException(status_code=404, detail="asset not found")
+
+    # Vendored JS (marked + DOMPurify) for chat markdown rendering. Served
+    # locally so the deployed app needs no CDN (offline/private-link safe).
+    _vendor_root = _TopoPath(__file__).parent / "_static" / "vendor"
+
+    @router.get("/_apx/vendor/{filename}", include_in_schema=False)
+    async def vendor_asset(filename: str) -> Any:
+        # Resolve and confirm the result is inside _vendor_root (block path
+        # traversal). {filename} is a single path segment, so a traversal
+        # attempt also simply fails to match this route — guard is belt-and-braces.
+        target = (_vendor_root / filename).resolve()
+        if _vendor_root.resolve() not in target.parents or not target.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(target, media_type="application/javascript")
 
     @router.post("/_apx/replay/tool", include_in_schema=False)
     async def replay_tool(request: Request) -> Any:
@@ -1045,7 +1821,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 yield "data: ERROR: apx binary not found in PATH\n\n"
                 yield "data: __EXIT__1\n\n"
                 return
-            yield f"data: Running: apx deploy {root}\n\n"
+            yield f"data: Running: apx-agent deploy {root}\n\n"
             try:
                 proc = await _asyncio.create_subprocess_exec(
                     apx_bin, "deploy", str(root),
@@ -1071,7 +1847,105 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def setup_ui(request: Request) -> HTMLResponse:
         env_path = _find_env_path()
         current = _read_env_file(env_path) if env_path and env_path.exists() else {}
-        return HTMLResponse(_render_setup_ui(current))
+        embed = request.query_params.get("embed") == "1"
+
+        # Backfill any missing catalog/schema/warehouse with a workspace probe so a
+        # fresh agent's Setup page lands pre-populated with the most relevant items
+        # from the user's workspace, rather than three "Loading…" dropdowns the
+        # user has to scan manually. .env values always win (user-curated wins).
+        if not (current.get("DEMO_CATALOG")
+                and current.get("DEMO_SCHEMA")
+                and current.get("WAREHOUSE_ID")):
+            try:
+                ws: WorkspaceClient = request.app.state.workspace_client
+                picked = await asyncio.to_thread(_pick_workspace_defaults, ws)
+                for k, v in picked.items():
+                    current.setdefault(k, v)
+            except Exception:
+                # Best-effort — the page still works with empty defaults, the user
+                # just picks manually like before. No crash on probe failure.
+                pass
+
+        return HTMLResponse(_render_setup_ui(current, embed=embed))
+
+    @router.get("/_apx/workspace-context", include_in_schema=False)
+    async def workspace_context(request: Request) -> Any:
+        """Return workspace identity + agent resource summary for the Context tab."""
+        import asyncio as _asyncio
+        from fastapi.responses import JSONResponse
+
+        ws: WorkspaceClient = request.app.state.workspace_client
+        ctx = request.app.state.agent_context
+
+        # Workspace identity
+        host = (getattr(getattr(ws, "config", None), "host", None) or "").rstrip("/")
+        try:
+            me = await _asyncio.to_thread(ws.current_user.me)
+            user_name = getattr(me, "user_name", None) or getattr(me, "display_name", None) or "unknown"
+        except Exception:
+            user_name = "unknown"
+
+        # Agent declared resources
+        resources: list[dict] = []
+        if ctx is not None:
+            try:
+                from ._resources import collect_resource_specs
+                for spec in collect_resource_specs(ctx.agent):
+                    resources.append({"kind": spec.kind, "identifier": spec.identifier})
+            except Exception:
+                pass
+
+        # Catalogs + schemas the agent explicitly uses (extract from resource identifiers)
+        uc_ids = [
+            r["identifier"] for r in resources
+            if r["kind"] in ("uc_table", "uc_schema", "uc_function")
+            and "." in r["identifier"]
+        ]
+        used_catalogs: list[str] = sorted({i.split(".")[0] for i in uc_ids})
+        used_schemas: list[str] = sorted({
+            ".".join(i.split(".")[:2]) for i in uc_ids if i.count(".") >= 1
+        })
+
+        return JSONResponse({
+            "host": host,
+            "user": user_name,
+            "resources": resources,
+            "used_catalogs": used_catalogs,
+            "used_schemas": used_schemas,
+        })
+
+    @router.get("/_apx/memories", include_in_schema=False)
+    async def list_memories(request: Request) -> Any:
+        """Return the most recent stored memories for the landing page preview."""
+        import asyncio as _asyncio
+        from fastapi.responses import JSONResponse
+
+        ctx = request.app.state.agent_context
+        if ctx is None:
+            return JSONResponse([])
+        agent = ctx.agent
+        store = getattr(agent, "_apx_memory_store", None)
+        if store is None:
+            return JSONResponse([])
+        principal = getattr(agent, "_apx_memory_principal", None) or ""
+        namespace = getattr(agent, "_apx_memory_namespace", None)
+        try:
+            from ._memory import MemoryFilter
+            filt = MemoryFilter(principal_id=principal, namespace=namespace, limit=5)
+            rows = await _asyncio.to_thread(store.list, filt)
+            rows = sorted(rows, key=lambda m: m.updated_at, reverse=True)[:5]
+            return JSONResponse([
+                {
+                    "id": m.id,
+                    "content": m.content,
+                    "namespace": m.namespace,
+                    "updated_at": m.updated_at,
+                }
+                for m in rows
+            ])
+        except Exception:
+            logger.exception("/_apx/memories: list failed")
+            return JSONResponse([])
 
     @router.get("/_apx/setup/catalogs", include_in_schema=False)
     async def setup_catalogs(request: Request) -> Any:
@@ -1096,6 +1970,23 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
         return JSONResponse(sorted(schemas))
+
+    @router.get("/_apx/setup/tables", include_in_schema=False)
+    async def setup_tables(request: Request) -> Any:
+        from fastapi.responses import JSONResponse
+        import asyncio as _asyncio
+        catalog = request.query_params.get("catalog", "")
+        schema = request.query_params.get("schema", "")
+        if not catalog or not schema:
+            return JSONResponse([])
+        ws: WorkspaceClient = request.app.state.workspace_client
+        try:
+            tables = await _asyncio.to_thread(
+                lambda: [t.name for t in ws.tables.list(catalog_name=catalog, schema_name=schema) if t.name]
+            )
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse(sorted(tables))
 
     @router.get("/_apx/setup/warehouses", include_in_schema=False)
     async def setup_warehouses(request: Request) -> Any:
@@ -1442,9 +2333,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if not url:
             return JSONResponse({"error": "url parameter required"}, status_code=400)
 
+        # SSRF guard: restrict scheme to http/https and reject hosts resolving
+        # to private/loopback/link-local/metadata IPs. follow_redirects=False
+        # so a public host can't 302 into the internal network (audit H18).
+        reason = _validate_probe_url(url)
+        if reason is not None:
+            return JSONResponse({"error": reason, "url": url}, status_code=400)
+
         t0 = _time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
                 r = await client.get(url)
             latency = int((_time.monotonic() - t0) * 1000)
             return JSONResponse({"status": r.status_code, "latency_ms": latency, "url": url})
@@ -1521,7 +2419,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if pattern in _SNIPPET_PATTERNS:
             return JSONResponse({"ok": True, "snippet": _SNIPPET_PATTERNS[pattern]})
 
-        _AUTO_PATTERNS = {"Agent", "LlmAgent", "LoopAgent"}
+        # Leaf agent types that can be switched between each other without
+        # touching positional args (they all use the same (name, ...) signature).
+        _LEAF_AGENT_TYPES = {"Agent", "LlmAgent", "DataAgent", "CoworkerAgent"}
+        _AUTO_PATTERNS = _LEAF_AGENT_TYPES | {"LoopAgent"}
         if pattern not in _AUTO_PATTERNS:
             return JSONResponse({"ok": False, "error": f"Unknown pattern: {pattern}"}, status_code=400)
 
@@ -1538,7 +2439,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"ok": False, "error": "No 'agent' variable in agent.py"}, status_code=400)
 
         current_type = agent_node["wrapper"] or "Agent"
-        if current_type == pattern or (pattern in ("Agent", "LlmAgent") and current_type in ("Agent", "LlmAgent")):
+        # Leaf→leaf switch is a no-op: DataAgent/CoworkerAgent carry extra positional
+        # args (catalog, schema) that _set_agent_wrapper would corrupt by blindly
+        # renaming the class. Edit agent.py directly to change between leaf types.
+        if current_type == pattern or (pattern in _LEAF_AGENT_TYPES and current_type in _LEAF_AGENT_TYPES):
             return JSONResponse({"ok": True, "type": current_type, "changed": False})
 
         # Can't collapse a multi-agent composition back to a single agent here —
@@ -1695,12 +2599,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             if choices:
                 msg = getattr(choices[0], "message", None)
                 text = ((getattr(msg, "content", None) or "") if msg else "").strip()
-            verdict, reason = _parse_judge_output(text)
+            _judge = _parse_judge_output(text)
             return JSONResponse({
                 "ok": True,
-                "pass": verdict == "PASS",
-                "verdict": verdict,
-                "reason": reason,
+                "pass": _judge.verdict == "PASS",
+                "verdict": _judge.verdict,
+                "reason": _judge.reason,
                 "duration_ms": elapsed,
                 "model": model,
             })
@@ -1748,7 +2652,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def wizard_tables(request: Request, catalog: str, schema: str) -> Any:
         from fastapi.responses import JSONResponse
         ws: WorkspaceClient = request.app.state.workspace_client
-        warehouse_id = os.environ.get("WAREHOUSE_ID", "")
+        warehouse_id = os.environ.get("WAREHOUSE_ID") or ""
         env_path = _find_env_path()
         if env_path and env_path.exists():
             env_vars = _read_env_file(env_path)

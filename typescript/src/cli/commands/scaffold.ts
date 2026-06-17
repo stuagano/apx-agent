@@ -66,7 +66,7 @@ const MODEL_SERVING_PACKAGE_JSON = `{
     "start": "node dist/app.js"
   },
   "dependencies": {
-    "appkit-agent": "^0.3.0",
+    "appkit-agent": "file:..",
     "express": "^5.0.0"
   },
   "devDependencies": {
@@ -179,7 +179,7 @@ const APPS_PACKAGE_JSON = `{
     "dev": "tsx agent_server/start.ts"
   },
   "dependencies": {
-    "appkit-agent": "^0.3.0",
+    "appkit-agent": "file:..",
     "express": "^5.0.0"
   },
   "devDependencies": {
@@ -234,6 +234,16 @@ artifacts:
       cp package.json .build/
       cp -r dist .build/
       cp -r node_modules .build/ 2>/dev/null || true
+      # appkit-agent is a "file:.." dep, so node_modules/appkit-agent is a
+      # symlink to the local framework build. The deployed container can't
+      # resolve "..", and npm doesn't hoist the framework's own deps (zod,
+      # commander, ...) into this project. Materialize the framework's dist +
+      # package.json in place of the symlink, then production-install its
+      # (published) runtime deps so the bundle is self-contained.
+      rm -rf .build/node_modules/appkit-agent
+      mkdir -p .build/node_modules/appkit-agent
+      cp -rL node_modules/appkit-agent/dist node_modules/appkit-agent/package.json .build/node_modules/appkit-agent/
+      (cd .build/node_modules/appkit-agent && npm install --omit=dev --no-package-lock --no-audit --no-fund)
 
 resources:
   apps:
@@ -407,8 +417,21 @@ function writeAll(
 // Commander registration
 // ---------------------------------------------------------------------------
 
+// The project name is substituted into databricks.yml (bundle/resource name)
+// and package.json ("name"), and used as a directory segment. Restrict it to a
+// safe charset so the generated files stay valid and the path cannot escape the
+// target dir. Must start alphanumeric; allows hyphen/underscore/dot internally;
+// rejects path separators (M/L14 — robustness, not a security boundary).
+const PROJECT_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+
 const ScaffoldOptionsSchema = z.object({
-  name: z.string().min(1, 'project name is required'),
+  name: z
+    .string()
+    .min(1, 'project name is required')
+    .regex(
+      PROJECT_NAME_RE,
+      'project name must start and end with a letter or digit and contain only letters, digits, hyphens, underscores, or dots (no path separators)',
+    ),
   dir: z.string().min(1).default('.'),
   target: z.enum(['model-serving', 'apps']).default('model-serving'),
   force: z.boolean().default(false),

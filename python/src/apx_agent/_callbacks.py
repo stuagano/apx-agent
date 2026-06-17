@@ -8,8 +8,9 @@ handler at the appropriate lifecycle events, and the handler invokes the
 user-supplied hook.
 
 Sync and async hooks are both supported. When a hook is a coroutine
-function, the handler schedules it on the running event loop (or wraps it
-in ``asyncio.run`` if invoked from sync code). Exceptions in hooks
+function, the handler runs it to completion (via ``asyncio.run`` from sync
+code, or on a dedicated worker-thread loop when already inside a running
+event loop) so its exception propagates synchronously. Exceptions in hooks
 propagate — that's the contract: ``before_*`` raises abort the call,
 ``after_*`` raises don't undo the side effect but do propagate.
 
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
     from langchain_core.outputs import LLMResult
 
 try:
-    from langchain_core.callbacks import BaseCallbackHandler
+    from langchain_core.callbacks import BaseCallbackHandler  # type: ignore[assignment]
     _LC_AVAILABLE = True
 except ImportError:  # pragma: no cover — exercised only without langchain
     _LC_AVAILABLE = False
@@ -50,12 +51,26 @@ logger = logging.getLogger(__name__)
 
 
 def _run_hook(hook: Any, *args: Any) -> None:
-    """Invoke a sync or async hook with ``args``.
+    """Invoke a sync or async hook with ``args``, running it to completion.
 
-    For async hooks, runs on the current event loop if there is one
-    (schedules a task); otherwise blocks via ``asyncio.run``. Exceptions
-    propagate to the caller — the LangChain runtime will surface them as
-    chain failures.
+    LangChain's ``on_tool_start``/``on_chat_model_start`` callbacks (where
+    ``before_*`` hooks fire) are *synchronous*, so the only way a hook's
+    exception can abort the call — the documented contract: "``before_*``
+    raises abort the call" — is to run the hook to completion before
+    returning. A coroutine scheduled fire-and-forget on the running loop
+    would let the call proceed and surface its exception too late to abort.
+
+    For async hooks we therefore always run the coroutine to completion:
+
+      * No running loop → ``asyncio.run``.
+      * Running loop (the normal uvicorn case) → run the coroutine in a
+        dedicated worker thread with its own event loop and block on the
+        result. This mirrors the sync-bridge offload in
+        ``_compile._make_langchain_tool``.
+
+    Either way the hook's exception propagates synchronously to the caller,
+    so the LangChain runtime surfaces it as a chain failure and the call is
+    aborted.
     """
     if hook is None:
         return
@@ -65,9 +80,13 @@ def _run_hook(hook: Any, *args: Any) -> None:
         except RuntimeError:
             loop = None
         if loop is not None and loop.is_running():
-            # Schedule and detach — fire-and-forget. The hook is contract'd
-            # to be cheap; long-running hooks should be queued by the user.
-            loop.create_task(hook(*args))
+            # Already inside a running loop — can't call asyncio.run here.
+            # Run the coroutine to completion on a worker thread so its
+            # exception propagates synchronously and can abort the call.
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                ex.submit(lambda: asyncio.run(hook(*args))).result()
         else:
             asyncio.run(hook(*args))
     else:
@@ -91,6 +110,15 @@ class _AgentCallbackHandler(BaseCallbackHandler):
     (the active LlmAgent's hook closures, OBO context) is captured
     correctly. The hook callables themselves can be sync or async.
     """
+
+    # langchain's handle_event / ahandle_event wraps every handler call in
+    # try/except and only re-raises if handler.raise_error is True (default
+    # False on BaseCallbackHandler).  Our before_tool / before_model / after_*
+    # hooks raise intentionally to ABORT the call — e.g. a ToolDenylist raises
+    # PermissionError to block a denied tool.  Without raise_error = True the
+    # exception is logged and swallowed, the guard becomes a silent no-op, and
+    # the tool body executes anyway.  This is a SECURITY bug (E3c).
+    raise_error: bool = True
 
     def __init__(
         self,
@@ -209,10 +237,10 @@ class _AgentCallbackHandler(BaseCallbackHandler):
             start_time = self._tool_starts.pop(run_id, None)
 
         # Record output shape + duration on the active span.
-        out_type, out_size = output_summary(output)
+        _out = output_summary(output)
         attrs: dict[str, Any] = {
-            "tool_output_type": out_type,
-            "tool_output_size": out_size,
+            "tool_output_type": _out.type_name,
+            "tool_output_size": _out.size,
         }
         if start_time is not None:
             attrs["tool_duration_ms"] = int((time.time() - start_time) * 1000)

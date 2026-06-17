@@ -13,8 +13,17 @@ from typing import Annotated, Any, TypeAlias
 from uuid import UUID
 
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.core import Config
 from fastapi import Depends, Header, Request
 from pydantic import BaseModel, SecretStr
+
+# Cap the Databricks SDK retry window for agent-runtime clients. The SDK
+# default is 300s, so a flaky/unreachable workspace API — e.g. FEVM/private-link
+# egress failing to reach the SQL warehouse API, or the host-metadata probe —
+# freezes an interactive agent for a full 5 minutes before erroring. 120s sits
+# well above a serverless SQL-warehouse cold-start (~20-30s) so legitimate
+# cold-starts still complete, but a genuine egress failure surfaces in ~2 min.
+_AGENT_RETRY_TIMEOUT_S = 120
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +43,18 @@ def _make_workspace_client(**kwargs: Any) -> WorkspaceClient:
     - Local dev (neither conflict): no auth_type, SDK auto-detects as usual.
     """
     if kwargs:
-        return WorkspaceClient(auth_type="pat", **kwargs)
+        kwargs.setdefault("retry_timeout_seconds", _AGENT_RETRY_TIMEOUT_S)
+        return WorkspaceClient(config=Config(auth_type="pat", **kwargs))
     client_id = os.environ.get("DATABRICKS_CLIENT_ID")
     client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET")
     if client_id and client_secret:
-        return WorkspaceClient(auth_type="oauth-m2m")
-    return WorkspaceClient()
+        return WorkspaceClient(
+            config=Config(
+                auth_type="oauth-m2m",
+                retry_timeout_seconds=_AGENT_RETRY_TIMEOUT_S,
+            )
+        )
+    return WorkspaceClient(config=Config(retry_timeout_seconds=_AGENT_RETRY_TIMEOUT_S))
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +99,42 @@ HeadersDependency: TypeAlias = Annotated[DatabricksAppsHeaders, Depends(get_data
 
 
 # ---------------------------------------------------------------------------
+# Principal dependency — per-request OBO identity
+# ---------------------------------------------------------------------------
+
+
+def _get_principal(headers: HeadersDependency) -> str | None:
+    """Return the OBO user identity (X-Forwarded-User) for the current request.
+
+    Used by config-built memory tools to resolve the per-request principal.
+    Returns ``None`` when running locally without Databricks Apps headers.
+    """
+    return headers.user_id
+
+
+PrincipalDependency: TypeAlias = Annotated[str | None, Depends(_get_principal)]
+
+
+# ---------------------------------------------------------------------------
+# Progress dependency — emit trace progress markers
+# ---------------------------------------------------------------------------
+
+
+ProgressFn: TypeAlias = Callable[..., None]
+"""Callable a tool calls to emit a progress marker into the trace."""
+
+
+def _get_progress() -> ProgressFn:
+    """Return the progress emitter (records a span event on the active span)."""
+    from ._mlflow_tracing import emit_progress
+
+    return emit_progress
+
+
+ProgressDependency: TypeAlias = Annotated[ProgressFn, Depends(_get_progress)]
+
+
+# ---------------------------------------------------------------------------
 # Workspace client factories
 # ---------------------------------------------------------------------------
 
@@ -98,7 +149,7 @@ def _get_user_client(headers: HeadersDependency) -> WorkspaceClient:
 
     Uses the OBO token from X-Forwarded-Access-Token when running inside a
     Databricks App.  Falls back to CLI-configured credentials for local
-    development (``apx dev`` / ``uvicorn --reload``).
+    development (``apx-agent dev`` / ``uvicorn --reload``).
     """
     if not headers.token:
         logger.info("No OBO token — falling back to CLI credentials for local dev")
@@ -206,3 +257,13 @@ class Dependencies:
     Sql: TypeAlias = SqlDependency
     """SQL runner bound to the current user's workspace — excluded from schemas.
     Recommended usage: ``sql: Dependencies.Sql``"""
+
+    Principal: TypeAlias = PrincipalDependency
+    """Per-request OBO user identity from X-Forwarded-User.
+    Returns the username string when running inside a Databricks App, or
+    ``None`` for local development without the header.
+    Recommended usage: ``principal: Dependencies.Principal``"""
+
+    Progress: TypeAlias = ProgressDependency
+    """Emit a progress marker into the trace: ``progress("Loading…")``.
+    Recommended usage: ``progress: Dependencies.Progress``."""

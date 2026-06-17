@@ -20,7 +20,7 @@ Typical usage::
 
 or via the CLI::
 
-    apx topology --format mermaid > topology.mmd
+    apx-agent topology --format mermaid > topology.mmd
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -37,6 +38,12 @@ if TYPE_CHECKING:
     from ._models import AgentContext
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _SubAgentRef:
+    display_name: str
+    kind: str
 
 
 @dataclass(frozen=True)
@@ -134,9 +141,9 @@ def discover_topology(
             csv = tags.get("apx.agent.sub_agents") or ""
             sub_agents = [s.strip() for s in csv.split(",") if s.strip()]
         for raw in sub_agents:
-            target, kind = _classify_sub_agent(raw)
+            _ref = _classify_sub_agent(raw)
             edges.append(TopologyEdge(
-                source=agent_name, target=target, target_kind=kind,
+                source=agent_name, target=_ref.display_name, target_kind=_ref.kind,
             ))
 
     return Topology(nodes=tuple(nodes), edges=tuple(edges))
@@ -163,7 +170,7 @@ def _sub_agents_from_metadata(metadata_json: str | None) -> list[str]:
     return [str(s) for s in (parsed.get("sub_agents") or [])]
 
 
-def _classify_sub_agent(raw: str) -> tuple[str, str]:
+def _classify_sub_agent(raw: str) -> _SubAgentRef:
     """Split a sub_agent reference into ``(display_name, kind)``.
 
     Strips ``endpoints/`` / ``serving-endpoints/`` prefixes; treats
@@ -173,14 +180,14 @@ def _classify_sub_agent(raw: str) -> tuple[str, str]:
     raw = raw.strip()
     if "databricksapps.com" in raw:
         # Apps URL — keep the URL but tag accordingly
-        return raw, "app_url"
+        return _SubAgentRef(display_name=raw, kind="app_url")
     if raw.startswith(("endpoints/", "serving-endpoints/")):
         _, _, name = raw.partition("/")
-        return name, "endpoint"
+        return _SubAgentRef(display_name=name, kind="endpoint")
     if "://" in raw:
-        return raw, "unresolved"
+        return _SubAgentRef(display_name=raw, kind="unresolved")
     # Bare endpoint name
-    return raw, "endpoint"
+    return _SubAgentRef(display_name=raw, kind="endpoint")
 
 
 def _coerce_int(value: Any) -> int | None:
@@ -323,6 +330,7 @@ def _agent_class_to_node_type(agent: "BaseAgent") -> str:
         "LlmAgent",
         "Agent",
         "DataAgent",
+        "CoworkerAgent",
         "SequentialAgent",
         "ParallelAgent",
         "LoopAgent",
@@ -344,7 +352,7 @@ def _instructions_for(agent: "BaseAgent") -> str:
     """Pull instructions string from any agent type; empty if not present."""
     instr = getattr(agent, "_instructions", "")
     if not instr and hasattr(agent, "_inner"):
-        instr = getattr(agent._inner, "_instructions", "")
+        instr = getattr(getattr(agent, "_inner"), "_instructions", "")
     return str(instr or "")
 
 
@@ -456,12 +464,18 @@ def _tool_has_obo_dep(fn: Any) -> bool:
     return any(_is_dependency_param(annotation) for annotation in hints.values())
 
 
-def _resource_url_for(kind: str, identifier: str) -> str | None:
-    """Best-effort Managed MCP URL for a resource — None when not applicable."""
+def _resource_url_for(kind: str, identifier: str, workspace_host: str | None) -> str | None:
+    """Best-effort Managed MCP URL for a resource — None when not applicable.
+
+    ``workspace_host`` is the Databricks workspace host (e.g. from
+    ``DATABRICKS_HOST``); without it the URL can't be built, so return None.
+    """
+    if not workspace_host:
+        return None
     try:
         from ._managed_mcp import managed_mcp_url_for_resource
 
-        return managed_mcp_url_for_resource(kind, identifier)
+        return managed_mcp_url_for_resource(kind, identifier, workspace_host=workspace_host)
     except Exception:
         return None
 
@@ -694,7 +708,7 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
         "resourceKind": detail_kind,
         "identifier": identifier,
     }
-    url = _resource_url_for(kind, identifier)
+    url = _resource_url_for(kind, identifier, os.environ.get("DATABRICKS_HOST"))
     if url:
         resource_details["url"] = url
     return {

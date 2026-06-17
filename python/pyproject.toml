@@ -17,20 +17,18 @@ dependencies = [
     "httpx>=0.27.0",
     "mcp>=1.0.0",
     "databricks-openai>=0.15.0",
-]
-
-[project.optional-dependencies]
-eval = ["mlflow>=2.0"]
-langgraph = [
-    # langchain 1.2.x imports ``ExecutionInfo`` from ``langgraph.runtime`` —
-    # only present in langgraph >= 1.1.0. Without this floor the resolver
-    # can land on 1.0.10 and the App throws ImportError at first request.
-    # Surfaced by the fe-stable customer_triage Apps deploy on 2026-05-20.
+    # langchain 1.2.x imports ExecutionInfo from langgraph.runtime —
+    # only present in langgraph >= 1.1.0.
     "langgraph>=1.1.0",
     "langchain>=1.0.0",
     "langchain-core>=1.0.0",
     "databricks-langchain>=0.3.0",
 ]
+
+[project.optional-dependencies]
+# mlflow>=3.6: search_traces uses `locations=` (the `experiment_ids` selector was
+# deprecated at 3.6.0, and `experiment_names` never existed — see _mlflow_tracing).
+eval = ["mlflow>=3.6"]
 uc = [
     "unitycatalog-ai>=0.1.0",
 ]
@@ -38,7 +36,7 @@ lakebase = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
 ]
-all = ["apx-agent[eval,langgraph,uc,lakebase]"]
+all = ["apx-agent[eval,uc,lakebase]"]
 
 [dependency-groups]
 dev = [
@@ -46,14 +44,12 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24.0",
     "pyright>=1.1.380",
+    "hatchling>=1.29.0",
+    "hatch-vcs>=0.5.0",
 ]
 
 [project.scripts]
-apx            = "apx_agent.cli:main"
-voynich_seed   = "apx_agent.workflow.cli:seed_population"
-voynich_run    = "apx_agent.workflow.cli:run_generation_batch"
-voynich_vacuum = "apx_agent.workflow.cli:vacuum_population"
-voynich_export = "apx_agent.workflow.cli:export_top_candidates"
+apx-agent      = "apx_agent.cli:main"
 
 # Version is derived from the git tag (e.g. v0.2.1 -> 0.2.1). root=".." because
 # this pyproject lives in python/ but the .git root is the repo root.
@@ -64,45 +60,36 @@ source = "vcs"
 raw-options = { root = "..", fallback_version = "0.0.0" }
 
 [tool.hatch.build.targets.wheel]
+# packages already includes every file under src/apx_agent/ — Python modules
+# AND data files (the built _static/topology/ React bundle served by _dev.py).
+# Do NOT re-add a force-include for _static/topology: it maps the same files to
+# the same wheel paths a second time. Older hatchling silently dedupes with a
+# "Duplicate name" warning, but newer hatchling (e.g. in a fresh Databricks
+# Apps container) raises a hard ValueError, failing the wheel build — and thus
+# the whole git+https install. See issue #116 follow-up.
 packages = ["src/apx_agent"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/apx_agent/_static/topology" = "apx_agent/_static/topology"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# .ctk/ vendors the claude-test-kit helpers (library only — not packaged into the
+# wheel, which ships only src/apx_agent). Makes `from ctk import run, expect,
+# verify` work in the same uv env the app runs in. The fixtures + error-log guard
+# are opt-in via ctk.pytest_plugin (see .ctk/README.md), so this does not change
+# behaviour for the existing suite.
+pythonpath = [".ctk"]
+markers = [
+    "unit: fast, isolated test with mocked boundaries — the inner-loop gate (pytest -m unit)",
+    "allow_error_logs: do not fail the test if it logs at ERROR/CRITICAL level (ctk guard)",
+]
 
 [tool.pyright]
 include = ["src/apx_agent"]
-# Everything not listed here is type-checked and gated in CI — new files and
-# the ~60 already-clean modules must stay clean. The block below is a shrinking
-# type-debt registry: these modules have pre-existing errors (see #85 fallout).
-# Fix a module's errors, then delete its line so it's protected going forward.
-exclude = [
-  "src/apx_agent/_ui_*.py",
-  "src/apx_agent/_dev.py",
-  # --- type-debt registry (remove as fixed) ---
-  "src/apx_agent/_callbacks.py",
-  "src/apx_agent/_canary.py",
-  "src/apx_agent/_canary_apps.py",
-  "src/apx_agent/_chat_agent.py",
-  "src/apx_agent/_compile.py",
-  "src/apx_agent/_eval_chain.py",
-  "src/apx_agent/_example_mining.py",
-  "src/apx_agent/_memory_delta.py",
-  "src/apx_agent/_publish.py",
-  "src/apx_agent/_remote.py",
-  "src/apx_agent/_topology.py",
-  "src/apx_agent/_trace_export.py",
-  "src/apx_agent/bootstrap.py",
-  "src/apx_agent/catalog.py",
-  "src/apx_agent/cli.py",
-  "src/apx_agent/vector_search.py",
-  "src/apx_agent/workflow/engine_delta.py",
-  "src/apx_agent/workflow/loop_agent.py",
-  "src/apx_agent/workflow/population_store.py",
-]
+# Everything under src/apx_agent is type-checked and gated in CI. The former
+# type-debt registry (pre-existing errors from #85, see #183–#189) is fully
+# paid down — including the _ui_*.py / _dev.py dev-UI glue, which turned out to
+# carry only 2 real errors across ~10k lines. There is no exclude list any more.
+# Don't add one to dodge an error — fix it or it gates CI.
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 reportMissingImports = "warning"

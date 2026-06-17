@@ -26,7 +26,15 @@ import asyncio
 import concurrent.futures
 import json
 import os
-import sys
+
+# Defaults for optional LoopConfig env vars — override by setting the env var before running.
+_DEFAULT_FITNESS_AGENT_URLS = ""       # empty = no fitness agents (must be set to run)
+_DEFAULT_REVIEW_TABLE = "voynich.evolution.review_queue"
+_DEFAULT_POPULATION_SIZE = "500"
+_DEFAULT_MUTATION_BATCH = "50"
+_DEFAULT_MAX_GENERATIONS = "2000"
+_DEFAULT_ESCALATION_THRESHOLD = "0.85"
+_DEFAULT_MLFLOW_EXPERIMENT = "/voynich/evolutionary_search"
 
 
 def _run_async(coro):
@@ -55,18 +63,18 @@ def _build_config_from_env():
         population_table     = os.environ["VOYNICH_POPULATION_TABLE"],
         fitness_agents       = [
             url.strip()
-            for url in os.environ.get("FITNESS_AGENT_URLS", "").split(",")
+            for url in os.environ.get("FITNESS_AGENT_URLS", _DEFAULT_FITNESS_AGENT_URLS).split(",")
             if url.strip()
         ],
         mutation_agent       = os.environ["DECIPHERER_AGENT_URL"],
         judge_agent          = os.environ["JUDGE_AGENT_URL"],
-        review_table         = os.environ.get("VOYNICH_REVIEW_TABLE", "voynich.evolution.review_queue"),
+        review_table         = os.environ.get("VOYNICH_REVIEW_TABLE", _DEFAULT_REVIEW_TABLE),
         warehouse_id         = os.environ["DATABRICKS_WAREHOUSE_ID"],
-        population_size      = int(os.environ.get("POPULATION_SIZE",    "500")),
-        mutation_batch       = int(os.environ.get("MUTATION_BATCH",     "50")),
-        max_generations      = int(os.environ.get("MAX_GENERATIONS",    "2000")),
-        escalation_threshold = float(os.environ.get("ESCALATION_THRESHOLD", "0.85")),
-        mlflow_experiment    = os.environ.get("MLFLOW_EXPERIMENT", "/voynich/evolutionary_search"),
+        population_size      = int(os.environ.get("POPULATION_SIZE",    _DEFAULT_POPULATION_SIZE)),
+        mutation_batch       = int(os.environ.get("MUTATION_BATCH",     _DEFAULT_MUTATION_BATCH)),
+        max_generations      = int(os.environ.get("MAX_GENERATIONS",    _DEFAULT_MAX_GENERATIONS)),
+        escalation_threshold = float(os.environ.get("ESCALATION_THRESHOLD", _DEFAULT_ESCALATION_THRESHOLD)),
+        mlflow_experiment    = os.environ.get("MLFLOW_EXPERIMENT", _DEFAULT_MLFLOW_EXPERIMENT),
     )
 
 
@@ -109,9 +117,15 @@ def seed_population():
     if not seed_hypotheses:
         print("[voynich-seed] WARNING: Decipherer returned 0 hypotheses. Using fallback seeder.")
         # Fallback: generate minimal diversity seed using built-in logic
-        from apx_agent.workflow import CipherType, SourceLanguage, Hypothesis
-        import uuid, random
+        from apx_agent.workflow import CipherType, Hypothesis
+        import uuid
+        import random
         alphabet = list("abcdefghijklmnopqrstuvwxyz")
+        cipher_types = [
+            CipherType.SUBSTITUTION, CipherType.TRANSPOSITION,
+            CipherType.POLYALPHABETIC, CipherType.NULL_BEARING,
+            CipherType.COMPOSITE, CipherType.STEGANOGRAPHIC,
+        ]
         seed_hypotheses = []
         for i in range(min(args.n, 500)):
             shuffled = alphabet[:]
@@ -119,8 +133,7 @@ def seed_population():
             seed_hypotheses.append(Hypothesis(
                 id=str(uuid.uuid4())[:8],
                 generation=0,
-                cipher_type=list(CipherType.__dict__.values())[i % 6]
-                            if hasattr(CipherType, '__dict__') else "substitution",
+                cipher_type=cipher_types[i % 6],
                 source_language=["latin","hebrew","arabic","italian","occitan","catalan"][i % 6],
                 symbol_map={c: shuffled[j % 26] for j, c in enumerate("oainshe")},
                 null_chars=["q"] if i % 3 == 0 else [],
@@ -245,7 +258,7 @@ def vacuum_population():
     _inject_job_params(unknown)
 
     config = _build_config_from_env()
-    ws     = _build_workspace_client()
+    _build_workspace_client()
 
     from pyspark.sql import SparkSession
     spark = SparkSession.builder.getOrCreate()
@@ -255,11 +268,11 @@ def vacuum_population():
 
     # OPTIMIZE with ZORDER for the most common query pattern
     spark.sql(f"OPTIMIZE {table} ZORDER BY (generation, fitness_composite)")
-    print(f"[voynich-vacuum] ✓ OPTIMIZE complete")
+    print("[voynich-vacuum] ✓ OPTIMIZE complete")
 
     # VACUUM (remove files older than 7 days)
     spark.sql(f"VACUUM {table} RETAIN 168 HOURS")
-    print(f"[voynich-vacuum] ✓ VACUUM complete")
+    print("[voynich-vacuum] ✓ VACUUM complete")
 
     # Remove flagged-for-review entries older than keep_generations
     rows = spark.sql(f"""

@@ -43,7 +43,9 @@ def _stub_chat_databricks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Avoid needing a live serving endpoint or langchain-databricks."""
     from apx_agent import _compile
 
-    def _fake_chat(endpoint: str) -> Any:
+    def _fake_chat(
+        endpoint: str, *, temperature: Any = None, max_tokens: Any = None
+    ) -> Any:
         mock = MagicMock(name=f"fake_chat:{endpoint}")
         # bind_tools is called by RouterAgent; return self for chainable.
         mock.bind_tools = MagicMock(return_value=mock)

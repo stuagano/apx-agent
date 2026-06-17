@@ -17,7 +17,7 @@ Verifies:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -137,9 +137,11 @@ class TestRunViaCompile:
         req = _fake_request()
 
         fake_graph = MagicMock()
-        fake_graph.invoke.return_value = {
+        # H1: run_via_compile now awaits compiled.ainvoke(...) — the async
+        # graph API — so ainvoke must be an awaitable returning the result dict.
+        fake_graph.ainvoke = AsyncMock(return_value={
             "messages": [HumanMessage(content="hi"), AIMessage(content="hello!")]
-        }
+        })
 
         with patch(
             "apx_agent._compile.compile_to_langgraph", return_value=fake_graph
@@ -161,7 +163,9 @@ class TestRunViaCompile:
         agent = LlmAgent(tools=[_trivial_tool])
         req = _fake_request(obo_token="user-tok")
         fake_graph = MagicMock()
-        fake_graph.invoke.return_value = {"messages": [AIMessage(content="ok")]}
+        fake_graph.ainvoke = AsyncMock(
+            return_value={"messages": [AIMessage(content="ok")]}
+        )
         obo_ws = MagicMock(name="obo_ws")
 
         with patch(
@@ -181,15 +185,24 @@ class TestStreamViaCompile:
         agent = LlmAgent(tools=[_trivial_tool])
         req = _fake_request()
 
-        fake_graph = MagicMock()
-        fake_graph.stream.return_value = iter([
+        # H1: stream_via_compile now consumes compiled.astream(...) via
+        # ``async for`` — the async graph API — so astream must return an
+        # async generator yielding the stream_mode="updates" chunks.
+        chunks_to_yield = [
             {"node_a": {"messages": [AIMessage(content="first")]}},
             {"node_b": {"messages": [AIMessage(
                 content="thinking",
                 tool_calls=[{"id": "t1", "name": "x", "args": {}}],
             )]}},
             {"node_c": {"messages": [AIMessage(content="last")]}},
-        ])
+        ]
+
+        async def _fake_astream(*args: Any, **kwargs: Any) -> Any:
+            for chunk in chunks_to_yield:
+                yield chunk
+
+        fake_graph = MagicMock()
+        fake_graph.astream = _fake_astream
 
         with patch(
             "apx_agent._compile.compile_to_langgraph", return_value=fake_graph
@@ -219,7 +232,9 @@ class TestAgentRunIntegratesCompile:
         req = _fake_request()
 
         fake_graph = MagicMock()
-        fake_graph.invoke.return_value = {"messages": [AIMessage(content="answer")]}
+        fake_graph.ainvoke = AsyncMock(
+            return_value={"messages": [AIMessage(content="answer")]}
+        )
 
         with patch(
             "apx_agent._compile.compile_to_langgraph", return_value=fake_graph

@@ -20,21 +20,33 @@ Agent = LlmAgent
 from ._agent_tool import agent_tool
 
 # DataAgent — LlmAgent specialized for governed UC data access
-from .data_agent import DataAgent
+from .data_agent import DataAgent, DataTemplate
+from .coworker import CoworkerAgent, CoworkerTemplate
+
+# Template protocol, registry, and decorator
+from ._template import Template, TemplateInfo, TemplateRegistry, template, template_registry
 
 # Models
 from ._models import (
+    AfterAgentCallback,
     AfterModelHook,
     AfterToolHook,
     AgentCard,
     AgentConfig,
     AgentContext,
     AgentTool,
+    BeforeAgentCallback,
     BeforeModelHook,
     BeforeToolHook,
+    ExampleBackendConfig,
+    GuardrailsConfig,
     InputGuardrailFn,
+    MemoryBackendConfig,
     Message,
+    OnModelErrorCallback,
+    OnToolErrorCallback,
     OutputGuardrailFn,
+    SessionBackendConfig,
 )
 
 # FastAPI dependency injection
@@ -47,7 +59,9 @@ from ._sql import decode_statement, get_warehouse_id, run_sql
 from ._llm import ChatDatabricksGptReasoning, get_llm
 
 # App factory and setup
-from ._wiring import create_app, mount_mcp_endpoints, setup_agent
+from ._wiring import create_app, finalize_agent, mount_mcp_endpoints, setup_agent
+from ._readyz import mount_readyz
+from ._tool_config import ToolConfigError, load_config_tools, merge_config_tools
 
 # Eval bridge
 from ._eval import (
@@ -68,6 +82,7 @@ from .catalog import (
     uc_function_tool,
     uc_function_toolkit,
 )
+from .uc_comment import uc_comment_tool
 
 # Platform tool factories
 from .vector_search import vector_search_tool
@@ -85,6 +100,27 @@ from .jobs_tools import (
 
 # LangGraph compiler (optional — requires the ``langgraph`` extra)
 from ._compile import CompileContext, compile_to_langgraph
+
+# Executor protocol + event types (harness abstraction seam)
+from ._executor import (
+    Executor,
+    ExecutorConfig,
+    ExecutorError,
+    ExecutorEvent,
+    TextChunk,
+    ToolCallComplete,
+    ToolCallRequest,
+    TurnComplete,
+)
+
+# LangGraph executor implementation
+from ._langgraph_executor import LangGraphExecutor
+
+# Native OpenAI-compatible executor (no LangGraph dependency)
+from ._claude_sdk_executor import ClaudeSDKExecutor
+
+# Executor factory — selects executor based on AgentConfig.executor field
+from ._executor_factory import create_executor
 
 # MLflow ChatAgent wrapper (optional — requires the ``langgraph`` and ``eval`` extras)
 from ._chat_agent import chat_agent_for, compile_to_chat_agent, log_agent
@@ -109,16 +145,28 @@ from ._tool import ToolMetadata, get_tool_metadata, tool
 from ._tool_factory import build_tool, resolve_description
 from ._tool_publish import PublishResult, publish_tools_to_uc
 
-# Session / multi-turn memory
-from ._session import (
-    InMemorySessionStore,
-    Session,
-    SessionStore,
-    append_turn,
-    load_or_create_session,
+# Conversation store (row-per-message, cursor pagination, response_id chaining)
+from ._conversation import (
+    CompactionData,
+    Conversation,
+    ConversationItem,
+    ConversationNotFoundError,
+    ConversationStore,
+    FunctionCallData,
+    FunctionCallOutputData,
+    InMemoryConversationStore,
+    MessageData,
+    NativeToolData,
+    NewConversationItem,
+    PagedList,
+    ReasoningData,
+    compute_search_text,
+    paginate_in_memory,
+    parse_item_data,
+    synthesize_conversation_title,
 )
-from ._session_delta import DeltaSessionStore
-from ._session_lakebase import LakebaseSessionStore
+from ._conversation_delta import DeltaConversationStore
+from ._conversation_lakebase import LakebaseConversationStore
 
 # Durable memory + few-shot examples
 from ._memory import (
@@ -155,14 +203,6 @@ from ._prompt_assembly import (
     assemble_memory_context,
 )
 
-# Example mining — extract few-shot examples from session history
-from ._example_mining import (
-    MineResult,
-    Turn as ExampleMiningTurn,
-    mine_examples,
-    pair_turns,
-)
-
 # Memory consolidation — LLM-summarize older memories into a rollup row
 from ._memory_consolidate import (
     ConsolidateResult,
@@ -177,7 +217,7 @@ from ._managed_mcp import (
 )
 
 # Mosaic AI Supervisor Agent publishing
-from ._publish import create_supervisor_agent, publish_to_supervisor
+from ._publish import create_supervisor_agent, publish_to_registry, publish_to_supervisor, publish_tools_to_registry, publish_standalone_tools_to_registry
 
 # Local lightweight guards — zero-latency runtime checks
 from ._guards import (
@@ -187,6 +227,31 @@ from ._guards import (
     ToolDenylist,
     compose,
     prompt_injection_heuristic,
+)
+
+# Async bridge — keep sync agent handlers off the AgentServer event loop
+from ._async_bridge import make_async_invoke, make_async_stream
+
+# Cancellable tools — interrupt long-running tool calls mid-flight
+from ._cancellation import (
+    CancellationRegistry,
+    CancelToken,
+    ToolCancelled,
+    cancellable,
+)
+
+# Policies — ALLOW / ASK / DENY governance with human-in-the-loop approvals
+from ._policy import (
+    Approval,
+    ApprovalRequired,
+    ApprovalStore,
+    FunctionPolicy,
+    PolicyAction,
+    PolicyEvent,
+    PolicyGate,
+    PolicyResult,
+    PromptPolicy,
+    evaluate_policies,
 )
 
 # Cost tracking helpers
@@ -260,6 +325,19 @@ from ._canary_apps import (
     write_databricks_yml,
 )
 
+# Apps → UC registry shim — register a version manifest for a deployed App
+from ._apps_registry import (
+    AppsManifestResult,
+    CanaryManifest,
+    find_latest_canary_version,
+    get_latest_apps_version,
+    get_latest_prod_version,
+    get_prod_alias_version,
+    get_version_git_sha,
+    register_apps_manifest,
+    set_prod_alias_version,
+)
+
 # databricks-watchdog integration
 from ._watchdog import (
     WatchdogClient,
@@ -272,8 +350,8 @@ from ._watchdog import (
     set_uc_tags_for_agent,
 )
 
-# MLflow ChatAgent /invocations route mounter (optional — same extras)
-from ._invocations import mount_invocations_route
+# MLflow ChatAgent /invocations + ResponsesAgent /responses route mounters
+from ._invocations import mount_invocations_route, mount_responses_route
 
 # MLflow tracing helpers (optional — graceful no-op without mlflow)
 from ._mlflow_tracing import (
@@ -299,7 +377,10 @@ __all__ = [
     # Agent types
     "Agent",
     "BaseAgent",
+    "CoworkerAgent",
+    "CoworkerTemplate",
     "DataAgent",
+    "DataTemplate",
     "HandoffAgent",
     "KeywordRouter",
     "LlmAgent",
@@ -309,18 +390,32 @@ __all__ = [
     "SequentialAgent",
     "RemoteDatabricksAgent",
     "agent_tool",
+    # Template protocol + registry
+    "Template",
+    "TemplateInfo",
+    "TemplateRegistry",
+    "template",
+    "template_registry",
     # Models
+    "AfterAgentCallback",
+    "AfterModelHook",
+    "AfterToolHook",
     "AgentCard",
     "AgentConfig",
     "AgentContext",
     "AgentTool",
-    "AfterModelHook",
-    "AfterToolHook",
+    "BeforeAgentCallback",
     "BeforeModelHook",
     "BeforeToolHook",
+    "ExampleBackendConfig",
+    "GuardrailsConfig",
     "InputGuardrailFn",
+    "MemoryBackendConfig",
     "Message",
+    "OnModelErrorCallback",
+    "OnToolErrorCallback",
     "OutputGuardrailFn",
+    "SessionBackendConfig",
     # Dependencies
     "Dependencies",
     # SQL utilities
@@ -332,8 +427,14 @@ __all__ = [
     "get_llm",
     # App factory
     "create_app",
+    "finalize_agent",
     "mount_mcp_endpoints",
+    "mount_readyz",
     "setup_agent",
+    # Declarative tool config
+    "ToolConfigError",
+    "load_config_tools",
+    "merge_config_tools",
     # Eval
     "app_predict_fn",
     "endpoint_predict_fn",
@@ -347,6 +448,7 @@ __all__ = [
     "schema_tool",
     "uc_function_tool",
     "uc_function_toolkit",
+    "uc_comment_tool",
     "vector_search_tool",
     "sql_tool",
     "http_tool",
@@ -385,14 +487,26 @@ __all__ = [
     "get_tool_metadata",
     "publish_tools_to_uc",
     "PublishResult",
-    # Session / multi-turn memory
-    "Session",
-    "SessionStore",
-    "InMemorySessionStore",
-    "DeltaSessionStore",
-    "LakebaseSessionStore",
-    "append_turn",
-    "load_or_create_session",
+    # Conversation store
+    "Conversation",
+    "ConversationItem",
+    "ConversationNotFoundError",
+    "ConversationStore",
+    "InMemoryConversationStore",
+    "DeltaConversationStore",
+    "LakebaseConversationStore",
+    "NewConversationItem",
+    "PagedList",
+    "MessageData",
+    "FunctionCallData",
+    "FunctionCallOutputData",
+    "ReasoningData",
+    "CompactionData",
+    "NativeToolData",
+    "compute_search_text",
+    "paginate_in_memory",
+    "parse_item_data",
+    "synthesize_conversation_title",
     # Durable memory + examples
     "EmbeddingFn",
     "InMemoryMemoryStore",
@@ -420,11 +534,6 @@ __all__ = [
     "assemble_context",
     "assemble_example_context",
     "assemble_memory_context",
-    # Example mining
-    "ExampleMiningTurn",
-    "MineResult",
-    "mine_examples",
-    "pair_turns",
     # Memory consolidation
     "ConsolidateResult",
     "consolidate_memories",
@@ -434,7 +543,10 @@ __all__ = [
     "managed_mcp_client_config",
     # Supervisor publishing
     "create_supervisor_agent",
+    "publish_to_registry",
     "publish_to_supervisor",
+    "publish_tools_to_registry",
+    "publish_standalone_tools_to_registry",
     # Local lightweight guards
     "FeatureFlagGuard",
     "RateLimit",
@@ -442,6 +554,25 @@ __all__ = [
     "ToolDenylist",
     "prompt_injection_heuristic",
     "compose",
+    # Async bridge
+    "make_async_invoke",
+    "make_async_stream",
+    # Cancellable tools
+    "CancellationRegistry",
+    "CancelToken",
+    "ToolCancelled",
+    "cancellable",
+    # Policies — ALLOW / ASK / DENY with human-in-the-loop approvals
+    "Approval",
+    "ApprovalRequired",
+    "ApprovalStore",
+    "FunctionPolicy",
+    "PolicyAction",
+    "PolicyEvent",
+    "PolicyGate",
+    "PolicyResult",
+    "PromptPolicy",
+    "evaluate_policies",
     # Cost tracking
     "CostBreakdown",
     "cost_for_agent",
@@ -500,6 +631,16 @@ __all__ = [
     "rollback_canary_app",
     "sanitize_version",
     "write_databricks_yml",
+    # Apps → UC registry shim
+    "AppsManifestResult",
+    "CanaryManifest",
+    "find_latest_canary_version",
+    "get_latest_apps_version",
+    "get_latest_prod_version",
+    "get_prod_alias_version",
+    "get_version_git_sha",
+    "register_apps_manifest",
+    "set_prod_alias_version",
     # Watchdog integration
     "WatchdogClient",
     "WatchdogDecision",
@@ -509,8 +650,9 @@ __all__ = [
     "make_uc_violation_writer",
     "make_mcp_transport",
     "make_watchdog_transport",
-    # MLflow /invocations route mounter
+    # MLflow route mounters
     "mount_invocations_route",
+    "mount_responses_route",
     # MLflow tracing
     "current_active_span",
     "enable_langchain_autolog",

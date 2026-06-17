@@ -1,6 +1,6 @@
 # memory_demo
 
-A self-contained worked example showing how to wire **MemoryBank** + **ExampleStore**
+A self-contained worked example showing how to wire **MemoryStore** + **ExampleStore**
 into an `apx-agent` end-to-end.
 
 `memory_demo` ships in two run modes:
@@ -18,17 +18,18 @@ module locally or behind a FastAPI route inside an App.
 `memory_demo` previously deployed via Model Serving (`databricks.agents.deploy`).
 We moved the deploy story to Apps because Model Serving container builds queue —
 iteration suffers. The full tradeoff write-up is in
-[`docs/apps-vs-model-serving.md`](../../../docs/apps-vs-model-serving.md).
+[`docs/deploy/apps-vs-model-serving.md`](../../../docs/deploy/apps-vs-model-serving.md).
 
 ## What's in here
 
 - `app.py` — the canonical in-process demo. Seeds the stores, builds the
   system prompt, runs the `recall` / `remember` tools synchronously, and
   prints the round-trip to stdout. No LLM, no infra.
-- `agent_server/agent.py` — the same wiring, plus `compile_to_responses_agent`
-  and `@invoke()`/`@stream()` registrations for the Databricks Apps target.
-- `agent_server/start_server.py` — FastAPI entry point. Databricks Apps
-  runs this file via uvicorn.
+- `agent.py` — the same `Agent` + memory/example-store wiring, shared with the
+  local demo.
+- `agent_server/start_server.py` — FastAPI entry point, plus
+  `compile_to_responses_agent` and the `@invoke()`/`@stream()` registrations for
+  the Databricks Apps target. Databricks Apps runs this file via uvicorn.
 - `databricks.yml` — Asset Bundle config. Declares the App + the
   serving-endpoint resource the App connects to.
 - `pyproject.toml` — apps-shape dependencies (apx-agent, mlflow, fastapi, uvicorn).
@@ -68,10 +69,10 @@ final stored memory count for alice: 6
 
 ```bash
 cd python/examples/memory_demo
-apx deploy --target apps
+apx-agent agents deploy --target apps
 ```
 
-One command. `apx deploy --target apps` does it all:
+One command. `apx-agent agents deploy --target apps` does it all:
 
 1. Builds the apx-agent wheel from the parent source tree
 2. Stages `.build/` (source + wheel), rewrites the staged `pyproject.toml`
@@ -111,7 +112,7 @@ replaces them:
 
 | Want | Swap to | See |
 |---|---|---|
-| Shared state across App replicas | `LakebaseMemoryStore`, `LakebaseExampleStore` | [`docs/lakebase-recipe.md`](../../../docs/lakebase-recipe.md) |
+| Shared state across App replicas | `LakebaseMemoryStore`, `LakebaseExampleStore` | [`docs/running/lakebase-recipe.md`](../../../docs/running/lakebase-recipe.md) |
 | Delta + Vector Search backing | `DeltaMemoryStore`, `DeltaExampleStore` | `apx_agent._memory_delta` / `_example_delta` source |
 
 When you move to Lakebase, also add a `database` resource to `databricks.yml`

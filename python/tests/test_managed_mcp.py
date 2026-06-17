@@ -248,3 +248,21 @@ def test_client_config_custom_name_prefix() -> None:
     ]
     config = managed_mcp_client_config(eps, name="my-agent")
     assert "my-agent.genie_space.space-abc" in config["mcpServers"]
+
+
+def test_managed_mcp_url_for_resource_single() -> None:
+    """Per-resource wrapper builds the same URL managed_mcp_urls does."""
+    from apx_agent._managed_mcp import managed_mcp_url_for_resource
+
+    assert managed_mcp_url_for_resource(
+        "uc_function", "main.tools.classify_intent",
+        workspace_host="https://workspace.cloud.databricks.com",
+    ) == "https://workspace.cloud.databricks.com/api/2.0/mcp/functions/main/tools/classify_intent"
+    # scheme/trailing-slash are normalised
+    assert managed_mcp_url_for_resource(
+        "genie_space", "space-abc", workspace_host="workspace.cloud.databricks.com/",
+    ) == "https://workspace.cloud.databricks.com/api/2.0/mcp/genie/space-abc"
+    # kinds without a Managed MCP equivalent -> None
+    assert managed_mcp_url_for_resource(
+        "unknown_kind", "x", workspace_host="https://w.com",
+    ) is None

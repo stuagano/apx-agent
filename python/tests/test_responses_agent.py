@@ -13,7 +13,7 @@ Covers:
   4. OBO header passthrough: when ``custom_inputs.user_token`` is present, the
      compiled graph's tools see the OBO WorkspaceClient — same load-bearing
      contract as ``test_chat_agent.py`` but exercised through the Apps path.
-  5. Session/thread_id support: with a session_store + thread_id, history is
+  5. Session/thread_id support: with a conversation_store + thread_id, history is
      prepended and the new turn is persisted.
   6. Best-effort import: NotImplementedError if mlflow Responses types absent
      (we don't directly test the raise path since mlflow IS installed in CI;
@@ -22,6 +22,8 @@ Covers:
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -38,11 +40,27 @@ ResponsesAgentResponse = mlflow_responses.ResponsesAgentResponse
 ResponsesAgentStreamEvent = mlflow_responses.ResponsesAgentStreamEvent
 
 from langchain_core.messages import AIMessage  # noqa: E402
+from langchain_core.messages import HumanMessage  # noqa: E402
+from langchain_core.messages import SystemMessage  # noqa: E402
+from langchain_core.messages import ToolMessage  # noqa: E402
 
 from apx_agent import (  # noqa: E402
-    InMemorySessionStore,
+    InMemoryConversationStore,
     LlmAgent,
     compile_to_responses_agent,
+)
+from apx_agent._executor import (  # noqa: E402
+    ExecutorError,
+    TextChunk,
+    ToolCallComplete,
+    ToolCallRequest,
+    TurnComplete,
+)
+from apx_agent._responses_agent import (  # noqa: E402
+    _conv_items_to_lc_messages,
+    _executor_events_to_items,
+    _lc_to_openai_messages,
+    _persist_conv_turn,
 )
 
 
@@ -315,9 +333,9 @@ class TestUserScopeAuth:
 class TestSessionPersistence:
     def test_thread_id_history_prepended_and_new_turn_persisted(self) -> None:
         agent = LlmAgent(tools=[_trivial_tool])
-        store = InMemorySessionStore()
+        store = InMemoryConversationStore()
         non_streaming, _ = compile_to_responses_agent(
-            agent, model="any", session_store=store
+            agent, model="any", conversation_store=store
         )
 
         # Capture the messages the graph sees so we can assert history was
@@ -350,11 +368,12 @@ class TestSessionPersistence:
         # Turn 2: at least the prior user+assistant pair plus the new user
         assert len(seen_inputs[1]) >= 3
 
-        # And the session store persisted both turns
-        session = store.get("t-1")
-        assert session is not None
+        # The conversation store persisted items for both turns
+        conv = store.get_conversation("t-1")
+        assert conv is not None
+        items = store.list_items("t-1").data
         # 2 input messages + 2 new messages from the assistant = 4
-        assert len(session.history) >= 4
+        assert len(items) >= 4
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +384,9 @@ class TestSessionPersistence:
 class TestStreamingSession:
     def test_streaming_persists_session_after_stream(self) -> None:
         agent = LlmAgent(tools=[_trivial_tool])
-        store = InMemorySessionStore()
+        store = InMemoryConversationStore()
         _, streaming = compile_to_responses_agent(
-            agent, model="any", session_store=store
+            agent, model="any", conversation_store=store
         )
 
         with patch(
@@ -379,6 +398,312 @@ class TestStreamingSession:
         ):
             list(streaming(_user_request("hi", thread_id="t-stream")))
 
-        session = store.get("t-stream")
-        assert session is not None
-        assert len(session.history) >= 2
+        conv = store.get_conversation("t-stream")
+        assert conv is not None
+        items = store.list_items("t-stream").data
+        assert len(items) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Phase C — executor="claude-sdk" helpers and serving path
+# ---------------------------------------------------------------------------
+
+
+# --- Fake async streaming client (no real credentials required) ---
+
+
+def _ns_text_chunk(text: str) -> SimpleNamespace:
+    """Fake OpenAI streaming chunk carrying a text delta.
+
+    :param text: The text content of the delta.
+    :returns: A ``SimpleNamespace`` shaped like a ``ChatCompletionChunk``.
+    """
+    delta = SimpleNamespace(content=text, tool_calls=None)
+    choice = SimpleNamespace(delta=delta, finish_reason=None)
+    return SimpleNamespace(choices=[choice], usage=None)
+
+
+def _ns_finish_chunk() -> SimpleNamespace:
+    """Terminal empty streaming chunk with no delta content.
+
+    :returns: A ``SimpleNamespace`` with empty choices list.
+    """
+    return SimpleNamespace(choices=[], usage=None)
+
+
+class _FakeCompletions:
+    """Fake ``AsyncCompletions`` resource consumed FIFO per ``create()`` call.
+
+    :param call_chunks: List of per-call chunk sequences.
+    """
+
+    def __init__(self, call_chunks: list[list[Any]]) -> None:
+        """Initialise the fake completions with a call queue.
+
+        :param call_chunks: Ordered list of chunk sequences, one per call.
+        """
+        self._queue: list[list[Any]] = list(call_chunks)
+
+    async def create(self, **kwargs: Any) -> Any:
+        """Return an async generator over the next queued chunk sequence.
+
+        :param kwargs: Ignored call kwargs.
+        :returns: Async generator yielding the next queued chunks.
+        """
+        chunks = self._queue.pop(0)
+
+        async def _gen() -> Any:
+            for c in chunks:
+                yield c
+
+        return _gen()
+
+
+def _make_sdk_fake_client(call_chunks: list[list[Any]]) -> SimpleNamespace:
+    """Build a fake top-level client whose ``.chat.completions.create()`` is faked.
+
+    :param call_chunks: Per-call chunk sequences forwarded to ``_FakeCompletions``.
+    :returns: A ``SimpleNamespace`` shaped like ``AsyncDatabricksOpenAI``.
+    """
+    completions = _FakeCompletions(call_chunks)
+    chat = SimpleNamespace(completions=completions)
+    return SimpleNamespace(chat=chat)
+
+
+class TestLcToOpenaiMessages:
+    def test_human_message_becomes_user_role(self) -> None:
+        result = _lc_to_openai_messages([HumanMessage(content="hi")])
+        assert result == [{"role": "user", "content": "hi"}]
+
+    def test_ai_message_no_tool_calls_becomes_assistant(self) -> None:
+        result = _lc_to_openai_messages([AIMessage(content="hello")])
+        assert result == [{"role": "assistant", "content": "hello"}]
+
+    def test_ai_message_with_tool_calls_includes_tool_calls_key(self) -> None:
+        msg = AIMessage(
+            content="",
+            tool_calls=[{"id": "c1", "name": "search", "args": {"q": "foo"}}],
+        )
+        result = _lc_to_openai_messages([msg])
+        assert len(result) == 1
+        assert result[0]["role"] == "assistant"
+        tc = result[0]["tool_calls"][0]
+        assert tc["id"] == "c1"
+        assert tc["function"]["name"] == "search"
+        assert json.loads(tc["function"]["arguments"]) == {"q": "foo"}
+
+    def test_tool_message_becomes_tool_role(self) -> None:
+        msg = ToolMessage(content="result", tool_call_id="c1")
+        result = _lc_to_openai_messages([msg])
+        assert result == [{"role": "tool", "tool_call_id": "c1", "content": "result"}]
+
+    def test_system_message_becomes_system_role(self) -> None:
+        msg = SystemMessage(content="You are helpful.")
+        result = _lc_to_openai_messages([msg])
+        assert result == [{"role": "system", "content": "You are helpful."}]
+
+    def test_mixed_history_preserves_order(self) -> None:
+        msgs = [HumanMessage(content="ask"), AIMessage(content="answer")]
+        result = _lc_to_openai_messages(msgs)
+        assert result[0] == {"role": "user", "content": "ask"}
+        assert result[1] == {"role": "assistant", "content": "answer"}
+
+
+class TestExecutorEventsToItems:
+    def test_text_chunks_plus_turn_complete_emits_single_message(self) -> None:
+        events: list[Any] = [
+            TextChunk(text="Hello"),
+            TextChunk(text=" world"),
+            TurnComplete(response="Hello world"),
+        ]
+        items = _executor_events_to_items(events)
+        assert len(items) == 1
+        assert items[0]["type"] == "message"
+        assert items[0]["role"] == "assistant"
+        # Text must be the concatenation of the two chunks
+        assert items[0]["content"][0]["text"] == "Hello world"
+
+    def test_turn_complete_fallback_when_no_text_chunks(self) -> None:
+        """TurnComplete.response is used when no TextChunk events preceded it."""
+        events: list[Any] = [TurnComplete(response="direct text")]
+        items = _executor_events_to_items(events)
+        assert len(items) == 1
+        assert items[0]["content"][0]["text"] == "direct text"
+
+    def test_tool_call_produces_correct_item_sequence(self) -> None:
+        events: list[Any] = [
+            ToolCallRequest(name="search", args={"q": "foo"}, call_id="c1"),
+            ToolCallComplete(name="search", call_id="c1", result="found it"),
+            TextChunk(text="Done"),
+            TurnComplete(response="Done"),
+        ]
+        items = _executor_events_to_items(events)
+        types = [i["type"] for i in items]
+        # function_call, function_call_output, final message
+        assert types == ["function_call", "function_call_output", "message"]
+        assert items[0]["call_id"] == "c1"
+        assert items[0]["name"] == "search"
+        assert items[1]["call_id"] == "c1"
+        assert items[1]["output"] == "found it"
+        assert items[2]["content"][0]["text"] == "Done"
+
+    def test_text_before_tool_call_emitted_first(self) -> None:
+        events: list[Any] = [
+            TextChunk(text="Thinking..."),
+            ToolCallRequest(name="look", args={}, call_id="cx"),
+            ToolCallComplete(name="look", call_id="cx", result="data"),
+            TextChunk(text="Done"),
+            TurnComplete(response="Done"),
+        ]
+        items = _executor_events_to_items(events)
+        assert items[0]["type"] == "message"
+        assert items[0]["content"][0]["text"] == "Thinking..."
+        assert items[1]["type"] == "function_call"
+        assert items[2]["type"] == "function_call_output"
+        assert items[3]["type"] == "message"
+        assert items[3]["content"][0]["text"] == "Done"
+
+    def test_executor_error_raises_runtime_error(self) -> None:
+        events: list[Any] = [ExecutorError(message="boom")]
+        with pytest.raises(RuntimeError, match="boom"):
+            _executor_events_to_items(events)
+
+
+class TestClaudeSDKPath:
+    """Integration tests for compile_to_responses_agent with executor='claude-sdk'."""
+
+    def test_non_streaming_returns_response_with_correct_text(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool])
+        non_streaming, _ = compile_to_responses_agent(
+            agent, model="databricks-claude-sonnet-4-6", executor="claude-sdk"
+        )
+        fake_client = _make_sdk_fake_client([
+            [_ns_text_chunk("hello from sdk"), _ns_finish_chunk()]
+        ])
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._claude_sdk_executor._make_client",
+            return_value=fake_client,
+        ):
+            resp = non_streaming(_user_request("hi"))
+
+        assert isinstance(resp, ResponsesAgentResponse)
+        assert len(resp.output) == 1
+        d = resp.output[0].model_dump()
+        assert d["type"] == "message"
+        assert d["role"] == "assistant"
+        # Verify the text from the fake streaming chunks reached the response
+        assert d["content"][0]["text"] == "hello from sdk"
+
+    def test_streaming_yields_item_done_then_completed(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool])
+        _, streaming = compile_to_responses_agent(
+            agent, model="databricks-claude-sonnet-4-6", executor="claude-sdk"
+        )
+        fake_client = _make_sdk_fake_client([
+            [_ns_text_chunk("streamed via sdk"), _ns_finish_chunk()]
+        ])
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._claude_sdk_executor._make_client",
+            return_value=fake_client,
+        ):
+            events = list(streaming(_user_request("go")))
+
+        assert len(events) >= 2
+        for ev in events:
+            assert isinstance(ev, ResponsesAgentStreamEvent)
+        event_types = [ev.type for ev in events]
+        assert "response.output_item.done" in event_types
+        # Terminal event must be last
+        assert event_types[-1] == "response.completed"
+        # The item event must carry the streamed text
+        item_ev = next(ev for ev in events if ev.type == "response.output_item.done")
+        item_dict = item_ev.item if isinstance(item_ev.item, dict) else item_ev.item.model_dump()
+        assert item_dict["content"][0]["text"] == "streamed via sdk"
+
+    def test_fallback_to_langgraph_when_executor_claude_sdk_but_not_llm_agent(
+        self,
+    ) -> None:
+        """Non-LlmAgent with executor='claude-sdk' silently falls back to langgraph."""
+        from apx_agent._agents import SequentialAgent
+
+        agent = SequentialAgent(agents=[LlmAgent(tools=[])])
+        non_streaming, _ = compile_to_responses_agent(
+            agent, model="any", executor="claude-sdk"
+        )
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._responses_agent.compile_to_langgraph",
+            return_value=_make_fake_graph("fallback answer"),
+        ):
+            resp = non_streaming(_user_request("hi"))
+
+        assert isinstance(resp, ResponsesAgentResponse)
+        assert resp.output[0].model_dump()["content"][0]["text"] == "fallback answer"
+
+
+# ---------------------------------------------------------------------------
+# Round-trip: write tool-call turn to store, read back, verify tool_calls survive
+# ---------------------------------------------------------------------------
+
+
+def test_conv_turn_tool_call_round_trip_preserves_tool_calls() -> None:
+    """Write→store→read→convert must not lose tool call data.
+
+    The risky invariant: _resp_item_to_new_conv_items emits FunctionCallData
+    items; _conv_items_to_lc_messages coalesces them into AIMessage.tool_calls.
+    A write/read asymmetry here would silently orphan the follow-on ToolMessage
+    on turn 2, causing the model to see an unmatched tool result.
+    """
+    store = InMemoryConversationStore()
+    store.create_conversation(id="trip-1")
+
+    user_msg = {"type": "message", "role": "user", "content": "call the tool"}
+    func_call = {
+        "type": "function_call",
+        "name": "do_lookup",
+        "call_id": "call-99",
+        "arguments": '{"q": "hello"}',
+    }
+    func_output = {
+        "type": "function_call_output",
+        "call_id": "call-99",
+        "output": "result-data",
+    }
+    assistant_reply = {"type": "message", "role": "assistant", "content": "all done"}
+
+    _persist_conv_turn(
+        store,
+        "trip-1",
+        input_items=[user_msg],
+        output_items=[func_call, func_output, assistant_reply],
+        model="any",
+        response_id="r-trip-1",
+    )
+
+    items = store.list_items("trip-1").data
+    assert len(items) == 4, f"Expected 4 items, got {len(items)}: {[i.type for i in items]}"
+
+    lc = _conv_items_to_lc_messages(items)
+
+    tool_call_msgs = [m for m in lc if isinstance(m, AIMessage) and m.tool_calls]
+    assert tool_call_msgs, "No AIMessage with tool_calls found after round-trip"
+    tc = tool_call_msgs[0].tool_calls[0]
+    assert tc["name"] == "do_lookup"
+    assert tc["id"] == "call-99"
+    assert tc["args"] == {"q": "hello"}
+
+    tool_msgs = [m for m in lc if isinstance(m, ToolMessage)]
+    assert tool_msgs, "No ToolMessage found after round-trip"
+    assert tool_msgs[0].tool_call_id == "call-99"
+    assert tool_msgs[0].content == "result-data"

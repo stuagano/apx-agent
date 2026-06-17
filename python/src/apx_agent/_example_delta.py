@@ -146,7 +146,6 @@ class DeltaExampleStore:
     def _ensure_table(self) -> None:
         """Idempotently create the Delta table on first use."""
         if self._created or not self._auto_create:
-            self._created = True
             return
         sql = (
             f"CREATE TABLE IF NOT EXISTS {self.table_name} ("
@@ -166,10 +165,14 @@ class DeltaExampleStore:
         try:
             self._run_sql(sql)
         except Exception as e:
+            schema_parts = self.table_name.rsplit(".", 1)[0]
             logger.warning(
-                "DeltaExampleStore: CREATE TABLE IF NOT EXISTS %s failed: %s",
-                self.table_name, e,
+                "DeltaExampleStore: CREATE TABLE IF NOT EXISTS %s failed: %s\n"
+                "  Fix: GRANT CREATE TABLE ON SCHEMA %s TO `<your-principal>`;\n"
+                "  Or pre-create the table and set auto_create=False.",
+                self.table_name, e, schema_parts,
             )
+            return  # don't set _created; let the next call retry
         self._created = True
 
     # -- MERGE SQL ----------------------------------------------------------
@@ -304,8 +307,17 @@ class DeltaExampleStore:
         return updated
 
     def delete(self, example_id: str) -> bool:
-        """Delete the row; returns True unless ``run_sql`` raised."""
+        """Delete the row; returns True on hit, False on miss.
+
+        Honors the ``ExampleStore`` contract (True only when a row existed),
+        matching the InMemory and Lakebase stores. Existence is checked via
+        ``get`` first, since ``run_sql`` does not reliably surface an
+        affected-rows count.
+        """
         self._ensure_table()
+        existing = self.get(example_id)
+        if existing is None:
+            return False
         sql = (
             f"DELETE FROM {self.table_name} "
             f"WHERE id = {_quote_string(example_id)}"
@@ -374,8 +386,23 @@ class DeltaExampleStore:
             else:
                 kwargs["query_text"] = opts.query
             result = self._vector_search.similarity_search(**kwargs)
+            # Vector Search filters only express ``agent_id``/``intent``
+            # cleanly here, so honor ``tags``/``min_score`` by post-filtering
+            # the returned rows (the SQL and Lakebase paths apply them too).
+            # ``min_score`` matches the store-side ``score >= min_score``
+            # semantics: rows with a NULL score are excluded.
+            tag_filter = set(opts.tags) if opts.tags else None
             out: list[ExampleResult] = []
             for row in result.get("rows") or []:
+                example = _row_to_example(row)
+                if opts.min_score is not None and (
+                    example.score is None or example.score < opts.min_score
+                ):
+                    continue
+                if tag_filter is not None and not (
+                    tag_filter & set(example.tags)
+                ):
+                    continue
                 # NOTE: ``score`` is BOTH a vector-search rank field and a
                 # genuine Example column. Prefer ``_score`` when the
                 # backend sets it (it's the standard Databricks shape);
@@ -391,7 +418,7 @@ class DeltaExampleStore:
                 )
                 out.append(
                     ExampleResult(
-                        example=_row_to_example(row),
+                        example=example,
                         score=float(score_val or 0.0),
                     )
                 )

@@ -43,10 +43,11 @@ class TestParseJudgeOutput:
         assert v == "FAIL"
         assert r == "Wrong city."
 
-    def test_unlabeled_pass_inferred(self):
-        v, r = _parse_judge_output("PASS — this answer is clearly correct")
-        assert v == "PASS"
-        assert "PASS" in r
+    def test_unlabeled_pass_does_not_infer_pass(self):
+        # Audit M4: with no VERDICT line, the judge output is unclear, so the
+        # harness must fail closed rather than infer PASS from a bare substring.
+        v, _ = _parse_judge_output("PASS — this answer is clearly correct")
+        assert v == "FAIL"
 
     def test_ambiguous_defaults_to_fail(self):
         v, _ = _parse_judge_output("I think this is mostly fine.")

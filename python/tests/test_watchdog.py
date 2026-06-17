@@ -392,23 +392,43 @@ def test_set_uc_tags_model_value_propagates() -> None:
     assert tags["apx.agent.model"] == "databricks-claude-sonnet-4-6"
 
 
-def test_set_uc_tags_continues_past_individual_failure() -> None:
-    """One tag write failing shouldn't abort the rest."""
+def test_set_uc_tags_continues_past_failure_and_excludes_it() -> None:
+    """A failed tag write shouldn't abort the rest (resilience), and it must be
+    EXCLUDED from the returned dict (claim-vs-reality: don't report a swallowed
+    failure as written)."""
     agent = _make_full_agent()
     mlflow_client = MagicMock()
-    # Fail every other call
-    mlflow_client.set_registered_model_tag.side_effect = [
-        None, RuntimeError("fail"), None, None, None, None, None, None,
-    ]
+    # Fail exactly the second write; everything else succeeds.
+    mlflow_client.set_registered_model_tag.side_effect = (
+        [None, RuntimeError("fail")] + [None] * 50
+    )
 
-    tags = set_uc_tags_for_agent(
+    written = set_uc_tags_for_agent(
         agent,
         registered_model_name="main.agents.triage",
         model="m",
         mlflow_client=mlflow_client,
     )
-    # All tag writes attempted even with a failure in the middle
-    assert mlflow_client.set_registered_model_tag.call_count == len(tags)
+    attempted = mlflow_client.set_registered_model_tag.call_count
+    # Resilience: every intended tag was still attempted...
+    assert attempted >= 2
+    # Honesty: the one failed write is NOT in the returned (written) tags.
+    assert len(written) == attempted - 1
+
+
+def test_set_uc_tags_returns_empty_when_all_writes_fail() -> None:
+    """If every write fails, the return is empty — never a false 'all written'."""
+    agent = _make_full_agent()
+    mlflow_client = MagicMock()
+    mlflow_client.set_registered_model_tag.side_effect = RuntimeError("no perms")
+
+    written = set_uc_tags_for_agent(
+        agent,
+        registered_model_name="main.agents.triage",
+        model="m",
+        mlflow_client=mlflow_client,
+    )
+    assert written == {}
 
 
 def test_set_uc_tags_truncates_long_metadata() -> None:

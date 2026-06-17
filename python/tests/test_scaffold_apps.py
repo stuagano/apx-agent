@@ -1,4 +1,4 @@
-"""Tests for ``apx scaffold --target apps`` — the Databricks Apps scaffold.
+"""Tests for ``apx-agent scaffold --target apps`` — the Databricks Apps scaffold.
 
 Covers:
   1. ``--target apps`` writes the expected file tree (ADK-style: top-level
@@ -11,7 +11,7 @@ Covers:
   4. Generated top-level ``agent.py`` parses as valid Python and the
      framework boilerplate at ``agent_server/start_server.py`` imports
      ``from agent import agent``.
-  5. ``apx scaffold`` with no ``--target`` still produces the Model Serving
+  5. ``apx-agent scaffold`` with no ``--target`` still produces the Model Serving
      layout (backwards compatibility).
   6. ``--target apps --force`` overwrites an existing directory.
   7. The ADK-style layout: ``agent_server/agent.py`` MUST NOT exist
@@ -25,6 +25,7 @@ from __future__ import annotations
 import ast
 import tomllib
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -54,11 +55,11 @@ APPS_EXPECTED_FILES: tuple[str, ...] = (
 
 
 def test_scaffold_apps_creates_expected_file_tree(tmp_path: Path) -> None:
-    """``apx scaffold my_agent --target apps`` creates every expected file."""
+    """``apx-agent scaffold my_agent --target apps`` creates every expected file."""
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code == 0, result.output
     base = tmp_path / "my_agent"
@@ -80,7 +81,7 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code == 0, result.output
 
@@ -121,7 +122,7 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code == 0, result.output
 
@@ -130,10 +131,9 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
 
     assert parsed["project"]["name"] == "my_agent"
     deps = parsed["project"]["dependencies"]
-    # The [langgraph] extra is REQUIRED at runtime — compile_to_responses_agent
-    # pulls in langchain_core via compile_to_langgraph. Bare 'apx-agent' fails
-    # at first request inside the deployed App. See commit 6f84ad24.
-    assert any(d == "apx-agent[langgraph]" or d.startswith("apx-agent[") for d in deps), deps
+    # apx-agent includes langgraph/langchain as required deps — no extra needed.
+    # The dep line references just "apx-agent" (or a git+https URL to the same).
+    assert any("apx-agent" in d for d in deps), deps
     # The mlflow dependency is pinned with the [databricks] extra and a
     # minimum version. Search loosely so the version pin can move.
     assert any("mlflow[databricks]" in d for d in deps), deps
@@ -165,7 +165,7 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code == 0, result.output
 
@@ -193,24 +193,23 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_default_target_is_model_serving(tmp_path: Path) -> None:
-    """No ``--target`` flag still emits the flat agent.py + app.py layout."""
+def test_scaffold_default_target_is_apps(tmp_path: Path) -> None:
+    """No ``--target`` flag now emits the Databricks Apps bundle layout."""
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["scaffold", "my_agent", "--dir", str(tmp_path)],
+        ["agents", "scaffold", "my_agent", "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code == 0, result.output
     base = tmp_path / "my_agent"
 
-    # Model-serving shape: flat agent.py + app.py
-    for rel in ("pyproject.toml", "agent.py", "app.py", ".gitignore", "README.md"):
+    # Apps shape: agent.py + agent_server/ + databricks.yml bundle.
+    for rel in ("pyproject.toml", "agent.py", "databricks.yml",
+                "agent_server/start_server.py", "scripts/quickstart.py"):
         assert (base / rel).exists(), f"missing {rel}"
 
-    # Apps-only artefacts must NOT appear.
-    assert not (base / "agent_server").exists()
-    assert not (base / "scripts").exists()
-    assert not (base / "databricks.yml").exists()
+    # The flat model-serving app.py must NOT appear by default anymore.
+    assert not (base / "app.py").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +227,7 @@ def test_scaffold_apps_force_overwrites_existing_dir(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--force"],
+        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--force", "--no-yaml"],
     )
     assert result.exit_code == 0, result.output
 
@@ -248,8 +247,224 @@ def test_scaffold_apps_gitignore_includes_sidecar(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--no-yaml"],
     )
     assert result.exit_code == 0, result.output
     gitignore = (tmp_path / "my_agent" / ".gitignore").read_text()
     assert ".apx-builder.json" in gitignore
+
+
+# ---------------------------------------------------------------------------
+# Test 8: framework-checkout auto-redirect (the "I ran apx-agent scaffold at the
+# repo root" gotcha that otherwise produces a broken `path = ".."` install)
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_framework_checkout(root: Path) -> Path:
+    """Build a minimal fake apx-agent repo checkout at ``root``: an empty
+    ``python/`` subdir with a ``pyproject.toml`` that declares
+    ``[project].name = "apx-agent"`` — enough to trip the detection."""
+    (root / "python").mkdir(parents=True)
+    (root / "python" / "pyproject.toml").write_text(
+        '[project]\nname = "apx-agent"\nversion = "0.1.0"\n'
+    )
+    return root / "python"
+
+
+def test_scaffold_at_framework_repo_root_redirects_into_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Running ``apx-agent scaffold X`` from the framework repo root auto-redirects
+    into ``python/X/`` so the editable ``path = ".."`` install resolves."""
+    framework_root = tmp_path / "fakeframework"
+    framework_python = _make_fake_framework_checkout(framework_root)
+
+    monkeypatch.chdir(framework_root)
+    runner = CliRunner()
+    result = runner.invoke(main, ["agents", "scaffold", "myagent", "--no-yaml"])
+
+    assert result.exit_code == 0, result.output
+    assert (framework_python / "myagent" / "pyproject.toml").exists()
+    assert not (framework_root / "myagent").exists()
+    assert "scaffolding inside the apx-agent repo" in result.output.lower()
+
+
+def test_scaffold_inside_python_does_not_redirect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The redirect must NOT fire when the user is already in the framework's
+    ``python/`` dir — the existing layout is correct and shouldn't move."""
+    framework_root = tmp_path / "fakeframework"
+    framework_python = _make_fake_framework_checkout(framework_root)
+
+    monkeypatch.chdir(framework_python)
+    runner = CliRunner()
+    result = runner.invoke(main, ["agents", "scaffold", "myagent", "--no-yaml"])
+
+    assert result.exit_code == 0, result.output
+    assert (framework_python / "myagent" / "pyproject.toml").exists()
+    assert "Scaffolding into python/" not in result.output
+
+
+def test_scaffold_here_overrides_auto_redirect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--here`` opts out of the redirect; the scaffold lands at cwd and
+    its pyproject uses a git+https install instead of the editable path."""
+    framework_root = tmp_path / "fakeframework"
+    framework_python = _make_fake_framework_checkout(framework_root)
+
+    monkeypatch.chdir(framework_root)
+    runner = CliRunner()
+    result = runner.invoke(main, ["agents", "scaffold", "myagent", "--here", "--no-yaml"])
+
+    assert result.exit_code == 0, result.output
+    assert (framework_root / "myagent" / "pyproject.toml").exists()
+    assert not (framework_python / "myagent").exists()
+
+    pyproject = (framework_root / "myagent" / "pyproject.toml").read_text()
+    assert "git+https://github.com/stuagano/apx-agent.git" in pyproject
+    assert 'path = ".."' not in pyproject
+
+
+# ---------------------------------------------------------------------------
+# --template coworker: persona via interactive flow
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None:
+    """Interactive coworker scaffold bakes persona into agent.py."""
+    runner = CliRunner()
+    with patch("apx_agent.cli._gate_workspace_for_scaffold", return_value=None):
+        result = runner.invoke(
+            main,
+            [
+                "agents", "scaffold", "my_coworker",
+                "--dir", str(tmp_path),
+                "--target", "apps",
+                "--template", "coworker",
+                "--interactive",
+                "--no-yaml",
+            ],
+            # catalog → "main", schema → "sales", persona → role text, join_key → blank, objective → blank
+            input="main\nsales\na sales analyst who knows revenue data deeply\n\n\n",
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0, result.output
+    agent_src = (tmp_path / "my_coworker" / "agent.py").read_text()
+    assert "a sales analyst who knows revenue data deeply" in agent_src
+    assert "persona=" in agent_src
+
+
+def test_scaffold_coworker_with_persona_and_objective(tmp_path: Path) -> None:
+    """Interactive coworker scaffold bakes persona, join_key, and objective into agent.py."""
+    runner = CliRunner()
+    with patch("apx_agent.cli._gate_workspace_for_scaffold", return_value=None):
+        result = runner.invoke(
+            main,
+            [
+                "agents", "scaffold", "fraud_agent",
+                "--dir", str(tmp_path),
+                "--target", "apps",
+                "--template", "coworker",
+                "--interactive",
+                "--no-yaml",
+            ],
+            # catalog, schema, persona, join_key, objective
+            input="main\nfraud\na fraud detection analyst\ntransaction ID\ndetect fraudulent transactions and flag anomalies\n",
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0, result.output
+    agent_src = (tmp_path / "fraud_agent" / "agent.py").read_text()
+    assert "a fraud detection analyst" in agent_src
+    assert "transaction ID" in agent_src
+    assert "detect fraudulent transactions and flag anomalies" in agent_src
+    assert "persona=" in agent_src
+    assert "join_key=" in agent_src
+    assert "objective=" in agent_src
+
+
+def test_scaffold_coworker_without_persona_omits_kwarg(tmp_path: Path) -> None:
+    """When no persona/objective given, the CoworkerAgent call omits those kwargs."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "my_coworker2",
+            "--dir", str(tmp_path),
+            "--target", "apps",
+            "--template", "coworker",
+            "--catalog", "main", "--schema", "sales",
+            "--no-interactive",
+            "--no-yaml",
+        ],
+        catch_exceptions=False,
+        env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
+    )
+    assert result.exit_code == 0, result.output
+    agent_src = (tmp_path / "my_coworker2" / "agent.py").read_text()
+    assert "persona=" not in agent_src
+    assert "objective=" not in agent_src
+
+
+def test_scaffold_interactive_prompts_for_catalog_schema_persona(tmp_path: Path) -> None:
+    """``--interactive`` prompts for catalog, schema, and persona for coworker.
+
+    Without a real workspace (gated to None), catalog list is empty → falls to
+    free-text prompts. The runner injects "main\\n" for catalog, "sales\\n" for
+    schema, and "payroll analyst\\n" for persona.
+    """
+    runner = CliRunner()
+    with patch("apx_agent.cli._gate_workspace_for_scaffold", return_value=None):
+        result = runner.invoke(
+            main,
+            [
+                "agents", "scaffold", "interactive_agent",
+                "--dir", str(tmp_path),
+                "--target", "apps",
+                "--template", "coworker",
+                "--interactive",
+                "--no-yaml",
+            ],
+            # catalog, schema, persona, join_key (blank), objective (blank)
+            input="main\nsales\npayroll analyst\n\n\n",
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0, result.output
+    agent_src = (tmp_path / "interactive_agent" / "agent.py").read_text()
+    assert "payroll analyst" in agent_src
+
+
+def test_scaffold_no_interactive_skips_prompts(tmp_path: Path) -> None:
+    """``--no-interactive`` skips prompting even with missing catalog/schema."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "silent_agent",
+            "--dir", str(tmp_path),
+            "--target", "apps",
+            "--no-interactive",
+            "--no-yaml",
+        ],
+        catch_exceptions=False,
+        env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
+    )
+    # Falls through to auto-detect (which returns samples.nyctaxi when no ws).
+    assert result.exit_code == 0, result.output
+
+
+def test_start_server_loads_agent_config_for_session(tmp_path: Path) -> None:
+    """start_server.py must call _load_agent_config() so [tool.apx.agent.session]
+    in pyproject.toml is respected — not just agent-constructor memory=."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["agents", "scaffold", "sess_agent", "--target", "apps", "--dir", str(tmp_path), "--no-yaml"],
+    )
+    assert result.exit_code == 0, result.output
+
+    start_server = (tmp_path / "sess_agent" / "agent_server" / "start_server.py").read_text()
+    # The config must be loaded from pyproject.toml and passed to resolve_conversation_store.
+    assert "_load_agent_config" in start_server
+    assert "resolve_conversation_store(_agent_config" in start_server

@@ -6,7 +6,7 @@ calls to the remote agent.
 
 Prefers ``DatabricksOpenAI.responses.create(model="apps/<name>")`` for
 automatic OBO token forwarding through the Supervisor gateway. Falls
-back to direct ``POST /responses`` when the app name cannot be resolved.
+back to direct ``POST /invocations`` when the app name cannot be resolved.
 
 Extends ``BaseAgent`` so it can be composed in ``SequentialAgent``,
 ``ParallelAgent``, ``RouterAgent``, or ``HandoffAgent``.
@@ -31,7 +31,7 @@ import json as _json
 import logging
 import os
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from fastapi import Request
@@ -40,6 +40,51 @@ from ._agents import BaseAgent
 from ._models import AgentCard, AgentTool, A2ASkill, Message
 
 logger = logging.getLogger(__name__)
+
+
+# Host suffixes whose origins are trusted to receive a forwarded OBO token,
+# even when they differ from the configured ``card_url`` origin. Covers the
+# ``from_app_name`` case where the card is fetched from the workspace host but
+# ``card.url`` points at the app's own ``*.databricksapps.com`` address.
+_TRUSTED_HOST_SUFFIXES = (".databricksapps.com",)
+
+
+def _default_port(scheme: str) -> int:
+    return 443 if scheme == "https" else 80
+
+
+def _trusted_origin(candidate: str, configured: str) -> bool:
+    """True if ``candidate``'s origin is safe to forward credentials to.
+
+    Safe means the origin matches the operator-supplied ``configured`` origin
+    (same scheme + host + port), or its host falls under a trusted Databricks
+    Apps suffix. A scheme downgrade (https → http) or alternate port of the same
+    host is treated as untrusted.
+    """
+    try:
+        c = urlparse(candidate if "://" in candidate else f"https://{candidate}")
+        ref = urlparse(configured if "://" in configured else f"https://{configured}")
+    except Exception:
+        return False
+    if not c.hostname:
+        return False
+
+    same_origin = (
+        c.scheme == ref.scheme
+        and c.hostname == ref.hostname
+        and (c.port or _default_port(c.scheme)) == (ref.port or _default_port(ref.scheme))
+    )
+    if same_origin:
+        return True
+
+    # Trusted Databricks Apps host, but only over https (never accept a downgrade).
+    if c.scheme == "https" and any(
+        c.hostname == suffix.lstrip(".") or c.hostname.endswith(suffix)
+        for suffix in _TRUSTED_HOST_SUFFIXES
+    ):
+        return True
+
+    return False
 
 
 def _url_to_app_name(url: str) -> str | None:
@@ -137,12 +182,13 @@ class RemoteDatabricksAgent(BaseAgent):
 
         Raises ``ValueError`` if ``DATABRICKS_HOST`` is not set.
         """
-        host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
+        host = os.environ.get("DATABRICKS_HOST")
         if not host:
             raise ValueError(
                 "RemoteDatabricksAgent.from_app_name requires DATABRICKS_HOST. "
                 "Use from_card_url() with a full URL instead."
             )
+        host = host.rstrip("/")
         card_url = f"{host}/apps/{app_name}/.well-known/agent.json"
         agent = cls(card_url, app_name=app_name, headers=headers, timeout=timeout)
         await agent.init()
@@ -180,9 +226,23 @@ class RemoteDatabricksAgent(BaseAgent):
             ],
         )
 
-        # Update base URL from card if provided
+        # Update base URL from card only when the card's origin is trusted
+        # (matches the configured card_url origin or a Databricks Apps host).
+        # A malicious card could otherwise redirect the forwarded OBO token to
+        # an arbitrary host, so an untrusted card.url is ignored.
         if self._card.url:
-            self._base_url = self._card.url.rstrip("/")
+            candidate = self._card.url.rstrip("/")
+            if _trusted_origin(candidate, self._card_url):
+                self._base_url = candidate
+            else:
+                logger.warning(
+                    "Ignoring card.url %s for %s: origin differs from configured "
+                    "card_url %s and is not a trusted host; keeping %s",
+                    candidate,
+                    self._card.name,
+                    self._card_url,
+                    self._base_url,
+                )
 
         # Try to infer app name if not already set
         if not self._app_name:
@@ -234,7 +294,7 @@ class RemoteDatabricksAgent(BaseAgent):
                     exc,
                 )
 
-        # Fallback: direct POST /responses
+        # Fallback: direct POST /invocations
         return await self._call_via_http(messages, obo_headers)
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
@@ -290,9 +350,24 @@ class RemoteDatabricksAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _obo_headers(self, request: Request) -> dict[str, str]:
-        """Extract OBO-relevant headers from the incoming request."""
+        """Extract OBO-relevant headers from the incoming request.
+
+        Credential headers (the user's OBO token) are only forwarded when the
+        outbound ``_base_url`` is a trusted origin relative to the operator-
+        supplied ``card_url``. This is defense-in-depth against a base URL that
+        was redirected to an untrusted host.
+        """
         headers = dict(self._extra_headers)
+        forward_credentials = _trusted_origin(self._base_url, self._card_url)
+        if not forward_credentials:
+            logger.warning(
+                "Not forwarding OBO credentials to untrusted base_url %s (configured card_url %s)",
+                self._base_url,
+                self._card_url,
+            )
         for key in ("Authorization", "X-Forwarded-Access-Token", "X-Forwarded-Host"):
+            if not forward_credentials and key in ("Authorization", "X-Forwarded-Access-Token"):
+                continue
             value = request.headers.get(key, "")
             if value:
                 headers[key] = value
@@ -316,10 +391,12 @@ class RemoteDatabricksAgent(BaseAgent):
         # list of InputContent parts and drops a plain string.
         response = await client.responses.create(
             model=f"apps/{self._app_name}",
-            input=[
-                {"role": m.role, "content": m.content}
-                for m in messages
-            ],
+            # The EasyInputMessage dict form (above comment) is intentional; the
+            # openai stub types `input` narrowly, so cast past it.
+            input=cast(
+                Any,
+                [{"role": m.role, "content": m.content} for m in messages],
+            ),
         )
         return response.output_text
 
@@ -332,7 +409,7 @@ class RemoteDatabricksAgent(BaseAgent):
         messages: list[Message],
         headers: dict[str, str],
     ) -> str:
-        """Direct POST /responses fallback."""
+        """Direct POST /invocations fallback."""
         from httpx import AsyncClient
 
         payload = {
@@ -341,7 +418,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
         async with AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
-                f"{self._base_url}/responses",
+                f"{self._base_url}/invocations",
                 json=payload,
                 headers={"Content-Type": "application/json", **headers},
             )
@@ -362,7 +439,7 @@ class RemoteDatabricksAgent(BaseAgent):
         messages: list[Message],
         headers: dict[str, str],
     ) -> AsyncGenerator[str, None]:
-        """Direct POST /responses with stream=true, parsing SSE."""
+        """Direct POST /invocations with stream=true, parsing SSE."""
         from httpx import AsyncClient
 
         payload = {
@@ -373,7 +450,7 @@ class RemoteDatabricksAgent(BaseAgent):
         async with AsyncClient(timeout=self._timeout) as client:
             async with client.stream(
                 "POST",
-                f"{self._base_url}/responses",
+                f"{self._base_url}/invocations",
                 json=payload,
                 headers={
                     "Content-Type": "application/json",

@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
-from typing import Annotated, Any, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, NamedTuple, get_args, get_origin, get_type_hints
 
 from fastapi import params
 from pydantic import BaseModel, create_model
 
 from ._models import AgentConfig, _ToolFn
+
+
+class ToolSignature(NamedTuple):
+    plain_params: dict[str, tuple[Any, Any]]
+    dep_param_names: list[str]
 
 
 def _is_fastapi_dependency(annotation: Any) -> bool:
@@ -19,7 +24,7 @@ def _is_fastapi_dependency(annotation: Any) -> bool:
     return any(isinstance(arg, params.Depends) for arg in get_args(annotation))
 
 
-def _inspect_tool_fn(fn: _ToolFn) -> tuple[dict[str, tuple[Any, Any]], list[str]]:
+def _inspect_tool_fn(fn: _ToolFn) -> ToolSignature:
     """Inspect a tool function's signature.
 
     Returns:
@@ -43,7 +48,7 @@ def _inspect_tool_fn(fn: _ToolFn) -> tuple[dict[str, tuple[Any, Any]], list[str]
             default = param.default if param.default is not inspect.Parameter.empty else ...
             plain_params[name] = (annotation, default)
 
-    return plain_params, dep_param_names
+    return ToolSignature(plain_params=plain_params, dep_param_names=dep_param_names)
 
 
 def _make_input_model(fn: _ToolFn, plain_params: dict[str, tuple[Any, Any]]) -> type[BaseModel] | None:

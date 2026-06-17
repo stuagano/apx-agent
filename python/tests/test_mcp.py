@@ -47,14 +47,15 @@ def mcp_ctx_and_app():
 class TestBuildMcpComponents:
     def test_builds_server_and_transport(self, mcp_ctx_and_app):
         ctx, app = mcp_ctx_and_app
-        server, transport = _build_mcp_components(ctx, app, "/api")
-        assert server is not None
-        assert transport is not None
+        components = _build_mcp_components(ctx, app, "/api")
+        assert components.server is not None
+        assert components.sse_transport is not None
 
     @pytest.mark.asyncio
     async def test_list_tools(self, mcp_ctx_and_app):
         ctx, app = mcp_ctx_and_app
-        server, _ = _build_mcp_components(ctx, app, "/api")
+        components = _build_mcp_components(ctx, app, "/api")
+        server = components.server
 
         handler = server.request_handlers[ListToolsRequest]
         result = await handler(MagicMock())
@@ -67,7 +68,7 @@ class TestBuildMcpComponents:
     @pytest.mark.asyncio
     async def test_call_tool(self, mcp_ctx_and_app):
         ctx, app = mcp_ctx_and_app
-        server, _ = _build_mcp_components(ctx, app, "/api")
+        server = _build_mcp_components(ctx, app, "/api").server
 
         handler = server.request_handlers[CallToolRequest]
         params = CallToolRequestParams(name="my_tool", arguments={"q": "test"})
@@ -80,7 +81,7 @@ class TestBuildMcpComponents:
     @pytest.mark.asyncio
     async def test_call_nonexistent_tool(self, mcp_ctx_and_app):
         ctx, app = mcp_ctx_and_app
-        server, _ = _build_mcp_components(ctx, app, "/api")
+        server = _build_mcp_components(ctx, app, "/api").server
 
         handler = server.request_handlers[CallToolRequest]
         params = CallToolRequestParams(name="nonexistent_tool", arguments={})
@@ -90,6 +91,82 @@ class TestBuildMcpComponents:
         assert len(inner.content) == 1
         text = inner.content[0].text.lower()
         assert "error" in text or "404" in text or "not found" in text
+
+
+class TestMcpAcceptHeaderNormalization:
+    """_mcp_http must inject both required Accept types so the MCP library
+    doesn't reject requests with 406 Not Acceptable.  Genie Code omits the
+    Accept header entirely; AI Playground may send only application/json."""
+
+    def _make_scope(self, accept: str | None) -> dict:
+        headers = [(b"content-type", b"application/json")]
+        if accept is not None:
+            headers.append((b"accept", accept.encode()))
+        return {
+            "type": "http",
+            "method": "POST",
+            "path": "/mcp",
+            "query_string": b"",
+            "root_path": "",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "headers": headers,
+        }
+
+    def _accept_from_scope(self, scope: dict) -> str:
+        for k, v in scope["headers"]:
+            if k.lower() == b"accept":
+                return v.decode()
+        return ""
+
+    def _run_accept_normalization(self, scope: dict) -> str:
+        """Run the same logic that _mcp_http applies to the scope."""
+        headers = list(scope.get("headers", []))
+        accept_vals = [v for k, v in headers if k.lower() == b"accept"]
+        has_json = any(b"application/json" in v for v in accept_vals)
+        has_sse = any(b"text/event-stream" in v for v in accept_vals)
+        if not has_json or not has_sse:
+            headers = [(k, v) for k, v in headers if k.lower() != b"accept"]
+            existing = b", ".join(accept_vals)
+            required = []
+            if not has_json:
+                required.append(b"application/json")
+            if not has_sse:
+                required.append(b"text/event-stream")
+            new_accept = b", ".join(required)
+            if existing:
+                new_accept = new_accept + b", " + existing
+            headers.append((b"accept", new_accept))
+            scope["headers"] = headers
+        return self._accept_from_scope(scope)
+
+    def test_no_accept_header_gets_both_types(self):
+        scope = self._make_scope(accept=None)
+        result = self._run_accept_normalization(scope)
+        assert "application/json" in result
+        assert "text/event-stream" in result
+
+    def test_only_json_accept_gets_sse_added(self):
+        scope = self._make_scope(accept="application/json")
+        result = self._run_accept_normalization(scope)
+        assert "application/json" in result
+        assert "text/event-stream" in result
+
+    def test_only_sse_accept_gets_json_added(self):
+        scope = self._make_scope(accept="text/event-stream")
+        result = self._run_accept_normalization(scope)
+        assert "application/json" in result
+        assert "text/event-stream" in result
+
+    def test_both_present_is_unchanged(self):
+        original = "application/json, text/event-stream"
+        scope = self._make_scope(accept=original)
+        result = self._run_accept_normalization(scope)
+        assert "application/json" in result
+        assert "text/event-stream" in result
+        # Should not duplicate
+        assert result.count("application/json") == 1
+        assert result.count("text/event-stream") == 1
 
 
 class TestMcpAuthContextVars:

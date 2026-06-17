@@ -11,16 +11,23 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from ._models import (
+    AfterAgentCallback,
     AfterModelHook,
     AfterToolHook,
     AgentContext,
     AgentTool,
+    BeforeAgentCallback,
     BeforeModelHook,
     BeforeToolHook,
     InputGuardrailFn,
+    MemoryBackendConfig,
     Message,
+    OnModelErrorCallback,
+    OnToolErrorCallback,
     OutputGuardrailFn,
+    SessionBackendConfig,
     _ToolFn,
+    normalize_memory_knob,
 )
 from ._inspection import (
     _inspect_tool_fn,
@@ -31,6 +38,8 @@ from ._inspection import (
 )
 
 logger = logging.getLogger(__name__)
+
+_UNSET_ENV = ""  # env var expansion: unset sub-agent URL vars resolve to empty
 
 
 class BaseAgent:
@@ -94,6 +103,8 @@ class LlmAgent(BaseAgent):
         tools: list[_ToolFn],
         sub_agents: list[str] | None = None,
         instructions: str = "",
+        instruction: str = "",
+        description: str = "",
         temperature: float | None = None,
         max_tokens: int | None = None,
         max_iterations: int | None = None,
@@ -101,25 +112,47 @@ class LlmAgent(BaseAgent):
         after_tool: AfterToolHook | None = None,
         before_model: BeforeModelHook | None = None,
         after_model: AfterModelHook | None = None,
+        before_tool_callback: BeforeToolHook | None = None,
+        after_tool_callback: AfterToolHook | None = None,
+        before_model_callback: BeforeModelHook | None = None,
+        after_model_callback: AfterModelHook | None = None,
+        before_agent_callback: BeforeAgentCallback | None = None,
+        after_agent_callback: AfterAgentCallback | None = None,
+        on_model_error_callback: OnModelErrorCallback | None = None,
+        on_tool_error_callback: OnToolErrorCallback | None = None,
         input_guardrails: list[InputGuardrailFn] | None = None,
         output_guardrails: list[OutputGuardrailFn] | None = None,
         context_window_tokens: int | None = None,
         name: str | None = None,
+        memory: str = "off",
     ) -> None:
         self._tool_fns = tools
         self._sub_agent_urls = sub_agents or []
-        self._instructions = instructions
+        self._instructions = instructions or instruction
+        self._description = description
         self._name = name
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._max_iterations = max_iterations
-        self._before_tool = before_tool
-        self._after_tool = after_tool
-        self._before_model = before_model
-        self._after_model = after_model
+        self._before_tool = before_tool_callback or before_tool
+        self._after_tool = after_tool_callback or after_tool
+        self._before_model = before_model_callback or before_model
+        self._after_model = after_model_callback or after_model
+        self._before_agent_callback = before_agent_callback
+        self._after_agent_callback = after_agent_callback
+        self._on_model_error_callback = on_model_error_callback
+        self._on_tool_error_callback = on_tool_error_callback
         self._input_guardrails = input_guardrails or []
         self._output_guardrails = output_guardrails or []
         self._context_window_tokens = context_window_tokens
+        self.memory_config: MemoryBackendConfig | None
+        self.session_config: SessionBackendConfig | None
+        self.memory_config, self.session_config = normalize_memory_knob(
+            memory,
+            catalog=getattr(self, "catalog", None),
+            schema=getattr(self, "schema", None),
+            name=self._name,
+        )
 
         # Pre-analyze all functions at construction time
         self._analyzed: list[tuple[_ToolFn, dict[str, Any], list[str], type[BaseModel] | None]] = []
@@ -142,9 +175,17 @@ class LlmAgent(BaseAgent):
                 return result
         return None
 
+    async def _invoke_callback(self, callback: Any, *args: Any) -> None:
+        if callback is None:
+            return
+        result = callback(*args)
+        if inspect.isawaitable(result):
+            await result
+
     async def run(self, messages: list[Message], request: Request) -> str:
         from ._compile_run import run_via_compile
 
+        await self._invoke_callback(self._before_agent_callback, messages)
         if rejection := await self._apply_input_guardrails(messages):
             return rejection
         text = await run_via_compile(
@@ -152,11 +193,13 @@ class LlmAgent(BaseAgent):
         )
         if replacement := await self._apply_output_guardrails(text):
             return replacement
+        await self._invoke_callback(self._after_agent_callback, text)
         return text
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
         from ._compile_run import stream_via_compile
 
+        await self._invoke_callback(self._before_agent_callback, messages)
         if rejection := await self._apply_input_guardrails(messages):
             yield rejection
             return
@@ -173,6 +216,7 @@ class LlmAgent(BaseAgent):
         # Callers requiring full replacement should use run() instead of stream().
         if replacement := await self._apply_output_guardrails(full_text):
             yield f"\n\n---\n**[Content filtered]** {replacement}"
+        await self._invoke_callback(self._after_agent_callback, full_text)
 
     def build_router(self) -> APIRouter:
         """Build an APIRouter with a POST route for each tool."""
@@ -191,6 +235,18 @@ class LlmAgent(BaseAgent):
 
     def get_tool_routers(self) -> list[APIRouter]:
         return [self.build_router()]
+
+    def _register_tool(self, fn: _ToolFn) -> None:
+        """Append a tool post-construction, keeping _tool_fns and _analyzed in sync.
+
+        Run-time compile reads _tool_fns; collect_tools()/build_router() read
+        _analyzed. Both must grow together or a tool added after __init__ is
+        invisible to the A2A card / MCP surface / per-tool routes.
+        """
+        self._tool_fns.append(fn)
+        plain_params, dep_names = _inspect_tool_fn(fn)
+        input_model = _make_input_model(fn, plain_params)
+        self._analyzed.append((fn, plain_params, dep_names, input_model))
 
     def collect_tools(self) -> list[AgentTool]:
         return [
@@ -226,7 +282,7 @@ class LlmAgent(BaseAgent):
             for raw_url in self._sub_agent_urls:
                 if raw_url.startswith("$"):
                     var_name = raw_url.lstrip("$").strip("{}")
-                    url = os.environ.get(var_name, "")
+                    url = os.environ.get(var_name, _UNSET_ENV)
                     if not url:
                         logger.warning(f"sub_agent env var {var_name} not set — skipping")
                         continue
@@ -466,17 +522,54 @@ class _TransferBody(BaseModel):
     context: str = ""
 
 
+def _normalize_router_agents(
+    agents: list[tuple[str, str, "BaseAgent"]] | list["BaseAgent"],
+) -> list[tuple[str, str, "BaseAgent"]]:
+    """Normalize either form to ``[(name, description, agent), ...]``."""
+    if not agents:
+        raise ValueError("RouterAgent requires at least one agent")
+    if isinstance(agents[0], tuple):
+        return agents  # type: ignore[return-value]
+    routes: list[tuple[str, "BaseAgent", "BaseAgent"]] = []
+    for agent in agents:
+        name = getattr(agent, "_name", None)
+        if not name:
+            raise ValueError(
+                "RouterAgent: each agent must have name= set when passed as a list. "
+                f"Got {agent!r} with no name."
+            )
+        desc = getattr(agent, "_description", "") or f"Routes to the {name} agent."
+        routes.append((name, desc, agent))  # type: ignore[arg-type]
+    return routes  # type: ignore[return-value]
+
+
 class RouterAgent(BaseAgent):
-    """Routes to one of several sub-agents based on a single LLM routing call."""
+    """Routes to one of several sub-agents based on a single LLM routing call.
+
+    Accepts either an explicit ``(name, description, agent)`` triple list, or a
+    plain ``list[BaseAgent]`` where each agent supplies its own ``name`` and
+    ``description``::
+
+        billing = Agent(
+            name="billing",
+            description="Handles billing questions and invoice disputes.",
+            tools=[lookup_invoice],
+        )
+        support = Agent(
+            name="support",
+            description="Answers product and technical support questions.",
+            tools=[search_docs],
+        )
+
+        router = RouterAgent(agents=[billing, support])
+    """
 
     def __init__(
         self,
-        agents: list[tuple[str, str, BaseAgent]],
+        agents: list[tuple[str, str, BaseAgent]] | list[BaseAgent],
         instructions: str = "",
     ) -> None:
-        if not agents:
-            raise ValueError("RouterAgent requires at least one agent")
-        self._routes = agents
+        self._routes = _normalize_router_agents(agents)
         self._instructions = instructions
 
     def _transfer_tool_schemas(self) -> list[dict[str, Any]]:
@@ -574,20 +667,51 @@ class RouterAgent(BaseAgent):
         return tools
 
 
+def _normalize_handoff_agents(
+    agents: dict[str, "LlmAgent"] | list["LlmAgent"],
+) -> dict[str, "LlmAgent"]:
+    """Normalize either form to ``{name: agent}``."""
+    if isinstance(agents, dict):
+        return agents
+    result: dict[str, "LlmAgent"] = {}
+    for agent in agents:
+        name = getattr(agent, "_name", None)
+        if not name:
+            raise ValueError(
+                "HandoffAgent: each agent must have name= set when passed as a list. "
+                f"Got {agent!r} with no name."
+            )
+        result[name] = agent
+    return result
+
+
 class HandoffAgent(BaseAgent):
-    """Multi-agent system where each agent can hand off control to another mid-conversation."""
+    """Multi-agent system where each agent can hand off control to another mid-conversation.
+
+    Accepts either a ``{name: agent}`` dict or a plain ``list[LlmAgent]``
+    where each agent supplies its own ``name``::
+
+        triage = Agent(name="triage", description="Classifies incoming requests.", tools=[...])
+        billing = Agent(name="billing", description="Handles billing questions.", tools=[...])
+        support = Agent(name="support", description="Answers product questions.", tools=[...])
+
+        agent = HandoffAgent(agents=[triage, billing, support], start="triage")
+    """
 
     TRANSFER_PREFIX = "transfer_to_"
 
     def __init__(
         self,
-        agents: dict[str, LlmAgent],
-        start: str,
+        agents: dict[str, LlmAgent] | list[LlmAgent],
+        start: str | None = None,
         max_handoffs: int = 5,
     ) -> None:
-        if start not in agents:
+        agents_dict = _normalize_handoff_agents(agents)
+        if start is None:
+            start = next(iter(agents_dict))
+        if start not in agents_dict:
             raise ValueError(f"HandoffAgent start='{start}' not found in agents dict")
-        self._agents = agents
+        self._agents = agents_dict
         self._start = start
         self._max_handoffs = max_handoffs
 
@@ -595,7 +719,9 @@ class HandoffAgent(BaseAgent):
         return [
             AgentTool(
                 name=f"{self.TRANSFER_PREFIX}{name}",
-                description=f"Hand off to the {name} agent.",
+                description=(
+                    getattr(sub, "_description", "") or f"Hand off to the {name} agent."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -607,7 +733,7 @@ class HandoffAgent(BaseAgent):
                     "required": [],
                 },
             )
-            for name in self._agents
+            for name, sub in self._agents.items()
             if name != current_name
         ]
 

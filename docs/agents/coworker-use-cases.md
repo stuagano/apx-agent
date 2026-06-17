@@ -1,0 +1,170 @@
+# Coworker Agent Use Cases — Joining Disparate Systems
+
+The core value of the `CoworkerAgent` class is **the join**: two systems of record
+that each own half the truth, joined on a business entity, answering a question
+neither system can answer alone.
+
+## What the CoworkerAgent actually is
+
+`CoworkerAgent` **is a** `DataAgent` (subclass, not a wrapper — see
+`python/src/apx_agent/coworker.py`). It adds three identity knobs and one
+memory knob on top of `DataAgent`:
+
+1. **`persona`** — a plain string woven into the grounded instructions the
+   `DataAgent` already builds from the schema. There is no separate
+   `PersonalityConfig` class.
+2. **`join_key`** — the business entity linking the two source systems
+   (e.g. `"employee ID"`, `"opportunity ID"`). Folded into the objective so
+   the agent knows which field to join on across landed tables.
+3. **`objective`** — what this agent is designed to do. Combined with
+   `join_key` when both are given.
+4. **`memory`** — a one-word tier knob: `"off"` (default) / `"inmemory"` /
+   `"persistent"` (UC Delta) / `"delta"`. It normalizes into
+   `MemoryBackendConfig` + `SessionBackendConfig` carried as declared config;
+   the framework's finalize/serve path does the wiring, so construction needs
+   no `ws`. `memory="lakebase"` deliberately raises — production pgvector
+   needs explicit `[tool.apx.agent.memory]` / `[tool.apx.agent.session]`
+   blocks, because the one-word knob can't carry connection details.
+
+```python
+agent = CoworkerAgent(
+    "main", "payroll",
+    persona="a payroll operations analyst",
+    join_key="employee ID",
+    objective="surface mismatches between hours worked and paychecks issued",
+    memory="persistent",
+)
+```
+
+The declarative surface is **TOML, not YAML**: `[tool.apx.agent]` in
+`pyproject.toml`. Two ways to get a coworker:
+
+- **Code-first** — `apx-agent agents scaffold --template coworker` generates an `agent.py`
+  with the one-liner above.
+- **Config-first (template-as-config)** — `CoworkerTemplate`
+  (`name = "coworker"`) exposes a pydantic `Spec` (`catalog`, `schema`,
+  `warehouse_id`, `persona`, `join_key`, `objective`, `memory`, `genie_space`,
+  `vector_index`, `include_functions`); `build(spec)` constructs the
+  `CoworkerAgent`. The Spec is the entire declarative surface.
+
+**Mental model:** `CoworkerAgent = DataAgent + persona + join_key + objective` —
+pre-grounded in the schema (it already knows the tables/columns), knows which
+field links the two source systems, and remembers across turns (facts +
+session). Default memory works with zero infra; Lakebase is an upgrade, never
+a prerequisite.
+
+## The outline and the colors
+
+The template is the **outline**; the data **fills in the colors**. The
+template never contains data — it *points* at it. The Spec holds the shape of
+the coworker (persona, memory, which tools); `catalog`/`schema` are a
+reference to a UC schema that lives next to, and separate from, the template.
+
+That separation is the whole GTM story: the two source systems land in the
+lakehouse first (Lakeflow Connect or whatever ingestion you have — Kronos and
+Workday tables side by side in one UC schema), and the coworker is grounded
+over the *joined landing zone*. The join the agent reasons about is a join the
+lakehouse already made physically possible.
+
+So every use case below is **the same outline, different colors**:
+
+```toml
+# Payroll coworker — Kronos × Workday
+[tool.apx.agent]
+template   = "coworker"
+catalog    = "main"
+schema     = "payroll"        # Kronos + Workday landed tables
+persona    = "a payroll operations analyst"
+join_key   = "employee ID"
+objective  = "surface mismatches between hours worked and paychecks issued"
+memory     = "persistent"
+```
+
+```toml
+# Quote-to-Cash coworker — Salesforce × NetSuite: SAME template
+[tool.apx.agent]
+template   = "coworker"
+catalog    = "main"
+schema     = "revops"         # Salesforce + NetSuite landed tables
+persona    = "a revenue operations analyst"
+join_key   = "opportunity ID"
+objective  = "identify revenue leakage between closed deals and invoiced amounts"
+memory     = "persistent"
+```
+
+Nothing else changes. One template, six coworkers — the Spec fields are the
+blanks, the customer's schema and persona are the fill. That's why the
+use-case list below can grow without any new code: a new use case is a new
+pair of landed systems plus a one-paragraph persona, not a new agent class.
+
+**The pattern:** the join key is a business entity (employee, deal, asset,
+shipment, encounter), each system is authoritative for half the record, and the
+expensive human workflow today is a person doing the join manually — tabbing
+between two screens.
+
+## Reference example
+
+### Payroll Agent — Kronos × Workday
+
+- **Join key:** employee ID
+- **System A (Kronos):** time and attendance — what hours were actually worked
+- **System B (Workday):** HR and payroll — what the employee should be paid
+- **Question only the join answers:** "Why doesn't this paycheck match the
+  hours worked, and which punches or pay rules caused the discrepancy?"
+
+## Five more
+
+### 1. Quote-to-Cash Agent — Salesforce × NetSuite
+
+- **Join key:** account / opportunity → invoice
+- **Salesforce:** what was sold and on what terms
+- **NetSuite:** what was billed and collected
+- **Question:** "Did the deal we closed actually invoice at the negotiated
+  discount, and why is this customer 60 days past due on a contract Sales
+  thinks is healthy?" Revenue leakage lives exactly in that gap.
+
+### 2. Onboarding/Offboarding Agent — Workday × Okta (or AD)
+
+- **Join key:** employee ID
+- **Workday:** employment status, start/term dates
+- **Okta/AD:** what access actually exists
+- **Question:** "Which day-one new hires have no accounts — and which
+  terminated contractors still have access?" The second one is a
+  compliance/audit story, not just convenience.
+
+### 3. Warranty & Entitlement Agent — ServiceNow × SAP
+
+- **Join key:** customer / asset serial number
+- **ServiceNow:** what broke, what the customer is asking for
+- **SAP:** contract, warranty terms, parts inventory
+- **Question:** "Is this repair covered, do we have the part, and what should
+  the customer actually pay?" Today that's a support rep tabbing between two
+  screens.
+
+### 4. Order-Status Agent — Oracle ERP × project44/FourKites (TMS)
+
+- **Join key:** PO / shipment number
+- **Oracle ERP:** what was ordered and invoiced
+- **TMS:** where the freight physically is
+- **Question:** "Where's my order, will it hit the dock date, and does the
+  carrier invoice match the rate on the PO?" Three-way match plus live
+  tracking in one conversation.
+
+### 5. Claims Integrity Agent — Epic × claims/clearinghouse
+
+- **Join key:** patient encounter
+- **Epic (EHR):** what care was documented
+- **Claims system:** what was coded, submitted, and denied
+- **Question:** "Why was this claim denied, and is the supporting
+  documentation actually in the chart?" Denial management is a huge labor
+  line item and it's purely a cross-system reconciliation problem.
+
+## Why this sells
+
+- **Mismatch detection is the product.** The agent isn't summarizing either
+  system — it's surfacing disagreements between them: unbilled deals,
+  unrevoked access, denied-but-documented claims. Mismatches quantify
+  directly in dollars, so the business case slide writes itself.
+- **Memory compounds the value.** The `CoworkerAgent`'s persistent memory
+  learns account-specific mapping quirks (this customer's PO format, this
+  carrier's reference codes), so the join gets cheaper every time.

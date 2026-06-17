@@ -34,10 +34,13 @@ Or via dependency injection (no explicit ws needed):
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementResponse
+
+from ._mlflow_tracing import emit_progress, safe_span
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +77,77 @@ def get_warehouse_id(ws: WorkspaceClient, *, prefer_serverless: bool = True) -> 
             fallback = wh.id
     if fallback is not None:
         return fallback
-    raise RuntimeError("No SQL warehouse available in this workspace")
+    workspace_url = getattr(getattr(ws, "config", None), "host", None) or "<your-workspace>"
+    raise RuntimeError(
+        f"No SQL warehouse available in this workspace. "
+        f"Fix: go to {workspace_url}/sql/warehouses → Create Warehouse (choose Serverless). "
+        f"Then set warehouse_id in your agent config or re-deploy."
+    )
+
+
+def _ensure_warehouse_running(
+    ws: WorkspaceClient, warehouse_id: str, *, timeout_s: int = 60
+) -> None:
+    """Best-effort: kick off the warehouse if it's STOPPED and wait until RUNNING.
+
+    Serverless warehouses auto-stop after their idle window; the next query
+    against a stopped warehouse would otherwise queue inside ``execute_statement``
+    and return with a non-SUCCEEDED status after ``wait_timeout`` — surfacing
+    as "Query failed" with no signal *why*. This converts the cold-start into a
+    pre-warm with a logged status so the cold-start is visible, not silent.
+    Idempotent: a RUNNING warehouse is a no-op. Failures are logged + swallowed
+    so we never block the query on the warmup check itself.
+    """
+    try:
+        from databricks.sdk.service.sql import State
+    except Exception:
+        return  # SDK without State enum — skip the warmup check.
+
+    try:
+        wh = ws.warehouses.get(warehouse_id)
+    except Exception as exc:
+        logger.debug("warehouse warmup check failed (%s); proceeding to execute", exc)
+        return
+    if wh.state == State.RUNNING:
+        return
+
+    # Wrap the start+wait in a child span so the cold-start is a visible, timed
+    # step in the trace (otherwise the trace goes silent for ~20-30s).
+    with safe_span(
+        "SQL warehouse cold-start",
+        attributes={"warehouse_id": warehouse_id},
+    ):
+        logger.warning(
+            "SQL warehouse %s is %s — starting it. Serverless cold-start "
+            "typically takes 20-30s; the query will run once it's warm.",
+            warehouse_id, wh.state,
+        )
+        emit_progress(
+            "Starting SQL warehouse — serverless cold-start, ~20-30s",
+            warehouse_id=warehouse_id,
+        )
+        try:
+            ws.warehouses.start(warehouse_id)
+        except Exception as exc:
+            # Start can race (already starting) or fail; either way we'll still
+            # try execute_statement below.
+            logger.debug("warehouses.start raised (continuing): %s", exc)
+
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            time.sleep(2)
+            try:
+                wh = ws.warehouses.get(warehouse_id)
+            except Exception:
+                continue
+            if wh.state == State.RUNNING:
+                logger.info("warehouse %s is now RUNNING", warehouse_id)
+                return
+        logger.warning(
+            "warehouse %s did not reach RUNNING in %ds; proceeding anyway "
+            "(execute_statement will queue)",
+            warehouse_id, timeout_s,
+        )
 
 
 def run_sql(
@@ -87,7 +160,9 @@ def run_sql(
     """Execute a SQL statement and return rows as list of dicts.
 
     If ``warehouse_id`` is not provided, auto-discovers one via
-    ``get_warehouse_id()``.
+    ``get_warehouse_id()``. If the resolved warehouse is stopped, it's started
+    + polled to RUNNING first (with a logged status) so the cold-start is
+    visible rather than hanging silently in ``execute_statement``.
 
     ``parameters`` accepts Databricks SQL bind parameters, e.g.::
 
@@ -100,6 +175,7 @@ def run_sql(
     from databricks.sdk.service.sql import StatementState, StatementParameterListItem
 
     wh_id = warehouse_id or get_warehouse_id(ws)
+    _ensure_warehouse_running(ws, wh_id)
     params = None
     if parameters:
         params = [

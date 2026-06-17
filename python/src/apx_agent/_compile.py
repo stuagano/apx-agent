@@ -19,7 +19,7 @@ Supported agent types and their LangGraph topologies:
   * ``RouterAgent``     → router decision node + conditional edges to targets
   * ``HandoffAgent``    → conditional edges driven by ``transfer_to_*`` tool calls
 
-Requires the ``langgraph`` extra: ``pip install 'apx-agent[langgraph]'``.
+Requires ``langgraph`` (included in apx-agent's required dependencies).
 """
 
 from __future__ import annotations
@@ -34,13 +34,12 @@ from fastapi import params
 # Hoisted so TypedDicts defined inside compile functions (e.g. LoopState) can
 # reference ``Annotated[list, add_messages]``. ``get_type_hints`` evaluates the
 # class body in the module's globals later, not in the function's local scope.
-try:  # pragma: no cover — optional langgraph extra
+from typing_extensions import Annotated, TypedDict
+
+try:  # pragma: no cover — defensive guard
     from langgraph.graph.message import add_messages
-    from typing_extensions import Annotated, TypedDict
 except ImportError:  # pragma: no cover — let downstream code raise on use
     add_messages = None  # type: ignore[assignment]
-    Annotated = None  # type: ignore[assignment]
-    TypedDict = None  # type: ignore[assignment]
 
 from ._agents import (
     BaseAgent,
@@ -53,12 +52,14 @@ from ._agents import (
     SequentialAgent,
 )
 from ._defaults import (
-    _get_request,
+    _get_principal,
+    _get_progress,
     _get_sql_runner,
     _get_user_client,
     _get_workspace_client,
     get_databricks_headers,
 )
+from ._mlflow_tracing import emit_progress
 from ._inspection import _inspect_tool_fn, _make_input_model
 
 if TYPE_CHECKING:
@@ -101,6 +102,8 @@ def _make_dep_resolvers(ctx: CompileContext) -> dict[Any, Any]:
         _get_user_client: ctx.ws,
         get_databricks_headers: ctx.headers,
         _get_sql_runner: (lambda q: run_sql(ctx.ws, q)),
+        _get_principal: (ctx.headers.user_id if ctx.headers else None),  # E3b
+        _get_progress: emit_progress,  # tool progress → trace span events
         # _get_request intentionally omitted: no FastAPI Request inside a
         # compiled graph. Tools needing the raw request can't be compiled
         # without lifting them; we fail loudly if encountered.
@@ -213,21 +216,73 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _build_chat_databricks(endpoint: str) -> Any:
+def _build_chat_databricks(
+    endpoint: str,
+    *,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> Any:
     """Build the ChatDatabricks for an agent's compile path.
 
     Delegates to the public ``get_llm`` factory, which routes by endpoint
     prefix and applies provider-specific quirk defenses (e.g., stripping
     ``temperature``/``top_p`` for GPT-5 family endpoints). See
     ``apx_agent._llm`` for the full provider-compat rationale.
+
+    ``temperature``/``max_tokens`` are forwarded to the underlying client only
+    when set, so ``LlmAgent`` generation knobs take effect. Endpoints that
+    reject a knob (e.g. the GPT-5 reasoning family strips ``temperature``)
+    still drop it defensively inside ``get_llm``.
     """
     from ._llm import get_llm
-    return get_llm(endpoint)
+
+    kwargs: dict[str, Any] = {}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return get_llm(endpoint, **kwargs)
 
 
 # ---------------------------------------------------------------------------
 # Per-agent compilers
 # ---------------------------------------------------------------------------
+
+
+def _governance_exception_middleware() -> Any:
+    """Middleware that converts governance exceptions into tool error results.
+
+    ``before_tool`` guards (Watchdog reject, PolicyGate DENY/ASK) and
+    cancellable tools signal via exceptions — ``PermissionError`` (incl.
+    ``ApprovalRequired``) and ``ToolCancelled``. Without this middleware
+    LangGraph's tool node re-raises them, which kills the WHOLE turn:
+    the user sees a dead stream instead of the agent explaining the
+    rejection and offering an alternative.
+
+    Converting them to error ``ToolMessage``s keeps the loop alive — the
+    LLM reads the reason (the exception message carries it) and can
+    respond. Genuine bugs (TypeError, KeyError, ...) still propagate and
+    fail loud.
+
+    :returns: An ``AgentMiddleware`` for ``create_agent(middleware=[...])``.
+    """
+    from langchain.agents.middleware import wrap_tool_call
+    from langchain_core.messages import ToolMessage
+
+    from ._cancellation import ToolCancelled
+
+    @wrap_tool_call
+    def _convert_governance_errors(request: Any, handler: Any) -> Any:
+        try:
+            return handler(request)
+        except (PermissionError, ToolCancelled) as exc:
+            return ToolMessage(
+                content=f"Error: {exc}",
+                tool_call_id=request.tool_call["id"],
+                status="error",
+            )
+
+    return _convert_governance_errors
 
 
 def _compile_llm_agent(agent: LlmAgent, ctx: CompileContext) -> Any:
@@ -237,18 +292,33 @@ def _compile_llm_agent(agent: LlmAgent, ctx: CompileContext) -> Any:
     from ._callbacks import build_callback_handler
 
     tools = [_make_langchain_tool(fn, ctx) for fn in agent._tool_fns]
-    llm = _build_chat_databricks(ctx.model)
+    llm = _build_chat_databricks(
+        ctx.model,
+        temperature=getattr(agent, "_temperature", None),
+        max_tokens=getattr(agent, "_max_tokens", None),
+    )
     runnable = create_agent(
         model=llm,
         tools=tools,
         system_prompt=agent._instructions or None,
+        middleware=[_governance_exception_middleware()],
     )
+    config: dict[str, Any] = {}
     handler = build_callback_handler(agent)
     if handler is not None:
         # LangChain's with_config propagates callbacks to every chain hop
         # inside the agent (LLM calls + tool calls), which is exactly the
         # surface our hooks want to observe.
-        runnable = runnable.with_config(callbacks=[handler])
+        config["callbacks"] = [handler]
+    max_iter = getattr(agent, "_max_iterations", None)
+    if max_iter:
+        # Each agent round is one LLM superstep plus (optionally) a tool
+        # superstep; allow two graph supersteps per requested iteration so a
+        # tool-calling turn isn't cut off mid-round, plus a small margin for
+        # the terminal answer hop.
+        config["recursion_limit"] = max_iter * 2 + 1
+    if config:
+        runnable = runnable.with_config(**config)
     return runnable
 
 
@@ -446,7 +516,7 @@ def _compile_loop_agent(agent: LoopAgent, ctx: CompileContext) -> Any:
 
     graph = StateGraph(LoopState)
     graph.add_node("agent", inner_node)
-    graph.add_node("check", _check_done_node)
+    graph.add_node("check", _check_done_node)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
     graph.add_edge(START, "agent")
     graph.add_edge("agent", "check")
     graph.add_conditional_edges("check", _route, {"agent": "agent", END: END})
@@ -502,7 +572,7 @@ def _compile_router_agent(agent: RouterAgent, ctx: CompileContext) -> Any:
         return {"chosen": chosen}
 
     graph = StateGraph(RouterState)
-    graph.add_node("router", _router_decision)
+    graph.add_node("router", _router_decision)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
     for name, _, sub in routes:
         graph.add_node(name, _compile_any(sub, ctx))
         graph.add_edge(name, END)
@@ -547,7 +617,7 @@ def _compile_keyword_router(agent: KeywordRouter, ctx: CompileContext) -> Any:
         return {"chosen": chosen}
 
     graph = StateGraph(KeywordRouterState)
-    graph.add_node("router", _keyword_match)
+    graph.add_node("router", _keyword_match)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
     for name, sub, _ in branches:
         graph.add_node(name, _compile_any(sub, ctx))
         graph.add_edge(name, END)
@@ -655,9 +725,9 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
         return END
 
     graph = StateGraph(HandoffState)
-    graph.add_node("__check__", _check_handoff)
+    graph.add_node("__check__", _check_handoff)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
     for name in names:
-        graph.add_node(name, _build_node(name))
+        graph.add_node(name, _build_node(name))  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
         graph.add_edge(name, "__check__")
     graph.add_edge(START, start_name)
     graph.add_conditional_edges(
@@ -699,7 +769,7 @@ def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
 def compile_to_langgraph(
     agent: BaseAgent,
     *,
-    ws: "WorkspaceClient",
+    ws: "WorkspaceClient | None",
     model: str,
     headers: Any | None = None,
 ) -> Any:
@@ -745,5 +815,9 @@ def compile_to_langgraph(
         )
         result = graph.invoke({"messages": [HumanMessage(content=prompt)]})
     """
+    if ws is None:
+        from ._defaults import _make_workspace_client
+
+        ws = _make_workspace_client()
     ctx = CompileContext(ws=ws, model=model, headers=headers)
     return _compile_any(agent, ctx)

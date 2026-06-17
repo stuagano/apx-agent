@@ -207,6 +207,18 @@ def test_auto_create_swallows_ddl_errors(caplog: pytest.LogCaptureFixture) -> No
     assert any("CREATE TABLE" in c for c in sql.calls)
 
 
+def test_auto_create_retries_after_create_table_failure() -> None:
+    """CREATE TABLE failure must not mark _created=True — next call retries."""
+    sql = RecordingSqlExecutor(patterns=[("CREATE TABLE", RuntimeError)])
+    store = DeltaMemoryStore(run_sql=sql)
+    store._ensure_table()
+    assert not store._created, "_created must stay False after CREATE TABLE failure"
+    # A second call should still attempt CREATE TABLE
+    store._ensure_table()
+    create_calls = [c for c in sql.calls if "CREATE TABLE" in c]
+    assert len(create_calls) == 2, "Expected two CREATE TABLE attempts"
+
+
 # ---------------------------------------------------------------------------
 # add / add_batch / MERGE
 # ---------------------------------------------------------------------------
@@ -395,11 +407,21 @@ def test_update_without_content_does_not_reembed() -> None:
 
 
 def test_delete_emits_delete_sql() -> None:
-    sql = RecordingSqlExecutor()
+    # delete() existence-checks first (SELECT), then DELETEs only on a hit.
+    # Seed a matching row so the existence check finds it and returns True.
+    sql = RecordingSqlExecutor(patterns=[(r"^SELECT", [_canned_row()])])
     store = DeltaMemoryStore(run_sql=sql)
     assert store.delete("m1") is True
     delete_sql = [c for c in sql.calls if c.startswith("DELETE FROM")][0]
     assert "WHERE id = 'm1'" in delete_sql
+
+
+def test_delete_returns_false_on_miss() -> None:
+    # No matching row → existence check misses → no DELETE emitted, False.
+    sql = RecordingSqlExecutor(patterns=[(r"^SELECT", [])])
+    store = DeltaMemoryStore(run_sql=sql)
+    assert store.delete("missing") is False
+    assert not any(c.startswith("DELETE FROM") for c in sql.calls)
 
 
 def test_delete_returns_false_on_error() -> None:
@@ -439,10 +461,14 @@ def test_list_emits_all_filter_clauses() -> None:
     assert "LIMIT 42" in select
 
 
-def test_list_returns_empty_on_sql_failure() -> None:
+def test_list_raises_on_sql_failure() -> None:
+    # H21: a swallowed error here would read as "no memories found" to the
+    # recall tool. list() lets infra failures propagate; [] is reserved for a
+    # genuinely empty result set.
     sql = RecordingSqlExecutor(patterns=[(r"^SELECT", RuntimeError)])
     store = DeltaMemoryStore(run_sql=sql)
-    assert store.list(MemoryFilter(principal_id="u1")) == []
+    with pytest.raises(RuntimeError):
+        store.list(MemoryFilter(principal_id="u1"))
 
 
 # ---------------------------------------------------------------------------
@@ -605,3 +631,35 @@ def test_protocol_compliance() -> None:
 
     store = DeltaMemoryStore(run_sql=lambda s: [])
     assert isinstance(store, MemoryStore)
+
+
+class TestEpochToIsoStringInput:
+    """Databricks statement-execution returns numeric columns as STRINGS, so a
+    recalled ``updated_at``/``created_at`` arrives as e.g. ``'1.78e9'``.
+    ``_epoch_to_iso`` must coerce before comparing — regression for recall
+    crashing with "'<=' not supported between instances of 'str' and 'int'"."""
+
+    def test_accepts_plain_string_seconds(self):
+        from apx_agent._memory_delta import _epoch_to_iso
+        out = _epoch_to_iso("1780597237.801")
+        assert out.startswith("2026-") and out.endswith("Z")
+
+    def test_accepts_scientific_string(self):
+        from apx_agent._memory_delta import _epoch_to_iso
+        out = _epoch_to_iso("1.780597237801E9")
+        assert "T" in out and out.endswith("Z")
+
+    def test_garbage_string_falls_back_no_crash(self):
+        from apx_agent._memory_delta import _epoch_to_iso
+        assert _epoch_to_iso("not a number").endswith("Z")
+
+    def test_row_to_memory_with_string_timestamps(self):
+        from apx_agent._memory_delta import _row_to_memory
+        row = {
+            "id": "m1", "principal_id": "u@x", "namespace": "default",
+            "content": "hi", "tags": [], "importance": "0.9",
+            "created_at": "1.78e9", "updated_at": "1.780597237801E9",
+        }
+        m = _row_to_memory(row)  # must not raise
+        assert m.content == "hi" and m.importance == 0.9
+        assert m.updated_at.endswith("Z")

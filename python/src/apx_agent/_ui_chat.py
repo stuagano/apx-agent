@@ -5,20 +5,22 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from ._models import AgentContext
-from ._ui_edit import _find_agent_router_path
-from ._ui_nav import _apx_nav_css, _apx_nav_html, _apx_nav_links, _deploy_overlay_html
+from ._models import AgentContext, AgentTool
+from ._ui_nav import _apx_nav_links, _deploy_overlay_html
 
 
 # Tabs exposed by the unified shell at /_apx/agent. Each entry is
 # (slug, label, iframe URL). The shell defaults to the first tab. To
 # add a tab, append here — the shell auto-renders it and the URL
 # fragment-router handles selection.
+_UNSET_ENV = ""  # optional UI env vars (catalog, warehouse) resolve to empty when not set
+
 _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
     ("chat", "Chat", "/_apx/chat"),
     ("edit", "Edit", "/_apx/edit"),
     ("eval", "Eval", "/_apx/eval"),
-    ("setup", "Setup", "/_apx/setup"),
+    # "setup" is intentionally not a shell tab — its data-source + tool
+    # generation flow is reached from the Edit page's "✨ From data" modal.
     ("probe", "Probe", "/_apx/probe"),
 )
 
@@ -53,16 +55,17 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
       --accent-bg: #0d1f38; --accent-border: #1e3a5f;
     }}
     * {{ box-sizing: border-box; }}
-    html, body {{ margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    html, body {{ margin: 0; height: 100%; display: flex; flex-direction: column;
+                  background: var(--bg); color: var(--text);
                   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; font-size: 13px; }}
-    header {{ height: 52px; padding: 0 16px; display: flex; align-items: center;
-              gap: 16px; background: var(--panel); border-bottom: 1px solid var(--border); }}
+    header {{ height: 52px; padding: 0 16px; display: flex; align-items: center; flex-shrink: 0;
+              gap: 12px; background: var(--panel); border-bottom: 1px solid var(--border); }}
     .badge {{ background: var(--accent-bg); color: var(--accent); font-size: 11px;
               font-weight: 600; padding: 3px 8px; border-radius: 4px; letter-spacing: .5px;
               text-transform: uppercase; }}
     .title {{ display: flex; flex-direction: column; gap: 1px; }}
     .agent-name {{ font-weight: 600; font-size: 14px; }}
-    .agent-desc {{ color: var(--text-muted); font-size: 11px; max-width: 480px;
+    .agent-desc {{ color: var(--text-muted); font-size: 11px; max-width: 360px;
                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
     .tabs {{ display: flex; gap: 2px; margin-left: auto; }}
     .tab {{ font: inherit; color: var(--text-muted); background: transparent;
@@ -77,7 +80,66 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
                  display: inline-flex; align-items: center; gap: 6px; }}
     .util-btn:hover {{ color: var(--text); border-color: #555; }}
     .util-btn .ico {{ font-size: 13px; line-height: 1; }}
-    main {{ height: calc(100% - 52px); background: var(--bg); }}
+    #btn-sidebar-toggle {{ background: none; border: none; color: #555; font-size: 16px;
+                           cursor: pointer; padding: 4px 8px; border-radius: 5px; line-height: 1;
+                           flex-shrink: 0; }}
+    #btn-sidebar-toggle:hover {{ color: #aaa; background: #1a1a1a; }}
+    /* Layout: sidebar + content */
+    .shell-body {{ flex: 1; display: flex; min-height: 0; }}
+    #sidebar {{ width: 220px; flex-shrink: 0; background: #0b0b0b;
+                border-right: 1px solid #1a1a1a; display: flex; flex-direction: column;
+                overflow: hidden; transition: width .18s ease; }}
+    body.sidebar-off #sidebar {{ width: 0; }}
+    #sidebar-scroll {{ flex: 1; overflow-y: auto; padding: 8px 0 16px; }}
+    /* Sidebar identity block */
+    .sb-identity {{ padding: 10px 14px 8px; border-bottom: 1px solid #141414; margin-bottom: 6px; }}
+    .sb-host {{ font-family: ui-monospace,monospace; font-size: 10px; color: #60b0ff;
+                text-decoration: none; display: block; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }}
+    .sb-host:hover {{ text-decoration: underline; }}
+    .sb-user {{ font-size: 10px; color: #444; margin-top: 2px; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }}
+    /* Section label */
+    .sb-section {{ font-size: 10px; color: #3a3a3a; text-transform: uppercase;
+                   letter-spacing: .08em; padding: 10px 14px 4px; }}
+    /* Nav items */
+    .sb-item {{ display: flex; align-items: center; gap: 10px; padding: 7px 14px;
+                cursor: pointer; border-radius: 0; user-select: none;
+                color: #666; font-size: 13px; border: none; background: none;
+                width: 100%; text-align: left; text-decoration: none; }}
+    .sb-item:hover {{ background: #141414; color: #bbb; }}
+    .sb-item.active {{ background: #0d1f38; color: var(--accent); }}
+    .sb-icon {{ width: 18px; flex-shrink: 0; text-align: center; font-size: 14px;
+                line-height: 1; opacity: .75; }}
+    .sb-item:hover .sb-icon, .sb-item.active .sb-icon {{ opacity: 1; }}
+    .sb-label {{ flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    /* Data tree inside sidebar */
+    .sb-tree {{ padding: 0 6px; }}
+    .tree-row {{ display: flex; align-items: center; gap: 7px; padding: 6px 8px;
+                 border-radius: 5px; cursor: pointer; user-select: none; }}
+    .tree-row:hover {{ background: #141414; color: #bbb; }}
+    .tree-chevron {{ flex-shrink: 0; width: 10px; color: #333; transition: transform .15s;
+                     font-size: 9px; line-height: 1; }}
+    .tree-row.open > .tree-chevron {{ transform: rotate(90deg); color: #555; }}
+    .tree-icon {{ flex-shrink: 0; font-size: 13px; line-height: 1; width: 16px;
+                  text-align: center; opacity: .8; }}
+    .tree-name {{ font-family: ui-monospace, monospace; font-size: 11px; flex: 1;
+                  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .tree-cat > .tree-name {{ color: #c9d1d9; font-weight: 500; }}
+    .tree-schemas {{ padding-left: 22px; position: relative; }}
+    .tree-schemas::before {{ content: ''; position: absolute; left: 13px; top: 0;
+                              bottom: 4px; width: 1px; background: #1e1e1e; }}
+    .tree-sch > .tree-name {{ color: #8b949e; }}
+    .tree-tables {{ padding-left: 22px; position: relative; }}
+    .tree-tables::before {{ content: ''; position: absolute; left: 13px; top: 0;
+                             bottom: 4px; width: 1px; background: #191919; }}
+    .tree-tbl {{ display: flex; align-items: center; gap: 7px; padding: 5px 8px;
+                 border-radius: 4px; cursor: pointer; user-select: none; }}
+    .tree-tbl:hover {{ background: #0f1f14; }}
+    .tree-tbl:hover > .tree-name {{ color: #4ade80; }}
+    .tree-tbl > .tree-name {{ color: #3d4a40; font-size: 10px; transition: color .1s; }}
+    .tree-loading {{ padding: 4px 8px; color: #2a2a2a; font-size: 11px; font-style: italic; }}
+    main {{ flex: 1; min-width: 0; background: var(--bg); }}
     iframe {{ width: 100%; height: 100%; border: 0; background: var(--bg); }}
     /* Topology pop-out modal */
     #topo-overlay {{ display: none; position: fixed; inset: 0; z-index: 1500;
@@ -101,6 +163,7 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
 </head>
 <body>
   <header>
+    <button id="btn-sidebar-toggle" title="Toggle sidebar">☰</button>
     <span class="badge">APX dev</span>
     <div class="title">
       <div class="agent-name">{agent_name}</div>
@@ -114,7 +177,18 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
       <span class="ico">⏱</span> Traces
     </a>
   </header>
-  <main><iframe id="dash-frame" src="{default_src}"></iframe></main>
+  <div class="shell-body">
+    <aside id="sidebar">
+      <div id="sidebar-scroll">
+        <div id="sb-identity" class="sb-identity">
+          <div class="sb-user" style="color:#333">Loading…</div>
+        </div>
+        <div class="sb-section">Data</div>
+        <div class="sb-tree"><div id="cat-tree"></div></div>
+      </div>
+    </aside>
+    <main><iframe id="dash-frame" src="{default_src}"></iframe></main>
+  </div>
   <div id="topo-overlay" role="dialog" aria-modal="true" aria-labelledby="topo-title">
     <div id="topo-modal">
       <div id="topo-head">
@@ -146,6 +220,12 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
       }});
       const initial = (location.hash || "#{default_slug}").slice(1);
       selectTab(initial);
+      window._selectTab = selectTab;
+      window._dashFrame = frame;
+      // Sidebar toggle
+      document.getElementById("btn-sidebar-toggle").addEventListener("click", () => {{
+        document.body.classList.toggle("sidebar-off");
+      }});
     }})();
     (function () {{
       const overlay = document.getElementById("topo-overlay");
@@ -165,6 +245,85 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
         if (e.key === "Escape" && overlay.classList.contains("open")) close();
       }});
     }})();
+    // ── Sidebar data ──
+    function selectTable(fqn) {{
+      // Stay on Eval if it's active (it handles apx:table-selected directly).
+      // For all other tabs, navigate to Chat first.
+      const activeSlug = (location.hash || "#{default_slug}").slice(1);
+      if (activeSlug !== "eval" && window._selectTab) window._selectTab("chat");
+      const frame = window._dashFrame || document.getElementById("dash-frame");
+      setTimeout(() => {{
+        frame.contentWindow.postMessage({{type: "apx:table-selected", fqn}}, "*");
+      }}, 150);
+    }}
+    async function loadSidebar() {{
+      try {{
+        const d = await fetch("/_apx/workspace-context").then(r => r.json());
+        const id = document.getElementById("sb-identity");
+        if (id) {{
+          id.innerHTML = `
+            <a class="sb-host" href="${{d.host||'#'}}" target="_blank">${{(d.host||'').replace('https://','')}}</a>
+            <div class="sb-user">${{d.user||''}}</div>`;
+        }}
+        loadCatalogTree(d.used_catalogs||[], d.used_schemas||[]);
+      }} catch(e) {{
+        const id = document.getElementById("sb-identity");
+        if (id) id.innerHTML = '<div class="sb-user">Unavailable</div>';
+      }}
+    }}
+    loadSidebar();
+    function loadCatalogTree(usedCats, usedSchemas) {{
+      const tree = document.getElementById("cat-tree");
+      if (!tree) return;
+      if (!usedCats.length) {{
+        tree.innerHTML = '<div class="tree-loading">No UC resources declared</div>';
+        return;
+      }}
+      // Group schemas by catalog
+      const bycat = {{}};
+      for (const cs of usedSchemas) {{
+        const [cat, sch] = cs.split(".");
+        if (!bycat[cat]) bycat[cat] = [];
+        bycat[cat].push(sch);
+      }}
+      tree.innerHTML = usedCats.map(c => {{
+        const schemas = (bycat[c] || []).map(s => `<div>
+          <div class="tree-row tree-sch" onclick="toggleSchema(this,'${{c}}','${{s}}')">
+            <span class="tree-chevron">›</span>
+            <span class="tree-icon" style="font-size:10px">◫</span>
+            <span class="tree-name">${{s}}</span>
+          </div>
+          <div class="tree-tables" style="display:none"></div>
+        </div>`).join("");
+        return `<div>
+          <div class="tree-row tree-cat open" onclick="this.classList.toggle('open');this.nextElementSibling.style.display=this.classList.contains('open')?'block':'none'">
+            <span class="tree-chevron">›</span>
+            <span class="tree-icon">🗄</span>
+            <span class="tree-name">${{c}}</span>
+          </div>
+          <div class="tree-schemas">${{schemas}}</div>
+        </div>`;
+      }}).join("");
+    }}
+    async function toggleSchema(rowEl, catalog, schema) {{
+      rowEl.classList.toggle("open");
+      const tablesEl = rowEl.nextElementSibling;
+      if (tablesEl.style.display === "none") {{
+        tablesEl.style.display = "block";
+        if (!tablesEl.dataset.loaded) {{
+          tablesEl.dataset.loaded = "1";
+          tablesEl.innerHTML = '<div class="tree-loading">Loading…</div>';
+          try {{
+            const tables = await fetch(`/_apx/setup/tables?catalog=${{catalog}}&schema=${{schema}}`).then(r => r.json());
+            tablesEl.innerHTML = tables.length
+              ? tables.map(t => `<div class="tree-tbl" onclick="selectTable('${{catalog}}.${{schema}}.${{t}}')" title="Ask about ${{t}}"><span class="tree-icon" style="font-size:9px;color:#333">▦</span><span class="tree-name">${{t}}</span></div>`).join("")
+              : '<div class="tree-loading">no tables</div>';
+          }} catch(e) {{ tablesEl.innerHTML = '<div class="tree-loading">Error</div>'; }}
+        }}
+      }} else {{
+        tablesEl.style.display = "none";
+      }}
+    }}
   </script>
 </body>
 </html>
@@ -274,7 +433,7 @@ def _render_eval_landing(
 <script>
 let rows = {cases_json};
 
-function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }}
 
 function render() {{
   const el = document.getElementById('cases');
@@ -404,10 +563,130 @@ document.getElementById('add-btn').addEventListener('click', async () => {{
 }});
 
 render();
+
+// Handle table selection from the parent shell's sidebar.
+window.addEventListener('message', (e) => {{
+  if (e.data?.type !== 'apx:table-selected') return;
+  const fqn = e.data.fqn || '';
+  const table = fqn.split('.').pop();
+  const suggestions = [
+    `How many rows are in ${{fqn}}?`,
+    `What are the most recent records in ${{table}}?`,
+    `Show me a sample of data from ${{table}}`,
+    `What are the column names and types in ${{table}}?`,
+  ];
+  // Pre-seed suggested eval cases for the selected table.
+  let added = 0;
+  for (const q of suggestions) {{
+    if (!rows.some(r => r.question === q)) {{
+      rows.push({{question: q, expected_judge: '', status: 'pending', response: ''}});
+      added++;
+    }}
+  }}
+  if (added) {{
+    render(); save();
+    document.querySelector('.meta').textContent = rows.length + ' case' + (rows.length === 1 ? '' : 's');
+  }}
+  // Scroll to + highlight the add-question box for any manual additions.
+  const addQ = document.getElementById('add-q');
+  if (addQ) {{
+    addQ.value = `Ask about ${{table}}: `;
+    addQ.focus();
+    document.querySelector('.add-section').scrollIntoView({{behavior: 'smooth'}});
+  }}
+}});
 </script>
 </body>
 </html>
 """
+
+
+def _render_landing(ctx: AgentContext) -> str:
+    """Server-rendered empty-chat landing: greeting + capability cards + starter chips.
+
+    Cards come from the agent's tools (click to expand params); chips come from
+    ``ctx.config.examples`` (click fills the input). Each block renders only when
+    its data is present; the greeting always renders.
+    """
+    import html as _html
+    import json as _json
+
+    name = ctx.config.name
+    desc = ctx.config.description or ""
+    tools = [t for t in ctx.tools if t.name != "create_tool"]
+    examples = ctx.config.examples or []
+
+    parts = [f'<div class="landing-hi">{_html.escape(name)}</div>']
+    if desc:
+        parts.append(f'<div class="landing-sub">{_html.escape(desc)}</div>')
+
+    schema = getattr(ctx, "schema", None)
+    if schema and isinstance(schema.get("tables"), dict) and schema["tables"]:
+        schema_name = schema.get("schema", "") or schema.get("catalog", "")
+        tbls = schema["tables"]
+        shown_tbls = list(tbls.items())[:12]
+        pills = "".join(
+            f'<span class="data-pill">{_html.escape(tname)}</span>'
+            for tname, _ in shown_tbls
+        )
+        more = f'<span class="data-pill data-pill-more">+{len(tbls) - 12} more</span>' if len(tbls) > 12 else ""
+        n = len(tbls)
+        parts.append(
+            '<div class="data-card">'
+            f'<div class="data-card-head">{_html.escape(schema_name)} &mdash; '
+            f'{n} table{"s" if n != 1 else ""}</div>'
+            f'<div class="data-pills">{pills}{more}</div>'
+            '</div>'
+        )
+
+    if tools:
+        _MEM_OPS = {"recall", "remember", "forget"}
+
+        def _is_mem_tool(name: str) -> bool:
+            n = name.lower()
+            return any(n == op or n.endswith("_" + op) for op in _MEM_OPS)
+
+        mem_tools = [t for t in tools if _is_mem_tool(t.name)]
+        other_tools = [t for t in tools if not _is_mem_tool(t.name)]
+
+        def _tool_card(t: AgentTool) -> str:
+            return (
+                '<div class="cap-card" onclick="this.classList.toggle(&quot;open&quot;)">'
+                f'<div class="cap-name">{_html.escape(t.name)}</div>'
+                f'<div class="cap-desc">{_html.escape(t.description or "")}</div>'
+                f'<pre class="cap-params">{_html.escape(_json.dumps(t.input_schema or {"type": "object", "properties": {}}, indent=2))}</pre>'
+                '</div>'
+            )
+
+        cards = "".join(_tool_card(t) for t in other_tools)
+
+        if mem_tools:
+            mem_table = getattr(getattr(ctx.config, "memory", None), "table_name", None) or ""
+            mem_link = (
+                f' <a href="#" class="cap-mem-link" data-mem-table="{_html.escape(mem_table)}"'
+                f' title="{_html.escape(mem_table)}">↗ table</a>'
+                if mem_table else ""
+            )
+            cards += (
+                '<div class="cap-card">'
+                f'<div class="cap-name">🧠 memory{mem_link}</div>'
+                '<div id="cap-mem-preview" class="cap-mem-preview"></div>'
+                '</div>'
+            )
+
+        parts.append('<div class="landing-label">What I can do</div>'
+                     f'<div class="cap-cards">{cards}</div>')
+
+    if examples:
+        chips = "".join(
+            f'<button type="button" class="starter-chip" onclick="useExample(this)" '
+            f'data-q="{_html.escape(q, quote=True)}">{_html.escape(q)}</button>'
+            for q in examples
+        )
+        parts.append('<div class="landing-label">Try asking</div>'
+                     f'<div class="starter-chips">{chips}</div>')
+
+    return f'<div id="landing">{"".join(parts)}</div>'
 
 
 def _render_agent_ui(ctx: AgentContext | None) -> str:
@@ -432,15 +711,32 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   <code>src/{app}/backend/agent_router.py</code> with an <code>Agent(tools=[...])</code> call,
   then restart the dev server.
 </div>""" if not_configured else ""
-    # First-run wizard nudge: show banner if no catalog/warehouse configured
+    # First-run wizard nudge: show banner if no catalog/warehouse configured.
+    # Read from disk (.env) so changes without restart are reflected.
     if not not_configured and ctx:
-        _env_catalog = os.environ.get("DEMO_CATALOG") or os.environ.get("CATALOG", "")
-        _env_wh = os.environ.get("WAREHOUSE_ID", "")
-        if not _env_catalog or not _env_wh:
+        from pathlib import Path
+        _dotenv: dict[str, str] = {}
+        for _dotenv_path in (Path.cwd() / ".env", Path.cwd() / ".env.local"):
+            try:
+                for _line in _dotenv_path.read_text().splitlines():
+                    if "=" in _line and not _line.lstrip().startswith("#"):
+                        _k, _, _v = _line.partition("=")
+                        _dotenv[_k.strip()] = _v.strip().strip('"').strip("'")
+            except Exception:
+                pass
+        _env_catalog = (
+            _dotenv.get("DEMO_CATALOG") or _dotenv.get("CATALOG")
+            or os.environ.get("DEMO_CATALOG") or os.environ.get("CATALOG", _UNSET_ENV)
+        )
+        _env_wh = _dotenv.get("WAREHOUSE_ID") or os.environ.get("WAREHOUSE_ID", _UNSET_ENV)
+        # Suppress banner when the agent already has tools — DataAgent/CoworkerAgent
+        # pre-ground their schema in code, so DEMO_CATALOG/WAREHOUSE_ID never get set.
+        _has_tools = ctx and any(t.name != "create_tool" for t in ctx.tools)
+        if (not _env_catalog or not _env_wh) and not _has_tools:
             setup_banner = (
                 '<div id="setup-banner" style="background:#1a1200;border-color:#5a3a00;color:#ffb84d">'
                 '<strong>👋 First time here?</strong> '
-                '<a href="/_apx/agent#setup" target="_top" style="color:#ffd080;text-decoration:underline">Open Setup</a> '
+                '<a href="/_apx/setup" target="_top" style="color:#ffd080;text-decoration:underline">Open Setup</a> '
                 'to connect your data and generate tools automatically.'
                 '</div>'
             )
@@ -481,6 +777,21 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .msg.assistant {{ align-self: flex-start; color: #ddd; white-space: pre-wrap; }}
   .msg.assistant.streaming::after {{ content: "▋"; animation: blink .7s step-end infinite; }}
   .msg.system {{ align-self: center; font-size: 13px; color: #444; font-style: italic; padding: 20px 0; }}
+  /* --- Rendered assistant markdown (tables, code, lists, headings) --- */
+  .msg.assistant table {{ border-collapse: collapse; margin: 8px 0; font-size: 12px; width: 100%; }}
+  .msg.assistant th, .msg.assistant td {{ border: 1px solid #2a2a2a; padding: 5px 9px; text-align: left; }}
+  .msg.assistant th {{ background: #161616; color: #cfe; font-weight: 600; }}
+  .msg.assistant tr:nth-child(even) td {{ background: #0f0f0f; }}
+  .msg.assistant pre {{ background: #111; border: 1px solid #222; border-radius: 6px; padding: 10px; overflow-x: auto; font-size: 12px; }}
+  .msg.assistant code {{ background: #15171a; border-radius: 4px; padding: 1px 5px; font-size: 12px; font-family: ui-monospace, monospace; }}
+  .msg.assistant pre code {{ background: none; padding: 0; }}
+  .msg.assistant h1, .msg.assistant h2, .msg.assistant h3 {{ margin: 10px 0 6px; line-height: 1.3; }}
+  .msg.assistant ul, .msg.assistant ol {{ margin: 6px 0 6px 20px; }}
+  .msg.assistant li {{ margin: 2px 0; }}
+  .msg.assistant a {{ color: #60b0ff; }}
+  .msg.assistant p {{ margin: 6px 0; }}
+  .msg.assistant > :first-child {{ margin-top: 0; }}
+  .msg.assistant > :last-child {{ margin-bottom: 0; }}
   @keyframes blink {{ 50% {{ opacity: 0; }} }}
 
   /* Inline tool call pills */
@@ -494,6 +805,31 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .tool-pill.error {{ background: #1a0a0a; color: #f87171; border-color: #3a1a1a; }}
   .tool-pill .icon {{ font-size: 12px; }}
   .tool-pill .ms {{ font-size: 11px; color: #555; margin-left: 4px; }}
+
+  /* Inline thinking-steps (live tool rows above the answer) */
+  .inline-steps {{ align-self: flex-start; width: 100%; }}
+  .inline-step {{ background: #0e1116; border: 1px solid #1f242b; border-radius: 8px; margin: 6px 0; padding: 0; max-width: 680px; }}
+  .inline-step.error {{ border-color: #3a1a1a; }}
+  .inline-step-head {{ display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; font-size: 12.5px; }}
+  .inline-step-head .step-icon {{ color: #60b0ff; }}
+  .inline-step.error .step-icon {{ color: #f87171; }}
+  .inline-step-head .step-name {{ color: #cfe; font-family: ui-monospace, monospace; }}
+  .inline-step-head .step-label {{ color: #6b7280; margin-left: auto; font-size: 11px; }}
+  .inline-step-detail {{ display: none; margin: 0; padding: 0 12px 10px; }}
+  .inline-step.open .inline-step-detail {{ display: block; }}
+  .step-detail-label {{ font-size: 10px; color: #5b6470; text-transform: uppercase; letter-spacing: .5px; margin: 8px 0 3px; }}
+  .step-detail-pre {{ margin: 0; color: #8a929b; font-size: 11px; white-space: pre-wrap;
+                      font-family: ui-monospace, monospace; }}
+  .step-sql {{ display: block; color: #8a929b; font-size: 11px; white-space: pre-wrap;
+               font-family: ui-monospace, monospace; }}
+  .resp-table-wrap {{ overflow-x: auto; max-width: 100%; }}
+  .resp-table {{ border-collapse: collapse; font-size: 11px; width: 100%; margin-bottom: 4px; }}
+  .resp-table th {{ color: #60b0ff; text-align: left; padding: 3px 8px;
+                    border-bottom: 1px solid #2a2a2a; font-weight: 600; white-space: nowrap; }}
+  .resp-table td {{ color: #c9d1d9; padding: 3px 8px; border-bottom: 1px solid #1a1a1a; }}
+  .resp-table tr:last-child td {{ border-bottom: none; }}
+  .resp-meta {{ font-size: 10px; color: #4b5563; margin-top: 4px; }}
+  .trunc-note {{ color: #f59e0b; }}
 
   /* Input area */
   .input-bar {{ display: flex; gap: 10px; padding: 16px 24px; background: #111;
@@ -523,6 +859,17 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .tab-panel.active {{ display: block; }}
   /* Trace tab uses flex column so trace-body can scroll independently */
   #tab-trace.active {{ display: flex; flex-direction: column; height: 100%; }}
+  #tab-history.active {{ display: flex; flex-direction: column; height: 100%; }}
+  .conv-toolbar {{ padding: 8px 12px; border-bottom: 1px solid #1a1a1a; display: flex; align-items: center; justify-content: flex-end; flex-shrink: 0; }}
+  .conv-new-btn {{ background: transparent; color: #60b0ff; border: 1px solid #1e3a5f; border-radius: 5px; padding: 4px 10px; font-size: 12px; cursor: pointer; }}
+  .conv-new-btn:hover {{ background: #0d1f38; }}
+  .conv-list {{ overflow-y: auto; flex: 1; }}
+  .conv-item {{ padding: 10px 12px; cursor: pointer; border-bottom: 1px solid #111; transition: background .1s; }}
+  .conv-item:hover {{ background: #131313; }}
+  .conv-item.active {{ background: #0d1f38; border-left: 2px solid #60b0ff; padding-left: 10px; }}
+  .conv-title {{ font-size: 13px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .conv-item.active .conv-title {{ color: #60b0ff; }}
+  .conv-ts {{ font-size: 11px; color: #444; margin-top: 2px; }}
 
   /* Trace tab — live span bubbles, mirrors /_apx/traces/{{id}} detail view */
   .span-step {{ position: relative; padding-left: 22px; margin-bottom: 4px; }}
@@ -560,6 +907,25 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .event.tool-call .event-title {{ color: #60b0ff; }}
   .event.tool-result .event-title {{ color: #4ade80; }}
   .event.tool-error .event-title {{ color: #f87171; }}
+  /* Tool-call group: call + response paired in one collapsible block. */
+  .event.tool-group {{ flex-direction: column; align-items: stretch; gap: 0; padding: 0; cursor: default; }}
+  .event.tool-group:hover {{ background: transparent; }}
+  .tg-head {{ display: flex; align-items: center; gap: 10px; padding: 10px 16px; cursor: pointer; }}
+  .tg-head:hover {{ background: #151515; }}
+  .tg-name {{ flex: 1; color: #60b0ff; font-family: ui-monospace, monospace; font-size: 13px;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .tg-caret {{ color: #555; font-size: 10px; flex-shrink: 0; transition: transform .12s; }}
+  .event.tool-group:not(.open) .tg-caret {{ transform: rotate(-90deg); }}
+  .tg-body {{ display: none; flex-direction: column; gap: 1px; padding: 0 16px 8px 52px; }}
+  .event.tool-group.open .tg-body {{ display: flex; }}
+  .tg-part {{ display: flex; gap: 10px; font-size: 12px; line-height: 1.5; cursor: pointer;
+              padding: 3px 6px; border-radius: 4px; }}
+  .tg-part:hover {{ background: #141414; }}
+  .tg-label {{ flex: none; min-width: 62px; color: #6b7686; text-transform: uppercase;
+               font-size: 10px; letter-spacing: .4px; font-weight: 600; padding-top: 1px; }}
+  .tg-part.err .tg-label {{ color: #f87171; }}
+  .tg-val {{ color: #cbd2da; font-family: ui-monospace, monospace; min-width: 0;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 
   /* Tool test panel */
   .tool-card {{ border-bottom: 1px solid #1a1a1a; }}
@@ -632,6 +998,44 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
                    padding: 12px 24px; font-size: 13px; line-height: 1.6; flex-shrink: 0; }}
   #setup-banner code {{ background: #1a1000; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }}
   .empty-state {{ padding: 24px; color: #444; font-size: 13px; text-align: center; }}
+
+  /* --- Landing (empty-chat) --- */
+  #landing {{ padding: 28px 22px; max-width: 680px; }}
+  .landing-hi {{ font-size: 19px; font-weight: 600; color: #fff; margin-bottom: 4px; }}
+  .landing-sub {{ font-size: 13px; color: #8a929b; margin-bottom: 18px; line-height: 1.4; }}
+  .data-card {{ background: #0e1116; border: 1px solid #1f242b; border-radius: 10px;
+                padding: 12px 14px; margin: 10px 0; max-width: 680px; }}
+  .data-card-head {{ font-size: 12.5px; color: #9aa3ad; margin-bottom: 8px; }}
+  .data-pills {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+  .data-pill {{ background: #151a20; border: 1px solid #252d35; border-radius: 5px;
+                padding: 3px 9px; font-size: 11.5px; color: #9ecbff;
+                font-family: ui-monospace, monospace; white-space: nowrap; }}
+  .data-pill-more {{ color: #6b7280; border-color: #1f242b; }}
+  .landing-label {{ font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #5d646c; margin: 16px 0 8px; }}
+  .cap-cards {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }}
+  .cap-card {{ background: #111418; border: 1px solid #262b31; border-radius: 8px; padding: 11px 13px; cursor: pointer; }}
+  .cap-card:hover {{ border-color: #3a424b; }}
+  .cap-name {{ color: #9ecbff; font-size: 12.5px; font-family: ui-monospace, monospace; }}
+  .cap-desc {{ color: #9aa3ad; font-size: 11px; margin-top: 3px; line-height: 1.35; }}
+  .cap-params {{ display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #222;
+                 color: #8a929b; font-size: 10.5px; white-space: pre-wrap; }}
+  .cap-card.open .cap-params {{ display: block; }}
+  .cap-card.open {{ border-color: #2f6b46; }}
+  .cap-mem-link {{ color: #60b0ff; font-size: 10px; text-decoration: none; margin-left: 6px; vertical-align: middle; opacity: .7; }}
+  .cap-mem-link:hover {{ opacity: 1; }}
+  .cap-mem-preview {{ margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }}
+  .cap-mem-preview:empty {{ display: none; }}
+  .cap-mem-row {{ font-size: 11.5px; color: #9ecbff; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .cap-mem-row-ts {{ font-size: 10px; color: #667; font-family: ui-monospace, monospace; margin-left: 4px; }}
+  .cap-mem-ops {{ margin-top: 8px; padding-top: 8px; border-top: 1px solid #222; display: flex; flex-direction: column; gap: 4px; }}
+  .cap-mem-op {{ display: flex; flex-direction: column; gap: 1px; }}
+  .cap-mem-name {{ color: #9ecbff; font-size: 11px; font-family: ui-monospace, monospace; }}
+  .cap-mem-desc {{ color: #8a929b; font-size: 10.5px; line-height: 1.35; }}
+  .starter-chip {{ display: inline-block; background: #15171a; border: 1px solid #2f343a; color: #bfe9cf;
+                   border-radius: 8px; padding: 9px 16px; font-size: 13px; margin: 0 8px 8px 0;
+                   cursor: pointer; text-align: left; transition: background 0.12s, border-color 0.12s; }}
+  .starter-chip:hover {{ background: #1c2822; border-color: #2f6b46; }}
+  .starter-chip:active {{ background: #213326; }}
 </style>
 </head>
 <body>
@@ -642,12 +1046,13 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   <nav>{_apx_nav_links("agent")}</nav>
   <button id="btn-deploy">Deploy ▶</button>
 </header>
+
 {setup_banner}
 <div class="main">
   <!-- Chat (left) -->
   <div class="chat-panel">
     <div id="chat">
-      <div class="msg system">Chat with <strong>{agent_name}</strong> — tool changes hot-reload automatically</div>
+      {_render_landing(ctx) if ctx else f'<div class="msg system">Chat with <strong>{agent_name}</strong></div>'}
     </div>
     <form id="form" class="input-bar" autocomplete="off">
       <textarea id="input" rows="1" placeholder="Type a message…" required></textarea>
@@ -670,21 +1075,30 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
       <span id="copy-sse-ok" style="display:none;color:#4ade80">✓</span>
     </div>
     <div class="panel-tabs">
+      <button onclick="switchTab('history',this)">History</button>
       <button onclick="switchTab('tools',this)">Tools</button>
-      <button class="active" onclick="switchTab('trace',this)">Trace</button>
-      <button onclick="switchTab('events',this)">Events</button>
+      <button onclick="switchTab('trace',this)">Trace</button>
+      <button class="active" onclick="switchTab('events',this)">Events</button>
       <button onclick="switchTab('eval',this)">Eval</button>
     </div>
     <div class="panel-content">
+      <div id="tab-history" class="tab-panel">
+        <div class="conv-toolbar">
+          <button class="conv-new-btn" onclick="newConversation()">+ New</button>
+        </div>
+        <div id="conv-list" class="conv-list">
+          <div class="empty-state">No conversations yet</div>
+        </div>
+      </div>
       <div id="tab-tools" class="tab-panel"></div>
-      <div id="tab-trace" class="tab-panel active">
+      <div id="tab-trace" class="tab-panel">
         <div id="trace-header" style="padding:8px 12px;border-bottom:1px solid #1a1a1a;font-size:11px;color:#666;display:flex;justify-content:space-between;align-items:center">
           <span id="trace-status">No trace yet — send a message</span>
           <a id="trace-link" href="#" target="_blank" style="display:none;color:#60b0ff;text-decoration:none;font-size:11px">open full →</a>
         </div>
         <div id="trace-body" style="overflow-y:auto;flex:1;padding:12px"></div>
       </div>
-      <div id="tab-events" class="tab-panel">
+      <div id="tab-events" class="tab-panel active">
         <div id="events-list" class="empty-state">Send a message to see events</div>
       </div>
       <div id="tab-eval" class="tab-panel">
@@ -715,8 +1129,41 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
 
 <div class="tooltip" id="tooltip"></div>
 
+<!-- Vendored locally (no CDN) so the deployed app is offline/private-link safe. -->
+<script src="/_apx/vendor/marked.min.js"></script>
+<script src="/_apx/vendor/purify.min.js"></script>
+
 <script>
 const TOOLS = {tools_json};
+function useExample(btn) {{
+  const inp = document.getElementById('input');
+  inp.value = btn.dataset.q;
+  form.requestSubmit();
+}}
+// Table selected from the workspace drawer (parent frame postMessage)
+window.addEventListener('message', (e) => {{
+  if (e.data?.type !== 'apx:table-selected') return;
+  const fqn = e.data.fqn || '';
+  const table = fqn.split('.').pop();
+  const questions = [
+    `What columns does ${{fqn}} have?`,
+    `Show me a sample of data from ${{table}}`,
+    `How many rows are in ${{table}}?`,
+    `What are the most recent records in ${{table}}?`,
+  ];
+  const chips = questions.map(q =>
+    `<button type="button" class="starter-chip" onclick="useExample(this)" data-q="${{q}}">${{q}}</button>`
+  ).join('');
+  const chatEl = document.getElementById('chat');
+  chatEl.innerHTML = `
+    <div style="padding:32px 24px 12px">
+      <div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px">Table selected</div>
+      <div style="font-family:ui-monospace,monospace;font-size:13px;color:#c9d1d9;margin-bottom:16px">${{fqn}}</div>
+      <div class="starter-chips">${{chips}}</div>
+    </div>`;
+  document.getElementById('input').placeholder = 'Ask about ${{table}}…';
+  document.getElementById('input').focus();
+}});
 const chat = document.getElementById('chat');
 const form = document.getElementById('form');
 const inputEl = document.getElementById('input');
@@ -784,7 +1231,8 @@ async function runTool(btn, name) {{
     msSpan.textContent = ms + 'ms';
     const ct = resp.headers.get('content-type') || '';
     const data = ct.includes('application/json') ? await resp.json() : await resp.text();
-    resultBox.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    const raw = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    resultBox.innerHTML = fmtResp(raw);
     if (resp.status >= 400) resultBox.classList.add('err');
   }} catch (err) {{
     resultBox.textContent = 'Error: ' + err.message;
@@ -839,13 +1287,143 @@ function switchTab(name, btn) {{
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
   if (name === 'eval' && !evalLoaded) loadEvalCases();
+  if (name === 'history') loadConversationHistory();
+}}
+
+// ── History tab ──
+let _convHistoryTimer = null;
+function loadConversationHistory() {{
+  if (_convHistoryTimer) clearTimeout(_convHistoryTimer);
+  _convHistoryTimer = setTimeout(_doLoadConversationHistory, 120);
+}}
+function _doLoadConversationHistory() {{
+  _convHistoryTimer = null;
+  fetch('/_apx/conversations').then(r => r.json()).then(convs => {{
+    const list = document.getElementById('conv-list');
+    if (!convs.length) {{
+      list.innerHTML = '<div class="empty-state">No conversations yet — send a message</div>';
+      return;
+    }}
+    list.innerHTML = convs.map(c => {{
+      const label = c.title || ('Conv ' + c.id.slice(-8));
+      const ts = c.updated_at ? new Date(c.updated_at).toLocaleDateString() : '';
+      const active = c.id === devThreadId ? ' active' : '';
+      return `<div class="conv-item${{active}}" data-id="${{c.id}}" onclick="switchConversation('${{c.id}}')">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div class="conv-title" style="flex:1">${{esc(label)}}</div>
+          <button onclick="event.stopPropagation();promoteToEval('${{c.id}}',${{JSON.stringify(label)}})"
+            title="Promote to Eval"
+            style="background:transparent;border:1px solid #2a2a2a;border-radius:3px;color:#555;font-size:9px;padding:1px 5px;cursor:pointer;flex-shrink:0;margin-left:4px">→ Eval</button>
+        </div>
+        ${{ts ? `<div class="conv-ts">${{ts}}</div>` : ''}}
+      </div>`;
+    }}).join('');
+  }}).catch(() => {{}});
+}}
+
+function newConversation() {{
+  devThreadId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
+  sessionStorage.setItem(_THREAD_KEY, devThreadId);
+  chat.innerHTML = '';
+  history.length = 0;  // reset request payload so a new conversation starts clean
+  loadConversationHistory();
+}}
+
+// ── Approvals (ASK policy human-in-the-loop) ──
+// Backend: GET /_apx/approvals, POST /_apx/approvals/{{id}}/approve|deny (see _dev.py).
+// ASK policy is non-blocking/retry-based: a gated tool is refused for the turn,
+// the turn ends, the card surfaces here, and approving auto-submits a retry turn.
+async function checkPendingApprovals() {{
+  let pending = [];
+  try {{
+    const r = await fetch('/_apx/approvals');
+    if (!r.ok) return;
+    pending = await r.json();
+    if (!Array.isArray(pending)) return;
+  }} catch {{ return; }}
+  for (const a of pending) {{
+    // One card per approval; skip if already rendered.
+    if (document.querySelector(`[data-approval-id="${{a.id}}"]`)) continue;
+    const card = document.createElement('div');
+    card.className = 'approval-card';
+    card.dataset.approvalId = a.id;
+    card.style.cssText = 'margin:8px 0;padding:10px 12px;border:1px solid #6b4f00;border-radius:8px;background:#1a1400';
+    const argsStr = JSON.stringify(a.arguments || {{}}, null, 0);
+    card.innerHTML = `
+      <div style="font-size:12px;color:#facc15;font-weight:600;margin-bottom:4px">⏸ Approval required: ${{esc(a.tool_name)}}</div>
+      ${{a.reason ? `<div style="font-size:11px;color:#aaa;margin-bottom:4px">${{esc(a.reason)}}</div>` : ''}}
+      <div style="font-size:11px;color:#888;font-family:monospace;margin-bottom:8px;word-break:break-all">${{esc(argsStr.slice(0, 300))}}</div>
+      <button onclick="resolveApproval('${{a.id}}', true, this)" style="background:#14532d;color:#4ade80;border:1px solid #166534;border-radius:5px;padding:4px 14px;cursor:pointer;font-size:12px;margin-right:8px">Approve</button>
+      <button onclick="resolveApproval('${{a.id}}', false, this)" style="background:#2a0a0a;color:#f87171;border:1px solid #7f1d1d;border-radius:5px;padding:4px 14px;cursor:pointer;font-size:12px">Deny</button>`;
+    chat.appendChild(card);
+    chat.scrollTop = chat.scrollHeight;
+  }}
+}}
+
+async function resolveApproval(id, approved, btn) {{
+  const card = btn.closest('.approval-card');
+  if (card) card.querySelectorAll('button').forEach(b => b.disabled = true);
+  try {{
+    const r = await fetch(`/_apx/approvals/${{id}}/${{approved ? 'approve' : 'deny'}}`, {{ method: 'POST' }});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  }} catch (err) {{
+    if (card) card.querySelectorAll('button').forEach(b => b.disabled = false);
+    addMsg('assistant', `Approval update failed: ${{err.message}}`, false);
+    return;
+  }}
+  if (card) card.remove();
+  // Close the loop: tell the agent the decision so it retries (approved) or
+  // moves on (denied) without the user retyping.
+  inputEl.value = approved
+    ? `I approved request ${{id}}. Please retry the action.`
+    : `I denied request ${{id}}. Do not retry that action.`;
+  form.requestSubmit();
+}}
+
+async function promoteToEval(convId, label) {{
+  try {{
+    const items = await fetch(`/_apx/conversations/${{convId}}/items`).then(r => r.json());
+    // Find the first user message and the first assistant response
+    const userMsg = items.find(it => it.type === 'message' && it.data && it.data.role === 'user');
+    const assistantMsg = items.find(it => it.type === 'message' && it.data && it.data.role === 'assistant');
+    const question = userMsg ? (Array.isArray(userMsg.data.content)
+      ? userMsg.data.content.map(p => p.text || '').join('') : userMsg.data.content || '') : label;
+    const response = assistantMsg ? (Array.isArray(assistantMsg.data.content)
+      ? assistantMsg.data.content.map(p => p.text || '').join('') : assistantMsg.data.content || '') : '';
+    if (!evalLoaded) {{ await loadEvalCases(); }}
+    evalRows.push({{ question: question.trim(), expected_judge: '', response: response.trim(), status: 'pending' }});
+    saveEvalCases();
+    switchTab('eval', document.querySelectorAll('.panel-tabs button')[4]);
+    renderEval();
+  }} catch(e) {{ alert('Failed to promote: ' + e.message); }}
+}}
+
+async function switchConversation(id) {{
+  devThreadId = id;
+  sessionStorage.setItem(_THREAD_KEY, id);
+  chat.innerHTML = '';
+  history.length = 0;  // reset request payload so the switched-to conversation starts clean
+  document.querySelectorAll('.conv-item').forEach(el => {{
+    el.classList.toggle('active', el.dataset.id === id);
+  }});
+  try {{
+    const items = await fetch(`/_apx/conversations/${{id}}/items`).then(r => r.json());
+    for (const item of items) {{
+      if (item.type !== 'message') continue;
+      const role = item.data?.role;
+      if (!role) continue;
+      const blocks = item.data?.content || [];
+      const text = blocks.map(b => b.text || b.content || '').join('');
+      if (text) addMsg(role, text, false);
+    }}
+  }} catch {{}}
 }}
 
 // ── Eval tab ──
 let evalRows = [];
 let evalLoaded = false;
 
-function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }}
 
 function renderEval() {{
   const el = document.getElementById('eval-cases');
@@ -976,8 +1554,7 @@ async function runEvalCase(i) {{
             const out = payload.response && payload.response.output;
             if (Array.isArray(out)) for (const it of out) if (it.type === 'message' && Array.isArray(it.content))
               for (const p of it.content) if (p.type === 'output_text' && p.text) text += p.text;
-          }} else if (payload.type === 'span.start') {{ renderSpanStart(payload); }}
-          else if (payload.type === 'span.end') {{ renderSpanEnd(payload); }}
+          }}
         }} catch {{}}
       }}
     }}
@@ -1062,6 +1639,54 @@ const history = [];
 let eventCounter = 0;
 let events = [];
 let eventsStarted = false;
+let apxHost = '';
+let apxMemoryTable = '';
+(async () => {{
+  try {{
+    const d = await fetch('/_apx/workspace-context').then(r => r.json());
+    apxHost = d.host || '';
+    apxMemoryTable = d.memory_table || '';
+    // Wire the ↗ table link to the actual Databricks UC explorer URL.
+    if (apxHost && apxMemoryTable) {{
+      const link = document.querySelector('.cap-mem-link[data-mem-table]');
+      if (link) {{
+        const parts = apxMemoryTable.split('.');
+        if (parts.length === 3) {{
+          link.href = `${{apxHost}}/explore/data/${{parts[0]}}/${{parts[1]}}/${{parts[2]}}`;
+          link.target = '_blank';
+          link.rel = 'noreferrer';
+        }}
+      }}
+    }}
+  }} catch {{}}
+  // Populate the landing page memory preview with recent stored memories.
+  try {{
+    const mems = await fetch('/_apx/memories').then(r => r.json());
+    const preview = document.getElementById('cap-mem-preview');
+    if (preview && Array.isArray(mems) && mems.length) {{
+      preview.innerHTML = mems.slice(0, 3).map(m => {{
+        const ts = m.updated_at ? m.updated_at.slice(0, 10) : '';
+        const tsSpan = ts ? `<span class="cap-mem-row-ts">${{ts}}</span>` : '';
+        return `<div class="cap-mem-row" title="${{m.content.replace(/"/g, '&quot;')}}">${{m.content}}${{tsSpan}}</div>`;
+      }}).join('');
+    }}
+  }} catch {{}}
+}})();
+
+// Stable session key for the dev-UI conversation.  Stored in sessionStorage so
+// a page refresh resumes the same server-side session (the user doesn't lose
+// agent memory / conversation state).  A new tab always gets a fresh UUID.
+const _THREAD_KEY = '_apx_dev_thread_id';
+let devThreadId = sessionStorage.getItem(_THREAD_KEY);
+if (!devThreadId) {{
+  devThreadId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
+  sessionStorage.setItem(_THREAD_KEY, devThreadId);
+}}
+
+// Load the conversation history list on page load (History is the default tab).
+loadConversationHistory();
+// Surface any approvals already pending when the UI is (re)opened.
+checkPendingApprovals();
 
 function fmt(v) {{
   if (v === null || v === undefined) return 'null';
@@ -1080,11 +1705,254 @@ function addEvent(type, title, subtitle, data) {{
   div.className = 'event' + (type === 'tool-call' ? ' tool-call' : type === 'tool-result' ? ' tool-result' : type === 'tool-error' ? ' tool-error' : '');
   div.dataset.idx = events.length - 1;
   const icons = {{ user: '👤', assistant: '🤖', 'tool-call': '⚡', 'tool-result': '✓', 'tool-error': '✗' }};
+  // Label tool rows clearly as call vs response (icons alone aren't obvious).
+  // The tool name (when present and not the generic "tool") is appended.
+  const kindLabel = {{ 'tool-call': 'tool call', 'tool-result': 'tool response', 'tool-error': 'tool error' }}[type] || '';
+  const shownTitle = kindLabel
+    ? (title && title !== 'tool' ? `${{kindLabel}} · ${{title}}` : kindLabel)
+    : title;
   div.innerHTML = `<span class="event-num">#${{num}}</span><span class="event-icon">${{icons[type] || '•'}}</span>`
-    + `<div class="event-body"><div class="event-title">${{title}}</div>`
+    + `<div class="event-body"><div class="event-title">${{shownTitle}}</div>`
     + (subtitle ? `<div class="event-sub">${{subtitle}}</div>` : '') + '</div>';
   div.onclick = () => showDetail(ev, div);
   eventsList.appendChild(div);
+  eventsList.scrollTop = eventsList.scrollHeight;
+  return ev;
+}}
+
+// ── Tool event grouping ──
+// Each tool call + its response are grouped into one collapsible block keyed by
+// call_id (request and response together), so you read "ran X → got Y" as a
+// unit instead of all-calls-then-all-responses interleaved. Non-tool events
+// (user/assistant) stay flat rows via addEvent. Memory tools (recall/remember/
+// forget) share one "memory" card regardless of how many calls there are.
+// Reset per send.
+const toolGroups = {{}};     // groupId -> {{ body }}
+const memCallBodies = {{}};  // call_id  -> sub-body within the shared memory card
+const MEM_GROUP_ID = '__apx_memory__';
+
+function isMemoryTool(name) {{
+  if (typeof name !== 'string') return false;
+  const n = name.toLowerCase();
+  return ['recall','remember','forget'].some(k => n === k || n.endsWith('_' + k));
+}}
+function memOpLabel(name) {{
+  const n = (name || '').toLowerCase();
+  if (n === 'recall'   || n.endsWith('_recall'))   return 'recall';
+  if (n === 'remember' || n.endsWith('_remember')) return 'remember';
+  if (n === 'forget'   || n.endsWith('_forget'))   return 'forget';
+  return name;
+}}
+function isRecallTool(name) {{
+  return typeof name === 'string' && (name === 'recall' || name.endsWith('_recall'));
+}}
+const RECALL_TOP_N = 3;
+function parseMemoryLines(text) {{
+  if (!text || text.trim() === 'No memories found.') return [];
+  return text.split('\\n')
+    .filter(l => l.trim().startsWith('-'))
+    .map(l => {{
+      const m = l.match(/^\\s*-\\s*\\[score=([\\d.]+)\\]\\s*(.*)/);
+      return m ? {{ score: parseFloat(m[1]), content: m[2] }}
+               : {{ score: null, content: l.replace(/^\\s*-\\s*/, '').trim() }};
+    }})
+    .filter(item => item.content);
+}}
+
+function addToolCall(groupId, name, reqText, reqData) {{
+  if (!eventsStarted) {{ eventsList.innerHTML = ''; eventsStarted = true; }}
+  const num = eventCounter++;
+  const reqEv = {{ num, type: 'tool-call', title: name || 'tool', subtitle: reqText, data: reqData }};
+  events.push(reqEv);
+
+  // Memory tools share one card.
+  if (isMemoryTool(name)) {{
+    let memGroup = toolGroups[MEM_GROUP_ID];
+    if (!memGroup) {{
+      const group = document.createElement('div');
+      group.className = 'event tool-group open';
+      const head = document.createElement('div');
+      head.className = 'tg-head';
+      head.innerHTML = `<span class="event-num">#${{num}}</span><span class="event-icon">🧠</span>`
+        + `<span class="tg-name">memory</span><span class="tg-caret">▾</span>`;
+      head.onclick = () => group.classList.toggle('open');
+      const body = document.createElement('div');
+      body.className = 'tg-body';
+      group.appendChild(head);
+      group.appendChild(body);
+      eventsList.appendChild(group);
+      toolGroups[MEM_GROUP_ID] = {{ body }};
+      memGroup = toolGroups[MEM_GROUP_ID];
+    }}
+    // Each call gets its own sub-container so its response lands in the right spot.
+    const sub = document.createElement('div');
+    sub.style.cssText = 'display: contents;';
+    memGroup.body.appendChild(sub);
+    const reqRow = document.createElement('div');
+    reqRow.className = 'tg-part';
+    reqRow.innerHTML = `<span class="tg-label">${{memOpLabel(name)}}</span>`
+      + `<span class="tg-val">${{esc(reqText || '')}}</span>`;
+    reqRow.onclick = () => showDetail(reqEv, null);
+    sub.appendChild(reqRow);
+    memCallBodies[groupId] = {{ sub, name }};
+    eventsList.scrollTop = eventsList.scrollHeight;
+    return reqEv;
+  }}
+
+  const group = document.createElement('div');
+  group.className = 'event tool-group open';
+  group.dataset.idx = events.length - 1;
+  const head = document.createElement('div');
+  head.className = 'tg-head';
+  head.innerHTML = `<span class="event-num">#${{num}}</span><span class="event-icon">⚡</span>`
+    + `<span class="tg-name">${{esc(name || 'tool')}}</span><span class="tg-caret">▾</span>`;
+  head.onclick = () => group.classList.toggle('open');
+  const body = document.createElement('div');
+  body.className = 'tg-body';
+  const reqRow = document.createElement('div');
+  reqRow.className = 'tg-part';
+  reqRow.innerHTML = '<span class="tg-label">request</span>'
+    + `<span class="tg-val">${{esc(reqText || '')}}</span>`;
+  reqRow.onclick = () => showDetail(reqEv, null);
+  body.appendChild(reqRow);
+  group.appendChild(head);
+  group.appendChild(body);
+  eventsList.appendChild(group);
+  eventsList.scrollTop = eventsList.scrollHeight;
+  toolGroups[groupId] = {{ body, callEv: reqEv }};
+  return reqEv;
+}}
+
+function _appendMemoryUcLink(container) {{
+  if (!apxHost || !apxMemoryTable) return;
+  const parts = apxMemoryTable.split('.');
+  const ucUrl = parts.length === 3
+    ? `${{apxHost}}/explore/data/${{parts[0]}}/${{parts[1]}}/${{parts[2]}}`
+    : `${{apxHost}}/explore/data`;
+  const a = document.createElement('a');
+  a.href = ucUrl; a.target = '_blank';
+  a.textContent = `${{apxMemoryTable}} ↗`;
+  a.style.cssText = 'font-size:11px;color:#555;font-family:ui-monospace,monospace;text-decoration:none;';
+  a.onmouseover = () => a.style.color = '#60b0ff';
+  a.onmouseout  = () => a.style.color = '#555';
+  a.onclick = e => e.stopPropagation();
+  container.appendChild(a);
+}}
+
+function addToolResponse(groupId, name, respText, respData, isErr) {{
+  // Memory tool response — route into the shared memory card's sub-container.
+  if (memCallBodies[groupId]) {{
+    const {{ sub, name: toolName }} = memCallBodies[groupId];
+    const ev = {{ num: '', type: isErr ? 'tool-error' : 'tool-result',
+                 title: toolName || 'tool', subtitle: respText, data: respData }};
+    events.push(ev);
+    const fullText = (respData && (respData.output || respData.result)) || respText || '';
+    // Recall: show top-N items with "View all" toggle + UC link.
+    if (!isErr && isRecallTool(toolName)) {{
+      const items = parseMemoryLines(fullText);
+      if (items.length > 0) {{
+        const row = document.createElement('div');
+        row.className = 'tg-part';
+        row.style.cssText = 'cursor:pointer;align-items:flex-start;';
+        row.onclick = () => showDetail(ev, null);
+        const lbl = document.createElement('span');
+        lbl.className = 'tg-label'; lbl.textContent = 'found';
+        row.appendChild(lbl);
+        const valDiv = document.createElement('div');
+        valDiv.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;';
+        const itemStyle = 'font-size:12px;color:#cbd2da;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        items.slice(0, RECALL_TOP_N).forEach(item => {{
+          const el = document.createElement('div');
+          el.style.cssText = itemStyle; el.title = item.content;
+          el.textContent = (item.score != null ? `[${{item.score.toFixed(2)}}] ` : '') + item.content;
+          valDiv.appendChild(el);
+        }});
+        const rest = items.slice(RECALL_TOP_N);
+        if (rest.length > 0) {{
+          const restDiv = document.createElement('div');
+          restDiv.style.cssText = 'display:none;flex-direction:column;gap:2px;';
+          rest.forEach(item => {{
+            const el = document.createElement('div');
+            el.style.cssText = itemStyle; el.title = item.content;
+            el.textContent = (item.score != null ? `[${{item.score.toFixed(2)}}] ` : '') + item.content;
+            restDiv.appendChild(el);
+          }});
+          valDiv.appendChild(restDiv);
+          const btn = document.createElement('button');
+          btn.textContent = `View all (${{items.length}}) ▸`;
+          btn.style.cssText = 'background:none;border:none;color:#60b0ff;font-size:11px;cursor:pointer;padding:2px 0;text-align:left;font-family:ui-monospace,monospace;';
+          btn.onclick = e => {{
+            e.stopPropagation();
+            const open = restDiv.style.display !== 'none';
+            restDiv.style.display = open ? 'none' : '';
+            btn.textContent = open ? `View all (${{items.length}}) ▸` : '▾ Collapse';
+          }};
+          valDiv.appendChild(btn);
+        }} else {{
+          const c = document.createElement('div');
+          c.style.cssText = 'font-size:11px;color:#555;font-family:ui-monospace,monospace;';
+          c.textContent = `${{items.length}} memor${{items.length === 1 ? 'y' : 'ies'}}`;
+          valDiv.appendChild(c);
+        }}
+        _appendMemoryUcLink(valDiv);
+        row.appendChild(valDiv);
+        sub.appendChild(row);
+        eventsList.scrollTop = eventsList.scrollHeight;
+        return ev;
+      }}
+    }}
+    // remember/forget: plain response row.
+    const row = document.createElement('div');
+    row.className = 'tg-part' + (isErr ? ' err' : '');
+    row.innerHTML = `<span class="tg-label">${{isErr ? 'error' : 'saved'}}</span>`
+      + `<span class="tg-val">${{esc(respText || '')}}</span>`;
+    row.onclick = () => showDetail(ev, null);
+    sub.appendChild(row);
+    eventsList.scrollTop = eventsList.scrollHeight;
+    return ev;
+  }}
+
+  const g = toolGroups[groupId];
+  // Unmatched response (no preceding call captured) → fall back to a flat row.
+  if (!g) return addEvent(isErr ? 'tool-error' : 'tool-result', name || 'tool', respText, respData);
+  const ev = {{ num: '', type: isErr ? 'tool-error' : 'tool-result',
+               title: name || 'tool', subtitle: respText, data: respData }};
+  events.push(ev);
+  // For SQL tools: update the request row and call event detail to show SQL.
+  // respData.result may be a parsed object (trace replay) or string (live stream).
+  let respDisplay = respText || '';
+  if (!isErr && respData) {{
+    const rawResult = respData.output || respData.result;
+    if (rawResult) {{
+      try {{
+        const parsed = typeof rawResult === 'string' ? JSON.parse(rawResult) : rawResult;
+        if (parsed._sql) {{
+          // Update compact request row with SQL preview
+          const reqPart = g.body.querySelector('.tg-part');
+          if (reqPart) {{
+            const valEl = reqPart.querySelector('.tg-val');
+            if (valEl) valEl.textContent = parsed._sql.replace(/\\s+/g, ' ').trim().slice(0, 160);
+          }}
+          // Inject SQL into the call event so the detail panel can show it
+          if (g.callEv && g.callEv.data) g.callEv.data._sql = parsed._sql;
+          // Build a clean response summary: "N rows · query took Xs"
+          const rowCount = Array.isArray(parsed.data) ? parsed.data.length : null;
+          const timingRaw = parsed._timing || '';
+          const timing = timingRaw.replace(/^\\[|\\]$/g, '');
+          respDisplay = [
+            rowCount != null ? `${{rowCount}} row${{rowCount !== 1 ? 's' : ''}}` : null,
+            timing || null
+          ].filter(Boolean).join(' · ');
+        }}
+      }} catch {{}}
+    }}
+  }}
+  const row = document.createElement('div');
+  row.className = 'tg-part' + (isErr ? ' err' : '');
+  row.innerHTML = `<span class="tg-label">${{isErr ? 'error' : 'response'}}</span>`
+    + `<span class="tg-val">${{esc(respDisplay)}}</span>`;
+  row.onclick = () => showDetail(ev, null);
+  g.body.appendChild(row);
   eventsList.scrollTop = eventsList.scrollHeight;
   return ev;
 }}
@@ -1095,14 +1963,33 @@ function showDetail(ev, el) {{
   detailTitle.textContent = `#${{ev.num}} ${{ev.type}}`;
   let html = '';
   if (ev.data) {{
-    for (const [k, v] of Object.entries(ev.data)) {{
-      html += `<div class="label">${{k}}</div><pre>${{typeof v === 'string' ? v : JSON.stringify(v, null, 2)}}</pre>`;
+    if (ev.type === 'assistant' && ev.data.content) {{
+      // Render assistant responses as markdown in the detail panel.
+      try {{ html = DOMPurify.sanitize(marked.parse(ev.data.content)); }}
+      catch {{ html = `<pre>${{esc(ev.data.content)}}</pre>`; }}
+    }} else {{
+      // For tool events use the same formatters as inline steps: SQL gets a
+      // code block, row arrays get a table — everything else falls back to <pre>.
+      const isCallKey = k => k === 'arguments' || k === 'inputs' || k === 'args';
+      const isRespKey = k => k === 'result' || k === 'outputs' || k === 'output';
+      // For tool-call events: show SQL as the request when available (set
+      // retroactively by addToolResponse once the result arrives).
+      if (ev.type === 'tool-call' && ev.data._sql) {{
+        html = `<div class="label">request</div>${{fmtSql(ev.data._sql)}}`;
+      }} else {{
+        for (const [k, v] of Object.entries(ev.data)) {{
+          if (k === '_sql') continue;  // already shown above or handled in fmtResp
+          const raw = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+          const body = isCallKey(k) ? fmtReq(raw) : isRespKey(k) ? fmtResp(raw) : `<pre>${{esc(raw)}}</pre>`;
+          html += `<div class="label">${{esc(k)}}</div>${{body}}`;
+        }}
+      }}
     }}
   }}
   detailBody.innerHTML = html;
   detailPanel.classList.add('open');
-  // Auto-switch to events tab (3rd button: Tools, Trace, Events, Eval)
-  switchTab('events', document.querySelectorAll('.panel-tabs button')[2]);
+  // Auto-switch to events tab (4th button: History, Tools, Trace, Events, Eval)
+  switchTab('events', document.querySelectorAll('.panel-tabs button')[3]);
 }}
 
 function closeDetail() {{
@@ -1111,10 +1998,25 @@ function closeDetail() {{
 }}
 
 // ── Chat ──
+function renderAssistantInto(el, text) {{
+  // Sanitized markdown → HTML for assistant messages. marked parses, DOMPurify
+  // strips anything unsafe (escape-by-default; the model never injects raw HTML).
+  try {{
+    el.innerHTML = DOMPurify.sanitize(marked.parse(text || ''));
+    // Block-level HTML now owns the layout — turn off the pre-wrap that the
+    // plain-text fallback relies on, otherwise marked's inter-block newline
+    // text-nodes render as visible blank lines (double-spaced output).
+    el.style.whiteSpace = 'normal';
+  }} catch (e) {{
+    el.textContent = text;       // never break the chat on a render error
+    el.style.whiteSpace = '';    // revert to the CSS pre-wrap for plain text
+  }}
+}}
 function addMsg(role, text, streaming) {{
   const div = document.createElement('div');
   div.className = `msg ${{role}}${{streaming ? ' streaming' : ''}}`;
-  div.textContent = text;
+  if (role === 'assistant') renderAssistantInto(div, text);
+  else div.textContent = text;
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
   return div;
@@ -1124,11 +2026,6 @@ function addMsg(role, text, streaming) {{
 const traceBody = document.getElementById('trace-body');
 const traceStatusEl = document.getElementById('trace-status');
 const traceLinkEl = document.getElementById('trace-link');
-const spanNodes = new Map();  // span_key → DOM node
-
-function spanKey(span) {{
-  return `${{span.type}}:${{span.name}}:${{span.start_time}}`;
-}}
 
 function escHtml(s) {{
   return String(s == null ? '' : s)
@@ -1143,6 +2040,10 @@ function extractMsg(value) {{
   }}
   if (typeof value === 'number') return String(value);
   if (Array.isArray(value)) {{
+    // Responses-API output array: find the last message item's text.
+    const msgs = value.filter(m => m && typeof m === 'object' && m.type === 'message');
+    if (msgs.length) return extractMsg(msgs[msgs.length - 1].content);
+    // Generic: last item with a content field.
     for (let i = value.length - 1; i >= 0; i--) {{
       const m = value[i];
       if (m && typeof m === 'object' && 'content' in m) return extractMsg(m.content);
@@ -1150,8 +2051,10 @@ function extractMsg(value) {{
     return value.map(extractMsg).filter(Boolean).join(', ').slice(0, 300);
   }}
   if (typeof value === 'object') {{
-    for (const k of ['content', 'text', 'output_text', 'message']) {{
-      if (k in value) return extractMsg(value[k]);
+    // Responses-API output_text block.
+    if (value.type === 'output_text' && value.text) return value.text.slice(0, 400);
+    for (const k of ['content', 'text', 'output_text', 'message', 'messages', 'choices', 'output', 'input']) {{
+      if (k in value && value[k] != null) return extractMsg(value[k]);
     }}
     return Object.entries(value).filter(([, v]) => v != null && v !== '')
       .map(([k, v]) => typeof v === 'string'
@@ -1162,65 +2065,6 @@ function extractMsg(value) {{
   return String(value).slice(0, 300);
 }}
 
-const SPAN_STYLE = {{
-  request:    {{ color: '#7986cb', label: 'Caller',          bubble: 'caller'      }},
-  llm:        {{ color: '#00bcd4', label: 'Agent asked',     bubble: 'llm-reply'   }},
-  tool:       {{ color: '#ffb300', label: 'Called tool',     bubble: 'tool-out'    }},
-  agent_call: {{ color: '#ab47bc', label: 'Called agent',    bubble: 'agent-reply' }},
-  response:   {{ color: '#4caf50', label: 'Agent responded', bubble: 'response'    }},
-  error:      {{ color: '#f44336', label: 'Error',           bubble: 'error-msg'   }},
-}};
-
-function renderSpanStart(span) {{
-  const style = SPAN_STYLE[span.type] || {{ color: '#888', label: span.type, bubble: 'caller' }};
-  const node = document.createElement('div');
-  node.className = 'span-step in-progress';
-  let title = style.label;
-  if (span.type === 'llm') {{
-    const model = String((span.metadata && span.metadata.model) || span.name || 'LLM').replace('databricks-', '');
-    title = `Agent asked ${{escHtml(model)}}`;
-  }} else if (span.type === 'tool') {{
-    title = `Called tool <em style="font-style:italic;color:#ddd">${{escHtml(span.name)}}</em>`;
-  }} else if (span.type === 'agent_call') {{
-    title = `Called agent <em style="font-style:italic;color:#ddd">${{escHtml(span.name)}}</em>`;
-  }}
-  const inputMsg = extractMsg(span.input);
-  let inputHtml = '';
-  if (inputMsg) {{
-    const cls = span.type === 'tool' ? 'tool-in' : (span.type === 'llm' ? 'agent-ask' : style.bubble);
-    inputHtml = `<div class="span-bubble ${{cls}}">${{escHtml(inputMsg)}}</div>`;
-  }}
-  node.innerHTML =
-    `<div class="step-line"></div>` +
-    `<div class="step-dot" style="background:${{style.color}}"></div>` +
-    `<div class="step-content">` +
-      `<div class="step-header">` +
-        `<span class="who" style="color:${{style.color}}">${{title}}</span>` +
-        `<span class="dur" data-role="dur"></span>` +
-      `</div>` +
-      `<div data-role="input">${{inputHtml}}</div>` +
-      `<div data-role="output"></div>` +
-    `</div>`;
-  traceBody.appendChild(node);
-  traceBody.scrollTop = traceBody.scrollHeight;
-  spanNodes.set(spanKey(span), node);
-}}
-
-function renderSpanEnd(span) {{
-  const node = spanNodes.get(spanKey(span));
-  if (!node) return;
-  node.classList.remove('in-progress');
-  const durEl = node.querySelector('[data-role="dur"]');
-  if (durEl && span.duration_ms != null) {{
-    durEl.textContent = `${{(span.duration_ms / 1000).toFixed(2)}}s`;
-  }}
-  const outEl = node.querySelector('[data-role="output"]');
-  const outputMsg = extractMsg(span.output);
-  if (outEl && outputMsg) {{
-    const style = SPAN_STYLE[span.type] || {{ bubble: 'caller' }};
-    outEl.innerHTML = `<div class="span-bubble ${{style.bubble}}">${{escHtml(outputMsg)}}</div>`;
-  }}
-}}
 
 function resetTrace() {{
   traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">Running…</div>';
@@ -1228,7 +2072,8 @@ function resetTrace() {{
   traceLinkEl.style.display = 'none';
 }}
 
-async function finalizeTrace(traceId, status) {{
+async function finalizeTrace(traceId, status, opts) {{
+  opts = opts || {{}};
   traceStatusEl.textContent = status === 'error' ? 'errored' : 'done';
   if (!traceId) {{
     // ResponsesAgent doesn't emit trace_id in the stream — fall back to the
@@ -1246,22 +2091,24 @@ async function finalizeTrace(traceId, status) {{
   }}
   traceLinkEl.href = `/_apx/traces/${{traceId}}`;
   traceLinkEl.style.display = 'inline';
-  // Load and render spans inline
+  // Load and render spans inline. ``mlflow.langchain.autolog()`` writes its
+  // spans as artifacts on a background thread, so the first fetch can race
+  // and return ``[]`` even when the trace exists. Retry once after 1.5s before
+  // declaring "no spans".
   try {{
-    const r = await fetch(`/_apx/traces/${{traceId}}?fmt=json`);
-    const data = await r.json();
+    let data;
+    for (let attempt = 0; attempt < 2; attempt++) {{
+      const r = await fetch(`/_apx/traces/${{traceId}}?fmt=json`);
+      data = await r.json();
+      if (data.spans && data.spans.length) break;
+      if (data.error) break;
+      await new Promise(res => setTimeout(res, 1500));
+    }}
     if (data.error || !data.spans || !data.spans.length) {{
       traceBody.innerHTML = `<div style="color:#555;font-size:12px;padding:8px 0">${{data.error || 'No spans.'}}</div>`;
       return;
     }}
     traceBody.innerHTML = '';
-    // Build parent→children
-    const byParent = {{}};
-    const roots = [];
-    for (const s of data.spans) {{
-      if (s.parent_id) (byParent[s.parent_id] = byParent[s.parent_id] || []).push(s);
-      else roots.push(s);
-    }}
     const SPAN_COLORS = {{LLM:'#22d3ee',TOOL:'#facc15',CHAIN:'#a78bfa',AGENT:'#60b0ff',OTHER:'#94a3b8'}};
     function spanTypeShort(t) {{
       t = (t||'').toUpperCase();
@@ -1271,49 +2118,125 @@ async function finalizeTrace(traceId, status) {{
       if (t === 'AGENT') return 'AGENT';
       return 'OTHER';
     }}
+
+    // ── Summary view: LLM + TOOL spans in start-time order ──
+    // Normalization in _serialize_trace_spans ensures Responses-API traces
+    // already have CHAT_MODEL spans and synthetic TOOL children, so one path
+    // handles all formats.
+    const ordered = [...data.spans].sort((a,b) => (a.start_time_ns||0)-(b.start_time_ns||0));
+    const keySpans = ordered.filter(s => {{
+      const t = spanTypeShort(s.span_type);
+      return t === 'LLM' || t === 'TOOL';
+    }});
+
+    function makeStepCard(typeLabel, color, name, dur, isErr) {{
+      const card = document.createElement('div');
+      card.className = 'span-step';
+      card.style.cssText = 'margin-bottom:6px;';
+      card.innerHTML =
+        `<div class="step-header">` +
+        `<span style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;background:${{color}}22;color:${{color}}">${{typeLabel}}</span>` +
+        `<span class="who" style="color:${{color}};font-size:12px;font-weight:600;margin-left:6px">${{escHtml(name)}}</span>` +
+        (isErr ? `<span style="color:#f87171;font-size:10px;margin-left:6px">ERR</span>` : '') +
+        (dur ? `<span class="dur" style="margin-left:auto">${{dur}}</span>` : '') +
+        `</div>`;
+      return card;
+    }}
+    function addBubble(card, val, cls) {{
+      const msg = extractMsg(val);
+      if (!msg) return;
+      const b = document.createElement('div');
+      b.className = `span-bubble ${{cls}}`;
+      b.style.cssText = 'font-size:11px;margin-top:4px;';
+      b.textContent = msg.slice(0, 200) + (msg.length > 200 ? '…' : '');
+      card.appendChild(b);
+    }}
+
+    if (!keySpans.length) {{
+      traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">No tool or model spans found.</div>';
+    }}
+    for (const s of keySpans) {{
+      const type = spanTypeShort(s.span_type);
+      const color = SPAN_COLORS[type] || '#888';
+      const dur = s.duration_ms != null ? `${{Math.round(s.duration_ms)}}ms` : '';
+      const isErr = (s.status||'').toUpperCase().includes('ERR');
+      const card = makeStepCard(type, color, s.name, dur, isErr);
+      addBubble(card, s.inputs,  type === 'TOOL' ? 'tool-in' : 'agent-ask');
+      addBubble(card, s.outputs, type === 'TOOL' ? 'tool-out' : 'llm-reply');
+      traceBody.appendChild(card);
+    }}
+
+    if (!keySpans.length) {{
+      traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">No LLM or tool spans found.</div>';
+    }}
+
+    // ── Full tree (collapsed by default) ──
+    const toggle = document.createElement('button');
+    toggle.textContent = '▸ Full trace';
+    toggle.style.cssText = 'margin-top:8px;background:none;border:1px solid #333;color:#666;font-size:11px;padding:2px 8px;border-radius:3px;cursor:pointer;';
+    const treeDiv = document.createElement('div');
+    treeDiv.style.display = 'none';
+    toggle.onclick = () => {{
+      const open = treeDiv.style.display !== 'none';
+      treeDiv.style.display = open ? 'none' : 'block';
+      toggle.textContent = open ? '▸ Full trace' : '▾ Full trace';
+    }};
+    traceBody.appendChild(toggle);
+    traceBody.appendChild(treeDiv);
+
+    // Build parent→children for full tree
+    const byParent = {{}};
+    const roots = [];
+    for (const s of data.spans) {{
+      if (s.parent_id) (byParent[s.parent_id] = byParent[s.parent_id] || []).push(s);
+      else roots.push(s);
+    }}
     function renderSpanNode(s, depth) {{
       const type = spanTypeShort(s.span_type);
       const color = SPAN_COLORS[type] || '#888';
-      const dur = s.duration_ms != null ? `${{s.duration_ms}}ms` : '';
+      const dur = s.duration_ms != null ? `${{Math.round(s.duration_ms)}}ms` : '';
       const isErr = (s.status||'').toUpperCase().includes('ERR');
       const wrap = document.createElement('div');
-      wrap.style.cssText = `padding-left:${{depth*14}}px;margin-bottom:3px;`;
+      wrap.style.cssText = `padding-left:${{depth*12}}px;margin-bottom:2px;`;
       const card = document.createElement('div');
       card.className = 'span-step';
-      card.style.cssText = 'position:relative;padding-left:18px;';
-      const dot = document.createElement('div');
-      dot.className = 'step-dot';
-      dot.style.cssText = `position:absolute;left:1px;top:5px;width:9px;height:9px;border-radius:50%;background:${{color}};`;
-      const content = document.createElement('div');
-      content.className = 'step-content';
-      const header = document.createElement('div');
-      header.className = 'step-header';
-      header.innerHTML =
-        `<span class="who" style="color:${{color}};font-size:12px;font-weight:600">${{escHtml(s.name)}}</span>` +
-        `<span style="font-size:10px;color:#555;font-family:monospace;margin-left:4px">${{type}}</span>` +
-        (dur ? `<span class="dur" style="margin-left:auto">${{dur}}</span>` : '') +
-        (isErr ? `<span style="color:#f87171;font-size:10px;margin-left:8px">ERR</span>` : '');
-      content.appendChild(header);
-      // Show inputs/outputs compactly
-      for (const [label, val] of [['in', s.inputs], ['out', s.outputs]]) {{
-        if (!val) continue;
-        const msg = extractMsg(val);
-        if (!msg) continue;
-        const bubble = document.createElement('div');
-        const bubbleCls = label === 'in' ? (type === 'TOOL' ? 'tool-in' : 'agent-ask') : (type === 'TOOL' ? 'tool-out' : 'llm-reply');
-        bubble.className = `span-bubble ${{bubbleCls}}`;
-        bubble.style.cssText = 'font-size:11px;margin-top:3px;';
-        bubble.textContent = msg.slice(0, 300) + (msg.length > 300 ? '…' : '');
-        content.appendChild(bubble);
-      }}
-      card.appendChild(dot); card.appendChild(content);
+      card.innerHTML =
+        `<div class="step-header">` +
+        `<span style="font-size:9px;font-weight:700;padding:1px 4px;border-radius:2px;background:${{color}}22;color:${{color}}">${{type}}</span>` +
+        `<span class="who" style="color:${{color}};font-size:11px;font-weight:600;margin-left:5px">${{escHtml(s.name)}}</span>` +
+        (isErr ? `<span style="color:#f87171;font-size:9px;margin-left:5px">ERR</span>` : '') +
+        (dur ? `<span class="dur" style="margin-left:auto;font-size:10px">${{dur}}</span>` : '') +
+        `</div>`;
       wrap.appendChild(card);
       for (const child of (byParent[s.span_id] || [])) {{
         wrap.appendChild(renderSpanNode(child, depth + 1));
       }}
       return wrap;
     }}
-    for (const root of roots) traceBody.appendChild(renderSpanNode(root, 0));
+    for (const root of roots) treeDiv.appendChild(renderSpanNode(root, 0));
+
+    // Surface tool calls + results in the Events panel so it stops only
+    // showing the user/assistant "one side" of the conversation. Gated on
+    // ``opts.emitEvents`` so the page-load autoload (which fetches the most
+    // recent historical trace) doesn't pollute the events list before the
+    // user has even sent a message.
+    if (opts.emitEvents) {{
+      // Spans come back roughly in start order; preserve that for the
+      // events list so call/result interleave correctly across multi-tool runs.
+      const orderedSpans = [...data.spans].sort(
+        (a, b) => (a.start_time_ns || 0) - (b.start_time_ns || 0)
+      );
+      for (const s of orderedSpans) {{
+        if ((s.span_type || '').toUpperCase() !== 'TOOL') continue;
+        const args = s.inputs || {{}};
+        const isErr = (s.status || '').toUpperCase().includes('ERR');
+        const result = s.outputs;
+        const dur = s.duration_ms != null ? `${{s.duration_ms}}ms` : '';
+        const gid = s.span_id || s.name;
+        addToolCall(gid, s.name, fmt(args).slice(0, 120), {{ arguments: args }});
+        addToolResponse(gid, s.name, dur, {{ result: result }}, isErr);
+      }}
+    }}
   }} catch(e) {{
     traceBody.innerHTML = `<div style="color:#f87171;font-size:12px">${{escHtml(e.message)}}</div>`;
   }}
@@ -1322,7 +2245,9 @@ async function finalizeTrace(traceId, status) {{
 function addToolPills(trace) {{
   const container = document.createElement('div');
   container.className = 'tool-pills';
+  let _pi = 0;
   for (const t of trace) {{
+    const gid = 'pill-' + (_pi++);
     const isErr = t.result && typeof t.result === 'object' && 'error' in t.result;
     const call = document.createElement('span');
     call.className = 'tool-pill call';
@@ -1330,8 +2255,8 @@ function addToolPills(trace) {{
     call.dataset.tip = JSON.stringify(t.args, null, 2);
     call.onmouseenter = showTip;
     call.onmouseleave = hideTip;
-    const callEv = addEvent('tool-call', t.name, fmt(t.args).slice(0, 60), {{ arguments: t.args }});
-    call.onclick = () => showDetail(callEv, eventsList.querySelector(`[data-idx="${{events.indexOf(callEv)}}"]`));
+    const callEv = addToolCall(gid, t.name, fmt(t.args).slice(0, 120), {{ arguments: t.args }});
+    call.onclick = () => showDetail(callEv, null);
     container.appendChild(call);
     const res = document.createElement('span');
     res.className = `tool-pill ${{isErr ? 'error' : 'result'}}`;
@@ -1339,11 +2264,124 @@ function addToolPills(trace) {{
     res.dataset.tip = fmt(t.result);
     res.onmouseenter = showTip;
     res.onmouseleave = hideTip;
-    const resEv = addEvent(isErr ? 'tool-error' : 'tool-result', t.name, `${{t.ms}}ms`, {{ result: t.result }});
-    res.onclick = () => showDetail(resEv, eventsList.querySelector(`[data-idx="${{events.indexOf(resEv)}}"]`));
+    const resEv = addToolResponse(gid, t.name, `${{t.ms}}ms`, {{ result: t.result }}, isErr);
+    res.onclick = () => showDetail(resEv, null);
     container.appendChild(res);
   }}
   chat.appendChild(container);
+  chat.scrollTop = chat.scrollHeight;
+}}
+
+// ── Tool detail formatters ──
+// SQL keyword highlighter.
+function sqlHL(sql) {{
+  const kws = /\\b(SELECT|FROM|WHERE|AND|OR|NOT|NULL|TRUE|FALSE|AS|IN|ON|JOIN|LEFT|RIGHT|INNER|ORDER|BY|LIMIT|GROUP|HAVING|DISTINCT|CASE|WHEN|THEN|ELSE|END|INSERT|UPDATE|DELETE|CREATE|DROP|TABLE|VIEW|WITH|IS|LIKE|BETWEEN|EXISTS|ALL|ANY|UNION|VALUES|SET|INTO|OUTER|CROSS|FULL|ASC|DESC|CAST|OVER|PARTITION|NULLIF|COALESCE|COUNT|SUM|AVG|MIN|MAX|RANK)\\b/gi;
+  return sql.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/('(?:[^']|'')*')/g, s => `<span style="color:#ce9178">${{s}}</span>`)
+    .replace(kws, k => `<span style="color:#569cd6;font-weight:600">${{k}}</span>`);
+}}
+function fmtSql(sql) {{
+  return `<pre style="background:#1e1e1e;font-family:ui-monospace,monospace;font-size:11px;line-height:1.6;padding:10px 12px;border-radius:4px;overflow:auto;margin:0">${{sqlHL(sql)}}</pre>`;
+}}
+function fmtTable(rows) {{
+  if (!rows || !rows.length) return '<div style="color:#555;font-size:12px;padding:8px">No rows returned.</div>';
+  const cols = Object.keys(rows[0]);
+  const th = cols.map(c => `<th style="padding:4px 8px;text-align:left;border-bottom:1px solid #2a2a2a;color:#9cdcfe;font-weight:500;white-space:nowrap">${{esc(c)}}</th>`).join('');
+  const trs = rows.map(r =>
+    `<tr>${{cols.map(c => `<td style="padding:3px 8px;border-bottom:1px solid #1a1a1a;color:#ccc;white-space:nowrap">${{esc(String(r[c] ?? ''))}}</td>`).join('')}}</tr>`
+  ).join('');
+  return `<div style="overflow:auto"><table style="border-collapse:collapse;font-family:ui-monospace,monospace;font-size:11px;width:100%"><thead><tr>${{th}}</tr></thead><tbody>${{trs}}</tbody></table><div style="color:#555;font-size:11px;padding:4px 8px">${{rows.length}} row${{rows.length !== 1 ? 's' : ''}}</div></div>`;
+}}
+function fmtReq(rawStr) {{
+  try {{
+    const obj = JSON.parse(rawStr);
+    const pretty = JSON.stringify(obj, null, 2);
+    return `<pre style="background:#1e1e1e;font-family:ui-monospace,monospace;font-size:11px;line-height:1.5;padding:10px 12px;border-radius:4px;overflow:auto;margin:0;color:#ccc">${{esc(pretty)}}</pre>`;
+  }} catch {{}}
+  return `<pre class="step-detail-pre">${{esc(rawStr)}}</pre>`;
+}}
+function fmtResp(rawStr) {{
+  try {{
+    const obj = JSON.parse(rawStr);
+    if (obj._sql || Array.isArray(obj.data)) {{
+      let html = '';
+      if (obj._sql) {{
+        // UC function link header (SQL itself is shown in the Request section)
+        const ucMatch = obj._sql.match(/FROM\\s+([\\w]+)\\.([\\w]+)\\.([\\w]+)\\s*\\(/i);
+        if (ucMatch) {{
+          const [, cat, schema, fn] = ucMatch;
+          const fqn = `${{cat}}.${{schema}}.${{fn}}`;
+          // Link to schema page — function URLs return "table not found" in UC explorer
+          const ucUrl = apxHost ? `${{apxHost}}/explore/data/${{cat}}/${{schema}}` : null;
+          const fnLink = ucUrl
+            ? `<a href="${{ucUrl}}" target="_blank" style="color:#60b0ff;font-family:ui-monospace,monospace;font-size:11px;text-decoration:none;margin-left:8px">${{esc(fqn)}} ↗</a>`
+            : `<span style="color:#9cdcfe;font-family:ui-monospace,monospace;font-size:11px;margin-left:8px">${{esc(fqn)}}</span>`;
+          const sqlHeader = '<span style="color:#555;font-size:10px;text-transform:uppercase;letter-spacing:.05em">Unity Catalog Function</span>' + fnLink;
+          html += `<div style="display:flex;align-items:center;padding:8px 0 4px">${{sqlHeader}}</div>`;
+        }}
+      }}
+      if (Array.isArray(obj.data)) html += `<div style="color:#555;font-size:10px;text-transform:uppercase;letter-spacing:.05em;padding:8px 0 4px">Results${{obj._timing ? ' · ' + obj._timing : ''}}</div>${{fmtTable(obj.data)}}`;
+      return html;
+    }}
+  }} catch {{}}
+  try {{
+    const pretty = JSON.stringify(JSON.parse(rawStr), null, 2);
+    return `<pre style="background:#1e1e1e;font-family:ui-monospace,monospace;font-size:11px;line-height:1.5;padding:10px 12px;border-radius:4px;overflow:auto;margin:0;color:#ccc">${{esc(pretty)}}</pre>`;
+  }} catch {{}}
+  return `<pre class="step-detail-pre">${{esc(rawStr)}}</pre>`;
+}}
+
+// ── Inline thinking-steps ──
+// Live tool-call rows rendered in the transcript above the answer bubble.
+// Keyed by callId so the function_call (running) and its function_call_output
+// (done/error) update the SAME row. The function_call_output item carries no
+// `name`, so we stash the tool name on the row when it's created and reuse it.
+const inlineSteps = {{}};  // callId -> row element (reset per send, see send handler)
+function renderInlineStep(stepsContainer, callId, opts) {{
+  // opts: {{ name, phase: 'running'|'done'|'error', request, response }}
+  // The REQUEST (tool args — for a SQL tool, the query itself) and the
+  // RESPONSE (rows) are kept as separate persistent sections so the query
+  // is never overwritten by its result.
+  let row = inlineSteps[callId];
+  if (!row) {{
+    row = document.createElement('div');
+    row.className = 'inline-step';
+    row.innerHTML = '<div class="inline-step-head"></div><div class="inline-step-detail"></div>';
+    row.querySelector('.inline-step-head').onclick = () => row.classList.toggle('open');
+    stepsContainer.appendChild(row);
+    inlineSteps[callId] = row;
+  }}
+  if (opts.name) row.dataset.toolName = opts.name;
+  if (opts.request != null) row._req = opts.request;
+  if (opts.response != null) row._resp = opts.response;
+  const name = opts.name || row.dataset.toolName || 'tool';
+  const icon = opts.phase === 'running' ? '⚙' : (opts.phase === 'error' ? '✗' : '✓');
+  const label = opts.phase === 'running' ? 'running…' : (opts.phase === 'error' ? 'error' : 'done');
+  row.classList.toggle('error', opts.phase === 'error');
+  row.querySelector('.inline-step-head').innerHTML =
+    `<span class="step-icon">${{icon}}</span><span class="step-name">${{esc(name)}}</span>`
+    + `<span class="step-label">${{label}}</span>`;
+  const detail = row.querySelector('.inline-step-detail');
+  detail.innerHTML = '';
+  // Show the request unless it's empty/no-arg ('{{}}'): a no-arg tool has no
+  // query to show, so we skip the Request section rather than print '{{}}'.
+  if (row._req != null && row._req !== '' && row._req.trim() !== '{{}}') {{
+    // For SQL tools: show the generated query as the request (not the raw args JSON)
+    let reqBody = '';
+    if (row._resp) {{
+      try {{
+        const rp = JSON.parse(row._resp);
+        if (rp._sql) reqBody = fmtSql(rp._sql);
+      }} catch {{}}
+    }}
+    if (!reqBody) reqBody = fmtReq(row._req);
+    detail.insertAdjacentHTML('beforeend',
+      `<div class="step-detail-label">Request</div>${{reqBody}}`);
+  }}
+  if (row._resp != null) {{
+    detail.insertAdjacentHTML('beforeend',
+      `<div class="step-detail-label">Response</div>${{fmtResp(row._resp)}}`);
+  }}
   chat.scrollTop = chat.scrollHeight;
 }}
 
@@ -1371,6 +2409,7 @@ form.addEventListener('submit', async e => {{
   e.preventDefault();
   const text = inputEl.value.trim();
   if (!text) return;
+  document.getElementById('landing')?.remove();
   inputEl.value = '';
   inputEl.style.height = 'auto';
   sendBtn.disabled = true;
@@ -1381,16 +2420,27 @@ form.addEventListener('submit', async e => {{
   resetTrace();
 
   const assistantDiv = addMsg('assistant', '', true);
+  // Live tool steps render into their own container ABOVE the answer bubble.
+  for (const k in inlineSteps) delete inlineSteps[k];   // reset per send
+  for (const k in toolGroups) delete toolGroups[k];
+  for (const k in memCallBodies) delete memCallBodies[k];
+  const stepsContainer = document.createElement('div');
+  stepsContainer.className = 'inline-steps';
+  chat.insertBefore(stepsContainer, assistantDiv);       // steps appear ABOVE the answer
   let full = '';
   let pendingTrace = null;
   let traceId = null;
   let traceStatus = 'completed';
+  // Tool calls are surfaced live from the stream (below). When that happens we
+  // tell finalizeTrace NOT to re-harvest them from the trace spans, so the
+  // Events panel doesn't double up on workspaces where the trace also loads.
+  let toolEventsFromStream = false;
 
   try {{
     const res = await fetch('/responses', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json', 'x-return-trace-id': 'true' }},
-      body: JSON.stringify({{ input: history, stream: true }}),
+      body: JSON.stringify({{ input: history, stream: true, custom_inputs: {{ thread_id: devThreadId }} }}),
     }});
     if (!res.ok) throw new Error(`${{res.status}} ${{await res.text()}}`);
 
@@ -1411,7 +2461,7 @@ form.addEventListener('submit', async e => {{
           if (payload.trace_id && !traceId) traceId = payload.trace_id;
           if (ptype === 'response.output_text.delta' && payload.delta) {{
             full += payload.delta;
-            assistantDiv.textContent = full;
+            renderAssistantInto(assistantDiv, full);
             chat.scrollTop = chat.scrollHeight;
           }} else if (ptype === 'response.output_item.done') {{
             const item = payload.item || {{}};
@@ -1419,10 +2469,38 @@ form.addEventListener('submit', async e => {{
               for (const part of item.content) {{
                 if (part.type === 'output_text' && part.text) {{
                   full += part.text;
-                  assistantDiv.textContent = full;
+                  renderAssistantInto(assistantDiv, full);
                   chat.scrollTop = chat.scrollHeight;
                 }}
               }}
+            }} else if (item.type === 'function_call') {{
+              // Surface the tool call (+ its SQL/args) live from the stream —
+              // no trace fetch, so it works even when artifact-storage egress
+              // is blocked. Detail pane shows the full arguments on click.
+              toolEventsFromStream = true;
+              const argStr = typeof item.arguments === 'string'
+                ? item.arguments : JSON.stringify(item.arguments || {{}});
+              // Group the call + its response by call_id in the Events panel.
+              addToolCall(item.call_id || item.id || item.name, item.name,
+                argStr.slice(0, 120), {{ arguments: argStr }});
+              // Also render the call live in the transcript as a step row.
+              // Pass the args as `request` (for a SQL tool this IS the query),
+              // kept separate from the result so it isn't overwritten on done.
+              renderInlineStep(stepsContainer, item.call_id || item.id || item.name,
+                {{ name: item.name, phase: 'running', request: argStr }});
+            }} else if (item.type === 'function_call_output') {{
+              toolEventsFromStream = true;
+              const outStr = typeof item.output === 'string'
+                ? item.output : JSON.stringify(item.output || '');
+              const isErr = /\"error\"|\berror\b/i.test(outStr);
+              // Fill the response into the SAME group as its call (by call_id).
+              addToolResponse(item.call_id || item.id || item.name, item.name,
+                outStr.slice(0, 120), {{ output: outStr }}, isErr);
+              // Update the SAME step row (shared call_id) running → done/error.
+              // Pass item.name unchanged (undefined on output items) so the row's
+              // stashed tool name survives — a truthy fallback would overwrite it.
+              renderInlineStep(stepsContainer, item.call_id || item.id || item.name,
+                {{ name: item.name, phase: isErr ? 'error' : 'done', response: outStr }});
             }}
           }} else if (ptype === 'response.completed' && !full) {{
             const out = payload.response && payload.response.output;
@@ -1434,9 +2512,15 @@ form.addEventListener('submit', async e => {{
                   }}
                 }}
               }}
-              if (full) assistantDiv.textContent = full;
+              if (full) renderAssistantInto(assistantDiv, full);
             }}
           }} else if (ptype === 'tool.trace') {{
+            // Intentional dormant hook: no current producer emits ``tool.trace``.
+            // Kept for a future server-side path that streams per-tool events so
+            // inline pills can render mid-conversation. Today the Events panel
+            // covers the same need by harvesting TOOL spans from the trace
+            // after the response completes (see ``finalizeTrace``). Don't
+            // delete in audit-chain sweeps.
             if (Array.isArray(payload.tools) && payload.tools.length) addToolPills(payload.tools);
           }} else if (ptype === 'error') {{
             traceStatus = 'error';
@@ -1446,16 +2530,20 @@ form.addEventListener('submit', async e => {{
     }}
   }} catch (err) {{
     full = `Error: ${{err.message}}`;
-    assistantDiv.textContent = full;
+    renderAssistantInto(assistantDiv, full);
     traceStatus = 'error';
   }}
 
   assistantDiv.classList.remove('streaming');
   addEvent('assistant', full.slice(0, 80) + (full.length > 80 ? '…' : ''), null, {{ content: full }});
   history.push({{ role: 'assistant', content: full }});
-  finalizeTrace(traceId, traceStatus);
+  finalizeTrace(traceId, traceStatus, {{ emitEvents: !toolEventsFromStream }});
   sendBtn.disabled = false;
   inputEl.focus();
+  // Refresh history list so the new/updated conversation appears.
+  loadConversationHistory();
+  // Surface any ASK-policy approval requests raised during this turn.
+  checkPendingApprovals();
 }});
 
 // ── Resizable panel ──
@@ -1469,6 +2557,10 @@ document.addEventListener('mousemove', e => {{
   rightPanel.style.width = w + 'px';
 }});
 document.addEventListener('mouseup', () => {{ resizing = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; }});
+
+// Auto-populate the Trace panel on page load with the most recent run, so
+// `reload → click Trace` shows context instead of an empty pane.
+finalizeTrace(null, 'done');
 
 inputEl.focus();
 </script>

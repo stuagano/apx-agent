@@ -84,13 +84,19 @@ class VectorSearchLike(Protocol):
 
 
 def _quote_string(value: str) -> str:
-    """SQL-escape a string literal: single quotes doubled.
+    """SQL-escape a string literal: backslashes then single quotes doubled.
+
+    Spark SQL treats backslash as an escape character inside string
+    literals, so backslashes must be doubled *before* single quotes are
+    doubled — otherwise a trailing ``\\`` would escape the closing quote
+    (unterminated literal) and an embedded ``\\'`` would corrupt the
+    literal / open an injection vector.
 
     All untrusted text must pass through this before being embedded in a
     SQL statement. Identifier names (table_name) are validated separately
     by the constructor.
     """
-    return "'" + value.replace("'", "''") + "'"
+    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
 
 
 def _sql_array_str(items: Sequence[str] | None) -> str:
@@ -140,7 +146,19 @@ def _iso_to_epoch(iso: str | None) -> float:
 
 
 def _epoch_to_iso(seconds: float | None) -> str:
-    """Convert UNIX epoch seconds to ISO-8601 (UTC). Returns now on garbage."""
+    """Convert UNIX epoch seconds to ISO-8601 (UTC). Returns now on garbage.
+
+    Coerces to ``float`` first: Databricks statement-execution returns numeric
+    columns as STRINGS, so a recalled ``updated_at``/``created_at`` arrives as
+    e.g. ``'1.78e9'``. Comparing that string with ``<= 0`` would raise
+    ``"'<=' not supported between instances of 'str' and 'int'"`` and crash
+    recall — coerce before the guard.
+    """
+    if seconds is not None and not isinstance(seconds, (int, float)):
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            return iso_now()
     if seconds is None or seconds <= 0:
         return iso_now()
     try:
@@ -186,7 +204,7 @@ def _row_to_memory(row: Mapping[str, Any]) -> Memory:
         namespace=str(row.get("namespace") or "default"),
         content=str(row.get("content") or ""),
         tags=tags,
-        importance=float(row.get("importance") if row.get("importance") is not None else 0.5),
+        importance=float(_imp if (_imp := row.get("importance")) is not None else 0.5),
         embedding=embedding,
         metadata=metadata,
         created_at=_epoch_to_iso(row.get("created_at")),
@@ -285,7 +303,6 @@ class DeltaMemoryStore:
     def _ensure_table(self) -> None:
         """Idempotently issue the ``CREATE TABLE IF NOT EXISTS`` once."""
         if self._created or not self._auto_create:
-            self._created = True
             return
         sql = (
             f"CREATE TABLE IF NOT EXISTS {self.table_name} ("
@@ -304,11 +321,14 @@ class DeltaMemoryStore:
         try:
             self._run_sql(sql)
         except Exception as e:
+            schema_parts = self.table_name.rsplit(".", 1)[0]
             logger.warning(
-                "DeltaMemoryStore: CREATE TABLE IF NOT EXISTS %s failed: %s — "
-                "subsequent reads/writes may fail until the table exists.",
-                self.table_name, e,
+                "DeltaMemoryStore: CREATE TABLE IF NOT EXISTS %s failed: %s\n"
+                "  Fix: GRANT CREATE TABLE ON SCHEMA %s TO `<your-principal>`;\n"
+                "  Or pre-create the table and set auto_create=False.",
+                self.table_name, e, schema_parts,
             )
+            return  # don't set _created; let the next call retry
         self._created = True
 
     # -- MERGE SQL ----------------------------------------------------------
@@ -440,8 +460,15 @@ class DeltaMemoryStore:
         return updated
 
     def delete(self, memory_id: str) -> bool:
-        """Delete the row; returns True unless ``run_sql`` raised."""
+        """Delete the row; returns ``True`` on hit, ``False`` on miss.
+
+        ``run_sql`` does not surface affected-row counts for a Delta
+        ``DELETE``, so existence is checked first (like :meth:`update`).
+        Honors the protocol contract that InMemory and Lakebase share.
+        """
         self._ensure_table()
+        if self.get(memory_id) is None:
+            return False
         sql = (
             f"DELETE FROM {self.table_name} "
             f"WHERE id = {_quote_string(memory_id)}"
@@ -475,11 +502,10 @@ class DeltaMemoryStore:
             f"WHERE {' AND '.join(where)} "
             f"ORDER BY updated_at DESC LIMIT {int(filter.limit)}"
         )
-        try:
-            rows = self._run_sql(sql)
-        except Exception as e:
-            logger.warning("DeltaMemoryStore.list failed: %s — returning [].", e)
-            return []
+        # Let infra failures propagate: a swallowed error here would read
+        # as "no memories found" to the recall tool. Reserve [] (an empty
+        # result set) for a genuinely empty table. (H21)
+        rows = self._run_sql(sql)
         return [_row_to_memory(r) for r in (rows or [])]
 
     def recall(self, opts: RecallOptions) -> list[RecallResult]:
@@ -505,10 +531,19 @@ class DeltaMemoryStore:
                 "id", "principal_id", "namespace", "content", "tags",
                 "importance", "metadata", "created_at", "updated_at",
             ]
+            # `tags` / `min_importance` are post-filtered below rather than
+            # pushed into the backend filter dict: array-intersection and
+            # range semantics vary across Vector Search backends, whereas
+            # post-filtering guarantees parity with the SQL / Lakebase
+            # paths. Over-fetch so the post-filter still yields up to k. (M12)
+            post_filter = (
+                opts.tags is not None and len(opts.tags) > 0
+            ) or opts.min_importance is not None
+            num_results = k * 4 if post_filter else k
             kwargs: dict[str, Any] = {
                 "index_name": self._index_name,
                 "columns": columns,
-                "num_results": k,
+                "num_results": num_results,
                 "filters": filters,
             }
             if self._embedding_fn is not None:
@@ -518,8 +553,18 @@ class DeltaMemoryStore:
             else:
                 kwargs["query_text"] = opts.query
             result = self._vector_search.similarity_search(**kwargs)
+            tag_set = set(opts.tags) if opts.tags else None
             out: list[RecallResult] = []
             for row in result.get("rows") or []:
+                memory = _row_to_memory(row)
+                # Post-filter to match SQL/Lakebase semantics. (M12)
+                if tag_set is not None and not (set(memory.tags) & tag_set):
+                    continue
+                if (
+                    opts.min_importance is not None
+                    and memory.importance < float(opts.min_importance)
+                ):
+                    continue
                 # Vector Search backends use _score, score, or
                 # similarity_score in practice — fall back gracefully.
                 score_val = (
@@ -533,10 +578,12 @@ class DeltaMemoryStore:
                 )
                 out.append(
                     RecallResult(
-                        memory=_row_to_memory(row),
+                        memory=memory,
                         score=float(score_val or 0.0),
                     )
                 )
+                if len(out) >= k:
+                    break
             return out
 
         # Branches 3 & 4 — list candidates via SQL.

@@ -30,12 +30,23 @@
  *
  * # Streaming caveat
  *
- * The TS streaming runner only yields text chunks for the final assistant
- * turn — tool-call rounds are buffered, not streamed. The `stream()` method
- * therefore yields ONE `response.output_item.done` for the final assistant
- * message, followed by `response.completed`. Mid-flight tool events are not
- * surfaced (matches the chat-agent.ts streaming gap; see that module header
- * for the rationale).
+ * The TS streaming runner yields incremental text deltas for assistant turns,
+ * but tool-call rounds are not surfaced as stream events. The `stream()`
+ * method therefore yields the assembled assistant text as ONE
+ * `response.output_item.done`, followed by `response.completed`. Mid-flight
+ * tool events are not surfaced (matches the chat-agent.ts streaming gap; see
+ * that module header for the rationale).
+ *
+ * # Non-streaming output-shape caveat (parity gap)
+ *
+ * `invoke()` returns a SINGLE assistant message item built from the runner's
+ * final text. It does NOT emit the intermediate `function_call` /
+ * `function_call_output` items that the Python `_responses_agent.py` includes
+ * in its `output` array. This is structural: the TS runner's return type is
+ * `Promise<string>` (see {@link RunViaSDKFn}), so it cannot surface
+ * intermediate tool items without a runner-signature change. Callers that
+ * depend on inspecting tool-call steps from the non-streaming output array
+ * will see only the final assistant message in the TS runtime.
  */
 
 import { z } from 'zod';

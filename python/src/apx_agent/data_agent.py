@@ -1,5 +1,9 @@
 """DataAgent — an LlmAgent specialized for governed Unity Catalog data access.
 
+Also the reference implementation of the Template protocol: ``DataTemplate``
+wraps the same builder behind a typed Spec + registry entry, so the data agent
+can be created by name/config as well as directly.
+
 A leaf agent primitive (alongside ``LlmAgent``, ``SequentialAgent``, ...) for the
 most common Databricks shape: "talk to my data." It wires the governed data
 tools and grounds its instructions in the actual schema, in one line::
@@ -22,11 +26,116 @@ agent: use it directly, as a ``sub_agent``, or as a leaf in a
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+import logging
 
 from ._agents import LlmAgent
 from ._resources import ResourceSpec, attach_resources
-from ._schema import build_instructions_from_schema, introspect_schema
+from ._schema import build_instructions_from_schema, introspect_schema, load_baked_schema, load_okf_grounding
+from ._template import template
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _DataAgentComponents:
+    tools: list[Any]
+    instructions: str
+
+
+def _build_data_tools_and_instructions(
+    *,
+    catalog: str,
+    schema: str,
+    warehouse_id: str | None,
+    ws: Any | None,
+    include_functions: bool,
+    genie_space: str | None,
+    vector_index: str | None,
+    instructions: str | None,
+    persona: str | None,
+    objective: str | None,
+    tables: dict | None,
+    extra_tools: list[Any] | None,
+) -> _DataAgentComponents:
+    """Shared builder: returns tools and instructions for the data agent shape."""
+    from .genie import genie_tool
+    from .sql_tools import sql_tool
+    from .vector_search import vector_search_tool
+
+    # Resolve the schema (table -> columns), in priority order:
+    #   1) explicit `tables=` override
+    #   2) live introspection when a workspace client is given
+    #   3) the baked `.apx/schema.json` manifest (scaffold-time grounding)
+    #   4) {} -> generic, ungrounded instructions
+    resolved_tables: dict = tables or {}
+    baked_was_source = False
+    if not resolved_tables and ws:
+        resolved_tables = introspect_schema(ws, catalog, schema, warehouse_id)
+    if not resolved_tables:
+        baked = load_baked_schema()
+        if (
+            baked
+            and baked.get("catalog") == catalog
+            and baked.get("schema") == schema
+            and isinstance(baked.get("tables"), dict)
+        ):
+            resolved_tables = baked["tables"]
+            baked_was_source = True
+    if not resolved_tables:
+        logger.warning(
+            "DataAgent(%r, %r): no schema found via tables=, ws=, or .apx/schema.json — "
+            "running ungrounded (generic SQL assistant). Pass ws= or run "
+            "`apx-agent scaffold` to bake the schema.",
+            catalog,
+            schema,
+        )
+    tables = resolved_tables
+
+    sql = sql_tool(warehouse_id=warehouse_id)
+
+    # Startup warehouse check — surface missing warehouse in logs before any
+    # user query, not silently on the first SQL call.
+    if warehouse_id is None and ws is not None:
+        from ._sql import get_warehouse_id as _get_wh
+        try:
+            _get_wh(ws)
+        except RuntimeError as _wh_err:
+            logger.warning(
+                "DataAgent(%r, %r): %s — SQL queries will fail until a warehouse "
+                "is created. Create one in your workspace then re-deploy.",
+                catalog, schema, _wh_err,
+            )
+
+    if tables:
+        # The schema's tables become governed resources, declared on the SQL
+        # tool so they flow through the existing tool-based resource collection.
+        attach_resources(
+            sql,
+            [ResourceSpec("uc_table", f"{catalog}.{schema}.{t}") for t in tables],
+        )
+
+    tools: list[Any] = [sql]
+    if include_functions and ws is not None:
+        from .catalog import uc_function_toolkit
+
+        tools += uc_function_toolkit(f"{catalog}.{schema}", ws=ws)
+    if genie_space:
+        tools.append(genie_tool(genie_space))
+    if vector_index:
+        tools.append(vector_search_tool(vector_index))
+    if extra_tools:
+        tools += extra_tools
+
+    grounding = load_okf_grounding() if baked_was_source else None
+    resolved_instructions = instructions or build_instructions_from_schema(
+        catalog, schema, tables, persona=persona, objective=objective, grounding=grounding
+    )
+    return _DataAgentComponents(tools=tools, instructions=resolved_instructions)
 
 
 class DataAgent(LlmAgent):
@@ -46,6 +155,15 @@ class DataAgent(LlmAgent):
         genie_space: Optional Genie space id — adds a ``genie_tool``.
         vector_index: Optional Vector Search index — adds a ``vector_search_tool``.
         instructions: Override the schema-generated grounding instructions.
+        persona: Optional role phrase ("a payroll analyst"). Woven into
+            schema-generated instructions. Ignored when ``instructions`` is given.
+        objective: Optional mission phrase ("surface mismatches between hours
+            worked and paychecks issued"). When both persona and objective are
+            given, the lead becomes "You are {persona} designed to {objective}."
+        tables: Pre-baked schema as ``{table: ["col(type)", ...]}`` (e.g. the
+            ``.apx/schema.json`` manifest). Grounds the agent without a live
+            workspace call. When omitted, falls back to live introspection
+            (if ``ws`` given) then auto-discovery of ``.apx/schema.json``.
         name: Agent name. Defaults to ``"{schema}_data_agent"``.
         extra_tools: Additional tools to append.
         **kwargs: Forwarded to ``LlmAgent`` (``temperature``, ``sub_agents``,
@@ -63,44 +181,74 @@ class DataAgent(LlmAgent):
         genie_space: str | None = None,
         vector_index: str | None = None,
         instructions: str | None = None,
+        persona: str | None = None,
+        objective: str | None = None,
+        tables: dict | None = None,
         name: str | None = None,
         extra_tools: list[Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        from .genie import genie_tool
-        from .sql_tools import sql_tool
-        from .vector_search import vector_search_tool
-
         self.catalog = catalog
         self.schema = schema
 
-        # Introspect once at construction (best-effort) when a client is given.
-        tables = introspect_schema(ws, catalog, schema, warehouse_id) if ws else {}
-
-        sql = sql_tool(warehouse_id=warehouse_id)
-        if tables:
-            # The schema's tables become governed resources, declared on the SQL
-            # tool so they flow through the existing tool-based resource collection.
-            attach_resources(
-                sql,
-                [ResourceSpec("uc_table", f"{catalog}.{schema}.{t}") for t in tables],
-            )
-
-        tools: list[Any] = [sql]
-        if include_functions and ws is not None:
-            from .catalog import uc_function_toolkit
-
-            tools += uc_function_toolkit(f"{catalog}.{schema}", ws=ws)
-        if genie_space:
-            tools.append(genie_tool(genie_space))
-        if vector_index:
-            tools.append(vector_search_tool(vector_index))
-        if extra_tools:
-            tools += extra_tools
-
+        _components = _build_data_tools_and_instructions(
+            catalog=catalog,
+            schema=schema,
+            warehouse_id=warehouse_id,
+            ws=ws,
+            include_functions=include_functions,
+            genie_space=genie_space,
+            vector_index=vector_index,
+            instructions=instructions,
+            persona=persona,
+            objective=objective,
+            tables=tables,
+            extra_tools=extra_tools,
+        )
         super().__init__(
-            tools=tools,
-            instructions=instructions or build_instructions_from_schema(catalog, schema, tables),
+            tools=_components.tools,
+            instructions=_components.instructions,
             name=name or f"{schema}_data_agent",
             **kwargs,
+        )
+
+
+@template
+class DataTemplate:
+    """Talks to a governed Unity Catalog schema (SQL + UC functions, optional
+    Genie / Vector Search) — the reference Template implementation.
+
+    The Spec covers only role/skill inputs. Persona (``model``, instruction
+    tone, generation knobs) is layered later from ``[tool.apx.agent]`` via
+    ``apply_config_knobs``; ``name``/``instructions``/``extra_tools`` from the
+    direct ``DataAgent`` constructor are intentionally out of the Spec for now.
+    """
+
+    name = "data"
+    title = "Data Analyst"
+    description = "Talks to a governed Unity Catalog schema (SQL + UC functions, optional Genie/Vector Search)."
+
+    class Spec(BaseModel):
+        """Spec for DataTemplate. In config dicts use the key ``schema`` (the
+        field is stored as ``schema_name`` to avoid shadowing Pydantic's
+        BaseModel.schema(); access it as ``spec.schema_name`` in code)."""
+
+        model_config = ConfigDict(populate_by_name=True)
+        catalog: str
+        # Access as spec.schema_name in code; 'schema' alias is for config dicts only.
+        schema_name: str = Field(alias="schema")
+        warehouse_id: str | None = None
+        genie_space: str | None = None
+        vector_index: str | None = None
+        include_functions: bool = True
+
+    def build(self, spec: "DataTemplate.Spec", *, ws: Any | None = None) -> DataAgent:
+        return DataAgent(
+            spec.catalog,
+            spec.schema_name,
+            warehouse_id=spec.warehouse_id,
+            ws=ws,
+            include_functions=spec.include_functions,
+            genie_space=spec.genie_space,
+            vector_index=spec.vector_index,
         )

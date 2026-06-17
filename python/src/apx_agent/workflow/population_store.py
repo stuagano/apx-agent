@@ -22,6 +22,16 @@ if TYPE_CHECKING:
     from .loop_agent import Hypothesis, LoopConfig
 
 
+def _esc_sql_str(v: str) -> str:
+    """Escape a value for an inline SQL string literal.
+
+    Escapes backslashes before single quotes (Spark SQL treats backslash as an
+    escape character). Mirrors ``engine_delta._esc`` so backslash-terminated
+    sub-agent output cannot break out of the literal.
+    """
+    return str(v).replace("\\", "\\\\").replace("'", "''")
+
+
 # ---------------------------------------------------------------------------
 # Pareto selection (pure functions, no I/O)
 # ---------------------------------------------------------------------------
@@ -201,10 +211,9 @@ class PopulationStore:
         Requires SparkSession (available in Workflow tasks and notebooks).
         Automatically applies Delta optimizeWrite for efficient small-file handling.
         """
-        from pyspark.sql import SparkSession
         from pyspark.sql.types import (
             StructType, StructField,
-            StringType, IntegerType, DoubleType, BooleanType, TimestampType,
+            StringType, IntegerType, DoubleType, BooleanType,
         )
 
         schema = StructType([
@@ -230,6 +239,7 @@ class PopulationStore:
         ])
 
         spark = self._get_spark()
+        assert spark is not None, "write_hypotheses_spark requires a SparkSession"
         rows  = [h.to_dict() for h in hypotheses]
 
         # Ensure JSON fields are strings (to_dict() already does this, but be safe)
@@ -265,8 +275,10 @@ class PopulationStore:
             self._sql_exec(self._build_insert(chunk))
 
     def _build_insert(self, hypotheses: list["Hypothesis"]) -> str:
-        def _esc(v: str) -> str:
-            return str(v).replace("'", "''")
+        # parent_id below uses repr(); every other string value goes through
+        # _esc_sql_str (backslash-then-quote) so a backslash-terminated
+        # sub-agent value can't break out of the literal.
+        _esc = _esc_sql_str
 
         rows = []
         for h in hypotheses:
@@ -317,6 +329,7 @@ class PopulationStore:
 
         if self._has_spark():
             spark = self._get_spark()
+            assert spark is not None  # guaranteed by _has_spark()
             updates = spark.createDataFrame([
                 {
                     "id": h.id,
@@ -366,10 +379,10 @@ class PopulationStore:
                         fitness_composite    = {h.composite_fitness():.6f},
                         agent_eval_historian = {h.agent_eval_historian:.6f},
                         agent_eval_critic    = {h.agent_eval_critic:.6f},
-                        decoded_sample       = '{h.decoded_sample[:500].replace(chr(39), chr(34))}',
-                        mlflow_run_id        = '{h.mlflow_run_id}',
+                        decoded_sample       = '{_esc_sql_str(h.decoded_sample[:500])}',
+                        mlflow_run_id        = '{_esc_sql_str(h.mlflow_run_id)}',
                         flagged_for_review   = {'true' if h.flagged_for_review else 'false'}
-                    WHERE id = '{h.id}'
+                    WHERE id = '{_esc_sql_str(h.id)}'
                 """)
 
     # ------------------------------------------------------------------
@@ -384,11 +397,22 @@ class PopulationStore:
         return [Hypothesis.from_dict(r) for r in rows]
 
     def load_pareto_survivors(self, generation: int, top_n: int) -> list["Hypothesis"]:
-        """Load top-N by composite fitness from a generation."""
+        """Load top-N by composite fitness from a generation.
+
+        A negative ``generation`` means "the latest generation" — the predicate
+        resolves to ``MAX(generation)`` via a subquery (atomic, and returns an
+        empty list rather than erroring on an empty table). A non-negative value
+        is used as a literal generation filter.
+        """
         from .loop_agent import Hypothesis
+        generation_filter = (
+            f"(SELECT MAX(generation) FROM {self.config.population_table})"
+            if generation < 0
+            else str(int(generation))
+        )
         rows = self._sql_exec(f"""
             SELECT * FROM {self.config.population_table}
-            WHERE generation = {generation}
+            WHERE generation = {generation_filter}
             ORDER BY fitness_composite DESC
             LIMIT {top_n}
         """)
@@ -427,12 +451,15 @@ class PopulationStore:
             statement=sql.strip(),
             wait_timeout="50s",
         )
+        assert resp.status is not None  # SDK always populates status
         if resp.status.state == StatementState.FAILED:
+            assert resp.status.error is not None  # populated when state is FAILED
             raise RuntimeError(
                 f"SQL failed [{resp.status.error.error_code}]: {resp.status.error.message}\n"
                 f"SQL: {sql[:200]}"
             )
         if not resp.result or not resp.result.data_array:
             return []
+        assert resp.manifest is not None and resp.manifest.schema is not None and resp.manifest.schema.columns is not None
         cols = [c.name for c in resp.manifest.schema.columns]
         return [dict(zip(cols, row)) for row in resp.result.data_array]

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ._models import AgentContext
 from ._ui_edit import _find_deploy_root
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
 
@@ -53,14 +52,27 @@ def _write_env_file(path: "Path", updates: "dict[str, str]") -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
-def _render_setup_ui(current: "dict[str, str]") -> str:
-    """Setup wizard page — catalog/schema/warehouse picker + instruction generator."""
+def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
+    """Setup wizard page — catalog/schema/warehouse picker + instruction generator.
+
+    When ``embed=True`` the page drops its nav + deploy chrome so it can be
+    hosted inside an iframe modal (the Edit page's "Generate from data" modal),
+    and posts an ``apx:tool-created`` message to the parent window whenever a
+    tool is created — so the host page can surface it and refresh.
+    """
+    import html as _html
     import json as _json
-    nav = _apx_nav_html("setup")
-    overlay = _deploy_overlay_html()
+    nav = "" if embed else _apx_nav_html("setup")
+    overlay = "" if embed else _deploy_overlay_html()
+    body_attr = ' class="apx-embed"' if embed else ""
     cur_catalog = current.get("DEMO_CATALOG", "")
     cur_schema = current.get("DEMO_SCHEMA", "")
     cur_wh = current.get("WAREHOUSE_ID", "")
+    # HTML-escaped variants for the current-tag labels (the raw values are
+    # still passed to JS via json.dumps below, which is safe for that context).
+    cur_catalog_html = _html.escape(cur_catalog)
+    cur_schema_html = _html.escape(cur_schema)
+    cur_wh_html = _html.escape(cur_wh)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -73,6 +85,9 @@ def _render_setup_ui(current: "dict[str, str]") -> str:
   body {{ background: #0d0d0d; color: #ccc; font-family: system-ui, sans-serif; font-size: 13px; }}
   {_apx_nav_css()}
   .page {{ max-width: 680px; margin: 72px auto 40px; padding: 0 20px; }}
+  /* embedded in the Edit "Generate from data" modal: no nav, tighter top */
+  .apx-embed .page {{ margin: 20px auto 28px; }}
+  .apx-embed h2 {{ display: none; }}
   h2 {{ font-size: 18px; font-weight: 600; color: #fff; margin-bottom: 4px; }}
   .subtitle {{ color: #555; margin-bottom: 28px; font-size: 13px; }}
   .section {{ background: #111; border: 1px solid #1e1e1e; border-radius: 10px;
@@ -168,7 +183,7 @@ def _render_setup_ui(current: "dict[str, str]") -> str:
   .anode-wire-btn:disabled {{ opacity: .5; cursor: not-allowed; }}
 </style>
 </head>
-<body>
+<body{body_attr}>
 {nav}
 <div class="page">
   <h2>Setup</h2>
@@ -177,15 +192,15 @@ def _render_setup_ui(current: "dict[str, str]") -> str:
   <div class="section">
     <div class="section-title">Data Source</div>
     <div class="field">
-      <label>Catalog {('<span class="current-tag">' + cur_catalog + '</span>') if cur_catalog else ''}</label>
+      <label>Catalog {('<span class="current-tag">' + cur_catalog_html + '</span>') if cur_catalog else ''}</label>
       <select id="sel-catalog"><option value="">Loading…</option></select>
     </div>
     <div class="field">
-      <label>Schema {('<span class="current-tag">' + cur_schema + '</span>') if cur_schema else ''}</label>
+      <label>Schema {('<span class="current-tag">' + cur_schema_html + '</span>') if cur_schema else ''}</label>
       <select id="sel-schema" disabled><option value="">Select a catalog first</option></select>
     </div>
     <div class="field">
-      <label>SQL Warehouse {('<span class="current-tag">' + cur_wh + '</span>') if cur_wh else ''}</label>
+      <label>SQL Warehouse {('<span class="current-tag">' + cur_wh_html + '</span>') if cur_wh else ''}</label>
       <select id="sel-warehouse"><option value="">Loading…</option></select>
     </div>
   </div>
@@ -244,8 +259,14 @@ def _render_setup_ui(current: "dict[str, str]") -> str:
     </div>
   </div>
 
-  <div class="section" id="pattern-section">
-    <div class="section-title">Agent Pattern</div>
+  <details class="section" id="pattern-section" style="padding:0">
+    <summary style="cursor:pointer;user-select:none;padding:20px;list-style:none;display:flex;align-items:center;justify-content:space-between">
+      <span class="section-title" style="margin:0">▸ Agent Pattern</span>
+      <span style="font-size:11px;color:#555;text-transform:none;letter-spacing:0">
+        defaults to <code style="color:#888">LlmAgent</code> — click to change
+      </span>
+    </summary>
+    <div style="padding:0 20px 20px">
     <p style="color:#555;font-size:12px;margin-bottom:14px;line-height:1.6">
       Choose how your agent executes. Click a pattern to apply it or see the code.
     </p>
@@ -301,7 +322,8 @@ def _render_setup_ui(current: "dict[str, str]") -> str:
            padding:12px;font-size:11px;color:#ccc;overflow-x:auto;white-space:pre;margin:0;line-height:1.5"></pre>
     </div>
     <div id="pattern-status" style="margin-top:8px;font-size:12px;min-height:16px"></div>
-  </div>
+    </div>
+  </details>
 
   <div class="section" id="instructions-section">
     <div class="section-title">Agent Instructions</div>
@@ -358,6 +380,13 @@ def _render_setup_ui(current: "dict[str, str]") -> str:
 const CUR_CATALOG = {_json.dumps(cur_catalog)};
 const CUR_SCHEMA  = {_json.dumps(cur_schema)};
 const CUR_WH      = {_json.dumps(cur_wh)};
+
+// Escape for HTML text + double-quoted attribute contexts (escapes " too).
+function escHtml(s) {{
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}}
 
 async function loadCatalogs() {{
   const r = await fetch('/_apx/setup/catalogs');
@@ -473,21 +502,24 @@ async function loadTools() {{
     }}
     palette.innerHTML = tools.map(t => {{
       const params = (t.params||[]).map(p =>
-        `<span class="tcard-param">${{p.name}}: ${{p.type}}</span>`).join('');
-      return `<div class="tcard" data-name="${{t.name}}">
+        `<span class="tcard-param">${{escHtml(p.name)}}: ${{escHtml(p.type)}}</span>`).join('');
+      const nm = escHtml(t.name);
+      return `<div class="tcard" data-name="${{nm}}">
         <div class="tcard-header">
-          <span class="tcard-name" title="${{t.name}}">${{t.name}}</span>
+          <span class="tcard-name" title="${{nm}}">${{nm}}</span>
           <a href="/_apx/edit" class="tcard-btn" title="Open in editor"
              style="text-decoration:none;font-size:10px">Edit</a>
-          <button class="tcard-btn tcard-del" onclick="deleteTool('${{t.name}}')"
+          <button class="tcard-btn tcard-del" data-del-name="${{nm}}"
                   title="Delete tool">✕</button>
         </div>
-        ${{t.description ? `<div class="tcard-desc" title="${{t.description}}">${{t.description}}</div>` : ''}}
+        ${{t.description ? `<div class="tcard-desc" title="${{escHtml(t.description)}}">${{escHtml(t.description)}}</div>` : ''}}
         <div class="tcard-params">${{params}}</div>
       </div>`;
     }}).join('');
+    palette.querySelectorAll('.tcard-del').forEach(btn =>
+      btn.addEventListener('click', () => deleteTool(btn.dataset.delName)));
   }} catch(e) {{
-    palette.innerHTML = `<div style="color:#f87171;font-size:12px;grid-column:1/-1">${{e.message}}</div>`;
+    palette.innerHTML = `<div style="color:#f87171;font-size:12px;grid-column:1/-1">${{escHtml(e.message)}}</div>`;
   }}
 }}
 
@@ -543,7 +575,11 @@ async function loadTables(catalog, schema) {{
   btn.disabled = true;
   try {{
     const r = await fetch(`/_apx/wizard/tables?catalog=${{encodeURIComponent(catalog)}}&schema=${{encodeURIComponent(schema)}}`);
-    tableList = await r.json();
+    const data = await r.json();
+    // Endpoint returns {{tables:[...], warehouse_id}}; older code read the
+    // object as if it were the array, so the list was always "No tables found".
+    if (data.error) throw new Error(data.error);
+    tableList = data.tables || [];
     if (!tableList.length) {{
       listEl.innerHTML = '<p style="color:#444;font-size:12px">No tables found in this schema.</p>';
       return;
@@ -602,7 +638,9 @@ document.getElementById('btn-gen-tools').addEventListener('click', async () => {
   btn.disabled = false;
   st.textContent = `${{created}}/${{checked.length}} tools created`;
   st.style.color = created === checked.length ? '#22c55e' : '#f59e0b';
-  if (created > 0) await loadTools();
+  if (created > 0) {{
+    await loadTools();
+  }}
 }});
 
 // trigger table load when schema changes
@@ -686,17 +724,19 @@ function renderAgentNodes() {{
       <textarea class="anode-instructions" id="anode-instr-${{idx}}"
                 oninput="agentNodeState[${{idx}}].instructions=this.value"
                 placeholder="Wire tools above to auto-draft, or write directly…">${{node.instructions||''}}</textarea>
-      <div class="anode-label" style="margin-top:8px">Routing
-        <span style="font-size:10px;color:#444;font-weight:400;margin-left:6px">for Router / Handoff patterns</span>
-      </div>
-      <input id="anode-rk-${{idx}}" type="text" value="${{node.route_key||''}}"
-             placeholder="route key (default: ${{node.name}})"
-             oninput="agentNodeState[${{idx}}].route_key=this.value"
-             style="width:100%;box-sizing:border-box;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px;margin-bottom:4px">
-      <textarea id="anode-rd-${{idx}}"
-                oninput="agentNodeState[${{idx}}].route_description=this.value"
-                placeholder="When should the router route here? (used by RouterAgent)"
-                style="width:100%;box-sizing:border-box;min-height:38px;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px">${{node.route_description||''}}</textarea>
+      <details style="margin-top:8px">
+        <summary class="anode-label" style="cursor:pointer;user-select:none;list-style:none">▸ Routing
+          <span style="font-size:10px;color:#444;font-weight:400;margin-left:6px">for Router / Handoff patterns</span>
+        </summary>
+        <input id="anode-rk-${{idx}}" type="text" value="${{node.route_key||''}}"
+               placeholder="route key (default: ${{node.name}})"
+               oninput="agentNodeState[${{idx}}].route_key=this.value"
+               style="width:100%;box-sizing:border-box;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px;margin:4px 0">
+        <textarea id="anode-rd-${{idx}}"
+                  oninput="agentNodeState[${{idx}}].route_description=this.value"
+                  placeholder="When should the router route here? (used by RouterAgent)"
+                  style="width:100%;box-sizing:border-box;min-height:38px;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px">${{node.route_description||''}}</textarea>
+      </details>
     </div>`;
   }}).join('');
   _refreshHandoffStart();
@@ -911,7 +951,7 @@ document.querySelectorAll('.pcard').forEach(card => {{
       }}
       setActiveCard(d.type);
       status.style.color = '#4ade80';
-      status.textContent = d.changed ? 'Saved — hot-reload in progress' : `Already ${{d.type}}`;
+      status.textContent = d.changed ? 'Saved — restart `apx-agent run` to load' : `Already ${{d.type}}`;
       setTimeout(() => {{ status.textContent = ''; }}, 4000);
     }} catch(e) {{
       status.style.color = '#f87171';
@@ -1426,7 +1466,11 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
     tableCards.innerHTML = '<p style="color:#555">Loading tables… <span class="spinner"></span></p>';
     try {{
       const r = await fetch(`/_apx/wizard/tables?catalog=${{encodeURIComponent(state.catalog)}}&schema=${{encodeURIComponent(state.schema)}}`);
-      const tables = await r.json();
+      const data = await r.json();
+      // Endpoint returns {{tables:[...], warehouse_id}}; older code read the
+      // object as if it were the array, so the list was always "No tables found".
+      if (data.error) throw new Error(data.error);
+      const tables = data.tables || [];
       state.tables = tables;
       if (!tables.length) {{
         tableCards.innerHTML = '<p style="color:#666">No tables found in this schema.</p>';

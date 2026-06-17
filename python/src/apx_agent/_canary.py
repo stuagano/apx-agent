@@ -45,6 +45,7 @@ match the convention.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -175,6 +176,28 @@ def _entity_name(model_full_name: str, version: int | str) -> str:
     return f"{short}-{version}"
 
 
+def _applied_config(endpoint: str, ws: "WorkspaceClient", routes: list[Any]) -> CanaryConfig:
+    """Snapshot after an ``update_config``, with ``traffic_split`` set to the split
+    we just *requested*.
+
+    ``update_config`` is async: a re-read returns the still-active (pre-update)
+    ``config`` until the change applies, with the new split only in
+    ``pending_config`` — so echoing ``get_canary_config().traffic_split`` right
+    after a mutation reports a STALE split. Report the requested split instead so
+    the return value (and the CLI echo) matches what was actually submitted.
+    """
+    from dataclasses import replace
+
+    snapshot = get_canary_config(endpoint, ws=ws)
+    return replace(
+        snapshot,
+        traffic_split={
+            getattr(r, "served_entity_name", ""): getattr(r, "traffic_percentage", 0)
+            for r in routes
+        },
+    )
+
+
 def deploy_canary(
     *,
     endpoint: str,
@@ -244,6 +267,23 @@ def deploy_canary(
         workload_size=workload_size,
     ))
 
+    # No existing served entities to canary against (newly-created or empty
+    # endpoint): there is nothing to split traffic *with*, and Model Serving
+    # rejects a TrafficConfig that doesn't sum to 100. Route 100% to the new
+    # entity — it is the only thing serving.
+    if not seen:
+        routes_only = [Route(served_entity_name=new_entity_name, traffic_percentage=100)]
+        ws.serving_endpoints.update_config(
+            name=endpoint,
+            served_entities=served_inputs,
+            traffic_config=TrafficConfig(routes=routes_only),
+        )
+        logger.info(
+            "deploy_canary: no existing served entities on %s — routing 100%% to %s",
+            endpoint, new_entity_name,
+        )
+        return _applied_config(endpoint, ws, routes_only)
+
     # Redistribute traffic — existing entities share (100 - canary_traffic_pct),
     # weighted by their current allocation; canary gets canary_traffic_pct.
     remaining = 100 - canary_traffic_pct
@@ -288,7 +328,7 @@ def deploy_canary(
         "deploy_canary: %s %% to %s on %s",
         canary_traffic_pct, new_entity_name, endpoint,
     )
-    return get_canary_config(endpoint, ws=ws)
+    return _applied_config(endpoint, ws, routes)
 
 
 def promote_canary(
@@ -329,7 +369,7 @@ def promote_canary(
         traffic_config=TrafficConfig(routes=routes),
     )
     logger.info("promote_canary: 100%% to %s on %s", target, endpoint)
-    return get_canary_config(endpoint, ws=ws)
+    return _applied_config(endpoint, ws, routes)
 
 
 def rollback_canary(
@@ -392,14 +432,32 @@ def analyze_canary(
             "analyze_canary requires mlflow. Install with: pip install 'apx-agent[eval]'"
         ) from e
 
+    # Bound the query to the lookback window so stale traffic can't mask a
+    # regression. MLflow trace search uses a millisecond ``timestamp_ms``.
+    start_time_ms = int((time.time() - lookback_hours * 3600) * 1000)
+    filter_string = f"timestamp_ms > {start_time_ms}"
+
+    from ._mlflow_tracing import search_traces_for_experiment
+
     try:
-        traces_raw = mlflow.search_traces(  # type: ignore[attr-defined]
-            experiment_names=[experiment],
+        # include_spans=False keeps this a metadata-only read so it works even
+        # when blob storage is unreachable (private-link / FEVM workspaces
+        # where *.storage.cloud.databricks.com is blocked). We only read
+        # trace-level tags / status / latency below, never span data.
+        traces_raw = search_traces_for_experiment(
+            experiment,
+            filter_string=filter_string,
             max_results=max_traces,
+            include_spans=False,
         )
     except Exception as e:
-        logger.warning("analyze_canary: search_traces failed: %s", e)
-        return CanaryReport(endpoint=endpoint, lookback_hours=lookback_hours)
+        # Do NOT swallow this into a clean empty report — an empty canary
+        # report reads as "no errors observed" and could greenlight
+        # promoting a bad model. Surface the failure so the operator knows
+        # the analysis did not run (e.g. blocked blob storage, bad token).
+        raise RuntimeError(
+            f"analyze_canary: search_traces failed for experiment {experiment!r}: {e}"
+        ) from e
 
     if hasattr(traces_raw, "to_dict"):
         try:

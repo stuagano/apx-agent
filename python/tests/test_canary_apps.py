@@ -25,14 +25,12 @@ import yaml
 from click.testing import CliRunner
 
 from apx_agent import (
-    AppsCanaryConfig,
     AppsCanaryReport,
     AppsVersionMetrics,
     add_canary_target_to_yml,
     analyze_canary_app,
     canary_app_name,
     canary_target_name,
-    deploy_canary_app,
     promote_canary_app,
     remove_canary_target_from_yml,
     rollback_canary_app,
@@ -191,55 +189,37 @@ def test_remove_canary_target_from_yml_removes_when_present() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_canary_app_writes_yml_and_invokes_bundle(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = _install_mock(monkeypatch)
-    from apx_agent.cli import _run_databricks_cmd  # noqa: F401 — patched above
+def test_deploy_canary_app_delegates_to_deploy_fn(tmp_path: Path) -> None:
+    from apx_agent import _canary_apps
 
-    cfg = deploy_canary_app(
-        cwd=scaffold,
+    yml = tmp_path / "databricks.yml"
+    yml.write_text(
+        "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+        "targets:\n  prod:\n    default: true\n"
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_deploy_fn(*, bundle_target, app_name_override, extra_version_tags):
+        seen.update(
+            bundle_target=bundle_target,
+            app_name_override=app_name_override,
+            extra_version_tags=extra_version_tags,
+        )
+
+    cfg = _canary_apps.deploy_canary_app(
+        cwd=tmp_path,
         bundle_key="my-app",
         base_app_name="my-app",
-        canary_version="feat-x",
+        canary_version="v42",
         traffic_hint=10,
-        run_cmd=_run_databricks_cmd,
-        profile="someprofile",
+        deploy_fn=fake_deploy_fn,
     )
-
-    # YAML mutation landed on disk.
-    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
-    assert "canary-feat-x" in doc["targets"]
-    assert doc["targets"]["canary-feat-x"]["resources"]["apps"]["my-app"]["name"] \
-        == "my-app-canary-feat-x"
-
-    # Subprocess calls dispatched in the right order.
-    assert ["bundle", "deploy", "--target", "canary-feat-x"] in calls
-    assert ["bundle", "run", "my-app", "--target", "canary-feat-x"] in calls
-    assert ["apps", "get", "my-app-canary-feat-x"] in calls
-
-    # Result shape.
-    assert isinstance(cfg, AppsCanaryConfig)
-    assert cfg.bundle_target == "canary-feat-x"
-    assert cfg.canary_app_name == "my-app-canary-feat-x"
-    assert cfg.traffic_hint == 10
-
-
-def test_deploy_canary_app_raises_when_deploy_fails(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _install_mock(monkeypatch, deploy_rc=1)
-    from apx_agent.cli import _run_databricks_cmd
-
-    with pytest.raises(RuntimeError, match="bundle deploy"):
-        deploy_canary_app(
-            cwd=scaffold,
-            bundle_key="my-app",
-            base_app_name="my-app",
-            canary_version="v",
-            traffic_hint=5,
-            run_cmd=_run_databricks_cmd,
-        )
+    assert seen["bundle_target"] == "canary-v42"
+    assert seen["app_name_override"] == "my-app-canary-v42"
+    assert seen["extra_version_tags"] == {"apx.apps.role": "canary"}
+    assert "canary-v42" in yml.read_text()
+    assert cfg.prod_app_name == "my-app"
+    assert cfg.canary_app_name == "my-app-canary-v42"
 
 
 def test_promote_canary_app_redeploys_prod_and_tears_down(
@@ -342,6 +322,8 @@ def test_analyze_canary_app_partitions_by_app_tag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mlflow_stub = SimpleNamespace()
+    # search_traces_for_experiment resolves the experiment name -> id first.
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
     fake_rows = [
         _trace_dict("my-app", 100),
         _trace_dict("my-app", 200),
@@ -383,6 +365,8 @@ def test_analyze_canary_app_returns_zero_buckets_when_no_traces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mlflow_stub = SimpleNamespace()
+    # search_traces_for_experiment resolves the experiment name -> id first.
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
     mlflow_stub.search_traces = lambda **_: []  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "mlflow", mlflow_stub)
 
@@ -402,6 +386,8 @@ def test_analyze_canary_app_handles_search_traces_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mlflow_stub = SimpleNamespace()
+    # search_traces_for_experiment resolves the experiment name -> id first.
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
 
     def _raise(**_: Any) -> Any:
         raise RuntimeError("transient")
@@ -409,35 +395,24 @@ def test_analyze_canary_app_handles_search_traces_exception(
     mlflow_stub.search_traces = _raise  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "mlflow", mlflow_stub)
 
-    report = analyze_canary_app(
-        prod_app_name="my-app", canary_app_name="my-app-canary-x",
-        experiment="exp", lookback_hours=1,
-    )
-    # Empty report — no apps, doesn't raise.
-    assert report.apps == ()
+    # A read failure must NOT collapse into a clean empty report (which reads
+    # as "no errors observed" and could greenlight promoting a bad App). The
+    # failure is surfaced as a RuntimeError that names the experiment and
+    # chains the original cause.
+    with pytest.raises(RuntimeError, match="search_traces failed") as exc_info:
+        analyze_canary_app(
+            prod_app_name="my-app", canary_app_name="my-app-canary-x",
+            experiment="exp", lookback_hours=1,
+        )
+
+    assert "exp" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert "transient" in str(exc_info.value.__cause__)
 
 
 # ---------------------------------------------------------------------------
 # CLI dispatch — `apx canary deploy --target apps`
 # ---------------------------------------------------------------------------
-
-
-def test_cli_canary_deploy_apps_writes_yml_and_runs_bundle(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = _install_mock(monkeypatch)
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["canary", "deploy", "--target", "apps", "--canary-version", "feat-x",
-         "--traffic", "20"],
-    )
-    assert result.exit_code == 0, result.output
-    # YAML mutated.
-    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
-    assert "canary-feat-x" in doc["targets"]
-    # Subprocess dispatched.
-    assert ["bundle", "deploy", "--target", "canary-feat-x"] in calls
 
 
 def test_cli_canary_deploy_apps_requires_canary_version(
@@ -467,10 +442,12 @@ def test_cli_canary_deploy_default_target_still_model_serving(
         return SimpleNamespace(traffic_split={"a-1": 90, "a-2": 10})
 
     monkeypatch.setattr("apx_agent.deploy_canary", fake_deploy)
+    # Patch the CLI's connection helper (not databricks.sdk.WorkspaceClient):
+    # _connect_workspace probes auth via Config() before constructing the
+    # client, so patching the SDK class alone still hits the auth error.
     monkeypatch.setattr(
-        "databricks.sdk.WorkspaceClient",
-        lambda *a, **k: SimpleNamespace(),
-        raising=False,
+        "apx_agent.cli._connect_workspace",
+        lambda profile=None: (SimpleNamespace(), SimpleNamespace()),
     )
     # Provide a click context.
     runner = CliRunner()
@@ -487,38 +464,20 @@ def test_cli_canary_deploy_default_target_still_model_serving(
     assert captured.get("canary_traffic_pct") == 10
 
 
-def test_cli_canary_promote_apps_dispatches_correctly(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Seed a canary block so the teardown step has something to remove.
-    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
-    add_canary_target_to_yml(
-        doc, bundle_key="my-app", base_app_name="my-app", version="feat-x",
-    )
-    (scaffold / "databricks.yml").write_text(yaml.safe_dump(doc))
-
-    calls = _install_mock(monkeypatch)
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["canary", "promote", "--target", "apps", "--canary-version", "feat-x"],
-    )
-    assert result.exit_code == 0, result.output
-    assert ["bundle", "deploy", "--target", "prod"] in calls
-    assert ["apps", "delete", "my-app-canary-feat-x"] in calls
+# NOTE: the old `test_cli_canary_promote_apps_dispatches_correctly` was removed
+# in P2. It asserted the thin promote (bare `bundle deploy --target prod` +
+# teardown). Promote is now gate-don't-mutate (resolve the canary UC manifest →
+# verify HEAD == the soaked git SHA + clean tree → deploy prod via the shared
+# faithful path → move @prod alias → teardown). That behavior is covered by the
+# `*promote_apps*` tests in test_deploy_apps.py.
 
 
-def test_cli_canary_rollback_apps_dispatches_correctly(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = _install_mock(monkeypatch)
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["canary", "rollback", "--target", "apps", "--canary-version", "prev"],
-    )
-    assert result.exit_code == 0, result.output
-    assert ["bundle", "deploy", "--target", "prod"] in calls
+# NOTE: the old `test_cli_canary_rollback_apps_dispatches_correctly` was removed
+# in P2. The CLI `canary rollback --target apps` is now gate-don't-mutate and
+# UC-version-addressed (--to-version) instead of the thin --canary-version
+# re-deploy. New behavior is covered by `*rollback_apps*` in test_deploy_apps.py.
+# (The standalone library function `rollback_canary_app` is unchanged and still
+# covered by its own function-level tests above.)
 
 
 def test_cli_canary_analyze_apps_uses_experiment_from_pyproject(
@@ -526,6 +485,8 @@ def test_cli_canary_analyze_apps_uses_experiment_from_pyproject(
 ) -> None:
     # Stub mlflow before invoking.
     mlflow_stub = SimpleNamespace()
+    # search_traces_for_experiment resolves the experiment name -> id first.
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
     mlflow_stub.search_traces = lambda **_: [  # type: ignore[attr-defined]
         _trace_dict("my-app", 100),
         _trace_dict("my-app-canary-x", 50),
@@ -555,6 +516,8 @@ def test_cli_canary_analyze_apps_json_output(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mlflow_stub = SimpleNamespace()
+    # search_traces_for_experiment resolves the experiment name -> id first.
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
     mlflow_stub.search_traces = lambda **_: [  # type: ignore[attr-defined]
         _trace_dict("my-app", 100),
     ]
@@ -590,3 +553,48 @@ def test_cli_canary_promote_apps_requires_canary_version(
     )
     assert result.exit_code != 0
     assert "--canary-version" in result.output
+
+
+def test_deploy_canary_app_stamps_git_sha_tag(tmp_path: Path) -> None:
+    """P1: when git_sha is provided, it lands as apx.apps.git_sha alongside role."""
+    from apx_agent import _canary_apps
+
+    yml = tmp_path / "databricks.yml"
+    yml.write_text(
+        "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+        "targets:\n  prod:\n    default: true\n"
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_deploy_fn(*, bundle_target, app_name_override, extra_version_tags):
+        seen["tags"] = extra_version_tags
+
+    _canary_apps.deploy_canary_app(
+        cwd=tmp_path, bundle_key="my-app", base_app_name="my-app",
+        canary_version="v42", traffic_hint=10, deploy_fn=fake_deploy_fn,
+        git_sha="abc123def456",
+    )
+    assert seen["tags"] == {"apx.apps.role": "canary", "apx.apps.git_sha": "abc123def456"}
+
+
+def test_deploy_canary_app_omits_git_sha_tag_when_none(tmp_path: Path) -> None:
+    """P1: no git_sha → only the role tag (no empty/None git_sha tag)."""
+    from apx_agent import _canary_apps
+
+    yml = tmp_path / "databricks.yml"
+    yml.write_text(
+        "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+        "targets:\n  prod:\n    default: true\n"
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_deploy_fn(*, bundle_target, app_name_override, extra_version_tags):
+        seen["tags"] = extra_version_tags
+
+    _canary_apps.deploy_canary_app(
+        cwd=tmp_path, bundle_key="my-app", base_app_name="my-app",
+        canary_version="v42", traffic_hint=10, deploy_fn=fake_deploy_fn,
+        git_sha=None,
+    )
+    assert seen["tags"] == {"apx.apps.role": "canary"}
+    assert "apx.apps.git_sha" not in seen["tags"]

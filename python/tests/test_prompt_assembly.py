@@ -14,6 +14,7 @@ from apx_agent import (
 )
 from apx_agent._example import FindSimilarOptions
 from apx_agent._memory import RecallOptions
+from apx_agent._prompt_assembly import compose_instructions
 
 
 # ---------------------------------------------------------------------------
@@ -293,3 +294,20 @@ class TestAssembleContext:
         )
         assert "gold" in out
         assert "bronze" not in out
+
+
+# ---------------------------------------------------------------------------
+# compose_instructions
+# ---------------------------------------------------------------------------
+
+
+def test_compose_overlays_persona_above_grounding():
+    out = compose_instructions(base="GROUNDING", overlay="PERSONA")
+    assert out.index("PERSONA") < out.index("GROUNDING")
+    assert "PERSONA" in out and "GROUNDING" in out
+
+
+def test_compose_returns_single_side_when_other_empty():
+    assert compose_instructions(base="GROUNDING", overlay="") == "GROUNDING"
+    assert compose_instructions(base="", overlay="PERSONA") == "PERSONA"
+    assert compose_instructions(base="  ", overlay=None) == ""

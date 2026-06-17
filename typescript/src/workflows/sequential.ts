@@ -70,23 +70,31 @@ export class SequentialAgent implements Runnable {
     let context = this.prependInstructions(messages, agentState);
     let result = '';
 
-    for (let i = 0; i < this.agents.length; i++) {
-      const agent = this.agents[i];
+    try {
+      for (let i = 0; i < this.agents.length; i++) {
+        const agent = this.agents[i];
 
-      // Clear turn-scoped temp values before each step
-      agentState.clearTemp();
+        // Clear turn-scoped temp values before each step
+        agentState.clearTemp();
 
-      // engine.step replays the cached output on resume, otherwise invokes
-      // the handler and persists the result.
-      result = await this.engine.step<string>(runId, `step-${i}`, () =>
-        agent.run(context, agentState),
-      );
+        // engine.step replays the cached output on resume, otherwise invokes
+        // the handler and persists the result.
+        result = await this.engine.step<string>(runId, `step-${i}`, () =>
+          agent.run(context, agentState),
+        );
 
-      if (agent.outputKey) {
-        agentState.set(agent.outputKey, result);
+        if (agent.outputKey) {
+          agentState.set(agent.outputKey, result);
+        }
+
+        context = [...context, { role: 'assistant', content: result }];
       }
-
-      context = [...context, { role: 'assistant', content: result }];
+    } catch (e) {
+      // A thrown step would otherwise leave the run stuck in 'running',
+      // indistinguishable from in-flight in listRuns/getRun. Mark it failed
+      // before re-throwing so monitoring/resume stays accurate. (M28)
+      await this.engine.finishRun(runId, 'failed', e instanceof Error ? e.message : String(e));
+      throw e;
     }
 
     await this.engine.finishRun(runId, 'completed', result);

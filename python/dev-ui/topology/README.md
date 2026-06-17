@@ -25,7 +25,7 @@ npm install                  # one-time
 npm run dev                  # http://localhost:5174
 ```
 
-The dev server proxies `/_apx/topology.json` and `/_apx/topology/inspect/*` to `http://localhost:8000` — run `apx dev` in another terminal against an example agent first.
+The dev server proxies `/_apx/topology.json` and `/_apx/topology/inspect/*` to `http://localhost:8000` — run `apx-agent dev` in another terminal against an example agent first.
 
 If the backend isn't running, `App.tsx` falls back to `sample-topology.json` in dev mode so the React surface can be developed standalone.
 

@@ -8,8 +8,8 @@ Serving endpoints.
 
 Linting is best-effort and static — it can only see what's wired
 into the agent tree at import time. Behavior bugs (does the agent
-actually do the right thing?) belong in ``apx eval``. Smoke tests
-(does the agent crash on a basic prompt?) belong in ``apx test``.
+actually do the right thing?) belong in ``apx-agent eval``. Smoke tests
+(does the agent crash on a basic prompt?) belong in ``apx-agent test``.
 
 The lint catalog (rule codes are stable; severities can tighten over time):
 

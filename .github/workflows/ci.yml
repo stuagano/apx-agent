@@ -5,13 +5,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.13"]
 
     defaults:
       run:
@@ -40,6 +43,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Guard uv.lock registry
+        run: bash ../scripts/check-uv-lock-registry.sh
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0

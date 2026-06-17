@@ -36,24 +36,34 @@ Hosting decision matrix:
       deploy. Each request runs as the model's service principal unless the
       caller threads a user token through ``custom_inputs``.
 
-Requires the ``langgraph`` and ``eval`` (mlflow) extras::
+Requires the ``eval`` extra (mlflow)::
 
-    pip install 'apx-agent[langgraph,eval]'
+    pip install 'apx-agent[eval]'
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Generator
+import uuid
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Generator, cast
 
 from ._agents import BaseAgent
 from ._audit import AuditAttrs, set_audit_attrs
 from ._compile import compile_to_langgraph
+from ._conversation import (
+    ConversationItem,
+    ConversationStore,
+    FunctionCallData,
+    FunctionCallOutputData,
+    MessageData,
+    NewConversationItem,
+    synthesize_conversation_title,
+)
 from ._mlflow_tracing import safe_span, set_span_outputs
 
 if TYPE_CHECKING:
-    from databricks.sdk import WorkspaceClient
     from mlflow.types.agent import (
         ChatAgentChunk,
         ChatAgentMessage,
@@ -63,55 +73,241 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ── ConversationStore ↔ ChatAgentMessage conversion ──────────────────────────
+
+
+def _chat_msg_to_new_items(
+    msg: "ChatAgentMessage",
+    model: str,
+    response_id: str,
+) -> list[NewConversationItem]:
+    """Convert a single ChatAgentMessage to one or more NewConversationItem objects.
+
+    Tool-call assistant messages expand to N ``function_call`` items sharing the
+    same ``response_id``; plain text messages become a single ``message`` item;
+    tool result messages (role ``"tool"``) become ``function_call_output`` items.
+
+    :param msg: The MLflow ChatAgentMessage to convert.
+    :param model: The model/endpoint name, e.g. ``"databricks-claude-sonnet-4-6"``.
+        Required for assistant-role items.
+    :param response_id: Logical turn ID linking input and output items,
+        e.g. ``"turn_abc123"``.
+    :returns: A list of :class:`NewConversationItem` objects (may be empty for
+        unsupported roles).
+    """
+    if msg.role == "tool":
+        return [NewConversationItem(
+            type="function_call_output",
+            response_id=response_id,
+            data=FunctionCallOutputData(
+                call_id=msg.tool_call_id or "",  # str field; ChatAgentMessage.tool_call_id is Optional
+                output=msg.content or "",        # str field; ChatAgentMessage.content is Optional
+            ),
+        )]
+
+    if msg.role == "assistant" and msg.tool_calls:
+        items: list[NewConversationItem] = []
+        for tc in msg.tool_calls:
+            tc_d = tc.model_dump() if hasattr(tc, "model_dump") else tc
+            if not isinstance(tc_d, dict):
+                continue
+            fn = tc_d.get("function") or {}
+            if not isinstance(fn, dict):
+                fn = {}
+            items.append(NewConversationItem(
+                type="function_call",
+                response_id=response_id,
+                data=FunctionCallData(
+                    agent=model,
+                    name=fn.get("name") or "",        # str field; tool_call dicts may omit name
+                    arguments=fn.get("arguments") or "{}",  # str field; default to empty JSON obj
+                    call_id=tc_d.get("id") or "",     # str field; tool_call dicts may omit id
+                ),
+            ))
+        return items
+
+    if msg.role not in ("user", "assistant"):
+        logger.warning(
+            "Skipping conversation item with unsupported role %r (only 'user', "
+            "'assistant', 'tool' are stored)", msg.role
+        )
+        return []
+
+    content_type = "output_text" if msg.role == "assistant" else "input_text"
+    return [NewConversationItem(
+        type="message",
+        response_id=response_id,
+        data=MessageData(
+            role=msg.role,  # type: ignore[arg-type]
+            content=[{"type": content_type, "text": msg.content or ""}],  # str field
+            agent=model if msg.role == "assistant" else None,
+        ),
+    )]
+
+
+def _conv_items_to_chat_msgs(items: list[ConversationItem]) -> list["ChatAgentMessage"]:
+    """Convert a list of ConversationItems to ChatAgentMessage objects for history replay.
+
+    Consecutive ``function_call`` items sharing the same ``response_id`` are
+    coalesced into a single assistant ChatAgentMessage with ``tool_calls`` set,
+    matching the format the LangGraph chat loop expects.
+
+    :param items: Ascending-ordered ConversationItems from the store.
+    :returns: A list of :class:`ChatAgentMessage` objects suitable for prepending
+        to the current turn's messages.
+    """
+    from mlflow.types.agent import ChatAgentMessage
+
+    result: list[ChatAgentMessage] = []
+    i = 0
+    while i < len(items):
+        item = items[i]
+        if item.type == "message":
+            data: MessageData = item.data  # type: ignore[assignment]
+            text = "".join(
+                b.get("text", "") for b in data.content
+                if isinstance(b, dict) and "text" in b
+            )
+            result.append(ChatAgentMessage(role=data.role, content=text, id=item.id))
+            i += 1
+        elif item.type == "function_call":
+            # Coalesce consecutive function_call items with the same response_id
+            # into one assistant message so the LLM sees paired tool_call/tool_result.
+            current_rid = item.response_id
+            tool_calls: list[dict[str, Any]] = []
+            while (
+                i < len(items)
+                and items[i].type == "function_call"
+                and items[i].response_id == current_rid
+            ):
+                fc: FunctionCallData = items[i].data  # type: ignore[assignment]
+                tool_calls.append({
+                    "id": fc.call_id,
+                    "type": "function",
+                    "function": {"name": fc.name, "arguments": fc.arguments},
+                })
+                i += 1
+            result.append(ChatAgentMessage(
+                role="assistant",
+                content="",
+                id=items[i - 1].id,
+                tool_calls=cast("Any", tool_calls) if tool_calls else None,
+            ))
+        elif item.type == "function_call_output":
+            fco: FunctionCallOutputData = item.data  # type: ignore[assignment]
+            result.append(ChatAgentMessage(
+                role="tool",
+                content=fco.output,
+                id=item.id,
+                tool_call_id=fco.call_id,
+            ))
+            i += 1
+        else:
+            i += 1  # skip reasoning, compaction, native_tool
+    return result
+
+
+@dataclass(frozen=True)
+class _WsAndHeaders:
+    ws: Any
+    headers: Any
+
+
+@dataclass(frozen=True)
+class _ChatConvLoad:
+    """Loaded or created conversation with its history as ChatAgentMessages.
+
+    :param conversation_id: The conversation key from ``custom_inputs``,
+        e.g. ``"session-abc123"``.
+    :param messages: History messages already persisted for this conversation,
+        converted to ``ChatAgentMessage`` format. Empty list for a new conversation.
+    :param is_new: ``True`` when the conversation row was just created (first
+        turn). Used to gate title synthesis so we only set it once.
+    """
+
+    conversation_id: str
+    messages: list[Any]  # list[ChatAgentMessage]; Any avoids mlflow import at class-def time
+    is_new: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Auth resolution — closure-based, identical scheme to _defaults._make_workspace_client
 # ---------------------------------------------------------------------------
 
 
-def _resolve_ws_for_request(
+def _resolve_ws_and_headers(
     custom_inputs: dict[str, Any] | None,
-    *,
-    headers: Any = None,
-) -> "WorkspaceClient":
-    """Build the per-request WorkspaceClient.
+) -> _WsAndHeaders:
+    """Resolve the per-request WorkspaceClient AND DatabricksAppsHeaders from
+    a single :func:`extract_obo_headers` call, so ws-identity and
+    memory-principal always come from the same source.
 
-    Delegates to :func:`apx_agent._obo.extract_obo_headers` for the
-    normalization so the Model Serving and Apps runtimes share a single source
-    of truth for OBO resolution.
-
-    Args:
-        custom_inputs: ``custom_inputs`` from the request payload. The
-            authoritative source: a caller-supplied ``user_token`` here wins
-            over a header-injected one.
-        headers: Optional per-request HTTP headers (a mapping or starlette
-            ``Headers``). Used as the fallback source for OBO context when
-            the SDK is invoked from a FastAPI route directly (e.g. the Apps
-            runtime). Default: ``None``.
-
-    Resolution order:
-      1. If a ``user_token`` is found (custom_inputs first, headers second) →
-         OBO (user-scope) ``WorkspaceClient(token=..., host=...)``.
-      2. Else fall back to ``_make_workspace_client()`` (app SP via
-         oauth-m2m if the env vars are set, else CLI auto-detect for local
-         dev).
+    Returns:
+        ``(ws, headers)`` where ``headers`` is a :class:`DatabricksAppsHeaders`
+        instance when ``custom_inputs`` carries a ``user_id``, else ``None``.
+        Keeping ``headers=None`` when there is no identity preserves the
+        existing null-principal behaviour for requests without a user context.
     """
-    from ._defaults import _make_workspace_client
+    from pydantic import SecretStr
+
+    from ._defaults import DatabricksAppsHeaders, _make_workspace_client
     from ._obo import extract_obo_headers
 
-    obo = extract_obo_headers(custom_inputs=custom_inputs, headers=headers)
+    # Model Serving has no HTTP-header source for identity — custom_inputs only.
+    obo = extract_obo_headers(custom_inputs=custom_inputs)
+
+    # Build the per-request WorkspaceClient (same logic as _resolve_ws_for_request).
     if obo.get("user_token"):
-        return _make_workspace_client(
+        ws = _make_workspace_client(
             token=obo["user_token"],
             host=obo.get("workspace_host"),
         )
+    else:
+        ws = _make_workspace_client()
 
-    return _make_workspace_client()
+    # Build headers only when we have a user_id to avoid replacing None with an
+    # all-None DatabricksAppsHeaders (which would change the compile-context
+    # semantics for tools that check ``if ctx.headers``).
+    headers: Any = None
+    if obo.get("user_id"):
+        token_raw = obo.get("user_token")
+        headers = DatabricksAppsHeaders(
+            host=obo.get("workspace_host"),
+            user_name=None,
+            user_id=obo.get("user_id"),
+            user_email=obo.get("user_email"),
+            request_id=None,
+            token=SecretStr(token_raw) if token_raw else None,
+        )
+
+    return _WsAndHeaders(ws=ws, headers=headers)
 
 
 # ---------------------------------------------------------------------------
 # Message conversion: ChatAgentMessage ↔ langchain BaseMessage
 # ---------------------------------------------------------------------------
+
+
+def _coerce_tool_args(arguments: Any) -> dict[str, Any]:
+    """Coerce a tool-call ``arguments`` value to the dict langchain requires.
+
+    ``ChatAgentMessage`` tool calls carry ``arguments`` as a JSON string on the
+    wire (and so does anything round-tripped through ``session.history``);
+    langchain ``AIMessage.tool_calls[*].args`` validates as a dict and raises on
+    a string. Parse JSON strings; fall back to an empty dict for unparseable or
+    non-dict values rather than crashing the whole conversion.
+    """
+    import json
+
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str) and arguments.strip():
+        try:
+            parsed = json.loads(arguments)
+        except (ValueError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def _to_langchain_messages(messages: list["ChatAgentMessage"]) -> list[Any]:
@@ -132,11 +328,23 @@ def _to_langchain_messages(messages: list["ChatAgentMessage"]) -> list[Any]:
         elif m.role == "assistant":
             tool_calls = []
             for tc in m.tool_calls or []:
-                fn = (tc or {}).get("function", {}) if isinstance(tc, dict) else {}
+                # ``tc`` may be a pydantic ToolCall (m.tool_calls path) or a
+                # plain dict (history-prepend path). Normalize to a dict so we
+                # don't silently drop name/args/id — which would orphan the
+                # following ToolMessage (Databricks-Claude rejects a tool_result
+                # whose tool_call_id matches no AIMessage tool call).
+                tc_d = tc.model_dump() if hasattr(tc, "model_dump") else tc
+                if not isinstance(tc_d, dict):
+                    tc_d = {}
+                fn = tc_d.get("function", {})
+                if not isinstance(fn, dict):
+                    fn = {}
                 tool_calls.append({
                     "name": fn.get("name", ""),
-                    "args": fn.get("arguments", {}),
-                    "id": tc.get("id", "") if isinstance(tc, dict) else "",
+                    # langchain validates args as a dict and raises on a JSON
+                    # string (the wire shape persisted to session history).
+                    "args": _coerce_tool_args(fn.get("arguments", {})),
+                    "id": tc_d.get("id", ""),
                 })
             out.append(AIMessage(content=m.content or "", tool_calls=tool_calls))
         elif m.role == "tool":
@@ -156,14 +364,18 @@ def _from_langchain_message(msg: Any, idx: int) -> "ChatAgentMessage":
     content = msg.content if isinstance(msg.content, str) else str(msg.content)
 
     if isinstance(msg, AIMessage):
+        import json
         tool_calls = []
         for tc in msg.tool_calls or []:
+            # ChatAgentMessage requires `arguments` to be a JSON string;
+            # langchain hands them back as a dict.
+            args = tc.get("args", {})
             tool_calls.append({
                 "id": tc.get("id", ""),
                 "type": "function",
                 "function": {
                     "name": tc.get("name", ""),
-                    "arguments": tc.get("args", {}),
+                    "arguments": args if isinstance(args, str) else json.dumps(args),
                 },
             })
         return ChatAgentMessage(
@@ -173,11 +385,13 @@ def _from_langchain_message(msg: Any, idx: int) -> "ChatAgentMessage":
             tool_calls=tool_calls or None,
         )
     if isinstance(msg, ToolMessage):
+        # ChatAgentMessage requires both name and tool_call_id for tool msgs.
         return ChatAgentMessage(
             role="tool",
             content=content,
             id=msg_id,
-            tool_call_id=msg.tool_call_id,
+            name=getattr(msg, "name", None) or "tool",
+            tool_call_id=msg.tool_call_id or "",
         )
     if isinstance(msg, SystemMessage):
         return ChatAgentMessage(role="system", content=content, id=msg_id)
@@ -197,7 +411,8 @@ def chat_agent_for(
     agent: BaseAgent,
     *,
     model: str,
-    session_store: Any | None = None,
+    conversation_store: ConversationStore | None = None,
+    agent_id: str | None = None,
 ) -> Any:
     """Return an MLflow ``ChatAgent`` wrapping ``agent``.
 
@@ -205,12 +420,16 @@ def chat_agent_for(
         agent: An apx-agent ``BaseAgent`` (currently ``LlmAgent`` or
             ``SequentialAgent`` — see ``compile_to_langgraph`` for the list).
         model: Databricks serving endpoint name passed through to compile.
-        session_store: Optional ``SessionStore`` for multi-turn memory.
-            When provided, the returned ChatAgent reads ``session_id`` from
-            ``custom_inputs`` and uses it to load history before the LLM
-            sees the new turn, then appends new messages and persists.
-            When ``custom_inputs["session_id"]`` is absent, sessions are
-            silently skipped (single-turn behavior preserved).
+        conversation_store: Optional :class:`ConversationStore` for multi-turn
+            memory. When provided, the returned ChatAgent reads ``session_id``
+            from ``custom_inputs`` (or ``conversation_id`` from ``context``,
+            bridged in ``_invocations.py``) and uses it to load prior turns
+            before the LLM sees the new turn, then appends new items and persists.
+            When the key is absent, multi-turn memory is silently skipped.
+        agent_id: Identifier bound to conversations created by this agent,
+            e.g. ``"my-agent"``. Pass the SAME name readers filter by — the
+            dev-UI History panel lists ``list_conversations(agent_id=
+            config.name)``. Falls back to ``agent.name`` when omitted.
 
     Returns:
         An instance of an ``mlflow.pyfunc.ChatAgent`` subclass. Usable
@@ -220,15 +439,12 @@ def chat_agent_for(
     compile the agent. Compilation happens per request inside ``predict`` so
     the per-request user-scoped WorkspaceClient can be threaded through.
     """
-    from mlflow.pyfunc import ChatAgent
+    from mlflow.pyfunc import ChatAgent  # type: ignore[attr-defined]  # re-exported from mlflow.pyfunc.model; stub omits it
     from mlflow.types.agent import (
         ChatAgentChunk,
         ChatAgentMessage,
         ChatAgentResponse,
-        ChatContext,
     )
-
-    from ._session import Session, append_turn, load_or_create_session
 
     class _ApxChatAgent(ChatAgent):
         """MLflow ChatAgent backed by an apx-agent declarative tree."""
@@ -237,11 +453,15 @@ def chat_agent_for(
             self,
             inner: BaseAgent,
             model_endpoint: str,
-            session_store: Any | None = None,
+            conversation_store: ConversationStore | None = None,
+            agent_id: str | None = None,
         ) -> None:
             self._agent = inner
             self._model = model_endpoint
-            self._session_store = session_store
+            self._conversation_store = conversation_store
+            # Bound onto conversations at creation so agent-filtered readers
+            # (dev-UI History panel) can see them.
+            self._agent_id = agent_id if agent_id is not None else getattr(inner, "name", None)
 
         def _resolve_model(self) -> str:
             """Return the model endpoint to use for this request.
@@ -251,30 +471,100 @@ def chat_agent_for(
             re-logging the artifact. Falls back to the compile-time model
             otherwise.
             """
-            import os
             return os.environ.get("APX_AGENT_MODEL_OVERRIDE") or self._model
 
-        def _load_session(self, custom_inputs: dict[str, Any] | None) -> Session | None:
-            if self._session_store is None or not custom_inputs:
-                return None
-            session_id = custom_inputs.get("session_id")
-            if not session_id:
-                return None
-            return load_or_create_session(self._session_store, session_id)
-
-        def _persist_turn(
+        def _load_or_create_conversation(
             self,
-            session: Session | None,
+            custom_inputs: dict[str, Any] | None,
+        ) -> _ChatConvLoad | None:
+            """Load the conversation and return its id and history.
+
+            Returns ``None`` when no conversation store is configured or no
+            session key is present in ``custom_inputs``. On backend failure,
+            logs a warning and returns ``None`` (degrades to a sessionless turn).
+
+            :param custom_inputs: Per-request custom inputs dict from the caller,
+                e.g. ``{"session_id": "my_session"}``.
+            :returns: A :class:`_ChatConvLoad` on success; ``None`` otherwise.
+            """
+            if self._conversation_store is None or not custom_inputs:
+                return None
+            conv_id = custom_inputs.get("session_id")
+            if not conv_id:
+                return None
+            try:
+                existing = self._conversation_store.get_conversation(conv_id)
+                is_new = existing is None
+                if is_new:
+                    self._conversation_store.create_conversation(
+                        id=conv_id, agent_id=self._agent_id
+                    )
+                page = self._conversation_store.list_items(
+                    conv_id, order="asc", limit=10_000
+                )
+                history = _conv_items_to_chat_msgs(page.data)
+                return _ChatConvLoad(
+                    conversation_id=conv_id, messages=history, is_new=is_new
+                )
+            except Exception as exc:
+                logger.warning(
+                    "_load_or_create_conversation(%s) degraded to sessionless: %s",
+                    conv_id, exc,
+                )
+                return None
+
+        def _persist_conv_turn(
+            self,
+            conv_id: str | None,
             *,
             input_messages: list[ChatAgentMessage],
             new_messages: list[ChatAgentMessage],
+            model: str,
+            response_id: str,
+            is_new: bool = False,
         ) -> None:
-            if session is None or self._session_store is None:
+            """Append the inbound + outbound messages as ConversationStore items.
+
+            No-ops when ``conv_id`` is ``None`` or no conversation store is set.
+            On backend failure, logs a warning (degrades to ephemeral turn).
+
+            :param conv_id: The conversation id to append to.
+            :param input_messages: User-sent messages for this turn.
+            :param new_messages: Agent-generated messages produced this turn.
+            :param model: Model endpoint name, e.g. ``"databricks-claude-sonnet-4-6"``.
+            :param response_id: Logical turn ID linking input and output items.
+            :param is_new: ``True`` when the conversation was just created. When
+                set, a title is synthesized from the first user message and
+                persisted via ``update_conversation``.
+            """
+            if conv_id is None or self._conversation_store is None:
                 return
-            input_dicts = [m.model_dump() for m in input_messages]
-            new_dicts = [m.model_dump() for m in new_messages]
-            append_turn(session, input_messages=input_dicts, new_messages=new_dicts)
-            self._session_store.put(session)
+            all_msgs = list(input_messages) + list(new_messages)
+            new_items = [
+                item
+                for msg in all_msgs
+                for item in _chat_msg_to_new_items(msg, model, response_id)
+            ]
+            try:
+                self._conversation_store.append(conv_id, new_items)
+                if is_new:
+                    user_item = next(
+                        (it for it in new_items
+                         if it.type == "message" and isinstance(it.data, MessageData)
+                         and it.data.role == "user"),
+                        None,
+                    )
+                    if user_item is not None:
+                        assert isinstance(user_item.data, MessageData)
+                        title = synthesize_conversation_title(user_item.data.content)
+                        if title:
+                            self._conversation_store.update_conversation(
+                                conv_id, title=title
+                            )
+            except Exception as exc:
+                logger.warning(
+                    "_persist_conv_turn(%s) failed — turn not saved: %s", conv_id, exc
+                )
 
         def predict(
             self,
@@ -282,23 +572,19 @@ def chat_agent_for(
             context: ChatContext | None = None,
             custom_inputs: dict[str, Any] | None = None,
         ) -> ChatAgentResponse:
-            session = self._load_session(custom_inputs)
-            # If a session exists, prepend its history so the LLM sees prior
-            # turns. The session itself owns the history; the user just sent
-            # ``messages`` for this turn.
-            prepended_messages: list[ChatAgentMessage] = list(messages)
-            if session is not None and session.history:
-                history_msgs = [
-                    ChatAgentMessage(
-                        role=m.get("role", "user"),
-                        content=m.get("content", ""),
-                        id=m.get("id"),
-                        tool_calls=m.get("tool_calls"),
-                        tool_call_id=m.get("tool_call_id"),
-                    )
-                    for m in session.history
-                ]
-                prepended_messages = history_msgs + prepended_messages
+            # Idempotent, never-raises: ensure the in-process trace-capture
+            # SpanProcessor is attached so the dev-UI Trace detail can serve
+            # this run from memory (FEVM blob egress is blocked).
+            from ._trace_store import ensure_capture_processor
+            ensure_capture_processor()
+
+            conv = self._load_or_create_conversation(custom_inputs)
+            conv_id = conv.conversation_id if conv is not None else None
+            history_msgs = conv.messages if conv is not None else []
+
+            prepended_messages: list[ChatAgentMessage] = (
+                history_msgs + list(messages) if history_msgs else list(messages)
+            )
 
             user_token_provided = bool(
                 custom_inputs and custom_inputs.get("user_token")
@@ -313,17 +599,18 @@ def chat_agent_for(
                     AuditAttrs.MODEL_ENDPOINT: effective_model,
                     AuditAttrs.MODEL_INPUT_MESSAGES: len(prepended_messages),
                     AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
-                    AuditAttrs.SESSION_ID: (session.session_id if session else ""),
+                    AuditAttrs.SESSION_ID: conv_id,
                     AuditAttrs.MODEL_STREAMING: False,
                 },
             ) as span:
-                ws = _resolve_ws_for_request(custom_inputs)
+                _auth = _resolve_ws_and_headers(custom_inputs)
                 with safe_span(
                     "compile_to_langgraph", span_type="CHAIN",
                     attributes={AuditAttrs.MODEL_ENDPOINT: effective_model},
                 ):
                     graph = compile_to_langgraph(
-                        self._agent, ws=ws, model=effective_model
+                        self._agent, ws=_auth.ws, model=effective_model,
+                        headers=_auth.headers,
                     )
 
                 lc_input = _to_langchain_messages(prepended_messages)
@@ -343,11 +630,13 @@ def chat_agent_for(
                 response = ChatAgentResponse(messages=new_messages)
                 set_span_outputs(span, response.model_dump())
 
-                # Persist the inbound turn + the new messages.
-                self._persist_turn(
-                    session,
+                self._persist_conv_turn(
+                    conv_id,
                     input_messages=messages,
                     new_messages=new_messages,
+                    model=effective_model,
+                    response_id=str(uuid.uuid4()),
+                    is_new=conv.is_new if conv is not None else False,
                 )
 
                 return response
@@ -358,6 +647,18 @@ def chat_agent_for(
             context: ChatContext | None = None,
             custom_inputs: dict[str, Any] | None = None,
         ) -> Generator[ChatAgentChunk, None, None]:
+            # See predict — idempotent capture-processor install (never raises).
+            from ._trace_store import ensure_capture_processor
+            ensure_capture_processor()
+
+            conv = self._load_or_create_conversation(custom_inputs)
+            conv_id = conv.conversation_id if conv is not None else None
+            history_msgs = conv.messages if conv is not None else []
+
+            prepended_messages: list[ChatAgentMessage] = (
+                history_msgs + list(messages) if history_msgs else list(messages)
+            )
+
             user_token_provided = bool(
                 custom_inputs and custom_inputs.get("user_token")
             )
@@ -365,21 +666,24 @@ def chat_agent_for(
             with safe_span(
                 "ApxChatAgent.predict_stream",
                 span_type="AGENT",
-                inputs={"messages": [m.model_dump() for m in messages]},
+                inputs={"messages": [m.model_dump() for m in prepended_messages]},
                 attributes={
                     AuditAttrs.OPERATION: "predict_stream",
                     AuditAttrs.MODEL_ENDPOINT: effective_model,
-                    AuditAttrs.MODEL_INPUT_MESSAGES: len(messages),
+                    AuditAttrs.MODEL_INPUT_MESSAGES: len(prepended_messages),
                     AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
+                    AuditAttrs.SESSION_ID: conv_id,
                     AuditAttrs.MODEL_STREAMING: True,
                 },
             ) as span:
-                ws = _resolve_ws_for_request(custom_inputs)
+                _auth = _resolve_ws_and_headers(custom_inputs)
                 graph = compile_to_langgraph(
-                    self._agent, ws=ws, model=effective_model
+                    self._agent, ws=_auth.ws, model=effective_model,
+                    headers=_auth.headers,
                 )
-                lc_input = _to_langchain_messages(messages)
+                lc_input = _to_langchain_messages(prepended_messages)
                 emitted = 0
+                new_messages: list[ChatAgentMessage] = []
 
                 # stream_mode="updates" yields {node_name: {"messages": [...new...]}}
                 # per node completion — same pattern Rand's shortage_intel uses.
@@ -394,6 +698,7 @@ def chat_agent_for(
                         for msg in node_output.get("messages", []) or []:
                             delta = _from_langchain_message(msg, emitted)
                             emitted += 1
+                            new_messages.append(delta)
                             yield ChatAgentChunk(delta=delta)
                 if span is not None:
                     try:
@@ -401,7 +706,19 @@ def chat_agent_for(
                     except Exception:  # pragma: no cover
                         pass
 
-    return _ApxChatAgent(agent, model, session_store=session_store)
+                # Persist the inbound turn + the new messages — mirrors
+                # ``predict`` so streaming multi-turn conversations remember
+                # prior turns instead of forgetting them.
+                self._persist_conv_turn(
+                    conv_id,
+                    input_messages=messages,
+                    new_messages=new_messages,
+                    model=effective_model,
+                    response_id=str(uuid.uuid4()),
+                    is_new=conv.is_new if conv is not None else False,
+                )
+
+    return _ApxChatAgent(agent, model, conversation_store=conversation_store, agent_id=agent_id)
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +730,8 @@ def compile_to_chat_agent(
     agent: BaseAgent,
     *,
     model: str,
-    session_store: Any | None = None,
+    conversation_store: ConversationStore | None = None,
+    agent_id: str | None = None,
 ) -> Any:
     """Canonical name for ``chat_agent_for`` — apx-agent compiles to a ChatAgent.
 
@@ -423,7 +741,9 @@ def compile_to_chat_agent(
         from apx_agent import Agent, compile_to_chat_agent
         chat = compile_to_chat_agent(my_agent, model="databricks-claude-sonnet-4-6")
     """
-    return chat_agent_for(agent, model=model, session_store=session_store)
+    return chat_agent_for(
+        agent, model=model, conversation_store=conversation_store, agent_id=agent_id
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +828,14 @@ def log_agent(
                 f"paths (e.g. '/Users/you@company.com/agents/my_agent')."
             ) from e
 
+    from ._wiring import finalize_agent
+
+    # Finalize BEFORE resource derivation AND before compile capture: config
+    # tools must appear in the logged resources AND in the agent the served
+    # model compiles at predict time. log_agent is public (notebooks/Coworker
+    # call it directly), so this single site covers all log/deploy paths.
+    finalize_agent(agent, pyproject_path=None)  # reads cwd pyproject.toml
+
     from ._resources import ResourceSpec, mlflow_resources_for
 
     # Split extra_resources into specs (auto-materialised) and pre-built
@@ -530,7 +858,7 @@ def log_agent(
         python_model=chat_agent,
         resources=resources,
         registered_model_name=registered_model_name,
-        input_example=input_example,
+        input_example=cast("Any", input_example),
         pip_requirements=pip_requirements,
         **log_model_kwargs,
     )

@@ -5,13 +5,26 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any, NamedTuple
+
+if TYPE_CHECKING:
+    from databricks.sdk import WorkspaceClient
 
 from ._models import AgentContext
 from ._ui_nav import _apx_nav_links, _deploy_overlay_html
 from ._ui_setup import _find_env_path, _read_env_file
 
 logger = logging.getLogger(__name__)
+
+
+class _WorkspaceAuthInfo(NamedTuple):
+    host: str
+    user: str
+
+
+class _MlflowReadInfo(NamedTuple):
+    trace_id: str
+    has_spans: bool
 
 
 # ---------------------------------------------------------------------------
@@ -21,6 +34,7 @@ logger = logging.getLogger(__name__)
 # Per-check timeout. The endpoint runs all checks in parallel so wall time
 # is roughly max(check_durations) + overhead.
 _CHECK_TIMEOUT_S = 4.0
+_UNSET_ENV = ""  # optional probe env vars (MLflow URI, experiment ID) resolve to empty when not set
 
 
 async def _check_workspace_auth() -> dict[str, Any]:
@@ -28,16 +42,19 @@ async def _check_workspace_auth() -> dict[str, Any]:
     try:
         from databricks.sdk import WorkspaceClient
 
-        def _init() -> str:
+        def _init() -> _WorkspaceAuthInfo:
             ws = WorkspaceClient()
             host = ws.config.host or "?"
-            return host
+            me = ws.current_user.me()
+            user = getattr(me, "user_name", None) or getattr(me, "userName", "")
+            return _WorkspaceAuthInfo(host=host, user=user)
 
-        host = await asyncio.wait_for(asyncio.to_thread(_init), timeout=_CHECK_TIMEOUT_S)
+        _auth_info = await asyncio.wait_for(asyncio.to_thread(_init), timeout=_CHECK_TIMEOUT_S)
+        host, user = _auth_info.host, _auth_info.user
         return {
             "name": "workspace_auth",
             "status": "ok",
-            "message": f"Authenticated against {host}",
+            "message": f"{user} @ {host}" if user else f"Authenticated against {host}",
             "hint": "",
         }
     except asyncio.TimeoutError:
@@ -63,7 +80,7 @@ async def _check_model(ctx: AgentContext | None) -> dict[str, Any]:
             "name": "model",
             "status": "skip",
             "message": "No model configured",
-            "hint": "Set `model` in pyproject.toml [tool.apx_agent].",
+            "hint": "Set `model` in pyproject.toml under [tool.apx.agent].",
         }
 
     model = ctx.config.model
@@ -206,7 +223,7 @@ async def _gather_sub_agent_checks(ctx: AgentContext | None) -> list[dict[str, A
     for raw in sub_agents:
         url = raw
         if isinstance(url, str) and url.startswith("$"):
-            url = os.environ.get(url.lstrip("$").strip("{}"), "")
+            url = os.environ.get(url.lstrip("$").strip("{}"), _UNSET_ENV)
         if url:
             resolved.append((raw, url))
     if not resolved:
@@ -219,10 +236,25 @@ async def _gather_sub_agent_checks(ctx: AgentContext | None) -> list[dict[str, A
     return list(await asyncio.gather(*[_check_sub_agent(raw, url) for raw, url in resolved]))
 
 
+def _pyproject_experiment() -> str:
+    """Return ``[tool.apx.agent].experiment`` from pyproject.toml, or ``""``."""
+    try:
+        from .cli import _read_apx_agent_config  # noqa: PLC0415
+        return _read_apx_agent_config().get("experiment") or ""
+    except Exception:
+        return ""
+
+
 async def _check_mlflow_config() -> dict[str, Any]:
-    """Verify MLFLOW_TRACKING_URI + MLFLOW_EXPERIMENT_ID look sane."""
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
-    experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID", "")
+    """Verify MLFLOW_TRACKING_URI + experiment config look sane.
+
+    Accepts two equivalent ways to declare the experiment:
+      - ``MLFLOW_EXPERIMENT_ID`` env var (Apps/deploy convention)
+      - ``[tool.apx.agent].experiment`` in pyproject.toml (``apx-agent run`` sets
+        this via ``mlflow.set_experiment()`` before serving starts)
+    """
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", _UNSET_ENV)
+    experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID", _UNSET_ENV)
 
     if not tracking_uri:
         return {
@@ -238,29 +270,45 @@ async def _check_mlflow_config() -> dict[str, Any]:
             "message": f"MLFLOW_TRACKING_URI={tracking_uri!r} (expected 'databricks')",
             "hint": "Set MLFLOW_TRACKING_URI=databricks to use the workspace MLflow backend.",
         }
-    if not experiment_id:
+    # Accept experiment declared via pyproject.toml as equivalent to the env var.
+    # ``apx-agent run`` calls mlflow.set_experiment() from this key before serving.
+    pyproject_exp = _pyproject_experiment()
+    if not experiment_id and not pyproject_exp:
         return {
             "name": "mlflow_config",
             "status": "warn",
-            "message": "MLFLOW_EXPERIMENT_ID not set — traces land in the default experiment",
-            "hint": "Set MLFLOW_EXPERIMENT_ID to pin the experiment. Find the ID in the MLflow UI URL.",
+            "message": "Experiment not configured — traces land in the default experiment",
+            "hint": (
+                "Set MLFLOW_EXPERIMENT_ID in app.yaml, or set `experiment` in "
+                "[tool.apx.agent] in pyproject.toml."
+            ),
         }
 
     # Verify the experiment actually exists and is reachable.
+    # Prefer MLFLOW_EXPERIMENT_ID (numeric id); fall back to name lookup.
     try:
         from mlflow.tracking import MlflowClient as _MlflowClient
 
         def _verify() -> str:
-            exp = _MlflowClient().get_experiment(experiment_id)
-            return getattr(exp, "name", experiment_id)
+            client = _MlflowClient()
+            if experiment_id:
+                exp = client.get_experiment(experiment_id)
+                return getattr(exp, "name", experiment_id)
+            # pyproject experiment is a name, not an id — look up by name.
+            exp = client.get_experiment_by_name(pyproject_exp)
+            if exp is None:
+                raise ValueError(f"experiment {pyproject_exp!r} not found")
+            return exp.name
 
+        exp_label = experiment_id or pyproject_exp
         exp_name = await asyncio.wait_for(
             asyncio.to_thread(_verify), timeout=_CHECK_TIMEOUT_S
         )
+        source = "env" if experiment_id else "pyproject.toml"
         return {
             "name": "mlflow_config",
             "status": "ok",
-            "message": f"Experiment {experiment_id!r} ({exp_name}) reachable",
+            "message": f"Experiment {exp_label!r} ({exp_name}) reachable [{source}]",
             "hint": "",
         }
     except ImportError:
@@ -275,14 +323,15 @@ async def _check_mlflow_config() -> dict[str, Any]:
             "name": "mlflow_config",
             "status": "warn",
             "message": f"MLflow experiment lookup timed out after {_CHECK_TIMEOUT_S}s",
-            "hint": "Workspace may be slow or MLFLOW_EXPERIMENT_ID may be wrong.",
+            "hint": "Workspace may be slow or the experiment name/ID may be wrong.",
         }
     except Exception as exc:  # noqa: BLE001
+        exp_label = experiment_id or pyproject_exp
         return {
             "name": "mlflow_config",
             "status": "fail",
-            "message": f"Experiment {experiment_id!r} not found: {str(exc)[:160]}",
-            "hint": "Verify MLFLOW_EXPERIMENT_ID matches an experiment in this workspace.",
+            "message": f"Experiment {exp_label!r} not found: {str(exc)[:160]}",
+            "hint": "Verify MLFLOW_EXPERIMENT_ID or [tool.apx.agent].experiment matches an experiment in this workspace.",
         }
 
 
@@ -409,8 +458,14 @@ async def _check_resources(ctx: AgentContext | None) -> dict[str, Any]:
                 if spec.kind in _verifiable and key not in seen:
                     seen.add(key)
                     specs.append(key)
-    except Exception:
-        pass
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("_check_resources: tool scan failed: %s", _e)
+        return {
+            "name": "resources",
+            "status": "warn",
+            "message": f"Could not scan tools for governed resources: {_e}",
+            "hint": "Check that agent.py imports cleanly.",
+        }
 
     if not specs:
         return {
@@ -527,49 +582,49 @@ async def _check_obo(headers: dict[str, str] | None) -> dict[str, Any]:
     }
 
 
-async def _check_session_store(session_store: Any | None) -> dict[str, Any]:
-    """Ping the configured session backend with a non-destructive read."""
-    if session_store is None:
+async def _check_conversation_store(conversation_store: Any | None) -> dict[str, Any]:
+    """Ping the configured conversation backend with a non-destructive read."""
+    if conversation_store is None:
         return {
-            "name": "session_store",
+            "name": "conversation_store",
             "status": "skip",
-            "message": "No session store configured",
-            "hint": "Pass session_store= to enable multi-turn history.",
+            "message": "No conversation store configured",
+            "hint": "Pass conversation_store= to enable multi-turn history.",
         }
 
-    store_kind = type(session_store).__name__
+    store_kind = type(conversation_store).__name__
     # InMemory has no backend to reach — report it but don't ping.
-    if store_kind == "InMemorySessionStore":
+    if store_kind == "InMemoryConversationStore":
         return {
-            "name": "session_store",
+            "name": "conversation_store",
             "status": "ok",
             "message": f"{store_kind} (in-process, no backend)",
             "hint": "InMemory history is lost on restart — use Lakebase/Delta for durability.",
         }
 
     def _ping() -> None:
-        # get() of a non-existent id returns None but still exercises the
-        # backend connection (and surfaces auth/network errors).
-        session_store.get("__apx_probe_healthcheck__")
+        # get_conversation() of a non-existent id returns None but still
+        # exercises the backend connection (and surfaces auth/network errors).
+        conversation_store.get_conversation("__apx_probe_healthcheck__")
 
     try:
         await asyncio.wait_for(asyncio.to_thread(_ping), timeout=_CHECK_TIMEOUT_S)
         return {
-            "name": "session_store",
+            "name": "conversation_store",
             "status": "ok",
             "message": f"{store_kind} backend reachable",
             "hint": "",
         }
     except asyncio.TimeoutError:
         return {
-            "name": "session_store",
+            "name": "conversation_store",
             "status": "fail",
             "message": f"{store_kind} ping timed out after {_CHECK_TIMEOUT_S}s",
             "hint": "Backend is slow or unreachable — history will silently fail to load.",
         }
     except Exception as exc:  # noqa: BLE001
         return {
-            "name": "session_store",
+            "name": "conversation_store",
             "status": "fail",
             "message": f"{store_kind}: {str(exc)[:160]}",
             "hint": "Backend unreachable — verify connection settings and credentials.",
@@ -629,16 +684,135 @@ async def _check_agent_source() -> dict[str, Any]:
     }
 
 
+async def _check_mlflow_read() -> dict[str, Any]:
+    """Exercise the trace-READ path *including span/blob fetch* so silent
+    read-side degradation surfaces.
+
+    ``_check_mlflow_export`` only inspects the export/write-error log, so a
+    blocked blob-storage backend (FEVM / private-link) that breaks *reads*
+    would otherwise leave the probe reporting "ok" while the canary/eval/trace
+    panels silently degrade (audit H9).
+
+    The degradation the canary/eval siblings hit is the *span* read: a
+    metadata-only ``include_spans=False`` read sidesteps blob storage entirely
+    (that's exactly why the Trace list keeps working when egress is blocked),
+    so it cannot detect this failure. So this check reads in two stages:
+
+      1. metadata-only read to confirm tracking is reachable and grab a
+         trace_id (empty → ``skip``, absence is not failure);
+      2. a span read on that trace (``include_spans=True``), which forces the
+         blob fetch the siblings rely on. If stage 1 succeeds but stage 2
+         raises, that is the blocked-blob signature → ``fail``.
+    """
+    experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+    try:
+        from mlflow.tracking import MlflowClient as _MlflowClient
+    except ImportError:
+        return {
+            "name": "mlflow_read",
+            "status": "skip",
+            "message": "mlflow not installed",
+            "hint": "",
+        }
+
+    # Resolve experiment_id: prefer env var; fall back to pyproject.toml name.
+    if not experiment_id:
+        pyproject_exp = _pyproject_experiment()
+        if pyproject_exp:
+            try:
+                exp = _MlflowClient().get_experiment_by_name(pyproject_exp)
+                if exp is not None:
+                    experiment_id = exp.experiment_id
+            except Exception:
+                pass
+
+    if not experiment_id:
+        return {
+            "name": "mlflow_read",
+            "status": "skip",
+            "message": "Experiment not configured — read path not exercised",
+            "hint": (
+                "Set MLFLOW_EXPERIMENT_ID or `experiment` in [tool.apx.agent] "
+                "to verify trace reads work."
+            ),
+        }
+
+    def _read() -> _MlflowReadInfo:
+        client = _MlflowClient()
+        # Stage 1: metadata-only — works even when blob storage is blocked.
+        metas = list(
+            client.search_traces(
+                locations=[experiment_id],
+                max_results=1,
+                include_spans=False,
+            )
+        )
+        if not metas:
+            return _MlflowReadInfo(trace_id="", has_spans=False)  # no traces — absence, not failure
+        trace_id = metas[0].info.trace_id
+        # Stage 2: span read — forces the blob fetch the canary/eval reads
+        # depend on. On a blob-blocked workspace this raises (the degradation
+        # H9 is about); the metadata read above already succeeded.
+        full = client.search_traces(
+            locations=[experiment_id],
+            max_results=1,
+            include_spans=True,
+        )
+        full_list = list(full)
+        has_spans = bool(full_list and getattr(full_list[0], "data", None) is not None)
+        return _MlflowReadInfo(trace_id=trace_id, has_spans=has_spans)
+
+    try:
+        _read_info = await asyncio.wait_for(
+            asyncio.to_thread(_read), timeout=_CHECK_TIMEOUT_S
+        )
+        trace_id = _read_info.trace_id
+    except asyncio.TimeoutError:
+        return {
+            "name": "mlflow_read",
+            "status": "warn",
+            "message": f"Trace read timed out after {_CHECK_TIMEOUT_S}s",
+            "hint": "Workspace may be slow or the trace backend may be degraded.",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "name": "mlflow_read",
+            "status": "fail",
+            "message": f"Trace span read failed: {str(exc)[:160]}",
+            "hint": (
+                "Trace metadata reads but span/blob fetch failed. On "
+                "FEVM/private-link workspaces this signals blocked egress to "
+                "*.storage.cloud.databricks.com — canary/eval/trace panels "
+                "silently return empty results while this is broken (pass "
+                "include_spans=False on metadata-only reads)."
+            ),
+        }
+
+    if not trace_id:
+        return {
+            "name": "mlflow_read",
+            "status": "skip",
+            "message": "No traces recorded yet — span read path not exercised",
+            "hint": "Run the agent once, then re-run to verify span reads work.",
+        }
+    return {
+        "name": "mlflow_read",
+        "status": "ok",
+        "message": "Trace read path reachable (metadata + spans)",
+        "hint": "",
+    }
+
+
 async def _run_probe_checks(
     ctx: AgentContext | None,
     *,
     headers: dict[str, str] | None = None,
-    session_store: Any | None = None,
+    conversation_store: Any | None = None,
 ) -> dict[str, Any]:
     """Run every health check in parallel and assemble a single response."""
     (
         workspace, model, env_vars, sub_agents,
-        mlflow_cfg, mlflow_exp, resources, obo, session, agent_src,
+        mlflow_cfg, mlflow_exp, mlflow_read, resources, obo, session, agent_src,
     ) = await asyncio.gather(
         _check_workspace_auth(),
         _check_model(ctx),
@@ -646,14 +820,15 @@ async def _run_probe_checks(
         _gather_sub_agent_checks(ctx),
         _check_mlflow_config(),
         _check_mlflow_export(),
+        _check_mlflow_read(),
         _check_resources(ctx),
         _check_obo(headers),
-        _check_session_store(session_store),
+        _check_conversation_store(conversation_store),
         _check_agent_source(),
     )
     checks: list[dict[str, Any]] = [  # type: ignore[list-item]
         workspace, model, env_vars, *sub_agents,
-        mlflow_cfg, mlflow_exp, resources, obo, session, agent_src,
+        mlflow_cfg, mlflow_exp, mlflow_read, resources, obo, session, agent_src,
     ]
     counts = {"ok": 0, "warn": 0, "fail": 0, "skip": 0}
     for c in checks:
@@ -901,6 +1076,10 @@ def _render_probe_ui(
 (async () => {{
   const list = document.getElementById('checks-list');
   const dot = (s) => ({{ok:'#4ade80', warn:'#facc15', fail:'#f87171', skip:'#444'}})[s] || '#888';
+  // Escape so server/remote-controlled check name/message/hint can't inject HTML.
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   try {{
     const r = await fetch('/_apx/probe/checks');
     const data = await r.json();
@@ -912,14 +1091,14 @@ def _render_probe_ui(
       <div class="check-row">
         <span class="check-dot" style="background:${{dot(c.status)}}"></span>
         <div class="check-body">
-          <div class="check-name">${{c.name}}</div>
-          <div class="check-msg">${{c.message || ''}}</div>
-          ${{c.hint ? `<div class="check-hint">${{c.hint}}</div>` : ''}}
+          <div class="check-name">${{esc(c.name)}}</div>
+          <div class="check-msg">${{esc(c.message || '')}}</div>
+          ${{c.hint ? `<div class="check-hint">${{esc(c.hint)}}</div>` : ''}}
         </div>
-        <span class="check-status check-status-${{c.status}}">${{c.status}}</span>
+        <span class="check-status check-status-${{esc(c.status)}}">${{esc(c.status)}}</span>
       </div>`).join('');
   }} catch (e) {{
-    list.innerHTML = `<p class="vs-error">Failed to load checks: ${{e.message}}</p>`;
+    list.innerHTML = `<p class="vs-error">Failed to load checks: ${{esc(e.message)}}</p>`;
   }}
 }})();
 </script>
@@ -928,15 +1107,71 @@ def _render_probe_ui(
 </html>"""
 
 
+def _validate_probe_url(url: str) -> str | None:
+    """SSRF guard for the dev-UI probe.
+
+    Restricts the scheme to http/https and rejects any URL whose host resolves
+    to a private / loopback / link-local / reserved / multicast address. This
+    blocks cloud instance-metadata (``169.254.169.254``), private-link
+    services, and decimal/octal/hex IP encodings (``http://2130706433/``) that
+    a string-prefix blocklist would miss. Callers pair this with
+    ``follow_redirects=False`` so a public host can't 302 to an internal one.
+
+    Returns ``None`` when the URL is safe, or a human-readable reason string
+    when it must be rejected.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "Could not parse URL"
+    if parsed.scheme not in ("http", "https"):
+        return f"Scheme {parsed.scheme!r} not allowed (use http or https)"
+    host = parsed.hostname
+    if not host:
+        return "URL has no host"
+
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or 0, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        return f"Could not resolve host: {exc}"
+
+    for info in infos:
+        sockaddr = info[4]
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            return f"Could not parse resolved address {sockaddr[0]!r}"
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return f"Host resolves to a blocked address ({ip})"
+    return None
+
+
 async def _run_probe(url: str) -> dict[str, Any]:
     """Make an outbound GET request and return connectivity diagnostics."""
     import time
     import ssl
     import httpx
 
+    reason = _validate_probe_url(url)
+    if reason is not None:
+        return {"url": url, "error": "BlockedURL", "detail": reason}
+
     start = time.monotonic()
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+        # follow_redirects=False: a public host could otherwise 302 to an
+        # internal address that _validate_probe_url already rejected.
+        async with httpx.AsyncClient(follow_redirects=False, timeout=10.0) as client:
             resp = await client.get(url)
         latency_ms = round((time.monotonic() - start) * 1000)
         return {

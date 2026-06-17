@@ -98,6 +98,48 @@ def is_mlflow_available() -> bool:
     return True
 
 
+def _resolve_experiment_id(experiment: str) -> str:
+    """Resolve an experiment name/path (or id) to an experiment id.
+
+    Raises ``ValueError`` if ``experiment`` is neither a known experiment name
+    nor a valid experiment id, so a mistyped/missing experiment surfaces as an
+    error rather than mis-reporting a failed read as "no traces".
+    """
+    import mlflow
+
+    by_name = mlflow.get_experiment_by_name(experiment)
+    if by_name is not None:
+        return by_name.experiment_id
+    # Not a known name — maybe it's already an id. Validate it exists.
+    try:
+        exp = mlflow.get_experiment(experiment)
+    except Exception:
+        exp = None
+    if exp is not None:
+        return exp.experiment_id
+    raise ValueError(
+        f"MLflow experiment {experiment!r} not found "
+        "(neither a known experiment name nor a valid experiment id)"
+    )
+
+
+def search_traces_for_experiment(experiment: str, **kwargs: Any) -> Any:
+    """Search MLflow traces scoped to one experiment, given its name or id.
+
+    Resolves ``experiment`` to an id and calls
+    ``mlflow.search_traces(locations=[id], **kwargs)``. The ``locations``
+    selector matters: mlflow 3.x ``search_traces`` has **no**
+    ``experiment_names`` parameter (passing it raises ``TypeError``), and
+    ``experiment_ids`` is deprecated in favour of ``locations``. Pass-through
+    kwargs (``filter_string``, ``max_results``, ``include_spans``, …) are
+    forwarded unchanged, so callers keep full control of the query.
+    """
+    import mlflow
+
+    exp_id = _resolve_experiment_id(experiment)
+    return mlflow.search_traces(locations=[exp_id], **kwargs)
+
+
 def enable_langchain_autolog() -> bool:
     """Turn on ``mlflow.langchain.autolog()`` for deep auto-tracing.
 
@@ -127,10 +169,15 @@ def enable_langchain_autolog() -> bool:
 def autolog_if_env() -> None:
     """If ``APX_AGENT_MLFLOW_AUTOLOG=1`` is set in the environment, enable
     LangChain autolog. Call this once at app startup.
+
+    ``apx-agent run`` sets this variable by default (via ``os.environ.setdefault``)
+    so the dev loop's Trace panel gets per-tool + per-LLM spans without the
+    user opting in. Deploy runtimes reach this with the env unset and stay
+    on the cheaper boot path. Set ``APX_AGENT_MLFLOW_AUTOLOG=0`` to force off
+    in either case.
     """
-    if os.environ.get("APX_AGENT_MLFLOW_AUTOLOG", "").strip().lower() in (
-        "1", "true", "yes",
-    ):
+    _autolog_raw = os.environ.get("APX_AGENT_MLFLOW_AUTOLOG")
+    if _autolog_raw and _autolog_raw.strip().lower() in ("1", "true", "yes"):
         enable_langchain_autolog()
 
 
@@ -221,6 +268,26 @@ def set_span_attribute(span: Any, key: str, value: Any) -> None:
         span.set_attribute(key, value)
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("Failed to set span attribute %r: %s", key, exc)
+
+
+def emit_progress(message: str, **attributes: Any) -> None:
+    """Record a progress marker as an event on the current active MLflow span.
+
+    Surfaces tool progress (e.g. a SQL-warehouse cold-start) in the trace
+    without streaming. No-ops safely when MLflow is absent or there is no
+    active span — never raises into the caller.
+    """
+    try:
+        from mlflow.entities import SpanEvent
+
+        span = current_active_span()
+        if span is None:
+            return
+        attrs: dict[str, Any] = {"message": message}
+        attrs.update({k: str(v) for k, v in attributes.items()})
+        span.add_event(SpanEvent(name="apx.progress", attributes=attrs))
+    except Exception:  # pragma: no cover — tracing must never break a tool
+        return
 
 
 def current_active_span() -> Any:

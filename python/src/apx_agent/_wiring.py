@@ -2,21 +2,15 @@
 
 Mounts the supported Mosaic AI surface on the agent:
 
-  * ``POST /invocations`` — MLflow ChatAgent protocol (used by Model Serving,
-    AI Playground, Review App, Agent Evaluation). Bridges Databricks Apps'
-    ``X-Forwarded-Access-Token`` header into ``custom_inputs["user_token"]``
-    so user-scoped OBO auth flows through.
+  * ``POST /invocations`` — MLflow ChatAgent protocol (Model Serving, Review App,
+    Agent Evaluation). OBO header bridge for user-scoped auth in Apps.
+  * ``POST /responses`` — MLflow ResponsesAgent protocol (AI Playground, Apps
+    runtime). Same compiled agent, same conversation_store — no divergence.
   * ``GET /.well-known/agent.json`` — A2A discovery card.
   * ``GET /health`` — liveness probe.
   * ``GET|POST|DELETE /mcp`` — stateless MCP HTTP transport for Genie Code
     and AI Playground.
   * ``{api_prefix}/tools/<name>`` — per-tool FastAPI routes for direct invocation.
-
-The legacy ``/responses`` endpoint, the custom apx-agent trace system, and
-the apx-agent-specific request/response types were deleted when the framework
-moved to the supported runtime (LangGraph + MLflow ChatAgent). ``BaseAgent``
-subclasses' ``.run()`` / ``.stream()`` methods now compile to LangGraph; the
-``/invocations`` route is the protocol surface.
 """
 
 from __future__ import annotations
@@ -31,6 +25,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from starlette.responses import Response
 
 from ._agents import BaseAgent
+from ._prompt_assembly import compose_instructions
 from ._defaults import _make_workspace_client
 from ._inspection import _load_agent_config
 from ._mcp import _build_mcp_components
@@ -43,6 +38,293 @@ from ._models import (
 
 logger = logging.getLogger(__name__)
 
+# Env var references that fail to resolve (var not set) expand to empty string.
+# Callers are expected to check `if not resolved:` and skip/warn accordingly.
+_UNSET_ENV_EXPANSION = ""
+
+
+def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
+    """Apply ``[tool.apx.agent]`` config values onto the live agent instance.
+
+    This is the **shared config→instance seam** that both serve paths must run:
+
+      * ``apx-agent run`` / Apps target — via ``setup_agent`` (this module).
+      * model-serving deploy — via ``apx-agent deploy`` calling this right before
+        ``log_agent``, because MLflow captures the agent *at log time*; nothing
+        re-applies config inside the logged model's per-request compile.
+
+    Keeping both paths on one helper is what prevents cross-target drift (a
+    knob that works under ``apx-agent run`` but silently no-ops on a deploy). Future
+    declarative features that likewise need to land on the instance before it
+    is captured — tools merge, memory attach, guard attach — should extend this
+    same function rather than re-implementing the merge at one call site.
+
+    Semantics for the generation knobs: the compile path (``_compile.py``) reads
+    ``temperature`` / ``max_tokens`` / ``max_iterations`` off the instance, not
+    off config. Constructor wins — only copy when the instance left the attr at
+    ``None``. Uses ``is None`` (not a truthy check) so a deliberate
+    ``temperature=0.0`` / ``max_iterations=0`` isn't clobbered, and ``hasattr``
+    guards composition agents (e.g. ``SequentialAgent``) that don't define
+    every knob. Idempotent: a second call sees a non-``None`` attr and no-ops.
+
+    Semantics for instructions: this ALSO overlays ``config.instructions`` onto
+    ``agent._instructions`` via ``compose_instructions`` (persona above
+    grounding). Unlike the generation knobs' constructor-wins *fill*, this is
+    *compose* — when both the template-set grounding and the envelope persona
+    are present, both are kept (overlay first, grounding below). When only one
+    side is non-empty, that side is used verbatim (fill). A whitespace-only
+    ``config.instructions`` is treated as empty (no-op). Idempotent per instance
+    via the ``_persona_overlaid`` sentinel: a second call leaves instructions
+    untouched.
+    """
+    for attr, config_value in (
+        ("_temperature", config.temperature),
+        ("_max_tokens", config.max_tokens),
+        ("_max_iterations", config.max_iterations),
+    ):
+        if (
+            config_value is not None
+            and hasattr(agent, attr)
+            and getattr(agent, attr) is None
+        ):
+            setattr(agent, attr, config_value)
+
+    # Persona instruction overlay. The compile path reads ``agent._instructions``
+    # as the system prompt. A template may have set grounded instructions; the
+    # envelope may carry persona instructions. Compose (overlay above grounding)
+    # when both are present; otherwise fill. Idempotent via a sentinel so a
+    # second call (e.g. mount_mcp_endpoints re-running setup_agent) is a no-op.
+    if config.instructions.strip():
+        if hasattr(agent, "_instructions"):
+            if not getattr(agent, "_persona_overlaid", False):
+                # getattr/setattr (not direct attr access) because the param is
+                # typed BaseAgent; _instructions/_persona_overlaid are LlmAgent
+                # state — same pattern as the generation-knob loop above.
+                setattr(
+                    agent,
+                    "_instructions",
+                    compose_instructions(
+                        base=getattr(agent, "_instructions"),
+                        overlay=config.instructions,
+                    ),
+                )
+                setattr(agent, "_persona_overlaid", True)
+        else:
+            # Composition roots (SequentialAgent/RouterAgent/...) hold no system
+            # prompt of their own — instructions live on inner leaves — so the
+            # persona overlay has nowhere to land. Skipping is intentional.
+            logger.debug(
+                "Skipping persona instruction overlay: %s is a composition root "
+                "without its own system prompt.",
+                type(agent).__name__,
+            )
+
+
+def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
+    """Apply ``[tool.apx.agent.guardrails]`` config onto the live agent instance.
+
+    Translates ``config.guardrails`` (a ``GuardrailsConfig``) into built-in
+    guard callables and attaches them additively:
+
+    - ``before_tool`` gates (deny / allow / rate-limit) are merged via
+      ``compose(existing_code_hook, *config_gates)`` — code hook runs first.
+    - ``input_guardrails`` (injection heuristic) are appended — code guards
+      run first.
+
+    Idempotent via the ``_apx_config_guards_applied`` sentinel: a second call
+    is a no-op.  ``setup_agent`` can run more than once on the same instance
+    (``mount_mcp_endpoints`` fires its own ``setup_agent`` at startup), so this
+    is a real correctness requirement, not a nicety.
+
+    Warns (never crashes) when guards are declared on a composition root
+    (e.g. ``SequentialAgent``) that has no ``_before_tool`` /
+    ``_input_guardrails`` — matches the ``sub_agents``-merge precedent.
+    """
+    if getattr(agent, "_apx_config_guards_applied", False):
+        return
+
+    from ._guards import build_config_guards, compose  # noqa: PLC0415
+
+    _guards = build_config_guards(config.guardrails)
+
+    if _guards.input_guardrails:
+        existing_igs = getattr(agent, "_input_guardrails", None)
+        if existing_igs is None:
+            logger.warning(
+                "config guardrails.injection_detection set on a %s root, "
+                "which has no _input_guardrails (only LlmAgent does) — ignored.",
+                type(agent).__name__,
+            )
+        else:
+            existing_igs.extend(_guards.input_guardrails)
+
+    if _guards.before_tool is not None:
+        if not hasattr(agent, "_before_tool"):
+            logger.warning(
+                "config guardrails tool rules (blocked_tools / allowed_tools / "
+                "rate_limit) set on a %s root, which has no _before_tool "
+                "(only LlmAgent does) — ignored.",
+                type(agent).__name__,
+            )
+        else:
+            code_hook = getattr(agent, "_before_tool", None)
+            if code_hook is not None:
+                setattr(agent, "_before_tool", compose(code_hook, _guards.before_tool))
+            else:
+                setattr(agent, "_before_tool", _guards.before_tool)
+
+    setattr(agent, "_apx_config_guards_applied", True)
+
+
+def finalize_agent(
+    agent: BaseAgent,
+    config: AgentConfig | None = None,
+    pyproject_path: str | None = None,
+    ws: Any | None = None,
+) -> None:
+    """Apply all config→instance steps before the agent is served or logged.
+
+    The single seam every runtime must run: it applies generation knobs + the
+    persona instruction overlay (apply_config_knobs) AND merges
+    [[tool.apx.tools]] (merge_config_tools). Idempotent — safe to call from
+    setup_agent (serve), log_agent (log/deploy), and apx info; a second call is
+    a no-op. Future declarative features (memory, guards — E3) extend here.
+
+    When *config* is supplied, knobs are applied from it and *pyproject_path*
+    is used only by merge_config_tools (to locate [[tool.apx.tools]]). When
+    *config* is omitted, it is loaded from *pyproject_path*; if no config is
+    found, knobs are skipped but the tool merge still runs.
+
+    Note: a project with no [tool.apx.agent] section is not servable (the serve
+    path requires an agent section), so finalize_agent is not invoked via the
+    serve path for such a project. Whether tools-only agents should be servable
+    is a future (E3) design question.
+    """
+    if config is None:
+        config = _load_agent_config(pyproject_path=pyproject_path)
+    if config is not None:
+        apply_config_knobs(agent, config)
+        # E3c: attach declarative guards (idempotent; warns on composition
+        # roots lacking the guard hook attributes).
+        apply_config_guardrails(agent, config)
+
+    # Local import: _tool_config lazily imports _resolve_env_var from this module;
+    # a top-level import here would make that cycle unconditional at load time.
+    from ._tool_config import merge_config_tools  # noqa: PLC0415
+
+    merge_config_tools(agent, pyproject_path=pyproject_path)
+
+    # E3b: attach config-declared memory/example tools AFTER the tool merge so
+    # code-wired tools' names are already in the existing set (collision guard).
+    # Must run BEFORE agent.collect_tools() (the A2A card snapshot in setup_agent)
+    # so memory tools appear in the card. attach_declared_memory is idempotent.
+    if config is not None:
+        from ._memory_wiring import attach_declared_memory  # noqa: PLC0415
+
+        attach_declared_memory(agent, config, ws=ws)
+
+
+class TemplateConfigError(ValueError):
+    """Raised when an agent cannot be resolved from the given template config or module."""
+
+
+def _ws_for_template(config: "AgentConfig | None") -> Any:
+    """Return a WorkspaceClient for template resolution, or None.
+
+    Only attempts construction when config has a template field (template.build
+    may need ws for live schema introspection). Degrades gracefully on failure —
+    DataTemplate.build(spec, ws=None) still returns a working agent.
+    """
+    if config is None or config.template is None:
+        return None
+    try:
+        return _make_workspace_client()
+    except Exception as e:
+        logger.warning(
+            "Could not build workspace client for template resolution: %s. "
+            "Template will build with ws=None (graceful degradation — "
+            "grounded instructions require live introspection).",
+            e,
+        )
+        return None
+
+
+def resolve_agent(
+    module_spec: str | None,
+    config: "AgentConfig | None",
+    *,
+    ws: Any | None = None,
+) -> "BaseAgent":
+    """Resolve a ``BaseAgent`` from either a template config or a module import.
+
+    Runs BEFORE ``finalize_agent`` (which then layers knobs/persona/tools/guards).
+
+    **Resolution order (precedence):** ``config.template`` is checked FIRST — when
+    both a ``template`` field and a ``module_spec`` are present, the template wins
+    and the module import is never attempted.
+
+    1. ``config.template`` set → ``template_registry.build(name, spec, ws=ws)``.
+       ``name`` key selects the template; other keys form the spec dict.
+    2. else → import ``module_spec`` (``module:variable``) via ``importlib``
+       (NOT ``cli._load_agent`` — that would create a ``cli → _wiring`` cycle).
+    3. neither → ``TemplateConfigError`` with a clear message.
+
+    Note: this function is only called on the CLI/deploy paths.  On the serve path
+    (``create_app``), an explicit ``agent=`` argument passed by the caller skips
+    ``resolve_agent`` entirely (see the ``if agent is None`` guard), so a
+    ``create_app(agent=my_agent)`` call always wins over any template config.
+    """
+    import importlib
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    from ._template import template_registry
+
+    template_dict: dict[str, Any] | None = None
+    if config is not None and config.template is not None:
+        template_dict = config.template
+
+    if template_dict is not None:
+        tname = template_dict.get("name")
+        if not tname:
+            raise TemplateConfigError(
+                "AgentConfig.template must include a 'name' key to select the template. "
+                f"Got: {template_dict!r}"
+            )
+        spec = {k: v for k, v in template_dict.items() if k != "name"}
+        return template_registry.build(tname, spec, ws=ws)
+
+    if not module_spec:
+        raise TemplateConfigError(
+            "No agent to resolve: config has no 'template' field and no module_spec "
+            "was provided. Either add 'template = { name = \"...\", ... }' to "
+            "[tool.apx.agent] or pass a 'module:variable' module_spec."
+        )
+    if ":" not in module_spec:
+        raise TemplateConfigError(
+            f"module_spec must be 'module:variable', got {module_spec!r}."
+        )
+    mod_path, _, var_name = module_spec.partition(":")
+    if not mod_path or not var_name:
+        raise TemplateConfigError(
+            f"Both module and variable must be non-empty in module_spec, got {module_spec!r}."
+        )
+    cwd = str(_Path.cwd())
+    if cwd not in _sys.path:
+        _sys.path.insert(0, cwd)
+    try:
+        mod = importlib.import_module(mod_path)
+    except ImportError as e:
+        raise TemplateConfigError(
+            f"Failed to import {mod_path!r}: {e}. "
+            "Make sure the module is on PYTHONPATH or in the current directory."
+        ) from e
+    if not hasattr(mod, var_name):
+        raise TemplateConfigError(
+            f"Module {mod_path!r} has no attribute {var_name!r}."
+        )
+    return getattr(mod, var_name)
+
 
 def _resolve_env_var(value: str) -> str:
     """Resolve a ``$VAR`` or ``${VAR}`` reference to its environment value.
@@ -53,12 +335,12 @@ def _resolve_env_var(value: str) -> str:
     if not value.startswith("$"):
         return value
     var_name = value.lstrip("$").strip("{}")
-    return os.environ.get(var_name, "")
+    return os.environ.get(var_name, _UNSET_ENV_EXPANSION)
 
 
 async def setup_agent(
     app: FastAPI,
-    agent: BaseAgent,
+    agent: "BaseAgent | None",
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
 ) -> AgentContext | None:
@@ -72,7 +354,7 @@ async def setup_agent(
       * Dev UI at ``/_apx/*`` (when ``_dev`` module loadable)
 
     The ``POST /invocations`` route is mounted separately by ``create_app``
-    after ``setup_agent`` runs (it depends on the optional ``langgraph`` extra).
+    after ``setup_agent`` runs (depends on the eval/mlflow extra).
     Returns the ``AgentContext``, or ``None`` if config is missing.
     """
     if config is None:
@@ -82,8 +364,28 @@ async def setup_agent(
         app.state.agent_context = None
         return None
 
+    # E3a: resolve from template if no agent was passed in.
+    if agent is None:
+        agent = resolve_agent(
+            None,
+            config,
+            ws=getattr(app.state, "workspace_client", None),
+        )
+
     # Merge sub_agents from config
     if config.sub_agents:
+        if not hasattr(agent, "_sub_agent_urls"):
+            # Only LlmAgent defines _sub_agent_urls; on a composition root
+            # getattr(..., []) would return a throwaway list, silently dropping
+            # config-declared sub_agents from the A2A/MCP discovery surface
+            # (audit M7). Warn loudly instead of failing silently.
+            logger.warning(
+                "config sub_agents %s set on a %s root, which does not support "
+                "sub-agent merging (only LlmAgent does) — these are ignored. "
+                "Declare sub_agents on a leaf LlmAgent instead.",
+                config.sub_agents,
+                type(agent).__name__,
+            )
         sub_agent_urls: list[str] = getattr(agent, "_sub_agent_urls", [])
         existing = set(sub_agent_urls)
         for raw_url in config.sub_agents:
@@ -96,6 +398,16 @@ async def setup_agent(
             if resolved not in existing:
                 sub_agent_urls.append(resolved)
                 existing.add(resolved)
+
+    # Apply knobs + persona overlay + config-tool merge + memory attach BEFORE
+    # the card snapshot (collect_tools below) so all declared tools are both
+    # callable and advertised. ws is set by the lifespan before setup_agent runs.
+    finalize_agent(
+        agent,
+        config,
+        pyproject_path=pyproject_path,
+        ws=getattr(app.state, "workspace_client", None),
+    )
 
     tools = agent.collect_tools()
     tools += await agent.fetch_remote_tools()
@@ -113,7 +425,11 @@ async def setup_agent(
             for t in tools
         ],
     )
-    ctx = AgentContext(config=config, tools=tools, card=card, agent=agent)
+    from ._schema import load_baked_schema
+    ctx = AgentContext(
+        config=config, tools=tools, card=card, agent=agent,
+        schema=load_baked_schema(),
+    )
     app.state.agent_context = ctx
 
     logger.info(f"Agent protocol enabled: {config.name} ({len(tools)} tools)")
@@ -286,12 +602,19 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         scope = dict(request.scope)
         headers = list(scope.get("headers", []))
         accept_vals = [v for k, v in headers if k.lower() == b"accept"]
-        if not any(b"text/event-stream" in v for v in accept_vals):
+        has_json = any(b"application/json" in v for v in accept_vals)
+        has_sse = any(b"text/event-stream" in v for v in accept_vals)
+        if not has_json or not has_sse:
             headers = [(k, v) for k, v in headers if k.lower() != b"accept"]
             existing = b", ".join(accept_vals)
-            new_accept = b"text/event-stream" + (
-                b", " + existing if existing else b""
-            )
+            required = []
+            if not has_json:
+                required.append(b"application/json")
+            if not has_sse:
+                required.append(b"text/event-stream")
+            new_accept = b", ".join(required)
+            if existing:
+                new_accept = new_accept + b", " + existing
             headers.append((b"accept", new_accept))
             scope["headers"] = headers
         await mcp_http_manager.handle_request(
@@ -316,33 +639,31 @@ async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
     try:
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
-        mcp_server, mcp_transport = _build_mcp_components(
-            ctx, app, ctx.config.api_prefix
-        )
-        app.state.mcp_server = mcp_server
-        app.state.mcp_transport = mcp_transport
-        mcp_http_manager = StreamableHTTPSessionManager(mcp_server, stateless=True)
+        _mcp = _build_mcp_components(ctx, app, ctx.config.api_prefix)
+        app.state.mcp_server = _mcp.server
+        app.state.mcp_transport = _mcp.sse_transport
+        mcp_http_manager = StreamableHTTPSessionManager(_mcp.server, stateless=True)
         app.state.mcp_http_manager = mcp_http_manager
         logger.info(
             "MCP server enabled at /mcp/sse (SSE) and /mcp (stateless HTTP)"
         )
         return mcp_http_manager.run()
-    except ImportError:
+    except (ImportError, Exception) as _mcp_exc:
         app.state.mcp_server = None
         app.state.mcp_transport = None
         app.state.mcp_http_manager = None
         logger.warning(
-            "mcp package not installed — /mcp endpoints disabled. "
-            "pip install apx-agent[mcp]"
+            "MCP server disabled (%s: %s). pip install apx-agent[mcp] if needed.",
+            type(_mcp_exc).__name__, _mcp_exc,
         )
         return nullcontext()
 
 
 def create_app(
-    agent: BaseAgent,
+    agent: "BaseAgent | None" = None,
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
-    session_store: Any | None = None,
+    conversation_store: Any | None = None,
 ) -> FastAPI:
     """Create a complete FastAPI app: ``/invocations`` + discovery + MCP + dev UI.
 
@@ -350,7 +671,7 @@ def create_app(
     omitted, the config is discovered from the entry-point module's location
     or the current working directory.
 
-    ``session_store`` is an optional ``SessionStore`` (e.g. ``DeltaSessionStore``)
+    ``conversation_store`` is an optional ``ConversationStore`` (e.g. ``DeltaConversationStore``)
     for multi-turn memory. When provided, conversation history is persisted
     across requests keyed by ``conversation_id``.
 
@@ -369,8 +690,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-        # Opt-in MLflow auto-tracing (off by default — autolog adds ~30s
-        # overhead per run; selective spans in the compile path are always on).
+        # MLflow auto-tracing. ``apx-agent run`` sets ``APX_AGENT_MLFLOW_AUTOLOG=1``
+        # before importing the user's module so the dev loop gets per-tool +
+        # per-LLM spans by default. Deploy paths reach this lifespan with the
+        # env unset, so autolog stays off there (selective spans in the
+        # compile path are always on either way).
         try:
             from ._mlflow_tracing import autolog_if_env
 
@@ -378,22 +702,66 @@ def create_app(
         except Exception as exc:  # pragma: no cover — defensive
             logger.debug("MLflow autolog setup skipped: %s", exc)
 
-        app.state.workspace_client = _make_workspace_client()
-        app.state.session_store = session_store
+        # Install the in-process trace-capture SpanProcessor so the dev-UI Trace
+        # detail can serve recent runs from memory (FEVM/private-link blocks the
+        # blob egress mlflow.get_trace falls through to). Best-effort.
+        try:
+            from ._trace_store import install_capture_processor_at_startup
+
+            install_capture_processor_at_startup()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("Trace-capture processor install skipped: %s", exc)
+
+        # Best-effort: a freshly scaffolded agent run locally with `apx-agent run`
+        # has no Databricks credentials configured yet. Don't let that crash
+        # startup — boot the server (so the dev UI loads) and surface a clear
+        # error only when a tool actually needs the client.
+        try:
+            app.state.workspace_client = _make_workspace_client()
+        except Exception as exc:
+            logger.warning(
+                "No Databricks credentials resolved — workspace client unavailable. "
+                "The server will start, but tool calls that hit Databricks will fail "
+                "until you configure auth (https://docs.databricks.com/dev-tools/auth). "
+                "Cause: %s",
+                exc,
+            )
+            app.state.workspace_client = None
+        app.state.conversation_store = conversation_store
 
         ctx = await setup_agent(
             app, agent, config, pyproject_path=pyproject_path
         )
 
-        # Mount the supported /invocations route (MLflow ChatAgent protocol).
-        # Best-effort — missing optional deps log a warning and skip.
+        # Mount the supported /invocations + /responses routes.
+        # Both use the same resolved conversation_store. Best-effort — missing
+        # optional deps log a warning and skip the affected route only.
         if ctx is not None:
+            _store: Any = None
             try:
-                from ._invocations import mount_invocations_route
+                from ._invocations import mount_invocations_route, mount_responses_route
+                from ._memory_wiring import resolve_conversation_store  # noqa: PLC0415
 
-                mount_invocations_route(app, agent, ctx.config, session_store=session_store)
+                _store = resolve_conversation_store(
+                    ctx.config,
+                    ws=app.state.workspace_client,
+                    override=conversation_store,
+                    agent=ctx.agent,
+                )
+                mount_invocations_route(
+                    app, ctx.agent, ctx.config, conversation_store=_store
+                )
             except Exception as exc:
                 logger.warning("Skipping /invocations mount: %s", exc)
+
+            try:
+                from ._invocations import mount_responses_route
+
+                mount_responses_route(
+                    app, ctx.agent, ctx.config, conversation_store=_store
+                )
+            except Exception as exc:
+                logger.warning("Skipping /responses mount: %s", exc)
 
         if ctx is not None:
             mcp_lifecycle = await _setup_mcp(app, ctx)
@@ -464,11 +832,47 @@ def mount_mcp_endpoints(
     # gets populated in the lifespan startup event below.
     _mount_protocol_routes(app)
 
+    # Dev UI (/_apx/*) — available when running locally with `apx-agent run`.
+    # Absent in production Apps deployments (DATABRICKS_APP_PORT is set by
+    # the Apps runtime). The mount is call-time so it runs before the startup
+    # event and the routes are registered on the first request.
+    if not os.environ.get("DATABRICKS_APP_PORT"):
+        try:
+            from ._dev import build_dev_ui_router
+
+            app.include_router(build_dev_ui_router())
+            logger.info("Dev UI mounted at /_apx/* (local dev mode)")
+        except Exception as exc:  # pragma: no cover — optional dep
+            logger.debug("Dev UI not available: %s", exc)
+
     # Track the in-flight MCP lifecycle so shutdown can close it cleanly.
     _state_key = "_apx_mount_state"
 
     @app.on_event("startup")
     async def _apx_mount_startup() -> None:  # type: ignore[misc]
+        # MLflow auto-tracing. This is the apps-target path (the AgentServer app
+        # is not created via create_app, so create_app's lifespan never runs
+        # here). Under ``apx-agent run --reload`` the worker subprocess re-imports the
+        # module and re-runs this startup, but never re-runs cli run()'s body —
+        # so autolog must be (re)applied in-process here or per-tool/per-LLM
+        # spans stop emitting under --reload (audit M5).
+        try:
+            from ._mlflow_tracing import autolog_if_env
+
+            autolog_if_env()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("MLflow autolog setup skipped: %s", exc)
+
+        # Install the in-process trace-capture SpanProcessor so the dev-UI Trace
+        # detail can serve recent runs from memory (FEVM/private-link blocks the
+        # blob egress mlflow.get_trace falls through to). Best-effort.
+        try:
+            from ._trace_store import install_capture_processor_at_startup
+
+            install_capture_processor_at_startup()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("Trace-capture processor install skipped: %s", exc)
+
         ctx = await setup_agent(app, agent, config, pyproject_path=pyproject_path)
         if ctx is None:
             logger.info("mount_mcp_endpoints: no agent config — /mcp will 503")

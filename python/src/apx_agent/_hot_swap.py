@@ -34,8 +34,9 @@ Caveats:
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -107,19 +108,18 @@ def hot_swap_model(
             previous_value = existing_env[env_var]
         existing_env[env_var] = model
 
-        new_served_entities.append(
-            ServedEntityInput(
-                name=getattr(entity, "name", None),
-                entity_name=getattr(entity, "entity_name", None),
-                entity_version=getattr(entity, "entity_version", None),
-                workload_size=getattr(entity, "workload_size", None),
-                workload_type=getattr(entity, "workload_type", None),
-                scale_to_zero_enabled=getattr(entity, "scale_to_zero_enabled", None),
-                min_provisioned_concurrency=getattr(entity, "min_provisioned_concurrency", None),
-                max_provisioned_concurrency=getattr(entity, "max_provisioned_concurrency", None),
-                environment_vars=existing_env,
-            )
-        )
+        # ``update_config`` is a full replace, so we must round-trip *every*
+        # field off the existing served entity — not a hand-picked subset.
+        # The fields on ``ServedEntityOutput`` carry the same names as on
+        # ``ServedEntityInput``, so a getattr carry-over preserves
+        # external_model / instance_profile_arn / provisioned-throughput /
+        # burst_scaling, which a fixed subset would silently wipe.
+        carried = {
+            f.name: getattr(entity, f.name, None)
+            for f in dataclasses.fields(ServedEntityInput)
+        }
+        carried["environment_vars"] = existing_env
+        new_served_entities.append(ServedEntityInput(**carried))
 
     if wait:
         ws.serving_endpoints.update_config_and_wait(

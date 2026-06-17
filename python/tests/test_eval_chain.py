@@ -119,7 +119,7 @@ def test_evaluate_chain_pairs_traces_to_evalset_by_request_text() -> None:
     fake_evaluate = MagicMock(return_value=SimpleNamespace(metrics={}))
 
     with patch("apx_agent._eval_chain.evaluate", fake_evaluate), \
-         patch("mlflow.search_traces", return_value=traces):
+         patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=traces):
         report = evaluate_chain(
             agent,
             model="databricks-claude-sonnet-4-6",
@@ -152,7 +152,7 @@ def test_evaluate_chain_aggregates_sub_agent_coverage() -> None:
     evalset = [{"request": "q1"}, {"request": "q2"}, {"request": "q3"}]
 
     with patch("apx_agent._eval_chain.evaluate", return_value=None), \
-         patch("mlflow.search_traces", return_value=traces):
+         patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=traces):
         report = evaluate_chain(
             agent,
             model="m",
@@ -173,7 +173,7 @@ def test_evaluate_chain_drops_cases_without_matching_trace() -> None:
     evalset = [{"request": "q1"}, {"request": "q2"}]
 
     with patch("apx_agent._eval_chain.evaluate", return_value=None), \
-         patch("mlflow.search_traces", return_value=traces):
+         patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=traces):
         report = evaluate_chain(
             agent, model="m", evalset=evalset, experiment="/x",
         )
@@ -185,14 +185,21 @@ def test_evaluate_chain_drops_cases_without_matching_trace() -> None:
 def test_evaluate_chain_returns_empty_when_search_traces_fails() -> None:
     agent = Agent(tools=[_plain_tool])
 
+    # The trace-correlation read needs span data (sub-agent / tool attributes
+    # live on child spans), so a read failure must NOT be swallowed into an
+    # empty coverage report — that reads as "no sub-agents fired" and silently
+    # produces a wrong report. Surface it as a RuntimeError naming the
+    # experiment and chaining the original cause.
     with patch("apx_agent._eval_chain.evaluate", return_value=None), \
-         patch("mlflow.search_traces", side_effect=RuntimeError("backend down")):
-        report = evaluate_chain(
-            agent, model="m", evalset=[{"request": "q"}], experiment="/x",
-        )
+         patch("apx_agent._mlflow_tracing.search_traces_for_experiment", side_effect=RuntimeError("backend down")):
+        with pytest.raises(RuntimeError, match="search_traces failed") as exc_info:
+            evaluate_chain(
+                agent, model="m", evalset=[{"request": "q"}], experiment="/x",
+            )
 
-    assert report.cases == ()
-    assert report.sub_agent_coverage == {}
+    assert "/x" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert "backend down" in str(exc_info.value.__cause__)
 
 
 def test_evaluate_chain_forwards_user_token_to_evaluate() -> None:
@@ -200,7 +207,7 @@ def test_evaluate_chain_forwards_user_token_to_evaluate() -> None:
     fake_evaluate = MagicMock(return_value=None)
 
     with patch("apx_agent._eval_chain.evaluate", fake_evaluate), \
-         patch("mlflow.search_traces", return_value=[]):
+         patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=[]):
         evaluate_chain(
             agent,
             model="m",

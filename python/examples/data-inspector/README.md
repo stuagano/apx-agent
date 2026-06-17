@@ -24,8 +24,14 @@ agent = Agent(
 Each tool receives a `WorkspaceClient` injected automatically — no auth wiring in your code:
 
 ```python
-def delta_bisect(table: str, predicate: str, ws: Workspace = None) -> dict:
-    """Binary search Delta history to find when data matching predicate appeared."""
+def delta_bisect(
+    table: str,
+    condition: str,
+    version_lo: int = -1,
+    version_hi: int = -1,
+    ws: Workspace = None,
+) -> dict:
+    """Binary search Delta history to find when data matching condition appeared."""
     ...
 ```
 
@@ -130,25 +136,17 @@ DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn app:app --port 9000 --relo
 
 ### Step 1: Review `app.yml`
 
-No env vars need to be set — the workspace client is injected automatically and there are no required configuration values. The optional `AGENT_HUB_URL` can be added if you want to register on startup:
+No env vars need to be set — the workspace client is injected automatically and there are no required configuration values:
 
 ```yaml
 # app.yml — no changes required for a basic deployment
 command: ["uvicorn", "app:app", "--workers", "2"]
 ```
 
-To register with an agent hub, add:
-
-```yaml
-env:
-  - name: AGENT_HUB_URL
-    value: "https://<your-agent-hub-url>"
-```
-
 ### Step 2: Deploy
 
 ```bash
-uv run apx deploy
+uv run apx-agent agents deploy
 ```
 
 ### Step 3: Verify
@@ -179,11 +177,7 @@ agent = Agent(tools=[...], sub_agents=["https://<data-inspector-url>"])
 
 ## Configuration
 
-| Env var | Default | Description |
-|---------|---------|-------------|
-| `AGENT_HUB_URL` | _(empty)_ | Optional: register with an Agent Hub on startup |
-
-No other env vars required — the workspace client is injected by Databricks Apps.
+No env vars required — the workspace client is injected by Databricks Apps.
 
 ---
 
@@ -208,9 +202,11 @@ No other env vars required — the workspace client is injected by Databricks Ap
 
 ```
 data-inspector/
+├── agent.py                      # Agent definition
+├── tools.py                      # all 10 tools
+├── app.py                        # FastAPI app (uvicorn target: app:app)
+├── agent_server/
+│   └── start_server.py           # FastAPI entry point
 ├── app.yml                       # Databricks Apps runtime config
-├── databricks.yml                # Asset Bundle — build, deploy, app resource
-└── src/data_inspector/backend/
-    ├── agent_router.py           # Agent + all 10 tools
-    └── app.py                    # FastAPI app
+└── databricks.yml                # Asset Bundle — build, deploy, app resource
 ```

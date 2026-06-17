@@ -213,3 +213,23 @@ class TestLoadAgentConfig:
         """Explicit path to a non-existent file returns None."""
         config = _load_agent_config(pyproject_path=tmp_path / "nope.toml")
         assert config is None
+
+
+def test_load_agent_config_parses_examples(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[tool.apx.agent]\n'
+        'name = "demo"\n'
+        'examples = ["Show me sample customers", "Top 5 by balance"]\n'
+    )
+    cfg = _load_agent_config(pyproject_path=str(pyproject))
+    assert cfg is not None
+    assert cfg.examples == ["Show me sample customers", "Top 5 by balance"]
+
+
+def test_load_agent_config_examples_defaults_empty(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[tool.apx.agent]\nname = "demo"\n')
+    cfg = _load_agent_config(pyproject_path=str(pyproject))
+    assert cfg is not None
+    assert cfg.examples == []

@@ -31,7 +31,8 @@ uv sync
 uv run quickstart            # MLflow experiment + .env
 export WAREHOUSE_ID=<id>      # optional — auto-discovered if your workspace has serverless SQL
 
-uv run uvicorn agent_server.start_server:app --host 127.0.0.1 --port 8000
+uv run apx-agent agents run --reload
+# → FastAPI on http://localhost:8000 with the /_apx/* dev UI; --reload picks up agent.py edits.
 # open http://localhost:8000/_apx/agent and try:
 #   "total sales by franchise?"        → routed to sales_agent
 #   "what do customers love about us?" → routed to reviews_agent
@@ -39,13 +40,13 @@ uv run uvicorn agent_server.start_server:app --host 127.0.0.1 --port 8000
 
 ## Deploy
 ```bash
-apx deploy --target apps
+apx-agent agents deploy --target apps
 ```
 
 ## Upgrade — semantic review search (optional)
 The default `reviews_agent` keyword-searches the review text with SQL — zero
 infra, but no semantic ranking. For production-grade retrieval, point a Vector
-Search agent at the pre-chunked reviews (`samples.bakehouse.media_gold_reviews_chunked`):
+Search agent at the reviews table (`samples.bakehouse.media_customer_reviews`):
 
 1. **One-time:** create a Vector Search index over the chunked reviews (UI or
    SQL — see docs.databricks.com → Vector Search). This provisions a VS

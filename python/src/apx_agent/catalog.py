@@ -8,7 +8,7 @@ _inspection.py sees the real Annotated[...] type, not a string.
 import logging
 from typing import Any
 
-from ._sql import get_warehouse_id, run_sql
+from ._sql import run_sql
 
 logger = logging.getLogger(__name__)
 
@@ -112,11 +112,12 @@ def lineage_tool(
 
     async def _get_lineage(table_name: str, ws: UserClientDependency) -> dict[str, Any]:  # type: ignore[valid-type]
         """Placeholder doc — overwritten below."""
-        result: dict[str, Any] = ws.api_client.do(
+        result = ws.api_client.do(
             "GET",
             "/api/2.1/unity-catalog/lineage-tracking/table-lineage",
             query={"table_name": table_name},
         )
+        assert isinstance(result, dict)
         upstreams = [
             {
                 "full_name": u.get("tableInfo", {}).get("name", ""),
@@ -243,7 +244,7 @@ def uc_function_tool(
     _comment_desc: str | None = None
     if ws is not None and description is None:
         try:
-            func_info = ws.functions.get(full_name=function_name)
+            func_info = ws.functions.get(function_name)
             comment = getattr(func_info, "comment", None)
             if comment:
                 _comment_desc = comment.strip()
@@ -269,7 +270,7 @@ def uc_function_tool(
         """Placeholder doc — overwritten below."""
         # Fetch and cache function definition on first call
         if not _cache:
-            func_info = ws.functions.get(full_name=function_name)
+            func_info = ws.functions.get(function_name)
             raw_params = getattr(getattr(func_info, "input_params", None), "parameters", None) or []
             _cache["parameters"] = sorted(
                 [
@@ -285,9 +286,10 @@ def uc_function_tool(
             _cache["data_type"] = str(getattr(func_info, "data_type", "") or "")
 
         # Build positional SQL args from param dict
+        cached_params: list[dict[str, Any]] = _cache["parameters"]
         sql_args = [
             _to_sql_literal(params.get(p["name"]), p["type_name"])
-            for p in _cache["parameters"]
+            for p in cached_params
         ]
         sql = (
             f"SELECT {function_name}()"

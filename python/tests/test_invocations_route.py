@@ -61,7 +61,7 @@ def app_and_chat_agent():
 
     original_factory = _ca_module.chat_agent_for
 
-    def _spy_factory(agent_arg, *, model, session_store=None):
+    def _spy_factory(agent_arg, *, model, conversation_store=None, agent_id=None):
         ca = original_factory(agent_arg, model=model)
         captured["chat_agent"] = ca
         ca.predict = MagicMock(name="mock_predict")
@@ -245,3 +245,101 @@ class TestErrorHandling:
         )
         # ChatAgentMessage requires content — either coerce or 400. We chose 400.
         assert resp.status_code in (400, 422)
+
+
+# ---------------------------------------------------------------------------
+# /responses route (ResponsesAgent protocol)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def app_with_responses():
+    """create_app() fixture with compile_to_responses_agent mocked out.
+
+    We mock the compile step so the test doesn't need a live LangGraph compile
+    and real MLflow ResponsesAgent types — just the route plumbing.
+    """
+    from unittest.mock import MagicMock, patch
+
+    agent = LlmAgent(tools=[_trivial_tool])
+    config = AgentConfig(name="test-agent", model="databricks-claude-sonnet-4-6")
+
+    # A fake ResponsesAgentResponse-like object with model_dump().
+    fake_response = MagicMock()
+    fake_response.model_dump.return_value = {
+        "output": [{"role": "assistant", "content": "pong"}],
+    }
+    fake_invoke = MagicMock(return_value=fake_response)
+
+    # A fake streaming generator yielding two events.
+    fake_event = MagicMock()
+    fake_event.model_dump_json.return_value = '{"type":"response.output_item.done"}'
+    fake_stream = MagicMock(return_value=iter([fake_event, fake_event]))
+
+    captured: dict[str, Any] = {}
+
+    def _fake_compile(agent_arg, *, model, conversation_store=None, executor="langgraph", agent_id=None):
+        captured["invoke"] = fake_invoke
+        captured["stream"] = fake_stream
+        return fake_invoke, fake_stream
+
+    with patch(
+        "apx_agent._responses_agent.compile_to_responses_agent",
+        side_effect=_fake_compile,
+    ), patch("apx_agent._wiring._make_workspace_client") as mock_ws_factory:
+        mock_ws_factory.return_value = MagicMock(name="sp_ws")
+        # Also patch chat_agent_for to prevent it from compiling real LangGraph
+        from apx_agent import _chat_agent as _ca_module
+
+        with patch.object(_ca_module, "chat_agent_for", side_effect=lambda a, **kw: MagicMock()):
+            app = create_app(agent, config=config)
+            with TestClient(app) as client:
+                yield client, captured
+
+
+class TestResponsesRoute:
+    def test_responses_route_mounted(self, app_with_responses) -> None:
+        client, _ = app_with_responses
+        route_paths = {r.path for r in client.app.routes}
+        assert "/responses" in route_paths
+
+    def test_both_routes_mounted(self, app_with_responses) -> None:
+        client, _ = app_with_responses
+        route_paths = {r.path for r in client.app.routes}
+        assert "/invocations" in route_paths
+        assert "/responses" in route_paths
+
+    def test_non_streaming_returns_response_json(self, app_with_responses) -> None:
+        client, captured = app_with_responses
+        resp = client.post(
+            "/responses",
+            json={"input": [{"role": "user", "content": "ping"}], "stream": False},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "output" in body
+        assert body["output"][0]["role"] == "assistant"
+
+    def test_streaming_returns_sse(self, app_with_responses) -> None:
+        client, captured = app_with_responses
+        resp = client.post(
+            "/responses",
+            json={"input": [{"role": "user", "content": "ping"}], "stream": True},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert resp.text.count("data: ") == 2
+
+    def test_obo_header_forwarded_to_custom_inputs(self, app_with_responses) -> None:
+        client, captured = app_with_responses
+        resp = client.post(
+            "/responses",
+            json={"input": [{"role": "user", "content": "hi"}]},
+            headers={"X-Forwarded-Access-Token": "obo-tok"},
+        )
+        assert resp.status_code == 200
+        assert captured["invoke"].called
+        # The OBO token must land in custom_inputs on the ResponsesAgentRequest
+        # passed to invoke — this is the enterprise-critical contract.
+        req_arg = captured["invoke"].call_args[0][0]
+        assert req_arg.custom_inputs["user_token"] == "obo-tok"

@@ -35,10 +35,19 @@ import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, NamedTuple
+
+if TYPE_CHECKING:
+    from ._models import GuardrailsConfig
 
 logger = logging.getLogger(__name__)
+
+
+class _GuardComponents(NamedTuple):
+    input_guardrails: list[Any]
+    before_tool: Any
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +62,14 @@ class RateLimit:
     tokens. Per-principal — the key extractor pulls a principal string
     from the tool arguments (defaults to ``None`` for a single global
     bucket). When the bucket runs dry, raises ``PermissionError``.
+
+    Per-principal bucket state is bounded so a request-derived
+    ``principal_key`` (e.g. a per-user or per-session id) cannot grow the
+    in-memory state without limit. Buckets idle for longer than
+    ``idle_ttl`` seconds are evicted, and the total number of live buckets
+    is capped at ``max_principals`` (least-recently-used eviction). Eviction
+    is safe: a bucket idle past ``idle_ttl`` has refilled to full, so a
+    re-created bucket starts in the identical (full) state.
 
     Thread-safe: a lock guards the per-principal state.
 
@@ -73,31 +90,58 @@ class RateLimit:
         burst: int | None = None,
         principal_key: Callable[[str, dict[str, Any]], Any] | None = None,
         message: str | None = None,
+        max_principals: int = 10_000,
+        idle_ttl: float = 3600.0,
     ) -> None:
         if per_minute <= 0:
             raise ValueError(f"per_minute must be positive; got {per_minute!r}")
+        if max_principals <= 0:
+            raise ValueError(f"max_principals must be positive; got {max_principals!r}")
+        if idle_ttl <= 0:
+            raise ValueError(f"idle_ttl must be positive; got {idle_ttl!r}")
         self.per_minute = per_minute
         self.burst = burst if burst is not None else per_minute
         self.principal_key = principal_key
         self.message = message or f"Rate limit exceeded: {per_minute}/min."
-        self._tokens: dict[Any, float] = {}
-        self._last_refill: dict[Any, float] = {}
+        self.max_principals = max_principals
+        self.idle_ttl = idle_ttl
+        # principal -> (tokens, last_refill). OrderedDict gives O(1) LRU
+        # eviction; most-recently-touched buckets sit at the end.
+        self._buckets: "OrderedDict[Any, tuple[float, float]]" = OrderedDict()
         self._lock = threading.Lock()
+
+    def _evict_idle(self, now: float) -> None:
+        """Drop buckets untouched for longer than ``idle_ttl``.
+
+        Caller must hold ``self._lock``. Buckets are ordered oldest-first,
+        so we can stop scanning at the first non-idle entry.
+        """
+        cutoff = now - self.idle_ttl
+        while self._buckets:
+            principal, (_tokens, last_refill) = next(iter(self._buckets.items()))
+            if last_refill > cutoff:
+                break
+            self._buckets.popitem(last=False)
 
     def _take_token(self, principal: Any) -> bool:
         """Return True if a token was available; False if rate-limited."""
         now = time.monotonic()
         rate = self.per_minute / 60.0
         with self._lock:
-            last = self._last_refill.get(principal, now)
-            tokens = self._tokens.get(principal, float(self.burst))
+            self._evict_idle(now)
+            tokens, last = self._buckets.get(principal, (float(self.burst), now))
             tokens = min(self.burst, tokens + (now - last) * rate)
-            self._last_refill[principal] = now
-            if tokens >= 1.0:
-                self._tokens[principal] = tokens - 1.0
-                return True
-            self._tokens[principal] = tokens
-            return False
+            took = tokens >= 1.0
+            if took:
+                tokens -= 1.0
+            # Re-insert at the end so this principal is treated as most
+            # recently used for LRU eviction.
+            self._buckets[principal] = (tokens, now)
+            self._buckets.move_to_end(principal)
+            # Cap total live buckets; evict least-recently-used first.
+            while len(self._buckets) > self.max_principals:
+                self._buckets.popitem(last=False)
+            return took
 
     def __call__(self, name: str, args: dict[str, Any]) -> None:
         principal = (
@@ -340,4 +384,62 @@ def compose(*callbacks: Callable[..., Any]) -> Callable[..., Any]:
                 return result
         return result
 
+    # Expose the composed parts for introspection — the dev UI walks
+    # before_tool hooks to find a PolicyGate's ApprovalStore.
+    _composed.callbacks = cb_list  # type: ignore[attr-defined]
     return _composed
+
+
+# ---------------------------------------------------------------------------
+# Declarative config builder (E3c)
+# ---------------------------------------------------------------------------
+
+
+def build_config_guards(
+    cfg: "GuardrailsConfig",
+) -> _GuardComponents:
+    """Translate a ``GuardrailsConfig`` into built-in guard callables.
+
+    Returns ``(input_guardrails, before_tool_gate)`` where:
+
+    - ``input_guardrails`` is a list of ``(messages) -> str | None`` callables
+      to *append* to ``LlmAgent._input_guardrails``.
+    - ``before_tool_gate`` is a single composed callable (or ``None``) to
+      merge with any existing ``LlmAgent._before_tool`` hook via ``compose``.
+
+    Composition order for ``before_tool_gate`` (first raise wins):
+    1. ``ToolDenylist`` — blocked tools are rejected before consuming a
+       rate-limit token.
+    2. ``ToolAllowlist`` — tools not on the allow list are rejected next.
+    3. ``RateLimit`` — rate limit is checked last (so blocked calls don't
+       burn tokens).
+
+    ``input_guardrails`` order: injection heuristic only (code-defined guards
+    run first when merged by the caller).
+
+    This function raises ``ValueError`` immediately (at build time) when
+    ``rate_limit <= 0``, propagated from ``RateLimit.__init__``.
+    """
+    input_guards: list[Any] = []
+    tool_gates: list[Any] = []
+
+    if cfg.injection_detection:
+        input_guards.append(prompt_injection_heuristic())
+
+    # Intentional asymmetry: blocked_tools is ``list[str]`` defaulting to ``[]``,
+    # so an empty denylist is a no-op (truthiness check). allowed_tools is
+    # ``list[str] | None``, so an empty allowlist (``[]``) is a real,
+    # intended block-all state distinct from "absent" (``None``) — hence the
+    # ``is not None`` check. Do not "simplify" this to matching truthiness.
+    if cfg.blocked_tools:
+        tool_gates.append(ToolDenylist(cfg.blocked_tools))
+    if cfg.allowed_tools is not None:
+        tool_gates.append(ToolAllowlist(cfg.allowed_tools))
+    if cfg.rate_limit is not None:
+        kw: dict[str, Any] = {"per_minute": cfg.rate_limit}
+        if cfg.rate_limit_burst is not None:
+            kw["burst"] = cfg.rate_limit_burst
+        tool_gates.append(RateLimit(**kw))
+
+    before_tool = compose(*tool_gates) if tool_gates else None
+    return _GuardComponents(input_guardrails=input_guards, before_tool=before_tool)

@@ -114,7 +114,7 @@ import {
 } from 'appkit-agent';
 ```
 
-Pick by workload: `InMemorySessionStore` for tests; `LakebaseSessionStore` (Postgres) for chat-style high-frequency turns; `DeltaSessionStore` for analytics-style pipelines and cheap durability across long-idle conversations. See [`docs/lakebase-recipe.md`](../docs/lakebase-recipe.md) for Lakebase wiring.
+Pick by workload: `InMemorySessionStore` for tests; `LakebaseSessionStore` (Postgres) for chat-style high-frequency turns; `DeltaSessionStore` for analytics-style pipelines and cheap durability across long-idle conversations. See [`docs/lakebase-recipe.md`](../docs/running/lakebase-recipe.md) for Lakebase wiring.
 
 ### Memory (MemoryBank)
 
@@ -270,6 +270,6 @@ This package is a faithful port — same field names (camelCase here, snake_case
 - [Governed primitives + identity passthrough](../README.md#1-governed-primitives)
 - [Workflow patterns](../README.md#3-workflow-patterns)
 - [MemoryBank](../README.md#memory-bank--long-lived-recall-across-conversations)
-- [Lakebase recipe (provisioning + pgvector + token rotation)](../docs/lakebase-recipe.md)
+- [Lakebase recipe (provisioning + pgvector + token rotation)](../docs/running/lakebase-recipe.md)
 
 When you need a primitive that exists in Python but not yet in the TS map above, file an issue — the parity goal is one-to-one.

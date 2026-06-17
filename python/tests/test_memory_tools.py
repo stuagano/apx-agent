@@ -355,3 +355,113 @@ class TestNaming:
     def test_empty_prefix_does_not_alter_names(self) -> None:
         tools = make_memory_tools(store=InMemoryMemoryStore(), tool_prefix="")
         assert sorted(t.__name__ for t in tools) == ["forget", "recall", "remember"]
+
+
+# ---------------------------------------------------------------------------
+# _use_dep_principal path
+# ---------------------------------------------------------------------------
+
+
+class TestDepPrincipalPath:
+    def test_use_dep_principal_true_emits_dep_param(self) -> None:
+        from apx_agent._memory_tools import make_memory_tools as _make
+        from apx_agent._inspection import _inspect_tool_fn
+
+        store = InMemoryMemoryStore()
+        tools = _make(store=store, _use_dep_principal=True)
+        recall = next(t for t in tools if getattr(t, "__name__", None) == "recall")
+        plain_params, dep_names = _inspect_tool_fn(recall)
+        assert "principal" in dep_names, (
+            "principal must be a DEP (if it's in plain_params the annotation "
+            "didn't resolve — the __future__ annotations trap)"
+        )
+        assert "principal" not in plain_params, (
+            "principal must NOT be in plain_params (would pollute LLM schema)"
+        )
+
+    def test_use_dep_principal_false_no_dep_param(self) -> None:
+        from apx_agent._memory_tools import make_memory_tools as _make
+        from apx_agent._inspection import _inspect_tool_fn
+
+        store = InMemoryMemoryStore()
+        tools = _make(store=store)  # default False
+        recall = next(t for t in tools if getattr(t, "__name__", None) == "recall")
+        _, dep_names = _inspect_tool_fn(recall)
+        assert "principal" not in dep_names
+
+    def test_dep_principal_tool_uses_principal_arg(self) -> None:
+        from apx_agent._memory_tools import make_memory_tools as _make
+
+        store = InMemoryMemoryStore()
+        store.add({"principal_id": "alice", "content": "alice dep data"})
+        tools = _make(store=store, _use_dep_principal=True)
+        recall = next(t for t in tools if getattr(t, "__name__", None) == "recall")
+        result = recall(query="dep data", principal="alice")
+        assert "alice dep data" in result
+
+    def test_dep_principal_none_returns_no_principal(self) -> None:
+        from apx_agent._memory_tools import make_memory_tools as _make, NO_PRINCIPAL
+
+        store = InMemoryMemoryStore()
+        tools = _make(store=store, _use_dep_principal=True)
+        recall = next(t for t in tools if getattr(t, "__name__", None) == "recall")
+        assert NO_PRINCIPAL in recall(query="anything", principal=None)
+
+    def test_dep_principal_remember_writes_under_injected_principal(self) -> None:
+        from apx_agent._memory_tools import make_memory_tools as _make, NO_PRINCIPAL
+
+        store = InMemoryMemoryStore()
+        tools = _make(store=store, _use_dep_principal=True)
+        remember = next(t for t in tools if getattr(t, "__name__", None) == "remember")
+        recall = next(t for t in tools if getattr(t, "__name__", None) == "recall")
+        # remember with injected principal=alice
+        remember(content="alice remembered this", principal="alice")
+        # alice can recall it; bob cannot; no-principal write is refused
+        assert "alice remembered this" in recall(query="remembered", principal="alice")
+        assert "alice remembered this" not in recall(query="remembered", principal="bob")
+        assert NO_PRINCIPAL in remember(content="anon", principal=None)
+
+    def test_dep_principal_isolation_alice_vs_bob(self) -> None:
+        from apx_agent._memory_tools import make_memory_tools as _make
+
+        store = InMemoryMemoryStore()
+        store.add({"principal_id": "alice", "content": "alice only"})
+        store.add({"principal_id": "bob", "content": "bob only"})
+        tools = _make(store=store, _use_dep_principal=True)
+        recall = next(t for t in tools if getattr(t, "__name__", None) == "recall")
+        alice_result = recall(query="only", principal="alice")
+        bob_result = recall(query="only", principal="bob")
+        assert "alice only" in alice_result and "bob only" not in alice_result
+        assert "bob only" in bob_result and "alice only" not in bob_result
+
+
+class TestDepPrincipalFallsBackToDefault:
+    """With ``_use_dep_principal=True`` (the config / agent-carried path), when
+    the per-request OBO principal is absent (None — e.g. local ``apx-agent run`` with
+    no X-Forwarded-User), the tools must fall back to ``default_principal_id``
+    rather than no-op. Regression: memory was dead in the local dev loop because
+    the dep branch ignored default_principal_id."""
+
+    def test_remember_uses_default_when_dep_principal_none(self) -> None:
+        store = InMemoryMemoryStore()
+        tools = make_memory_tools(
+            store=store, _use_dep_principal=True, default_principal_id="bob"
+        )
+        out = _find_tool(tools, "remember")(content="hello", principal=None)
+        assert out != "No principal_id available; cannot recall memories."
+        rows = store.list(MemoryFilter(principal_id="bob"))
+        assert len(rows) == 1 and rows[0].content == "hello"
+
+    def test_dep_principal_wins_over_default(self) -> None:
+        store = InMemoryMemoryStore()
+        tools = make_memory_tools(
+            store=store, _use_dep_principal=True, default_principal_id="bob"
+        )
+        _find_tool(tools, "remember")(content="hi", principal="alice")
+        assert len(store.list(MemoryFilter(principal_id="alice"))) == 1
+        assert len(store.list(MemoryFilter(principal_id="bob"))) == 0
+
+    def test_no_principal_and_no_default_still_degrades(self) -> None:
+        tools = make_memory_tools(store=InMemoryMemoryStore(), _use_dep_principal=True)
+        out = _find_tool(tools, "remember")(content="x", principal=None)
+        assert out == "No principal_id available; cannot recall memories."

@@ -43,6 +43,16 @@ class TestGetWarehouseId:
         with pytest.raises(RuntimeError, match="No SQL warehouse"):
             get_warehouse_id(ws)
 
+    def test_no_warehouse_error_includes_workspace_url_and_fix(self):
+        ws = MagicMock()
+        ws.config.host = "https://my-workspace.azuredatabricks.net"
+        ws.warehouses.list.return_value = []
+        with pytest.raises(RuntimeError) as exc:
+            get_warehouse_id(ws)
+        msg = str(exc.value)
+        assert "my-workspace.azuredatabricks.net/sql/warehouses" in msg
+        assert "Create Warehouse" in msg
+
     def test_skips_warehouses_without_id(self):
         ws = MagicMock()
         no_id = MagicMock()
@@ -83,8 +93,15 @@ class TestRunSql:
         return result
 
     def _make_ws(self, result: MagicMock) -> MagicMock:
+        from databricks.sdk.service.sql import State
+
         ws = MagicMock()
         ws.statement_execution.execute_statement.return_value = result
+        # Report the warehouse as already RUNNING so _ensure_warehouse_running()
+        # is a no-op. Without this, the MagicMock's default .state never equals
+        # State.RUNNING, so the cold-start poll loop runs the full 60s timeout —
+        # which made each of these tests take 60s (300s of the suite's runtime).
+        ws.warehouses.get.return_value.state = State.RUNNING
         return ws
 
     def test_returns_list_of_dicts(self):

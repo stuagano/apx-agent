@@ -1,7 +1,7 @@
 """data-inspector: FastAPI app for local dev.
 
 The Apps-target deployment uses ``agent_server/start_server.py``. This file
-is what ``apx dev`` (or ``uvicorn app:app``) runs locally — adds CORS so
+is what ``apx-agent dev`` (or ``uvicorn app:app``) runs locally — adds CORS so
 Genie Code (and other workspace-UI MCP clients) can call ``/mcp`` cross-origin.
 """
 from __future__ import annotations

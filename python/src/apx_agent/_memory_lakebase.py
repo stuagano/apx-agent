@@ -81,6 +81,28 @@ def _require_sqlalchemy() -> Any:
 # ---------------------------------------------------------------------------
 
 
+_TABLE_NAME_ALLOWED = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_."
+)
+
+
+def _validate_table_name(name: str) -> None:
+    """Reject table names that can't be a safe SQL identifier.
+
+    ``table_name`` is interpolated raw into every statement (Postgres
+    bind parameters cannot stand in for identifiers), so it must be
+    constrained to a strict allowlist. Allows alnum, underscore, and dot
+    (for a ``schema.table`` prefix). Mirrors the Delta store's guard.
+    """
+    if not name:
+        raise ValueError("table_name must not be empty")
+    for ch in name:
+        if ch not in _TABLE_NAME_ALLOWED:
+            raise ValueError(
+                f"table_name contains illegal character {ch!r}: {name!r}"
+            )
+
+
 def _iso_to_epoch(iso: str) -> float:
     """Convert ISO-8601 timestamp to UNIX epoch seconds. Returns 0 on garbage."""
     if not iso:
@@ -192,8 +214,9 @@ class LakebaseMemoryStore:
             omitted.
         embedding_dim: Required dimensionality of ``embedding_fn``'s output.
             Wired into the ``vector(N)`` column type. Must match the function.
-        table_name: Table name for rows. Defaults to ``"apx_memories"``. Quoted
-            as a SQL identifier in queries, so it can include a schema prefix.
+        table_name: Table name for rows. Defaults to ``"apx_memories"``.
+            Validated against an allowlist of safe identifier characters
+            (alnum, underscore, dot), so it can include a schema prefix.
         auto_create: When ``True`` (default), runs the DDL block on first use.
         ensure_extension: When ``True`` (default), the DDL block also runs
             ``CREATE EXTENSION IF NOT EXISTS vector``. Set ``False`` when the
@@ -210,7 +233,7 @@ class LakebaseMemoryStore:
 
         @event.listens_for(engine, "do_connect")
         def add_oauth_token(_dialect, _record, _args, kwargs):
-            cred = ws.postgres.generate_database_credential(
+            cred = ws.database.generate_database_credential(
                 instance_names=["my-lakebase-instance"], request_id="apx-memory",
             )
             kwargs["password"] = cred.token
@@ -237,6 +260,7 @@ class LakebaseMemoryStore:
             raise ValueError(
                 "LakebaseMemoryStore requires a positive `embedding_dim`."
             )
+        _validate_table_name(table_name)
         _require_sqlalchemy()
         self.engine = engine
         self._embedding_fn = embedding_fn
@@ -443,12 +467,11 @@ class LakebaseMemoryStore:
             f"ORDER BY updated_at DESC "
             f"LIMIT :limit"
         )
-        try:
-            with self.engine.connect() as conn:
-                rows = conn.execute(sql, params).mappings().all()
-        except Exception as e:
-            logger.warning("LakebaseMemoryStore.list failed: %s — returning [].", e)
-            return []
+        # Let infra failures propagate: a swallowed error here would read
+        # as "no memories found" to the recall tool. Reserve [] (an empty
+        # result set) for a genuinely empty table. (H21)
+        with self.engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings().all()
         return [_row_to_memory(dict(r)) for r in rows]
 
     def recall(self, opts: RecallOptions) -> list[RecallResult]:
@@ -460,6 +483,15 @@ class LakebaseMemoryStore:
         self._ensure_schema()
         sa = _require_sqlalchemy()
         query_emb = self._embedding_fn([opts.query])[0]
+        # Validate dimensionality up front (mirrors the TS store): a
+        # mismatch must raise here rather than surface as a swallowed DB
+        # error → []. (M30)
+        if query_emb is None or len(query_emb) != self.embedding_dim:
+            raise ValueError(
+                f"LakebaseMemoryStore.recall: embedder returned "
+                f"{0 if query_emb is None else len(query_emb)} dims, "
+                f"expected {self.embedding_dim}."
+            )
         where_clauses = ["principal_id = :principal_id"]
         params: dict[str, Any] = {
             "principal_id": opts.principal_id,
@@ -486,12 +518,11 @@ class LakebaseMemoryStore:
             f"ORDER BY embedding <=> CAST(:query_vec AS vector) ASC "
             f"LIMIT :k"
         )
-        try:
-            with self.engine.connect() as conn:
-                rows = conn.execute(sql, params).mappings().all()
-        except Exception as e:
-            logger.warning("LakebaseMemoryStore.recall failed: %s — returning [].", e)
-            return []
+        # Let infra failures propagate: a swallowed error here would read
+        # as "no memories found" to the recall tool. Reserve [] (an empty
+        # result set) for a genuinely empty match. (H21)
+        with self.engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings().all()
         results: list[RecallResult] = []
         for r in rows:
             d = dict(r)

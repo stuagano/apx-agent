@@ -134,6 +134,12 @@ class DeltaEngine(WorkflowEngine):
     ) -> T:
         await self._bootstrap()
 
+        # Validate the identifier-like values before they reach inline SQL via
+        # _lookup_step / _persist_step — mirrors the _safe_name guard on
+        # start_run / finish_run so the injection barrier is symmetric.
+        _safe_name(run_id, "run_id")
+        _safe_name(step_key, "step_key")
+
         cached = await self._lookup_step(run_id, step_key)
         if cached is not None:
             if cached.status == "completed":
@@ -362,13 +368,17 @@ class DeltaEngine(WorkflowEngine):
             statement=sql.strip(),
             wait_timeout="50s",
         )
+        assert resp.status is not None  # synchronous execute_statement always returns status
         if resp.status.state == StatementState.FAILED:
             err = resp.status.error
+            error_code = err.error_code if err else None
+            message = err.message if err else None
             raise RuntimeError(
-                f"Databricks SQL failed [{err.error_code}]: {err.message}\n"
+                f"Databricks SQL failed [{error_code}]: {message}\n"
                 f"SQL: {sql[:200]}"
             )
         if not resp.result or not resp.result.data_array:
             return []
-        cols = [c.name for c in resp.manifest.schema.columns]
+        assert resp.manifest is not None and resp.manifest.schema is not None
+        cols = [c.name for c in (resp.manifest.schema.columns or [])]
         return [dict(zip(cols, row)) for row in resp.result.data_array]

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
-from ._models import AgentContext
+logger = logging.getLogger(__name__)
+
 from ._ui_nav import (
-    _apx_nav_css,
-    _apx_nav_html,
     _apx_nav_links,
     _deploy_overlay_html,
     _topology_minimap_html,
@@ -167,15 +167,46 @@ def _write_env_file(path: "Path", updates: "dict[str, str]") -> None:
 
 
 
+# Leaf-agent constructors the editor can wire tools into, mapped to the kwarg
+# each uses for its tool list. DataAgent (an LlmAgent subclass) builds its own
+# ``tools=`` list internally and takes additional tools via ``extra_tools=``,
+# so generated tools must attach there, not to a (nonexistent) ``tools=``.
+_LEAF_AGENT_TOOL_KWARG = {
+    "Agent": "tools",
+    "LlmAgent": "tools",
+    "DataAgent": "extra_tools",
+    "CoworkerAgent": "extra_tools",
+}
+
+
+def _call_func_name(call: Any) -> str:
+    """Constructor name of an ``ast.Call`` (e.g. ``Agent``, ``DataAgent``)."""
+    import ast as _ast
+
+    fn = call.func
+    if isinstance(fn, _ast.Name):
+        return fn.id
+    if isinstance(fn, _ast.Attribute):
+        return fn.attr
+    return ""
+
+
+def _tool_kwarg_for(call: Any) -> str:
+    """Which kwarg holds the wireable tool list for this agent call."""
+    return _LEAF_AGENT_TOOL_KWARG.get(_call_func_name(call), "tools")
+
+
 def _agent_tool_names(source: str, target: str) -> list[str] | None:
-    """Return the tool names in ``{target} = Agent(...)``'s ``tools=`` list, or
-    None if there is no such Agent call (e.g. a composition wrapper)."""
+    """Return the tool names in ``{target}``'s tool list (``tools=`` or, for
+    DataAgent, ``extra_tools=``), or None if there is no recognized agent call
+    (e.g. a composition wrapper)."""
     import ast as _ast
 
     call = _find_root_agent_call(source, target)
     if call is None:
         return None
-    kw = next((k for k in call.keywords if k.arg == "tools"), None)
+    kwarg = _tool_kwarg_for(call)
+    kw = next((k for k in call.keywords if k.arg == kwarg), None)
     if kw is None or not isinstance(kw.value, _ast.List):
         return []
     return [e.id for e in kw.value.elts if isinstance(e, _ast.Name)]
@@ -218,8 +249,8 @@ def _splice_tool(source: str, fn_code: str, fn_name: str, *, target: str = "agen
         existing = _agent_tool_names(result, target)
         if existing is not None and fn_name not in existing:
             result = _set_agent_tools(result, existing + [fn_name], target=target)
-    except Exception:  # noqa: BLE001 — never block the function insert on a wiring hiccup
-        pass
+    except Exception as _e:  # noqa: BLE001 — never block the function insert on a wiring hiccup
+        logger.warning("_splice_tool: failed to wire %r into %r tools=[]: %s", fn_name, target, _e)
 
     return result
 
@@ -401,8 +432,17 @@ def _remove_tool(source: str, fn_name: str) -> str:
                 result = _set_agent_tools(
                     result, [n for n in names if n != fn_name], target=node["name"]
                 )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _e:  # noqa: BLE001
+        logger.warning(
+            "_remove_tool: AST unwiring of %r failed (%s); falling back to regex removal", fn_name, _e
+        )
+        # Regex fallback: remove fn_name from any tools=[...] list to avoid
+        # a stale reference that causes NameError at agent load time.
+        # Handles: [fn_name, rest], [first, fn_name], [first, fn_name, rest]
+        esc = re.escape(fn_name)
+        result = re.sub(rf",\s*\b{esc}\b", "", result)   # trailing: first, fn_name
+        result = re.sub(rf"\b{esc}\b\s*,\s*", "", result)  # leading:  fn_name, rest
+        result = re.sub(rf"\b{esc}\b", "", result)         # sole element
 
     return result
 
@@ -526,12 +566,13 @@ def _parse_agent_nodes(source: str) -> list[dict[str, Any]]:
             func_name = call_node.func.id
         elif isinstance(call_node.func, _ast.Attribute):
             func_name = call_node.func.attr
-        if func_name not in ("Agent", "LlmAgent"):
+        if func_name not in _LEAF_AGENT_TOOL_KWARG:
             return None
+        tool_kwarg = _LEAF_AGENT_TOOL_KWARG[func_name]
         tools: list[str] = []
         instructions: str = ""
         for kw in call_node.keywords:
-            if kw.arg == "tools" and isinstance(kw.value, _ast.List):
+            if kw.arg == tool_kwarg and isinstance(kw.value, _ast.List):
                 tools = [e.id for e in kw.value.elts if isinstance(e, _ast.Name)]
             elif kw.arg == "instructions" and isinstance(kw.value, _ast.Constant):
                 instructions = str(kw.value.value)
@@ -632,7 +673,7 @@ def _find_root_agent_call(source: str, target: str) -> Any:
                 else fn.attr if isinstance(fn, _ast.Attribute)
                 else ""
             )
-            if fname in ("Agent", "LlmAgent"):
+            if fname in _LEAF_AGENT_TOOL_KWARG:
                 return value
             for arg in value.args:  # wrapped: Wrapper(Agent(...), ...)
                 inner = _find(arg)
@@ -669,12 +710,16 @@ def _set_agent_kwarg(source: str, *, arg: str, literal: str, target: str) -> str
         end = _abs_offset(source, v.end_lineno, v.end_col_offset)  # type: ignore[arg-type]
         return source[:start] + literal + source[end:]
 
-    # Keyword absent — insert right after the call's opening '('.
-    fn_end = _abs_offset(source, call.func.end_lineno, call.func.end_col_offset)  # type: ignore[arg-type]
-    insert_at = source.find("(", fn_end) + 1
-    has_args = bool(call.args or call.keywords)
-    piece = f"{arg}={literal}" + (", " if has_args else "")
-    return source[:insert_at] + piece + source[insert_at:]
+    # Keyword absent — append before the call's closing ')'. Appending (rather
+    # than inserting after '(') is required when the call has positional args,
+    # e.g. DataAgent("samples", "nyctaxi") — a leading kwarg would be a
+    # "positional argument follows keyword argument" SyntaxError.
+    call_end = _abs_offset(source, call.end_lineno, call.end_col_offset)  # type: ignore[arg-type]
+    close_paren = source.rfind(")", 0, call_end)
+    before = source[:close_paren].rstrip()
+    needs_comma = bool(call.args or call.keywords) and not before.endswith(("(", ","))
+    piece = (", " if needs_comma else "") + f"{arg}={literal}"
+    return source[:close_paren] + piece + source[close_paren:]
 
 
 def _set_agent_instructions(source: str, instructions: str, *, target: str = "agent") -> str:
@@ -697,7 +742,9 @@ def _set_agent_tools(source: str, tools: list[str], *, target: str = "agent") ->
     only the ``tools=`` value, preserving every other argument; inserts if absent.
     """
     literal = "[" + ", ".join(tools) + "]"
-    return _set_agent_kwarg(source, arg="tools", literal=literal, target=target)
+    call = _find_root_agent_call(source, target)
+    kwarg = _tool_kwarg_for(call) if call is not None else "tools"
+    return _set_agent_kwarg(source, arg=kwarg, literal=literal, target=target)
 
 
 def _set_agent_wrapper(source: str, wrapper: str, *, target: str = "agent") -> str:
@@ -908,7 +955,7 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
     Right panel — live tool schemas (what the model sees) updated on debounce.
     New Tool modal — structured form that generates correct function boilerplate.
 
-    Cmd/Ctrl+S saves. APX dev server hot-reloads on file change.
+    Cmd/Ctrl+S saves the file; restart `apx-agent run` to load the new agent code.
     """
     import json as _json
     import re as _re
@@ -1010,6 +1057,28 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
   #modal-close {{ background: none; border: none; color: #555; font-size: 18px;
                   cursor: pointer; line-height: 1; padding: 2px 6px; }}
   #modal-close:hover {{ color: #ccc; }}
+  #btn-from-data {{ background: transparent; color: #9d7bff; border: 1px solid #3a2d5f;
+    border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; margin-left: 8px; }}
+  #btn-from-data:hover {{ background: #1a1230; }}
+  /* "From data" modal — hosts the Setup flow (data source + schema-grounded gen) in an iframe */
+  #data-modal-overlay {{ position: fixed; inset: 0; background: rgba(0,0,0,.7);
+    display: none; align-items: center; justify-content: center; z-index: 200; }}
+  #data-modal-overlay.open {{ display: flex; }}
+  #data-modal {{ width: 88vw; max-width: 940px; height: 86vh; background: #0d0d0d;
+    border: 1px solid #2a2a2a; border-radius: 12px; display: flex; flex-direction: column;
+    overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.6); }}
+  #data-modal-head {{ display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    border-bottom: 1px solid #1e1e1e; }}
+  #data-modal-head h2 {{ font-size: 14px; color: #fff; flex: 1; margin: 0; }}
+  #data-modal-close {{ background: none; border: none; color: #555; font-size: 18px;
+    cursor: pointer; line-height: 1; }}
+  #data-modal-close:hover {{ color: #ccc; }}
+  #data-modal iframe {{ flex: 1; width: 100%; border: none; background: #0d0d0d; }}
+  #apx-toast {{ position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+    background: #0d2a0d; color: #4ade80; border: 1px solid #1a4a1a; border-radius: 8px;
+    padding: 10px 18px; font-size: 13px; z-index: 300; opacity: 0; transition: opacity .2s;
+    pointer-events: none; }}
+  #apx-toast.show {{ opacity: 1; }}
   #modal-body {{ padding: 20px; display: flex; flex-direction: column; gap: 14px; }}
   .field {{ display: flex; flex-direction: column; gap: 5px; }}
   .field label {{ font-size: 11px; font-weight: 600; color: #888;
@@ -1081,9 +1150,22 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
 <div id="status-bar">
   <button id="btn-save">Save &nbsp;<kbd>⌘S</kbd></button>
   <button id="btn-new-tool">+ New Tool</button>
+  <button id="btn-from-data">✨ From data</button>
   <span id="status-msg"></span>
   <span style="margin-left:auto;font-size:11px;color:#333">{file_label}</span>
 </div>
+
+<!-- Generate-from-data modal: hosts the Setup flow (data source + schema-grounded tool gen) -->
+<div id="data-modal-overlay">
+  <div id="data-modal">
+    <div id="data-modal-head">
+      <h2>✨ Generate a tool from your data</h2>
+      <button id="data-modal-close" title="Close">✕</button>
+    </div>
+    <iframe id="data-modal-frame" title="Generate from data"></iframe>
+  </div>
+</div>
+<div id="apx-toast"></div>
 
 <!-- New Tool modal -->
 <div id="modal-overlay">
@@ -1213,6 +1295,13 @@ async function refreshPreview(source) {{
   }} catch (e) {{ /* silent */ }}
 }}
 
+// Escape untrusted tool metadata before injecting into innerHTML (escapes " and ' too).
+function escHtml(s) {{
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}}
+
 function renderSchemas(schemas) {{
   const el = document.getElementById('schema-list');
   if (!schemas.length) {{
@@ -1220,18 +1309,18 @@ function renderSchemas(schemas) {{
     return;
   }}
   el.innerHTML = schemas.map(s => {{
-    if (s._error) return `<p class="schema-error">${{s._error}}</p>`;
+    if (s._error) return `<p class="schema-error">${{escHtml(s._error)}}</p>`;
     const props = s.parameters?.properties ?? {{}};
     const paramHtml = Object.keys(props).length
       ? Object.entries(props).map(([k, v]) =>
-          `<div class="param-row"><span class="param-name">${{k}}</span>`
-          + `<span class="param-type">${{v.type}}</span>`
-          + (v.description ? `<span class="param-desc">— ${{v.description}}</span>` : '')
+          `<div class="param-row"><span class="param-name">${{escHtml(k)}}</span>`
+          + `<span class="param-type">${{escHtml(v.type)}}</span>`
+          + (v.description ? `<span class="param-desc">— ${{escHtml(v.description)}}</span>` : '')
           + `</div>`).join('')
       : '<span class="no-params">No parameters</span>';
     return `<div class="tool-card">
-      <div class="tool-name">${{s.name}}</div>
-      <div class="tool-desc">${{s.description || '<em style="color:#333">No description</em>'}}</div>
+      <div class="tool-name">${{escHtml(s.name)}}</div>
+      <div class="tool-desc">${{s.description ? escHtml(s.description) : '<em style="color:#333">No description</em>'}}</div>
       <div class="tool-params">${{paramHtml}}</div>
     </div>`;
   }}).join('');
@@ -1404,6 +1493,38 @@ document.getElementById('btn-insert').addEventListener('click', async () => {{
     alert(e.message);
   }}
 }});
+
+// "From data" modal — host the Setup flow in an iframe; toast on creation and
+// reload on close so the editor + schema panel pick up the new agent_router.py.
+(function() {{
+  const dOverlay = document.getElementById('data-modal-overlay');
+  const dFrame   = document.getElementById('data-modal-frame');
+  const toast    = document.getElementById('apx-toast');
+  let createdInModal = false;
+  function openData() {{
+    if (!dFrame.getAttribute('src')) dFrame.setAttribute('src', '/_apx/setup?embed=1');
+    dOverlay.classList.add('open');
+  }}
+  function closeData() {{
+    dOverlay.classList.remove('open');
+    if (createdInModal) window.location.reload();
+  }}
+  document.getElementById('btn-from-data').addEventListener('click', openData);
+  document.getElementById('data-modal-close').addEventListener('click', closeData);
+  dOverlay.addEventListener('click', e => {{ if (e.target === dOverlay) closeData(); }});
+  function showToast(msg) {{
+    toast.textContent = msg; toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2800);
+  }}
+  window.addEventListener('message', e => {{
+    const d = e.data || {{}};
+    if (d && d.type === 'apx:tool-created') {{
+      createdInModal = true;
+      const what = d.name ? `✓ Created ${{d.name}}` : `✓ Created ${{d.count || ''}} tool(s)`;
+      showToast(`${{what}} — close to see it in your agent`);
+    }}
+  }});
+}})();
 </script>
 {_deploy_overlay_html()}
 {_topology_minimap_html()}

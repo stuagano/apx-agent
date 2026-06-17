@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
+from ._defaults import PrincipalDependency  # module-level — resolvable by get_type_hints
 from ._memory import MemoryStore, RecallOptions, RecallResult
 from ._tool import tool
 
@@ -73,6 +74,7 @@ def make_memory_tools(
     namespace_default: str = "default",
     tool_prefix: str = "",
     include: list[MemoryToolName] | None = None,
+    _use_dep_principal: bool = False,
 ) -> list[Any]:
     """Build LLM-facing memory tools that close over ``store``.
 
@@ -104,6 +106,14 @@ def make_memory_tools(
         include: Optional subset of tool names to build. Defaults to
             all three. Passing ``["recall"]`` yields only the read tool,
             for read-only agents.
+        _use_dep_principal: When ``True``, the emitted ``recall`` /
+            ``remember`` tools carry a ``principal: PrincipalDependency``
+            parameter so FastAPI's dependency injection supplies the
+            per-request OBO identity at call time. The LLM never sees
+            ``principal`` as a tool argument. Used by
+            ``_memory_wiring.attach_declared_memory`` to build config-
+            driven memory tools. When ``False`` (default), the classic
+            zero-arg resolver path is used.
 
     Returns:
         A list of decorated callables, in the order requested by
@@ -123,72 +133,153 @@ def make_memory_tools(
 
     tools: list[Any] = []
 
+    # The dep / resolver branches below use distinct inner function names
+    # (_recall_dep vs _recall_resolver, etc.) so pyright doesn't flag a
+    # reportRedeclaration; @tool(name=...) sets the tool name the LLM sees.
     for name in requested:
         if name == "recall":
+            if _use_dep_principal:
 
-            @tool(name=f"{tool_prefix}recall")
-            def recall(
-                query: str,
-                k: int = 5,
-                namespace: str | None = None,
-                tags: list[str] | None = None,
-            ) -> str:
-                """Recall durable memories relevant to a query.
+                @tool(name=f"{tool_prefix}recall")
+                def _recall_dep(
+                    query: str,
+                    k: int = 5,
+                    namespace: str | None = None,
+                    tags: list[str] | None = None,
+                    *,
+                    principal: PrincipalDependency,
+                ) -> str:
+                    """Recall durable memories relevant to a query.
 
-                Returns the top-k matches formatted as a markdown bullet
-                list. Each line is ``"- [score=X.XX] {content}"``.
-                Returns ``"No memories found."`` when nothing matches.
-                """
-                principal_id = _resolve_principal()
-                if not principal_id:
-                    return NO_PRINCIPAL
-                results = store.recall(
-                    RecallOptions(
-                        principal_id=principal_id,
-                        query=query,
-                        k=k,
-                        namespace=namespace if namespace is not None else namespace_default,
-                        tags=tuple(tags) if tags is not None else None,
+                    Returns the top-k matches formatted as a markdown bullet
+                    list. Each line is ``"- [score=X.XX] {content}"``.
+                    Returns ``"No memories found."`` when nothing matches.
+                    """
+                    # Per-request OBO principal wins; fall back to the configured
+                    # default (e.g. the local CLI-profile identity) so memory
+                    # works when no OBO header is present (local apx-agent run).
+                    principal = principal or default_principal_id
+                    if not principal:
+                        return NO_PRINCIPAL
+                    results = store.recall(
+                        RecallOptions(
+                            principal_id=principal,
+                            query=query,
+                            k=k,
+                            namespace=namespace if namespace is not None else namespace_default,
+                            tags=tuple(tags) if tags is not None else None,
+                        )
                     )
-                )
-                return _format_recall_results(results)
+                    return _format_recall_results(results)
 
-            tools.append(recall)
+                tools.append(_recall_dep)
+
+            else:
+
+                @tool(name=f"{tool_prefix}recall")
+                def _recall_resolver(
+                    query: str,
+                    k: int = 5,
+                    namespace: str | None = None,
+                    tags: list[str] | None = None,
+                ) -> str:
+                    """Recall durable memories relevant to a query.
+
+                    Returns the top-k matches formatted as a markdown bullet
+                    list. Each line is ``"- [score=X.XX] {content}"``.
+                    Returns ``"No memories found."`` when nothing matches.
+                    """
+                    principal_id = _resolve_principal()
+                    if not principal_id:
+                        return NO_PRINCIPAL
+                    results = store.recall(
+                        RecallOptions(
+                            principal_id=principal_id,
+                            query=query,
+                            k=k,
+                            namespace=namespace if namespace is not None else namespace_default,
+                            tags=tuple(tags) if tags is not None else None,
+                        )
+                    )
+                    return _format_recall_results(results)
+
+                tools.append(_recall_resolver)
 
         elif name == "remember":
+            if _use_dep_principal:
 
-            @tool(name=f"{tool_prefix}remember")
-            def remember(
-                content: str,
-                namespace: str | None = None,
-                tags: list[str] | None = None,
-                importance: float = 0.5,
-            ) -> str:
-                """Save a durable memory for later recall.
+                @tool(name=f"{tool_prefix}remember")
+                def _remember_dep(
+                    content: str,
+                    namespace: str | None = None,
+                    tags: list[str] | None = None,
+                    importance: float = 0.5,
+                    *,
+                    principal: PrincipalDependency,
+                ) -> str:
+                    """Save a durable memory for later recall.
 
-                Persists ``content`` under the current principal and
-                returns the new memory id. ``importance`` is a 0..1
-                hint used by the store for ranking and pruning.
-                """
-                if not (0.0 <= importance <= 1.0):
-                    raise ValueError(
-                        f"importance must be in [0, 1]; got {importance}"
+                    Persists ``content`` under the current principal and
+                    returns the new memory id. ``importance`` is a 0..1
+                    hint used by the store for ranking and pruning.
+                    """
+                    if not (0.0 <= importance <= 1.0):
+                        raise ValueError(
+                            f"importance must be in [0, 1]; got {importance}"
+                        )
+                    # Per-request OBO principal wins; fall back to the configured
+                    # default (e.g. the local CLI-profile identity) so memory
+                    # works when no OBO header is present (local apx-agent run).
+                    principal = principal or default_principal_id
+                    if not principal:
+                        return NO_PRINCIPAL
+                    memory = store.add(
+                        {
+                            "principal_id": principal,
+                            "content": content,
+                            "namespace": namespace if namespace is not None else namespace_default,
+                            "tags": tuple(tags) if tags is not None else (),
+                            "importance": importance,
+                        }
                     )
-                principal_id = _resolve_principal()
-                if not principal_id:
-                    return NO_PRINCIPAL
-                memory = store.add(
-                    {
-                        "principal_id": principal_id,
-                        "content": content,
-                        "namespace": namespace if namespace is not None else namespace_default,
-                        "tags": tuple(tags) if tags is not None else (),
-                        "importance": importance,
-                    }
-                )
-                return f"Saved memory {memory.id}."
+                    return f"Saved memory {memory.id}."
 
-            tools.append(remember)
+                tools.append(_remember_dep)
+
+            else:
+
+                @tool(name=f"{tool_prefix}remember")
+                def _remember_resolver(
+                    content: str,
+                    namespace: str | None = None,
+                    tags: list[str] | None = None,
+                    importance: float = 0.5,
+                ) -> str:
+                    """Save a durable memory for later recall.
+
+                    Persists ``content`` under the current principal and
+                    returns the new memory id. ``importance`` is a 0..1
+                    hint used by the store for ranking and pruning.
+                    """
+                    if not (0.0 <= importance <= 1.0):
+                        raise ValueError(
+                            f"importance must be in [0, 1]; got {importance}"
+                        )
+                    principal_id = _resolve_principal()
+                    if not principal_id:
+                        return NO_PRINCIPAL
+                    memory = store.add(
+                        {
+                            "principal_id": principal_id,
+                            "content": content,
+                            "namespace": namespace if namespace is not None else namespace_default,
+                            "tags": tuple(tags) if tags is not None else (),
+                            "importance": importance,
+                        }
+                    )
+                    return f"Saved memory {memory.id}."
+
+                tools.append(_remember_resolver)
 
         elif name == "forget":
 
