@@ -2596,6 +2596,56 @@ def migrate_to_okf(force: bool) -> None:
     click.echo(f"Wrote OKF bundle to {okf_root} (schema.json regenerated as derived cache).")
 
 
+@agents.command("pull-comments")
+@click.option("--profile", default=None,
+              help="Databricks CLI profile to read UC comments with. "
+                   "Falls back to $DATABRICKS_CONFIG_PROFILE.")
+@click.option("--overwrite", is_flag=True,
+              help="Replace already-curated OKF descriptions with UC comments "
+                   "(default: only fill empty cells).")
+def pull_comments(profile: str | None, overwrite: bool) -> None:
+    """Enrich this project's OKF bundle from Unity Catalog COMMENTs (read-only).
+
+    Reads table/column comments from UC via the Tables API and fills empty
+    # Schema Description cells + a # Overview per table. Non-destructive: curated
+    descriptions are kept unless --overwrite. Does NOT write to Unity Catalog.
+    """
+    from ._okf import apply_uc_comments
+    from ._schema import load_baked_schema, APX_DIR
+
+    existing = load_baked_schema(Path.cwd())
+    if not existing or not existing.get("catalog") or not existing.get("schema"):
+        raise click.ClickException(
+            "No .apx grounding found. Run inside a scaffolded project with an OKF bundle."
+        )
+    okf_root = Path.cwd() / APX_DIR / "okf"
+    if not okf_root.is_dir():
+        raise click.ClickException(
+            "No .apx/okf bundle found. Run `apx-agent agents migrate-to-okf` first."
+        )
+    catalog, schema = existing["catalog"], existing["schema"]
+    ws = _make_ws_for_scaffold(profile)
+    if ws is None:
+        raise click.ClickException(
+            f"Could not connect to a workspace to read comments for {catalog}.{schema}."
+        )
+    comments: dict = {}
+    for t in ws.tables.list(catalog_name=catalog, schema_name=schema):
+        name = getattr(t, "name", None)
+        if not name:
+            continue
+        cmap: dict = {"_table": getattr(t, "comment", None) or ""}
+        for c in (getattr(t, "columns", None) or []):
+            if getattr(c, "name", None):
+                cmap[c.name] = getattr(c, "comment", None) or ""
+        comments[name] = cmap
+    n = apply_uc_comments(okf_root, comments, overwrite=overwrite)
+    click.echo(
+        f"pull-comments: enriched {n} table{'s' if n != 1 else ''} in {okf_root} "
+        f"from {catalog}.{schema} (read-only)."
+    )
+
+
 def _port_is_free(port: int, host: str) -> bool:
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

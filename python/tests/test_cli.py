@@ -4437,3 +4437,55 @@ class TestRefreshSchemaPreservesOKF:
         assert result.exit_code == 0, result.output
         assert not (apx / "okf" / "tables" / "gone.md").exists()  # dropped on opt-in
         assert set(json.loads((apx / "schema.json").read_text())["tables"]) == {"keep"}
+
+
+# ---------------------------------------------------------------------------
+# TestPullComments
+# ---------------------------------------------------------------------------
+
+
+class TestPullComments:
+    def test_pull_fills_bundle_from_uc_comments(self, tmp_path, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+        from apx_agent._okf import write_okf_bundle
+
+        apx = tmp_path / ".apx"
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        write_okf_bundle(m, apx / "okf", timestamp="z")
+        (apx / "schema.json").write_text(json.dumps(m))
+
+        def col(name, comment):
+            return SimpleNamespace(name=name, comment=comment)
+
+        fake_tables = [
+            SimpleNamespace(
+                name="pay_runs",
+                comment="Core payroll table.",
+                columns=[col("gross_pay", "Gross before deductions.")],
+            )
+        ]
+        fake_ws = SimpleNamespace(
+            tables=SimpleNamespace(
+                list=lambda catalog_name, schema_name: fake_tables
+            )
+        )
+        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda *a, **k: fake_ws)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["pull-comments"])
+        assert result.exit_code == 0, result.output
+        body = (apx / "okf" / "tables" / "pay_runs.md").read_text()
+        assert "Gross before deductions." in body   # column comment -> Description cell
+        assert "Core payroll table." in body         # table comment -> # Overview
+
+    def test_pull_no_bundle_errors_cleanly(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent.cli import agents
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(agents, ["pull-comments"])
+        assert result.exit_code != 0  # no .apx -> clean ClickException, not a crash
