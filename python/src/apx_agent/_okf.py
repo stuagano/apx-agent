@@ -98,3 +98,63 @@ def parse_schema_columns(body: str) -> list[str]:
             tm = re.search(r"\(([^)]*)\)", line[name_m.end():])
             cols.append(f"{name_m.group(1)}({tm.group(1).strip() if tm else ''})")
     return cols
+
+
+_RESERVED = {"index.md", "log.md"}
+
+
+def _index_order(index_text: str) -> list[str]:
+    """Stems listed (in order) by an ``index.md`` ``* [title](stem.md)`` body."""
+    return [m.group(1) for m in re.finditer(r"\]\(([^)]+?)\.md\)", index_text)]
+
+
+def _ordered_table_files(okf_root: Path) -> list[Path]:
+    tdir = okf_root / "tables"
+    if not tdir.is_dir():
+        return []
+    files = sorted(p for p in tdir.glob("*.md") if p.name not in _RESERVED)  # F3 primary order
+    idx = tdir / "index.md"
+    if idx.is_file():
+        bystem = {p.stem: p for p in files}
+        order = [bystem[s] for s in _index_order(idx.read_text()) if s in bystem]  # advisory
+        listed = {p.stem for p in order}
+        order += [p for p in files if p.stem not in listed]
+        if order:
+            return order
+    return files
+
+
+def _dataset_concept(okf_root: Path) -> "OKFDocument | None":
+    ds_dir = okf_root / "datasets"
+    if not ds_dir.is_dir():
+        return None
+    files = sorted(p for p in ds_dir.glob("*.md") if p.name not in _RESERVED)
+    if not files:
+        return None
+    return OKFDocument.parse(files[0].read_text())  # F10: deterministic first
+
+
+def okf_manifest(okf_root: "Path | str") -> "dict | None":
+    """Parse an OKF bundle directory into ``{catalog, schema, tables}``.
+
+    Returns ``None`` on ANY miss/error (no dataset concept, missing catalog/
+    schema, unreadable files, bad YAML). NEVER raises — totality is the
+    contract that keeps ``load_baked_schema`` crash-free (F1).
+    """
+    try:
+        root = Path(okf_root)
+        ds = _dataset_concept(root)
+        if ds is None:
+            return None
+        catalog = ds.frontmatter.get("catalog")
+        schema = ds.frontmatter.get("schema")
+        if not catalog or not schema:
+            return None
+        tables: dict[str, list[str]] = {}
+        for table_md in _ordered_table_files(root):
+            doc = OKFDocument.parse(table_md.read_text())
+            name = doc.frontmatter.get("title") or table_md.stem
+            tables[name] = parse_schema_columns(doc.body)  # [] when no # Schema (name still kept)
+        return {"catalog": catalog, "schema": schema, "tables": tables}
+    except Exception:
+        return None

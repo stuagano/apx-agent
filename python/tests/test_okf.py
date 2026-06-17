@@ -87,3 +87,50 @@ class TestParseSchemaColumns:
         from apx_agent._okf import parse_schema_columns
         body = "# Schema\n- `event_date` (STRING): the date\n"
         assert parse_schema_columns(body) == ["event_date(STRING)"]
+
+
+class TestOKFManifest:
+    def _write_bundle(self, root, *, tables_order):
+        okf = root / ".apx" / "okf"
+        (okf / "datasets").mkdir(parents=True)
+        (okf / "tables").mkdir(parents=True)
+        (okf / "datasets" / "payroll_demo.md").write_text(
+            "---\ntype: Databricks Schema\ntitle: payroll_demo\n"
+            "description: d\ncatalog: cat\nschema: payroll_demo\ntimestamp: z\n---\n\n# Tables\n"
+        )
+        for t, cols in tables_order:
+            rows = "".join(f"| `{c}` | int |  |\n" for c in cols)
+            (okf / "tables" / f"{t}.md").write_text(
+                f"---\ntype: Unity Catalog Table\ntitle: {t}\ndescription: d\ntimestamp: z\n---\n\n"
+                f"# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n{rows}"
+            )
+        return okf
+
+    def test_parses_catalog_schema_tables(self, tmp_path):
+        from apx_agent._okf import okf_manifest
+        okf = self._write_bundle(tmp_path, tables_order=[("employees", ["a", "b"]), ("pay_runs", ["c"])])
+        out = okf_manifest(okf)
+        assert out["catalog"] == "cat"
+        assert out["schema"] == "payroll_demo"
+        assert out["tables"] == {"employees": ["a(int)", "b(int)"], "pay_runs": ["c(int)"]}
+
+    def test_excludes_reserved_index_md_no_phantom_table(self, tmp_path):
+        from apx_agent._okf import okf_manifest
+        okf = self._write_bundle(tmp_path, tables_order=[("employees", ["a"])])
+        (okf / "tables" / "index.md").write_text("# Tables\n* [employees](employees.md)\n")
+        out = okf_manifest(okf)
+        assert "index" not in out["tables"]
+        assert set(out["tables"]) == {"employees"}
+
+    def test_missing_dataset_returns_none(self, tmp_path):
+        from apx_agent._okf import okf_manifest
+        okf = tmp_path / ".apx" / "okf" / "tables"
+        okf.mkdir(parents=True)
+        assert okf_manifest(tmp_path / ".apx" / "okf") is None
+
+    def test_malformed_bundle_returns_none_never_raises(self, tmp_path):
+        from apx_agent._okf import okf_manifest
+        okf = tmp_path / ".apx" / "okf"
+        (okf / "datasets").mkdir(parents=True)
+        (okf / "datasets" / "x.md").write_text("---\nnot: : valid: yaml\n: -\n---\n")
+        assert okf_manifest(okf) is None
