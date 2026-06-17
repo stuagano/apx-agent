@@ -368,7 +368,8 @@ def apply_uc_comments(
             tcomment = cmap.get("_table", "")
             existing_overview = _extract_section(doc.body, "Overview").strip()
             if tcomment and (overwrite or not existing_overview):
-                doc.body = _replace_section(doc.body, "Overview", f"# Overview\n{tcomment}")
+                safe = re.sub(r"^(#+)", r"\\\1", tcomment, flags=re.M)
+                doc.body = _replace_section(doc.body, "Overview", f"# Overview\n{safe}")
                 changed = True
             if changed:
                 path.write_text(doc.serialize())

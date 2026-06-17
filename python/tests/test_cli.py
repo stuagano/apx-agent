@@ -4454,3 +4454,4 @@ class TestPullComments:
         monkeypatch.chdir(tmp_path)
         result = CliRunner().invoke(agents, ["pull-comments"])
         assert result.exit_code != 0  # no .apx -> clean ClickException, not a crash
+        assert "No .apx" in result.output or "no .apx" in result.output.lower()
