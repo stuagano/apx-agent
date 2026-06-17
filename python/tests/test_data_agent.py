@@ -237,3 +237,45 @@ class TestStartupWarning:
         # ws.warehouses.list should never be called when warehouse_id is explicit
         ws.warehouses.list.assert_not_called()
         assert not any("SQL queries will fail" in r.message for r in caplog.records)
+
+
+class TestDataAgentOKFGrounding:
+    def test_baked_grounding_reaches_instructions(self, tmp_path, monkeypatch):
+        from apx_agent._okf import write_okf_bundle
+        from apx_agent.data_agent import _build_data_tools_and_instructions
+
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        okf = tmp_path / ".apx" / "okf"
+        write_okf_bundle(m, okf, timestamp="z")
+        (okf / "tables" / "pay_runs.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Overview\nPay records narrative.\n\n# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) |  |\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        comp = _build_data_tools_and_instructions(
+            catalog="c", schema="s", warehouse_id=None, ws=None, include_functions=False,
+            genie_space=None, vector_index=None, instructions=None, persona=None,
+            objective=None, tables=None, extra_tools=None,
+        )
+        assert "Pay records narrative." in comp.instructions
+
+    def test_tables_override_does_not_pull_grounding(self, tmp_path, monkeypatch):
+        from apx_agent._okf import write_okf_bundle
+        from apx_agent.data_agent import _build_data_tools_and_instructions
+
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        okf = tmp_path / ".apx" / "okf"
+        write_okf_bundle(m, okf, timestamp="z")
+        (okf / "tables" / "pay_runs.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Overview\nShould not appear.\n\n# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) |  |\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        comp = _build_data_tools_and_instructions(
+            catalog="c", schema="s", warehouse_id=None, ws=None, include_functions=False,
+            genie_space=None, vector_index=None, instructions=None, persona=None,
+            objective=None, tables={"pay_runs": ["gross_pay(decimal(6,2))"]}, extra_tools=None,
+        )
+        assert "Should not appear." not in comp.instructions
