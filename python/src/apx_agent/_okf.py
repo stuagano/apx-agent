@@ -238,3 +238,61 @@ def write_okf_bundle(
         f'---\nokf_version: "{OKF_VERSION}"\n---\n\n'
         "# Subdirectories\n* [datasets](datasets/)\n* [tables](tables/)\n"
     )
+
+
+def _schema_rows_with_desc(body: str) -> list[dict]:
+    """Per-column {name, type, description} from a ``# Schema`` pipe table."""
+    section = _extract_section(body, "Schema")
+    rows: list[dict] = []
+    for raw in section.splitlines():
+        line = raw.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        name_m = _BACKTICK_IDENT.search(cells[0]) if cells else None
+        if not name_m:
+            continue
+        rows.append({
+            "name": name_m.group(1),
+            "type": cells[1].strip() if len(cells) > 1 else "",
+            "description": cells[2].strip() if len(cells) > 2 else "",
+        })
+    return rows
+
+
+def _first_code_block(section: str) -> str:
+    """Body of the first fenced ``` block in a section, or ''."""
+    m = re.search(r"```[a-zA-Z]*\n(.*?)```", section, re.DOTALL)
+    return m.group(1).strip() if m else section.strip()
+
+
+def okf_grounding(okf_root: "Path | str") -> "dict | None":
+    """Harvest optional per-table enrichment from an OKF bundle's bodies.
+
+    Returns ``None`` when no table carries enrichment beyond bare auto-gen, so
+    un-enriched bundles produce a byte-identical prompt. Totalised — never
+    raises (mirrors ``okf_manifest``).
+    """
+    try:
+        root = Path(okf_root)
+        out: dict[str, dict] = {}
+        for table_md in _ordered_table_files(root):
+            doc = OKFDocument.parse(table_md.read_text())
+            name = doc.frontmatter.get("title") or table_md.stem
+            body = doc.body
+            overview = _extract_section(body, "Overview").strip()
+            joins = _extract_section(body, "Joins").strip()
+            examples_sec = _extract_section(body, "Examples")
+            examples = _first_code_block(examples_sec) if examples_sec.strip() else ""
+            columns = _schema_rows_with_desc(body)
+            has_col_desc = any(c["description"] for c in columns)
+            if overview or joins or examples or has_col_desc:
+                out[name] = {
+                    "description": overview,
+                    "columns": columns,
+                    "joins": joins,
+                    "examples": examples,
+                }
+        return out or None
+    except Exception:
+        return None

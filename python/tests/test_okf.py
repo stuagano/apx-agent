@@ -193,3 +193,54 @@ class TestNonAlphabeticalOrder:
         before = build_instructions_from_schema(m["catalog"], m["schema"], m["tables"])
         after = build_instructions_from_schema(m["catalog"], m["schema"], out["tables"])
         assert after == before  # order-sensitive prompt stays byte-identical
+
+
+class TestOKFGrounding:
+    def _bundle(self, root, pay_runs_body):
+        from apx_agent._okf import write_okf_bundle
+        m = {"catalog": "c", "schema": "s", "tables": {
+            "employees": ["employee_id(string)"],
+            "pay_runs": ["gross_pay(decimal(6,2))", "employee_id(string)"],
+        }}
+        okf = root / "okf"
+        write_okf_bundle(m, okf, timestamp="z")
+        (okf / "tables" / "pay_runs.md").write_text(pay_runs_body)
+        return okf
+
+    def test_returns_none_when_no_enrichment(self, tmp_path):
+        from apx_agent._okf import write_okf_bundle, okf_grounding
+        m = {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)"]}}
+        okf = tmp_path / "okf"
+        write_okf_bundle(m, okf, timestamp="z")
+        assert okf_grounding(okf) is None
+
+    def test_harvests_overview_joins_examples_and_col_descriptions(self, tmp_path):
+        from apx_agent._okf import okf_grounding
+        body = (
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\n"
+            "description: d\ntimestamp: z\n---\n\n"
+            "# Overview\nOne row per employee per pay period.\n\n"
+            "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) | Gross before deductions. |\n"
+            "| `employee_id` | string | FK -> [`employees`](/tables/employees.md) |\n\n"
+            "# Joins\nJoin to employees on `employee_id`.\n\n"
+            "# Examples\n```sql\nSELECT * FROM pay_runs LIMIT 10\n```\n"
+        )
+        okf = self._bundle(tmp_path, body)
+        g = okf_grounding(okf)
+        assert g is not None
+        assert "employees" not in g
+        pr = g["pay_runs"]
+        assert pr["description"] == "One row per employee per pay period."
+        assert pr["joins"] == "Join to employees on `employee_id`."
+        assert pr["examples"].strip() == "SELECT * FROM pay_runs LIMIT 10"
+        descmap = {c["name"]: c["description"] for c in pr["columns"]}
+        assert descmap["gross_pay"] == "Gross before deductions."
+
+    def test_malformed_returns_none_never_raises(self, tmp_path):
+        from apx_agent._okf import okf_grounding
+        okf = tmp_path / "okf" / "tables"
+        okf.mkdir(parents=True)
+        (okf.parent / "datasets").mkdir()
+        (okf.parent / "datasets" / "s.md").write_text("---\n: bad: yaml\n---\n")
+        assert okf_grounding(okf.parent) is None
