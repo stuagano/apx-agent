@@ -2,6 +2,7 @@ from click.testing import CliRunner
 from apx_agent.cli import main
 import yaml
 from pathlib import Path
+from unittest.mock import patch
 
 
 def test_scaffold_coworker_outputs_yaml(tmp_path):
@@ -57,3 +58,71 @@ def test_build_heredoc_copies_apx_dir():
 
     src = inspect.getsource(cli)
     assert "cp -r .apx .build/" in src
+
+
+class TestScaffoldEmitsOKF:
+    """Scaffold writes an OKF bundle alongside the derived schema.json cache."""
+
+    _manifest = {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)"]}}
+
+    def _invoke_model_serving(self, tmp_path):
+        runner = CliRunner()
+        with patch("apx_agent.cli._schema_manifest_for_scaffold", return_value=self._manifest):
+            result = runner.invoke(
+                main,
+                [
+                    "agents", "scaffold", "proj",
+                    "--target", "model-serving",
+                    "--catalog", "c", "--schema", "s",
+                    "--no-interactive",
+                    "--no-yaml",
+                    "--dir", str(tmp_path),
+                ],
+                catch_exceptions=False,
+                env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
+            )
+        return result, tmp_path / "proj"
+
+    def _invoke_apps(self, tmp_path):
+        runner = CliRunner()
+        with patch("apx_agent.cli._schema_manifest_for_scaffold", return_value=self._manifest):
+            result = runner.invoke(
+                main,
+                [
+                    "agents", "scaffold", "proj",
+                    "--target", "apps",
+                    "--catalog", "c", "--schema", "s",
+                    "--no-interactive",
+                    "--no-yaml",
+                    "--dir", str(tmp_path),
+                ],
+                catch_exceptions=False,
+                env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
+            )
+        return result, tmp_path / "proj"
+
+    def test_model_serving_writes_okf_bundle_and_cache(self, tmp_path):
+        import json
+        from apx_agent._okf import okf_manifest
+
+        result, target = self._invoke_model_serving(tmp_path)
+        assert result.exit_code == 0, result.output
+
+        assert (target / ".apx" / "okf" / "datasets" / "s.md").is_file()
+        assert (target / ".apx" / "schema.json").is_file()
+        assert okf_manifest(target / ".apx" / "okf") == json.loads(
+            (target / ".apx" / "schema.json").read_text()
+        )
+
+    def test_apps_writes_okf_bundle_and_cache(self, tmp_path):
+        import json
+        from apx_agent._okf import okf_manifest
+
+        result, target = self._invoke_apps(tmp_path)
+        assert result.exit_code == 0, result.output
+
+        assert (target / ".apx" / "okf" / "datasets" / "s.md").is_file()
+        assert (target / ".apx" / "schema.json").is_file()
+        assert okf_manifest(target / ".apx" / "okf") == json.loads(
+            (target / ".apx" / "schema.json").read_text()
+        )
