@@ -47,3 +47,13 @@ def test_scaffold_no_yaml_flag_creates_directory(tmp_path):
     ])
     # --no-yaml uses old behavior: creates a project directory
     assert (tmp_path / "my-agent").exists() or result.exit_code == 0
+
+
+def test_build_heredoc_copies_apx_dir():
+    # The OKF bundle (and the derived schema.json cache) live under .apx/ and
+    # MUST ship to the App container, else the deployed agent is ungrounded (F8).
+    from apx_agent import cli
+    import inspect
+
+    src = inspect.getsource(cli)
+    assert "cp -r .apx .build/" in src
