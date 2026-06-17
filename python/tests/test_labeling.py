@@ -1,0 +1,55 @@
+import pytest
+from types import SimpleNamespace
+from mlflow.genai import label_schemas as ls
+from apx_agent import _labeling
+
+
+def _judge(name="domain_quality_base", ft=float, instr="rate {{ inputs }} {{ outputs }}"):
+    return SimpleNamespace(name=name, instructions=instr, feedback_value_type=ft)
+
+
+@pytest.mark.unit
+def test_parse_scale_ok():
+    assert _labeling.parse_scale("1-5") == (1.0, 5.0)
+    assert _labeling.parse_scale("0.0 - 1.0") == (0.0, 1.0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["", "5", "a-b", "1-2-3"])
+def test_parse_scale_bad(bad):
+    with pytest.raises(_labeling.LabelingError):
+        _labeling.parse_scale(bad)
+
+
+@pytest.mark.unit
+def test_derive_numeric_schema_matches_judge():
+    spec = _labeling.derive_label_schema(judge=_judge(ft=float), scale="1-5", options=None)
+    assert spec["name"] == "domain_quality_base"          # verbatim from judge
+    assert spec["instruction"] == "rate {{ inputs }} {{ outputs }}"
+    assert spec["type"] == "feedback"
+    assert spec["enable_comment"] is True
+    assert spec["overwrite"] is True
+    assert isinstance(spec["input"], ls.InputNumeric)
+    assert (spec["input"].min_value, spec["input"].max_value) == (1.0, 5.0)
+
+
+@pytest.mark.unit
+def test_derive_numeric_requires_scale():
+    with pytest.raises(_labeling.LabelingError, match="--scale"):
+        _labeling.derive_label_schema(judge=_judge(ft=float), scale=None, options=None)
+
+
+@pytest.mark.unit
+def test_derive_bool_maps_to_categorical_true_false():
+    spec = _labeling.derive_label_schema(judge=_judge(ft=bool), scale=None, options=None)
+    assert isinstance(spec["input"], ls.InputCategorical)
+    assert spec["input"].options == ["true", "false"]
+
+
+@pytest.mark.unit
+def test_derive_str_requires_options():
+    with pytest.raises(_labeling.LabelingError, match="--options"):
+        _labeling.derive_label_schema(judge=_judge(ft=str), scale=None, options=None)
+    spec = _labeling.derive_label_schema(judge=_judge(ft=str), scale=None, options=["good", "bad"])
+    assert isinstance(spec["input"], ls.InputCategorical)
+    assert spec["input"].options == ["good", "bad"]
