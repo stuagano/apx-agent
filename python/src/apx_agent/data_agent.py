@@ -61,6 +61,7 @@ def _build_data_tools_and_instructions(
     objective: str | None,
     tables: dict | None,
     extra_tools: list[Any] | None,
+    knowledge: str | None = None,
 ) -> _DataAgentComponents:
     """Shared builder: returns tools and instructions for the data agent shape."""
     from .genie import genie_tool
@@ -70,12 +71,28 @@ def _build_data_tools_and_instructions(
     # Resolve the schema (table -> columns), in priority order:
     #   1) explicit `tables=` override
     #   2) live introspection when a workspace client is given
-    #   3) the baked `.apx/schema.json` manifest (scaffold-time grounding)
-    #   4) {} -> generic, ungrounded instructions
+    #   3) explicit `knowledge=` bundle path (OKF grounding)
+    #   4) the baked `.apx/schema.json` manifest (scaffold-time grounding)
+    #   5) {} -> generic, ungrounded instructions
     resolved_tables: dict = tables or {}
     baked_was_source = False
+    knowledge_was_source = False
+    explicit_grounding = None
     if not resolved_tables and ws:
         resolved_tables = introspect_schema(ws, catalog, schema, warehouse_id)
+    if not resolved_tables and knowledge:
+        from ._schema import load_grounding_from_path
+        km, kg = load_grounding_from_path(knowledge)
+        if (
+            km
+            and km.get("catalog") == catalog
+            and km.get("schema") == schema
+            and isinstance(km.get("tables"), dict)
+        ):
+            resolved_tables = km["tables"]
+            baked_was_source = True
+            knowledge_was_source = True
+            explicit_grounding = kg
     if not resolved_tables:
         baked = load_baked_schema()
         if (
@@ -131,7 +148,12 @@ def _build_data_tools_and_instructions(
     if extra_tools:
         tools += extra_tools
 
-    grounding = load_okf_grounding() if baked_was_source else None
+    if knowledge_was_source:
+        grounding = explicit_grounding
+    elif baked_was_source:
+        grounding = load_okf_grounding()
+    else:
+        grounding = None
     resolved_instructions = instructions or build_instructions_from_schema(
         catalog, schema, tables, persona=persona, objective=objective, grounding=grounding
     )
@@ -164,6 +186,9 @@ class DataAgent(LlmAgent):
             ``.apx/schema.json`` manifest). Grounds the agent without a live
             workspace call. When omitted, falls back to live introspection
             (if ``ws`` given) then auto-discovery of ``.apx/schema.json``.
+        knowledge: Path to an OKF bundle directory. When provided, used as the
+            grounding source after live introspection but before the baked
+            ``.apx/schema.json`` manifest. Catalog/schema must match.
         name: Agent name. Defaults to ``"{schema}_data_agent"``.
         extra_tools: Additional tools to append.
         **kwargs: Forwarded to ``LlmAgent`` (``temperature``, ``sub_agents``,
@@ -184,6 +209,7 @@ class DataAgent(LlmAgent):
         persona: str | None = None,
         objective: str | None = None,
         tables: dict | None = None,
+        knowledge: str | None = None,
         name: str | None = None,
         extra_tools: list[Any] | None = None,
         **kwargs: Any,
@@ -204,6 +230,7 @@ class DataAgent(LlmAgent):
             objective=objective,
             tables=tables,
             extra_tools=extra_tools,
+            knowledge=knowledge,
         )
         super().__init__(
             tools=_components.tools,
@@ -241,6 +268,7 @@ class DataTemplate:
         genie_space: str | None = None
         vector_index: str | None = None
         include_functions: bool = True
+        knowledge: str | None = None
 
     def build(self, spec: "DataTemplate.Spec", *, ws: Any | None = None) -> DataAgent:
         return DataAgent(
@@ -251,4 +279,5 @@ class DataTemplate:
             include_functions=spec.include_functions,
             genie_space=spec.genie_space,
             vector_index=spec.vector_index,
+            knowledge=spec.knowledge,
         )

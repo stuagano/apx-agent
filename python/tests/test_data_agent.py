@@ -189,6 +189,64 @@ class TestDataAgentBakedSchema:
         assert "call the SQL tool to confirm what tables" in agent._instructions
 
 
+class TestDataAgentKnowledgeKnob:
+    def _enriched_bundle(self, root):
+        from apx_agent._okf import write_okf_bundle
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        write_okf_bundle(m, root, timestamp="z")
+        (root / "tables" / "pay_runs.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Overview\nDeclared-bundle narrative.\n\n# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) |  |\n"
+        )
+        return root
+
+    def test_knowledge_bundle_grounds_even_without_cwd_apx(self, tmp_path, monkeypatch):
+        from apx_agent.data_agent import _build_data_tools_and_instructions
+        okf = self._enriched_bundle(tmp_path / "kb")
+        monkeypatch.chdir(tmp_path)
+        comp = _build_data_tools_and_instructions(
+            catalog="c", schema="s", warehouse_id=None, ws=None, include_functions=False,
+            genie_space=None, vector_index=None, instructions=None, persona=None,
+            objective=None, tables=None, extra_tools=None, knowledge=str(okf),
+        )
+        assert "Declared-bundle narrative." in comp.instructions
+        assert "gross_pay(decimal(6,2))" in comp.instructions
+
+    def test_tables_override_still_wins_over_knowledge(self, tmp_path, monkeypatch):
+        from apx_agent.data_agent import _build_data_tools_and_instructions
+        okf = self._enriched_bundle(tmp_path / "kb")
+        monkeypatch.chdir(tmp_path)
+        comp = _build_data_tools_and_instructions(
+            catalog="c", schema="s", warehouse_id=None, ws=None, include_functions=False,
+            genie_space=None, vector_index=None, instructions=None, persona=None,
+            objective=None, tables={"pay_runs": ["gross_pay(decimal(6,2))"]}, extra_tools=None,
+            knowledge=str(okf),
+        )
+        assert "Declared-bundle narrative." not in comp.instructions
+
+    def test_missing_knowledge_path_falls_through_no_raise(self, tmp_path, monkeypatch):
+        from apx_agent.data_agent import _build_data_tools_and_instructions
+        monkeypatch.chdir(tmp_path)
+        comp = _build_data_tools_and_instructions(
+            catalog="c", schema="s", warehouse_id=None, ws=None, include_functions=False,
+            genie_space=None, vector_index=None, instructions=None, persona=None,
+            objective=None, tables=None, extra_tools=None, knowledge=str(tmp_path / "nope"),
+        )
+        assert isinstance(comp.instructions, str)
+
+    def test_knowledge_catalog_mismatch_degrades(self, tmp_path, monkeypatch):
+        from apx_agent.data_agent import _build_data_tools_and_instructions
+        okf = self._enriched_bundle(tmp_path / "kb")
+        monkeypatch.chdir(tmp_path)
+        comp = _build_data_tools_and_instructions(
+            catalog="OTHER", schema="s", warehouse_id=None, ws=None, include_functions=False,
+            genie_space=None, vector_index=None, instructions=None, persona=None,
+            objective=None, tables=None, extra_tools=None, knowledge=str(okf),
+        )
+        assert "Declared-bundle narrative." not in comp.instructions
+
+
 class TestStartupWarning:
     """Startup warehouse check warns early when no warehouse is available."""
 
