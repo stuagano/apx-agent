@@ -21,15 +21,12 @@
 - **Totality:** a missing/malformed `knowledge` bundle does **not** crash — it logs a warning and falls through to the cwd-walk (same None-on-error discipline as every other reader).
 - **Catalog/schema gate still applies:** the bundle's `catalog`/`schema` must match the template's `catalog`/`schema` (the existing `data_agent.py` byte-match gate), else it degrades — so `knowledge` can't silently ground against the wrong schema.
 
-## Decisions proposed for Part B (UC round-trip) — **NEEDS YOUR SIGN-OFF**
+## Part B (UC round-trip) — DECIDED: read-only only
 
-> **GOVERNANCE GATE.** Part B has apx **write to a customer's Unity Catalog metadata** (`COMMENT ON`). That is an outward, stateful action on their catalog of record. Do not implement Part B until the user confirms: (1) we want apx to write UC comments at all; (2) the dry-run-default + explicit-`--apply` posture below; (3) the direction(s) in scope. Part A has no such concern and can ship independently.
+> **GOVERNANCE DECISION (user, 2026-06-17).** The READ direction (UC → OKF) ships as a CLI command — it only enriches the local bundle. The WRITE direction (OKF → UC) does **NOT** ship as a CLI `push-comments --apply`. UC metadata writes must go through a **governed apx agent tool — an explicitly-wired UC function** the agent invokes, so the write inherits UC grants + end-user identity passthrough (OBO) + audit. A direct-SQL `COMMENT ON` CLI write is an ungoverned side-channel and is rejected.
 
-- **Two directions, two commands** (proposed):
-  - `apx-agent okf pull-comments` — **UC → OKF**: read table/column `COMMENT`s via the Tables API, write them into the bundle's `# Schema` Description cells + a `# Overview` from the table comment. Read-only on UC. Safe.
-  - `apx-agent okf push-comments` — **OKF → UC**: write curated OKF descriptions back to UC via `COMMENT ON TABLE` / `ALTER TABLE … ALTER COLUMN … COMMENT`. **Dry-run by default** (prints the SQL it would run); `--apply` actually executes; each statement gated on the caller's `MODIFY`/ownership (surfaces the permission error, never swallows).
-- **Conflict policy** (pull): UC comment wins for an empty OKF cell; an already-curated OKF cell is **preserved** unless `--overwrite` (don't clobber human curation with a possibly-staler UC comment).
-- **No automatic push.** `push-comments` is always explicit and never wired into deploy/scaffold/refresh.
+- **`apx-agent agents pull-comments` — UC → OKF (BUILT, read-only):** reads table/column `COMMENT`s via the Tables API (`ws.tables.list`), fills empty `# Schema` Description cells + a `# Overview` per table. Read-only on UC; never writes/SQL. Conflict policy: a curated OKF cell is **preserved** unless `--overwrite` (don't clobber human curation with a possibly-staler UC comment). Manifest-stable (only descriptions/overview change, not columns).
+- **OKF → UC writes — DEFERRED to a governed UC-function tool (NOT a CLI command):** future design — register a UC function that writes comments, wire it as a declared, grant-gated apx agent tool. No CLI `push-comments`, no direct `COMMENT ON` from apx tooling. See [[feedback_okf_uc_writes_via_governed_tool]].
 
 ---
 
@@ -137,20 +134,18 @@ and when building instructions, prefer `explicit_grounding` when the source was 
 
 ---
 
-# PART B — OKF ↔ UC comment round-trip (**gated on governance sign-off**)
+# PART B — OKF ← UC comment enrichment (read-only; SHIPPED)
 
-> Do not start Part B until the user signs off on the governance gate above. Tasks are outlined; expand to full TDD steps after sign-off.
+> Decision: read-only only. The OKF → UC write direction is NOT a CLI command — it is deferred to a governed agent UC-function tool (see the Part-B decision above).
 
-## Task B1: `okf pull-comments` (UC → OKF, read-only)
-- New `_okf.py` helper `apply_uc_comments(okf_root, comments, *, overwrite=False)` where `comments = {table: {"_table": str, col: str}}`: fills empty `# Schema` Description cells (and a `# Overview` from the table comment) without clobbering curated cells unless `overwrite`.
-- New CLI `apx-agent okf pull-comments [--profile] [--overwrite]`: reads the bundle's catalog/schema, fetches comments via the Tables API (`ws.tables.get(...).columns[].comment`, `.comment`), calls `apply_uc_comments`, regenerates the cache. Read-only on UC. TDD with a stubbed `ws`.
+## Task B1: `apply_uc_comments` helper (SHIPPED)
+- `_okf.py` `apply_uc_comments(okf_root, comments, *, overwrite=False) -> int` where `comments = {table: {"_table": str, col: str}}`: fills empty `# Schema` Description cells + a `# Overview` from the table comment, non-destructive (curated cells kept unless `overwrite`), manifest-stable (column names/types unchanged), totalised per-table.
 
-## Task B2: `okf push-comments` (OKF → UC, dry-run default, `--apply`)
-- New `_okf.py` helper `uc_comment_statements(okf_root) -> list[str]`: emits `COMMENT ON TABLE <fqn> IS '...'` and `ALTER TABLE <fqn> ALTER COLUMN <col> COMMENT '...'` for every non-empty OKF description (properly escaped). Pure/SQL-string-building — unit-testable with no workspace.
-- New CLI `apx-agent okf push-comments [--profile] [--apply]`: prints the statements (dry-run); with `--apply`, executes each via the SQL warehouse, reporting per-statement success/permission-error (never swallowed). Gated on the caller's `MODIFY`/ownership.
+## Task B2: `apx-agent agents pull-comments` CLI (SHIPPED, read-only)
+- Reads the bundle's catalog/schema via `load_baked_schema`, fetches comments via the Tables API (`ws.tables.list(...)` → `t.comment`, `c.comment`) using `_make_ws_for_scaffold(profile)`, calls `apply_uc_comments`. `--overwrite` opt-in. **Read-only on UC** — no SQL, no write. Does not regenerate the cache (comments don't change columns). Stubbed-`ws` test.
 
-## Task B3: round-trip integration
-- Pull → enrich → push (dry-run) on a stubbed/test schema; assert the generated SQL matches the curated descriptions and that pull is non-destructive to curated cells.
+## OKF → UC writes — DEFERRED (governed tool, not CLI)
+- Future design: a UC function (registered in UC) that writes `COMMENT ON`, wired as a declared, grant-gated apx agent tool — so the write runs under UC grants + OBO + audit. Explicitly NOT a CLI `push-comments`. See [[feedback_okf_uc_writes_via_governed_tool]].
 
 ---
 
