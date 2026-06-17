@@ -333,3 +333,73 @@ class TestRefreshOKFSchema:
         assert (okf / "tables" / "a.md").is_file()
         assert not (okf / "tables" / "b.md").exists()
         assert "[b](b.md)" not in (okf / "tables" / "index.md").read_text()
+
+
+class TestApplyUCComments:
+    def _bundle(self, root):
+        from apx_agent._okf import write_okf_bundle
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))", "net_pay(decimal(6,2))"]}}
+        write_okf_bundle(m, root, timestamp="z")
+        # pre-curate one column so we can prove non-destructiveness
+        (root / "tables" / "pay_runs.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) | Curated already. |\n"
+            "| `net_pay` | decimal(6,2) |  |\n"
+        )
+        return root
+
+    def test_fills_empty_cells_and_overview_non_destructive(self, tmp_path):
+        from apx_agent._okf import apply_uc_comments, OKFDocument, okf_manifest
+        okf = self._bundle(tmp_path / "okf")
+        comments = {"pay_runs": {"_table": "Core payroll fact table.", "gross_pay": "UC gross.", "net_pay": "UC net."}}
+        apply_uc_comments(okf, comments)
+        doc = OKFDocument.parse((okf / "tables" / "pay_runs.md").read_text())
+        assert "Curated already." in doc.body          # curated cell NOT overwritten
+        assert "UC gross." not in doc.body              # ... so UC value did not replace it
+        assert "UC net." in doc.body                    # empty cell filled from UC
+        assert "Core payroll fact table." in doc.body   # # Overview added from table comment
+        assert "# Overview" in doc.body
+        # column names/types unchanged -> manifest stable
+        assert okf_manifest(okf)["tables"]["pay_runs"] == ["gross_pay(decimal(6,2))", "net_pay(decimal(6,2))"]
+
+    def test_overwrite_replaces_curated(self, tmp_path):
+        from apx_agent._okf import apply_uc_comments, OKFDocument
+        okf = self._bundle(tmp_path / "okf")
+        apply_uc_comments(okf, {"pay_runs": {"gross_pay": "UC gross."}}, overwrite=True)
+        doc = OKFDocument.parse((okf / "tables" / "pay_runs.md").read_text())
+        assert "UC gross." in doc.body
+        assert "Curated already." not in doc.body
+
+    def test_no_comments_no_change(self, tmp_path):
+        from apx_agent._okf import apply_uc_comments
+        okf = self._bundle(tmp_path / "okf")
+        before = (okf / "tables" / "pay_runs.md").read_text()
+        apply_uc_comments(okf, {"pay_runs": {"_table": "", "gross_pay": "", "net_pay": ""}})
+        assert (okf / "tables" / "pay_runs.md").read_text() == before  # all-empty UC comments -> no-op
+
+    def test_unknown_table_ignored(self, tmp_path):
+        from apx_agent._okf import apply_uc_comments
+        okf = self._bundle(tmp_path / "okf")
+        apply_uc_comments(okf, {"nonexistent": {"_table": "x"}})  # must not raise
+
+    def test_table_comment_with_heading_line_does_not_corrupt_schema(self, tmp_path):
+        from apx_agent._okf import apply_uc_comments, okf_manifest
+        okf = self._bundle(tmp_path / "okf")
+        # Pre-seed a real # Overview so overwrite=True replaces it in-place
+        # (Overview before Schema), which is the layout where an unescaped
+        # "# Schema" line in the replacement would clobber the real section.
+        p = okf / "tables" / "pay_runs.md"
+        p.write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Overview\nold\n\n"
+            "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) | Curated already. |\n"
+            "| `net_pay` | decimal(6,2) |  |\n"
+        )
+        # Table comment contains a "# Schema" heading line — without sanitization
+        # this would be written raw into Overview, parsed as a real heading, and
+        # truncate the real # Schema section on the next okf_manifest() read.
+        apply_uc_comments(okf, {"pay_runs": {"_table": "Intro line.\n# Schema\nbogus"}}, overwrite=True)
+        # The real schema (column names/types) must survive intact
+        assert okf_manifest(okf)["tables"]["pay_runs"] == ["gross_pay(decimal(6,2))", "net_pay(decimal(6,2))"]
