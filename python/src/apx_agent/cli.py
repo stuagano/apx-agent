@@ -1877,7 +1877,6 @@ def _scaffold_model_serving(
     """
     prelude, extra_tools = _example_tool_block(catalog, schema, table)
 
-    import json as _json
     manifest = _schema_manifest_for_scaffold(catalog, schema)
     knowledge_line = 'knowledge = "./.apx/okf"\n' if manifest is not None else ""
     files = {
@@ -1891,7 +1890,8 @@ def _scaffold_model_serving(
         "README.md": _SCAFFOLD_README.format(name=name),
     }
     if manifest is not None:
-        files[".apx/schema.json"] = _json.dumps(manifest, indent=2)
+        from ._okf import dump_schema_cache
+        files[".apx/schema.json"] = dump_schema_cache(manifest)
     for rel_path, content in files.items():
         path = target / rel_path
         if path.exists() and not force:
@@ -1973,8 +1973,6 @@ def _scaffold_apps(
     Produces the ``agent_server/`` + ``scripts/`` + ``databricks.yml``
     bundle shape consumed by ``databricks bundle deploy``.
     """
-    import json as _json
-
     if template == "base":
         prelude = extra_tools = ""
         manifest = None
@@ -2057,7 +2055,8 @@ def _scaffold_apps(
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
     }
     if manifest is not None:
-        files[".apx/schema.json"] = _json.dumps(manifest, indent=2)
+        from ._okf import dump_schema_cache
+        files[".apx/schema.json"] = dump_schema_cache(manifest)
     for rel_path, content in files.items():
         path = target / rel_path
         if path.exists() and not force:
@@ -2511,15 +2510,23 @@ def _probe_import(module_spec: str) -> None:
 @click.option("--profile", default=None,
               help="Databricks CLI profile to introspect with. "
                    "Falls back to $DATABRICKS_CONFIG_PROFILE.")
-def refresh_schema(profile: str | None) -> None:
+@click.option("--prune-missing-tables", is_flag=True, default=False,
+              help="DESTRUCTIVE: delete OKF table concepts that the live schema "
+                   "no longer lists (drops local-only / hand-authored tables). "
+                   "Off by default — a refresh preserves them.")
+def refresh_schema(profile: str | None, prune_missing_tables: bool) -> None:
     """Re-introspect this project's catalog.schema and rewrite .apx/schema.json.
 
     Run inside a scaffolded project. Reads the existing manifest to learn which
-    catalog/schema to refresh, re-introspects via the Tables API, and overwrites
-    the manifest so the agent's grounding + landing card reflect the live schema.
+    catalog/schema to refresh, re-introspects via the Tables API, and updates the
+    manifest so the agent's grounding + landing card reflect the live schema.
+
+    Non-destructive by default: each table's enriched body (Overview/Joins/etc.)
+    is preserved and local-only tables not in the live schema are kept. Pass
+    ``--prune-missing-tables`` to delete those dropped-table concepts.
     """
-    import json as _json
     from ._schema import load_baked_schema, APX_DIR, SCHEMA_MANIFEST_NAME
+    from ._okf import dump_schema_cache
 
     existing = load_baked_schema(Path.cwd())
     if not existing or not existing.get("catalog") or not existing.get("schema"):
@@ -2541,16 +2548,20 @@ def refresh_schema(profile: str | None) -> None:
     if okf_root.is_dir():
         from datetime import datetime, timezone
         from ._okf import refresh_okf_schema, okf_manifest
-        refresh_okf_schema(okf_root, manifest, timestamp=datetime.now(timezone.utc).isoformat())
+        refresh_okf_schema(
+            okf_root, manifest,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            prune=prune_missing_tables,
+        )
         regen = okf_manifest(okf_root)
         if regen is not None:
-            (apx / SCHEMA_MANIFEST_NAME).write_text(_json.dumps(regen, indent=2))
+            (apx / SCHEMA_MANIFEST_NAME).write_text(dump_schema_cache(regen))
         n = len(regen["tables"]) if regen else 0
         click.echo(f"refreshed {okf_root} (+ schema.json cache) — {n} table{'s' if n != 1 else ''} from {catalog}.{schema}")
         return
     out = Path.cwd() / APX_DIR / SCHEMA_MANIFEST_NAME
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(_json.dumps(manifest, indent=2))
+    out.write_text(dump_schema_cache(manifest))
     n = len(manifest["tables"])
     click.echo(f"refreshed {out} — {n} table{'s' if n != 1 else ''} from {catalog}.{schema}")
 
@@ -2565,7 +2576,7 @@ def migrate_to_okf(force: bool) -> None:
     refuses to clobber an existing bundle without --force.
     """
     from datetime import datetime, timezone
-    from ._okf import write_okf_bundle, okf_manifest
+    from ._okf import write_okf_bundle, okf_manifest, dump_schema_cache
 
     apx = Path.cwd() / APX_DIR
     manifest_path = apx / "schema.json"
@@ -2581,61 +2592,8 @@ def migrate_to_okf(force: bool) -> None:
     write_okf_bundle(manifest, okf_root, timestamp=ts)
     regen = okf_manifest(okf_root)
     if regen is not None:
-        manifest_path.write_text(json.dumps(regen, indent=2))
+        manifest_path.write_text(dump_schema_cache(regen))
     click.echo(f"Wrote OKF bundle to {okf_root} (schema.json regenerated as derived cache).")
-
-
-@agents.command("pull-comments")
-@click.option("--profile", default=None,
-              help="Databricks CLI profile to read UC comments with. "
-                   "Falls back to $DATABRICKS_CONFIG_PROFILE.")
-@click.option("--overwrite", is_flag=True,
-              help="Replace already-curated OKF descriptions with UC comments "
-                   "(default: only fill empty cells).")
-def pull_comments(profile: str | None, overwrite: bool) -> None:
-    """Enrich this project's OKF bundle from Unity Catalog COMMENTs (read-only).
-
-    Reads table/column comments from UC via the Tables API and fills empty
-    # Schema Description cells + a # Overview per table. Non-destructive: curated
-    descriptions are kept unless --overwrite. Does NOT write to Unity Catalog.
-    """
-    from ._okf import apply_uc_comments
-    from ._schema import load_baked_schema, APX_DIR
-
-    existing = load_baked_schema(Path.cwd())
-    if not existing or not existing.get("catalog") or not existing.get("schema"):
-        raise click.ClickException(
-            "No .apx grounding found. Run inside a scaffolded project with an OKF bundle."
-        )
-    okf_root = Path.cwd() / APX_DIR / "okf"
-    if not okf_root.is_dir():
-        raise click.ClickException(
-            "No .apx/okf bundle found. Run `apx-agent agents migrate-to-okf` first."
-        )
-    catalog, schema = existing["catalog"], existing["schema"]
-    ws = _make_ws_for_scaffold(profile)
-    if ws is None:
-        raise click.ClickException(
-            f"Could not connect to a workspace to read comments for {catalog}.{schema}."
-        )
-    comments: dict = {}
-    try:
-        for t in ws.tables.list(catalog_name=catalog, schema_name=schema):
-            name = getattr(t, "name", None)
-            if not name:
-                continue
-            cmap: dict = {"_table": getattr(t, "comment", None) or ""}
-            for c in (getattr(t, "columns", None) or []):
-                if getattr(c, "name", None):
-                    cmap[c.name] = getattr(c, "comment", None) or ""
-            comments[name] = cmap
-    except Exception as e:
-        raise click.ClickException(f"Could not read comments for {catalog}.{schema}: {e}")
-    n = apply_uc_comments(okf_root, comments, overwrite=overwrite)
-    click.echo(
-        f"pull-comments: enriched {n} table{'s' if n != 1 else ''} in {okf_root} "
-        f"from {catalog}.{schema} (read-only)."
-    )
 
 
 def _port_is_free(port: int, host: str) -> bool:

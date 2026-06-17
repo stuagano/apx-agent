@@ -313,3 +313,42 @@ def test_skill_tool_dispatch_via_load_config_tools(tmp_path):
     assert len(tools) == 1
     assert tools[0].__name__ == "sql_guide"
     assert "SQL Guide" in tools[0]()
+
+
+# ---------------------------------------------------------------------------
+# uc_comment_writer tool type
+# ---------------------------------------------------------------------------
+
+
+def test_uc_comment_writer_in_registry():
+    """The registry must contain 'uc_comment_writer' mapped to uc_comment_tool."""
+    import apx_agent._tool_config as mod
+    from apx_agent.uc_comment import uc_comment_tool
+
+    registry = mod._registry()
+    assert "uc_comment_writer" in registry, (
+        f"'uc_comment_writer' not found in registry; known: {sorted(registry)}"
+    )
+    assert registry["uc_comment_writer"] is uc_comment_tool
+
+
+def test_uc_comment_writer_builds_via_load_config_tools():
+    """A config table with type='uc_comment_writer' builds a callable tool."""
+    tools = load_config_tools([
+        {
+            "type": "uc_comment_writer",
+            "catalog": "c",
+            "schema": "s",
+            "warehouse_id": "w",
+        }
+    ])
+    assert len(tools) == 1
+    assert callable(tools[0])
+    # Default name should be 'update_uc_comment' (uc_comment_tool default)
+    assert tools[0].__name__ == "update_uc_comment"
+
+
+def test_uc_comment_writer_missing_required_arg_raises():
+    """Missing required kwarg (catalog/schema) must raise ToolConfigError."""
+    with pytest.raises(ToolConfigError, match=r"type=uc_comment_writer"):
+        load_config_tools([{"type": "uc_comment_writer", "catalog": "c"}])  # missing schema

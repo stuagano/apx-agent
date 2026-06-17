@@ -8,7 +8,6 @@ the pre-commit "fixer" convention.
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -16,7 +15,7 @@ from pathlib import Path
 def main(argv: list[str]) -> int:
     repo = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo / "python" / "src"))
-    from apx_agent._okf import okf_manifest
+    from apx_agent._okf import okf_manifest, dump_schema_cache
 
     changed = False
     seen: set[Path] = set()
@@ -28,9 +27,10 @@ def main(argv: list[str]) -> int:
         seen.add(okf_root)
         manifest = okf_manifest(okf_root)
         if manifest is None:
+            # Missing / invalid / empty bundle: write nothing, stay green.
             continue
         cache = okf_root.parent / "schema.json"
-        new = json.dumps(manifest, indent=2)
+        new = dump_schema_cache(manifest)
         if not cache.is_file() or cache.read_text() != new:
             cache.write_text(new)
             print(f"regenerated {cache}")

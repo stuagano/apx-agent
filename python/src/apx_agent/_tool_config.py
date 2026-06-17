@@ -113,6 +113,7 @@ def _registry() -> dict[str, Callable[..., Any]]:
     )
     from .mcp_consume import mcp_tool, mcp_toolkit
     from .sql_tools import sql_tool
+    from .uc_comment import uc_comment_tool
     from .vector_search import vector_search_tool
 
     return {
@@ -121,6 +122,7 @@ def _registry() -> dict[str, Callable[..., Any]]:
         "vector_search": vector_search_tool,
         "uc_function": uc_function_tool,
         "uc_function_toolkit": uc_function_toolkit,
+        "uc_comment_writer": uc_comment_tool,
         "catalog": catalog_tool,
         "schema": schema_tool,
         "lineage": lineage_tool,

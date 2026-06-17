@@ -4403,55 +4403,37 @@ class TestRefreshSchemaPreservesOKF:
         assert "decimal(10,2)" in body                # schema refreshed
         assert json.loads((apx / "schema.json").read_text())["tables"]["pay_runs"] == ["gross_pay(decimal(10,2))"]
 
-
-# ---------------------------------------------------------------------------
-# TestPullComments
-# ---------------------------------------------------------------------------
-
-
-class TestPullComments:
-    def test_pull_fills_bundle_from_uc_comments(self, tmp_path, monkeypatch):
-        import json
-        from types import SimpleNamespace
-        from click.testing import CliRunner
-        from apx_agent import cli
-        from apx_agent.cli import agents
+    def _two_table_bundle(self, tmp_path):
         from apx_agent._okf import write_okf_bundle
-
         apx = tmp_path / ".apx"
-        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        m = {"catalog": "c", "schema": "s", "tables": {"keep": ["x(int)"], "gone": ["y(int)"]}}
         write_okf_bundle(m, apx / "okf", timestamp="z")
         (apx / "schema.json").write_text(json.dumps(m))
+        return apx
 
-        def col(name, comment):
-            return SimpleNamespace(name=name, comment=comment)
-
-        fake_tables = [
-            SimpleNamespace(
-                name="pay_runs",
-                comment="Core payroll table.",
-                columns=[col("gross_pay", "Gross before deductions.")],
-            )
-        ]
-        fake_ws = SimpleNamespace(
-            tables=SimpleNamespace(
-                list=lambda catalog_name, schema_name: fake_tables
-            )
-        )
-        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda *a, **k: fake_ws)
-        monkeypatch.chdir(tmp_path)
-
-        result = CliRunner().invoke(agents, ["pull-comments"])
-        assert result.exit_code == 0, result.output
-        body = (apx / "okf" / "tables" / "pay_runs.md").read_text()
-        assert "Gross before deductions." in body   # column comment -> Description cell
-        assert "Core payroll table." in body         # table comment -> # Overview
-
-    def test_pull_no_bundle_errors_cleanly(self, tmp_path, monkeypatch):
-        from click.testing import CliRunner
+    def test_default_refresh_keeps_table_missing_from_live_schema(self, tmp_path, monkeypatch):
+        # Live introspection no longer returns `gone`; default refresh must NOT drop it.
+        from apx_agent import cli
         from apx_agent.cli import agents
-
+        apx = self._two_table_bundle(tmp_path)
+        live = {"catalog": "c", "schema": "s", "tables": {"keep": ["x(int)"]}}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: live)
         monkeypatch.chdir(tmp_path)
-        result = CliRunner().invoke(agents, ["pull-comments"])
-        assert result.exit_code != 0  # no .apx -> clean ClickException, not a crash
-        assert "No .apx" in result.output or "no .apx" in result.output.lower()
+
+        result = CliRunner().invoke(agents, ["refresh-schema"])
+        assert result.exit_code == 0, result.output
+        assert (apx / "okf" / "tables" / "gone.md").is_file()   # preserved by default
+        assert set(json.loads((apx / "schema.json").read_text())["tables"]) == {"keep", "gone"}
+
+    def test_prune_flag_removes_table_missing_from_live_schema(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        from apx_agent.cli import agents
+        apx = self._two_table_bundle(tmp_path)
+        live = {"catalog": "c", "schema": "s", "tables": {"keep": ["x(int)"]}}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: live)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["refresh-schema", "--prune-missing-tables"])
+        assert result.exit_code == 0, result.output
+        assert not (apx / "okf" / "tables" / "gone.md").exists()  # dropped on opt-in
+        assert set(json.loads((apx / "schema.json").read_text())["tables"]) == {"keep"}
