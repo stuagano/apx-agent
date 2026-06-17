@@ -166,12 +166,52 @@ def _format_schema_block(
     return "\n".join(lines)
 
 
+def _format_grounded_schema_block(
+    tables: dict[str, list[str]],
+    grounding: dict,
+    max_cols: int = 12,
+    max_tables: int = 20,
+) -> str:
+    """Like ``_format_schema_block`` but appends per-table OKF enrichment.
+
+    For a table with no enrichment entry the emitted line is byte-identical to
+    ``_format_schema_block``'s line (F7 — every table is kept). Enriched tables
+    gain indented description / column-descriptions / joins / one example, all
+    bounded to mirror the plain block's caps.
+    """
+    lines: list[str] = []
+    for name in list(tables.keys())[:max_tables]:
+        cols = tables[name] or []
+        shown = ", ".join(cols[:max_cols])
+        if len(cols) > max_cols:
+            shown += f" (+{len(cols) - max_cols} more)"
+        lines.append(f"- {name}: {shown}" if shown else f"- {name}")
+        enr = grounding.get(name) if grounding else None
+        if not enr:
+            continue
+        if enr.get("description"):
+            lines.append(f"    {enr['description']}")
+        described = [c for c in enr.get("columns", []) if c.get("description")][:max_cols]
+        for c in described:
+            lines.append(f"    - {c['name']}: {c['description']}")
+        if enr.get("joins"):
+            lines.append(f"    Joins: {enr['joins']}")
+        if enr.get("examples"):
+            ex_lines = enr["examples"].strip().splitlines()[:6]
+            lines.append("    Example:")
+            lines.extend(f"      {l}" for l in ex_lines)
+    if len(tables) > max_tables:
+        lines.append(f"- (+{len(tables) - max_tables} more tables)")
+    return "\n".join(lines)
+
+
 def build_instructions_from_schema(
     catalog: str,
     schema: str,
     tables: dict[str, list[str]],
     persona: str | None = None,
     objective: str | None = None,
+    grounding: dict | None = None,
 ) -> str:
     """Build agent instructions from schema metadata without an LLM call.
 
@@ -225,11 +265,16 @@ def build_instructions_from_schema(
             f"combine the results."
         )
 
+    _block = (
+        _format_grounded_schema_block(tables, grounding)
+        if grounding
+        else _format_schema_block(tables)
+    )
     return (
         lead + f"You are a data assistant for {fqn}. You already know the schema below — "
         f"query the relevant table directly with the SQL tool. Do NOT run "
         f"SHOW TABLES or DESCRIBE to discover the structure; it is given here.\n\n"
-        f"Schema:\n{_format_schema_block(tables)}\n\n"
+        f"Schema:\n{_block}\n\n"
         f"{chain}\n\n"
         f"When a query returns empty results or an error, try a broader filter or "
         f"verify the column name exists in the schema before telling the user you "
