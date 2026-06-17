@@ -4329,3 +4329,46 @@ def test_generate_coworker_yaml_passes_chatmessage_not_dicts() -> None:
         f"messages must be ChatMessage objects (SDK calls .as_dict()); got {[type(m).__name__ for m in msgs]}"
     )
     assert msgs[0].role == ChatMessageRole.USER
+
+
+# ---------------------------------------------------------------------------
+# TestMigrateToOKF
+# ---------------------------------------------------------------------------
+
+
+class TestMigrateToOKF:
+    def test_migrate_creates_bundle_and_regenerates_cache(self, tmp_path, monkeypatch):
+        import json
+        from click.testing import CliRunner
+        from apx_agent.cli import agents
+
+        apx = tmp_path / ".apx"
+        apx.mkdir()
+        manifest = {
+            "catalog": "serverless_stable_qh44kx_catalog",
+            "schema": "payroll_demo",
+            "tables": {"employees": ["employee_id(string)"], "pay_runs": ["gross_pay(decimal(6,2))"]},
+        }
+        (apx / "schema.json").write_text(json.dumps(manifest))
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["migrate-to-okf"])
+        assert result.exit_code == 0, result.output
+        assert (apx / "okf" / "datasets" / "payroll_demo.md").is_file()
+        assert (apx / "okf" / "tables" / "pay_runs.md").is_file()
+
+        from apx_agent._schema import load_baked_schema
+        assert load_baked_schema(tmp_path) == manifest
+
+    def test_refuses_existing_bundle_without_force(self, tmp_path, monkeypatch):
+        import json
+        from click.testing import CliRunner
+        from apx_agent.cli import agents
+
+        apx = tmp_path / ".apx"
+        (apx / "okf").mkdir(parents=True)
+        (apx / "schema.json").write_text(json.dumps({"catalog": "c", "schema": "s", "tables": {}}))
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(agents, ["migrate-to-okf"])
+        assert result.exit_code != 0
+        assert "force" in result.output.lower()

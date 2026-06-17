@@ -52,7 +52,7 @@ warnings.filterwarnings(
 )
 
 from . import _doctor as _doctor_mod
-from ._schema import introspect_schema_columns
+from ._schema import introspect_schema_columns, APX_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -1111,6 +1111,7 @@ artifacts:
       # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts README.md .build/ 2>/dev/null || true
       cp -r .apx-agent .build/ 2>/dev/null || true
+      cp -r .apx .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
       # pyproject.toml and uv.lock are written by apx-agent deploy (wheel-pinned).
       # Do NOT copy them here — bundle deploy re-runs this script and would
@@ -2517,6 +2518,36 @@ def refresh_schema(profile: str | None) -> None:
     out.write_text(_json.dumps(manifest, indent=2))
     n = len(manifest["tables"])
     click.echo(f"refreshed {out} — {n} table{'s' if n != 1 else ''} from {catalog}.{schema}")
+
+
+@agents.command("migrate-to-okf")
+@click.option("--force", is_flag=True, help="Overwrite an existing .apx/okf bundle.")
+def migrate_to_okf(force: bool) -> None:
+    """Convert this project's .apx/schema.json into an .apx/okf/ bundle.
+
+    Reads the existing manifest, emits an OKF v0.1 bundle (the new source of
+    truth), then regenerates .apx/schema.json as the derived cache. Idempotent;
+    refuses to clobber an existing bundle without --force.
+    """
+    from datetime import datetime, timezone
+    from ._okf import write_okf_bundle, okf_manifest
+
+    apx = Path.cwd() / APX_DIR
+    manifest_path = apx / "schema.json"
+    okf_root = apx / "okf"
+    if not manifest_path.is_file():
+        raise click.ClickException(
+            "No .apx/schema.json found. Run inside a scaffolded project."
+        )
+    if okf_root.exists() and not force:
+        raise click.ClickException(".apx/okf already exists. Use --force to overwrite.")
+    manifest = json.loads(manifest_path.read_text())
+    ts = datetime.now(timezone.utc).isoformat()
+    write_okf_bundle(manifest, okf_root, timestamp=ts)
+    regen = okf_manifest(okf_root)
+    if regen is not None:
+        manifest_path.write_text(json.dumps(regen, indent=2))
+    click.echo(f"Wrote OKF bundle to {okf_root} (schema.json regenerated as derived cache).")
 
 
 def _port_is_free(port: int, host: str) -> bool:
