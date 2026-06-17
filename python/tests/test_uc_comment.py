@@ -101,6 +101,57 @@ class TestUcCommentToolEscaping:
         assert result["status"] == "ok"
         assert "don''t" in captured["stmt"]
 
+    @pytest.mark.asyncio
+    async def test_backslash_in_comment_is_escaped_no_breakout(self):
+        """Trailing backslash in comment must be doubled — not left to escape the quote."""
+        tool = _make_tool()
+        ws = _fake_ws()
+        captured = {}
+
+        def _fake_run_sql(ws_arg, stmt, *, warehouse_id=None):
+            captured["stmt"] = stmt
+            return []
+
+        with patch("apx_agent.uc_comment.run_sql", _fake_run_sql):
+            result = await tool(table="orders", comment="x\\", ws=ws)
+
+        assert result["status"] == "ok"
+        # comment is one real backslash ("x\"); after escaping it becomes "x\\"
+        # so the emitted SQL literal is: 'x\\'   (backslash doubled inside the quotes)
+        assert captured["stmt"] == (
+            "COMMENT ON TABLE `main`.`sales`.`orders` IS 'x\\\\'"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backslash_quote_breakout_neutralized(self):
+        """Classic SQL-injection via backslash+quote must be neutralized."""
+        tool = _make_tool()
+        ws = _fake_ws()
+        captured = {}
+
+        def _fake_run_sql(ws_arg, stmt, *, warehouse_id=None):
+            captured["stmt"] = stmt
+            return []
+
+        with patch("apx_agent.uc_comment.run_sql", _fake_run_sql):
+            result = await tool(
+                table="orders",
+                comment="\\'; DROP TABLE x; --",
+                ws=ws,
+            )
+
+        assert result["status"] == "ok"
+        # comment is: \'; DROP TABLE x; --
+        # after escaping: \\'' ; DROP TABLE x; --
+        #   (backslash → \\, then single-quote → '')
+        # so the full emitted statement ends with:  IS '\\'' ; DROP TABLE x; --'
+        assert captured["stmt"] == (
+            "COMMENT ON TABLE `main`.`sales`.`orders` IS "
+            "'\\\\''; DROP TABLE x; --'"
+        )
+        # All single quotes in the emitted statement must be balanced (even count)
+        assert captured["stmt"].count("'") % 2 == 0
+
 
 class TestUcCommentToolIdentifierValidation:
     """Invalid table identifiers return an error without calling run_sql."""

@@ -21,7 +21,9 @@ _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _esc_literal(text: str) -> str:
-    return text.replace("'", "''")
+    # Backslash MUST be escaped first (Databricks SQL processes backslash escapes
+    # in string literals), then single quotes — order matters.
+    return text.replace("\\", "\\\\").replace("'", "''")
 
 
 def uc_comment_tool(

@@ -83,7 +83,7 @@ warehouse_id = "abc123"
 |---|---|---|
 | `catalog` | yes | UC catalog that scopes the writes |
 | `schema` | yes | UC schema within `catalog` |
-| `warehouse_id` | yes | SQL warehouse to execute the `COMMENT` statement |
+| `warehouse_id` | no | SQL warehouse to execute the `COMMENT` statement; auto-discovered at call time if omitted |
 | `name` | no | Tool name exposed to the LLM (default: `"update_uc_comment"`) |
 | `description` | no | Override the auto-generated tool description |
 
