@@ -359,7 +359,7 @@ def refresh_okf_schema(okf_root: "Path | str", manifest: dict, *, timestamp: str
             doc.validate()
             path.write_text(doc.serialize())
 
-    for p in tdir.glob("*.md"):
+    for p in list(tdir.glob("*.md")):
         if p.name in _RESERVED:
             continue
         stem_name = OKFDocument.parse(p.read_text()).frontmatter.get("title") or p.stem
