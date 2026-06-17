@@ -1854,6 +1854,19 @@ def _interactive_resolve(
     return catalog, schema, persona, objective, join_key
 
 
+def _write_okf_bundle_for_scaffold(target: Path, manifest: dict, *, force: bool) -> None:
+    """Write the OKF bundle (source of truth) next to the derived schema.json cache."""
+    from datetime import datetime, timezone
+    from ._okf import write_okf_bundle
+
+    okf_root = target / ".apx" / "okf"
+    if okf_root.exists() and not force:
+        click.echo(f"  skip   {okf_root} (exists; pass --force to overwrite)")
+        return
+    write_okf_bundle(manifest, okf_root, timestamp=datetime.now(timezone.utc).isoformat())
+    click.echo(f"  write  {okf_root} (OKF bundle)")
+
+
 def _scaffold_model_serving(
     target: Path, name: str, force: bool, catalog: str, schema: str,
     table: str | None = None,
@@ -1886,6 +1899,8 @@ def _scaffold_model_serving(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
         click.echo(f"  write  {path}")
+    if manifest is not None:
+        _write_okf_bundle_for_scaffold(target, manifest, force=force)
 
 
 def _is_inside_framework_repo(target: Path) -> bool:
@@ -2045,6 +2060,8 @@ def _scaffold_apps(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
         click.echo(f"  write  {path}")
+    if manifest is not None:
+        _write_okf_bundle_for_scaffold(target, manifest, force=force)
 
 
 def _echo_scaffold_yaml_done(out: Path, *, catalog: str | None, schema: str | None) -> None:
