@@ -29,6 +29,32 @@ Use apx-agent when you want a **production data agent**:
 Canonical examples are `DataAgent` (one line over a UC schema) and `CoworkerAgent` (join two
 source systems on a shared key) — see [agents/overview.md](agents/overview.md).
 
+## apx-agent and the Databricks Agent Framework
+
+apx-agent builds **on** the official
+[Databricks Mosaic AI Agent Framework](https://docs.databricks.com/aws/en/generative-ai/agent-framework/author-agent),
+not beside it. It uses the same GA primitives — MLflow `ResponsesAgent` / `ChatAgent` served by
+the MLflow `AgentServer`, packaged and deployed through a Databricks asset bundle to Databricks
+Apps or Model Serving. An apx-built agent **is** a GA-compliant agent, so adopting apx-agent
+keeps you on the official path.
+
+What apx-agent adds is the layer the GA authoring workflow leaves to the developer:
+
+| The GA workflow leaves to the developer | apx-agent provides |
+|---|---|
+| Retrieval / grounding (implement via MCP or custom tools) | open-format grounding auto-generated from Unity Catalog — the agent knows its tables and columns |
+| Built-in UC data tools (connect via MCP / custom endpoints) | `sql_tool`, `genie_tool`, `uc_function_tool`, `vector_search_tool` — built-in and governed |
+| End-user identity passthrough (manual `get_user_workspace_client()`) | identity passthrough wired declaratively; tools run as the asking user, and metadata writes run under their grants |
+| Memory / state backends (not configured for you) | Delta / Lakebase semantic memory and sessions, declared |
+| Multi-agent orchestration (supported but not demonstrated) | `SequentialAgent`, `ParallelAgent`, `RouterAgent`, composition |
+| Authoring (write a `ResponsesAgent`, wrap your framework) | declare a `[tool.apx.agent]` block or a Python object; apx-agent compiles it and normalizes the LLM, memory, and trace formats |
+
+In short: apx-agent is a batteries-included, governed, data-grounded toolkit over the same
+primitives the GA framework exposes — the way an opinionated framework sits over a lower-level
+one. Use the raw framework when you want maximum control over a custom `ResponsesAgent`; use
+apx-agent when you want a governed, UC-grounded data agent without wiring the grounding,
+data-plane tools, identity passthrough, and memory yourself.
+
 ## What apx-agent is not for
 
 apx-agent is **not** a coding-agent orchestrator or a cross-harness meta-framework. If your
@@ -59,6 +85,7 @@ layer.
 | Build a data agent grounded in a UC schema | **apx-agent** (`DataAgent` / `CoworkerAgent`) |
 | Serve a governed agent on Databricks Apps / model serving | **apx-agent** |
 | Have tools run as the asking user under UC grants | **apx-agent** |
+| Hand-author a custom `ResponsesAgent` with maximum control | the Databricks Agent Framework directly (apx-agent builds on it) |
 | Orchestrate / swap coding agents (Claude Code, Codex, Cursor) | an agent-orchestration / meta-harness framework |
 | Sandbox dev work, gate shell/spend on a dev machine | an agent-orchestration / meta-harness framework |
 
