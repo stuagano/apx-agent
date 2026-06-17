@@ -276,3 +276,38 @@ def test_no_skills_copy_step_when_skills_empty(tmp_path: Path, minimal_config: A
     generate_project(minimal_config, tmp_path)
     content = (tmp_path / "databricks.yml").read_text()
     assert "cp -r skills" not in content
+
+
+# ---------------------------------------------------------------------------
+# Test 9: knowledge = "./.apx/okf" emitted for template+catalog+schema agents
+# ---------------------------------------------------------------------------
+
+
+def test_knowledge_emitted_for_template_with_catalog_and_schema(
+    tmp_path: Path, coworker_config: AgentConfig
+) -> None:
+    """knowledge = \"./.apx/okf\" must appear in [tool.apx.agent] when template has catalog+schema."""
+    generate_project(coworker_config, tmp_path)
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    agent_section = data.get("tool", {}).get("apx", {}).get("agent", {})
+    assert agent_section.get("knowledge") == "./.apx/okf", (
+        f"Expected knowledge = \"./.apx/okf\" in [tool.apx.agent], got: {agent_section.get('knowledge')!r}"
+    )
+
+
+def test_knowledge_not_emitted_for_plain_module_agent(
+    tmp_path: Path, minimal_config: AgentConfig
+) -> None:
+    """knowledge must NOT appear in [tool.apx.agent] for a plain agent with no template."""
+    generate_project(minimal_config, tmp_path)
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    agent_section = data.get("tool", {}).get("apx", {}).get("agent", {})
+    assert agent_section.get("knowledge") is None, (
+        f"knowledge should be absent when no template/catalog/schema, got: {agent_section.get('knowledge')!r}"
+    )

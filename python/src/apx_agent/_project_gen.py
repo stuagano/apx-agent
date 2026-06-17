@@ -114,6 +114,16 @@ def _build_pyproject(config: "AgentConfig") -> str:
     if config.instructions:
         lines.append(f"instructions = {_toml_value(config.instructions)}")
 
+    # knowledge — explicit value wins; fall back to the baked OKF bundle path
+    # when the template anchors a specific catalog+schema (the same condition
+    # under which scaffold writes .apx/okf/).
+    knowledge = config.knowledge
+    if knowledge is None and config.template:
+        if config.template.get("catalog") and config.template.get("schema"):
+            knowledge = "./.apx/okf"
+    if knowledge is not None:
+        lines.append(f"knowledge = {_toml_value(knowledge)}")
+
     # Only write module when there is no template — template replaces it
     if not config.template:
         lines.append('module = "agent:agent"')

@@ -130,6 +130,27 @@ The `template` inline-table selects a registered template by `name` and passes t
 
 **Cross-repo templates:** Third-party templates register via the `apx_agent.templates` Python entry-point group — they appear in the registry after `pip install`. See the E1 spec and the `Template` protocol for authoring a template.
 
+## Declarative grounding — `knowledge`
+
+> Python only. Pins the agent to a specific OKF bundle directory instead of relying on the upward directory walk.
+
+```toml
+[tool.apx.agent]
+name = "sales-coworker"
+model = "databricks-claude-sonnet-4-6"
+knowledge = "./.apx/okf"   # relative to project root
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `knowledge` | `str` | absent | Path to an OKF bundle directory, relative to the project root |
+
+**Precedence:** When set, grounding loads directly from this bundle — it is the highest-priority baked grounding source, ahead of the automatic upward directory walk from the working directory. The path is resolved relative to the project root at startup.
+
+**Graceful degradation:** If the path does not exist at startup (e.g. a freshly-cloned project before `apx-agent okf pull` has been run), grounding falls back silently to the cwd walk. The agent still starts.
+
+**Scaffold default:** Projects scaffolded with `apx-agent agents scaffold` that specify a `catalog` and `schema` automatically receive `knowledge = "./.apx/okf"` in their generated `pyproject.toml`, pointing at the OKF bundle written by the scaffold step.
+
 ## Declarative memory — `[tool.apx.agent.memory]`
 
 > Python only. Declares a memory backend auto-attached on all runtimes (serve, log/deploy, `apx-agent agents describe`). Memory tools are additive over code-wired tools; code-wired tools win on name collision.
