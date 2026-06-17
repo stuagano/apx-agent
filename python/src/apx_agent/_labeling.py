@@ -11,6 +11,7 @@ align_judge so `label start` never requires the [align] extra.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 try:  # mlflow is the `eval`/`align` extra
@@ -19,8 +20,24 @@ except Exception:  # pragma: no cover — only without the extra
     _label_schemas = None  # type: ignore[assignment]
 
 
+RUN_TAG = "apx.label.run"
+
+
 class LabelingError(Exception):
     """A user-facing labeling error (bad input, unmet precondition)."""
+
+
+def make_run_id(judge_name: str, now: datetime) -> str:
+    """Deterministic run id tying `start` to `align`."""
+    return f"{judge_name}-{now:%Y%m%dT%H%M%SZ}"
+
+
+def dataset_name_for(agent_name: str, run_id: str) -> str:
+    return f"{agent_name}_label_{run_id}"
+
+
+def session_name_for(run_id: str) -> str:
+    return f"{run_id}_sme"
 
 
 def _require_mlflow() -> Any:

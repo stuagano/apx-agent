@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from mlflow.genai import label_schemas as ls
 from apx_agent import _labeling
@@ -53,3 +54,17 @@ def test_derive_str_requires_options():
     spec = _labeling.derive_label_schema(judge=_judge(ft=str), scale=None, options=["good", "bad"])
     assert isinstance(spec["input"], ls.InputCategorical)
     assert spec["input"].options == ["good", "bad"]
+
+
+@pytest.mark.unit
+def test_make_run_id_is_deterministic():
+    now = datetime(2026, 6, 17, 19, 5, 30, tzinfo=timezone.utc)
+    assert _labeling.make_run_id("domain_quality_base", now) == "domain_quality_base-20260617T190530Z"
+
+
+@pytest.mark.unit
+def test_name_helpers():
+    rid = "domain_quality_base-20260617T190530Z"
+    assert _labeling.dataset_name_for("payroll", rid) == f"payroll_label_{rid}"
+    assert _labeling.session_name_for(rid) == f"{rid}_sme"
+    assert _labeling.RUN_TAG == "apx.label.run"
