@@ -27,6 +27,17 @@ def load_baked_schema(start: "Path | str | None" = None) -> "dict | None":
     here = Path(start) if start is not None else Path.cwd()
     here = here.resolve()
     for d in [here, *here.parents]:
+        okf_root = d / APX_DIR / "okf"
+        if okf_root.is_dir():
+            try:
+                from ._okf import okf_manifest
+
+                parsed = okf_manifest(okf_root)  # totalised; None on any miss
+            except Exception:
+                parsed = None
+            if parsed is not None:
+                return parsed
+            # OKF parse-miss -> fall through to schema.json at the SAME level
         candidate = d / APX_DIR / SCHEMA_MANIFEST_NAME
         if candidate.is_file():
             try:

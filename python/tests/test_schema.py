@@ -124,3 +124,33 @@ class TestPersona:
                                              persona="a revenue analyst")
         assert out.startswith("You are a revenue analyst.")
         assert "confirm what tables and columns are available" in out  # still discovers
+
+
+class TestLoadBakedSchemaOKF:
+    def _write_okf(self, root, manifest):
+        from apx_agent._okf import write_okf_bundle
+        import shutil
+        write_okf_bundle(manifest, root / "okf_tmp", timestamp="z")
+        dest = root / ".apx" / "okf"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(root / "okf_tmp"), str(dest))
+
+    def test_prefers_okf_bundle(self, tmp_path):
+        m = {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)"]}}
+        self._write_okf(tmp_path, m)
+        assert load_baked_schema(tmp_path) == m
+
+    def test_okf_wins_over_stale_schema_json(self, tmp_path):
+        stale = {"catalog": "c", "schema": "s", "tables": {"old": ["x(int)"]}}
+        _write_manifest(tmp_path, stale)
+        fresh = {"catalog": "c", "schema": "s", "tables": {"new": ["y(int)"]}}
+        self._write_okf(tmp_path, fresh)
+        assert load_baked_schema(tmp_path) == fresh
+
+    def test_falls_back_to_schema_json_when_okf_malformed(self, tmp_path):
+        cache = {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)"]}}
+        _write_manifest(tmp_path, cache)
+        okf = tmp_path / ".apx" / "okf" / "datasets"
+        okf.mkdir(parents=True)
+        (okf / "x.md").write_text("---\n: bad: yaml\n---\n")
+        assert load_baked_schema(tmp_path) == cache
