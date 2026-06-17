@@ -4372,3 +4372,68 @@ class TestMigrateToOKF:
         result = CliRunner().invoke(agents, ["migrate-to-okf"])
         assert result.exit_code != 0
         assert "force" in result.output.lower()
+
+
+class TestRefreshSchemaPreservesOKF:
+    def test_refresh_preserves_enriched_body_and_updates_cache(self, tmp_path, monkeypatch):
+        import json
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+        from apx_agent._okf import write_okf_bundle
+
+        apx = tmp_path / ".apx"
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        write_okf_bundle(m, apx / "okf", timestamp="z")
+        (apx / "okf" / "tables" / "pay_runs.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Overview\nEnriched narrative.\n\n# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) |  |\n"
+        )
+        (apx / "schema.json").write_text(json.dumps(m))
+        # live introspection now reports a wider type
+        updated = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(10,2))"]}}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: updated)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["refresh-schema"])
+        assert result.exit_code == 0, result.output
+        body = (apx / "okf" / "tables" / "pay_runs.md").read_text()
+        assert "Enriched narrative." in body          # body preserved
+        assert "decimal(10,2)" in body                # schema refreshed
+        assert json.loads((apx / "schema.json").read_text())["tables"]["pay_runs"] == ["gross_pay(decimal(10,2))"]
+
+    def _two_table_bundle(self, tmp_path):
+        from apx_agent._okf import write_okf_bundle
+        apx = tmp_path / ".apx"
+        m = {"catalog": "c", "schema": "s", "tables": {"keep": ["x(int)"], "gone": ["y(int)"]}}
+        write_okf_bundle(m, apx / "okf", timestamp="z")
+        (apx / "schema.json").write_text(json.dumps(m))
+        return apx
+
+    def test_default_refresh_keeps_table_missing_from_live_schema(self, tmp_path, monkeypatch):
+        # Live introspection no longer returns `gone`; default refresh must NOT drop it.
+        from apx_agent import cli
+        from apx_agent.cli import agents
+        apx = self._two_table_bundle(tmp_path)
+        live = {"catalog": "c", "schema": "s", "tables": {"keep": ["x(int)"]}}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: live)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["refresh-schema"])
+        assert result.exit_code == 0, result.output
+        assert (apx / "okf" / "tables" / "gone.md").is_file()   # preserved by default
+        assert set(json.loads((apx / "schema.json").read_text())["tables"]) == {"keep", "gone"}
+
+    def test_prune_flag_removes_table_missing_from_live_schema(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        from apx_agent.cli import agents
+        apx = self._two_table_bundle(tmp_path)
+        live = {"catalog": "c", "schema": "s", "tables": {"keep": ["x(int)"]}}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: live)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["refresh-schema", "--prune-missing-tables"])
+        assert result.exit_code == 0, result.output
+        assert not (apx / "okf" / "tables" / "gone.md").exists()  # dropped on opt-in
+        assert set(json.loads((apx / "schema.json").read_text())["tables"]) == {"keep"}

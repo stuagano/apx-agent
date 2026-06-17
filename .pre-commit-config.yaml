@@ -15,6 +15,11 @@ repos:
         language: script
         files: uv\.lock$
         pass_filenames: false
+      - id: okf-cache-sync
+        name: OKF bundle -> schema.json cache in sync (auto-fix)
+        entry: python3 scripts/regen-okf-cache.py
+        language: system
+        files: '\.apx/okf/.*\.md$'
 
       # ── Code-quality lint hooks (ported from agent-framework) ─────────
       #

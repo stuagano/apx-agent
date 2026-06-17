@@ -14,10 +14,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import json
 import re
 
 REQUIRED_FRONTMATTER_KEYS = ("type", "title", "description", "timestamp")
 OKF_VERSION = "0.1"
+
+
+def dump_schema_cache(manifest: dict) -> str:
+    """Canonical serialization of the derived ``schema.json`` cache.
+
+    The single writer shared by the CLI lifecycle commands (scaffold,
+    refresh-schema, migrate-to-okf) and the pre-commit regen hook, so the two
+    never emit byte-different caches that rewrite each other on every run (no
+    flip-flop). ``indent=2``, no trailing newline — matches the committed
+    caches already in the tree, so adopting it churns nothing.
+    """
+    return json.dumps(manifest, indent=2)
+
 
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.DOTALL)
 
@@ -296,3 +310,96 @@ def okf_grounding(okf_root: "Path | str") -> "dict | None":
         return out or None
     except Exception:
         return None
+
+
+def _replace_section(body: str, heading: str, new_block: str) -> str:
+    """Replace the ``# <heading>`` section (its heading line through just before
+    the next top-level ``# `` heading) with ``new_block`` (which includes its own
+    ``# <heading>`` line). Appends ``new_block`` when the section is absent."""
+    lines = body.splitlines()
+    start = None
+    end = len(lines)
+    for i, line in enumerate(lines):
+        if re.match(rf"^#\s+{re.escape(heading)}\s*$", line):
+            start = i
+            for j in range(i + 1, len(lines)):
+                if re.match(r"^#\s+", lines[j]):
+                    end = j
+                    break
+            break
+    new_lines = new_block.rstrip("\n").splitlines()
+    if start is None:
+        return body.rstrip("\n") + "\n\n" + "\n".join(new_lines) + "\n"
+    rebuilt = lines[:start] + new_lines + [""] + lines[end:]
+    return "\n".join(rebuilt).rstrip("\n") + "\n"
+
+
+def _schema_block_md(cols: list[str], descriptions: "dict | None" = None) -> str:
+    """A full ``# Schema`` pipe-table block for the given ``col(type)`` strings,
+    carrying over ``descriptions`` ({col: text}) into the 3rd cell."""
+    descriptions = descriptions or {}
+    rows = "".join(_schema_row(c, descriptions.get(_split_col(c)[0], "")) for c in cols)
+    return "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n" + rows
+
+
+def refresh_okf_schema(
+    okf_root: "Path | str", manifest: dict, *, timestamp: str, prune: bool = False
+) -> None:
+    """Update an OKF bundle's ``# Schema`` tables to match ``manifest`` while
+    preserving enriched bodies and per-column descriptions.
+
+    NON-DESTRUCTIVE by default: only the ``# Schema`` section of each live table
+    is rewritten (Overview/Joins/Examples and other hand-authored sections are
+    kept), and table concepts present in the bundle but ABSENT from ``manifest``
+    (local-only / hand-authored tables) are LEFT IN PLACE and still listed in the
+    indexes. Pass ``prune=True`` to delete those dropped-table concepts — the
+    explicit opt-in behind ``refresh-schema --prune-missing-tables``. Caller
+    regenerates the ``schema.json`` cache afterwards."""
+    root = Path(okf_root)
+    catalog, schema = manifest["catalog"], manifest["schema"]
+    tables = manifest.get("tables", {})
+    tdir = root / "tables"
+    tdir.mkdir(parents=True, exist_ok=True)
+
+    for name, cols in tables.items():
+        path = tdir / f"{name}.md"
+        if path.is_file():
+            doc = OKFDocument.parse(path.read_text())
+            old_desc = {r["name"]: r["description"] for r in _schema_rows_with_desc(doc.body)}
+            doc.frontmatter["timestamp"] = timestamp
+            doc.body = _replace_section(doc.body, "Schema", _schema_block_md(cols, old_desc))
+            path.write_text(doc.serialize())
+        else:
+            doc = OKFDocument(
+                frontmatter={
+                    "type": "Unity Catalog Table", "title": name,
+                    "description": f"{name} table.",
+                    "resource": f"{catalog}.{schema}.{name}", "timestamp": timestamp,
+                },
+                body=_schema_block_md(cols),
+            )
+            doc.validate()
+            path.write_text(doc.serialize())
+
+    # Table concepts on disk that the live schema no longer lists. With prune
+    # they are deleted; by default they are preserved (local-only / hand-authored)
+    # and kept in the indexes so nothing the user wrote silently vanishes.
+    local_only: list[str] = []
+    for p in sorted(tdir.glob("*.md")):
+        if p.name in _RESERVED:
+            continue
+        title = OKFDocument.parse(p.read_text()).frontmatter.get("title") or p.stem
+        if title not in tables:
+            if prune:
+                p.unlink()
+            else:
+                local_only.append(p.stem)
+
+    listed = list(tables) + local_only
+    ds_path = root / "datasets" / f"{schema}.md"
+    if ds_path.is_file():
+        ds = OKFDocument.parse(ds_path.read_text())
+        ds.frontmatter["timestamp"] = timestamp
+        ds.body = "# Tables\n" + "".join(f"* [{t}](../tables/{t}.md)\n" for t in listed)
+        ds_path.write_text(ds.serialize())
+    (tdir / "index.md").write_text("# Tables\n" + "".join(f"* [{t}]({t}.md)\n" for t in listed))
