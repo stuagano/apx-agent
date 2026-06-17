@@ -173,3 +173,74 @@ class TestLoadBakedSchemaOKF:
         with caplog.at_level(logging.WARNING):
             assert load_baked_schema(tmp_path) == m
         assert not any("did not parse" in r.message for r in caplog.records)
+
+
+class TestLoadOKFGrounding:
+    def _write_enriched_okf(self, root):
+        from apx_agent._okf import write_okf_bundle
+        import shutil
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        tmp = root / "okf_tmp"
+        write_okf_bundle(m, tmp, timestamp="z")
+        (tmp / "tables" / "pay_runs.md").write_text(
+            "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
+            "# Overview\nPay records.\n\n# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `gross_pay` | decimal(6,2) |  |\n"
+        )
+        dest = root / ".apx" / "okf"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(tmp), str(dest))
+
+    def test_returns_enrichment_when_present(self, tmp_path):
+        from apx_agent._schema import load_okf_grounding
+        self._write_enriched_okf(tmp_path)
+        g = load_okf_grounding(tmp_path)
+        assert g is not None and g["pay_runs"]["description"] == "Pay records."
+
+    def test_returns_none_when_no_okf(self, tmp_path):
+        from apx_agent._schema import load_okf_grounding
+        assert load_okf_grounding(tmp_path) is None
+
+
+class TestGroundedInstructions:
+    def test_default_identical_when_grounding_none(self):
+        from apx_agent._schema import build_instructions_from_schema
+        tables = {"pay_runs": ["gross_pay(decimal(6,2))"], "employees": ["employee_id(string)"]}
+        a = build_instructions_from_schema("c", "s", tables)
+        b = build_instructions_from_schema("c", "s", tables, grounding=None)
+        c = build_instructions_from_schema("c", "s", tables, grounding={})
+        assert a == b == c
+
+    def test_unenriched_table_line_unchanged_when_other_enriched(self):
+        from apx_agent._schema import build_instructions_from_schema
+        tables = {"pay_runs": ["gross_pay(decimal(6,2))"], "employees": ["employee_id(string)"]}
+        grounding = {"pay_runs": {"description": "Pay records.", "columns": [], "joins": "", "examples": ""}}
+        out = build_instructions_from_schema("c", "s", tables, grounding=grounding)
+        assert "- pay_runs: gross_pay(decimal(6,2))" in out
+        assert "    Pay records." in out
+        assert "- employees: employee_id(string)" in out
+
+    def test_enrichment_includes_joins_and_example(self):
+        from apx_agent._schema import build_instructions_from_schema
+        tables = {"pay_runs": ["gross_pay(decimal(6,2))"]}
+        grounding = {"pay_runs": {
+            "description": "", "columns": [{"name": "gross_pay", "type": "decimal(6,2)", "description": "Gross."}],
+            "joins": "Join employees on employee_id.", "examples": "SELECT * FROM pay_runs",
+        }}
+        out = build_instructions_from_schema("c", "s", tables, grounding=grounding)
+        assert "    - gross_pay: Gross." in out
+        assert "    Joins: Join employees on employee_id." in out
+        assert "SELECT * FROM pay_runs" in out
+
+    def test_multiline_description_and_joins_are_first_line_only(self):
+        from apx_agent._schema import build_instructions_from_schema
+        tables = {"pay_runs": ["gross_pay(decimal(6,2))"]}
+        grounding = {"pay_runs": {
+            "description": "Line one.\nLine two should not leak.",
+            "columns": [], "joins": "Join A.\nJoin B should not leak.", "examples": "",
+        }}
+        out = build_instructions_from_schema("c", "s", tables, grounding=grounding)
+        assert "    Line one." in out
+        assert "Line two should not leak." not in out
+        assert "    Joins: Join A." in out
+        assert "Join B should not leak." not in out

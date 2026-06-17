@@ -35,7 +35,7 @@ import logging
 
 from ._agents import LlmAgent
 from ._resources import ResourceSpec, attach_resources
-from ._schema import build_instructions_from_schema, introspect_schema, load_baked_schema
+from ._schema import build_instructions_from_schema, introspect_schema, load_baked_schema, load_okf_grounding
 from ._template import template
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ def _build_data_tools_and_instructions(
     #   3) the baked `.apx/schema.json` manifest (scaffold-time grounding)
     #   4) {} -> generic, ungrounded instructions
     resolved_tables: dict = tables or {}
+    baked_was_source = False
     if not resolved_tables and ws:
         resolved_tables = introspect_schema(ws, catalog, schema, warehouse_id)
     if not resolved_tables:
@@ -84,6 +85,7 @@ def _build_data_tools_and_instructions(
             and isinstance(baked.get("tables"), dict)
         ):
             resolved_tables = baked["tables"]
+            baked_was_source = True
     if not resolved_tables:
         logger.warning(
             "DataAgent(%r, %r): no schema found via tables=, ws=, or .apx/schema.json — "
@@ -129,8 +131,9 @@ def _build_data_tools_and_instructions(
     if extra_tools:
         tools += extra_tools
 
+    grounding = load_okf_grounding() if baked_was_source else None
     resolved_instructions = instructions or build_instructions_from_schema(
-        catalog, schema, tables, persona=persona, objective=objective
+        catalog, schema, tables, persona=persona, objective=objective, grounding=grounding
     )
     return _DataAgentComponents(tools=tools, instructions=resolved_instructions)
 
