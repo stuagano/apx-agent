@@ -1,5 +1,7 @@
 # apx-agent documentation
 
+- [positioning.md](positioning.md) — **where apx-agent fits**: what it's for (governed data agents on Databricks), what it's not (a coding-agent orchestrator), and how the layers compose
+
 ## Get Started
 
 - [get-started/quickstart.md](get-started/quickstart.md) — install, scaffold, run locally, first deploy
