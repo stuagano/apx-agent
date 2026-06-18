@@ -4490,3 +4490,30 @@ class TestPullComments:
         result = CliRunner().invoke(agents, ["pull-comments"])
         assert result.exit_code != 0  # no .apx -> clean ClickException, not a crash
         assert "No .apx" in result.output or "no .apx" in result.output.lower()
+
+    def test_pull_uc_read_failure_errors_cleanly(self, tmp_path, monkeypatch):
+        # ws.tables.list raises (permission/network) -> the command must fail
+        # with a clean ClickException naming the cause, not crash on the
+        # traceback.
+        import json
+        from types import SimpleNamespace
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+        from apx_agent._okf import write_okf_bundle
+
+        apx = tmp_path / ".apx"
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        write_okf_bundle(m, apx / "okf", timestamp="z")
+        (apx / "schema.json").write_text(json.dumps(m))
+
+        def boom(catalog_name, schema_name):
+            raise RuntimeError("PERMISSION_DENIED")
+
+        fake_ws = SimpleNamespace(tables=SimpleNamespace(list=boom))
+        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda *a, **k: fake_ws)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["pull-comments"])
+        assert result.exit_code != 0
+        assert "Could not read comments" in result.output
