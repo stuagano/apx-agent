@@ -609,6 +609,7 @@ def set_uc_tags_for_agent(
     registered_model_name: str,
     model: str | None = None,
     name: str | None = None,
+    experiment_id: str | None = None,
     mlflow_client: Any | None = None,
 ) -> dict[str, str]:
     """Write the agent's metadata as UC tags on its registered model.
@@ -626,6 +627,9 @@ def set_uc_tags_for_agent(
         model: Optional LLM endpoint name. Included in tags.
         name: Optional agent name override. Defaults to the agent's
             ``_name`` attribute.
+        experiment_id: Optional MLflow experiment ID. When provided, written
+            as the ``apx.mlflow.experiment_id`` tag so ``apx-agent label``
+            can resolve traces without requiring ``--experiment``.
         mlflow_client: Optional ``mlflow.tracking.MlflowClient`` instance.
             When omitted, a default one is constructed (uses the active
             MLflow tracking URI).
@@ -650,6 +654,8 @@ def set_uc_tags_for_agent(
     client = mlflow_client or MlflowClient()
     metadata = emit_agent_metadata(agent, name=name, model=model)
     tags = _build_uc_tag_payload(metadata)
+    if experiment_id:
+        tags["apx.mlflow.experiment_id"] = str(experiment_id)
 
     written: dict[str, str] = {}
     failed: list[str] = []

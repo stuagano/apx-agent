@@ -34,6 +34,16 @@ apx-agent canary deploy --endpoint customer_triage --model main.agents.x --versi
 apx-agent canary analyze --endpoint customer_triage --hours 24    # per-version requests / errors / latency
 apx-agent canary promote --endpoint customer_triage --model main.agents.x --version 42
 apx-agent canary rollback --endpoint customer_triage --model main.agents.x --version 41
+# judge alignment loop — collect SME labels, then align the BYO LLM judge
+# step 1: register a judge with make_judge().register() against the agent's experiment
+# step 2: open the labeling session (experiment auto-resolved from the apx.mlflow.experiment_id UC tag set at deploy)
+apx-agent label start --uc-name cat.sch.my_agent --judge domain_quality --scale 1-5 --assignee sme@co.com
+                                        # prints Review App URL + run-id; SMEs label out-of-band
+# step 3: align the judge once labeling is complete (requires: pip install 'apx-agent[align]')
+apx-agent label align --uc-name cat.sch.my_agent --judge domain_quality --run <run-id>
+# for cross-environment or multi-deploy setups where runtime traces land in a different experiment,
+# override the auto-resolved experiment with --experiment <mlflow-experiment-id>
+apx-agent label start --uc-name cat.sch.my_agent --judge domain_quality --scale 1-5 --experiment 123456789
 apx-agent watchdog violations --hours 24       # recent reject/redact decisions from the UC table
 apx-agent watchdog status --agent customer_triage  # current posture via watchdog's MCP tool
 apx-agent memory recall --principal-id user:alice --query "notification preferences"  # semantic recall
