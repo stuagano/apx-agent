@@ -171,6 +171,8 @@ knowledge = "./.apx/okf"   # relative to project root
 |---|---|---|---|
 | `knowledge` | `str` | absent | Path to an OKF bundle directory, relative to the project root |
 
+**Read-only grounding:** `knowledge` is a *read-only* runtime grounding source — the agent reads the OKF bundle at startup and never writes back to Unity Catalog. Writes to UC happen only through the governed `uc_comment_writer` tool, never as a side effect of grounding.
+
 **Precedence:** When set, grounding loads directly from this bundle — it is the highest-priority baked grounding source, ahead of the automatic upward directory walk from the working directory. The path is resolved relative to the project root at startup.
 
 **Graceful degradation:** If the path does not exist at startup (e.g. a freshly-cloned project before `apx-agent okf pull` has been run), grounding falls back silently to the cwd walk. The agent still starts.
