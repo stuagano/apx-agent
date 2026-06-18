@@ -41,6 +41,17 @@ def test_label_start_errors_when_not_one_agent(runner, monkeypatch):
 
 
 @pytest.mark.unit
+def test_label_start_errors_when_multiple_agents(runner, monkeypatch):
+    a1 = SimpleNamespace(uc_name="c.s.a1", name="a1", tags={"apx.mlflow.experiment_id": "123"})
+    a2 = SimpleNamespace(uc_name="c.s.a2", name="a2", tags={"apx.mlflow.experiment_id": "456"})
+    monkeypatch.setattr(cli, "_connect_workspace", lambda p: (object(), object()))
+    monkeypatch.setattr(cli, "_fleet_resolve", lambda ws, **kw: [a1, a2])
+    res = runner.invoke(cli.main, ["label", "start", "--judge", "j", "--scale", "1-5"])
+    assert res.exit_code != 0
+    assert "exactly one" in res.output.lower()
+
+
+@pytest.mark.unit
 def test_label_align_happy_path(runner, monkeypatch):
     agent = SimpleNamespace(uc_name="c.s.payroll", name="payroll",
                             tags={"apx.mlflow.experiment_id": "123"})

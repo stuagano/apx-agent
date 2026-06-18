@@ -7822,6 +7822,7 @@ def label_start_cmd(
         click.echo(f"Labeling session: {result.session_url}")
         click.echo(f"  run-id:  {result.run_id}   (pass to `label align --run`)")
         click.echo(f"  traces:  {result.trace_count}   schema/judge: {result.schema_name}")
+        click.echo(f"  dataset: {result.dataset_name}")
 
 
 @label.command("align")
