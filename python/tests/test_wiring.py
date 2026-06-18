@@ -1218,6 +1218,31 @@ class TestSetupMcpMountError:
         assert hasattr(result, "__enter__")
 
     @pytest.mark.asyncio
+    async def test_import_error_after_optional_import_sets_mount_error(self, monkeypatch):
+        import types
+
+        import apx_agent._wiring as wiring
+
+        app = FastAPI()
+        ctx = types.SimpleNamespace(config=types.SimpleNamespace(api_prefix="/api"))
+
+        # The optional top-level import succeeds in this test env; an ImportError
+        # raised while building components means the installed extra is broken,
+        # not absent, and must be recorded as degraded.
+        def _boom(*_a, **_k):
+            raise ImportError("incompatible mcp package")
+
+        monkeypatch.setattr(wiring, "_build_mcp_components", _boom)
+
+        result = await wiring._setup_mcp(app, ctx)
+
+        assert app.state.mcp_mount_error == "incompatible mcp package"
+        assert app.state.mcp_server is None
+        assert app.state.mcp_transport is None
+        assert app.state.mcp_http_manager is None
+        assert hasattr(result, "__enter__")
+
+    @pytest.mark.asyncio
     async def test_missing_dep_leaves_mount_error_none(self, monkeypatch):
         import sys
         import types

@@ -645,16 +645,6 @@ async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
     app.state.mcp_mount_error = None
     try:
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-
-        _mcp = _build_mcp_components(ctx, app, ctx.config.api_prefix)
-        app.state.mcp_server = _mcp.server
-        app.state.mcp_transport = _mcp.sse_transport
-        mcp_http_manager = StreamableHTTPSessionManager(_mcp.server, stateless=True)
-        app.state.mcp_http_manager = mcp_http_manager
-        logger.info(
-            "MCP server enabled at /mcp/sse (SSE) and /mcp (stateless HTTP)"
-        )
-        return mcp_http_manager.run()
     except ImportError as _imp_exc:
         # The optional ``mcp`` extra isn't installed — expected, NOT an error.
         app.state.mcp_server = None
@@ -666,6 +656,17 @@ async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
             type(_imp_exc).__name__, _imp_exc,
         )
         return nullcontext()
+
+    try:
+        _mcp = _build_mcp_components(ctx, app, ctx.config.api_prefix)
+        app.state.mcp_server = _mcp.server
+        app.state.mcp_transport = _mcp.sse_transport
+        mcp_http_manager = StreamableHTTPSessionManager(_mcp.server, stateless=True)
+        app.state.mcp_http_manager = mcp_http_manager
+        logger.info(
+            "MCP server enabled at /mcp/sse (SSE) and /mcp (stateless HTTP)"
+        )
+        return mcp_http_manager.run()
     except Exception as _mcp_exc:
         # The extra is present but setup genuinely failed — a real degradation.
         # No pip-install framing here: this is intended-but-errored, not absent.
