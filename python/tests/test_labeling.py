@@ -150,7 +150,6 @@ def test_start_session_creates_schema_with_judge_name(monkeypatch):
                         lambda **kw: (sess_kwargs.update(kw), session)[1])
     monkeypatch.setattr(_labeling, "get_review_app", lambda experiment_id: None)
 
-    from datetime import datetime, timezone
     res = _labeling.start_session(
         experiment_id="123", agent_name="payroll", judge_name="domain_quality_base",
         scale="1-5", options=None, assignees=["sme@x.com"], filter_string=None,
@@ -163,3 +162,84 @@ def test_start_session_creates_schema_with_judge_name(monkeypatch):
     assert res.run_id == "domain_quality_base-20260617T190530Z"
     assert res.session_url == "https://x/sme"
     assert res.trace_count == 2
+
+
+def _base_start_session_monkeypatches(monkeypatch):
+    """Shared stubs for start_session isolation tests."""
+    judge = _judge(name="domain_quality_base", ft=float)
+    monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: judge)
+    monkeypatch.setattr(_labeling, "create_label_schema", lambda **kw: None)
+    monkeypatch.setattr(_labeling, "select_scored_traces",
+                        lambda **kw: pd.DataFrame({"trace_id": ["t1", "t2"]}))
+    monkeypatch.setattr(_labeling, "tag_traces", lambda ids, rid: len(ids))
+
+    ds = SimpleNamespace(merge_records=lambda df: ds)
+    monkeypatch.setattr(_labeling, "get_dataset", lambda name: (_ for _ in ()).throw(Exception()))
+    monkeypatch.setattr(_labeling, "create_dataset", lambda name: ds)
+
+    session = SimpleNamespace(add_dataset=lambda dataset_name: session, url="https://x/sme")
+    monkeypatch.setattr(_labeling, "create_labeling_session", lambda **kw: session)
+    return ds
+
+
+@pytest.mark.unit
+def test_start_session_attaches_agent_when_requested(monkeypatch):
+    ds = _base_start_session_monkeypatches(monkeypatch)
+    add_agent_calls = []
+    review_app = SimpleNamespace(add_agent=lambda **kw: add_agent_calls.append(kw))
+    monkeypatch.setattr(_labeling, "get_review_app", lambda experiment_id: review_app)
+
+    _labeling.start_session(
+        experiment_id="123", agent_name="payroll", judge_name="domain_quality_base",
+        scale="1-5", options=None, assignees=["sme@x.com"], filter_string=None,
+        limit=None, endpoint="https://ep", attach_agent=True,
+        now=datetime(2026, 6, 17, 19, 5, 30, tzinfo=timezone.utc),
+    )
+    assert len(add_agent_calls) == 1
+    assert add_agent_calls[0]["agent_name"] == "payroll"
+    assert add_agent_calls[0]["model_serving_endpoint"] == "https://ep"
+    assert add_agent_calls[0]["overwrite"] is True
+
+
+@pytest.mark.unit
+def test_start_session_raises_when_review_app_missing(monkeypatch):
+    _base_start_session_monkeypatches(monkeypatch)
+    monkeypatch.setattr(_labeling, "get_review_app", lambda experiment_id: None)
+
+    with pytest.raises(_labeling.LabelingError, match="no review app found"):
+        _labeling.start_session(
+            experiment_id="123", agent_name="payroll", judge_name="domain_quality_base",
+            scale="1-5", options=None, assignees=["sme@x.com"], filter_string=None,
+            limit=None, endpoint="https://ep", attach_agent=True,
+            now=datetime(2026, 6, 17, 19, 5, 30, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.unit
+def test_start_session_uses_existing_dataset(monkeypatch):
+    judge = _judge(name="domain_quality_base", ft=float)
+    monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: judge)
+    monkeypatch.setattr(_labeling, "create_label_schema", lambda **kw: None)
+    monkeypatch.setattr(_labeling, "select_scored_traces",
+                        lambda **kw: pd.DataFrame({"trace_id": ["t1", "t2"]}))
+    monkeypatch.setattr(_labeling, "tag_traces", lambda ids, rid: len(ids))
+    monkeypatch.setattr(_labeling, "get_review_app", lambda experiment_id: None)
+
+    merge_calls = []
+    existing_ds = SimpleNamespace(merge_records=lambda df: merge_calls.append(df))
+    create_dataset_calls = []
+    monkeypatch.setattr(_labeling, "get_dataset", lambda name: existing_ds)
+    monkeypatch.setattr(_labeling, "create_dataset",
+                        lambda name: create_dataset_calls.append(name) or existing_ds)
+
+    session = SimpleNamespace(add_dataset=lambda dataset_name: session, url="https://x/sme")
+    monkeypatch.setattr(_labeling, "create_labeling_session", lambda **kw: session)
+
+    _labeling.start_session(
+        experiment_id="123", agent_name="payroll", judge_name="domain_quality_base",
+        scale="1-5", options=None, assignees=["sme@x.com"], filter_string=None,
+        limit=None, endpoint=None, attach_agent=False,
+        now=datetime(2026, 6, 17, 19, 5, 30, tzinfo=timezone.utc),
+    )
+    assert create_dataset_calls == [], "create_dataset should NOT be called when get_dataset succeeds"
+    assert len(merge_calls) == 1, "merge_records should still be called on the existing dataset"

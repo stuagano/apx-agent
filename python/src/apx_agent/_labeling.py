@@ -225,6 +225,11 @@ def start_session(
 
     if attach_agent and endpoint:
         review_app = get_review_app(experiment_id=experiment_id)
+        if review_app is None:
+            raise LabelingError(
+                f"no review app found for experiment {experiment_id}; cannot attach agent "
+                f"'{agent_name}'. Check the experiment id or omit --attach-agent."
+            )
         review_app.add_agent(
             agent_name=agent_name, model_serving_endpoint=endpoint, overwrite=True,
         )
