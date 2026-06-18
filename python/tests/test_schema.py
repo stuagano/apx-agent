@@ -273,3 +273,16 @@ class TestLoadGroundingFromPath:
     def test_missing_path_returns_none_none(self, tmp_path):
         from apx_agent._schema import load_grounding_from_path
         assert load_grounding_from_path(tmp_path / "nope") == (None, None)
+
+    def test_malformed_bundle_returns_none_none(self, tmp_path):
+        # The bundle dir EXISTS (so we get past the is_dir() guard), but is
+        # corrupt: a DIRECTORY sits where the dataset concept .md file is
+        # expected, so the manifest read (_dataset_concept -> read_text) RAISES
+        # internally and is swallowed to None per okf_manifest's totality
+        # contract. With no readable tables, okf_grounding is None too -> the
+        # explicit-bundle loader must return (None, None), never half a pair.
+        from apx_agent._schema import load_grounding_from_path
+        okf = tmp_path / "okf"
+        (okf / "datasets").mkdir(parents=True)
+        (okf / "datasets" / "s.md").mkdir()  # non-file where a concept is expected
+        assert load_grounding_from_path(okf) == (None, None)
