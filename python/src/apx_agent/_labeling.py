@@ -256,9 +256,10 @@ class AlignResult:
 
 def _load_memalign(*, reflection_model: str, embedding_model: str, retrieval_k: int) -> Any:
     """Build a MemAlignOptimizer, translating a missing dspy into guidance."""
+    from mlflow.exceptions import MlflowException
     try:
         from mlflow.genai.judges.optimizers import MemAlignOptimizer
-    except (ImportError, Exception) as e:
+    except (ImportError, MlflowException) as e:
         raise LabelingError(
             "judge alignment (MemAlign) requires dspy. "
             "Install with: pip install 'apx-agent[align]'"

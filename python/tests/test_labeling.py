@@ -267,6 +267,29 @@ def test_align_judge_missing_dspy_raises_friendly(monkeypatch):
 
 
 @pytest.mark.unit
+def test_align_judge_missing_dspy_mlflowexception_raises_friendly(monkeypatch):
+    # On real environments without dspy, the optimizers import raises MlflowException,
+    # not ImportError. The guard must convert it to the install-hint LabelingError.
+    import builtins
+    from mlflow.exceptions import MlflowException
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name.startswith("mlflow.genai.judges.optimizers"):
+            raise MlflowException("DSPy library is required but not installed")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(_labeling.LabelingError, match=r"apx-agent\[align\]"):
+        _labeling.align_judge(
+            experiment_id="123", judge_name="j", run_id="r1",
+            reflection_model="databricks:/databricks-claude-sonnet-4-6",
+            embedding_model="databricks:/databricks-gte-large-en",
+            retrieval_k=5, new_version=None,
+        )
+
+
+@pytest.mark.unit
 def test_align_judge_aligns_and_updates_in_place(monkeypatch):
     captured = {}
 
