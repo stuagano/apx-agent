@@ -114,6 +114,57 @@ def test_select_scored_traces_empty_fails_fast(monkeypatch):
     with pytest.raises(_labeling.LabelingError, match="--evaluate"):
         _labeling.select_scored_traces(
             experiment_id="123", judge_name="j", filter_string=None, limit=None)
+    # Error message must NOT mention --since (label start has no --since option)
+    try:
+        _labeling.select_scored_traces(
+            experiment_id="123", judge_name="j", filter_string=None, limit=None)
+    except _labeling.LabelingError as exc:
+        assert "--since" not in str(exc)
+
+
+@pytest.mark.unit
+def test_select_scored_traces_judge_score_present_returns_df(monkeypatch):
+    """Happy path: at least one trace carries the judge's assessment."""
+    # Mirroring real Assessment.to_dictionary() output (assessment_name key, proto field names).
+    scored_assessment = {
+        "assessment_name": "domain_quality",
+        "trace_id": "t1",
+        "source": {"source_type": "LLM_JUDGE", "source_id": "domain_quality"},
+        "feedback": {"value": 0.9},
+    }
+    df = pd.DataFrame({
+        "trace_id": ["t1", "t2"],
+        "assessments": [
+            [scored_assessment],  # t1 has the judge's score
+            [],                   # t2 is unscored — that's fine, at least one suffices
+        ],
+    })
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment", lambda exp, **kw: df)
+    out = _labeling.select_scored_traces(
+        experiment_id="123", judge_name="domain_quality", filter_string=None, limit=None)
+    assert list(out["trace_id"]) == ["t1", "t2"]
+
+
+@pytest.mark.unit
+def test_select_scored_traces_no_judge_score_raises(monkeypatch):
+    """Reject: non-empty traces but none carry the judge's assessment."""
+    other_assessment = {
+        "assessment_name": "other_judge",
+        "trace_id": "t1",
+        "source": {"source_type": "LLM_JUDGE", "source_id": "other_judge"},
+        "feedback": {"value": 0.5},
+    }
+    df = pd.DataFrame({
+        "trace_id": ["t1", "t2"],
+        "assessments": [
+            [other_assessment],  # t1 has a score but for the WRONG judge
+            [],                  # t2 is unscored
+        ],
+    })
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment", lambda exp, **kw: df)
+    with pytest.raises(_labeling.LabelingError, match="score them first"):
+        _labeling.select_scored_traces(
+            experiment_id="123", judge_name="domain_quality", filter_string=None, limit=None)
 
 
 @pytest.mark.unit

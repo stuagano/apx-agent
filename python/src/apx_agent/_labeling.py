@@ -148,7 +148,22 @@ def resolve_experiment_id(*, explicit: str | None, agent_tags: dict[str, str]) -
 def select_scored_traces(
     *, experiment_id: str, judge_name: str, filter_string: str | None, limit: int | None
 ) -> Any:
-    """Pull traces to be labeled. Fails fast if none match."""
+    """Pull traces to be labeled. Fails fast if none carry the judge's score.
+
+    Every trace in a labeling session must already carry the judge's score —
+    SMEs cannot resolve alignment gaps without a baseline prediction to react to.
+
+    Assessment schema: the pandas DataFrame has an ``assessments`` column where
+    each cell is a list of dicts (from ``Assessment.to_dictionary()`` with
+    ``preserving_proto_field_name=True``). The name key is ``assessment_name``
+    (proto field name), not ``name``.
+
+    Degradation contract: if the ``assessments`` column is absent or every cell
+    is None/non-list we cannot affirmatively determine scoring status, so we
+    return the DataFrame unchanged (degrade gracefully) rather than break the
+    happy path on old/mock/unexpected DataFrame shapes. We only raise when we
+    can positively confirm no trace carries the judge's score.
+    """
     if search_traces_for_experiment is None:  # pragma: no cover
         raise LabelingError("labeling requires mlflow. pip install 'apx-agent[eval]'")
     kwargs: dict[str, Any] = {"return_type": "pandas"}
@@ -160,8 +175,38 @@ def select_scored_traces(
     if df is None or len(df) == 0:
         raise LabelingError(
             f"no traces found for experiment {experiment_id}. Score a sample first "
-            f"with --evaluate <inputs.jsonl>, or widen --filter/--since/--limit."
+            f"with --evaluate <inputs.jsonl>, or widen --filter/--limit."
         )
+
+    # Verify that at least one trace carries the judge's assessment.
+    # Degrade gracefully (return df) if the column is absent or has an
+    # unrecognised shape — wrong-schema rejection is worse than no check.
+    if "assessments" in df.columns:
+        saw_parseable = False
+        found = False
+        for cell in df["assessments"]:
+            if not isinstance(cell, list):
+                continue
+            saw_parseable = True
+            for assessment in cell:
+                if not isinstance(assessment, dict):
+                    continue
+                # to_dictionary() uses preserving_proto_field_name=True → "assessment_name"
+                aname = assessment.get("assessment_name") or assessment.get("name")
+                if aname == judge_name:
+                    found = True
+                    break
+            if found:
+                break
+        if saw_parseable and not found:
+            raise LabelingError(
+                f"none of the {len(df)} traces for experiment {experiment_id} carry a "
+                f"'{judge_name}' score; score them first (run the judge / --evaluate) "
+                f"before creating a labeling session."
+            )
+        # If not saw_parseable: column present but no recognisable list cells —
+        # degrade gracefully; see docstring for rationale.
+
     return df
 
 
