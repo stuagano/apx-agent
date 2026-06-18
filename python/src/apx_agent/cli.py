@@ -3691,6 +3691,7 @@ def deploy(
         or config.get("name")
         or registered_model_name.rsplit(".", 1)[-1]
     )
+    resolved_experiment_id: str | None = None
     if effective_experiment:
         click.echo(f"# experiment: {effective_experiment}", err=True)
 
@@ -3722,7 +3723,8 @@ def deploy(
     # log_agent via finalize_agent — no separate call needed here.)
 
     if effective_experiment:
-        mlflow.set_experiment(effective_experiment)
+        _exp = mlflow.set_experiment(effective_experiment)
+        resolved_experiment_id = _exp.experiment_id
     with _EnvVarGuard(capture=effective_capture), mlflow.start_run():
         info = log_agent(
             agent,
@@ -3761,6 +3763,7 @@ def deploy(
                 registered_model_name=registered_model_name,
                 model=model,
                 name=effective_agent_name,
+                experiment_id=resolved_experiment_id,   # lets `apx-agent label` resolve traces without --experiment
             )
             if written:
                 click.echo(f"  {len(written)} apx.agent.* tags written on {registered_model_name} "

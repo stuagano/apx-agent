@@ -354,3 +354,31 @@ def test_align_judge_new_version_makes_and_registers(monkeypatch):
     assert make_judge_calls["model"] == "databricks:/model"
     assert register_calls["experiment_id"] == "exp-42"
     assert res.guidelines == ["be very precise"]
+
+
+@pytest.mark.unit
+def test_set_uc_tags_includes_experiment_id():
+    from apx_agent import _watchdog
+
+    class FakeClient:
+        def __init__(self):
+            self.tags = {}
+        def set_registered_model_tag(self, *, name, key, value):
+            self.tags[key] = value
+
+    class FakeAgent:
+        _name = "payroll"
+
+    client = FakeClient()
+    # emit_agent_metadata needs a real-ish agent; patch it to a minimal dict.
+    import apx_agent._watchdog as w
+    orig = w.emit_agent_metadata
+    w.emit_agent_metadata = lambda agent, name=None, model=None: {"name": "payroll", "model": "m"}
+    try:
+        _watchdog.set_uc_tags_for_agent(
+            FakeAgent(), registered_model_name="c.s.payroll",
+            experiment_id="555", mlflow_client=client,
+        )
+    finally:
+        w.emit_agent_metadata = orig
+    assert client.tags.get("apx.mlflow.experiment_id") == "555"
