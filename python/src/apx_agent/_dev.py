@@ -27,6 +27,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from ._apx_models import (
+    EvalCaseIn,
+    EvalCaseResponse,
+    EvalDataSaveResponse,
+    JudgeRequest,
+    JudgeResponse,
+)
 from ._models import AgentContext, AgentTool
 from ._topology import build_topology, inspect_node
 from ._ui_chat import (
@@ -2571,9 +2578,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "changed": updated != source,
         })
 
-    @router.get("/_apx/eval/data", include_in_schema=False)
+    @router.get("/_apx/eval/data", response_model=list[EvalCaseResponse])
     async def eval_data_get() -> Any:
-        """Read persisted eval cases. Returns [] if no file or no agent_router."""
+        """Read persisted eval cases. Returns [] if no file or no agent_router.
+
+        Success returns the persisted JSON list via ``JSONResponse`` so the
+        bytes on the wire are the file verbatim (cases diverge — see
+        :class:`~apx_agent._apx_models.EvalCaseResponse`); ``response_model``
+        documents the row shape in the OpenAPI schema without filtering the
+        response. The parse-error path returns ``{ok: false, error}`` with 500.
+        """
         from fastapi.responses import JSONResponse
         path = _find_evals_path()
         if path is None or not path.exists():
@@ -2583,13 +2597,23 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         except (OSError, ValueError) as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
-    @router.post("/_apx/eval/data", include_in_schema=False)
-    async def eval_data_post(request: Request) -> Any:
-        """Replace persisted eval cases with the request body (a list)."""
+    @router.post("/_apx/eval/data", response_model=EvalDataSaveResponse)
+    async def eval_data_post(request: Request, cases: list[EvalCaseIn]) -> Any:
+        """Replace persisted eval cases with the request body (a list).
+
+        ``cases: list[EvalCaseIn]`` makes FastAPI validate the body shape: a
+        non-list, or an element missing ``question``, now yields ``422`` (this
+        replaces the old manual ``isinstance``/400 check). The persisted bytes
+        come from re-reading the **raw** body — ``EvalCaseIn`` uses
+        ``extra="ignore"``, so dumping the parsed models would drop the UI's
+        divergent fields; the cached raw body preserves them verbatim. The
+        semantic 503 (``agent_router.py`` not found) and 500 (OS write error)
+        stay in the handler as ``JSONResponse`` (bypassing ``response_model``).
+        """
         from fastapi.responses import JSONResponse
+        # Body already validated as a list[EvalCaseIn]; re-read the cached raw
+        # body so unmodelled, divergent case fields persist unchanged.
         body = await request.json()
-        if not isinstance(body, list):
-            return JSONResponse({"ok": False, "error": "Body must be a list"}, status_code=400)
         path = _find_evals_path()
         if path is None:
             return JSONResponse({"ok": False, "error": "agent_router.py not found in running process"}, status_code=503)
@@ -2599,15 +2623,19 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         except OSError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
         await _ws_upload_agent_file(request, path, content)
-        return JSONResponse({"ok": True, "count": len(body)})
+        # Raw dict (not JSONResponse) so ``response_model`` validates the shape.
+        return {"ok": True, "count": len(cases)}
 
-    @router.post("/_apx/eval/judge", include_in_schema=False)
-    async def eval_judge(request: Request) -> Any:
+    @router.post("/_apx/eval/judge", response_model=JudgeResponse)
+    async def eval_judge(request: Request, judge: JudgeRequest) -> Any:
         """LLM-as-judge scoring for eval cases.
 
-        Body: {question, response, criterion, model?}. The judge prompt asks the
-        model to reply with PASS/FAIL + a one-sentence reason; we parse the
-        verdict deterministically and return {ok, pass, verdict, reason}.
+        Body: {question, response, criterion, model?}. A missing required key or
+        a wrong type now yields ``422`` via :class:`JudgeRequest`; a present-but-
+        blank required field yields ``422`` here in the handler. The judge prompt
+        asks the model to reply with PASS/FAIL + a one-sentence reason; we parse
+        the verdict deterministically and return {ok, pass, verdict, reason}.
+        The semantic 503 (no agent context) is preserved.
         """
         from fastapi.responses import JSONResponse
         import time as _time
@@ -2616,16 +2644,15 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if ctx is None:
             return JSONResponse({"ok": False, "error": "Agent not configured"}, status_code=503)
 
-        body = await request.json()
-        question = (body.get("question") or "").strip()
-        response = (body.get("response") or "").strip()
-        criterion = (body.get("criterion") or "").strip()
+        question = judge.question.strip()
+        response = judge.response.strip()
+        criterion = judge.criterion.strip()
         if not (question and response and criterion):
             return JSONResponse(
                 {"ok": False, "error": "question, response, and criterion are all required"},
-                status_code=400,
+                status_code=422,
             )
-        model = body.get("model") or getattr(ctx.config, "model", "")
+        model = judge.model or getattr(ctx.config, "model", "")
         if not model:
             return JSONResponse({"ok": False, "error": "No model configured"}, status_code=400)
 
@@ -2659,14 +2686,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 msg = getattr(choices[0], "message", None)
                 text = ((getattr(msg, "content", None) or "") if msg else "").strip()
             _judge = _parse_judge_output(text)
-            return JSONResponse({
+            # Raw dict (not JSONResponse) so ``response_model`` validates the
+            # JudgeResponse shape; ``pass`` serialises via its field alias.
+            return {
                 "ok": True,
                 "pass": _judge.verdict == "PASS",
                 "verdict": _judge.verdict,
                 "reason": _judge.reason,
                 "duration_ms": elapsed,
                 "model": model,
-            })
+            }
         except Exception as exc:  # noqa: BLE001
             elapsed = int((_time.monotonic() - t0) * 1000)
             return JSONResponse({
@@ -2676,7 +2705,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             }, status_code=200)
 
     # Redirects for old routes
-    @router.get("/_apx/eval", include_in_schema=False)
+    @router.get("/_apx/eval", response_class=HTMLResponse)
     async def eval_ui() -> HTMLResponse:
         """Eval landing page — lists persisted eval cases.
 
