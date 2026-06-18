@@ -442,14 +442,17 @@ async def setup_agent(
 
     _mount_protocol_routes(app)
 
-    # Dev UI (optional). Skipped silently if unavailable or broken.
+    # Dev UI (optional). The app must still serve if this fails, so the failure
+    # is swallowed — but recorded on app.state for local diagnosis, not hidden.
+    app.state.dev_ui_mount_error = None
     try:
         from ._dev import build_dev_ui_router
 
         app.include_router(build_dev_ui_router(config.api_prefix))
         logger.info("Dev UI mounted at /_apx/*")
     except Exception as e:
-        logger.info(f"Dev UI not available: {e}")
+        app.state.dev_ui_mount_error = str(e)
+        logger.info("Dev UI not mounted (%s: %s)", type(e).__name__, e)
 
     # Auto-register with agent registry (if configured)
     if config.registry:
@@ -638,6 +641,8 @@ async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
     """Initialize MCP server + transports. Returns lifecycle context manager."""
     from contextlib import nullcontext
 
+    # Tri-state: None when fine OR not-configured; str(exc) when intended-but-errored.
+    app.state.mcp_mount_error = None
     try:
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
@@ -650,12 +655,26 @@ async def _setup_mcp(app: FastAPI, ctx: AgentContext) -> Any:
             "MCP server enabled at /mcp/sse (SSE) and /mcp (stateless HTTP)"
         )
         return mcp_http_manager.run()
-    except (ImportError, Exception) as _mcp_exc:
+    except ImportError as _imp_exc:
+        # The optional ``mcp`` extra isn't installed — expected, NOT an error.
         app.state.mcp_server = None
         app.state.mcp_transport = None
         app.state.mcp_http_manager = None
+        app.state.mcp_mount_error = None
+        logger.info(
+            "MCP server not configured (%s: %s). pip install apx-agent[mcp] to enable.",
+            type(_imp_exc).__name__, _imp_exc,
+        )
+        return nullcontext()
+    except Exception as _mcp_exc:
+        # The extra is present but setup genuinely failed — a real degradation.
+        # No pip-install framing here: this is intended-but-errored, not absent.
+        app.state.mcp_server = None
+        app.state.mcp_transport = None
+        app.state.mcp_http_manager = None
+        app.state.mcp_mount_error = str(_mcp_exc)
         logger.warning(
-            "MCP server disabled (%s: %s). pip install apx-agent[mcp] if needed.",
+            "MCP server failed to initialize (%s: %s) — /mcp will 503.",
             type(_mcp_exc).__name__, _mcp_exc,
         )
         return nullcontext()
@@ -839,13 +858,17 @@ def mount_mcp_endpoints(
     # the Apps runtime). The mount is call-time so it runs before the startup
     # event and the routes are registered on the first request.
     if not os.environ.get("DATABRICKS_APP_PORT"):
+        # Swallowed so the app still serves; recorded on app.state for local
+        # diagnosis. No /readyz check — dev-UI is intentionally off in deploys.
+        app.state.dev_ui_mount_error = None
         try:
             from ._dev import build_dev_ui_router
 
             app.include_router(build_dev_ui_router())
             logger.info("Dev UI mounted at /_apx/* (local dev mode)")
         except Exception as exc:  # pragma: no cover — optional dep
-            logger.debug("Dev UI not available: %s", exc)
+            app.state.dev_ui_mount_error = str(exc)
+            logger.info("Dev UI not mounted (%s: %s)", type(exc).__name__, exc)
 
     # Track the in-flight MCP lifecycle so shutdown can close it cleanly.
     _state_key = "_apx_mount_state"
@@ -882,6 +905,9 @@ def mount_mcp_endpoints(
         try:
             mcp_lifecycle = await _setup_mcp(app, ctx)
         except Exception as exc:  # pragma: no cover — defensive
+            # _setup_mcp swallows its own errors; this only fires on something
+            # truly unexpected. Record it as a real degradation.
+            app.state.mcp_mount_error = str(exc)
             logger.warning(
                 "mount_mcp_endpoints: MCP setup failed (%s) — /mcp will 503",
                 exc,
@@ -891,6 +917,7 @@ def mount_mcp_endpoints(
         try:
             await cm
         except Exception as exc:  # pragma: no cover
+            app.state.mcp_mount_error = str(exc)
             logger.warning("mount_mcp_endpoints: failed to enter MCP lifecycle: %s", exc)
             setattr(app.state, _state_key, None)
             return
