@@ -403,3 +403,36 @@ class TestApplyUCComments:
         apply_uc_comments(okf, {"pay_runs": {"_table": "Intro line.\n# Schema\nbogus"}}, overwrite=True)
         # The real schema (column names/types) must survive intact
         assert okf_manifest(okf)["tables"]["pay_runs"] == ["gross_pay(decimal(6,2))", "net_pay(decimal(6,2))"]
+
+    def test_heading_escape_preserves_literal_overview_text(self, tmp_path):
+        # A table comment whose FIRST line is a markdown heading must round-trip
+        # into the Overview as LITERAL prose: the escape (\#) keeps the leading
+        # "# " text present instead of having it parsed as a heading and lost.
+        from apx_agent._okf import apply_uc_comments, OKFDocument, _extract_section, okf_manifest
+        okf = self._bundle(tmp_path / "okf")
+        apply_uc_comments(okf, {"pay_runs": {"_table": "# Quarterly payroll facts."}})
+        doc = OKFDocument.parse((okf / "tables" / "pay_runs.md").read_text())
+        overview = _extract_section(doc.body, "Overview")
+        assert r"\# Quarterly payroll facts." in overview   # leading "#" preserved (escaped)
+        assert "Quarterly payroll facts." in overview        # literal text round-trips into Overview
+        # and the escape did not clobber the schema
+        assert okf_manifest(okf)["tables"]["pay_runs"] == ["gross_pay(decimal(6,2))", "net_pay(decimal(6,2))"]
+
+    def test_corrupt_table_skipped_and_logged(self, tmp_path, caplog):
+        # One good + one corrupt table: the good one is still enriched, the
+        # corrupt one is skipped (per-table except), and the skip is surfaced
+        # via a logged warning naming the table.
+        import logging
+        from apx_agent._okf import apply_uc_comments
+        okf = self._bundle(tmp_path / "okf")
+        # Malformed YAML frontmatter -> OKFDocument.parse raises for this table.
+        (okf / "tables" / "broken.md").write_text("---\nbad: [unclosed\n---\n\n# Schema\n")
+        comments = {
+            "pay_runs": {"_table": "", "net_pay": "UC net."},   # good -> enriched
+            "broken": {"_table": "should be skipped"},           # corrupt -> skipped
+        }
+        with caplog.at_level(logging.WARNING):
+            modified = apply_uc_comments(okf, comments)
+        assert modified == 1                                      # only the good table enriched
+        assert "UC net." in (okf / "tables" / "pay_runs.md").read_text()
+        assert "skipped" in caplog.text and "broken" in caplog.text   # corrupt table named in a warning
