@@ -118,7 +118,15 @@ survive restarts.
 apx-agent agents scaffold my-coworker --template coworker
 ```
 
-Writes two files you care about:
+By default this writes `my-coworker.yaml`, a deployable coworker spec. Deploy it with `apx-agent agents deploy my-coworker.yaml --target apps`.
+
+If you want a local project directory first, add `--no-yaml`:
+
+```bash
+apx-agent agents scaffold my-coworker --template coworker --no-yaml
+```
+
+The project directory includes two files you care about:
 
 **`agent.py`** — the agent definition:
 ```python

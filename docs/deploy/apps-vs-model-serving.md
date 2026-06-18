@@ -183,14 +183,14 @@ apx-agent agents deploy --module my_agent.app:agent \
            --model databricks-claude-sonnet-4-6 \
            --name main.agents.mine
 
-# New — scaffold an Apps project alongside, then deploy:
-apx-agent agents scaffold my_agent_apps --target apps
+# New — scaffold an editable Apps project alongside, then deploy:
+apx-agent agents scaffold my_agent_apps --target apps --no-yaml
 # Copy your existing agent.py contents into agent_server/agent.py
 # (the Agent definition is byte-identical; only request entry points change).
 apx-agent agents deploy --target apps
 ```
 
-The `apx-agent agents scaffold --target apps` command lays down the file tree shown in
+The `apx-agent agents scaffold --target apps --no-yaml` command lays down the file tree shown in
 [`memory_demo`](../python/examples/memory_demo/) — `agent_server/`,
 `scripts/`, `databricks.yml`, `pyproject.toml`. Drop your existing agent
 module into `agent_server/agent.py`, wrap the entry points with the

@@ -175,7 +175,7 @@ knowledge = "./.apx/okf"   # relative to project root
 
 **Graceful degradation:** If the path does not exist at startup (e.g. a freshly-cloned project before `apx-agent okf pull` has been run), grounding falls back silently to the cwd walk. The agent still starts.
 
-**Scaffold default:** `apx-agent agents scaffold` emits `knowledge = "./.apx/okf"` in the generated `pyproject.toml` **only when it also writes an `.apx/okf/` bundle** — i.e. when the schema introspection succeeds and returns readable tables. If no tables are found (or auth fails), neither the knob nor the bundle is written, so the two are always coherent. The `apx-agent deploy <spec>.yaml` path (`generate_project`) does not auto-emit this knob; set `knowledge:` explicitly in your YAML spec if you ship your own bundle.
+**Project generation:** `apx-agent agents scaffold --no-yaml` can emit `knowledge = "./.apx/okf"` in the generated `pyproject.toml` **only when it also writes an `.apx/okf/` bundle** — i.e. when schema introspection succeeds and returns readable tables. If no tables are found (or auth fails), neither the knob nor the bundle is written, so the two are always coherent. The YAML-first path (`apx-agent agents scaffold` followed by `apx-agent agents deploy <spec>.yaml`) uses `generate_project` at deploy time and does not auto-emit this knob; set `knowledge:` explicitly in your YAML spec if you ship your own bundle.
 
 ## Declarative memory — `[tool.apx.agent.memory]`
 

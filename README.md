@@ -9,14 +9,17 @@ Build governed Databricks agents. Write a Python object — apx-agent compiles i
 ```bash
 uv add apx-agent
 uv run apx-agent agents scaffold my-agent
+uv run apx-agent agents deploy my-agent.yaml --target apps
+```
+
+`scaffold` writes `my-agent.yaml` by default. `deploy` reads that spec, generates the Databricks Apps project at deploy time, and prints the App URL when done.
+
+```bash
+uv run apx-agent agents scaffold my-agent --no-yaml
 cd my-agent && uv run apx-agent agents run --reload
 ```
 
-Chat at `http://localhost:8000/_apx/agent`. When it looks right:
-
-```bash
-uv run apx-agent agents deploy --target apps
-```
+Use `--no-yaml` when you want the editable project directory and local FastAPI dev UI first.
 
 ---
 
@@ -79,30 +82,31 @@ Python 3.11+ required.
 uv add apx-agent
 ```
 
-**2. Scaffold a project**
+**2. Scaffold a YAML spec**
 
 ```bash
 uv run apx-agent agents scaffold my-agent
-cd my-agent && uv sync
 ```
 
-The scaffold is interactive — it asks for your catalog, schema, and SQL warehouse, then bakes the schema into `.apx/schema.json` so the agent is grounded before the first question.
+The default scaffold writes `my-agent.yaml` in the current directory. Fill in any `$CATALOG` / `$SCHEMA` placeholders before deploying.
 
-**3. Run locally**
+**3. Deploy from YAML**
 
 ```bash
+uv run apx-agent agents deploy my-agent.yaml --target apps
+```
+
+`deploy` generates the Apps project from the YAML in a temporary directory, bundles it, and creates a Databricks App. It prints the URL when done.
+
+**4. Optional local project**
+
+```bash
+uv run apx-agent agents scaffold my-agent --no-yaml
+cd my-agent && uv sync
 uv run apx-agent agents run --reload
 ```
 
-FastAPI starts on `:8000`. Chat at `/_apx/agent`, view traces at `/_apx/traces`, inspect tools at `/_apx/tools`. Edit `agent.py` and the server reloads.
-
-**4. Deploy**
-
-```bash
-uv run apx-agent agents deploy --target apps
-```
-
-Bundles the project and creates a Databricks App. Prints the URL when done.
+Use `--no-yaml` only when you need an editable project directory. FastAPI starts on `:8000`; chat at `/_apx/agent`, view traces at `/_apx/traces`, and edit `agent.py` with reload.
 
 > **Something not working?** Run `uv run apx-agent doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
 
@@ -165,7 +169,7 @@ That's a working agent. It knows the tables and columns in `main.sales` before t
 
 Schema discovery priority (first match wins):
 
-1. **Baked schema** — `apx-agent agents scaffold` writes `.apx/schema.json` from the UC Tables API at project creation time. Ships with your code.
+1. **Baked schema** — `.apx/schema.json`, written from the UC Tables API when the project is generated: `apx-agent agents scaffold --no-yaml`, or at `apx-agent agents deploy my-agent.yaml` time. Ships with your code.
 2. **Live introspection** — pass `ws=WorkspaceClient()` for fresh schema at construction time.
 3. **Explicit override** — pass `tables={"orders": ["id(bigint)", ...]}` for tests.
 4. **Ungrounded fallback** — discovers schema with SQL on the first turn.
@@ -219,7 +223,7 @@ The `join_key` and `objective` are woven into the agent's grounded instructions.
 | Claims integrity | Epic (chart) | Claims system (coding) | patient encounter |
 
 ```bash
-apx-agent agents scaffold my-coworker --template coworker
+apx-agent agents scaffold my-coworker --template coworker   # writes my-coworker.yaml; add --no-yaml for a local project
 ```
 
 See [docs/agents/coworker.md](docs/agents/coworker.md) for the full reference.
@@ -255,9 +259,9 @@ See [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) for the full `/_apx
 ## CLI
 
 ```bash
-apx-agent agents scaffold <name>   # scaffold a new agent project
-apx-agent agents run               # local FastAPI dev server (/_apx/agent)
-apx-agent agents deploy --target apps  # deploy to Databricks Apps
+apx-agent agents scaffold <name>   # writes <name>.yaml spec (add --no-yaml for a full project dir)
+apx-agent agents run               # local FastAPI dev server (/_apx/agent) — run inside a --no-yaml project
+apx-agent agents deploy <name>.yaml    # generate project from the spec + deploy to Databricks Apps
 apx-agent eval run evalset.jsonl   # run against deployed endpoint with LLM judge
 apx-agent traces list --agent <name>   # recent MLflow traces filtered by apx.* attributes
 apx-agent fleet list --where team=revops   # bulk ops across many agents (tag/backfill/redeploy; dry-run by default)
