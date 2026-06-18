@@ -25,6 +25,7 @@ from typing import Any, NamedTuple
 from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
 from ._models import AgentContext, AgentTool
 from ._topology import build_topology, inspect_node
@@ -55,6 +56,59 @@ from ._ui_setup import (
 from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes, _validate_probe_url
 
 logger = logging.getLogger(__name__)
+
+
+# ── Response contracts for the read-only MEMORY + CONVERSATIONS routes ───────
+# These model the *existing* success shapes the dev UI's embedded JS already
+# reads — field names/types mirror the source dataclasses exactly so the
+# contract documents reality rather than reshaping it. Setting these as
+# ``response_model`` (and flipping ``include_in_schema=True``) puts the three
+# read-only GET routes into the native FastAPI OpenAPI schema. Error/empty
+# paths are preserved: the 503 paths return an explicit ``JSONResponse`` so
+# they bypass ``response_model`` validation.
+
+
+class ConversationSummaryResponse(BaseModel):
+    """One row from ``GET /_apx/conversations``.
+
+    Mirrors :class:`apx_agent._conversation.Conversation`; the dev UI reads
+    ``c.id`` / ``c.title`` / ``c.updated_at`` (``_ui_chat.py:1307``).
+    ``title`` is nullable on the source (unset until synthesized).
+    """
+
+    id: str
+    title: str | None = None
+    created_at: int
+    updated_at: int
+
+
+class ConversationItemResponse(BaseModel):
+    """One row from ``GET /_apx/conversations/{conv_id}/items``.
+
+    The dev UI reads ``item.type`` and ``item.data.role`` /
+    ``item.data.content`` (``_ui_chat.py:1387``, ``:1411``). ``data`` stays a
+    loose mapping: the per-item payload is one of several ``ItemData`` shapes
+    (message, function_call, …) the JS reads dynamically — a nested model
+    would strip fields.
+    """
+
+    id: str
+    type: str
+    data: dict[str, Any]
+
+
+class MemoryResponse(BaseModel):
+    """One row from ``GET /_apx/memories``.
+
+    Mirrors :class:`apx_agent._memory.Memory`; the landing-page preview reads
+    ``m.content`` / ``m.updated_at`` (``_ui_chat.py:1667``). ``namespace`` is
+    nullable to match callers that don't scope by namespace.
+    """
+
+    id: str
+    content: str
+    namespace: str | None = None
+    updated_at: str
 
 
 class _JudgeOutput(NamedTuple):
@@ -1002,13 +1056,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             )
         )
 
-    @router.get("/_apx/conversations", include_in_schema=False)
+    @router.get("/_apx/conversations",
+                response_model=list[ConversationSummaryResponse])
     async def list_conversations_api(request: Request) -> Any:
         """Return conversations from the conversation store as JSON."""
-        from fastapi.responses import JSONResponse
         store = getattr(request.app.state, "conversation_store", None)
         if store is None:
-            return JSONResponse([])
+            return []
         ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
         agent_id = ctx.config.name if ctx else None
         try:
@@ -1018,7 +1072,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 sort_by="updated_at",
                 agent_id=agent_id,
             )
-            return JSONResponse([
+            # Raw list (not JSONResponse) so ``response_model`` actually
+            # validates each row — FastAPI passes a Response through untouched.
+            return [
                 {
                     "id": c.id,
                     "title": c.title,
@@ -1026,7 +1082,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                     "updated_at": c.updated_at,
                 }
                 for c in paged.data
-            ])
+            ]
         except Exception:
             # Surface the failure to the UI (history panel shows an error
             # state) instead of silently rendering an empty list, and log
@@ -1035,23 +1091,24 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"error": "conversation store unavailable"},
                                 status_code=503)
 
-    @router.get("/_apx/conversations/{conv_id}/items", include_in_schema=False)
+    @router.get("/_apx/conversations/{conv_id}/items",
+                response_model=list[ConversationItemResponse])
     async def list_conversation_items_api(conv_id: str, request: Request) -> Any:
         """Return items for a conversation as JSON."""
-        from fastapi.responses import JSONResponse
         store = getattr(request.app.state, "conversation_store", None)
         if store is None:
-            return JSONResponse([])
+            return []
         try:
             paged = store.list_items(conv_id, limit=200, order="asc")
-            return JSONResponse([
+            # Raw list (not JSONResponse) so ``response_model`` validates rows.
+            return [
                 {
                     "id": item.id,
                     "type": item.type,
                     "data": item.data.model_dump(exclude_none=True) if item.data else {},
                 }
                 for item in paged.data
-            ])
+            ]
         except Exception:
             logger.exception("listing items for conversation %s failed", conv_id)
             return JSONResponse({"error": "conversation store unavailable"},
@@ -1914,19 +1971,18 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "used_schemas": used_schemas,
         })
 
-    @router.get("/_apx/memories", include_in_schema=False)
+    @router.get("/_apx/memories", response_model=list[MemoryResponse])
     async def list_memories(request: Request) -> Any:
         """Return the most recent stored memories for the landing page preview."""
         import asyncio as _asyncio
-        from fastapi.responses import JSONResponse
 
         ctx = request.app.state.agent_context
         if ctx is None:
-            return JSONResponse([])
+            return []
         agent = ctx.agent
         store = getattr(agent, "_apx_memory_store", None)
         if store is None:
-            return JSONResponse([])
+            return []
         principal = getattr(agent, "_apx_memory_principal", None) or ""
         namespace = getattr(agent, "_apx_memory_namespace", None)
         try:
@@ -1934,7 +1990,8 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             filt = MemoryFilter(principal_id=principal, namespace=namespace, limit=5)
             rows = await _asyncio.to_thread(store.list, filt)
             rows = sorted(rows, key=lambda m: m.updated_at, reverse=True)[:5]
-            return JSONResponse([
+            # Raw list (not JSONResponse) so ``response_model`` validates rows.
+            return [
                 {
                     "id": m.id,
                     "content": m.content,
@@ -1942,10 +1999,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                     "updated_at": m.updated_at,
                 }
                 for m in rows
-            ])
+            ]
         except Exception:
+            # No 503 here: the landing preview degrades to an empty list (the
+            # pre-existing behaviour) rather than surfacing an error state.
             logger.exception("/_apx/memories: list failed")
-            return JSONResponse([])
+            return []
 
     @router.get("/_apx/setup/catalogs", include_in_schema=False)
     async def setup_catalogs(request: Request) -> Any:

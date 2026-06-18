@@ -26,7 +26,12 @@ from httpx import ASGITransport, AsyncClient
 
 from ctk import claim_vs_reality, expect
 
-from apx_agent import AgentConfig, AgentContext, InMemoryConversationStore
+from apx_agent import (
+    AgentConfig,
+    AgentContext,
+    InMemoryConversationStore,
+    InMemoryMemoryStore,
+)
 from apx_agent._conversation import MessageData, NewConversationItem
 from apx_agent._dev import build_dev_ui_router
 from apx_agent._models import AgentCard
@@ -260,4 +265,77 @@ class TestTraceEventReadAfterWrite:
             claimed_success=True,
             verifier=_event_payload_present,
             claim_label="tool event → /_apx/traces/{id} detail route",
+        )
+
+
+# ---------------------------------------------------------------------------
+# 4) Memories — store a memory through the real store, read it back through
+#    the route. (Previously only the memory TOOL had read-after-write coverage;
+#    the GET /_apx/memories route had none.)
+# ---------------------------------------------------------------------------
+
+
+class _MemoryAgentStub:
+    """Minimal stand-in for the served agent: the route reaches the memory
+    store via ``ctx.agent._apx_memory_store`` (+ principal/namespace), exactly
+    as :mod:`apx_agent._memory_wiring` attaches them at serve time."""
+
+    def __init__(self, store: InMemoryMemoryStore, principal: str, namespace: str) -> None:
+        self._apx_memory_store = store
+        self._apx_memory_principal = principal
+        self._apx_memory_namespace = namespace
+
+
+def _ctx_with_agent(name: str, agent: object) -> AgentContext:
+    config = AgentConfig(name=name, model="claude-fake")
+    card = AgentCard(name=name, description="", skills=[])
+    return AgentContext(config=config, tools=[], card=card, agent=agent)  # type: ignore[arg-type]
+
+
+class TestMemoriesReadAfterWrite:
+    """A memory written to the agent's ``_apx_memory_store`` must surface in
+    ``GET /_apx/memories``. The route filters by the agent's principal +
+    namespace via ``MemoryFilter``; a wrong scope, a dropped ``content`` field,
+    or a serializer that silently returns ``[]`` would leave the landing-page
+    preview blank. This writes a real memory and asserts the route hands the
+    content back — the silent-failure shape (200 with ``[]``) fails here."""
+
+    @pytest.mark.asyncio
+    async def test_stored_memory_reads_back_through_route(self) -> None:
+        principal, namespace = "alice", "profile"
+        store = InMemoryMemoryStore()
+        # WRITE: a real memory through the store the route reads from.
+        store.add({
+            "principal_id": principal,
+            "namespace": namespace,
+            "content": "prefers metric units",
+        })
+
+        app = FastAPI()
+        app.state.agent_context = _ctx_with_agent(
+            "mem-reality", _MemoryAgentStub(store, principal, namespace)
+        )
+        app.include_router(build_dev_ui_router())
+
+        # READ: the route — the memory must round-trip with its content intact.
+        async with _client(app) as ac:
+            resp = await ac.get("/_apx/memories")
+
+        assert resp.status_code == 200
+
+        def _memory_reads_back() -> None:
+            rows = resp.json()
+            expect(rows, label="memory rows").nonempty() \
+                .satisfies(lambda xs: all("content" in r for r in xs),
+                           "every row carries content").verify()
+            expect([r["content"] for r in rows], label="memory contents") \
+                .contains("prefers metric units").verify()
+
+        # claim_vs_reality: the store *claims* the add succeeded; the only
+        # honest proof is the route handing the content back. A 200 with [] —
+        # the silent-failure shape this test exists to catch — fails here.
+        claim_vs_reality(
+            claimed_success=True,
+            verifier=_memory_reads_back,
+            claim_label="memory add → /_apx/memories route",
         )
