@@ -1,4 +1,5 @@
 import pytest
+import pandas as pd
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from mlflow.genai import label_schemas as ls
@@ -97,9 +98,6 @@ def test_resolve_experiment_empty_string_falls_through_and_raises():
         _labeling.resolve_experiment_id(explicit="", agent_tags={})
 
 
-import pandas as pd
-
-
 @pytest.mark.unit
 def test_select_scored_traces_returns_df(monkeypatch):
     df = pd.DataFrame({"trace_id": ["t1", "t2"]})
@@ -127,3 +125,41 @@ def test_tag_traces_sets_run_tag(monkeypatch):
     assert n == 2
     assert all(c["key"] == _labeling.RUN_TAG and c["value"] == "run-1" for c in calls)
     assert {c["trace_id"] for c in calls} == {"t1", "t2"}
+
+
+@pytest.mark.unit
+def test_start_session_creates_schema_with_judge_name(monkeypatch):
+    judge = _judge(name="domain_quality_base", ft=float)
+    monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: judge)
+
+    created = {}
+    monkeypatch.setattr(_labeling, "create_label_schema",
+                        lambda **kw: created.update(kw))
+    monkeypatch.setattr(_labeling, "select_scored_traces",
+                        lambda **kw: pd.DataFrame({"trace_id": ["t1", "t2"]}))
+    monkeypatch.setattr(_labeling, "tag_traces", lambda ids, rid: len(ids))
+
+    ds = SimpleNamespace(merge_records=lambda df: ds)
+    monkeypatch.setattr(_labeling, "get_dataset", lambda name: (_ for _ in ()).throw(Exception()))
+    monkeypatch.setattr(_labeling, "create_dataset", lambda name: ds)
+
+    session = SimpleNamespace(add_dataset=lambda dataset_name: session,
+                              url="https://x/sme")
+    sess_kwargs = {}
+    monkeypatch.setattr(_labeling, "create_labeling_session",
+                        lambda **kw: (sess_kwargs.update(kw), session)[1])
+    monkeypatch.setattr(_labeling, "get_review_app", lambda experiment_id: None)
+
+    from datetime import datetime, timezone
+    res = _labeling.start_session(
+        experiment_id="123", agent_name="payroll", judge_name="domain_quality_base",
+        scale="1-5", options=None, assignees=["sme@x.com"], filter_string=None,
+        limit=None, endpoint=None, attach_agent=False,
+        now=datetime(2026, 6, 17, 19, 5, 30, tzinfo=timezone.utc),
+    )
+    # schema name MUST equal judge name; session references that schema name
+    assert created["name"] == "domain_quality_base"
+    assert sess_kwargs["label_schemas"] == ["domain_quality_base"]
+    assert res.run_id == "domain_quality_base-20260617T190530Z"
+    assert res.session_url == "https://x/sme"
+    assert res.trace_count == 2

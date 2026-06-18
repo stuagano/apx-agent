@@ -11,6 +11,7 @@ align_judge so `label start` never requires the [align] extra.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -26,6 +27,22 @@ try:
 except Exception:  # pragma: no cover
     search_traces_for_experiment = None  # type: ignore[assignment]
     set_trace_tag = None  # type: ignore[assignment]
+
+try:
+    from mlflow.genai import (
+        create_labeling_session,
+        get_review_app,
+    )
+    from mlflow.genai.label_schemas import create_label_schema
+    from mlflow.genai.scorers import get_scorer
+    from mlflow.genai.datasets import create_dataset, get_dataset
+except Exception:  # pragma: no cover
+    create_labeling_session = None  # type: ignore[assignment]
+    get_review_app = None  # type: ignore[assignment]
+    create_label_schema = None  # type: ignore[assignment]
+    get_scorer = None  # type: ignore[assignment]
+    create_dataset = None  # type: ignore[assignment]
+    get_dataset = None  # type: ignore[assignment]
 
 
 RUN_TAG = "apx.label.run"
@@ -157,3 +174,69 @@ def tag_traces(trace_ids: list[str], run_id: str) -> int:
         set_trace_tag(trace_id=tid, key=RUN_TAG, value=run_id)
         n += 1
     return n
+
+
+@dataclass
+class StartResult:
+    run_id: str
+    session_url: str
+    trace_count: int
+    dataset_name: str
+    schema_name: str
+
+
+def start_session(
+    *,
+    experiment_id: str,
+    agent_name: str,
+    judge_name: str,
+    scale: str | None,
+    options: list[str] | None,
+    assignees: list[str],
+    filter_string: str | None,
+    limit: int | None,
+    endpoint: str | None,
+    attach_agent: bool,
+    now: datetime,
+) -> StartResult:
+    """Provision a labeling session for a deployed agent's judge."""
+    judge = get_scorer(name=judge_name, experiment_id=experiment_id)
+
+    schema_kwargs = derive_label_schema(judge=judge, scale=scale, options=options)
+    create_label_schema(**schema_kwargs)
+    schema_name = schema_kwargs["name"]
+
+    run_id = make_run_id(judge_name, now)
+    traces = select_scored_traces(
+        experiment_id=experiment_id, judge_name=judge_name,
+        filter_string=filter_string, limit=limit,
+    )
+    trace_ids = [str(t) for t in traces["trace_id"].tolist()]
+    tag_traces(trace_ids, run_id)
+
+    dataset_name = dataset_name_for(agent_name, run_id)
+    try:
+        dataset = get_dataset(name=dataset_name)
+    except Exception:
+        dataset = create_dataset(name=dataset_name)
+    # search_traces returns request/response; merge_records wants inputs/outputs
+    renamed = traces.rename(columns={"request": "inputs", "response": "outputs"})
+    dataset.merge_records(renamed)
+
+    if attach_agent and endpoint:
+        review_app = get_review_app(experiment_id=experiment_id)
+        review_app.add_agent(
+            agent_name=agent_name, model_serving_endpoint=endpoint, overwrite=True,
+        )
+
+    session = create_labeling_session(
+        name=session_name_for(run_id),
+        assigned_users=assignees,
+        label_schemas=[schema_name],
+    )
+    session = session.add_dataset(dataset_name=dataset_name)
+
+    return StartResult(
+        run_id=run_id, session_url=str(getattr(session, "url", "")),
+        trace_count=len(trace_ids), dataset_name=dataset_name, schema_name=schema_name,
+    )
