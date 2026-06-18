@@ -19,6 +19,14 @@ try:  # mlflow is the `eval`/`align` extra
 except Exception:  # pragma: no cover — only without the extra
     _label_schemas = None  # type: ignore[assignment]
 
+try:
+    import mlflow as _mlflow
+    from apx_agent._mlflow_tracing import search_traces_for_experiment
+    set_trace_tag = _mlflow.set_trace_tag
+except Exception:  # pragma: no cover
+    search_traces_for_experiment = None  # type: ignore[assignment]
+    set_trace_tag = None  # type: ignore[assignment]
+
 
 RUN_TAG = "apx.label.run"
 EXPERIMENT_TAG = "apx.mlflow.experiment_id"
@@ -118,3 +126,34 @@ def resolve_experiment_id(*, explicit: str | None, agent_tags: dict[str, str]) -
         "could not resolve the agent's MLflow experiment. Pass --experiment <id> "
         "(or redeploy so the apx.mlflow.experiment_id tag is recorded)."
     )
+
+
+def select_scored_traces(
+    *, experiment_id: str, judge_name: str, filter_string: str | None, limit: int | None
+) -> Any:
+    """Pull traces to be labeled. Fails fast if none match."""
+    if search_traces_for_experiment is None:  # pragma: no cover
+        raise LabelingError("labeling requires mlflow. pip install 'apx-agent[eval]'")
+    kwargs: dict[str, Any] = {"return_type": "pandas"}
+    if filter_string:
+        kwargs["filter_string"] = filter_string
+    if limit:
+        kwargs["max_results"] = limit
+    df = search_traces_for_experiment(experiment_id, **kwargs)
+    if df is None or len(df) == 0:
+        raise LabelingError(
+            f"no traces found for experiment {experiment_id}. Score a sample first "
+            f"with --evaluate <inputs.jsonl>, or widen --filter/--since/--limit."
+        )
+    return df
+
+
+def tag_traces(trace_ids: list[str], run_id: str) -> int:
+    """Tag each trace with apx.label.run=<run_id> for the start->align handoff."""
+    if set_trace_tag is None:  # pragma: no cover
+        raise LabelingError("labeling requires mlflow. pip install 'apx-agent[eval]'")
+    n = 0
+    for tid in trace_ids:
+        set_trace_tag(trace_id=tid, key=RUN_TAG, value=run_id)
+        n += 1
+    return n

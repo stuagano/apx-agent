@@ -95,3 +95,35 @@ def test_resolve_experiment_raises_when_unresolved():
 def test_resolve_experiment_empty_string_falls_through_and_raises():
     with pytest.raises(_labeling.LabelingError, match="--experiment"):
         _labeling.resolve_experiment_id(explicit="", agent_tags={})
+
+
+import pandas as pd
+
+
+@pytest.mark.unit
+def test_select_scored_traces_returns_df(monkeypatch):
+    df = pd.DataFrame({"trace_id": ["t1", "t2"]})
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment", lambda exp, **kw: df)
+    out = _labeling.select_scored_traces(
+        experiment_id="123", judge_name="j", filter_string=None, limit=None)
+    assert list(out["trace_id"]) == ["t1", "t2"]
+
+
+@pytest.mark.unit
+def test_select_scored_traces_empty_fails_fast(monkeypatch):
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment",
+                        lambda exp, **kw: pd.DataFrame({"trace_id": []}))
+    with pytest.raises(_labeling.LabelingError, match="--evaluate"):
+        _labeling.select_scored_traces(
+            experiment_id="123", judge_name="j", filter_string=None, limit=None)
+
+
+@pytest.mark.unit
+def test_tag_traces_sets_run_tag(monkeypatch):
+    calls = []
+    monkeypatch.setattr(_labeling, "set_trace_tag",
+                        lambda **kw: calls.append(kw))
+    n = _labeling.tag_traces(["t1", "t2"], "run-1")
+    assert n == 2
+    assert all(c["key"] == _labeling.RUN_TAG and c["value"] == "run-1" for c in calls)
+    assert {c["trace_id"] for c in calls} == {"t1", "t2"}
