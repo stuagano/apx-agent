@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover — only without the extra
 
 
 RUN_TAG = "apx.label.run"
+EXPERIMENT_TAG = "apx.mlflow.experiment_id"
 
 
 class LabelingError(Exception):
@@ -100,3 +101,20 @@ def derive_label_schema(
         "enable_comment": True,
         "overwrite": True,
     }
+
+
+def resolve_experiment_id(*, explicit: str | None, agent_tags: dict[str, str]) -> str:
+    """Resolve the MLflow experiment id for a deployed agent.
+
+    Order: --experiment override, then the apx.mlflow.experiment_id UC tag.
+    The naming-convention path is deploy-time only and not available here.
+    """
+    if explicit:
+        return explicit
+    tagged = agent_tags.get(EXPERIMENT_TAG)
+    if tagged:
+        return tagged
+    raise LabelingError(
+        "could not resolve the agent's MLflow experiment. Pass --experiment <id> "
+        "(or redeploy so the apx.mlflow.experiment_id tag is recorded)."
+    )

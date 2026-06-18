@@ -68,3 +68,24 @@ def test_name_helpers():
     assert _labeling.dataset_name_for("payroll", rid) == f"payroll_label_{rid}"
     assert _labeling.session_name_for(rid) == f"{rid}_sme"
     assert _labeling.RUN_TAG == "apx.label.run"
+
+
+@pytest.mark.unit
+def test_resolve_experiment_prefers_explicit():
+    eid = _labeling.resolve_experiment_id(
+        explicit="123", agent_tags={"apx.mlflow.experiment_id": "999"})
+    assert eid == "123"
+
+
+@pytest.mark.unit
+def test_resolve_experiment_falls_back_to_tag():
+    eid = _labeling.resolve_experiment_id(
+        explicit=None, agent_tags={"apx.mlflow.experiment_id": "999"})
+    assert eid == "999"
+    assert _labeling.EXPERIMENT_TAG == "apx.mlflow.experiment_id"
+
+
+@pytest.mark.unit
+def test_resolve_experiment_raises_when_unresolved():
+    with pytest.raises(_labeling.LabelingError, match="--experiment"):
+        _labeling.resolve_experiment_id(explicit=None, agent_tags={})
