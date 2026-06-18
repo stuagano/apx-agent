@@ -23,10 +23,9 @@ apx-agent agents deploy --model databricks-claude-sonnet-4-6 \
 The MLflow GenAI Agent Server path. `compile_to_responses_agent` produces a `ResponsesAgent` with `@invoke` / `@stream` decorated functions; `databricks bundle deploy + bundle run` pushes code and restarts the app. No container build. The deploy is a code push.
 
 ```bash
-apx-agent agents scaffold my_agent --target apps   # scaffolds agent_server/ + databricks.yml + pyproject.toml + quickstart
-cd my_agent
-apx-agent agents deploy --target apps              # one command — builds wheel, stages .build,
-                                       # auto-resolves MLflow experiment, bundle deploy + run
+apx-agent agents scaffold my_agent --target apps   # writes my_agent.yaml by default
+apx-agent agents deploy my_agent.yaml --target apps # generates project, builds wheel,
+                                        # auto-resolves MLflow experiment, bundle deploy + run
 ```
 
 - **Code-push deploy** — seconds to minutes from edit to running app

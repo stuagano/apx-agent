@@ -3,10 +3,11 @@
 `apx-agent` is the command-line wrapper. Every command maps to a single library primitive — the CLI is ergonomics, not logic.
 
 ```bash
-apx-agent agents scaffold my_agent          # generate a Databricks Apps project (default)
-apx-agent agents scaffold my_agent --target model-serving  # generate a Model Serving project
+apx-agent agents scaffold my_agent          # write my_agent.yaml (default)
+apx-agent agents deploy my_agent.yaml --target apps  # generate project at deploy time
+apx-agent agents scaffold my_agent --no-yaml # generate an editable Apps project directory
 cd my_agent && uv sync
-apx-agent agents run               # uvicorn against the project's FastAPI app (resolved per scaffold layout)
+apx-agent agents run               # uvicorn against an existing project directory
 apx-agent uc publish --dry-run     # preview UC function registrations
 apx-agent uc publish               # actually register
 apx-agent agents deploy --model databricks-claude-sonnet-4-6 \

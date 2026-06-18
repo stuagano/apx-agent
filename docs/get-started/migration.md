@@ -28,7 +28,7 @@ apx-agent is structurally aligned with both Google ADK and the OpenAI Agents SDK
 | Sessions (in-conversation) | `Session` + `SessionService` | `session` strategy / `conversation_id` | `ConversationStore` — pass `session_id` in `custom_inputs` |
 | Cross-session memory | `MemoryService` | `to_input_list()` + external store | `MemoryStore` — `make_memory_tools` or `assemble_memory_context` |
 | Deploy agent | _(separate infra)_ | _(separate infra)_ | `apx-agent agents deploy` — Apps or Model Serving |
-| Scaffold new agent | _(manual)_ | _(manual)_ | `apx-agent agents scaffold my-agent` |
+| Scaffold new agent | _(manual)_ | _(manual)_ | `apx-agent agents scaffold my-agent` writes `my-agent.yaml` by default |
 | Governed data access | _(manual)_ | _(manual)_ | `DataAgent`, `genie_tool`, `uc_function_tool` |
 | Two-system join pattern | _(manual)_ | _(manual)_ | `CoworkerAgent` |
 | Identity passthrough | _(manual)_ | _(manual)_ | OBO token — see [identity-passthrough.md](../safety/identity-passthrough.md) |
@@ -230,9 +230,10 @@ Neither ADK nor the OpenAI Agents SDK has a built-in deploy story. apx-agent add
 
 ```bash
 # apx-agent — no equivalent in ADK or OpenAI SDK
-apx-agent agents scaffold my-agent   # creates project structure, bakes UC schema
-apx-agent agents run                 # local dev server with hot reload
-apx-agent agents deploy              # bundles + deploys to Databricks Apps
+apx-agent agents scaffold my-agent   # writes my-agent.yaml
+apx-agent agents deploy my-agent.yaml --target apps  # generates project + deploys
+apx-agent agents scaffold my-agent --no-yaml         # optional local project dir
+cd my-agent && apx-agent agents run                  # local dev server with hot reload
 apx-agent agents deploy --target model-serving --name main.agents.my_agent
 ```
 
@@ -253,7 +254,7 @@ These have no equivalent in ADK or the OpenAI Agents SDK:
 | `vector_search_tool(...)` | Databricks Vector Search index as a retrieval tool |
 | OBO identity passthrough | The calling user's OAuth token is forwarded to all tool calls, UC functions, and sub-agents — no service principal needed |
 | `apx-agent agents deploy` | One-command deploy to Databricks Apps or Model Serving |
-| `apx-agent agents scaffold` | Interactive project generation with UC schema baking |
+| `apx-agent agents scaffold` | YAML-first scaffold; add `--no-yaml` for project generation |
 | `apx-agent uc publish` | Syncs `@tool(uc=...)` functions to Unity Catalog |
 
 See [data-agent.md](../agents/data-agent.md), [coworker.md](../agents/coworker.md), [tools/overview.md](../tools/overview.md), and [identity-passthrough.md](../safety/identity-passthrough.md).
