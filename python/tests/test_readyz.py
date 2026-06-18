@@ -192,3 +192,53 @@ class TestReadyzMemory:
         resp = self._app_for(agent).get("/readyz")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ready"
+
+
+class TestReadyzMcp:
+    """checks['mcp'] is a tri-state, informational signal — it never gates
+    readiness (MCP is an optional, extra-gated surface)."""
+
+    def _app_for(self, agent, *, mcp_mount_error=..., mcp_server=...):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        import apx_agent._readyz as rz
+        # Stub the canned probe so the test doesn't need a real model.
+        rz._run_canned_probe = lambda a, m: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
+        app = FastAPI()
+        # The readyz handler reads MCP status off app.state at request time.
+        if mcp_mount_error is not ...:
+            app.state.mcp_mount_error = mcp_mount_error
+        if mcp_server is not ...:
+            app.state.mcp_server = mcp_server
+        mount_readyz(app, agent)
+        return TestClient(app)
+
+    def test_mcp_intended_but_errored_is_degraded_but_still_ready(self):
+        """A real MCP mount failure surfaces as degraded but stays ready/200."""
+        from apx_agent import Agent
+        agent = Agent(instructions="x", tools=[])
+        client = self._app_for(agent, mcp_mount_error="RuntimeError: transport bind failed")
+        resp = client.get("/readyz")
+        body = resp.json()
+        assert body["checks"]["mcp"] == "degraded"
+        # Informational only — does NOT gate readiness.
+        assert resp.status_code == 200
+        assert body["status"] == "ready"
+
+    def test_mcp_ok_when_server_mounted(self):
+        from apx_agent import Agent
+        agent = Agent(instructions="x", tools=[])
+        client = self._app_for(agent, mcp_mount_error=None, mcp_server=object())
+        body = client.get("/readyz").json()
+        assert body["checks"]["mcp"] == "ok"
+
+    def test_mcp_not_configured_stays_ready(self):
+        """Missing mcp extra / never set up → not-configured, still ready/200."""
+        from apx_agent import Agent
+        agent = Agent(instructions="x", tools=[])
+        # Neither mcp_mount_error nor mcp_server set on app.state.
+        resp = self._app_for(agent).get("/readyz")
+        body = resp.json()
+        assert body["checks"]["mcp"] == "not-configured"
+        assert resp.status_code == 200
+        assert body["status"] == "ready"

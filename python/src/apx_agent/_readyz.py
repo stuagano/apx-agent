@@ -36,11 +36,18 @@ Checks:
     never fails).
   * ``tool_exec`` — best-effort, always ``"skipped"`` for now (running a real
     tool needs OBO / user data access this self-test lacks).
+  * ``mcp`` — tri-state and INFORMATIONAL ONLY. ``"degraded"`` when the MCP
+    surface was configured but errored at mount (``app.state.mcp_mount_error``
+    is a non-empty string); ``"ok"`` when an MCP server mounted; otherwise
+    ``"not-configured"`` (the optional ``mcp`` extra is absent / never set up).
+    MCP is extra-gated, so it NEVER gates readiness — a non-MCP deploy still
+    reads ready/200 even though ``mcp == "not-configured"``.
 
 Contract:
 
   * Overall ``status`` is ``"ready"`` iff ``llm == "ok"`` AND
-    ``tracing in ("ok", "unavailable")``; else ``"degraded"``.
+    ``tracing in ("ok", "unavailable")``; else ``"degraded"``. The ``mcp``
+    check is informational and is NOT part of this predicate.
   * HTTP 200 ``{"status":"ready","checks":{...}}`` when ready;
     HTTP 503 ``{"status":"degraded","checks":{...}}`` otherwise.
   * On unexpected error: HTTP 503
@@ -128,6 +135,21 @@ def _last_trace_id() -> str | None:
         return None
 
 
+def _mcp_check(app: "FastAPI") -> str:
+    """Tri-state MCP mount status from ``app.state`` — informational only.
+
+    ``"degraded"`` when MCP was configured but errored at mount
+    (``app.state.mcp_mount_error`` is a non-empty string); ``"ok"`` when an MCP
+    server is mounted; ``"not-configured"`` when the optional ``mcp`` extra is
+    absent or MCP was never set up. Never gates readiness.
+    """
+    if getattr(app.state, "mcp_mount_error", None):
+        return "degraded"
+    if getattr(app.state, "mcp_server", None) is not None:
+        return "ok"
+    return "not-configured"
+
+
 def _run_canned_probe(agent: "BaseAgent", model: str | None) -> ProbeResult:
     """Run the canned prompt through the compiled agent.
 
@@ -181,6 +203,8 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
             "tools_registered": _count_tools(agent),
             "tool_exec": "skipped",
             "memory": getattr(agent, "_apx_memory_degraded", None) or "ok",
+            # Informational tri-state; never gates readiness (extra-gated surface).
+            "mcp": _mcp_check(app),
         }
         try:
             # Module-global lookup so monkeypatch.setattr resolves at call time.

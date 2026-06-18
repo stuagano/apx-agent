@@ -1181,3 +1181,59 @@ class TestResolveAgentThreadsKnowledge:
         cfg = AgentConfig(name="x", template={"name": "data", "catalog": "c", "schema": "s"})
         _wiring.resolve_agent(None, cfg, ws=None)
         assert "knowledge" not in captured["spec"]
+
+
+# ---------------------------------------------------------------------------
+# _setup_mcp — tri-state mount status (RT-6/RT-7 hardening)
+# ---------------------------------------------------------------------------
+
+
+class TestSetupMcpMountError:
+    """``_setup_mcp`` must distinguish a missing optional ``mcp`` extra
+    (not-configured → ``app.state.mcp_mount_error is None``) from a real
+    runtime failure (intended-but-errored → ``mcp_mount_error`` is the error
+    string). Either way it still returns a context manager so the app boots."""
+
+    @pytest.mark.asyncio
+    async def test_real_failure_sets_mount_error(self, monkeypatch):
+        import types
+
+        import apx_agent._wiring as wiring
+
+        app = FastAPI()
+        ctx = types.SimpleNamespace(config=types.SimpleNamespace(api_prefix="/api"))
+
+        # ``mcp`` is installed in the test env, so the import succeeds; force a
+        # genuine runtime failure inside component construction.
+        def _boom(*_a, **_k):
+            raise RuntimeError("transport bind failed")
+
+        monkeypatch.setattr(wiring, "_build_mcp_components", _boom)
+
+        result = await wiring._setup_mcp(app, ctx)
+
+        assert app.state.mcp_mount_error == "transport bind failed"
+        assert app.state.mcp_server is None
+        # Still boots: a usable context manager is returned (no re-raise).
+        assert hasattr(result, "__enter__")
+
+    @pytest.mark.asyncio
+    async def test_missing_dep_leaves_mount_error_none(self, monkeypatch):
+        import sys
+        import types
+
+        import apx_agent._wiring as wiring
+
+        app = FastAPI()
+        ctx = types.SimpleNamespace(config=types.SimpleNamespace(api_prefix="/api"))
+
+        # Make the optional ``mcp`` extra look absent: a None entry in
+        # sys.modules makes ``from mcp...import`` raise ImportError.
+        monkeypatch.setitem(sys.modules, "mcp.server.streamable_http_manager", None)
+
+        result = await wiring._setup_mcp(app, ctx)
+
+        # Missing extra is EXPECTED, not an error — no degradation recorded.
+        assert app.state.mcp_mount_error is None
+        assert app.state.mcp_server is None
+        assert hasattr(result, "__enter__")
