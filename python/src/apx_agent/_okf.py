@@ -15,7 +15,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 REQUIRED_FRONTMATTER_KEYS = ("type", "title", "description", "timestamp")
 OKF_VERSION = "0.1"
@@ -359,6 +362,7 @@ def apply_uc_comments(
     root = Path(okf_root)
     tdir = root / "tables"
     modified = 0
+    skipped = 0
     for table, cmap in comments.items():
         path = tdir / f"{table}.md"
         if not path.is_file():
@@ -388,8 +392,15 @@ def apply_uc_comments(
             if changed:
                 path.write_text(doc.serialize())
                 modified += 1
-        except Exception:
+        except Exception as e:
+            skipped += 1
+            logger.warning("apply_uc_comments: skipped table %r: %s", table, e)
             continue
+    if skipped:
+        logger.warning(
+            "apply_uc_comments: skipped %d malformed table%s",
+            skipped, "" if skipped == 1 else "s",
+        )
     return modified
 
 
