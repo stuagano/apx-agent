@@ -86,14 +86,19 @@ Auto-mount Google [Agent2Agent](https://github.com/google/A2A) endpoints on ever
 
 - `/.well-known/agent.json` discovery document generated from the agent definition
   (name, description, skills, input/output schemas).
-- `POST /tasks/send`, `POST /tasks/sendSubscribe`, `GET /tasks/{id}` mapped onto
-  the same handler as `/invocations`.
+- A2A v0.3 task/message surface: `message/send` (`POST /v1/message:send`),
+  `message/stream` (`POST /v1/message:stream`), `tasks/get`
+  (`GET /v1/tasks/{id}`), `tasks/list` (`GET /v1/tasks`), `tasks/cancel`
+  (`POST /v1/tasks/{id}:cancel`), and `tasks/resubscribe`
+  (`POST /v1/tasks/{id}:subscribe`). Supporting the full lifecycle is real
+  work beyond aliasing `/invocations`: task states, cancellation, and
+  resubscribe/streaming replay all need protocol-aware handling.
 - OBO preserved across A2A calls — verify auth header forwarding works the same
   as in the ResponsesAgent path.
 
 This is the interop wedge. Cross-vendor agent-to-agent calls are coming whether
-we like them or not; shipping A2A from day one is cheap, and it differentiates
-against frameworks that only speak their own runtime.
+we like them or not; shipping A2A early is a focused feature project, and it
+differentiates against frameworks that only speak their own runtime.
 
 ### 5. Long-running agent runs (kickoff / poll / cancel)
 
