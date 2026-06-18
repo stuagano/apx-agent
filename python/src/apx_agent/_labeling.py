@@ -200,10 +200,10 @@ def start_session(
     now: datetime,
 ) -> StartResult:
     """Provision a labeling session for a deployed agent's judge."""
-    judge = get_scorer(name=judge_name, experiment_id=experiment_id)
+    judge = get_scorer(name=judge_name, experiment_id=experiment_id)  # type: ignore[call]
 
     schema_kwargs = derive_label_schema(judge=judge, scale=scale, options=options)
-    create_label_schema(**schema_kwargs)
+    create_label_schema(**schema_kwargs)  # type: ignore[call]
     schema_name = schema_kwargs["name"]
 
     run_id = make_run_id(judge_name, now)
@@ -216,15 +216,15 @@ def start_session(
 
     dataset_name = dataset_name_for(agent_name, run_id)
     try:
-        dataset = get_dataset(name=dataset_name)
+        dataset = get_dataset(name=dataset_name)  # type: ignore[call]
     except Exception:
-        dataset = create_dataset(name=dataset_name)
+        dataset = create_dataset(name=dataset_name)  # type: ignore[call]
     # search_traces returns request/response; merge_records wants inputs/outputs
     renamed = traces.rename(columns={"request": "inputs", "response": "outputs"})
     dataset.merge_records(renamed)
 
     if attach_agent and endpoint:
-        review_app = get_review_app(experiment_id=experiment_id)
+        review_app = get_review_app(experiment_id=experiment_id)  # type: ignore[call]
         if review_app is None:
             raise LabelingError(
                 f"no review app found for experiment {experiment_id}; cannot attach agent "
@@ -234,7 +234,7 @@ def start_session(
             agent_name=agent_name, model_serving_endpoint=endpoint, overwrite=True,
         )
 
-    session = create_labeling_session(
+    session = create_labeling_session(  # type: ignore[call]
         name=session_name_for(run_id),
         assigned_users=assignees,
         label_schemas=[schema_name],
@@ -292,8 +292,8 @@ def align_judge(
     traces = search_traces_for_experiment(
         experiment_id, filter_string=f"tag.{RUN_TAG} = '{run_id}'", return_type="list",
     )
-    base = get_scorer(name=judge_name, experiment_id=experiment_id)
-    aligned = base.align(traces=traces, optimizer=optimizer)
+    base = get_scorer(name=judge_name, experiment_id=experiment_id)  # type: ignore[call]
+    aligned = base.align(traces=traces, optimizer=optimizer)  # type: ignore[union-attr]
 
     guidelines = [g.guideline_text for g in getattr(aligned, "_semantic_memory", []) or []]
 
@@ -301,7 +301,8 @@ def align_judge(
         from mlflow.genai.judges import make_judge
         new = make_judge(
             name=new_version, instructions=aligned.instructions,
-            feedback_value_type=base.feedback_value_type, model=base.model,
+            feedback_value_type=base.feedback_value_type,  # type: ignore[union-attr]
+            model=base.model,  # type: ignore[union-attr]
         )
         new.register(experiment_id=experiment_id)
         registered_as = new_version

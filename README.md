@@ -265,6 +265,10 @@ apx-agent agents deploy <name>.yaml    # generate project from the spec + deploy
 apx-agent eval run evalset.jsonl   # run against deployed endpoint with LLM judge
 apx-agent traces list --agent <name>   # recent MLflow traces filtered by apx.* attributes
 apx-agent fleet list --where team=revops   # bulk ops across many agents (tag/backfill/redeploy; dry-run by default)
+apx-agent label start --uc-name cat.sch.my_agent --judge domain_quality --scale 1-5 --assignee sme@co.com
+                                   # open SME labeling session → prints Review App URL + run-id
+apx-agent label align --uc-name cat.sch.my_agent --judge domain_quality --run <run-id>
+                                   # align the judge on SME ratings (requires: pip install 'apx-agent[align]')
 apx-agent doctor                   # diagnose auth, deps, project layout
 ```
 
