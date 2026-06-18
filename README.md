@@ -106,7 +106,7 @@ cd my-agent && uv sync
 uv run apx-agent agents run --reload
 ```
 
-Use `--no-yaml` only when you need an editable project directory. FastAPI starts on `:8000`; chat at `/_apx/agent`, view traces at `/_apx/traces`, and edit `agent.py` with reload.
+Use `--no-yaml` only when you need an editable project directory. FastAPI starts on `:8000`; chat at `/_apx/agent`, view traces at `/_apx/traces`. `agent.py` edits are picked up on restart — pass `--reload` (off by default) for auto-reload during local dev.
 
 > **Something not working?** Run `uv run apx-agent doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
 
