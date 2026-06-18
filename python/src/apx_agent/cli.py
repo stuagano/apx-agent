@@ -7752,6 +7752,124 @@ def fleet_redeploy_cmd(
         raise SystemExit(code)
 
 
+# ---------------------------------------------------------------------------
+# label — judge-alignment labeling sessions
+# ---------------------------------------------------------------------------
+
+@main.group(cls=_ApxGroup)
+def label() -> None:
+    """Judge-alignment: create SME labeling sessions and align judges."""
+
+
+def _label_one_agent(profile: str | None, **selectors: Any) -> Any:
+    """Resolve exactly one apx agent or raise a UsageError."""
+    ws = _require_sdk(profile)
+    agents = _fleet_resolve(ws, **selectors)
+    if len(agents) != 1:
+        raise click.UsageError(
+            f"selector resolved {len(agents)} agents; narrow it so exactly one matches "
+            f"(use --uc-name catalog.schema.model)."
+        )
+    return agents[0]
+
+
+@label.command("start")
+@_fleet_select_options
+@click.option("--judge", "judge_name", required=True, help="Registered judge (scorer) name.")
+@click.option("--scale", default=None, help="Numeric judge scale, MIN-MAX (e.g. 1-5).")
+@click.option("--options", "options_csv", default=None, help="Categorical judge options, comma-separated.")
+@click.option("--experiment", "experiment", default=None, help="MLflow experiment id (overrides the agent tag).")
+@click.option("--assignee", "assignees", multiple=True, help="SME email (repeatable). Defaults to you.")
+@click.option("--filter", "filter_string", default=None, help="MLflow trace filter_string.")
+@click.option("--limit", default=None, type=int, help="Max traces to include.")
+@click.option("--endpoint", default=None, help="Serving endpoint for the Review App agent.")
+@click.option("--no-review-agent", "attach_agent", flag_value=False, default=True,
+              help="Do not attach the agent to the Review App.")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text")
+def label_start_cmd(
+    catalog: str | None, schema: str | None, name_glob: str | None,
+    where_exprs: tuple[str, ...], uc_names: tuple[str, ...],
+    profile: str | None,
+    judge_name: str, scale: str | None, options_csv: str | None,
+    experiment: str | None, assignees: tuple[str, ...], filter_string: str | None,
+    limit: int | None, endpoint: str | None, attach_agent: bool,
+    fmt: str,
+) -> None:
+    """Create an SME labeling session for a deployed agent's judge."""
+    from datetime import datetime, timezone
+    from apx_agent import _labeling
+
+    agent = _label_one_agent(
+        profile, catalog=catalog, schema=schema, name_glob=name_glob,
+        where_exprs=where_exprs, uc_names=uc_names,
+    )
+    try:
+        eid = _labeling.resolve_experiment_id(explicit=experiment, agent_tags=agent.tags)
+        result = _labeling.start_session(
+            experiment_id=eid, agent_name=agent.name, judge_name=judge_name,
+            scale=scale, options=(options_csv.split(",") if options_csv else None),
+            assignees=list(assignees) or [],
+            filter_string=filter_string, limit=limit, endpoint=endpoint,
+            attach_agent=attach_agent, now=datetime.now(timezone.utc),
+        )
+    except _labeling.LabelingError as e:
+        raise click.ClickException(str(e)) from e
+
+    if fmt == "json":
+        import json as _json
+        click.echo(_json.dumps(result.__dict__))
+    else:
+        click.echo(f"Labeling session: {result.session_url}")
+        click.echo(f"  run-id:  {result.run_id}   (pass to `label align --run`)")
+        click.echo(f"  traces:  {result.trace_count}   schema/judge: {result.schema_name}")
+
+
+@label.command("align")
+@_fleet_select_options
+@click.option("--judge", "judge_name", required=True, help="Registered judge (scorer) name.")
+@click.option("--run", "run_id", required=True, help="Run id printed by `label start`.")
+@click.option("--experiment", "experiment", default=None, help="MLflow experiment id (overrides the agent tag).")
+@click.option("--reflection-model", default="databricks:/databricks-claude-sonnet-4-6",
+              help="Model used by MemAlign to distill guidelines.")
+@click.option("--embedding-model", default="databricks:/databricks-gte-large-en",
+              help="Embedding model for MemAlign retrieval.")
+@click.option("--retrieval-k", default=5, type=int, help="Examples retrieved per evaluation.")
+@click.option("--new-version", default=None, help="Register the aligned judge under a new name (preserve the original).")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text")
+def label_align_cmd(
+    catalog: str | None, schema: str | None, name_glob: str | None,
+    where_exprs: tuple[str, ...], uc_names: tuple[str, ...],
+    profile: str | None,
+    judge_name: str, run_id: str, experiment: str | None,
+    reflection_model: str, embedding_model: str, retrieval_k: int,
+    new_version: str | None, fmt: str,
+) -> None:
+    """Align the judge from a finished labeling run (requires apx-agent[align])."""
+    from apx_agent import _labeling
+
+    agent = _label_one_agent(
+        profile, catalog=catalog, schema=schema, name_glob=name_glob,
+        where_exprs=where_exprs, uc_names=uc_names,
+    )
+    try:
+        eid = _labeling.resolve_experiment_id(explicit=experiment, agent_tags=agent.tags)
+        result = _labeling.align_judge(
+            experiment_id=eid, judge_name=judge_name, run_id=run_id,
+            reflection_model=reflection_model, embedding_model=embedding_model,
+            retrieval_k=retrieval_k, new_version=new_version,
+        )
+    except _labeling.LabelingError as e:
+        raise click.ClickException(str(e)) from e
+
+    if fmt == "json":
+        import json as _json
+        click.echo(_json.dumps(result.__dict__))
+    else:
+        click.echo(f"Aligned judge registered as: {result.registered_as}")
+        for i, g in enumerate(result.guidelines, 1):
+            click.echo(f"  {i}. {g}")
+
+
 @main.group()
 def canary() -> None:
     """Canary / A-B deployment helpers — multi-version traffic split."""
