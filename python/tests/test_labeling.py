@@ -314,3 +314,43 @@ def test_align_judge_aligns_and_updates_in_place(monkeypatch):
     assert captured["align"]["optimizer"] == "OPT"
     assert captured["align"]["traces"] == ["trace-a", "trace-b"]
     assert "experiment_id" in captured  # update() was called in-place
+
+
+@pytest.mark.unit
+def test_align_judge_new_version_makes_and_registers(monkeypatch):
+    make_judge_calls = {}
+    register_calls = {}
+
+    def fake_make_judge(**kw):
+        make_judge_calls.update(kw)
+        judge_ns = SimpleNamespace(register=lambda **rkw: register_calls.update(rkw))
+        return judge_ns
+
+    aligned = SimpleNamespace(
+        instructions="distilled v2...",
+        _semantic_memory=[SimpleNamespace(guideline_text="be very precise")],
+        update=lambda **kw: SimpleNamespace(name="j"),
+    )
+    base = SimpleNamespace(
+        feedback_value_type=float,
+        model="databricks:/model",
+        align=lambda **kw: aligned,
+    )
+    monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: base)
+    monkeypatch.setattr(_labeling, "_load_memalign", lambda **kw: "OPT")
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment",
+                        lambda exp, **kw: ["trace-a", "trace-b"])
+    monkeypatch.setattr("mlflow.genai.judges.make_judge", fake_make_judge)
+
+    res = _labeling.align_judge(
+        experiment_id="exp-42", judge_name="j", run_id="r1",
+        reflection_model="databricks:/m", embedding_model="databricks:/e",
+        retrieval_k=5, new_version="v2",
+    )
+
+    assert res.registered_as == "v2"
+    assert make_judge_calls["name"] == "v2"
+    assert make_judge_calls["feedback_value_type"] is float
+    assert make_judge_calls["model"] == "databricks:/model"
+    assert register_calls["experiment_id"] == "exp-42"
+    assert res.guidelines == ["be very precise"]
