@@ -13,9 +13,12 @@ Subcommands:
   apx-agent examples <cmd>            find / save / remove / list — ExampleStore CRUD
   apx-agent version                   Print the package version
 
-Every command that operates on an agent accepts ``--module MODULE:VAR``
-to point at the agent definition (defaults to ``agent:agent``). The module
-must be importable from the current working directory.
+Most agent-facing commands accept ``--module MODULE:VAR`` to point at the
+agent definition (defaults to ``agent:agent``); the module must be importable
+from the current working directory. The OKF bundle commands
+(``refresh-schema`` / ``migrate-to-okf`` / ``pull-comments``) and
+``scaffold`` / ``cost`` operate on the project, not a loaded agent, and so
+take no ``--module``.
 
 The CLI is a thin orchestration layer over the primitives — every command
 maps to a single ``apx_agent`` call. The CLI's value isn't logic; it's
