@@ -245,3 +245,67 @@ def start_session(
         run_id=run_id, session_url=str(getattr(session, "url", "")),
         trace_count=len(trace_ids), dataset_name=dataset_name, schema_name=schema_name,
     )
+
+
+@dataclass
+class AlignResult:
+    judge_name: str
+    guidelines: list[str]
+    registered_as: str
+
+
+def _load_memalign(*, reflection_model: str, embedding_model: str, retrieval_k: int) -> Any:
+    """Build a MemAlignOptimizer, translating a missing dspy into guidance."""
+    try:
+        from mlflow.genai.judges.optimizers import MemAlignOptimizer
+    except (ImportError, Exception) as e:
+        raise LabelingError(
+            "judge alignment (MemAlign) requires dspy. "
+            "Install with: pip install 'apx-agent[align]'"
+        ) from e
+    return MemAlignOptimizer(
+        reflection_lm=reflection_model,
+        retrieval_k=retrieval_k,
+        embedding_model=embedding_model,
+    )
+
+
+def align_judge(
+    *,
+    experiment_id: str,
+    judge_name: str,
+    run_id: str,
+    reflection_model: str,
+    embedding_model: str,
+    retrieval_k: int,
+    new_version: str | None,
+) -> AlignResult:
+    """Align a judge from a finished labeling run's SME-labeled traces."""
+    if search_traces_for_experiment is None:  # pragma: no cover
+        raise LabelingError("alignment requires mlflow. pip install 'apx-agent[align]'")
+    optimizer = _load_memalign(
+        reflection_model=reflection_model,
+        embedding_model=embedding_model,
+        retrieval_k=retrieval_k,
+    )
+    traces = search_traces_for_experiment(
+        experiment_id, filter_string=f"tag.{RUN_TAG} = '{run_id}'", return_type="list",
+    )
+    base = get_scorer(name=judge_name, experiment_id=experiment_id)
+    aligned = base.align(traces=traces, optimizer=optimizer)
+
+    guidelines = [g.guideline_text for g in getattr(aligned, "_semantic_memory", []) or []]
+
+    if new_version:
+        from mlflow.genai.judges import make_judge
+        new = make_judge(
+            name=new_version, instructions=aligned.instructions,
+            feedback_value_type=base.feedback_value_type, model=base.model,
+        )
+        new.register(experiment_id=experiment_id)
+        registered_as = new_version
+    else:
+        updated = aligned.update(experiment_id=experiment_id)
+        registered_as = str(getattr(updated, "name", judge_name))
+
+    return AlignResult(judge_name=judge_name, guidelines=guidelines, registered_as=registered_as)

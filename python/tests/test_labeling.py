@@ -243,3 +243,51 @@ def test_start_session_uses_existing_dataset(monkeypatch):
     )
     assert create_dataset_calls == [], "create_dataset should NOT be called when get_dataset succeeds"
     assert len(merge_calls) == 1, "merge_records should still be called on the existing dataset"
+
+
+@pytest.mark.unit
+def test_align_judge_missing_dspy_raises_friendly(monkeypatch):
+    # Force the MemAlign import to fail like a missing dspy.
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name.startswith("mlflow.genai.judges.optimizers"):
+            raise ImportError("DSPy library is required but not installed")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(_labeling.LabelingError, match=r"apx-agent\[align\]"):
+        _labeling.align_judge(
+            experiment_id="123", judge_name="j", run_id="r1",
+            reflection_model="databricks:/databricks-claude-sonnet-4-6",
+            embedding_model="databricks:/databricks-gte-large-en",
+            retrieval_k=5, new_version=None,
+        )
+
+
+@pytest.mark.unit
+def test_align_judge_aligns_and_updates_in_place(monkeypatch):
+    captured = {}
+
+    aligned = SimpleNamespace(
+        instructions="distilled...",
+        _semantic_memory=[SimpleNamespace(guideline_text="be precise")],
+        update=lambda **kw: captured.update(kw) or SimpleNamespace(name="j"),
+    )
+    base = SimpleNamespace(align=lambda **kw: (captured.update(align=kw), aligned)[1])
+    monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: base)
+    monkeypatch.setattr(_labeling, "_load_memalign",
+                        lambda **kw: "OPT")  # bypass dspy import
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment",
+                        lambda exp, **kw: ["trace-a", "trace-b"])
+
+    res = _labeling.align_judge(
+        experiment_id="123", judge_name="j", run_id="r1",
+        reflection_model="databricks:/m", embedding_model="databricks:/e",
+        retrieval_k=5, new_version=None,
+    )
+    assert res.guidelines == ["be precise"]
+    assert captured["align"]["optimizer"] == "OPT"
+    assert captured["align"]["traces"] == ["trace-a", "trace-b"]
+    assert "experiment_id" in captured  # update() was called in-place
