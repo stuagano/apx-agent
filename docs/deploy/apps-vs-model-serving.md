@@ -259,9 +259,9 @@ A few things that bite in practice:
 
 | You want… | Run |
 |---|---|
-| Deploy a new agent to Apps | `apx-agent agents scaffold X --target apps && apx-agent agents deploy --target apps` |
-| Deploy a new agent to Model Serving | `apx-agent agents scaffold X && apx-agent agents deploy --name <uc-three-part>` |
-| Move an existing agent from Model Serving to Apps | `apx-agent agents scaffold X_apps --target apps`, then drop agent module in, then `apx-agent agents deploy --target apps` |
+| Deploy a new agent to Apps | `apx-agent agents scaffold X && apx-agent agents deploy X.yaml --target apps` |
+| Deploy a new agent to Model Serving | `apx-agent agents scaffold X --no-yaml && cd X && apx-agent agents deploy --target model-serving --name <uc-three-part>` |
+| Move an existing agent from Model Serving to Apps | `apx-agent agents scaffold X_apps --target apps --no-yaml`, then drop agent module in, then `cd X_apps && apx-agent agents deploy --target apps` |
 | Move an existing agent from Apps to Model Serving | `apx-agent agents deploy --target model-serving --module agent_server.agent:agent --name <uc-three-part>` |
 | Validate Apps bundle without deploying | `databricks bundle validate --target dev --profile <profile>` |
 | Tail Apps logs | `databricks apps logs <app-name> --profile <profile>` |
