@@ -29,6 +29,7 @@ dependencies = [
 # mlflow>=3.6: search_traces uses `locations=` (the `experiment_ids` selector was
 # deprecated at 3.6.0, and `experiment_names` never existed — see _mlflow_tracing).
 eval = ["mlflow>=3.6"]
+align = ["mlflow>=3.6", "dspy"]
 uc = [
     "unitycatalog-ai>=0.1.0",
 ]
@@ -36,7 +37,7 @@ lakebase = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
 ]
-all = ["apx-agent[eval,uc,lakebase]"]
+all = ["apx-agent[eval,uc,lakebase,align]"]
 
 [dependency-groups]
 dev = [
