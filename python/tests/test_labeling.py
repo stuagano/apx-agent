@@ -89,3 +89,9 @@ def test_resolve_experiment_falls_back_to_tag():
 def test_resolve_experiment_raises_when_unresolved():
     with pytest.raises(_labeling.LabelingError, match="--experiment"):
         _labeling.resolve_experiment_id(explicit=None, agent_tags={})
+
+
+@pytest.mark.unit
+def test_resolve_experiment_empty_string_falls_through_and_raises():
+    with pytest.raises(_labeling.LabelingError, match="--experiment"):
+        _labeling.resolve_experiment_id(explicit="", agent_tags={})
