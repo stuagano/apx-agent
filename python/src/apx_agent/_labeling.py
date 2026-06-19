@@ -29,20 +29,19 @@ except Exception:  # pragma: no cover
     set_trace_tag = None  # type: ignore[assignment]
 
 try:
+    from mlflow import set_experiment
     from mlflow.genai import (
         create_labeling_session,
         get_review_app,
     )
     from mlflow.genai.label_schemas import create_label_schema
     from mlflow.genai.scorers import get_scorer
-    from mlflow.genai.datasets import create_dataset, get_dataset
 except Exception:  # pragma: no cover
+    set_experiment = None  # type: ignore[assignment]
     create_labeling_session = None  # type: ignore[assignment]
     get_review_app = None  # type: ignore[assignment]
     create_label_schema = None  # type: ignore[assignment]
     get_scorer = None  # type: ignore[assignment]
-    create_dataset = None  # type: ignore[assignment]
-    get_dataset = None  # type: ignore[assignment]
 
 
 RUN_TAG = "apx.label.run"
@@ -56,10 +55,6 @@ class LabelingError(Exception):
 def make_run_id(judge_name: str, now: datetime) -> str:
     """Deterministic run id tying `start` to `align`."""
     return f"{judge_name}-{now:%Y%m%dT%H%M%SZ}"
-
-
-def dataset_name_for(agent_name: str, run_id: str) -> str:
-    return f"{agent_name}_label_{run_id}"
 
 
 def session_name_for(run_id: str) -> str:
@@ -166,7 +161,11 @@ def select_scored_traces(
     """
     if search_traces_for_experiment is None:  # pragma: no cover
         raise LabelingError("labeling requires mlflow. pip install 'apx-agent[eval]'")
-    kwargs: dict[str, Any] = {"return_type": "pandas"}
+    # include_spans=False keeps this a metadata-only read, so it still returns
+    # rows on FEVM/private-link workspaces where the trace blob store is blocked
+    # (a span read otherwise makes search_traces silently return 0 rows). We
+    # only need request/response/assessments here, never the execution spans.
+    kwargs: dict[str, Any] = {"return_type": "pandas", "include_spans": False}
     if filter_string:
         kwargs["filter_string"] = filter_string
     if limit:
@@ -226,7 +225,6 @@ class StartResult:
     run_id: str
     session_url: str
     trace_count: int
-    dataset_name: str
     schema_name: str
 
 
@@ -245,6 +243,13 @@ def start_session(
     now: datetime,
 ) -> StartResult:
     """Provision a labeling session for a deployed agent's judge."""
+    # The mlflow.genai labeling APIs (create_label_schema, create_labeling_session,
+    # review-app resolution) read the *active* MLflow experiment from ambient
+    # context, not from an argument. Make experiment_id active up front so they
+    # target the right experiment instead of failing "no active experiment".
+    if set_experiment is not None:
+        set_experiment(experiment_id=experiment_id)
+
     judge = get_scorer(name=judge_name, experiment_id=experiment_id)  # type: ignore[call]
 
     schema_kwargs = derive_label_schema(judge=judge, scale=scale, options=options)
@@ -258,15 +263,6 @@ def start_session(
     )
     trace_ids = [str(t) for t in traces["trace_id"].tolist()]
     tag_traces(trace_ids, run_id)
-
-    dataset_name = dataset_name_for(agent_name, run_id)
-    try:
-        dataset = get_dataset(name=dataset_name)  # type: ignore[call]
-    except Exception:
-        dataset = create_dataset(name=dataset_name)  # type: ignore[call]
-    # search_traces returns request/response; merge_records wants inputs/outputs
-    renamed = traces.rename(columns={"request": "inputs", "response": "outputs"})
-    dataset.merge_records(renamed)
 
     if attach_agent and endpoint:
         review_app = get_review_app(experiment_id=experiment_id)  # type: ignore[call]
@@ -284,11 +280,14 @@ def start_session(
         assigned_users=assignees,
         label_schemas=[schema_name],
     )
-    session = session.add_dataset(dataset_name=dataset_name)
+    # Add the scored traces directly to the session. (The earlier UC-dataset
+    # path required a catalog.schema.table name that the agent/run id can't
+    # supply; add_traces takes the traces straight from search_traces.)
+    session = session.add_traces(traces)
 
     return StartResult(
         run_id=run_id, session_url=str(getattr(session, "url", "")),
-        trace_count=len(trace_ids), dataset_name=dataset_name, schema_name=schema_name,
+        trace_count=len(trace_ids), schema_name=schema_name,
     )
 
 
@@ -334,11 +333,28 @@ def align_judge(
         embedding_model=embedding_model,
         retrieval_k=retrieval_k,
     )
+    # include_spans=False: metadata-only read so the run-tagged traces still
+    # come back on FEVM/private-link workspaces (blocked trace blob store);
+    # MemAlign aligns from the labeled request/response + assessments, not spans.
     traces = search_traces_for_experiment(
-        experiment_id, filter_string=f"tag.{RUN_TAG} = '{run_id}'", return_type="list",
+        experiment_id, filter_string=f"tag.{RUN_TAG} = '{run_id}'",
+        return_type="list", include_spans=False,
     )
     base = get_scorer(name=judge_name, experiment_id=experiment_id)  # type: ignore[call]
-    aligned = base.align(traces=traces, optimizer=optimizer)  # type: ignore[union-attr]
+    from mlflow.exceptions import MlflowException
+    try:
+        aligned = base.align(traces=traces, optimizer=optimizer)  # type: ignore[union-attr]
+    except MlflowException as e:
+        # MemAlign aligns to *human* feedback; if SMEs haven't labeled the
+        # run's traces yet it raises "No valid feedback records found". Turn
+        # that into actionable guidance instead of a raw stack trace.
+        if "feedback records" in str(e).lower():
+            raise LabelingError(
+                f"no SME labels found for run '{run_id}' yet. Have the assigned "
+                f"reviewers label the traces in the Review App (the session URL "
+                f"`label start` printed), then re-run `label align`."
+            ) from e
+        raise
 
     guidelines = [g.guideline_text for g in getattr(aligned, "_semantic_memory", []) or []]
 
