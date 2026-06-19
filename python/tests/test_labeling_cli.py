@@ -20,7 +20,7 @@ def test_label_start_happy_path(runner, monkeypatch):
                         lambda **kw: _labeling.StartResult(
                             run_id="payroll_j-20260617T000000Z",
                             session_url="https://x/sme", trace_count=5,
-                            dataset_name="payroll_label_x", schema_name="j"))
+                            schema_name="j"))
     res = runner.invoke(cli.main, [
         "label", "start", "--uc-name", "c.s.payroll",
         "--judge", "j", "--scale", "1-5", "--format", "json",

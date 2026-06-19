@@ -66,7 +66,6 @@ def test_make_run_id_is_deterministic():
 @pytest.mark.unit
 def test_name_helpers():
     rid = "domain_quality_base-20260617T190530Z"
-    assert _labeling.dataset_name_for("payroll", rid) == f"payroll_label_{rid}"
     assert _labeling.session_name_for(rid) == f"{rid}_sme"
     assert _labeling.RUN_TAG == "apx.label.run"
 
@@ -105,6 +104,22 @@ def test_select_scored_traces_returns_df(monkeypatch):
     out = _labeling.select_scored_traces(
         experiment_id="123", judge_name="j", filter_string=None, limit=None)
     assert list(out["trace_id"]) == ["t1", "t2"]
+
+
+@pytest.mark.unit
+def test_select_scored_traces_passes_include_spans_false(monkeypatch):
+    # FEVM/private-link workspaces block the trace blob store; a span read makes
+    # search_traces silently return 0 rows. The read must be metadata-only.
+    captured: dict = {}
+
+    def fake(exp, **kw):
+        captured.update(kw)
+        return pd.DataFrame({"trace_id": ["t1"]})
+
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment", fake)
+    _labeling.select_scored_traces(
+        experiment_id="123", judge_name="j", filter_string=None, limit=None)
+    assert captured.get("include_spans") is False
 
 
 @pytest.mark.unit
@@ -181,6 +196,7 @@ def test_tag_traces_sets_run_tag(monkeypatch):
 @pytest.mark.unit
 def test_start_session_creates_schema_with_judge_name(monkeypatch):
     judge = _judge(name="domain_quality_base", ft=float)
+    monkeypatch.setattr(_labeling, "set_experiment", lambda **kw: None)
     monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: judge)
 
     created = {}
@@ -190,11 +206,8 @@ def test_start_session_creates_schema_with_judge_name(monkeypatch):
                         lambda **kw: pd.DataFrame({"trace_id": ["t1", "t2"]}))
     monkeypatch.setattr(_labeling, "tag_traces", lambda ids, rid: len(ids))
 
-    ds = SimpleNamespace(merge_records=lambda df: ds)
-    monkeypatch.setattr(_labeling, "get_dataset", lambda name: (_ for _ in ()).throw(Exception()))
-    monkeypatch.setattr(_labeling, "create_dataset", lambda name: ds)
-
-    session = SimpleNamespace(add_dataset=lambda dataset_name: session,
+    added = {}
+    session = SimpleNamespace(add_traces=lambda traces: (added.update(n=len(traces)), session)[1],
                               url="https://x/sme")
     sess_kwargs = {}
     monkeypatch.setattr(_labeling, "create_labeling_session",
@@ -213,24 +226,22 @@ def test_start_session_creates_schema_with_judge_name(monkeypatch):
     assert res.run_id == "domain_quality_base-20260617T190530Z"
     assert res.session_url == "https://x/sme"
     assert res.trace_count == 2
+    assert added["n"] == 2, "scored traces are added to the session via add_traces"
 
 
 def _base_start_session_monkeypatches(monkeypatch):
     """Shared stubs for start_session isolation tests."""
     judge = _judge(name="domain_quality_base", ft=float)
+    monkeypatch.setattr(_labeling, "set_experiment", lambda **kw: None)
     monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: judge)
     monkeypatch.setattr(_labeling, "create_label_schema", lambda **kw: None)
     monkeypatch.setattr(_labeling, "select_scored_traces",
                         lambda **kw: pd.DataFrame({"trace_id": ["t1", "t2"]}))
     monkeypatch.setattr(_labeling, "tag_traces", lambda ids, rid: len(ids))
 
-    ds = SimpleNamespace(merge_records=lambda df: ds)
-    monkeypatch.setattr(_labeling, "get_dataset", lambda name: (_ for _ in ()).throw(Exception()))
-    monkeypatch.setattr(_labeling, "create_dataset", lambda name: ds)
-
-    session = SimpleNamespace(add_dataset=lambda dataset_name: session, url="https://x/sme")
+    session = SimpleNamespace(add_traces=lambda traces: session, url="https://x/sme")
     monkeypatch.setattr(_labeling, "create_labeling_session", lambda **kw: session)
-    return ds
+    return session
 
 
 @pytest.mark.unit
@@ -264,36 +275,6 @@ def test_start_session_raises_when_review_app_missing(monkeypatch):
             limit=None, endpoint="https://ep", attach_agent=True,
             now=datetime(2026, 6, 17, 19, 5, 30, tzinfo=timezone.utc),
         )
-
-
-@pytest.mark.unit
-def test_start_session_uses_existing_dataset(monkeypatch):
-    judge = _judge(name="domain_quality_base", ft=float)
-    monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: judge)
-    monkeypatch.setattr(_labeling, "create_label_schema", lambda **kw: None)
-    monkeypatch.setattr(_labeling, "select_scored_traces",
-                        lambda **kw: pd.DataFrame({"trace_id": ["t1", "t2"]}))
-    monkeypatch.setattr(_labeling, "tag_traces", lambda ids, rid: len(ids))
-    monkeypatch.setattr(_labeling, "get_review_app", lambda experiment_id: None)
-
-    merge_calls = []
-    existing_ds = SimpleNamespace(merge_records=lambda df: merge_calls.append(df))
-    create_dataset_calls = []
-    monkeypatch.setattr(_labeling, "get_dataset", lambda name: existing_ds)
-    monkeypatch.setattr(_labeling, "create_dataset",
-                        lambda name: create_dataset_calls.append(name) or existing_ds)
-
-    session = SimpleNamespace(add_dataset=lambda dataset_name: session, url="https://x/sme")
-    monkeypatch.setattr(_labeling, "create_labeling_session", lambda **kw: session)
-
-    _labeling.start_session(
-        experiment_id="123", agent_name="payroll", judge_name="domain_quality_base",
-        scale="1-5", options=None, assignees=["sme@x.com"], filter_string=None,
-        limit=None, endpoint=None, attach_agent=False,
-        now=datetime(2026, 6, 17, 19, 5, 30, tzinfo=timezone.utc),
-    )
-    assert create_dataset_calls == [], "create_dataset should NOT be called when get_dataset succeeds"
-    assert len(merge_calls) == 1, "merge_records should still be called on the existing dataset"
 
 
 @pytest.mark.unit
@@ -353,8 +334,13 @@ def test_align_judge_aligns_and_updates_in_place(monkeypatch):
     monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: base)
     monkeypatch.setattr(_labeling, "_load_memalign",
                         lambda **kw: "OPT")  # bypass dspy import
-    monkeypatch.setattr(_labeling, "search_traces_for_experiment",
-                        lambda exp, **kw: ["trace-a", "trace-b"])
+    search_kw: dict = {}
+
+    def fake_search(exp, **kw):
+        search_kw.update(kw)
+        return ["trace-a", "trace-b"]
+
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment", fake_search)
 
     res = _labeling.align_judge(
         experiment_id="123", judge_name="j", run_id="r1",
@@ -365,6 +351,33 @@ def test_align_judge_aligns_and_updates_in_place(monkeypatch):
     assert captured["align"]["optimizer"] == "OPT"
     assert captured["align"]["traces"] == ["trace-a", "trace-b"]
     assert "experiment_id" in captured  # update() was called in-place
+    # FEVM footgun: the run-tagged trace read must be metadata-only too.
+    assert search_kw.get("include_spans") is False
+
+
+@pytest.mark.unit
+def test_align_judge_no_sme_labels_raises_friendly(monkeypatch):
+    # MemAlign raises MlflowException "No valid feedback records found" when the
+    # run's traces have no human/SME labels yet; align must turn that into a
+    # clear LabelingError pointing the user back to the Review App.
+    from mlflow.exceptions import MlflowException
+
+    def boom(**kw):
+        raise MlflowException(
+            "Alignment optimization failed: No valid feedback records found in traces.")
+
+    base = SimpleNamespace(align=boom)
+    monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: base)
+    monkeypatch.setattr(_labeling, "_load_memalign", lambda **kw: "OPT")
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment",
+                        lambda exp, **kw: ["trace-a"])
+
+    with pytest.raises(_labeling.LabelingError, match="no SME labels"):
+        _labeling.align_judge(
+            experiment_id="123", judge_name="j", run_id="r1",
+            reflection_model="databricks:/m", embedding_model="databricks:/e",
+            retrieval_k=5, new_version=None,
+        )
 
 
 @pytest.mark.unit
