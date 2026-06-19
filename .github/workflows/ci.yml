@@ -33,7 +33,9 @@ jobs:
         run: uv sync --group dev --all-extras  # incl. langgraph/eval/uc/lakebase so their tests run, not skip
 
       - name: Run tests
-        run: uv run pytest tests/ -v --tb=short
+        # -n auto runs the suite across the runner's CPUs (~2x faster); the
+        # suite is parallel-clean. Full coverage on every PR — no test subset.
+        run: uv run pytest tests/ -n auto --tb=short
 
   typecheck:
     runs-on: ubuntu-latest
