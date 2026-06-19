@@ -80,6 +80,15 @@ class _BundleUpdateResult(NamedTuple):
     skipped: list[str]
 
 
+class _AdvertiseResult(NamedTuple):
+    """Outcome of advertising an agent — the resolved workspace client plus the
+    endpoint/description the discovery registry recorded, consumed together by
+    the advertise/publish commands."""
+    ws: Any
+    endpoint: str
+    description: str
+
+
 def _fix_msg(title: str, detail: str, fix: str | None) -> str:
     """Consistent error body for hardened CLI failures."""
     parts = [title, detail]
@@ -210,6 +219,10 @@ _RUN_MODULE_BY_TARGET = {
     "model-serving": "app:app",
     "apps": "agent_server.start_server:app",
 }
+
+# Default foundation model for the Apps runtime when APX_MODEL is unset. Matches
+# the value baked into the scaffold's app.yaml; override via the APX_MODEL env var.
+_APPS_DEFAULT_MODEL = "databricks-claude-sonnet-4-6"
 
 
 def _detect_target(cwd: Path | None = None) -> str:
@@ -2920,7 +2933,7 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
         module = _RUN_MODULE_BY_TARGET[detected]
         click.echo(f"# Detected {detected} layout → serving {module}", err=True)
         if detected == "apps":
-            model = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
+            model = os.environ.get("APX_MODEL", _APPS_DEFAULT_MODEL)
             click.echo(
                 f"# apps runtime uses APX_MODEL={model} (export APX_MODEL to override)",
                 err=True,
@@ -5300,7 +5313,7 @@ def _do_advertise(
     endpoint_url: str | None, endpoint_type: str, registry_table: str | None,
     tools_table: str | None, no_registry: bool, no_tools: bool, module: str | None,
     profile: str | None,
-) -> tuple[Any, str, str]:
+) -> _AdvertiseResult:
     """Write the agent → discovery registry + its tools → tools registry.
 
     Shared by `agents advertise` and the deprecated `agents publish` alias.
@@ -5380,7 +5393,7 @@ def _do_advertise(
                 "  ~ Tools registry skipped (no --module and no agent:agent default found)",
                 fg="yellow",
             ))
-    return ws, endpoint, description
+    return _AdvertiseResult(ws, endpoint, description)
 
 
 def _do_supervisor_add(
