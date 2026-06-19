@@ -7776,12 +7776,71 @@ def _label_one_agent(profile: str | None, **selectors: Any) -> Any:
     return agents[0]
 
 
+def _label_mlflow_setup(profile: str | None) -> None:
+    """Point MLflow + the Databricks labeling client at the workspace.
+
+    The label commands run client-side; without this MLflow defaults to a
+    local ./mlruns store and never reaches the workspace. We pin the config
+    profile (so the databricks-agents review-app client authenticates to the
+    same workspace the --profile flag selects) and set the databricks
+    tracking URI that the labeling APIs read from ambient context.
+    """
+    import mlflow
+
+    if profile:
+        os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+    mlflow.set_tracking_uri("databricks")
+
+
+def _resolve_label_agent(
+    profile: str | None,
+    *,
+    agent_name: str | None,
+    experiment: str | None,
+    need_name: bool,
+    **selectors: Any,
+) -> Any:
+    """Resolve the target agent for a label command.
+
+    Two ways to target an agent:
+    - **Fleet selector** (--uc-name / --catalog / ...): resolves exactly one
+      UC-registered agent and reads its tags. Works for Model-Serving agents.
+    - **Explicit** (no selector + --experiment, plus --agent-name for `start`):
+      targets an agent directly without fleet discovery. Required for
+      Apps-deployed agents, which have no fleet-discoverable UC registered
+      model. Returns a lightweight stand-in carrying just name + empty tags.
+    """
+    has_selector = any([
+        selectors.get("catalog"), selectors.get("schema"),
+        selectors.get("name_glob"), selectors.get("where_exprs"),
+        selectors.get("uc_names"),
+    ])
+    if has_selector:
+        return _label_one_agent(profile, **selectors)
+    # explicit-target path
+    if not experiment:
+        hint = " with --agent-name <name>" if need_name else ""
+        raise click.UsageError(
+            f"provide a fleet selector (e.g. --uc-name catalog.schema.model) or "
+            f"target the agent directly with --experiment <id>{hint}. "
+            f"(Apps-deployed agents have no fleet-discoverable UC model, so use "
+            f"the explicit form.)"
+        )
+    if need_name and not agent_name:
+        raise click.UsageError(
+            "--experiment without a selector also needs --agent-name <name>."
+        )
+    from types import SimpleNamespace
+    return SimpleNamespace(name=(agent_name or ""), tags={})
+
+
 @label.command("start")
 @_fleet_select_options
 @click.option("--judge", "judge_name", required=True, help="Registered judge (scorer) name.")
 @click.option("--scale", default=None, help="Numeric judge scale, MIN-MAX (e.g. 1-5).")
 @click.option("--options", "options_csv", default=None, help="Categorical judge options, comma-separated.")
-@click.option("--experiment", "experiment", default=None, help="MLflow experiment id (overrides the agent tag).")
+@click.option("--experiment", "experiment", default=None, help="MLflow experiment id (overrides the agent tag; required when targeting an agent without a fleet selector).")
+@click.option("--agent-name", "agent_name", default=None, help="Target an agent by name without a fleet selector (with --experiment). Use for Apps-deployed agents that aren't fleet-discoverable.")
 @click.option("--assignee", "assignees", multiple=True, help="SME email (repeatable). Defaults to you.")
 @click.option("--filter", "filter_string", default=None, help="MLflow trace filter_string.")
 @click.option("--limit", default=None, type=int, help="Max traces to include.")
@@ -7794,7 +7853,8 @@ def label_start_cmd(
     where_exprs: tuple[str, ...], uc_names: tuple[str, ...],
     profile: str | None,
     judge_name: str, scale: str | None, options_csv: str | None,
-    experiment: str | None, assignees: tuple[str, ...], filter_string: str | None,
+    experiment: str | None, agent_name: str | None,
+    assignees: tuple[str, ...], filter_string: str | None,
     limit: int | None, endpoint: str | None, attach_agent: bool,
     fmt: str,
 ) -> None:
@@ -7802,8 +7862,10 @@ def label_start_cmd(
     from datetime import datetime, timezone
     from apx_agent import _labeling
 
-    agent = _label_one_agent(
-        profile, catalog=catalog, schema=schema, name_glob=name_glob,
+    _label_mlflow_setup(profile)
+    agent = _resolve_label_agent(
+        profile, agent_name=agent_name, experiment=experiment, need_name=True,
+        catalog=catalog, schema=schema, name_glob=name_glob,
         where_exprs=where_exprs, uc_names=uc_names,
     )
     try:
@@ -7831,7 +7893,7 @@ def label_start_cmd(
 @_fleet_select_options
 @click.option("--judge", "judge_name", required=True, help="Registered judge (scorer) name.")
 @click.option("--run", "run_id", required=True, help="Run id printed by `label start`.")
-@click.option("--experiment", "experiment", default=None, help="MLflow experiment id (overrides the agent tag).")
+@click.option("--experiment", "experiment", default=None, help="MLflow experiment id (overrides the agent tag; pass it with no fleet selector to target an Apps-deployed agent directly).")
 @click.option("--reflection-model", default="databricks:/databricks-claude-sonnet-4-6",
               help="Model used by MemAlign to distill guidelines.")
 @click.option("--embedding-model", default="databricks:/databricks-gte-large-en",
@@ -7850,8 +7912,10 @@ def label_align_cmd(
     """Align the judge from a finished labeling run (requires apx-agent[align])."""
     from apx_agent import _labeling
 
-    agent = _label_one_agent(
-        profile, catalog=catalog, schema=schema, name_glob=name_glob,
+    _label_mlflow_setup(profile)
+    agent = _resolve_label_agent(
+        profile, agent_name=None, experiment=experiment, need_name=False,
+        catalog=catalog, schema=schema, name_glob=name_glob,
         where_exprs=where_exprs, uc_names=uc_names,
     )
     try:
