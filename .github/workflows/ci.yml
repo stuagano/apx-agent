@@ -5,9 +5,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
 
 # Cancel superseded runs on the same ref so a new push frees the runners and
 # gives faster feedback instead of queueing behind stale in-flight runs.
@@ -17,7 +14,49 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Detect whether the PR touches anything other than docs. The heavy jobs below
+  # ALWAYS run (so the required-status-check contexts are always created and
+  # conclude success), but skip their real steps on docs-only PRs. This replaces
+  # the old `paths-ignore: [docs/**, **.md]` — which skipped the whole workflow
+  # and left the required checks "Expected, waiting" forever, blocking docs-only
+  # PRs from ever merging.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Push events (to main) carry no PR context — always run full CI.
+          if [ -z "$BASE" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # If the diff can't be computed for any reason, fail SAFE: run full CI
+          # (code=true) rather than risk skipping real tests on a code change.
+          if ! changed=$(git diff --name-only "$BASE" "$HEAD"); then
+            echo "git diff failed — defaulting to full CI"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Changed files:"; echo "$changed"
+          # "code" = any changed file that is NOT under docs/ and NOT a .md file
+          # (mirrors the old paths-ignore globs). grep -v exits 0 when such a
+          # line exists; inside `if`, a non-match (docs-only) doesn't trip set -e.
+          if echo "$changed" | grep -qvE '^docs/|\.md$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
+    needs: changes
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -28,53 +67,74 @@ jobs:
         working-directory: python
 
     steps:
-      - uses: actions/checkout@v6
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@v6
 
       - name: Install uv
+        if: needs.changes.outputs.code == 'true'
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true  # cache the uv download/build cache (keyed on uv.lock)
 
       - name: Set up Python ${{ matrix.python-version }}
+        if: needs.changes.outputs.code == 'true'
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
+        if: needs.changes.outputs.code == 'true'
         run: uv sync --group dev --all-extras  # incl. langgraph/eval/uc/lakebase so their tests run, not skip
 
       - name: Run tests
+        if: needs.changes.outputs.code == 'true'
         # -n auto runs the suite across the runner's CPUs (~2x faster); the
         # suite is parallel-clean. Full coverage on every PR — no test subset.
         run: uv run pytest tests/ -n auto --tb=short
 
+      - name: Docs-only change — tests not required
+        if: needs.changes.outputs.code != 'true'
+        run: echo "Docs-only PR — skipping tests; required check passes."
+
   typecheck:
+    needs: changes
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: python
 
     steps:
-      - uses: actions/checkout@v6
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@v6
 
       - name: Guard uv.lock registry
+        if: needs.changes.outputs.code == 'true'
         run: bash ../scripts/check-uv-lock-registry.sh
 
       - name: Install uv
+        if: needs.changes.outputs.code == 'true'
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true  # cache the uv download/build cache (keyed on uv.lock)
 
       - name: Set up Python
+        if: needs.changes.outputs.code == 'true'
         run: uv python install 3.11
 
       - name: Install dependencies
+        if: needs.changes.outputs.code == 'true'
         run: uv sync --group dev
 
       # Gates new type errors. Pre-existing offenders are excluded via the
       # shrinking type-debt registry in pyproject.toml [tool.pyright].
       - name: Run pyright
+        if: needs.changes.outputs.code == 'true'
         run: uv run pyright src/apx_agent/
 
+      - name: Docs-only change — pyright not required
+        if: needs.changes.outputs.code != 'true'
+        run: echo "Docs-only PR — skipping pyright; required check passes."
+
   typecheck-ts:
+    needs: changes
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -84,24 +144,35 @@ jobs:
         working-directory: typescript
 
     steps:
-      - uses: actions/checkout@v6
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
+        if: needs.changes.outputs.code == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
 
       - name: Guard lockfile registry
+        if: needs.changes.outputs.code == 'true'
         run: bash ../scripts/check-ts-lockfile-registry.sh
 
       - name: Install dependencies
+        if: needs.changes.outputs.code == 'true'
         run: npm ci
 
       - name: Build
+        if: needs.changes.outputs.code == 'true'
         run: npm run build
 
       - name: Typecheck
+        if: needs.changes.outputs.code == 'true'
         run: npm run typecheck
 
       - name: Run tests
+        if: needs.changes.outputs.code == 'true'
         run: npm test
+
+      - name: Docs-only change — TS checks not required
+        if: needs.changes.outputs.code != 'true'
+        run: echo "Docs-only PR — skipping TS build/typecheck/tests; required check passes."
