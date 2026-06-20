@@ -8589,9 +8589,8 @@ def watchdog_violations(
         f"ts > CURRENT_TIMESTAMP - INTERVAL {hours} HOUR",
     ]
     if agent_name:
-        # _sql_str_literal isn't exported; inline the escape rules.
-        escaped = agent_name.replace("'", "''")
-        where_parts.append(f"agent_name = '{escaped}'")
+        from ._sql import sql_escape
+        where_parts.append(f"agent_name = '{sql_escape(agent_name)}'")
     sql = (
         f"SELECT ts, agent_name, operation, action, reason, "
         f"  policy_id, domain, context, metadata "
