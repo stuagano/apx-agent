@@ -18,6 +18,7 @@ in-process ring buffer — so they run in CI with no infra.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -339,3 +340,176 @@ class TestMemoriesReadAfterWrite:
             verifier=_memory_reads_back,
             claim_label="memory add → /_apx/memories route",
         )
+
+
+# ---------------------------------------------------------------------------
+# 5) Eval cases — POST a list through the route, read it back through the GET
+#    route (read-after-write through the real evals.json persistence), plus the
+#    request-validation contract (malformed body → 422) the eval-route
+#    hardening (PR-W1) introduced. These prove the WRITE slice: a 200 that
+#    didn't actually persist, or validation that 500s instead of 422-ing, fails
+#    here.
+# ---------------------------------------------------------------------------
+
+
+def _eval_app(name: str = "eval-reality") -> FastAPI:
+    app = FastAPI()
+    app.state.agent_context = _ctx(name)
+    app.include_router(build_dev_ui_router())
+    return app
+
+
+class TestEvalDataReadAfterWrite:
+    """A list POSTed to ``/_apx/eval/data`` must be readable back through
+    ``GET /_apx/eval/data`` — through the real ``evals.json`` write, not a mock.
+    A handler that returns ``{ok: true}`` without writing, or a GET that filters
+    the persisted rows, fails here. The UI's divergent case fields
+    (``expected_judge``, run metadata) must survive untouched: the request model
+    uses ``extra="ignore"``, so this also guards that persistence re-reads the
+    raw body rather than dumping the stripped models."""
+
+    @pytest.mark.asyncio
+    async def test_posted_cases_read_back_through_get_route(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "evals.json"
+        # Hermetic: point the route's evals.json at a temp file (no agent_router
+        # resolution, no workspace write — workspace_client is unset).
+        monkeypatch.setattr("apx_agent._dev._find_evals_path", lambda: target)
+
+        # Divergent shapes on purpose: one keyword case, one judge case carrying
+        # run metadata that is NOT in the strict request model.
+        cases = [
+            {"question": "how many customers?", "expected": "42",
+             "status": "pass", "response": "42", "trace_id": "tr-1"},
+            {"question": "is the tone polite?", "expected_judge": "answer is courteous",
+             "status": "pending", "response": "", "judge_verdict": None},
+        ]
+
+        app = _eval_app()
+        async with _client(app) as ac:
+            post_resp = await ac.post("/_apx/eval/data", json=cases)
+            get_resp = await ac.get("/_apx/eval/data")
+
+        assert post_resp.status_code == 200
+        expect(post_resp.json(), label="save response") \
+            .has_keys("ok", "count").verify()
+        expect(post_resp.json()["count"], label="saved count").equals(2).verify()
+        assert get_resp.status_code == 200
+
+        def _round_trips() -> None:
+            # The file the route persisted must hold the raw body verbatim
+            # (divergent fields intact), and the GET route must hand it back.
+            on_disk = json.loads(target.read_text())
+            expect(on_disk, label="persisted evals.json").equals(cases).verify()
+            rows = get_resp.json()
+            expect(rows, label="GET eval rows").nonempty() \
+                .satisfies(lambda xs: len(xs) == 2, "both cases persisted").verify()
+            expect(rows, label="GET eval rows round-trip").equals(cases).verify()
+
+        # claim_vs_reality: the POST *claims* it saved (200 {ok:true,count:2});
+        # the only honest proof is the file holding the rows AND the GET route
+        # reading them back. A 200 that wrote nothing fails here.
+        claim_vs_reality(
+            claimed_success=True,
+            verifier=_round_trips,
+            claim_label="eval POST → evals.json → GET round-trip",
+        )
+
+    @pytest.mark.asyncio
+    async def test_malformed_body_is_rejected_with_422(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-list body is rejected by the request model (422) before the
+        handler runs — and nothing is written to evals.json."""
+        target = tmp_path / "evals.json"
+        monkeypatch.setattr("apx_agent._dev._find_evals_path", lambda: target)
+
+        app = _eval_app()
+        async with _client(app) as ac:
+            resp = await ac.post("/_apx/eval/data", json={"not": "a list"})
+
+        assert resp.status_code == 422
+        expect(target.exists(), label="evals.json after rejected save") \
+            .equals(False).verify()
+
+
+class TestEvalGetShapes:
+    """Happy-path shape guards for the two read routes: the JSON list route and
+    the HTML landing page. These ensure un-hiding the routes (PR-W1) did not
+    break their existing return shapes."""
+
+    @pytest.mark.asyncio
+    async def test_eval_data_get_returns_json_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "evals.json"
+        target.write_text(json.dumps([{"question": "q1", "expected": "a"}]))
+        monkeypatch.setattr("apx_agent._dev._find_evals_path", lambda: target)
+
+        app = _eval_app()
+        async with _client(app) as ac:
+            resp = await ac.get("/_apx/eval/data")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        expect(body, label="eval/data list").nonempty() \
+            .satisfies(lambda xs: isinstance(xs, list), "is a JSON list").verify()
+        expect(body[0]["question"], label="first case question").equals("q1").verify()
+
+    @pytest.mark.asyncio
+    async def test_eval_landing_renders_html(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "evals.json"
+        target.write_text(json.dumps([{"question": "rendered question", "expected": "x"}]))
+        monkeypatch.setattr("apx_agent._dev._find_evals_path", lambda: target)
+
+        app = _eval_app()
+        async with _client(app) as ac:
+            resp = await ac.get("/_apx/eval")
+
+        assert resp.status_code == 200
+        expect(resp.headers["content-type"], label="eval landing content-type") \
+            .contains("text/html").verify()
+        expect(resp.text, label="eval landing body") \
+            .contains("rendered question").verify()
+
+
+class TestEvalJudgeContract:
+    """The judge route's validation/503 contract — proven WITHOUT a live model
+    (decision: never call a real LLM in the suite). A missing required field is
+    a request-shape error (422); a valid body with no agent context is the
+    semantic 503."""
+
+    @pytest.mark.asyncio
+    async def test_missing_required_field_is_422(self) -> None:
+        app = FastAPI()
+        # agent_context is read by direct attribute access in the handler; set
+        # it explicitly so a (would-be) handler entry can't AttributeError into
+        # a 500. Body validation 422s before the handler runs regardless.
+        app.state.agent_context = None
+        app.include_router(build_dev_ui_router())
+
+        async with _client(app) as ac:
+            resp = await ac.post("/_apx/eval/judge",
+                                 json={"question": "Q?", "response": "x"})  # no criterion
+
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_valid_body_without_context_is_503(self) -> None:
+        app = FastAPI()
+        # Explicit None: the handler reads request.app.state.agent_context via
+        # direct attribute access, so an unset State would AttributeError → 500
+        # instead of the 503 this asserts.
+        app.state.agent_context = None
+        app.include_router(build_dev_ui_router())
+
+        async with _client(app) as ac:
+            resp = await ac.post("/_apx/eval/judge", json={
+                "question": "Q?", "response": "x", "criterion": "y",
+            })
+
+        assert resp.status_code == 503
+        expect(resp.json(), label="judge 503 body").has_keys("ok", "error").verify()

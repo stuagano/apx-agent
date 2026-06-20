@@ -86,9 +86,12 @@ class TestEvalDataPost:
 
     @pytest.mark.asyncio
     async def test_rejects_non_list_body(self, app: FastAPI, evals_path: Path):
+        # A non-list body is now rejected by the request model (FastAPI 422)
+        # rather than the old manual 400, before the handler runs — so nothing
+        # is written.
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             r = await ac.post("/_apx/eval/data", json={"not": "a list"})
-        assert r.status_code == 400
+        assert r.status_code == 422
         assert evals_path.exists() is False
 
     @pytest.mark.asyncio

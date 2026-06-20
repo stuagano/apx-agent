@@ -522,10 +522,25 @@ async function runCase(i) {{
 }}
 
 async function save() {{
-  await fetch('/_apx/eval/data', {{
-    method: 'POST', headers: {{'Content-Type': 'application/json'}},
-    body: JSON.stringify(rows),
-  }});
+  // Surface a rejected save (422 bad shape / 503 no agent_router / 500 write
+  // error) instead of swallowing it — a silent save reads as success while
+  // nothing persisted. A network error (offline) stays silent: in-memory
+  // state still works and the next save retries.
+  try {{
+    const resp = await fetch('/_apx/eval/data', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(rows),
+    }});
+    if (!resp.ok) {{
+      let msg = resp.status + ' ' + resp.statusText;
+      try {{ const d = await resp.json(); msg = d.error || (d.detail && JSON.stringify(d.detail)) || msg; }} catch {{}}
+      const st = document.getElementById('status');
+      if (st) st.textContent = 'Save failed: ' + msg;
+      console.error('eval save failed:', msg);
+    }}
+  }} catch (e) {{
+    console.error('eval save error (offline?):', e);
+  }}
 }}
 
 document.getElementById('run-all').addEventListener('click', async () => {{
@@ -1483,17 +1498,43 @@ async function loadEvalCases() {{
   }}
 }}
 
+function _evalSaveBanner(msg) {{
+  // Single reusable banner as a sibling *before* #eval-cases, so renderEval()
+  // (which rewrites #eval-cases.innerHTML) never wipes it. msg === null clears.
+  const host = document.getElementById('eval-cases');
+  if (!host || !host.parentNode) return;
+  let b = document.getElementById('eval-save-err');
+  if (msg === null) {{ if (b) b.remove(); return; }}
+  if (!b) {{
+    b = document.createElement('div');
+    b.id = 'eval-save-err';
+    b.style.cssText = 'color:#f87171;font-size:12px;padding:8px 12px;background:#2a0a0a;border-bottom:1px solid #401414';
+    host.parentNode.insertBefore(b, host);
+  }}
+  b.textContent = 'Save failed: ' + msg;
+}}
+
 let _evalSaveTimer = null;
 function saveEvalCases() {{
   // Debounce so per-keystroke edits don't hammer the disk.
   clearTimeout(_evalSaveTimer);
   _evalSaveTimer = setTimeout(async () => {{
     try {{
-      await fetch('/_apx/eval/data', {{
+      const resp = await fetch('/_apx/eval/data', {{
         method: 'POST',
         headers: {{'Content-Type':'application/json'}},
         body: JSON.stringify(evalRows),
       }});
+      // Surface a rejected save (422/503/500) instead of swallowing it; a
+      // silent save reads as success while nothing persisted.
+      if (!resp.ok) {{
+        let msg = resp.status + ' ' + resp.statusText;
+        try {{ const d = await resp.json(); msg = d.error || (d.detail && JSON.stringify(d.detail)) || msg; }} catch {{}}
+        _evalSaveBanner(msg);
+        console.error('eval save failed:', msg);
+      }} else {{
+        _evalSaveBanner(null);
+      }}
     }} catch {{ /* offline; in-memory state still works */ }}
   }}, 250);
 }}
