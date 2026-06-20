@@ -51,7 +51,6 @@ from pathlib import Path
 # Hardcoded because regex inference is unreliable here:
 #   - customer_triage/agent.py declares 4 Agent objects (3 specialists + a
 #     triage classifier) plus the top-level HandoffAgent named `agent`.
-#   - voynich exports 5 separately-deployable agents under agents/*/main.py.
 #   - account-search-service, afr-enrollment-api, agent-hub import
 #     apx_agent.Dependencies but have NO Agent export — they are FastAPI
 #     services, not Mosaic ChatAgents. Flagged with module=None.
@@ -65,7 +64,7 @@ class AuditTarget:
     directory: str  # path under examples/ (or "." to run from python/)
     module: str | None  # ``pkg.mod:var``; None means no deployable agent
     requires_workspace: bool = False
-    note: str = ""
+    note: str | None = None
     cwd_at_parent: bool = False  # True for examples that import from
     # the parent python/ project root (e.g. memory_demo runs as
     # `python -m examples.memory_demo.app`, not as its own uv project).
@@ -100,19 +99,6 @@ TARGETS: list[AuditTarget] = [
                 "shortage_intelligence_agent.backend.agent_router:agent", False),
     AuditTarget("slack-agent", "slack-agent",
                 "slack_agent.backend.agent_router:agent", False),
-
-    # voynich: orchestrator is the top-level deployable; the rest are
-    # independently deployable sub-agents.
-    AuditTarget("voynich:orchestrator", "voynich",
-                "agents.orchestrator.main:agent", False),
-    AuditTarget("voynich:historian", "voynich",
-                "agents.historian.main:agent", False),
-    AuditTarget("voynich:judge", "voynich",
-                "agents.judge.main:agent", False),
-    AuditTarget("voynich:critic", "voynich",
-                "agents.critic.main:agent", False),
-    AuditTarget("voynich:decipherer", "voynich",
-                "agents.decipherer.main:agent", False),
 ]
 
 # Databricks creds get scrubbed so the audit never silently reaches a
@@ -196,11 +182,11 @@ class AuditResult:
     target: AuditTarget
     status: str  # OK | FAIL | SKIP_NO_AGENT | SKIP_REQ_WORKSPACE
     duration_s: float = 0.0
-    phase: str = ""  # last reported probe phase before failure (or 'ok')
-    agent_type: str = ""
+    phase: str | None = None  # last reported probe phase before failure (or 'ok')
+    agent_type: str | None = None
     resource_count: int = -1
     warnings: list[str] = field(default_factory=list)
-    error: str = ""
+    error: str | None = None
 
 
 def _eprint(msg: str) -> None:
@@ -236,7 +222,7 @@ def _parse_probe_result(stdout: str) -> dict | None:
 
 def _short_error(stderr: str, stdout: str) -> str:
     """Find the most diagnostic line for the summary."""
-    lines = (stderr or "").strip().splitlines()
+    lines = stderr.strip().splitlines()
     for ln in reversed(lines):
         s = ln.strip()
         if not s:
@@ -244,7 +230,7 @@ def _short_error(stderr: str, stdout: str) -> str:
         if s.startswith("Traceback ") or s.startswith("File "):
             continue
         return s[:200]
-    out = (stdout or "").strip().splitlines()
+    out = stdout.strip().splitlines()
     return (out[-1][:200] if out else "no output")
 
 
@@ -310,13 +296,14 @@ def _run_one(
                 status="OK",
                 duration_s=duration,
                 phase="ok",
-                agent_type=parsed.get("agent_type", ""),
+                agent_type=parsed.get("agent_type"),
                 resource_count=parsed.get("resource_count", -1),
                 warnings=warnings,
             )
+        error_msg = parsed.get("error_msg")
         err = (
             f"{parsed.get('error_type', 'Error')}: "
-            f"{parsed.get('error_msg', '')}"
+            f"{error_msg if error_msg is not None else ''}"
         )
         return AuditResult(
             target=target,
@@ -330,7 +317,7 @@ def _run_one(
     # Case 2: probe never reported — uv resolve or interpreter crashed
     # before our script ran. Classify the failure family for the
     # summary so it's actionable.
-    stderr = proc.stderr or ""
+    stderr = proc.stderr
     if "apx-agent was not found in the package registry" in stderr:
         phase = "pyproject_pins_registry_apx_agent"
     elif "Failed to build `apx-agent" in stderr or (
@@ -356,7 +343,7 @@ def _print_summary(results: list[AuditResult]) -> None:
     name_w = max(len(r.target.example) for r in results)
     name_w = max(name_w, len("example"))
     phase_w = max(len("phase"),
-                  max((len(r.phase) for r in results), default=0))
+                  max((len(r.phase) for r in results if r.phase), default=0))
     hdr = (
         f"{'example':<{name_w}} | status              | secs  | "
         f"{'phase':<{phase_w}} | resources | warnings    | error"
@@ -370,9 +357,10 @@ def _print_summary(results: list[AuditResult]) -> None:
         if len(err) > 80:
             err = err[:77] + "..."
         res = str(r.resource_count) if r.resource_count >= 0 else "-"
+        phase_str = r.phase if r.phase is not None else ""
         print(
             f"{r.target.example:<{name_w}} | {r.status:<19s} | "
-            f"{secs:>5s} | {r.phase:<{phase_w}} | {res:>9s} | "
+            f"{secs:>5s} | {phase_str:<{phase_w}} | {res:>9s} | "
             f"{warns:<11s} | {err}"
         )
 
@@ -386,7 +374,7 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--only", action="append", default=None, metavar="NAME",
-        help="Only run named target(s) (e.g. customer_triage, voynich:critic).",
+        help="Only run named target(s) (e.g. customer_triage, slack-agent).",
     )
     p.add_argument("--timeout", type=int, default=180)
     p.add_argument("--verbose", action="store_true",

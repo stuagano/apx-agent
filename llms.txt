@@ -70,7 +70,7 @@ apx deploy --target model-serving --name main.agents.account_lookup
 
 ## Examples
 
-- [Examples Index](https://raw.githubusercontent.com/stuagano/apx-agent/main/python/examples/EXAMPLES.md): 13 worked Python examples — memory_demo, customer_triage (HandoffAgent), data-triage-agent (6-step Sequential), data-inspector (MCP-callable), entity-resolution-agent (Vector Search + Supervisor + Evaluator), eligibility-agent (document parsing), contract-parsing-agent, shortage-intelligence-agent (5-step Sequential), explain-my-bill-agent, slack-agent, apx-builder (NL → deploy), agent-hub, voynich (LoopAgent + evolutionary population)
+- [Examples Index](https://raw.githubusercontent.com/stuagano/apx-agent/main/python/examples/EXAMPLES.md): 12 worked Python examples — memory_demo, customer_triage (HandoffAgent), data-triage-agent (6-step Sequential), data-inspector (MCP-callable), entity-resolution-agent (Vector Search + Supervisor + Evaluator), eligibility-agent (document parsing), contract-parsing-agent, shortage-intelligence-agent (5-step Sequential), explain-my-bill-agent, slack-agent, apx-builder (NL → deploy), agent-hub
 - [Hello World](https://raw.githubusercontent.com/stuagano/apx-agent/main/python/hello-world/README.md): Minimal scaffolded Python agent — reference for the canonical project layout
 - [apx-builder](https://raw.githubusercontent.com/stuagano/apx-agent/main/python/examples/apx-builder/README.md): Natural-language agent builder shipped as an example app — describe an agent in English and it scaffolds + deploys
 

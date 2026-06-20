@@ -253,6 +253,39 @@ def iso_now() -> str:
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
+def iso_to_epoch(iso: str | None) -> float:
+    """Convert ISO-8601 to UNIX epoch seconds. Returns 0 on garbage."""
+    if not iso:
+        return 0.0
+    try:
+        s = iso[:-1] + "+00:00" if iso.endswith("Z") else iso
+        return datetime.fromisoformat(s).timestamp()
+    except ValueError:
+        return 0.0
+
+
+_TABLE_NAME_ALLOWED = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_."
+)
+
+
+def validate_table_name(name: str) -> None:
+    """Reject table names that can't be a safe SQL identifier.
+
+    ``table_name`` is interpolated raw into statements (neither UC nor
+    Postgres bind parameters can stand in for identifiers), so it must be
+    constrained to a strict allowlist: alnum, underscore, and dot (for a
+    ``catalog.schema.table`` prefix). Anything else risks SQL injection.
+    """
+    if not name:
+        raise ValueError("table_name must not be empty")
+    for ch in name:
+        if ch not in _TABLE_NAME_ALLOWED:
+            raise ValueError(
+                f"table_name contains illegal character {ch!r}: {name!r}"
+            )
+
+
 def new_memory_id(prefix: str = "mem") -> str:
     """Generate a memory id of the form ``"{prefix}_{uuid4}"``."""
     return f"{prefix}_{uuid.uuid4()}"

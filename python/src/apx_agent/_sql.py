@@ -45,6 +45,21 @@ from ._mlflow_tracing import emit_progress, safe_span
 logger = logging.getLogger(__name__)
 
 
+def sql_escape(value: str) -> str:
+    """Escape a string for inline SQL — single quotes doubled (no wrapping quotes)."""
+    return value.replace("'", "''")
+
+
+def sql_str_literal(value: str) -> str:
+    """Render a Python string as a safe single-quoted SQL literal.
+
+    Prefer bind parameters where the driver supports them; use this only when
+    a value must be interpolated directly (e.g. identifiers, or the SQL
+    Statements API where binds aren't available).
+    """
+    return "'" + sql_escape(value) + "'"
+
+
 def decode_statement(response: StatementResponse | None) -> list[dict[str, Any]]:
     """Decode a Databricks ``StatementResponse`` into a list of row dicts.
 
