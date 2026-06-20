@@ -20,9 +20,9 @@ Color coding follows NodeType: pink stroke for routing agents (`HandoffAgent`, `
 Data is served from `GET /_apx/topology.json` (full graph) and `GET /_apx/topology/inspect/{node_id}` (per-node details).
 
 ### `/_apx/edit` — Edit agent source
-Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file; restart `apx-agent agents run` to load the new code (there is no live hot-reload — the agent is compiled at startup).
+Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file to disk; the running agent is compiled at startup, so a save here — like any source change — takes effect on the next restart. Auto-reload on source changes happens only when you start the server with `apx-agent agents run --reload` (the `--reload` flag is off by default).
 
-Tool authoring also lives here: the **New Tool** modal scaffolds a tool into the source — including a natural-language generator (`POST /_apx/tools/suggest`) that drafts the tool from a description. (The standalone `/_apx/tools` inspector page has been retired; `/_apx/tools` now redirects here.)
+Tool authoring also lives here: the **New Tool** modal scaffolds a tool into the source — including a natural-language generator (`POST /_apx/tools/suggest`) that drafts the tool from a description. The standalone `/_apx/tools` inspector page has been retired in the Python dev UI (`/_apx/tools` now redirects to `/_apx/edit`); the standalone tools inspector survives only in the TypeScript dev UI.
 
 ### `/_apx/probe` — Outbound connectivity tester
 Pass `?url=<url>` to verify outbound network reachability from the App. Pairs with `/_apx/probe/checks` for a curated list of common Databricks endpoints (control plane, model serving, UC, Genie). Useful when an App can't reach a managed MCP / vector index / endpoint.
