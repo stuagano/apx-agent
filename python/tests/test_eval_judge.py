@@ -134,10 +134,13 @@ class TestEvalJudgeRoute:
         assert "rate limited" in data["error"]
 
     @pytest.mark.asyncio
-    async def test_returns_400_when_fields_missing(self, app_with_model: FastAPI):
+    async def test_returns_422_when_fields_missing(self, app_with_model: FastAPI):
+        # A missing required field (here ``criterion``) is now rejected by the
+        # request model (FastAPI 422) before the handler runs, replacing the
+        # old manual 400.
         async with AsyncClient(transport=ASGITransport(app=app_with_model), base_url="http://test") as ac:
             r = await ac.post("/_apx/eval/judge", json={"question": "Q?", "response": "x"})
-        assert r.status_code == 400
+        assert r.status_code == 422
 
     @pytest.mark.asyncio
     async def test_returns_400_when_no_model(self):
