@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from ._sql import run_sql
+from ._sql import sql_escape as _escape_sql
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -198,11 +199,3 @@ def cost_for_agent(
     )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _escape_sql(value: str) -> str:
-    """Escape a string literal for inline SQL — single quotes doubled."""
-    return value.replace("'", "''")

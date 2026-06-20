@@ -21,12 +21,6 @@ Quick index — what each example does and which direction data/auth flows.
 | [memory_demo](./memory_demo/) | **MemoryStore + ExampleStore** — seeded memories, few-shot examples, recall/remember tools, system prompt assembled per turn. Two run modes: local in-process (`app.py`) + Databricks Apps deploy (`agent_server/` + `databricks.yml`). Verified live on fe-stable. |
 | [customer_triage](./customer_triage/) | **HandoffAgent** over four LlmAgents (triage / billing / account / technical) with memory wired into the account specialist. Demonstrates the full apx-agent surface: `@tool(uc=...)` decorator, `Dependencies.Workspace` for OBO, `genie_tool` / `vector_search_tool`, peer handoffs, principal-keyed memory recall across handoffs. Apps-target deploy verified live on fe-stable. |
 
-## Experimental
-
-| Example | What it does |
-|---------|-------------|
-| [voynich](./voynich/) | **LoopAgent** — evolutionary population loop primitive for apx-agent. Five separately-deployed sub-agents (`critic`, `decipherer`, `historian`, `judge`, `orchestrator`) under `voynich/agents/<name>/` collaborate on Voynich manuscript decoding. Each sub-agent is independently deployable. |
-
 ## MCP Servers & Shared Libraries
 
 | Example | What it does |

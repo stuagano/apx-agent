@@ -55,6 +55,8 @@ from ._memory import (
     iso_now,
     materialize_memory,
 )
+from ._memory import iso_to_epoch as _iso_to_epoch
+from ._memory import validate_table_name as _validate_table_name
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
@@ -79,41 +81,6 @@ def _require_sqlalchemy() -> Any:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-_TABLE_NAME_ALLOWED = set(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_."
-)
-
-
-def _validate_table_name(name: str) -> None:
-    """Reject table names that can't be a safe SQL identifier.
-
-    ``table_name`` is interpolated raw into every statement (Postgres
-    bind parameters cannot stand in for identifiers), so it must be
-    constrained to a strict allowlist. Allows alnum, underscore, and dot
-    (for a ``schema.table`` prefix). Mirrors the Delta store's guard.
-    """
-    if not name:
-        raise ValueError("table_name must not be empty")
-    for ch in name:
-        if ch not in _TABLE_NAME_ALLOWED:
-            raise ValueError(
-                f"table_name contains illegal character {ch!r}: {name!r}"
-            )
-
-
-def _iso_to_epoch(iso: str) -> float:
-    """Convert ISO-8601 timestamp to UNIX epoch seconds. Returns 0 on garbage."""
-    if not iso:
-        return 0.0
-    try:
-        # Accept both with and without the trailing 'Z'
-        if iso.endswith("Z"):
-            iso = iso[:-1] + "+00:00"
-        return datetime.fromisoformat(iso).timestamp()
-    except ValueError:
-        return 0.0
 
 
 def _epoch_to_iso(seconds: float | None) -> str:

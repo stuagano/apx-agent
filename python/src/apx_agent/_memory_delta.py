@@ -41,6 +41,8 @@ from ._memory import (
     iso_now,
     materialize_memory,
 )
+from ._memory import iso_to_epoch as _iso_to_epoch
+from ._memory import validate_table_name as _validate_table_name
 
 logger = logging.getLogger(__name__)
 
@@ -134,17 +136,6 @@ def _sql_array_float(items: Sequence[float] | None) -> str:
     return "array(" + ", ".join(_fmt(n) for n in items) + ")"
 
 
-def _iso_to_epoch(iso: str | None) -> float:
-    """Convert ISO-8601 to UNIX epoch seconds. Returns 0 on garbage."""
-    if not iso:
-        return 0.0
-    try:
-        s = iso[:-1] + "+00:00" if iso.endswith("Z") else iso
-        return datetime.fromisoformat(s).timestamp()
-    except ValueError:
-        return 0.0
-
-
 def _epoch_to_iso(seconds: float | None) -> str:
     """Convert UNIX epoch seconds to ISO-8601 (UTC). Returns now on garbage.
 
@@ -210,31 +201,6 @@ def _row_to_memory(row: Mapping[str, Any]) -> Memory:
         created_at=_epoch_to_iso(row.get("created_at")),
         updated_at=_epoch_to_iso(row.get("updated_at")),
     )
-
-
-# ---------------------------------------------------------------------------
-# Table-name validation
-# ---------------------------------------------------------------------------
-
-
-_TABLE_NAME_ALLOWED = set(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_."
-)
-
-
-def _validate_table_name(name: str) -> None:
-    """Reject table names that can't be a UC identifier.
-
-    Allows alnum, underscore, and dot (for ``catalog.schema.table``).
-    Anything else risks SQL injection through identifier interpolation.
-    """
-    if not name:
-        raise ValueError("table_name must not be empty")
-    for ch in name:
-        if ch not in _TABLE_NAME_ALLOWED:
-            raise ValueError(
-                f"table_name contains illegal character {ch!r}: {name!r}"
-            )
 
 
 # ---------------------------------------------------------------------------

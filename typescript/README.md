@@ -246,7 +246,6 @@ apx examples list --agent-id my_agent
 | [`examples/basic-agent/`](./examples/basic-agent) | The smallest end-to-end app — one tool, the four core plugins, Express. |
 | [`examples/pipeline-agent/`](./examples/pipeline-agent) | `SequentialAgent` with state interpolation across steps. |
 | [`examples/memory-demo/`](./examples/memory-demo) | Memory + few-shot examples — `makeMemoryTools` + `assembleContext` end-to-end. |
-| [`examples/voynich/`](./examples/voynich) | Six-agent decipher pipeline (`orchestrator`, `decipherer`, `grounder`, `critic`, `historian`, `judge`). |
 
 Each example has its own `package.json`, `app.ts`, and `databricks.yml` so you can `cd examples/<name> && npx tsx app.ts` to run locally and `./deploy.sh` to ship to Databricks Apps.
 

@@ -145,7 +145,7 @@ memory_store = LakebaseMemoryStore(
 )
 ```
 
-`databricks-gte-large-en` is the general-purpose 1024-dim Foundation Model API endpoint Databricks ships in most workspaces — see the entity-resolution-agent and voynich examples for prior art. If you swap to a different embedder, set `embedding_dim` to whatever it actually returns.
+`databricks-gte-large-en` is the general-purpose 1024-dim Foundation Model API endpoint Databricks ships in most workspaces — see the entity-resolution-agent example for prior art. If you swap to a different embedder, set `embedding_dim` to whatever it actually returns.
 
 The store auto-creates the table + indexes on first call:
 

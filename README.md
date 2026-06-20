@@ -242,7 +242,7 @@ See [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) for the full `/_apx
 
 ## Examples
 
-13 worked examples in [`python/examples/`](python/examples/EXAMPLES.md):
+12 worked examples in [`python/examples/`](python/examples/EXAMPLES.md):
 
 | Example | What it shows |
 |---|---|
@@ -250,7 +250,6 @@ See [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) for the full `/_apx
 | **data-triage-agent** | 6-step `SequentialAgent` (presence → lineage → pipeline → genie → code → synthesis) |
 | **entity-resolution-agent** | Fuzzy account match via Vector Search + `HandoffAgent` |
 | **memory_demo** | `MemoryStore` + `ExampleStore` — recall across handoffs |
-| **voynich** | `LoopAgent` + 5-agent evolutionary population |
 | **slack-agent** | Slack-initiated runs as the Slack user's Databricks identity |
 | + 7 more | data-inspector, eligibility-agent, contract-parsing, shortage-intelligence, explain-my-bill, apx-builder, agent-hub |
 

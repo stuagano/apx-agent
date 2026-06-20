@@ -78,6 +78,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from ._audit import set_audit_attrs
 from ._mlflow_tracing import current_active_span
 from ._sql import run_sql
+from ._sql import sql_str_literal as _sql_str_literal
 
 if TYPE_CHECKING:
     from ._agents import BaseAgent
@@ -684,11 +685,6 @@ def set_uc_tags_for_agent(
 # ---------------------------------------------------------------------------
 # UC violations writer — transport that handles violation_report only
 # ---------------------------------------------------------------------------
-
-
-def _sql_str_literal(value: str) -> str:
-    """SQL-escape a string for inline literal use — single quotes doubled."""
-    return "'" + value.replace("'", "''") + "'"
 
 
 def make_uc_violation_writer(
