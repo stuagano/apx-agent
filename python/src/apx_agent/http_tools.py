@@ -34,16 +34,11 @@ logger = logging.getLogger(__name__)
 _ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "DELETE", "PATCH"})
 
 
-def _sql_str_literal(value: str) -> str:
-    """Render a Python string as a safe single-quoted SQL literal."""
-    return "'" + value.replace("'", "''") + "'"
-
-
 def http_tool(
     connection: str,
     *,
     method: str = "GET",
-    path: str = "",
+    path: str | None = None,
     name: str = "http_request",
     description: str | None = None,
     warehouse_id: str | None = None,
@@ -85,6 +80,7 @@ def http_tool(
     """
     from ._defaults import UserClientDependency
     from ._resources import ResourceSpec
+    from ._sql import sql_str_literal
     from ._tool_factory import build_tool, resolve_description
 
     _method = method.upper()
@@ -93,14 +89,15 @@ def http_tool(
             f"http_tool: method must be one of {sorted(_ALLOWED_METHODS)}, got {method!r}"
         )
 
-    _conn_lit = _sql_str_literal(connection)
-    _method_lit = _sql_str_literal(_method)
-    _path_lit = _sql_str_literal(path)
+    _path = path if path is not None else ""
+    _conn_lit = sql_str_literal(connection)
+    _method_lit = sql_str_literal(_method)
+    _path_lit = sql_str_literal(_path)
 
     _desc = resolve_description(
         description,
         fallback=(
-            f"Make a {_method} request to `{path or '/'}` on the external service "
+            f"Make a {_method} request to `{_path or '/'}` on the external service "
             f"behind UC connection `{connection}`. Pass `query` for URL query "
             f"parameters and `body` for a JSON request body."
         ),
@@ -140,7 +137,7 @@ def http_tool(
             rows = run_sql(ws, sql, warehouse_id=warehouse_id, parameters=params or None)
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "http_tool %s %s via connection %s failed: %s", _method, path, connection, e
+                "http_tool %s %s via connection %s failed: %s", _method, _path, connection, e
             )
             return {"error": str(e)}
 
