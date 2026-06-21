@@ -43,6 +43,14 @@ import mlflow
 from databricks.sdk import WorkspaceClient
 
 
+# Empty string is the intended default for the always-string fields below:
+# ``decoded_sample`` / ``mlflow_run_id`` are populated during a run and
+# ``review_table`` is optional config, all interpolated/sliced as ``str``
+# downstream (None would break them). A named constant documents that the
+# default is deliberate rather than an accidental "unset" sentinel.
+_UNSET_STR = ""
+
+
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
@@ -89,8 +97,8 @@ class Hypothesis:
     agent_eval_critic: float           = 0.0
 
     # Outputs
-    decoded_sample: str                = ""
-    mlflow_run_id: str                 = ""
+    decoded_sample: str                = _UNSET_STR
+    mlflow_run_id: str                 = _UNSET_STR
     flagged_for_review: bool           = False
 
     def composite_fitness(self) -> float:
@@ -198,8 +206,8 @@ class LoopConfig:
     fitness_agents: list[str]          # sub-agent URLs for evaluators
     mutation_agent: str                # sub-agent URL for Decipherer
     judge_agent: str                   # sub-agent URL for Judge
-    review_table: str = ""             # Delta FQN: catalog.schema.review_queue
-    warehouse_id: str = ""             # SQL warehouse for Delta ops
+    review_table: str = _UNSET_STR     # Delta FQN: catalog.schema.review_queue
+    warehouse_id: str = _UNSET_STR     # SQL warehouse for Delta ops
     population_size: int = 500
     mutation_batch: int = 50           # new hypotheses per generation
     max_generations: int = 2000
@@ -432,6 +440,7 @@ class LoopAgent:
         response = await client.responses.create(
             model=f"apps/{app_name}",
             input=[{"role": "user", "content": content}],
+            timeout=timeout,
         )
         return response.output_text
 
