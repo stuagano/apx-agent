@@ -38,11 +38,38 @@ beats ``X-Forwarded-User``), and ``user_email``.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Mapping
 
+logger = logging.getLogger(__name__)
 
 __all__ = ["extract_obo_headers", "make_obo_workspace_client"]
+
+# G2: warn at most once per process when a request falls open to the app SP.
+_warned_no_obo_in_app = False
+
+
+def warn_once_no_obo_in_app() -> None:
+    """Log one WARNING when a request resolves no OBO user token while running in
+    the Databricks Apps (multi-user) runtime.
+
+    In that case tools run as the **app service principal** (not the caller) and
+    memory falls back to a single shared principal — cross-user identity bleed.
+    Fires at most once per process. The fail-closed fix is tracked separately;
+    see ``docs/design/served-path-guards-and-identity.md`` (G2).
+    """
+    global _warned_no_obo_in_app
+    if _warned_no_obo_in_app or not _in_databricks_app():
+        return
+    _warned_no_obo_in_app = True
+    logger.warning(
+        "apx-agent: a request resolved no OBO user token in the Databricks Apps "
+        "runtime — tools run as the app service principal (not the caller) and "
+        "memory falls back to a shared principal (cross-user identity bleed). "
+        "Forward X-Forwarded-Access-Token or custom_inputs.user_token per "
+        "request. See docs/design/served-path-guards-and-identity.md (G2)."
+    )
 
 
 def _in_databricks_app() -> bool:

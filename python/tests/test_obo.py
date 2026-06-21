@@ -261,3 +261,36 @@ def test_starlette_like_headers_object_supported() -> None:
     obo = extract_obo_headers(headers=fake)
     assert obo["user_token"] == "tok-star"
     assert obo["user_id"] == "u-1"
+
+
+# ── G2: warn-once on app-SP fallback in the Apps runtime ──────────────────────
+
+
+def test_warn_once_no_obo_fires_once_in_app(monkeypatch, caplog):
+    """In the Apps runtime, a tokenless request warns exactly once per process."""
+    import logging
+
+    import apx_agent._obo as _obo
+
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+    monkeypatch.setattr(_obo, "_warned_no_obo_in_app", False)
+    with caplog.at_level(logging.WARNING, logger="apx_agent._obo"):
+        _obo.warn_once_no_obo_in_app()
+        _obo.warn_once_no_obo_in_app()  # second call must be silent
+    fired = [r for r in caplog.records if "app service principal" in r.getMessage()]
+    assert len(fired) == 1
+    assert "G2" in fired[0].getMessage()
+
+
+def test_warn_once_no_obo_silent_outside_app(monkeypatch, caplog):
+    """Outside the Apps runtime (local / Model Serving SP), it stays silent."""
+    import logging
+
+    import apx_agent._obo as _obo
+
+    monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+    monkeypatch.delenv("DATABRICKS_APP_URL", raising=False)
+    monkeypatch.setattr(_obo, "_warned_no_obo_in_app", False)
+    with caplog.at_level(logging.WARNING, logger="apx_agent._obo"):
+        _obo.warn_once_no_obo_in_app()
+    assert caplog.records == []
