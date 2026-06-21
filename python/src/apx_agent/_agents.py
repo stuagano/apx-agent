@@ -398,6 +398,14 @@ class LoopAgent(BaseAgent):
         return await self._inner.fetch_remote_tools()
 
 
+# Internal continuation turn inserted between SequentialAgent steps so the
+# conversation handed to the next step ends with a user message. Prefill-strict
+# serving endpoints (e.g. Claude) reject a request whose conversation ends with
+# an assistant message. Shared by SequentialAgent.run()/.stream() and the
+# compiled-graph path (_compile._sequential_continuation) so the two stay aligned.
+SEQUENTIAL_CONTINUATION = "Continue with the next step based on the results above."
+
+
 class SequentialAgent(BaseAgent):
     """Runs agents in order, each receiving the previous agent's output as context."""
 
@@ -426,7 +434,7 @@ class SequentialAgent(BaseAgent):
                 # Append previous result and a continuation prompt so the
                 # conversation ends with a user message (required by some models)
                 context.append(Message(role="assistant", content=result))
-                context.append(Message(role="user", content="Continue with the next investigation step based on the findings above."))
+                context.append(Message(role="user", content=SEQUENTIAL_CONTINUATION))
             result = await sub.run(context, request)
         return result
 
@@ -444,7 +452,7 @@ class SequentialAgent(BaseAgent):
             step_num = i + 1
             if i > 0:
                 context.append(Message(role="assistant", content=result))
-                context.append(Message(role="user", content="Continue with the next investigation step based on the findings above."))
+                context.append(Message(role="user", content=SEQUENTIAL_CONTINUATION))
 
             # Emit step header so the user sees progress
             yield f"\n\n---\n**Step {step_num}/{total}**\n\n"
