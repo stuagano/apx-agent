@@ -738,10 +738,83 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
     return graph.compile()
 
 
+def _ai_message_text(message: Any) -> str:
+    """Flatten a message's content to plain text (list/multimodal → text parts)."""
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    return "" if content is None else str(content)
+
+
+def _wrap_served_hooks(agent: LlmAgent, runnable: Any) -> Any:
+    """Enforce input/output guardrails + before/after_agent callbacks on the
+    served (compiled-graph) path, reusing the exact ``LlmAgent`` helpers so
+    behavior matches ``LlmAgent.run``.
+
+    No-op when the agent declares none — returns the runnable unchanged so
+    non-guarded agents keep their current streaming behavior. Guarded agents
+    buffer: the inner agent runs to completion inside one node so the output
+    guard can see the full text (a streamed token can't be retracted — the
+    documented G1 ceiling). The served paths stream with ``stream_mode="updates"``
+    (node-granular), so a guarded agent simply surfaces as one node update.
+    See ``docs/design/served-path-guards-and-identity.md`` (G1).
+    """
+    has_hooks = bool(
+        agent._input_guardrails
+        or agent._output_guardrails
+        or agent._before_agent_callback is not None
+        or agent._after_agent_callback is not None
+    )
+    if not has_hooks:
+        return runnable
+
+    from langchain_core.messages import AIMessage
+    from langgraph.graph import END, START, MessagesState, StateGraph
+
+    async def _guarded(state: dict[str, Any]) -> dict[str, Any]:
+        input_msgs = list(state["messages"])
+        await agent._invoke_callback(agent._before_agent_callback, input_msgs)
+        rejection = await agent._apply_input_guardrails(input_msgs)
+        if rejection is not None:
+            # Short-circuit: the agent never runs.
+            return {"messages": [AIMessage(content=rejection)]}
+
+        result = await runnable.ainvoke(state)
+        new_msgs = list(result.get("messages", []))[len(input_msgs):]
+        last_ai = next(
+            (m for m in reversed(new_msgs) if isinstance(m, AIMessage)), None
+        )
+        text = _ai_message_text(last_ai) if last_ai is not None else ""
+
+        replacement = await agent._apply_output_guardrails(text)
+        if replacement is not None:
+            # Matches LlmAgent.run: a replacement is returned as-is and the
+            # after_agent callback is NOT fired.
+            if last_ai is not None:
+                new_msgs = [
+                    AIMessage(content=replacement, id=last_ai.id) if m is last_ai else m
+                    for m in new_msgs
+                ]
+            else:
+                new_msgs = [AIMessage(content=replacement)]
+            return {"messages": new_msgs}
+
+        await agent._invoke_callback(agent._after_agent_callback, text)
+        return {"messages": new_msgs}
+
+    graph = StateGraph(MessagesState)
+    graph.add_node("agent", _guarded)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
+    graph.add_edge(START, "agent")
+    graph.add_edge("agent", END)
+    return graph.compile()
+
+
 def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
     """Dispatch to the right per-agent compiler."""
     if isinstance(agent, LlmAgent):
-        return _compile_llm_agent(agent, ctx)
+        return _wrap_served_hooks(agent, _compile_llm_agent(agent, ctx))
     if isinstance(agent, SequentialAgent):
         return _compile_sequential_agent(agent, ctx)
     if isinstance(agent, ParallelAgent):
