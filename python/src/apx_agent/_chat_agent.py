@@ -263,8 +263,10 @@ def _resolve_ws_and_headers(
             host=obo.get("workspace_host"),
         )
     else:
-        from ._obo import warn_once_no_obo_in_app
-        warn_once_no_obo_in_app()  # G2: app-SP fallback in a multi-user runtime
+        # G2: fail closed in the Apps multi-user runtime (unless SP fallback is
+        # explicitly opted in) instead of silently running as the app SP.
+        from ._obo import resolve_no_obo_or_raise
+        resolve_no_obo_or_raise()
         ws = _make_workspace_client()
 
     # Build headers only when we have a user_id to avoid replacing None with an
