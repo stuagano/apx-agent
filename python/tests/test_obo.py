@@ -294,3 +294,50 @@ def test_warn_once_no_obo_silent_outside_app(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="apx_agent._obo"):
         _obo.warn_once_no_obo_in_app()
     assert caplog.records == []
+
+
+# ── G2: fail-closed identity policy (resolve_no_obo_or_raise) ──────────────────
+
+
+def test_no_obo_in_app_rejects_by_default(monkeypatch):
+    """In the Apps runtime with no token and no opt-in, the request is rejected."""
+    import apx_agent._obo as _obo
+
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+    monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
+    with pytest.raises(_obo.ApxIdentityError, match="fails closed"):
+        _obo.resolve_no_obo_or_raise()
+
+
+def test_no_obo_in_app_allowed_with_optin(monkeypatch, caplog):
+    """With the SP-fallback opt-in, it does NOT raise — only warns once."""
+    import logging
+
+    import apx_agent._obo as _obo
+
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+    monkeypatch.setenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", "true")
+    monkeypatch.setattr(_obo, "_warned_no_obo_in_app", False)
+    with caplog.at_level(logging.WARNING, logger="apx_agent._obo"):
+        _obo.resolve_no_obo_or_raise()  # must not raise
+    assert any("app service principal" in r.getMessage() for r in caplog.records)
+
+
+def test_no_obo_outside_app_is_noop(monkeypatch):
+    """Outside the Apps runtime (local / Model Serving SP-default), it's a no-op."""
+    import apx_agent._obo as _obo
+
+    monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+    monkeypatch.delenv("DATABRICKS_APP_URL", raising=False)
+    _obo.resolve_no_obo_or_raise()  # no raise, no error
+
+
+def test_sp_fallback_env_truthy_values(monkeypatch):
+    import apx_agent._obo as _obo
+
+    for val in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", val)
+        assert _obo._sp_fallback_allowed() is True
+    for val in ("0", "false", "no", ""):
+        monkeypatch.setenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", val)
+        assert _obo._sp_fallback_allowed() is False
