@@ -125,10 +125,14 @@ class LlmAgent(BaseAgent):
         context_window_tokens: int | None = None,
         name: str | None = None,
         memory: str = "off",
+        output_key: str | None = None,
     ) -> None:
         self._tool_fns = tools
         self._sub_agent_urls = sub_agents or []
         self._instructions = instructions or instruction
+        # G3: when set, the agent's final text is written to the shared state
+        # channel under this key (readable by later steps via {key} templating).
+        self._output_key = output_key
         self._description = description
         self._name = name
         self._temperature = temperature

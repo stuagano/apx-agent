@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, get_args, get_type_hints
 
@@ -285,8 +286,15 @@ def _governance_exception_middleware() -> Any:
     return _convert_governance_errors
 
 
-def _compile_llm_agent(agent: LlmAgent, ctx: CompileContext) -> Any:
-    """Compile an ``LlmAgent`` into a ``create_agent`` runnable."""
+def _compile_llm_agent(
+    agent: LlmAgent, ctx: CompileContext, *, bake_prompt: bool = True
+) -> Any:
+    """Compile an ``LlmAgent`` into a ``create_agent`` runnable.
+
+    ``bake_prompt=False`` builds the agent with no system prompt — used for
+    ``{key}``-templated agents, where the wrapper node renders the instructions
+    from state per-invocation and injects them as a SystemMessage (G3).
+    """
     from langchain.agents import create_agent
 
     from ._callbacks import build_callback_handler
@@ -300,7 +308,7 @@ def _compile_llm_agent(agent: LlmAgent, ctx: CompileContext) -> Any:
     runnable = create_agent(
         model=llm,
         tools=tools,
-        system_prompt=agent._instructions or None,
+        system_prompt=(agent._instructions or None) if bake_prompt else None,
         middleware=[_governance_exception_middleware()],
     )
     config: dict[str, Any] = {}
@@ -326,7 +334,7 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
     """Compile a ``SequentialAgent`` into a linear ``StateGraph``."""
     from langgraph.graph import END, START, MessagesState, StateGraph
 
-    graph = StateGraph(MessagesState)
+    graph = StateGraph(state_schema())
     node_names: list[str] = []
 
     for i, sub in enumerate(agent._agents):
@@ -353,7 +361,7 @@ def _compile_parallel_agent(agent: ParallelAgent, ctx: CompileContext) -> Any:
     """
     from langgraph.graph import END, START, MessagesState, StateGraph
 
-    graph = StateGraph(MessagesState)
+    graph = StateGraph(state_schema())
     node_names: list[str] = []
     for i, sub in enumerate(agent._agents):
         name = getattr(sub, "_name", None) or f"branch_{i}"
@@ -487,6 +495,7 @@ def _compile_loop_agent(agent: LoopAgent, ctx: CompileContext) -> Any:
 
     class LoopState(TypedDict):
         messages: Annotated[list, add_messages]
+        state: Annotated[dict[str, Any], _merge_state]
         iteration: int
 
     # Build the inner react agent with finish_loop appended to its tools.
@@ -539,6 +548,7 @@ def _compile_router_agent(agent: RouterAgent, ctx: CompileContext) -> Any:
 
     class RouterState(TypedDict):
         messages: Annotated[list, add_messages]
+        state: Annotated[dict[str, Any], _merge_state]
         chosen: str
 
     routes = list(agent._routes)  # [(name, description, sub_agent), ...]
@@ -600,6 +610,7 @@ def _compile_keyword_router(agent: KeywordRouter, ctx: CompileContext) -> Any:
 
     class KeywordRouterState(TypedDict):
         messages: Annotated[list, add_messages]
+        state: Annotated[dict[str, Any], _merge_state]
         chosen: str
 
     branches = list(agent._branches)
@@ -655,6 +666,7 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
 
     class HandoffState(TypedDict):
         messages: Annotated[list, add_messages]
+        state: Annotated[dict[str, Any], _merge_state]
         handoffs: int
 
     llm = _build_chat_databricks(ctx.model)
@@ -748,41 +760,93 @@ def _ai_message_text(message: Any) -> str:
     return "" if content is None else str(content)
 
 
-def _wrap_served_hooks(agent: LlmAgent, runnable: Any) -> Any:
-    """Enforce input/output guardrails + before/after_agent callbacks on the
-    served (compiled-graph) path, reusing the exact ``LlmAgent`` helpers so
-    behavior matches ``LlmAgent.run``.
+# ── G3: keyed shared state (docs/design/keyed-shared-state.md) ────────────────
 
-    No-op when the agent declares none — returns the runnable unchanged so
-    non-guarded agents keep their current streaming behavior. Guarded agents
-    buffer: the inner agent runs to completion inside one node so the output
-    guard can see the full text (a streamed token can't be retracted — the
-    documented G1 ceiling). The served paths stream with ``stream_mode="updates"``
-    (node-granular), so a guarded agent simply surfaces as one node update.
-    See ``docs/design/served-path-guards-and-identity.md`` (G1).
+_TEMPLATE_KEY = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+_APX_STATE_CLS: Any = None
+
+
+def _merge_state(old: Any, new: Any) -> dict[str, Any]:
+    """Reducer for the keyed ``state`` channel: shallow dict merge, last write
+    wins per key. Tolerates ``None`` (the channel's pre-first-write value)."""
+    return {**(old or {}), **(new or {})}
+
+
+def state_schema() -> Any:
+    """The compiled-graph state: ``messages`` (unchanged) plus a keyed ``state``
+    dict. Cached so every ``StateGraph`` shares one class. Backward compatible —
+    ``graph.invoke({"messages": [...]})`` still works (``state`` defaults empty),
+    and ``result["messages"]`` is unchanged.
     """
-    has_hooks = bool(
+    global _APX_STATE_CLS
+    if _APX_STATE_CLS is None:
+        from typing import Annotated
+
+        from langgraph.graph import MessagesState
+
+        class ApxState(MessagesState):
+            state: Annotated[dict[str, Any], _merge_state]
+
+        _APX_STATE_CLS = ApxState
+    return _APX_STATE_CLS
+
+
+def _has_template(agent: LlmAgent) -> bool:
+    return bool(agent._instructions and _TEMPLATE_KEY.search(agent._instructions))
+
+
+def _render_template(template: str, keyed: dict[str, Any]) -> str:
+    """Substitute ``{key}`` from ``keyed``; leave unknown keys literal."""
+    return _TEMPLATE_KEY.sub(
+        lambda m: str(keyed[m.group(1)]) if m.group(1) in keyed else m.group(0),
+        template,
+    )
+
+
+def _agent_needs_node_wrap(agent: LlmAgent) -> bool:
+    return bool(
         agent._input_guardrails
         or agent._output_guardrails
         or agent._before_agent_callback is not None
         or agent._after_agent_callback is not None
+        or getattr(agent, "_output_key", None)
+        or _has_template(agent)
     )
-    if not has_hooks:
-        return runnable
 
-    from langchain_core.messages import AIMessage
-    from langgraph.graph import END, START, MessagesState, StateGraph
 
-    async def _guarded(state: dict[str, Any]) -> dict[str, Any]:
+def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
+    """Wrap an ``LlmAgent``'s runnable in a graph node that applies the served
+    hooks (G1) and keyed-state surface (G3): ``{key}`` instruction templating
+    on the way in, ``output_key`` on the way out.
+
+    No-op for agents that declare none — ``_compile_any`` returns the runnable
+    unchanged so they keep full streaming. Wrapped agents buffer (the inner
+    agent runs to completion in the node), which the served paths surface as one
+    ``stream_mode="updates"`` node update.
+    """
+    from langchain_core.messages import AIMessage, SystemMessage
+    from langgraph.graph import END, START, StateGraph
+
+    async def _node(state: dict[str, Any]) -> dict[str, Any]:
         input_msgs = list(state["messages"])
+        keyed = state.get("state") or {}
+
         await agent._invoke_callback(agent._before_agent_callback, input_msgs)
         rejection = await agent._apply_input_guardrails(input_msgs)
         if rejection is not None:
-            # Short-circuit: the agent never runs.
             return {"messages": [AIMessage(content=rejection)]}
 
-        result = await runnable.ainvoke(state)
-        new_msgs = list(result.get("messages", []))[len(input_msgs):]
+        # {key} templating: the runnable was built with no baked system prompt;
+        # render the instructions from state and inject them as a SystemMessage
+        # (internal to this call — not added to the conversation).
+        if templated:
+            rendered = _render_template(agent._instructions, keyed)
+            inner_msgs = [SystemMessage(content=rendered), *input_msgs]
+        else:
+            inner_msgs = input_msgs
+        result = await runnable.ainvoke({**state, "messages": inner_msgs})
+        new_msgs = list(result.get("messages", []))[len(inner_msgs):]
+
         last_ai = next(
             (m for m in reversed(new_msgs) if isinstance(m, AIMessage)), None
         )
@@ -790,8 +854,8 @@ def _wrap_served_hooks(agent: LlmAgent, runnable: Any) -> Any:
 
         replacement = await agent._apply_output_guardrails(text)
         if replacement is not None:
-            # Matches LlmAgent.run: a replacement is returned as-is and the
-            # after_agent callback is NOT fired.
+            # Matches LlmAgent.run: a replacement is returned as-is, after_agent
+            # is NOT fired, and it is NOT written to output_key.
             if last_ai is not None:
                 new_msgs = [
                     AIMessage(content=replacement, id=last_ai.id) if m is last_ai else m
@@ -802,10 +866,13 @@ def _wrap_served_hooks(agent: LlmAgent, runnable: Any) -> Any:
             return {"messages": new_msgs}
 
         await agent._invoke_callback(agent._after_agent_callback, text)
-        return {"messages": new_msgs}
+        update: dict[str, Any] = {"messages": new_msgs}
+        if agent._output_key:
+            update["state"] = {agent._output_key: text}
+        return update
 
-    graph = StateGraph(MessagesState)
-    graph.add_node("agent", _guarded)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
+    graph = StateGraph(state_schema())
+    graph.add_node("agent", _node)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
     graph.add_edge(START, "agent")
     graph.add_edge("agent", END)
     return graph.compile()
@@ -814,7 +881,11 @@ def _wrap_served_hooks(agent: LlmAgent, runnable: Any) -> Any:
 def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
     """Dispatch to the right per-agent compiler."""
     if isinstance(agent, LlmAgent):
-        return _wrap_served_hooks(agent, _compile_llm_agent(agent, ctx))
+        templated = _has_template(agent)
+        runnable = _compile_llm_agent(agent, ctx, bake_prompt=not templated)
+        if not _agent_needs_node_wrap(agent):
+            return runnable
+        return _wrap_agent_node(agent, runnable, templated=templated)
     if isinstance(agent, SequentialAgent):
         return _compile_sequential_agent(agent, ctx)
     if isinstance(agent, ParallelAgent):
