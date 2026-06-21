@@ -44,10 +44,63 @@ from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["extract_obo_headers", "make_obo_workspace_client"]
+__all__ = [
+    "ApxIdentityError",
+    "extract_obo_headers",
+    "make_obo_workspace_client",
+    "resolve_no_obo_or_raise",
+]
+
+# Operators that genuinely run an agent as a service principal opt in here.
+_SP_FALLBACK_ENV = "APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK"
 
 # G2: warn at most once per process when a request falls open to the app SP.
 _warned_no_obo_in_app = False
+
+
+class ApxIdentityError(PermissionError):
+    """A served request resolved no caller identity and the fail-closed policy
+    rejected it rather than run as the app service principal (G2)."""
+
+
+def _sp_fallback_allowed() -> bool:
+    """True when an operator has explicitly opted into the app-SP fallback.
+
+    Absence of the env var means *not opted in* — i.e. fail closed. That safe
+    default is the point of this gate, so we read with no inline default and
+    treat unset (``None``) as disabled.
+    """
+    val = os.environ.get(_SP_FALLBACK_ENV)
+    return val is not None and val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def resolve_no_obo_or_raise() -> None:
+    """Identity policy for a served request that resolved **no** OBO user token.
+
+    Fails CLOSED in the Databricks Apps (multi-user) runtime: raises
+    :class:`ApxIdentityError` so the request is rejected rather than silently
+    running tools as the app service principal (cross-user data access).
+
+    Operators that genuinely run as a service principal opt in with
+    ``APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true``, which downgrades the reject to
+    a one-time warning. Outside the Apps runtime (local dev, and Model Serving
+    which is service-principal by default) this is a no-op so the existing
+    behavior is unchanged. See ``docs/design/served-path-guards-and-identity.md`` (G2).
+    """
+    if not _in_databricks_app():
+        return
+    if _sp_fallback_allowed():
+        warn_once_no_obo_in_app()
+        return
+    raise ApxIdentityError(
+        "Rejected: no OBO user token on this request in the Databricks Apps "
+        "runtime. apx-agent fails closed — otherwise tools would run as the app "
+        "service principal with cross-user data access. Forward the caller's "
+        "X-Forwarded-Access-Token (or custom_inputs.user_token) per request. To "
+        "intentionally run as the app service principal, set "
+        f"{_SP_FALLBACK_ENV}=true. See "
+        "docs/design/served-path-guards-and-identity.md (G2)."
+    )
 
 
 def warn_once_no_obo_in_app() -> None:

@@ -109,6 +109,14 @@ full wiring lands.
 
 ## G2 — identity fail-open: missing OBO header → app SP + shared memory principal
 
+> **Status: implemented (fail-closed).** In the Databricks Apps runtime a request
+> that resolves no OBO user token is now **rejected** (`ApxIdentityError`) at the
+> auth chokepoint of both served paths, instead of silently running as the app
+> service principal. Operators that genuinely run as a service principal opt in
+> with `APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true` (downgrades the reject to a
+> one-time warning). Local dev and Model Serving (SP-by-default) are unaffected.
+> See `_obo.resolve_no_obo_or_raise`.
+
 ### Problem
 
 Two compounding failures, neither surfaced as an error:

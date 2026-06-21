@@ -707,3 +707,17 @@ def test_conv_turn_tool_call_round_trip_preserves_tool_calls() -> None:
     assert tool_msgs, "No ToolMessage found after round-trip"
     assert tool_msgs[0].tool_call_id == "call-99"
     assert tool_msgs[0].content == "result-data"
+
+
+def test_resolve_ws_rejects_tokenless_request_in_app(monkeypatch):
+    """G2 wiring: the responses auth chokepoint fails closed in the Apps runtime
+    when no OBO token is present (no app-SP fallback unless opted in)."""
+    import pytest
+
+    from apx_agent._obo import ApxIdentityError
+    from apx_agent._responses_agent import _resolve_ws_and_headers_for_request
+
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+    monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
+    with pytest.raises(ApxIdentityError):
+        _resolve_ws_and_headers_for_request(custom_inputs=None)

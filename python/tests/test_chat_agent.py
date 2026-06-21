@@ -300,3 +300,17 @@ def test_log_agent_finalizes_before_resource_derivation(tmp_path, monkeypatch):
     from apx_agent._chat_agent import log_agent
     log_agent(Agent(tools=[]), model="m")
     assert "ask_sales" in seen["tools"]  # finalize ran BEFORE resource derivation
+
+
+def test_resolve_ws_rejects_tokenless_request_in_app(monkeypatch):
+    """G2 wiring: the chat auth chokepoint fails closed in the Apps runtime when
+    no OBO token is present (no app-SP fallback unless opted in)."""
+    import pytest
+
+    from apx_agent._chat_agent import _resolve_ws_and_headers
+    from apx_agent._obo import ApxIdentityError
+
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+    monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
+    with pytest.raises(ApxIdentityError):
+        _resolve_ws_and_headers(custom_inputs=None)
