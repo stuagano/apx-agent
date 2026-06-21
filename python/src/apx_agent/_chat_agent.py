@@ -461,10 +461,6 @@ def chat_agent_for(
             agent_id: str | None = None,
         ) -> None:
             self._agent = inner
-            # G1: warn once at build time if guards/callbacks are configured —
-            # the served path does not enforce them yet.
-            from ._agents import warn_unenforced_serve_hooks
-            warn_unenforced_serve_hooks(inner, surface="/invocations (ChatAgent)")
             self._model = model_endpoint
             self._conversation_store = conversation_store
             # Bound onto conversations at creation so agent-filtered readers

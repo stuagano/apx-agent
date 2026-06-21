@@ -29,6 +29,17 @@ references to `input_guardrails` / `output_guardrails` /
 
 ## G1 — guardrails & agent callbacks never fire on the served path
 
+> **Status: implemented.** `compile_to_langgraph` now wraps each `LlmAgent` that
+> declares `input_guardrails` / `output_guardrails` / `before_agent_callback` /
+> `after_agent_callback` in a guard node (`_compile._wrap_served_hooks`), reusing
+> the exact `LlmAgent.run` helpers. Because `_compile_any` runs per agent, guards
+> on sub-agents fire when that sub-agent runs. Agents with no hooks are returned
+> unchanged (full streaming). Guarded agents buffer (the inner agent runs to
+> completion inside the node so the output guard sees the full text — the
+> streaming ceiling noted below); the served paths stream with
+> `stream_mode="updates"`, so this surfaces as one node update. The interim
+> serve-time warning is removed now that the hooks are enforced.
+
 ### Problem
 
 ```python
