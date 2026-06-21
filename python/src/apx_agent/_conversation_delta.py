@@ -152,15 +152,24 @@ class DeltaConversationStore(ConversationStore):
     # ── Table creation ────────────────────────────────────────────────────────
 
     def _ensure_tables(self) -> None:
-        """Issue CREATE TABLE IF NOT EXISTS on first call. No-op thereafter."""
+        """Issue CREATE TABLE IF NOT EXISTS on first call. No-op thereafter.
+
+        Only latches as created when BOTH DDLs succeed, so a transient or
+        permission DDL failure self-heals on the next call instead of
+        permanently disabling the store (the early-return above would otherwise
+        skip the retry forever once the flag was set).
+        """
         if self._tables_created or not self._auto_create:
             return
-        self._create_conversations_table()
-        self._create_items_table()
-        self._tables_created = True
+        ok_conv = self._create_conversations_table()
+        ok_items = self._create_items_table()
+        self._tables_created = ok_conv and ok_items
 
-    def _create_conversations_table(self) -> None:
-        """Create the conversations table if absent; log and continue on failure."""
+    def _create_conversations_table(self) -> bool:
+        """Create the conversations table if absent; log and continue on failure.
+
+        Returns True on success, False if the DDL failed.
+        """
         sql = (
             f"CREATE TABLE IF NOT EXISTS {self._conv_table} ("
             f"  conversation_id STRING NOT NULL,"
@@ -177,10 +186,13 @@ class DeltaConversationStore(ConversationStore):
             f"  updated_at BIGINT NOT NULL"
             f") USING DELTA"
         )
-        self._run_ddl(sql, self._conv_table)
+        return self._run_ddl(sql, self._conv_table)
 
-    def _create_items_table(self) -> None:
-        """Create the items table if absent; log and continue on failure."""
+    def _create_items_table(self) -> bool:
+        """Create the items table if absent; log and continue on failure.
+
+        Returns True on success, False if the DDL failed.
+        """
         sql = (
             f"CREATE TABLE IF NOT EXISTS {self._items_table} ("
             f"  item_id STRING NOT NULL,"
@@ -195,12 +207,17 @@ class DeltaConversationStore(ConversationStore):
             f"  created_at BIGINT NOT NULL"
             f") USING DELTA"
         )
-        self._run_ddl(sql, self._items_table)
+        return self._run_ddl(sql, self._items_table)
 
-    def _run_ddl(self, sql: str, table: str) -> None:
-        """Execute a DDL statement, logging a hint on failure without raising."""
+    def _run_ddl(self, sql: str, table: str) -> bool:
+        """Execute a DDL statement, logging a hint on failure without raising.
+
+        Returns True on success, False on failure so the caller can avoid
+        latching the store as created when the tables don't actually exist.
+        """
         try:
             run_sql(self.ws, sql, warehouse_id=self.warehouse_id)
+            return True
         except Exception as exc:
             schema_parts = table.rsplit(".", 1)[0]
             logger.warning(
@@ -209,7 +226,7 @@ class DeltaConversationStore(ConversationStore):
                 "  Or pre-create the tables and set auto_create=False.",
                 table, exc, schema_parts,
             )
-            self._tables_created = False  # retry on next call
+            return False
 
     # ── Row serialisation helpers ─────────────────────────────────────────────
 

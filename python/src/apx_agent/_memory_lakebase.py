@@ -240,11 +240,16 @@ class LakebaseMemoryStore:
     # -- DDL ----------------------------------------------------------------
 
     def _ensure_schema(self) -> None:
-        """Run the table + index DDL exactly once per instance."""
+        """Run the table + index DDL exactly once per instance.
+
+        Latch ``_created`` only after the DDL succeeds, so a transient or
+        permission failure self-heals on the next op instead of permanently
+        no-opping schema creation (get/delete would silently return None/False
+        and add/list/recall would raise undefined-table). Mirrors
+        DeltaMemoryStore, which deliberately does not latch on failure.
+        """
         if self._created or not self._auto_create:
             return
-        # Flip the flag first so a failure doesn't loop on every op.
-        self._created = True
         sa = _require_sqlalchemy()
         table = self.table_name
         statements: list[str] = []
@@ -277,6 +282,7 @@ class LakebaseMemoryStore:
             with self.engine.begin() as conn:
                 for stmt in statements:
                     conn.execute(sa.text(stmt))
+            self._created = True
         except Exception as e:
             logger.warning(
                 "LakebaseMemoryStore: DDL on %s failed: %s — "
