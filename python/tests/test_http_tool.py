@@ -131,3 +131,20 @@ class TestCallMechanics:
         with _patch_run_sql([{"status_code": 200, "text": ""}]) as m:
             await t(ws=MagicMock())
         assert m.call_args.kwargs["warehouse_id"] == "wh-9"
+
+
+class TestOpenapiSpecGuard:
+    def test_non_spec_response_raises_valueerror_not_attributeerror(self):
+        """A non-JSON/text response (e.g. an error page) yaml-parses to a str.
+
+        Regression: `(doc or {}).get("paths")` then raised AttributeError
+        ('str' object has no attribute 'get'). It must be a clean ValueError.
+        """
+        from apx_agent.http_tools import openapi_tool
+
+        resp = MagicMock()
+        resp.text = "Service Unavailable"  # yaml-parses to the bare string
+        resp.raise_for_status = MagicMock()  # simulate a 200 with a bad body
+        with patch("httpx.get", return_value=resp):
+            with pytest.raises(ValueError):
+                openapi_tool("https://example.com/not-a-spec", "conn")

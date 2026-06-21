@@ -550,3 +550,28 @@ def test_new_conversation_item_type_mismatch_raises():
             response_id="r1",
             data=MessageData(role="user", content=[]),
         )
+
+
+# ── item-data alias round-trip (the "model"/"agent" storage round-trip) ───────
+# Regression guard: Delta/Lakebase stores persist item data with
+# ``model_dump_json(by_alias=True)`` (key ``"model"``) and rebuild with
+# ``parse_item_data`` (``cls(**raw)``). The ``agent`` field must accept the
+# alias back, or every read of a persisted assistant turn raises.
+
+
+@pytest.mark.parametrize(
+    "item_type,data",
+    [
+        ("message", MessageData(role="assistant", content=[{"type": "text", "text": "hi"}], agent="acme")),
+        ("function_call", FunctionCallData(agent="acme", name="search", arguments="{}", call_id="c1")),
+        ("reasoning", ReasoningData(agent="acme", summary=[{"type": "summary_text", "text": "x"}])),
+    ],
+)
+def test_item_data_survives_by_alias_storage_round_trip(item_type, data):
+    """data -> model_dump_json(by_alias=True) -> parse_item_data preserves ``agent``."""
+    import json
+
+    wire = json.loads(data.model_dump_json(by_alias=True, exclude_none=True))
+    assert wire["model"] == "acme"  # persisted under the alias
+    back = parse_item_data(item_type, wire)
+    assert back.agent == "acme"  # ...and read back without dropping it

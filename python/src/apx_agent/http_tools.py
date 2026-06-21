@@ -171,7 +171,9 @@ def _load_openapi_spec(spec: str) -> dict[str, Any]:
     if spec.startswith("http://") or spec.startswith("https://"):
         import httpx
 
-        raw = httpx.get(spec, timeout=10.0).text
+        resp = httpx.get(spec, timeout=10.0, follow_redirects=True)
+        resp.raise_for_status()  # an HTML/text error page would otherwise parse as a YAML string
+        raw = resp.text
     else:
         with open(spec, encoding="utf-8") as f:
             raw = f.read()
@@ -233,7 +235,13 @@ def openapi_tool(
         agent = Agent(tools=tools)
     """
     doc = _load_openapi_spec(spec)
-    paths = (doc or {}).get("paths") or {}
+    if not isinstance(doc, dict):
+        # A non-JSON/HTML response YAML-parses to a str; guard before `.get`.
+        raise ValueError(
+            f"openapi_tool: {spec!r} did not parse to a spec object "
+            f"(got {type(doc).__name__}); check the URL/path returns OpenAPI JSON or YAML."
+        )
+    paths = doc.get("paths") or {}
 
     tools: list = []
     for path, path_item in paths.items():
