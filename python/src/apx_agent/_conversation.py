@@ -251,6 +251,14 @@ def parse_item_data(item_type: str, raw: dict[str, Any]) -> ItemData:
     cls = ITEM_TYPE_TO_DATA_CLS.get(item_type)
     if cls is None:
         raise ValueError(f"unknown item type: {item_type!r}")
+    # Stores serialize the ``agent`` field under its alias "model"
+    # (``model_dump_json(by_alias=True)``). Map it back on read so the value
+    # round-trips — ``extra="ignore"`` would otherwise drop the "model" key and
+    # every read of a persisted assistant message / function_call / reasoning
+    # item would raise. Restricted to classes that have an ``agent`` field but
+    # no real ``model`` field, so CompactionData's genuine ``model`` is untouched.
+    if "model" in raw and "agent" in cls.model_fields and "model" not in cls.model_fields:
+        raw = {**raw, "agent": raw["model"]}
     return cls(**raw)  # type: ignore[return-value]
 
 

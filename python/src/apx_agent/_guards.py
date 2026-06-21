@@ -230,6 +230,14 @@ def _texts_from_messages(messages: Any) -> list[str]:
             content = getattr(m, "content", None)
         if isinstance(content, str):
             out.append(content)
+        elif isinstance(content, list):
+            # Multimodal/structured shape, e.g. [{"type": "text", "text": ...}].
+            # Without this branch the guard never inspects the standard content
+            # shape and returns "allowed" for exactly what it should screen.
+            for part in content:
+                text = part.get("text") if isinstance(part, dict) else None
+                if isinstance(text, str):
+                    out.append(text)
     return out
 
 
