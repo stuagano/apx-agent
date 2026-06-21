@@ -966,11 +966,6 @@ def compile_to_responses_agent(
             are not installed. The compile is lazy so a process that never
             calls this function won't trip the import.
     """
-    # G1: warn once at compile time if guards/callbacks are configured — the
-    # served path does not enforce them yet.
-    from ._agents import warn_unenforced_serve_hooks
-    warn_unenforced_serve_hooks(agent, surface="/responses (ResponsesAgent / Apps)")
-
     _types = _import_responses_types()
     ResponsesAgentRequest = _types.request_cls
     ResponsesAgentResponse = _types.response_cls
