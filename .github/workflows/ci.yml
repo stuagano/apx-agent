@@ -67,8 +67,9 @@ jobs:
         working-directory: python
 
     steps:
-      - if: needs.changes.outputs.code == 'true'
-        uses: actions/checkout@v6
+      # Always check out so the per-job working-directory exists even on the
+      # docs-only path (where the real steps below are skipped).
+      - uses: actions/checkout@v6
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
@@ -102,8 +103,9 @@ jobs:
         working-directory: python
 
     steps:
-      - if: needs.changes.outputs.code == 'true'
-        uses: actions/checkout@v6
+      # Always check out so the per-job working-directory exists even on the
+      # docs-only path (where the real steps below are skipped).
+      - uses: actions/checkout@v6
 
       - name: Guard uv.lock registry
         if: needs.changes.outputs.code == 'true'
@@ -144,8 +146,9 @@ jobs:
         working-directory: typescript
 
     steps:
-      - if: needs.changes.outputs.code == 'true'
-        uses: actions/checkout@v6
+      # Always check out so the per-job working-directory exists even on the
+      # docs-only path (where the real steps below are skipped).
+      - uses: actions/checkout@v6
 
       - name: Setup Node.js
         if: needs.changes.outputs.code == 'true'
