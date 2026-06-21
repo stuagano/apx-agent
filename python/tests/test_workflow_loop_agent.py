@@ -305,3 +305,22 @@ def test_cipher_type_constants_are_plain_strings():
     assert all(isinstance(c, str) and c.isidentifier() for c in constants)
     # No dunder leakage (the L8 bug wrote "__module__" as a cipher_type).
     assert not any(c.startswith("__") for c in constants)
+
+
+class TestCallAppTimeout:
+    """Regression: _call_app declared a `timeout` it never forwarded to the
+    client, so configured sub-agent timeouts were no-ops (audit bug #229)."""
+
+    @pytest.mark.asyncio
+    async def test_call_app_forwards_timeout_to_client(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        fake_client = MagicMock()
+        fake_client.responses.create = AsyncMock(
+            return_value=MagicMock(output_text="ok")
+        )
+        with patch("databricks_openai.AsyncDatabricksOpenAI", return_value=fake_client):
+            out = await LoopAgent._call_app("my-app", "payload", timeout=42.0)
+
+        assert out == "ok"
+        assert fake_client.responses.create.call_args.kwargs["timeout"] == 42.0
