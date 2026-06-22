@@ -2269,6 +2269,18 @@ def _scaffold_from_gallery(
     _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
 
 
+def _prompt_for_instructions() -> str | None:
+    """Ask what the agent should do. Returns None when left blank (fill later)."""
+    raw = click.prompt(
+        "\nWhat should this agent do?  (its instructions)\n"
+        "  e.g. 'Answer questions about Salesforce opportunities and pipeline health.'\n"
+        "  Leave blank to fill in the YAML later",
+        default="",
+        show_default=False,
+    )
+    return raw.strip() or None
+
+
 def _scaffold_to_yaml(
     name: str,
     directory: Path,
@@ -2278,13 +2290,14 @@ def _scaffold_to_yaml(
     persona: str | None,
     join_key: str | None,
     objective: str | None,
+    instructions: str | None = None,
 ) -> None:
     import yaml as _yaml
     spec: dict = {
         "name": name,
         "description": "",
         "model": "databricks-claude-sonnet-4-6",
-        "instructions": "",
+        "instructions": instructions or "",
         "examples": [],
     }
     if scaffold_template in ("coworker", "data"):
@@ -2544,6 +2557,7 @@ def scaffold(
                 persona=persona,
                 join_key=join_key,
                 objective=objective,
+                instructions=_prompt_for_instructions() if interactive_mode else None,
             )
         return
 
@@ -3025,9 +3039,10 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
         ) from e
 
     # --- resolve SPEC to a project directory ---
+    from ._doctor import _is_apx_project
+
     cwd = Path.cwd()
-    if spec == "list":
-        pass  # handled below
+    spec_is_yaml = bool(spec) and spec.endswith((".yaml", ".yml"))
 
     if spec == "list":
         agents = _find_runnable_agents(cwd)
@@ -3043,23 +3058,62 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
         idx = click.prompt("Choose", type=click.IntRange(1, len(agents)), default=1)
         _, project_dir = agents[idx - 1]
         os.chdir(project_dir)
+    elif spec_is_yaml:
+        # A .yaml spec has no project files — generate one into a temp dir and
+        # serve from there, mirroring `deploy <spec>.yaml`. The temp dir lives
+        # for the server's lifetime and is cleaned up on process exit. Edit the
+        # YAML and re-run to pick up changes (the generated project is derived,
+        # not the source of truth — that's the YAML).
+        import atexit
+        import shutil
+        import tempfile
+        from ._project_gen import generate_project
+        from ._yaml_spec import SpecValidationError, load_spec
+
+        assert spec is not None  # spec_is_yaml implies spec is truthy
+        yaml_path = Path(spec)
+        if not yaml_path.exists():
+            raise click.ClickException(f"Spec file not found: {spec}")
+        try:
+            config = load_spec(yaml_path)
+        except SpecValidationError as e:
+            raise click.ClickException(f"Invalid spec {yaml_path}: {e}") from e
+        tmp = tempfile.mkdtemp(prefix="apx_run_")
+        atexit.register(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        project_dir = Path(tmp) / config.name
+        generate_project(config, project_dir, source_dir=yaml_path.parent)
+        click.echo(
+            f"# Generated a local project from {yaml_path.name} "
+            "(edit the YAML and re-run to update)",
+            err=True,
+        )
+        os.chdir(project_dir)
+        # Pin config resolution to the generated project. The apps runtime's
+        # _load_agent_config() otherwise walks up from __main__ (uvicorn / the
+        # apx-agent bin) and can find a nearer [tool.apx.agent] than this one.
+        os.environ["APX_PYPROJECT"] = str(project_dir / "pyproject.toml")
     elif spec is not None:
-        # Could be a directory name, or a .yaml stem/path
+        # A directory name (or bare stem) of an already-materialized project.
         spec_path = Path(spec)
         candidate_dir: Path | None = None
         if spec_path.is_dir():
             candidate_dir = spec_path.resolve()
         else:
-            # Strip .yaml extension → look for a matching project dir
-            stem = spec_path.stem if spec_path.suffix == ".yaml" else spec
-            for d in [cwd / stem, cwd]:
-                if d.is_dir() and _detect_target(d) in _RUN_MODULE_BY_TARGET:
+            # Match against real apx projects only — _detect_target defaults to
+            # "apps" for any directory, so checking it would falsely match cwd.
+            for d in [cwd / spec, cwd]:
+                if d.is_dir() and _is_apx_project(d):
                     candidate_dir = d
                     break
         if candidate_dir is None:
+            hint = (
+                f"{spec!r} looks like a spec file but doesn't exist."
+                if spec.endswith((".yaml", ".yml"))
+                else f"No runnable agent project found for {spec!r}."
+            )
             raise click.ClickException(
-                f"No runnable agent project found for {spec!r}.\n"
-                f"Try 'apx-agent run list' to see what's available."
+                f"{hint}\nTry 'apx-agent run list' to see what's available, or "
+                "'apx-agent run <spec>.yaml' to run from a spec."
             )
         if candidate_dir != cwd:
             os.chdir(candidate_dir)

@@ -131,6 +131,45 @@ def test_version_runs() -> None:
     assert result.output.strip()  # some version string
 
 
+def test_run_missing_yaml_gives_clear_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["agents", "run", "nope.yaml"])
+    assert result.exit_code != 0
+    assert "Spec file not found" in result.output
+
+
+def test_run_unknown_dir_does_not_falsely_match_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # cwd is NOT an apx project — run must error, not serve cwd as "apps".
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["agents", "run", "ghost"])
+    assert result.exit_code != 0
+    assert "No runnable agent project" in result.output
+
+
+def test_scaffold_yaml_writes_instructions(tmp_path: Path) -> None:
+    import yaml as _yaml
+
+    from apx_agent.cli import _scaffold_to_yaml
+
+    _scaffold_to_yaml(
+        name="sf-agent",
+        directory=tmp_path,
+        scaffold_template="base",
+        catalog=None,
+        schema=None,
+        persona=None,
+        join_key=None,
+        objective=None,
+        instructions="Answer Salesforce pipeline questions.",
+    )
+    spec = _yaml.safe_load((tmp_path / "sf-agent.yaml").read_text())
+    assert spec["instructions"] == "Answer Salesforce pipeline questions."
+
+
 def test_status_prompt_outside_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
