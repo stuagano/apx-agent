@@ -61,7 +61,7 @@ from ._defaults import (
     get_databricks_headers,
 )
 from ._mlflow_tracing import emit_progress
-from ._inspection import _inspect_tool_fn, _make_input_model
+from ._inspection import _inspect_tool_fn, _make_input_model, _state_param_name
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -151,6 +151,105 @@ def _resolve_deps_for_fn(fn: Any, ctx: CompileContext) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _tool_message_text(value: Any) -> str:
+    """Render a tool return for a ToolMessage body, matching ToolNode's default
+    coercion: strings verbatim, everything else as JSON."""
+    import json
+
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, default=str)
+
+
+def _make_stateful_langchain_tool(
+    fn: Any,
+    state_param: str,
+    resolved_deps: dict[str, Any],
+    input_model: Any,
+    is_async: bool,
+) -> Any:
+    """Build a StructuredTool for a tool that declares ``Dependencies.State``.
+
+    The wrapper takes LangGraph-injected ``state`` and ``tool_call_id`` params
+    (hidden from the LLM), binds a StateProxy to the author's state param, and
+    turns tracked writes into a Command state delta after the fn returns.
+    """
+    from typing import Annotated
+
+    from langchain_core.messages import ToolMessage
+    from langchain_core.tools import InjectedToolCallId, StructuredTool
+    from langgraph.prebuilt import InjectedState
+    from langgraph.types import Command
+
+    from ._state_proxy import StateProxy
+
+    def _finish(proxy: StateProxy, tool_call_id: str, ret: Any) -> Any:
+        if not proxy.dirty:
+            return ret
+        return Command(
+            update={
+                "state": proxy.delta,
+                "messages": [
+                    ToolMessage(_tool_message_text(ret), tool_call_id=tool_call_id)
+                ],
+            }
+        )
+
+    if is_async:
+        async def _wrapper(
+            __apx_state: Annotated[dict, InjectedState("state")],
+            tool_call_id: Annotated[str, InjectedToolCallId],
+            **kwargs: Any,
+        ) -> Any:
+            proxy = StateProxy(__apx_state)
+            ret = await fn(**kwargs, **resolved_deps, **{state_param: proxy})
+            return _finish(proxy, tool_call_id, ret)
+    else:
+        def _wrapper(  # type: ignore[misc]
+            __apx_state: Annotated[dict, InjectedState("state")],
+            tool_call_id: Annotated[str, InjectedToolCallId],
+            **kwargs: Any,
+        ) -> Any:
+            proxy = StateProxy(__apx_state)
+            ret = fn(**kwargs, **resolved_deps, **{state_param: proxy})
+            return _finish(proxy, tool_call_id, ret)
+
+    _wrapper.__name__ = fn.__name__
+    _wrapper.__doc__ = fn.__doc__
+    # ``from __future__ import annotations`` defers all annotations to strings.
+    # Two consumers need actual type objects, not strings:
+    #   1. ToolNode's _get_all_injected_args calls get_type_hints(_wrapper) —
+    #      resolved against _wrapper.__globals__, so patch InjectedState /
+    #      InjectedToolCallId into module globals.
+    #   2. StructuredTool._injected_args_keys reads inspect.signature(fn).parameters
+    #      directly (no get_type_hints), so it sees raw string annotations and
+    #      can't detect injected types. Fix by rewriting __annotations__ with
+    #      real objects; inspect.signature propagates these.
+    # Note: InjectedToolCallId param must be named "tool_call_id" so that
+    #   BaseTool._parse_input's "elif k == 'tool_call_id'" branch injects it.
+    _wrapper.__globals__.setdefault("InjectedState", InjectedState)
+    _wrapper.__globals__.setdefault("InjectedToolCallId", InjectedToolCallId)
+    _wrapper.__annotations__ = {
+        "__apx_state": Annotated[dict, InjectedState("state")],
+        "tool_call_id": Annotated[str, InjectedToolCallId],
+        "kwargs": Any,
+        "return": Any,
+    }
+    if is_async:
+        return StructuredTool.from_function(
+            coroutine=_wrapper,
+            name=fn.__name__,
+            description=(fn.__doc__ or fn.__name__).strip(),
+            args_schema=input_model,
+        )
+    return StructuredTool.from_function(
+        func=_wrapper,
+        name=fn.__name__,
+        description=(fn.__doc__ or fn.__name__).strip(),
+        args_schema=input_model,
+    )
+
+
 def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
     """Wrap an apx-agent tool function as a langchain ``StructuredTool``.
 
@@ -163,6 +262,12 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
     input_model = _make_input_model(fn, plain_params)
     resolved_deps = _resolve_deps_for_fn(fn, ctx)
     is_async = inspect.iscoroutinefunction(fn)
+
+    state_param = _state_param_name(fn)
+    if state_param is not None:
+        return _make_stateful_langchain_tool(
+            fn, state_param, resolved_deps, input_model, is_async
+        )
 
     if is_async:
         async def _async_wrapper(**kwargs: Any) -> Any:
