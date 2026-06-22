@@ -273,25 +273,40 @@ def _governance_exception_middleware() -> Any:
     respond. Genuine bugs (TypeError, KeyError, ...) still propagate and
     fail loud.
 
+    Implements BOTH the sync (``wrap_tool_call``) and async
+    (``awrap_tool_call``) hooks: the served ``/invocations``/ChatAgent paths
+    call tools synchronously, but ``LangGraphExecutor`` drives the graph with
+    ``astream``. A sync-only middleware made tool-calling agents raise
+    ``NotImplementedError`` on the async path (#243).
+
     :returns: An ``AgentMiddleware`` for ``create_agent(middleware=[...])``.
     """
-    from langchain.agents.middleware import wrap_tool_call
+    from langchain.agents.middleware import AgentMiddleware
     from langchain_core.messages import ToolMessage
 
     from ._cancellation import ToolCancelled
 
-    @wrap_tool_call
-    def _convert_governance_errors(request: Any, handler: Any) -> Any:
-        try:
-            return handler(request)
-        except (PermissionError, ToolCancelled) as exc:
-            return ToolMessage(
-                content=f"Error: {exc}",
-                tool_call_id=request.tool_call["id"],
-                status="error",
-            )
+    def _to_error(request: Any, exc: Exception) -> ToolMessage:
+        return ToolMessage(
+            content=f"Error: {exc}",
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
 
-    return _convert_governance_errors
+    class _GovernanceErrorMiddleware(AgentMiddleware):
+        def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+            try:
+                return handler(request)
+            except (PermissionError, ToolCancelled) as exc:
+                return _to_error(request, exc)
+
+        async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+            try:
+                return await handler(request)
+            except (PermissionError, ToolCancelled) as exc:
+                return _to_error(request, exc)
+
+    return _GovernanceErrorMiddleware()
 
 
 def _compile_llm_agent(
