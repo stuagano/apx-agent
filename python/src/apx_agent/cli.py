@@ -5980,7 +5980,66 @@ def logs(
 # ---------------------------------------------------------------------------
 
 
+def _find_apx_specs(cwd: Path) -> list[Path]:
+    """YAML files in *cwd* that load as a valid apx spec (best-effort)."""
+    from ._yaml_spec import load_spec
+
+    found = []
+    for p in sorted([*cwd.glob("*.yaml"), *cwd.glob("*.yml")]):
+        try:
+            load_spec(p)
+            found.append(p)
+        except Exception:
+            continue
+    return found
+
+
+def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
+    """Render what a YAML spec declares — pure-local, no agent resolution."""
+    from ._yaml_spec import SpecValidationError, load_spec
+
+    try:
+        cfg = load_spec(yaml_path)
+    except SpecValidationError as e:
+        raise click.ClickException(f"Invalid spec {yaml_path}: {e}") from e
+
+    payload = {
+        "spec": str(yaml_path),
+        "name": cfg.name,
+        "model": cfg.model,
+        "instructions": cfg.instructions,
+        "template": cfg.template,
+        "tools": cfg.tools,
+        "sub_agents": cfg.sub_agents,
+    }
+    if fmt == "json":
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    click.echo(f"Agent spec: {yaml_path.name}")
+    click.echo(f"  name:  {cfg.name}")
+    click.echo(f"  model: {cfg.model}")
+    if cfg.template:
+        loc = f"{cfg.template.get('catalog')}.{cfg.template.get('schema')}"
+        click.echo(f"  template: {cfg.template.get('name')} ({loc})")
+    click.echo("\nInstructions:")
+    if cfg.instructions.strip():
+        click.echo(f"  {cfg.instructions}")
+    else:
+        click.echo("  (empty — add 'instructions:' to the YAML to say what it does)")
+    click.echo(f"\nDeclared tools ({len(cfg.tools)}):")
+    if not cfg.tools:
+        click.echo("  (none)")
+    for t in cfg.tools:
+        click.echo(f"  - {t.get('type', '?')}: {t.get('name', '')}".rstrip())
+    if cfg.sub_agents:
+        click.echo(f"\nSub-agents ({len(cfg.sub_agents)}):")
+        for s in cfg.sub_agents:
+            click.echo(f"  - {s}")
+
+
 @agents.command("describe")
+@click.argument("spec", required=False, default=None, metavar="[SPEC]")
 @click.option("--module", default="agent:agent", help='Agent module spec.')
 @click.option(
     "--format", "fmt",
@@ -5988,8 +6047,12 @@ def logs(
     default="text",
     help="Output format.",
 )
-def info(module: str, fmt: str) -> None:
+def info(spec: str | None, module: str, fmt: str) -> None:
     """Introspect an agent — tools, resources, sub-agents, instructions.
+
+    SPEC may be a .yaml spec (shows what it declares). Omit it inside a
+    scaffolded project to introspect the materialized agent, or when only a
+    lone spec is present it's auto-detected.
 
     Pure local — no Databricks calls. Useful as a sanity check before
     deploy and as a programmatic source of truth for what an agent
@@ -6002,6 +6065,34 @@ def info(module: str, fmt: str) -> None:
         get_resources,
     )
     from apx_agent._tool import get_tool_metadata
+
+    # A .yaml SPEC (explicit, or passed via --module) → describe the spec.
+    spec_arg = spec if (spec and spec.endswith((".yaml", ".yml"))) else None
+    if spec_arg is None and module.endswith((".yaml", ".yml")):
+        spec_arg = module
+    if spec_arg is not None:
+        spec_path = Path(spec_arg)
+        if not spec_path.exists():
+            raise click.ClickException(f"Spec file not found: {spec_arg}")
+        _describe_from_spec(spec_path, fmt)
+        return
+
+    # No explicit module/spec: prefer a materialized project, else a lone spec.
+    if module == "agent:agent":
+        detected = _detect_module_spec()
+        if detected is not None:
+            module = detected
+        else:
+            specs = _find_apx_specs(Path.cwd())
+            if len(specs) == 1:
+                _describe_from_spec(specs[0], fmt)
+                return
+            if len(specs) > 1:
+                names = ", ".join(p.name for p in specs)
+                raise click.ClickException(
+                    f"Multiple specs here ({names}). "
+                    "Pass one: apx-agent agents describe <spec>.yaml"
+                )
 
     # Finalize so `apx-agent info` reports the same tools/resources the serve and
     # deploy paths will — config-declared [[tool.apx.tools]] included.
