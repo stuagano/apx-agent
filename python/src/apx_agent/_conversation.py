@@ -12,10 +12,12 @@ Agent-plane fields stripped from Conversation:
 
 Agent-plane methods stripped from ConversationStore:
   get_runner_ids, get_session_connectivity, get_conversations,
-  list_latest_message_items_for_conversations, set_labels, set_session_state,
+  list_latest_message_items_for_conversations, set_labels,
   set_session_usage, update_conversation_runner, create_session, create_response,
   close_inbox, open_inbox, delete_response, list_responses, find_for_token,
   and fork-related methods.
+
+(set_session_state was restored for G3 session-state persistence — see docs/design/session-state-persistence.md.)
 
 When omniagents is released as a public package, replace this module with a direct import.
 """
@@ -682,6 +684,17 @@ class ConversationStore(ABC):
         ...
 
     @abstractmethod
+    def set_session_state(
+        self, conversation_id: str, session_state: dict[str, Any]
+    ) -> None:
+        """Overwrite the conversation's persisted session_state (full replacement).
+
+        ``session_state`` must be JSON-serializable. No-op when the conversation
+        does not exist (parity with a SQL ``UPDATE`` matching zero rows).
+        """
+        ...
+
+    @abstractmethod
     def delete_conversation(self, conversation_id: str) -> bool:
         """
         Delete a conversation and all its items.
@@ -722,9 +735,9 @@ class InMemoryConversationStore(ConversationStore):
     across restarts. Thread-safe.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, storage_location: str = "memory://") -> None:
         """Initialize the in-memory store with empty state."""
-        super().__init__(storage_location="memory://")
+        super().__init__(storage_location=storage_location)
         self._conversations: dict[str, Conversation] = {}
         # Items stored in insertion (ascending position) order.
         self._items: dict[str, list[ConversationItem]] = {}
@@ -984,6 +997,17 @@ class InMemoryConversationStore(ConversationStore):
             )
             self._conversations[conversation_id] = updated
             return updated
+
+    def set_session_state(
+        self, conversation_id: str, session_state: dict[str, Any]
+    ) -> None:
+        with self._lock:
+            conv = self._conversations.get(conversation_id)
+            if conv is None:
+                return  # no-op for unknown conversation (SQL-UPDATE parity)
+            self._conversations[conversation_id] = replace(
+                conv, session_state=dict(session_state), updated_at=_now_ms()
+            )
 
     def delete_conversation(self, conversation_id: str) -> bool:
         """

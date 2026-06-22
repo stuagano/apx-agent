@@ -715,6 +715,29 @@ class LakebaseConversationStore(ConversationStore):
             params["model"] = model_override
         return assignments
 
+    def set_session_state(
+        self, conversation_id: str, session_state: dict[str, Any]
+    ) -> None:
+        """Overwrite the persisted ``session_state`` for a conversation.
+
+        Stamps ``updated_at`` for consistency with :meth:`update_conversation`.
+        No-op when the conversation does not exist (SQL UPDATE matches zero rows).
+
+        :param conversation_id: Unique conversation identifier.
+        :param session_state: JSON-serializable dict to persist.
+        """
+        import json as _json
+
+        sa = _require_sqlalchemy()
+        now = _now_ms()
+        sql = sa.text(
+            f"UPDATE {self._conv_table} "
+            f"SET session_state = :ss, updated_at = :now "
+            f"WHERE conversation_id = :cid"
+        )
+        with self.engine.begin() as conn:
+            conn.execute(sql, {"ss": _json.dumps(session_state), "cid": conversation_id, "now": now})
+
     def delete_conversation(self, conversation_id: str) -> bool:
         """
         Delete a conversation and all its items.
