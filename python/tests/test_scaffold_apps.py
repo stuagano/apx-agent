@@ -147,6 +147,43 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test 3b: session backend defaults to Lakebase, --no-lakebase opts out
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_apps_defaults_to_lakebase_session(tmp_path: Path) -> None:
+    """A default scaffold writes an active ``[tool.apx.agent.session]`` lakebase block."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--no-yaml"],
+    )
+    assert result.exit_code == 0, result.output
+
+    content = (tmp_path / "my_agent" / "pyproject.toml").read_text()
+    parsed = tomllib.loads(content)
+    session = parsed["tool"]["apx"]["agent"]["session"]
+    assert session["type"] == "lakebase"
+    assert session["instance_name"] == "apx-agent"  # shared instance
+    assert session["database"] == "my_agent"  # per-agent database (name slug)
+
+
+def test_scaffold_apps_no_lakebase_omits_session_block(tmp_path: Path) -> None:
+    """``--no-lakebase`` leaves no session block — falls back to in-memory sessions."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path),
+         "--no-yaml", "--no-lakebase"],
+    )
+    assert result.exit_code == 0, result.output
+
+    content = (tmp_path / "my_agent" / "pyproject.toml").read_text()
+    parsed = tomllib.loads(content)
+    assert "session" not in parsed.get("tool", {}).get("apx", {}).get("agent", {})
+
+
+# ---------------------------------------------------------------------------
 # Test 4: agent_server/agent.py parses as valid Python
 # ---------------------------------------------------------------------------
 
