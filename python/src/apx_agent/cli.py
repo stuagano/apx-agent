@@ -1341,6 +1341,39 @@ def _ws_is_connected(ws) -> bool:
         return False
 
 
+def _echo_lakebase_guidance(profile: str | None, instance_name: str = "apx-agent") -> None:
+    """Tell the user about the durable Lakebase session store and how to create it.
+
+    Best-effort, read-only: probes whether the shared instance already exists so
+    the next-step message is accurate. Never creates anything (that's
+    ``uv run quickstart``) and never fails the scaffold — auth/network errors
+    fall back to the generic "quickstart will create it" message.
+    """
+    click.echo()
+    click.echo(f"Sessions: durable on Lakebase — shared instance '{instance_name}'.")
+
+    ws = _make_ws_for_scaffold(profile)
+    exists = False
+    if ws is not None:
+        try:
+            ws.database.get_database_instance(instance_name)
+            exists = True
+        except Exception:
+            exists = False
+
+    if exists:
+        click.echo(
+            f"      ✓ instance '{instance_name}' already exists — "
+            "`uv run quickstart` wires this agent's tables."
+        )
+    else:
+        click.echo(
+            f"      uv run quickstart        # get-or-creates '{instance_name}' "
+            "(~2 min, reused across your agents) + tables"
+        )
+    click.echo("      (--no-lakebase next time for non-durable in-memory sessions)")
+
+
 def _list_databricks_profiles() -> list[tuple[str, str, bool]]:
     """Return (name, host, valid) for each profile via 'databricks auth profiles'.
 
@@ -2488,6 +2521,9 @@ def scaffold(
         click.echo(
             "      uv run apx-agent deploy --model <endpoint> --name <catalog.schema.model>"
         )
+
+    if scaffold_target == "apps" and lakebase:
+        _echo_lakebase_guidance(profile)
 
 
 # ---------------------------------------------------------------------------
