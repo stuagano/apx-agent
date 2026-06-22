@@ -39,15 +39,20 @@ class Dependencies:
 Authored like a dict — no LangGraph types in sight:
 
 ```python
-def remember(fact: str, state: Dependencies.State) -> str:
-    """Append a fact to running memory and report the count."""
-    facts = state.get("facts", [])
-    state["facts"] = [*facts, fact]      # write — harvested into a state delta
-    return f"noted ({len(facts) + 1} total)"
+def resolve_account(name: str, state: Dependencies.State) -> str:
+    """Resolve a customer name to an account id and stash it for later steps."""
+    acct = crm.lookup(name)
+    state["account_id"] = acct          # write — harvested into a state delta
+    return f"resolved {name} -> {acct}"
 ```
 
-The LLM sees only `fact`. `state` is excluded from the tool's input schema, exactly
-like the other `Dependencies.*` params.
+The LLM sees only `name`. `state` is excluded from the tool's input schema, exactly
+like the other `Dependencies.*` params. A later `{account_id}`-templated agent or a
+downstream tool reads the value as data, not prose.
+
+The example writes a **scalar** deliberately — see the concurrency caveat below for
+why read-modify-write accumulation (`state["x"] = [*state["x"], y]`) is unsafe when
+the LLM emits several tool calls in one turn.
 
 ## How it works (hidden from the author)
 
@@ -89,22 +94,60 @@ need to own tool execution.
 - **In-graph only.** Writes land in the `state` channel for the rest of the
   invocation (the `temp:`/in-graph scope). Persistence across turns/sessions is
   phases 2–3 of the parent design, unchanged by this increment.
+- **`create_agent` must be given `state_schema=ApxState`** for an injected
+  `state` field to exist inside its inner subgraph. `_compile_llm_agent` does not
+  pass one today; this increment adds it (scoped to agents that have a
+  State-using tool, to keep the blast radius minimal). *Verified by the
+  feasibility probe.*
 
-## Feasibility gate (verify before building the proxy)
+## Concurrency caveat (verified by probe)
 
-The whole approach rests on one assumption: `create_agent`'s `ToolNode` honors
+When the LLM emits **several tool calls in one turn**, ToolNode runs them in the
+same superstep. Each call's injected `state` reflects the value at superstep
+*start*, and the increment-1 reducer is shallow **last-write-wins per key**. So:
+
+- **Scalar / independent-key writes are fine** — distinct keys merge cleanly; a
+  last write to one key is the intended value.
+- **Read-modify-write on a shared key loses data.** Two same-turn calls that each
+  do `state["facts"] = [*state.get("facts", []), x]` both read the empty list and
+  the second delta overwrites the first — only one `x` survives. (Observed: asking
+  for two facts in one turn kept one.)
+
+This is the same hazard the parent design notes for ParallelAgent fan-in. For this
+increment we **document it and keep last-write-wins** (consistent with #240). Safe
+accumulation across concurrent calls — a list-append reducer for designated keys —
+is deferred (YAGNI until a real use case needs it). Guidance: use a distinct key
+per writer, or accumulate at the agent level via `output_key`.
+
+## Feasibility gate — PASSED (probe, 2026-06-21, live Claude)
+
+The approach rested on one assumption: `create_agent`'s `ToolNode` honors
 `InjectedState` / `InjectedToolCallId` on a `StructuredTool` and applies a `Command`
-the tool returns (state update **and** the `ToolMessage`). Prove this first with a
-minimal tool (fake or live) before implementing `StateProxy`. If it does not hold,
-the fallback is apx owning a thin tool node — a larger scope change that would send
-us back to design.
+the tool returns (state update **and** the `ToolMessage`). A minimal live probe
+confirmed it — `state["facts"]` was updated and the `ToolMessage` emitted — with one
+discovered requirement: **`create_agent` must be passed `state_schema=ApxState`** or
+the injected `state` field doesn't exist. The fallback (apx owning a thin tool node)
+is **not** needed. The probe also surfaced the concurrency caveat above.
+
+Verified API shape (locks the plan's code):
+
+```python
+from langgraph.prebuilt import InjectedState
+from langchain_core.tools import InjectedToolCallId
+from langgraph.types import Command
+
+def _wrapper(name: str,
+             state: Annotated[dict, InjectedState("state")],
+             tool_call_id: Annotated[str, InjectedToolCallId]):
+    ...  # returns Command(update={"state": delta, "messages": [ToolMessage(ret, tool_call_id=tool_call_id)]})
+```
 
 ## Testing
 
-- **Feasibility probe** (gate): a trivial state-writing tool through a real
-  `create_agent` runtime; assert the state delta lands and the `ToolMessage` is
-  emitted.
+- **Feasibility probe** (gate): DONE — committed as a regression test so the
+  injected-state + `Command` mechanism is guarded against langgraph upgrades.
 - **Unit:** `StateProxy` read/write/delta tracking; missing-key semantics;
+  concurrency caveat (two deltas on one key → last-write-wins);
   no-write path returns the plain value (no `Command`); detection of the `State`
   param in `_make_langchain_tool`; schema excludes `state`.
 - **Integration:** a tool reads a key written by an earlier `output_key`, writes a
