@@ -3260,6 +3260,37 @@ def test_apx_info_with_template_config(tmp_path, monkeypatch):
     assert "run_sql" in res.output
 
 
+def test_describe_reads_instructions_from_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The scaffold→describe loop: a YAML spec's instructions are read back.
+    (tmp_path / "sf.yaml").write_text(
+        "name: sf\nmodel: databricks-claude-sonnet-4-6\n"
+        "instructions: Answer Salesforce pipeline questions.\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    # Explicit spec
+    res = CliRunner().invoke(main, ["agents", "describe", "sf.yaml"])
+    assert res.exit_code == 0, res.output
+    assert "Answer Salesforce pipeline questions." in res.output
+    # Auto-detected lone spec (no args)
+    res = CliRunner().invoke(main, ["agents", "describe"])
+    assert res.exit_code == 0, res.output
+    assert "Answer Salesforce pipeline questions." in res.output
+
+
+def test_describe_spec_empty_instructions_hints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "sf.yaml").write_text(
+        "name: sf\nmodel: databricks-claude-sonnet-4-6\ninstructions: ''\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    res = CliRunner().invoke(main, ["agents", "describe", "sf.yaml"])
+    assert res.exit_code == 0, res.output
+    assert "empty" in res.output.lower()
+
+
 def test_scaffold_apps_pyproject_ships_examples() -> None:
     from apx_agent.cli import _SCAFFOLD_APPS_PYPROJECT
     assert "examples = [" in _SCAFFOLD_APPS_PYPROJECT
