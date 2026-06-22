@@ -312,12 +312,15 @@ def _compile_llm_agent(
         temperature=getattr(agent, "_temperature", None),
         max_tokens=getattr(agent, "_max_tokens", None),
     )
-    runnable = create_agent(
-        model=llm,
-        tools=tools,
-        system_prompt=(agent._instructions or None) if bake_prompt else None,
-        middleware=[_governance_exception_middleware()],
-    )
+    create_kwargs: dict[str, Any] = {
+        "model": llm,
+        "tools": tools,
+        "system_prompt": (agent._instructions or None) if bake_prompt else None,
+        "middleware": [_governance_exception_middleware()],
+    }
+    if _agent_has_state_tool(agent):
+        create_kwargs["state_schema"] = state_schema()
+    runnable = create_agent(**create_kwargs)
     config: dict[str, Any] = {}
     handler = build_callback_handler(agent)
     if handler is not None:
@@ -810,6 +813,11 @@ def _render_template(template: str, keyed: dict[str, Any]) -> str:
     )
 
 
+def _agent_has_state_tool(agent: LlmAgent) -> bool:
+    """True if any tool fn declares a Dependencies.State parameter."""
+    return any(_state_param_name(fn) is not None for fn in agent._tool_fns)
+
+
 def _agent_needs_node_wrap(agent: LlmAgent) -> bool:
     return bool(
         agent._input_guardrails
@@ -874,8 +882,12 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
 
         await agent._invoke_callback(agent._after_agent_callback, text)
         update: dict[str, Any] = {"messages": new_msgs}
+        inner_state = result.get("state")          # tool writes from the inner agent
+        merged_state: dict[str, Any] = dict(inner_state) if inner_state else {}
         if agent._output_key:
-            update["state"] = {agent._output_key: text}
+            merged_state[agent._output_key] = text
+        if merged_state:
+            update["state"] = merged_state
         return update
 
     graph = StateGraph(state_schema())
