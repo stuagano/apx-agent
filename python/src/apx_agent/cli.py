@@ -1076,10 +1076,18 @@ _SCAFFOLD_MEMORY_BLOCK = '''
 # [tool.apx.agent.memory]
 # type = "delta"
 # table_name = "<CATALOG>.<SCHEMA>.apx_<APP_NAME_SLUG>_memory"
-#
-# [tool.apx.agent.session]
-# type = "delta"
-# table_name = "<CATALOG>.<SCHEMA>.apx_<APP_NAME_SLUG>_sessions"
+'''
+
+# Default session backend: durable history + keyed state on Databricks Lakebase.
+# `uv run quickstart` get-or-creates the shared "apx-agent" instance (one instance
+# reused across all your scaffolded agents); each agent gets its own database, and
+# the per-agent tables auto-create on first use. Pass --no-lakebase at scaffold time
+# (or delete this block) to fall back to non-durable in-memory sessions.
+_SCAFFOLD_SESSION_LAKEBASE_BLOCK = '''
+[tool.apx.agent.session]
+type = "lakebase"
+instance_name = "apx-agent"
+database = "<APP_NAME_SLUG>"
 '''
 
 _SCAFFOLD_APPS_DATABRICKS_YML = '''\
@@ -1982,7 +1990,7 @@ def _scaffold_apps(
     target: Path, name: str, force: bool, catalog: str, schema: str,
     table: str | None = None, template: str = "data",
     persona: str | None = None, objective: str | None = None,
-    join_key: str | None = None,
+    join_key: str | None = None, lakebase: bool = True,
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
@@ -2048,10 +2056,13 @@ def _scaffold_apps(
             .replace("<KNOWLEDGE_LINE>", knowledge_line)
         )
 
-    # Inject commented-out memory block when a UC catalog/schema is known (coworker / data agents).
-    pyproject = _sub(
-        _SCAFFOLD_APPS_PYPROJECT + (_SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else "")
-    )
+    # Enable a durable Lakebase session store by default (--no-lakebase opts out to
+    # non-durable in-memory sessions). Session persistence needs only an instance +
+    # database, so it's emitted regardless of whether a UC catalog/schema resolved.
+    # The commented memory block is added only when a UC catalog/schema is known.
+    session_block = _SCAFFOLD_SESSION_LAKEBASE_BLOCK if lakebase else ""
+    memory_block = _SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else ""
+    pyproject = _sub(_SCAFFOLD_APPS_PYPROJECT + session_block + memory_block)
 
     files: dict[str, str] = {
         "pyproject.toml": pyproject,
@@ -2257,6 +2268,12 @@ def _scaffold_to_yaml(
 @click.option("--data", "use_data", is_flag=True, default=False,
               help="Shorthand for --template data.")
 @click.option(
+    "--lakebase/--no-lakebase", "lakebase", default=True,
+    help="Enable a durable Lakebase session store by default (shared 'apx-agent' "
+    "instance, per-agent database, created by `uv run quickstart`). Use "
+    "--no-lakebase for non-durable in-memory sessions.",
+)
+@click.option(
     "--interactive/--no-interactive", "interactive", default=None,
     help="Run the setup wizard (target, template, catalog, schema, persona). "
          "Defaults to on when stdin is a TTY.",
@@ -2269,7 +2286,7 @@ def scaffold(
     name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
     scaffold_template: str | None, coworker_spec: str | None, use_data: bool,
-    interactive: bool | None, emit_yaml: bool,
+    lakebase: bool, interactive: bool | None, emit_yaml: bool,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -2456,7 +2473,7 @@ def scaffold(
         _scaffold_apps(
             target, project_name, force, catalog, schema, table,
             template=scaffold_template, persona=persona, objective=objective,
-            join_key=join_key,
+            join_key=join_key, lakebase=lakebase,
         )
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)
