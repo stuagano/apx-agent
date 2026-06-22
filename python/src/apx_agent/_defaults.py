@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from typing import Annotated, Any, TypeAlias
 from uuid import UUID
 
@@ -16,6 +16,8 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
 from fastapi import Depends, Header, Request
 from pydantic import BaseModel, SecretStr
+
+from ._state_marker import _STATE_DEP
 
 # Cap the Databricks SDK retry window for agent-runtime clients. The SDK
 # default is 300s, so a flaky/unreachable workspace API — e.g. FEVM/private-link
@@ -214,6 +216,12 @@ def _get_sql_runner(headers: HeadersDependency) -> SqlRunnerFn:
 SqlDependency: TypeAlias = Annotated[SqlRunnerFn, Depends(_get_sql_runner)]
 
 
+# Not a FastAPI Depends — resolved per-call from LangGraph state, not the request
+# cycle. See _compile._make_stateful_langchain_tool and
+# docs/design/keyed-state-tool-access.md.
+StateDependency: TypeAlias = Annotated[MutableMapping[str, Any], _STATE_DEP]
+
+
 # ---------------------------------------------------------------------------
 # Dependencies class — public API
 # ---------------------------------------------------------------------------
@@ -267,3 +275,9 @@ class Dependencies:
     Progress: TypeAlias = ProgressDependency
     """Emit a progress marker into the trace: ``progress("Loading…")``.
     Recommended usage: ``progress: Dependencies.Progress``."""
+
+    State: TypeAlias = StateDependency
+    """In-graph keyed state, read/written like a dict; excluded from the LLM
+    schema. Writes are harvested into the graph state after the tool returns.
+    In-place mutation of a nested value is not tracked — reassign the key.
+    Recommended usage: ``state: Dependencies.State``"""

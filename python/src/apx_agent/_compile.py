@@ -61,7 +61,8 @@ from ._defaults import (
     get_databricks_headers,
 )
 from ._mlflow_tracing import emit_progress
-from ._inspection import _inspect_tool_fn, _make_input_model
+from ._inspection import _inspect_tool_fn, _make_input_model, _state_param_name
+from ._state_tool import _make_stateful_langchain_tool
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -163,6 +164,12 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
     input_model = _make_input_model(fn, plain_params)
     resolved_deps = _resolve_deps_for_fn(fn, ctx)
     is_async = inspect.iscoroutinefunction(fn)
+
+    state_param = _state_param_name(fn)
+    if state_param is not None:
+        return _make_stateful_langchain_tool(
+            fn, state_param, resolved_deps, input_model, is_async
+        )
 
     if is_async:
         async def _async_wrapper(**kwargs: Any) -> Any:
@@ -305,12 +312,15 @@ def _compile_llm_agent(
         temperature=getattr(agent, "_temperature", None),
         max_tokens=getattr(agent, "_max_tokens", None),
     )
-    runnable = create_agent(
-        model=llm,
-        tools=tools,
-        system_prompt=(agent._instructions or None) if bake_prompt else None,
-        middleware=[_governance_exception_middleware()],
-    )
+    create_kwargs: dict[str, Any] = {
+        "model": llm,
+        "tools": tools,
+        "system_prompt": (agent._instructions or None) if bake_prompt else None,
+        "middleware": [_governance_exception_middleware()],
+    }
+    if _agent_has_state_tool(agent):
+        create_kwargs["state_schema"] = state_schema()
+    runnable = create_agent(**create_kwargs)
     config: dict[str, Any] = {}
     handler = build_callback_handler(agent)
     if handler is not None:
@@ -803,6 +813,11 @@ def _render_template(template: str, keyed: dict[str, Any]) -> str:
     )
 
 
+def _agent_has_state_tool(agent: LlmAgent) -> bool:
+    """True if any tool fn declares a Dependencies.State parameter."""
+    return any(_state_param_name(fn) is not None for fn in agent._tool_fns)
+
+
 def _agent_needs_node_wrap(agent: LlmAgent) -> bool:
     return bool(
         agent._input_guardrails
@@ -867,8 +882,12 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
 
         await agent._invoke_callback(agent._after_agent_callback, text)
         update: dict[str, Any] = {"messages": new_msgs}
+        inner_state = result.get("state")          # tool writes from the inner agent
+        merged_state: dict[str, Any] = dict(inner_state) if inner_state else {}
         if agent._output_key:
-            update["state"] = {agent._output_key: text}
+            merged_state[agent._output_key] = text
+        if merged_state:
+            update["state"] = merged_state
         return update
 
     graph = StateGraph(state_schema())
