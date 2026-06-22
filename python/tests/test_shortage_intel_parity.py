@@ -120,9 +120,21 @@ class TestTopologyParity:
         edges = compiled.get_graph().edges
         edge_pairs = {(e.source, e.target) for e in edges}
 
-        # Expect each adjacent pair in REFERENCE_NODE_NAMES to be wired.
+        # Each adjacent pair in REFERENCE_NODE_NAMES must be linearly wired —
+        # either directly, or through a synthetic ``_continue_*`` node (the
+        # SequentialAgent inserts one between steps so the next LLM step never
+        # receives a conversation ending in an assistant message; see
+        # _compile._sequential_continuation). Linear order is preserved either way.
         for src, dst in zip(REFERENCE_NODE_NAMES, REFERENCE_NODE_NAMES[1:]):
-            assert (src, dst) in edge_pairs, (
+            direct = (src, dst) in edge_pairs
+            via_continuation = any(
+                (src, mid) in edge_pairs and (mid, dst) in edge_pairs
+                for mid in (
+                    t for s, t in edge_pairs
+                    if s == src and t.startswith("_continue_")
+                )
+            )
+            assert direct or via_continuation, (
                 f"Missing linear edge {src} → {dst} in compiled apx-agent graph "
                 f"(got edges: {sorted(edge_pairs)})"
             )

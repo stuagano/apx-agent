@@ -50,6 +50,7 @@ from ._agents import (
     LoopAgent,
     ParallelAgent,
     RouterAgent,
+    SEQUENTIAL_CONTINUATION,
     SequentialAgent,
 )
 from ._defaults import (
@@ -340,9 +341,28 @@ def _compile_llm_agent(
     return runnable
 
 
+def _sequential_continuation(state: dict[str, Any]) -> dict[str, Any]:
+    """Between two sequential steps, append a user turn if the conversation ends
+    with an assistant message.
+
+    A compiled ``SequentialAgent`` shares one ``messages`` channel, so each step
+    leaves its final ``AIMessage`` on the tail. The next LLM step would then send
+    a conversation ending in an assistant message, which prefill-strict endpoints
+    (e.g. Claude) reject. This mirrors ``SequentialAgent.run()``; the conditional
+    fires only when a trailing assistant message actually exists, so it adds no
+    turn for non-LLM tails and doesn't sniff the endpoint.
+    """
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    messages = state.get("messages") or []
+    if messages and isinstance(messages[-1], AIMessage):
+        return {"messages": [HumanMessage(content=SEQUENTIAL_CONTINUATION)]}
+    return {}
+
+
 def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> Any:
     """Compile a ``SequentialAgent`` into a linear ``StateGraph``."""
-    from langgraph.graph import END, START, MessagesState, StateGraph
+    from langgraph.graph import END, START, StateGraph
 
     graph = StateGraph(state_schema())
     node_names: list[str] = []
@@ -355,8 +375,13 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
         graph.add_node(name, _compile_any(sub, ctx))
 
     graph.add_edge(START, node_names[0])
-    for src, dst in zip(node_names, node_names[1:]):
-        graph.add_edge(src, dst)
+    for i, (src, dst) in enumerate(zip(node_names, node_names[1:])):
+        # Insert a continuation node so dst never receives a conversation that
+        # ends with src's assistant message (see _sequential_continuation).
+        cont = f"_continue_{i}"
+        graph.add_node(cont, _sequential_continuation)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
+        graph.add_edge(src, cont)
+        graph.add_edge(cont, dst)
     graph.add_edge(node_names[-1], END)
 
     return graph.compile()
