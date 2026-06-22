@@ -10,6 +10,7 @@ from fastapi import params
 from pydantic import BaseModel, create_model
 
 from ._models import AgentConfig, _ToolFn
+from ._state_marker import _STATE_DEP
 
 
 class ToolSignature(NamedTuple):
@@ -22,6 +23,25 @@ def _is_fastapi_dependency(annotation: Any) -> bool:
     if get_origin(annotation) is not Annotated:
         return False
     return any(isinstance(arg, params.Depends) for arg in get_args(annotation))
+
+
+def _is_state_dependency(annotation: Any) -> bool:
+    """Return True if the annotation is ``Dependencies.State``."""
+    if get_origin(annotation) is not Annotated:
+        return False
+    return any(arg is _STATE_DEP for arg in get_args(annotation))
+
+
+def _state_param_name(fn: _ToolFn) -> str | None:
+    """Return the name of the fn's Dependencies.State parameter, or None."""
+    try:
+        hints = get_type_hints(fn, include_extras=True)
+    except Exception:
+        hints = {}
+    for name in inspect.signature(fn).parameters:
+        if _is_state_dependency(hints.get(name, Any)):
+            return name
+    return None
 
 
 def _inspect_tool_fn(fn: _ToolFn) -> ToolSignature:
@@ -42,6 +62,8 @@ def _inspect_tool_fn(fn: _ToolFn) -> ToolSignature:
 
     for name, param in sig.parameters.items():
         annotation = hints.get(name, Any)
+        if _is_state_dependency(annotation):
+            continue                            # injected per-call, not in schema/deps
         if _is_fastapi_dependency(annotation):
             dep_param_names.append(name)
         else:
