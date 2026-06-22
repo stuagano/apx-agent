@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from apx_agent.bootstrap import init_apps_experiment
+from apx_agent.bootstrap import init_apps_experiment, provision_memory_backends
 
 
 @pytest.fixture
@@ -159,3 +159,68 @@ def test_init_is_idempotent_when_experiment_exists(
     lines = env_file.read_text().splitlines()
     exp_lines = [l for l in lines if l.startswith("MLFLOW_EXPERIMENT_ID=")]
     assert exp_lines == ["MLFLOW_EXPERIMENT_ID=exp-existing"]
+
+
+# ---------------------------------------------------------------------------
+# Test 4: provision_memory_backends reaches lakebase create for a SESSION-only
+# config (no [tool.apx.agent.memory] block). Regression guard — the old
+# `cfg.memory is None` early-return killed session-only provisioning.
+# ---------------------------------------------------------------------------
+
+
+def _fake_session_lakebase_config() -> types.SimpleNamespace:
+    """Config with a lakebase session block and no memory block."""
+    session = types.SimpleNamespace(
+        type="lakebase", instance_name="apx-agent", database="my_agent", table_name=None
+    )
+    return types.SimpleNamespace(memory=None, session=session)
+
+
+def test_provision_session_only_lakebase_creates_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session-only lakebase config provisions the instance (no memory block)."""
+    import apx_agent._inspection as _inspection
+    import apx_agent._defaults as _defaults
+
+    monkeypatch.setattr(
+        _inspection, "_load_agent_config", lambda **_: _fake_session_lakebase_config()
+    )
+
+    ws = MagicMock()
+    # Instance does not exist yet → get raises, create succeeds.
+    ws.database.get_database_instance.side_effect = RuntimeError("not found")
+    ws.database.create_database_instance_and_wait.return_value = types.SimpleNamespace(
+        read_write_dns="apx-agent.db.databricks.com"
+    )
+    monkeypatch.setattr(_defaults, "_make_workspace_client", lambda: ws)
+
+    lines = provision_memory_backends()
+
+    # The create call actually fired (the bug was: it never reached here).
+    ws.database.create_database_instance_and_wait.assert_called_once()
+    created = ws.database.create_database_instance_and_wait.call_args[0][0]
+    assert created.name == "apx-agent"
+    assert any("done   lakebase instance 'apx-agent'" in l for l in lines), lines
+
+
+def test_provision_reuses_existing_lakebase_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the shared instance already exists, no create call is made (idempotent)."""
+    import apx_agent._inspection as _inspection
+    import apx_agent._defaults as _defaults
+
+    monkeypatch.setattr(
+        _inspection, "_load_agent_config", lambda **_: _fake_session_lakebase_config()
+    )
+    ws = MagicMock()
+    ws.database.get_database_instance.return_value = types.SimpleNamespace(
+        read_write_dns="apx-agent.db.databricks.com"
+    )
+    monkeypatch.setattr(_defaults, "_make_workspace_client", lambda: ws)
+
+    lines = provision_memory_backends()
+
+    ws.database.create_database_instance_and_wait.assert_not_called()
+    assert any("exists lakebase instance 'apx-agent'" in l for l in lines), lines

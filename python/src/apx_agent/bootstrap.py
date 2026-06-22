@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 _DEFAULT_BUNDLE_TARGET = "dev"  # fall back to local dev mode when BUNDLE_TARGET not set
 _DEFAULT_MLFLOW_TRACKING_URI = "databricks"  # MLflow default for Databricks workspaces
@@ -179,75 +179,101 @@ CREATE TABLE IF NOT EXISTS {table} (
 ) USING DELTA"""
 
 
+def _ensure_lakebase_instance(ws: Any, instance_name: str) -> list[str]:
+    """Get-or-create a Lakebase Postgres instance. Idempotent.
+
+    The instance is a workspace-level resource (~2 min to create) and is meant
+    to be shared across agents — per-agent isolation is the *database*, not the
+    instance. Per-agent tables are auto-created by the conversation/memory store
+    on first use, so this only ensures the instance exists.
+
+    Returns status lines for printing.
+    """
+    from databricks.sdk.service.database import DatabaseInstance  # noqa: PLC0415
+
+    try:
+        existing = ws.database.get_database_instance(instance_name)
+        host = existing.read_write_dns or "(host pending)"
+        return [f"  exists lakebase instance '{instance_name}'  host={host}"]
+    except Exception:
+        lines = [f"  create lakebase instance '{instance_name}' (this may take ~2 min)…"]
+        try:
+            result = ws.database.create_database_instance_and_wait(
+                DatabaseInstance(name=instance_name)
+            )
+            host = result.read_write_dns or "(host not yet available — re-run quickstart)"
+            lines.append(f"  done   lakebase instance '{instance_name}'")
+            lines.append(f"         host = {host}")
+        except Exception as exc:
+            lines.append(f"  FAIL   lakebase provisioning: {exc}")
+        return lines
+
+
 def provision_memory_backends(
     *,
     pyproject_path: str | None = None,
 ) -> list[str]:
     """Provision memory and session backends declared in ``pyproject.toml``.
 
-    - **delta**: runs ``CREATE TABLE IF NOT EXISTS`` for both the memory and
-      session tables.  Idempotent — safe to re-run.
-    - **lakebase**: checks whether the named instance already exists; creates
-      it via the Databricks SDK if not.  Prints the ``read_write_dns`` host so
-      you can paste it into the ``[tool.apx.agent.memory] host`` field.
+    - **delta**: runs ``CREATE TABLE IF NOT EXISTS`` for the memory and session
+      tables.  Idempotent — safe to re-run.
+    - **lakebase**: get-or-creates the named instance via the Databricks SDK.
+      A single shared instance is reused across agents, so memory and session
+      pointing at the same ``instance_name`` provision it once.
 
-    Returns a list of status lines for printing.  No-ops silently when no
-    memory config is present.
+    Reads both ``[tool.apx.agent.memory]`` and ``[tool.apx.agent.session]`` —
+    either block alone is enough to trigger provisioning. Returns a list of
+    status lines for printing.  No-ops silently when neither block is present.
     """
     from ._inspection import _load_agent_config  # noqa: PLC0415
     from ._defaults import _make_workspace_client  # noqa: PLC0415
 
     cfg = _load_agent_config(pyproject_path=pyproject_path)
-    if cfg is None or cfg.memory is None:
+    if cfg is None:
         return []
 
     mem = cfg.memory
     sess = getattr(cfg, "session", None)
+    if mem is None and sess is None:
+        return []
 
     ws = _make_workspace_client()
     lines: list[str] = []
 
-    if mem.type == "delta":
+    # Delta tables (CREATE TABLE IF NOT EXISTS) for whichever blocks use delta.
+    delta_tables = []
+    if mem and mem.type == "delta" and mem.table_name:
+        delta_tables.append((mem.table_name, _DELTA_MEMORY_DDL))
+    if sess and sess.type == "delta" and sess.table_name:
+        delta_tables.append((sess.table_name, _DELTA_SESSION_DDL))
+    if delta_tables:
         from ._sql import run_sql  # noqa: PLC0415
 
-        for table, ddl in [
-            (mem.table_name, _DELTA_MEMORY_DDL),
-            (sess.table_name if sess else None, _DELTA_SESSION_DDL),
-        ]:
-            if not table:
-                continue
+        for table, ddl in delta_tables:
             try:
                 run_sql(ws, ddl.format(table=table))
-                lines.append(f"  create memory table  {table}")
+                lines.append(f"  create table  {table}")
             except Exception as exc:
-                lines.append(f"  WARN  memory table {table}: {exc}")
+                lines.append(f"  WARN  table {table}: {exc}")
 
-    elif mem.type == "lakebase":
-        if not mem.instance_name:
-            lines.append("  skip   lakebase — no instance_name in config")
-            return lines
-
-        from databricks.sdk.service.database import DatabaseInstance  # noqa: PLC0415
-
-        instance_name = mem.instance_name
-        try:
-            existing = ws.database.get_database_instance(instance_name)
-            host = existing.read_write_dns or "(host pending)"
-            lines.append(f"  exists lakebase instance '{instance_name}'  host={host}")
-        except Exception:
-            lines.append(f"  create lakebase instance '{instance_name}' (this may take ~2 min)…")
-            try:
-                result = ws.database.create_database_instance_and_wait(
-                    DatabaseInstance(name=instance_name)
-                )
-                host = result.read_write_dns or "(host not yet available — re-run quickstart)"
-                lines.append(f"  done   lakebase instance '{instance_name}'")
-                lines.append(f"         host = {host}")
-                lines.append(f"         Add to pyproject.toml:  host = \"{host}\"")
-            except Exception as exc:
-                lines.append(f"  FAIL   lakebase provisioning: {exc}")
+    # Lakebase instances — shared, so dedup by name (memory + session may share one).
+    wanted = []
+    if mem and mem.type == "lakebase" and mem.instance_name:
+        wanted.append(mem.instance_name)
+    if sess and sess.type == "lakebase" and sess.instance_name:
+        wanted.append(sess.instance_name)
+    if (mem and mem.type == "lakebase" and not mem.instance_name) or (
+        sess and sess.type == "lakebase" and not sess.instance_name
+    ):
+        lines.append("  skip   lakebase — no instance_name in config")
+    for instance_name in dict.fromkeys(wanted):  # dedup, preserve order
+        lines += _ensure_lakebase_instance(ws, instance_name)
 
     return lines
 
 
-__all__ = ["init_apps_experiment", "provision_memory_backends"]
+__all__ = [
+    "init_apps_experiment",
+    "provision_memory_backends",
+    "_ensure_lakebase_instance",
+]
