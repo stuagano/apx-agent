@@ -145,7 +145,8 @@ class TestMakeRouteHandler:
         model = _make_input_model(get_weather, plain)
         handler = _make_route_handler(get_weather, model, deps)
         assert handler.__name__ == "get_weather"
-        assert "weather" in (handler.__doc__ or "").lower()
+        assert handler.__doc__ is not None
+        assert "weather" in handler.__doc__.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +214,32 @@ class TestLoadAgentConfig:
         """Explicit path to a non-existent file returns None."""
         config = _load_agent_config(pyproject_path=tmp_path / "nope.toml")
         assert config is None
+
+    def test_env_pyproject_override(self, tmp_path, monkeypatch):
+        """APX_PYPROJECT pins resolution ahead of the __main__/cwd heuristics.
+
+        This is what `apx-agent run <spec>.yaml` relies on so the generated
+        temp project's config wins over a nearer pyproject.
+        """
+        toml = tmp_path / "pyproject.toml"
+        toml.write_text('[tool.apx.agent]\nname = "from-env"\n')
+        monkeypatch.setenv("APX_PYPROJECT", str(toml))
+        config = _load_agent_config()
+        assert config is not None
+        assert config.name == "from-env"
+
+    def test_explicit_path_outranks_env(self, tmp_path, monkeypatch):
+        """An explicit pyproject_path still beats APX_PYPROJECT."""
+        env_toml = tmp_path / "env" / "pyproject.toml"
+        env_toml.parent.mkdir()
+        env_toml.write_text('[tool.apx.agent]\nname = "from-env"\n')
+        arg_toml = tmp_path / "arg" / "pyproject.toml"
+        arg_toml.parent.mkdir()
+        arg_toml.write_text('[tool.apx.agent]\nname = "from-arg"\n')
+        monkeypatch.setenv("APX_PYPROJECT", str(env_toml))
+        config = _load_agent_config(pyproject_path=arg_toml)
+        assert config is not None
+        assert config.name == "from-arg"
 
 
 def test_load_agent_config_parses_examples(tmp_path):

@@ -178,8 +178,17 @@ def _load_agent_config(
                 return candidate
         return None
 
+    import os
+
+    env_pyproject = os.environ.get("APX_PYPROJECT")
     if pyproject_path is not None:
         resolved = Path(pyproject_path)
+    elif env_pyproject:
+        # Explicit override — `apx-agent run <spec>.yaml` sets this to the
+        # generated project's pyproject so config resolution can't fall through
+        # to a nearer pyproject (e.g. the framework repo's own [tool.apx.agent]
+        # or the consumer's top-level project) via the __main__/cwd heuristics.
+        resolved = Path(env_pyproject)
     else:
         resolved = None
         # Try __main__'s location first — this is the consumer's entry point
