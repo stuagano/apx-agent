@@ -735,6 +735,28 @@ class DeltaConversationStore(ConversationStore):
             parts.append(f"model_override = {_sql_str(model_override)}")
         return parts
 
+    def set_session_state(
+        self, conversation_id: str, session_state: dict[str, Any]
+    ) -> None:
+        """Overwrite the persisted ``session_state`` for a conversation.
+
+        Stamps ``updated_at`` for consistency with :meth:`update_conversation`.
+        No-op when the conversation does not exist (SQL UPDATE matches zero rows).
+
+        :param conversation_id: Unique conversation identifier.
+        :param session_state: JSON-serializable dict to persist.
+        """
+        import json as _json
+
+        now = _now_ms()
+        sql = (
+            f"UPDATE {self._conv_table} "
+            f"SET session_state = {_sql_str(_json.dumps(session_state))}, "
+            f"updated_at = {now} "
+            f"WHERE conversation_id = {_sql_str(conversation_id)}"
+        )
+        run_sql(self.ws, sql, warehouse_id=self.warehouse_id)
+
     def delete_conversation(self, conversation_id: str) -> bool:
         """
         Delete a conversation and all its items.
