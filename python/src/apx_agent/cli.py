@@ -341,6 +341,32 @@ def _save_profile_to_pyproject(profile: str) -> bool:
     return _save_to_pyproject("profile", profile, local=True)
 
 
+def _interactive_pick_profile() -> str | None:
+    """Prompt the user to pick a ~/.databrickscfg profile, set it for this
+    session, and offer to persist it to .apx.local. Returns the chosen profile
+    name, or None when no profiles exist / not a TTY. Caller re-checks auth."""
+    import sys
+    if not sys.stdin.isatty():
+        return None
+    profiles = _list_databricks_profiles()
+    if not profiles:
+        return None
+    click.echo("Databricks auth unresolved — pick a profile to use for this session:\n")
+    for i, (name, host, valid) in enumerate(profiles, 1):
+        status = "✓" if valid else " "
+        short_host = host.replace("https://", "").split(".")[0] if host else ""
+        click.echo(f"  {i:2}. {status} {name:<28} {short_host}")
+    default = next((i for i, (_, _, v) in enumerate(profiles, 1) if v), 1)
+    idx = click.prompt("\nChoose", type=click.IntRange(1, len(profiles)), default=default)
+    chosen, _, _ = profiles[idx - 1]
+    os.environ["DATABRICKS_CONFIG_PROFILE"] = chosen
+    if _save_profile_to_pyproject(chosen):
+        click.echo(f"  Saved profile '{chosen}' to .apx.local — future runs will use it automatically.\n")
+    else:
+        click.echo(f"  Using profile '{chosen}' for this session (export DATABRICKS_CONFIG_PROFILE={chosen} to make it permanent).\n")
+    return chosen
+
+
 
 
 def _preflight_databricks_auth() -> None:
@@ -351,7 +377,6 @@ def _preflight_databricks_auth() -> None:
     automatically. When running in a TTY and auth still fails, shows a profile
     picker and offers to save the choice back to pyproject.toml.
     """
-    import sys
     from . import _doctor as _d
 
     # Apply a saved profile preference before running the auth check.
@@ -362,29 +387,10 @@ def _preflight_databricks_auth() -> None:
 
     result = _d.check_databricks_auth()
     if result.status is _d.Status.FAIL:
-        profiles = _list_databricks_profiles()
-        if profiles and sys.stdin.isatty():
-            # Auth is ambiguous or unresolved — let the user pick a profile
-            # interactively instead of just printing instructions and exiting.
-            click.echo(
-                "Databricks auth unresolved — pick a profile to use for this session:\n"
-            )
-            for i, (name, host, valid) in enumerate(profiles, 1):
-                status = "✓" if valid else " "
-                short_host = host.replace("https://", "").split(".")[0] if host else ""
-                click.echo(f"  {i:2}. {status} {name:<28} {short_host}")
-            default = next((i for i, (_, _, v) in enumerate(profiles, 1) if v), 1)
-            idx = click.prompt("\nChoose", type=click.IntRange(1, len(profiles)), default=default)
-            chosen, _, _ = profiles[idx - 1]
-            os.environ["DATABRICKS_CONFIG_PROFILE"] = chosen
-            # Offer to persist the choice so the next run skips this picker.
-            if sys.stdin.isatty():
-                if _save_profile_to_pyproject(chosen):
-                    click.echo(f"  Saved profile '{chosen}' to .apx.local — future runs will use it automatically.\n")
-                else:
-                    click.echo(f"  Using profile '{chosen}' for this session (set DATABRICKS_CONFIG_PROFILE={chosen} to make it permanent).\n")
-            # Retry after setting the profile.
-            result = _d.check_databricks_auth()
+        # Auth is ambiguous or unresolved — let the user pick a profile
+        # interactively instead of just printing instructions and exiting.
+        if _interactive_pick_profile():
+            result = _d.check_databricks_auth()  # retry with the chosen profile
 
         if result.status is _d.Status.FAIL:
             raise click.ClickException(
@@ -684,7 +690,22 @@ def doctor(offline: bool, as_json: bool) -> None:
     Runs a live workspace round-trip by default; pass --offline to skip it.
     Exits non-zero if any check fails.
     """
+    # Honour a saved profile preference, then run once. If Databricks auth is
+    # the only thing blocking and we're interactive, let the user pick a profile
+    # and re-run — so `doctor` fixes the common "ambiguous profile" case in place.
+    if "DATABRICKS_CONFIG_PROFILE" not in os.environ:
+        saved = _read_apx_agent_config().get("profile")
+        if isinstance(saved, str) and saved:
+            os.environ["DATABRICKS_CONFIG_PROFILE"] = saved
+
     groups = _doctor_mod.run_checks(Path.cwd(), online=not offline)
+    auth_failed = any(
+        c.name == "Databricks auth" and c.status is _doctor_mod.Status.FAIL
+        for _g, cs in groups for c in cs
+    )
+    if auth_failed and _interactive_pick_profile():
+        groups = _doctor_mod.run_checks(Path.cwd(), online=not offline)
+
     fails = sum(
         1 for _g, cs in groups for c in cs if c.status is _doctor_mod.Status.FAIL
     )
