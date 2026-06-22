@@ -22,6 +22,27 @@ cd my-agent && uv run apx-agent agents run --reload
 
 Use `--no-yaml` when you want the editable project directory and local FastAPI dev UI first.
 
+### Know what you're pointed at
+
+`apx-agent status` prints the active Databricks profile and project/target — offline, no API call — so you can confirm context before you deploy:
+
+```bash
+$ apx-agent status
+profile: fe-stable
+project: payroll-coworker
+target:  apps
+```
+
+`--prompt` emits a compact one-liner (`apx:payroll-coworker(apps) ▸ fe-stable`). It's safe in an async/cached prompt segment (e.g. starship `[custom]`, powerlevel10k async), but the CLI cold-starts in ~1s, so don't call it on every render of a synchronous `PS1`. For an instant, zero-overhead prompt the same facts read straight from the shell:
+
+```bash
+apx_ps1() {
+  local p="${DATABRICKS_CONFIG_PROFILE:-DEFAULT}"
+  [ -f pyproject.toml ] && grep -q '\[tool.apx.agent\]' pyproject.toml && printf 'apx ▸ %s ' "$p"
+}
+setopt PROMPT_SUBST 2>/dev/null; PROMPT='$(apx_ps1)'"$PROMPT"
+```
+
 ---
 
 ## What is apx-agent?

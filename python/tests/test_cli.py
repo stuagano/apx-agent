@@ -131,6 +131,30 @@ def test_version_runs() -> None:
     assert result.output.strip()  # some version string
 
 
+def test_status_prompt_outside_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    result = CliRunner().invoke(main, ["status", "--prompt"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "apx"  # no project, no profile
+
+
+def test_status_prompt_in_project_with_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.apx.agent]\nname = "demo"\n'
+    )
+    (tmp_path / "agent_server").mkdir()  # apps-layout marker for _detect_target
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "fe-stable")
+    result = CliRunner().invoke(main, ["status", "--prompt"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "apx:demo(apps) ▸ fe-stable"
+
+
 # ---------------------------------------------------------------------------
 # `apx-agent scaffold`
 # ---------------------------------------------------------------------------
@@ -546,7 +570,7 @@ def test_watchdog_violations_requires_table(monkeypatch: pytest.MonkeyPatch) -> 
     runner = CliRunner()
     result = runner.invoke(main, ["watchdog", "violations"])
     assert result.exit_code != 0
-    assert "table" in result.output.lower() or "table" in (result.stderr or "").lower()
+    assert "table" in result.output.lower() or "table" in result.stderr.lower()
 
 
 def test_watchdog_violations_table_must_be_three_part() -> None:
@@ -728,7 +752,7 @@ def test_cost_requires_agent_or_endpoint() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["agents", "cost"])
     assert result.exit_code != 0
-    assert "Pass --agent" in result.output or "Pass --agent" in (result.stderr or "")
+    assert "Pass --agent" in result.output or "Pass --agent" in result.stderr
 
 
 def test_cost_agent_and_endpoint_mutually_exclusive() -> None:
@@ -1121,7 +1145,7 @@ def test_logs_requires_endpoint_or_app() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["agents", "logs"])
     assert result.exit_code != 0
-    assert "either --endpoint" in result.output or "either --endpoint" in (result.stderr or "")
+    assert "either --endpoint" in result.output or "either --endpoint" in result.stderr
 
 
 def test_logs_endpoint_and_app_mutually_exclusive() -> None:
@@ -1448,7 +1472,7 @@ def test_memory_missing_required_flag_is_usage_error(
         ])
         assert result.exit_code != 0
         # click prints "Missing option" for required flags
-        assert "Missing option" in (result.output + (result.stderr or ""))
+        assert "Missing option" in (result.output + result.stderr)
     finally:
         _cleanup_store_module()
 

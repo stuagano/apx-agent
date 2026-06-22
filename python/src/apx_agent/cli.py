@@ -746,6 +746,68 @@ def doctor(offline: bool, as_json: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+
+def _resolve_active_profile() -> str | None:
+    """The Databricks profile apx-agent would use, resolved offline.
+
+    Mirrors the precedence the commands apply: explicit env var first, then a
+    saved ``.apx.local`` preference. Returns None when neither is set (the SDK
+    falls back to DEFAULT). No network call — safe to call from a shell prompt.
+    """
+    env = os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    if env:
+        return env
+    saved = _read_apx_agent_config().get("profile")
+    return saved if isinstance(saved, str) and saved else None
+
+
+@main.command()
+@click.option(
+    "--prompt", "as_prompt", is_flag=True,
+    help="Emit a compact one-line summary for a shell prompt (offline, never errors).",
+)
+def status(as_prompt: bool) -> None:
+    """Show the active profile and project context — offline, no API call.
+
+    Run on demand to confirm what you're pointed at before deploying. Pass
+    --prompt for a compact one-liner you can wire into your shell prompt.
+    """
+    from . import _doctor as _d
+
+    cwd = Path.cwd()
+    in_project = _d._is_apx_project(cwd)
+    profile = _resolve_active_profile()
+    name = _read_apx_agent_config().get("name") if in_project else None
+    target = _detect_target(cwd) if in_project else None
+
+    if as_prompt:
+        # Never raise: a broken prompt is worse than an empty one.
+        try:
+            parts = []
+            if in_project:
+                parts.append(f"apx:{name}({target})" if name else f"apx({target})")
+            else:
+                parts.append("apx")
+            if profile:
+                parts.append(f"▸ {profile}")
+            click.echo(" ".join(parts))
+        except Exception:
+            click.echo("")
+        return
+
+    click.echo(f"profile: {profile or 'DEFAULT (unset — may be ambiguous)'}")
+    if in_project:
+        click.echo(f"project: {name or '(unnamed)'}")
+        click.echo(f"target:  {target}")
+    else:
+        click.echo(f"project: none ({cwd} is not an apx project)")
+    click.echo("\nRun `apx-agent doctor` for a full environment check.")
+
+
+# ---------------------------------------------------------------------------
 # scaffold
 # ---------------------------------------------------------------------------
 
