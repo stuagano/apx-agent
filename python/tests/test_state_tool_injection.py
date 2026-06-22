@@ -76,3 +76,30 @@ def test_state_param_excluded_from_tool_schema():
 
     tool = _make_langchain_tool(resolve, _ctx())
     assert set(tool.args.keys()) == {"name"}  # state + injected params hidden
+
+
+def test_async_stateful_tool_via_sync_graph_invoke():
+    """Async stateful tools must work on the sync graph.invoke() path.
+
+    This exercises the _sync_bridge added to the async stateful branch, which
+    bridges the coroutine so Apps /invocations and ChatAgent (sync) paths work.
+    """
+    import asyncio
+
+    async def async_resolve(name: str, state: Dependencies.State) -> str:
+        # Simulate async work, then write to state.
+        await asyncio.sleep(0)
+        state["resolved"] = f"ASYNC-{name}"
+        return f"done:{name}"
+
+    tool = _make_langchain_tool(async_resolve, _ctx())
+    graph = _make_graph(tool)
+    # Invoke SYNCHRONOUSLY — this is the path that previously had no sync bridge.
+    out = graph.invoke(
+        {"messages": [_tool_call("async_resolve", {"name": "z"})], "state": {}}
+    )
+    # State write landed.
+    assert out["state"]["resolved"] == "ASYNC-z"
+    # Tool message still emitted.
+    tms = [m for m in out["messages"] if isinstance(m, ToolMessage)]
+    assert tms and "done:z" in tms[0].content
