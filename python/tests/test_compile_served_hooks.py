@@ -152,3 +152,47 @@ async def test_output_key_threads_into_template() -> None:
     )
     sys = [m for m in summarizer.seen_messages if isinstance(m, SystemMessage)]
     assert sys and sys[0].content == "Look up ACME-123."
+
+
+@pytest.mark.asyncio
+async def test_sequential_inserts_continuation_user_turn(monkeypatch) -> None:
+    """A compiled SequentialAgent must not hand the next step a conversation that
+    ends on an assistant message — prefill-strict endpoints (Claude) reject it.
+    The continuation node appends a user turn between steps, mirroring run().
+    """
+    from unittest.mock import MagicMock
+
+    from apx_agent import SequentialAgent, compile_to_langgraph
+    from apx_agent._agents import SEQUENTIAL_CONTINUATION
+    from apx_agent import _compile
+
+    seen: dict[str, list] = {}  # agent name -> messages it was invoked with
+
+    def _fake_compile_llm(agent, ctx, *, bake_prompt=True):  # type: ignore[no-untyped-def]
+        name = agent._name
+
+        async def _node(state: dict) -> dict:
+            seen[name] = list(state["messages"])
+            return {"messages": [AIMessage(content=name)]}  # delta only
+
+        return _node
+
+    monkeypatch.setattr(_compile, "_compile_llm_agent", _fake_compile_llm)
+
+    pipeline = SequentialAgent(
+        agents=[
+            LlmAgent(tools=[], name="a", instructions="Help."),
+            LlmAgent(tools=[], name="b", instructions="Help."),
+        ],
+        name="pipe",
+    )
+    graph = compile_to_langgraph(
+        pipeline, ws=MagicMock(), model="databricks-claude-sonnet-4-6"
+    )
+    await graph.ainvoke({"messages": [HumanMessage(content="start")]})
+
+    # step "b" must see a user turn on the tail, not step "a"'s assistant message.
+    assert isinstance(seen["b"][-1], HumanMessage)
+    assert seen["b"][-1].content == SEQUENTIAL_CONTINUATION
+    # accumulation preserved: step a's output still precedes the continuation.
+    assert any(isinstance(m, AIMessage) and m.content == "a" for m in seen["b"])
