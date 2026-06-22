@@ -8,11 +8,12 @@ Build governed Databricks agents. Write a Python object — apx-agent compiles i
 
 ```bash
 uv add apx-agent
+uv run apx-agent doctor                          # check auth & environment first
 uv run apx-agent agents scaffold my-agent
 uv run apx-agent agents deploy my-agent.yaml --target apps
 ```
 
-`scaffold` writes `my-agent.yaml` by default. `deploy` reads that spec, generates the Databricks Apps project at deploy time, and prints the App URL when done.
+`doctor` verifies your Databricks auth, tooling, and config before you scaffold. `scaffold` writes `my-agent.yaml` by default. `deploy` reads that spec, generates the Databricks Apps project at deploy time, and prints the App URL when done.
 
 ```bash
 uv run apx-agent agents scaffold my-agent --no-yaml
