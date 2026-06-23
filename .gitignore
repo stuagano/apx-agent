@@ -80,3 +80,15 @@ docs/omniagent/
 
 # Local scratch — PR diffs, gap analysis, registry snapshots (not for the repo)
 .polly/
+
+# Client-specific demos — built locally, not shipped or tracked
+demos/
+
+# Superpowers planning artifacts (specs/plans) — local, not tracked
+docs/superpowers/
+
+# Client-specific demos — built locally, not shipped or tracked
+demos/
+
+# Superpowers planning artifacts (specs/plans) — local, not tracked
+docs/superpowers/
