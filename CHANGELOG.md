@@ -4,6 +4,28 @@ All notable changes to apx-agent. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are git tags
 (`v*`) and the wheel version is derived from the tag via hatch-vcs.
 
+## [0.4.2] — 2026-06-23
+
+`agents list` sees Databricks Apps; root chat matches the dev UI.
+
+### Added
+
+- **`agents list` discovers Apps-deployed agents.** It used to show only
+  UC-registered models, so agents deployed to the Apps target without UC
+  registration were invisible. It now also probes each Databricks App's
+  `/.well-known/agent.json` (A2A card) using the SDK's own credentials, and
+  merges the results into one table with a **SERVING** column
+  (`model-serving` / `apps`). An apps-deploy that also has a UC manifest is
+  deduped into one row carrying both the UC name and the live URL.
+- **`agents list --apps-only`** — skip the UC scan and show just the
+  Apps-deployed agents.
+
+### Changed
+
+- The root chat at `/` now uses the apx-agent dev-UI dark palette (same
+  background, panels, and accent) for a consistent look between the end-user
+  chat and the dev console.
+
 ## [0.4.1] — 2026-06-23
 
 End-user chat at the agent's root URL.
@@ -90,5 +112,6 @@ labeling loop.
 - Shared SQL/memory helpers deduplicated (`_sql.sql_str_literal`,
   `_sql.sql_escape`); voynich examples removed.
 
+[0.4.2]: https://github.com/stuagano/apx-agent/releases/tag/v0.4.2
 [0.4.1]: https://github.com/stuagano/apx-agent/releases/tag/v0.4.1
 [0.4.0]: https://github.com/stuagano/apx-agent/releases/tag/v0.4.0
