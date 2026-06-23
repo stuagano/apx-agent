@@ -45,31 +45,45 @@ _PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
 <style>
-  :root { color-scheme: light dark; }
+  /* Palette mirrors the apx-agent dev UI (_ui_chat.py) — dark-only, same accent. */
+  :root {
+    --bg: #0a0a0a; --panel: #111; --border: #2a2a2a; --border-strong: #333;
+    --text: #e5e7eb; --text-muted: #888; --accent: #60b0ff;
+    --accent-bg: #0d1f38; --accent-border: #1e3a5f;
+    color-scheme: dark;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, sans-serif;
-         display: flex; flex-direction: column; height: 100vh; }
-  header { padding: 12px 16px; border-bottom: 1px solid #8884;
+  body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+         font-size: 14px; line-height: 1.5; display: flex; flex-direction: column;
+         height: 100vh; background: var(--bg); color: var(--text); }
+  header { padding: 12px 16px; border-bottom: 1px solid var(--border);
+           background: var(--panel); flex-shrink: 0;
            display: flex; align-items: baseline; gap: 10px; }
   header .name { font-weight: 600; }
-  header .desc { font-size: 13px; opacity: .6; }
+  header .desc { font-size: 13px; color: var(--text-muted); }
   #log { flex: 1; overflow-y: auto; padding: 16px; display: flex;
          flex-direction: column; gap: 12px; }
   .msg { max-width: 760px; width: fit-content; padding: 10px 14px;
          border-radius: 12px; white-space: normal; word-wrap: break-word; }
-  .user { align-self: flex-end; background: #2563eb; color: #fff; }
-  .assistant { align-self: flex-start; background: #8882; }
-  .assistant pre { overflow-x: auto; background: #0002; padding: 8px;
-                   border-radius: 6px; }
+  .user { align-self: flex-end; background: var(--accent-bg); color: var(--text);
+          border: 1px solid var(--accent-border); }
+  .assistant { align-self: flex-start; background: var(--panel);
+               border: 1px solid var(--border); }
+  .assistant a { color: var(--accent); }
+  .assistant pre { overflow-x: auto; background: #000; padding: 8px;
+                   border-radius: 6px; border: 1px solid var(--border); }
   .assistant p:first-child { margin-top: 0; }
   .assistant p:last-child { margin-bottom: 0; }
-  .err { align-self: center; color: #c00; font-size: 13px; }
-  form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #8884; }
+  .err { align-self: center; color: #f87171; font-size: 13px; }
+  form { display: flex; gap: 8px; padding: 12px 16px;
+         border-top: 1px solid var(--border); background: var(--panel); }
   textarea { flex: 1; resize: none; padding: 10px; border-radius: 8px;
-             border: 1px solid #8886; font: inherit; background: transparent;
-             color: inherit; max-height: 160px; }
-  button { padding: 0 18px; border: 0; border-radius: 8px; background: #2563eb;
-           color: #fff; font: inherit; cursor: pointer; }
+             border: 1px solid var(--border-strong); font: inherit;
+             background: var(--bg); color: var(--text); max-height: 160px; }
+  textarea:focus { outline: none; border-color: var(--accent-border); }
+  button { padding: 0 18px; border: 1px solid var(--accent-border); border-radius: 8px;
+           background: var(--accent-bg); color: var(--accent); font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .5; cursor: default; }
   .dots::after { content: '...'; animation: blink 1.2s steps(4) infinite; }
   @keyframes blink { to { clip-path: inset(0 100% 0 0); } }
