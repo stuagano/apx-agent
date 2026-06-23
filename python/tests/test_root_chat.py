@@ -1,10 +1,14 @@
 """End-user chat at ``/`` — the public face of a deployed agent.
 
 Guards two things the dev UI does NOT do:
-  1. The page is self-contained (markdown libs inlined, talks to /invocations) —
+  1. The page is self-contained (markdown libs inlined, talks to /responses) —
      no /_apx/* assets, which aren't mounted in production.
   2. It ships in the Apps runtime. The dev UI is gated off when
      DATABRICKS_APP_PORT is set; the root chat must survive that gate.
+
+It targets /responses (ResponsesAgent {input}->{output}) deliberately: that
+contract is identical on both serve paths, whereas /invocations is ChatAgent
+{messages} under create_app but ResponsesAgent {input} under Apps.
 """
 
 from __future__ import annotations
@@ -21,10 +25,11 @@ from .conftest import get_weather
 
 def test_page_is_self_contained():
     html = render_root_chat()
-    # Talks to the live prod contract, not /responses or /_apx/*.
-    assert "/invocations" in html
+    # Talks to /responses (ResponsesAgent, works on both serve paths), not the
+    # ambiguous /invocations, and never reaches for /_apx/* dev assets.
+    assert "/responses" in html
+    assert "/invocations" not in html
     assert "/_apx/" not in html
-    assert "/responses" not in html
     # Markdown libs inlined (not <script src=...>) so the page needs no assets.
     assert "marked" in html and "DOMPurify" in html
     assert "/_apx/vendor" not in html
@@ -38,7 +43,7 @@ async def test_root_serves_chat_html():
         r = await ac.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert "/invocations" in r.text
+    assert "/responses" in r.text
 
 
 @pytest.mark.asyncio
