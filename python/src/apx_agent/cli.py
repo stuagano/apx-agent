@@ -7022,21 +7022,27 @@ def _fleet_select_options(f: Any) -> Any:
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
+@click.option("--apps-only", is_flag=True,
+              help="Only agents deployed as Databricks Apps (skip the UC-registered scan).")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks config profile (~/.databrickscfg).")
-def list_agents_cmd(catalog: str | None, schema: str | None, fmt: str, profile: str | None) -> None:
-    """Discover apx-agents in the workspace by their UC tags.
+def list_agents_cmd(
+    catalog: str | None, schema: str | None, fmt: str, apps_only: bool, profile: str | None,
+) -> None:
+    """Discover apx-agents in the workspace.
 
-    Looks for registered models tagged ``apx.agent.name`` — the tag
-    ``set_uc_tags_for_agent`` writes after deploy. Prints (name, model,
-    endpoint hint, resource count). Useful for fleet operators
-    inventorying multi-agent workspaces.
+    Two sources, merged into one table with a SERVING column: UC-registered
+    models tagged ``apx.agent.name`` (the deploy-time tag flow) and agents
+    running as Databricks Apps (probed via their A2A card). ``--apps-only``
+    skips the UC scan and shows just the Apps-deployed agents.
     """
     if schema and not catalog:
         raise click.UsageError("--schema requires --catalog.")
+    if apps_only and (catalog or schema):
+        raise click.UsageError("--apps-only can't be combined with --catalog/--schema (those scope the UC scan).")
 
     ws = _require_sdk(profile)
-    agents_ = _fleet_resolve(
+    agents_ = [] if apps_only else _fleet_resolve(
         ws, catalog=catalog, schema=schema, name_glob=None,
         where_exprs=(), uc_names=(),
     )
