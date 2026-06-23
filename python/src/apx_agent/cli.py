@@ -7041,6 +7041,9 @@ def list_agents_cmd(catalog: str | None, schema: str | None, fmt: str, profile: 
         where_exprs=(), uc_names=(),
     )
     rows: list[dict[str, Any]] = []
+    # app_name -> row, so app discovery can fill in the live URL for an
+    # apps-deploy that also registered a UC manifest (rather than duplicate it).
+    by_app_name: dict[str, dict[str, Any]] = {}
     for a in agents_:
         resource_count = 0
         try:
@@ -7048,31 +7051,66 @@ def list_agents_cmd(catalog: str | None, schema: str | None, fmt: str, profile: 
                                  .get("resources") or [])
         except Exception:
             pass
-        rows.append({
+        serving = "apps" if a.tags.get("apx.serving") == "apps" else "model-serving"
+        row = {
             "agent_name": a.name,
+            "serving": serving,
             "model_endpoint": a.model,
             "uc_name": a.uc_name,
+            "url": None,
             "tool_count": a.tags.get("apx.agent.tool_count"),
             "resource_count": resource_count,
+        }
+        rows.append(row)
+        if a.app_name:
+            by_app_name[a.app_name] = row
+
+    # App-discovered agents: probe Databricks Apps for their A2A card. Merge into
+    # the UC manifest row when app_name matches; otherwise add a standalone row
+    # (an apps-deploy that never registered a UC manifest, e.g. no UC name).
+    from ._apps_discovery import discover_app_agents
+
+    if fmt != "json":
+        click.echo("(checking Databricks Apps for agents…)", err=True)
+    app_agents = discover_app_agents(ws)
+    for app in app_agents:
+        existing = by_app_name.get(app.app_name)
+        if existing is not None:
+            existing["url"] = app.url
+            continue
+        rows.append({
+            "agent_name": app.name,
+            "serving": "apps",
+            "model_endpoint": None,
+            "uc_name": None,
+            "url": app.url,
+            "tool_count": app.tool_count,
+            "resource_count": 0,
         })
+
+    rows.sort(key=lambda r: (r["serving"], (r["agent_name"] or "")))
 
     if fmt == "json":
         click.echo(json.dumps(rows, indent=2, default=str))
         return
 
     if not rows:
-        click.echo("No apx-tagged agents found in this workspace.")
+        click.echo("No apx agents found in this workspace.")
         click.echo("Deploy one with:  apx-agent deploy")
         click.echo("Then run this command again to see it here.")
         return
-    click.echo(f"{'AGENT':<28}  {'UC NAME':<40}  {'MODEL':<28}  {'TOOLS':>6}  {'RESOURCES':>9}")
+    click.echo(
+        f"{'AGENT':<24}  {'SERVING':<13}  {'UC NAME':<34}  "
+        f"{'MODEL / URL':<46}  {'TOOLS':>6}"
+    )
     for r in rows:
+        endpoint = r["model_endpoint"] or r["url"] or "-"
         click.echo(
-            f"{(r['agent_name'] or '-'):<28}  "
-            f"{(r['uc_name'] or '-'):<40}  "
-            f"{(r['model_endpoint'] or '-'):<28}  "
-            f"{(r['tool_count'] or '-'):>6}  "
-            f"{r['resource_count']:>9}"
+            f"{(r['agent_name'] or '-'):<24}  "
+            f"{r['serving']:<13}  "
+            f"{(r['uc_name'] or '-'):<34}  "
+            f"{endpoint:<46}  "
+            f"{(r['tool_count'] or '-'):>6}"
         )
 
 
