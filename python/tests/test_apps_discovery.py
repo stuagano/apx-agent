@@ -120,3 +120,28 @@ def test_list_dedups_uc_manifest_with_live_app(monkeypatch):
     assert rows[0]["uc_name"] == "cat.sch.weather"
     assert rows[0]["url"] == "https://weather.example"
     assert rows[0]["serving"] == "apps"
+
+
+def test_apps_only_skips_the_uc_scan(monkeypatch):
+    # --apps-only must NOT call the UC resolver; only app agents are shown.
+    def _boom(*a, **k):
+        raise AssertionError("_fleet_resolve must not run under --apps-only")
+    monkeypatch.setattr("apx_agent.cli._require_sdk", lambda profile: object())
+    monkeypatch.setattr("apx_agent.cli._fleet_resolve", _boom)
+    monkeypatch.setattr(
+        "apx_agent._apps_discovery.discover_app_agents",
+        lambda ws, **k: [AppAgentInfo(
+            name="weather", app_name="weather-app", url="https://weather.example",
+            description="d", tool_count=2, state="RUNNING")],
+    )
+    result = CliRunner().invoke(main, ["agents", "list", "--apps-only", "--format", "json"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert [r["agent_name"] for r in rows] == ["weather"]
+    assert rows[0]["serving"] == "apps"
+
+
+def test_apps_only_rejects_catalog_scope():
+    result = CliRunner().invoke(main, ["agents", "list", "--apps-only", "--catalog", "main"])
+    assert result.exit_code != 0
+    assert "apps-only" in result.output.lower()
