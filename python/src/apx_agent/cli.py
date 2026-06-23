@@ -264,20 +264,36 @@ def _detect_module_spec(cwd: Path | None = None) -> str | None:
 def _sanitize_uv_lock(lock_path: Path) -> bool:
     """Re-point a uv.lock's internal Databricks PyPI proxy at public PyPI.
 
-    The dev's UV_INDEX_URL leaks ``pypi-proxy.dev.databricks.com`` into the
-    lock's per-package ``source.registry``. Deployed apps / serving endpoints
-    (and external users) can't reach that index, so any lock we ship must
-    resolve from public PyPI. Download URLs are already public
-    (files.pythonhosted.org); only the recorded index changes. Returns True if
-    the file changed.
+    The dev's ``UV_INDEX_URL`` / ``~/.config/uv/uv.toml`` leaks
+    ``pypi-proxy.dev.databricks.com`` into the lock. Deployed apps / serving
+    endpoints (and external users) can't reach that host, so any lock we ship
+    must point at public hosts. Two things get rewritten:
+
+    1. the index registry line (``.../simple`` → ``pypi.org/simple``), and
+    2. per-package download URLs — this proxy also *serves package files*
+       through itself (``.../packages/...``), which a deployed container cannot
+       reach. The proxy mirrors PyPI's path layout, so those re-point cleanly at
+       ``files.pythonhosted.org/packages/...``. (Without this, the index line
+       was clean but every wheel URL still pointed at the unreachable proxy and
+       the app's package install failed.)
+
+    Returns True if the file changed.
     """
     if not lock_path.exists():
         return False
     text = lock_path.read_text()
-    proxy = "https://pypi-proxy.dev.databricks.com/simple"
-    if proxy not in text:
+    original = text
+    text = text.replace(
+        "https://pypi-proxy.dev.databricks.com/simple",
+        "https://pypi.org/simple",
+    )
+    text = text.replace(
+        "https://pypi-proxy.dev.databricks.com/packages/",
+        "https://files.pythonhosted.org/packages/",
+    )
+    if text == original:
         return False
-    lock_path.write_text(text.replace(proxy, "https://pypi.org/simple"))
+    lock_path.write_text(text)
     return True
 
 
