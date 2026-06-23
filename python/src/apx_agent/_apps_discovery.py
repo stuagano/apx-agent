@@ -1,0 +1,118 @@
+"""Discover apx agents deployed as Databricks Apps by probing their A2A card.
+
+``agents list`` reads UC-registered models (the deploy-time tag flow in
+``_fleet``). Agents deployed to the Apps target that skipped UC registration are
+invisible to that query — so this finds them the other way around: list the
+workspace's Apps, probe each running one's ``/.well-known/agent.json``, and keep
+the ones that answer with an apx/A2A agent card.
+
+The probe uses the SDK's own credentials (Bearer token via
+``ws.config.authenticate()``), which the Databricks Apps proxy accepts. Any app
+the caller can't list, can't reach, or that isn't an apx agent is simply
+omitted — discovery is best-effort and never raises.
+"""
+
+from __future__ import annotations
+
+import concurrent.futures
+import json
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class AppAgentInfo:
+    """An apx agent discovered by probing a running Databricks App."""
+
+    name: str
+    app_name: str
+    url: str
+    description: str | None
+    tool_count: int
+    state: str
+
+
+def _bearer_headers(ws: Any) -> dict[str, str]:
+    """Auth headers from the SDK config (the configured Bearer credentials)."""
+    try:
+        return dict(ws.config.authenticate() or {})
+    except Exception:
+        return {}
+
+
+def _probe_card(url: str, headers: dict[str, str], timeout: float) -> dict[str, Any] | None:
+    """GET ``<url>/.well-known/agent.json``; return the parsed card or ``None``.
+
+    ``None`` means "not an apx agent / unreachable" — every error is non-fatal.
+    """
+    card_url = url.rstrip("/") + "/.well-known/agent.json"
+    req = urllib.request.Request(card_url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (workspace URL)
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+    # An A2A card carries a name and a skills list — that's the apx signal.
+    if isinstance(data, dict) and data.get("name") and "skills" in data:
+        return data
+    return None
+
+
+def discover_app_agents(
+    ws: Any, *, timeout: float = 2.5, max_workers: int = 24
+) -> list[AppAgentInfo]:
+    """Find apx agents running as Databricks Apps.
+
+    Lists the workspace's Apps and probes each one's A2A card concurrently,
+    keeping the ones that answer with an apx card. The probe is both the
+    liveness and the identity check: a stopped or non-apx app simply doesn't
+    return a card. (``ws.apps.list()`` does not populate per-app state — that
+    needs a ``get()`` per app — so we can't pre-filter to RUNNING cheaply; the
+    bounded-timeout probe is the filter instead.)
+
+    :param ws: A Databricks ``WorkspaceClient``.
+    :param timeout: Per-probe HTTP timeout in seconds.
+    :param max_workers: Max concurrent probes.
+    :returns: Discovered app agents (possibly empty); never raises.
+    """
+    try:
+        apps = list(ws.apps.list())
+    except Exception:
+        return []
+
+    candidates = [
+        (getattr(app, "name", "?"), url)
+        for app in apps
+        if (url := getattr(app, "url", None))
+    ]
+    if not candidates:
+        return []
+
+    headers = _bearer_headers(ws)
+    found: list[AppAgentInfo] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {
+            ex.submit(_probe_card, url, headers, timeout): (app_name, url)
+            for (app_name, url) in candidates
+        }
+        for fut in concurrent.futures.as_completed(futs):
+            app_name, url = futs[fut]
+            card = fut.result()
+            if card is None:
+                continue
+            found.append(
+                AppAgentInfo(
+                    name=str(card.get("name") or app_name),
+                    app_name=app_name,
+                    url=url,
+                    description=card.get("description"),
+                    tool_count=len(card.get("skills") or []),
+                    state="RUNNING",  # it answered the card, so it's up
+                )
+            )
+    found.sort(key=lambda a: a.name)
+    return found
