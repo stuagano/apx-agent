@@ -9,8 +9,9 @@ Given an ``AgentConfig`` and a target directory, ``generate_project`` writes:
   target_dir/app.yml                    — Apps compute config
 
 The generated project is immediately deployable via ``databricks bundle deploy``.
-When ``config.template`` is set the project is config-only (no ``agent.py`` needed)
-and ``module = "agent:agent"`` is intentionally omitted from pyproject.toml.
+The agent always has a single Python definition: when ``config.template`` is set,
+``render_agent_py`` codegens a top-level ``agent.py`` that constructs the template
+agent in code (ADK-style), and ``module = "agent:agent"`` is always written.
 """
 
 from __future__ import annotations
@@ -122,18 +123,14 @@ def _build_pyproject(config: "AgentConfig") -> str:
     if config.knowledge is not None:
         lines.append(f"knowledge = {_toml_value(config.knowledge)}")
 
-    # Only write module when there is no template — template replaces it
-    if not config.template:
-        lines.append('module = "agent:agent"')
+    # Python-canonical: the agent always has a top-level agent.py (generated from
+    # the template by render_agent_py), so the module spec is always written and
+    # the [tool.apx.agent.template] section is no longer emitted.
+    lines.append('module = "agent:agent"')
 
     if config.examples:
         lines.append(f"examples = {_toml_value(config.examples)}")
     lines.append("")
-
-    # [tool.apx.agent.template] — only when template is set
-    if config.template:
-        template_dict = dict(config.template)
-        _write_toml_section(lines, "tool.apx.agent.template", template_dict, skip_none=False)
 
     # [tool.apx.agent.memory]
     if config.memory is not None:
@@ -177,9 +174,61 @@ _START_SERVER_CONTENT = '''\
 from apx_agent import create_app
 from apx_agent._inspection import _load_agent_config
 
+from agent import agent
+
 config = _load_agent_config()
-app = create_app(config=config)
+app = create_app(agent=agent, config=config)
 '''
+
+# name -> (import module, class). Built-in templates whose ``build()`` is a pure
+# spec->constructor forward, so the generated agent.py reproduces the same agent.
+_TEMPLATE_TARGETS = {
+    "coworker": ("apx_agent.coworker", "CoworkerAgent"),
+    "data": ("apx_agent.data_agent", "DataAgent"),
+}
+
+
+def render_agent_py(config: "AgentConfig") -> str:
+    """Codegen a top-level ``agent.py`` that builds the template agent in code.
+
+    The YAML/config deploy path used to ship a config-only project (the runtime
+    rebuilt the agent from ``[tool.apx.agent.template]`` via the registry). This
+    emits an ADK-style ``agent = CoworkerAgent("cat", "sch", persona=...)`` instead
+    so the agent has a single Python definition — editable, debuggable, and visible
+    in the dev-UI Edit page. The template's ``build()`` is a pure spec->kwargs
+    forward (see coworker.py / data_agent.py), so the constructed agent is identical.
+
+    ``ws`` is intentionally omitted: at import time there is no workspace client,
+    and DataAgent/CoworkerAgent fall back to the baked ``.apx/schema.json`` for
+    grounding (ws is resolved by the serving runtime later).
+
+    :param config: Validated ``AgentConfig`` whose ``template`` selects the agent.
+    :returns: Complete ``agent.py`` source.
+    """
+    if config.template is None:
+        raise ValueError("render_agent_py requires config.template to be set")
+    name = config.template.get("name")
+    spec = {k: v for k, v in config.template.items() if k != "name"}
+    if config.knowledge is not None and "knowledge" not in spec:
+        spec["knowledge"] = config.knowledge
+
+    target = _TEMPLATE_TARGETS.get(name or "")
+    if target is None:
+        # Unknown/third-party template: fall back to a faithful registry build
+        # call rather than guessing a constructor we don't know.
+        return (
+            "from apx_agent._template import template_registry\n\n"
+            f"agent = template_registry.build({name!r}, {spec!r})\n"
+        )
+
+    module, cls = target
+    catalog = spec.pop("catalog", None)
+    schema = spec.pop("schema", None)
+    spec.setdefault("name", config.name)
+    pos = [repr(v) for v in (catalog, schema) if v is not None]
+    kw = [f"{k}={v!r}" for k, v in spec.items() if v is not None]
+    args = ", ".join(pos + kw)
+    return f"from {module} import {cls}\n\nagent = {cls}({args})\n"
 
 _KEEPALIVE_CONTENT = '''\
 """Scheduled keepalive — pings /readyz to prevent cold starts. Do not edit."""
@@ -366,6 +415,11 @@ def generate_project(
 
     # pyproject.toml
     (target_dir / "pyproject.toml").write_text(_build_pyproject(config))
+
+    # agent.py — single Python definition of the agent (Python-canonical). The
+    # template selects the constructor; the runtime imports this module.
+    if config.template is not None:
+        (target_dir / "agent.py").write_text(render_agent_py(config))
 
     # agent_server/
     agent_server_dir = target_dir / "agent_server"

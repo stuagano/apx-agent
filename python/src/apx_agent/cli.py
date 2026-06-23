@@ -3625,7 +3625,7 @@ def _deploy_from_yaml(
                 profile=profile,
                 bundle_target=bundle_target,
                 no_run=no_run,
-                auto_update_yml=False,  # generated yml is complete; no agent.py to inspect
+                auto_update_yml=False,  # generated yml is complete; agent.py is codegen'd
                 auto_build_wheel=True,
                 auto_experiment=True,
                 vars=(),
