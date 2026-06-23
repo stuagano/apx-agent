@@ -221,14 +221,17 @@ def _people(rng: random.Random) -> list[dict]:
                                            "Globex DW", "Internal R&D"]),
         })
 
-    # Planted scarcity: India is tight on Databricks. Force a handful of India
-    # people to HAVE Databricks but with low availability (the bandwidth story).
-    india = [p for p in people if p["region"] == "India"][:4]
-    for p in india:
-        existing = [s.strip() for s in p["skills"].split(",")]
-        if "Databricks" not in existing:
-            existing = ["Databricks", "PySpark", *existing][:6]
-            p["skills"] = ", ".join(existing)
+    # Planted scarcity: India is tight on Databricks. EVERY India person who can
+    # do Databricks work is near-fully allocated (the bandwidth story). Applying
+    # this to all India+Databricks people — not just a few — is what makes the
+    # "India is tight on Databricks" answer unambiguous.
+    india_dbx = [p for p in people
+                 if p["region"] == "India" and "Databricks" in p["skills"]]
+    if not india_dbx:  # guarantee at least one for the demo
+        forced = next(p for p in people if p["region"] == "India")
+        forced["skills"] = "Databricks, PySpark, " + forced["skills"]
+        india_dbx = [forced]
+    for p in india_dbx:
         p["availability_pct"] = float(rng.choice([0, 10, 20]))
     return people
 
