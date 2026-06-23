@@ -1596,6 +1596,38 @@ def _schema_manifest_for_scaffold(
     return {"catalog": catalog, "schema": schema, "tables": tables}
 
 
+def _bake_schema_into_project(
+    project_dir: Path, config: Any, profile: str | None
+) -> bool:
+    """Write ``.apx/schema.json`` into a generated project so a YAML-spec
+    deploy/run is grounded (the DataAgent declares its UC tables and skips
+    runtime ``DESCRIBE``; the dev-UI DATA panel shows the tables).
+
+    ``generate_project`` intentionally writes no ``.apx/``, so without this the
+    YAML path runs ungrounded. Best-effort: returns False (and the agent falls
+    back to live introspection) when the template has no resolved catalog/schema
+    or the schema can't be read. The bundle step copies ``.apx/`` into ``.build/``.
+    """
+    template = config.template if isinstance(config.template, dict) else None
+    if not template:
+        return False
+    catalog = template.get("catalog")
+    schema = template.get("schema")
+    if not (isinstance(catalog, str) and isinstance(schema, str)):
+        return False
+    if "$" in catalog or "$" in schema:  # unresolved $CATALOG/$SCHEMA placeholders
+        return False
+    manifest = _schema_manifest_for_scaffold(catalog, schema, profile)
+    if manifest is None:
+        return False
+    from ._okf import dump_schema_cache
+
+    apx_dir = project_dir / ".apx"
+    apx_dir.mkdir(parents=True, exist_ok=True)
+    (apx_dir / "schema.json").write_text(dump_schema_cache(manifest))
+    return True
+
+
 def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[str, str]":
     """Bake a 'talk to your data' example tool against a real table.
 
@@ -3082,6 +3114,11 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
         atexit.register(lambda: shutil.rmtree(tmp, ignore_errors=True))
         project_dir = Path(tmp) / config.name
         generate_project(config, project_dir, source_dir=yaml_path.parent)
+        # Ground the served agent: bake .apx/schema.json so the DataAgent
+        # declares its UC tables (no runtime DESCRIBE; dev-UI DATA panel shows
+        # them). Best-effort — falls back to live introspection if it can't read.
+        if _bake_schema_into_project(project_dir, config, None):
+            click.echo("# baked .apx/schema.json from the UC schema", err=True)
         click.echo(
             f"# Generated a local project from {yaml_path.name} "
             "(edit the YAML and re-run to update)",
@@ -3545,6 +3582,11 @@ def _deploy_from_yaml(
     with tempfile.TemporaryDirectory(prefix="apx_deploy_") as tmp:
         project_dir = Path(tmp) / config.name
         generate_project(config, project_dir, source_dir=yaml_path.parent)
+        # Ground the deployed agent: bake .apx/schema.json so the DataAgent
+        # declares its UC tables (no runtime DESCRIBE; dev-UI DATA panel shows
+        # them). The bundle step copies .apx/ into .build/. Best-effort.
+        if _bake_schema_into_project(project_dir, config, profile):
+            click.echo("  baked .apx/schema.json from the UC schema", err=True)
 
         # When running inside the framework source repo, inject the editable
         # source so _ensure_apx_wheel can build and bundle the wheel.

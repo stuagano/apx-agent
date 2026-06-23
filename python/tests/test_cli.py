@@ -170,6 +170,45 @@ def test_scaffold_yaml_writes_instructions(tmp_path: Path) -> None:
     assert spec["instructions"] == "Answer Salesforce pipeline questions."
 
 
+def test_bake_schema_writes_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    from types import SimpleNamespace
+
+    import apx_agent.cli as cli
+
+    monkeypatch.setattr(
+        cli, "_schema_manifest_for_scaffold",
+        lambda c, s, p: {"catalog": c, "schema": s, "tables": {"orders": ["id(int)"]}},
+    )
+    cfg = SimpleNamespace(template={"catalog": "main", "schema": "sales"})
+    assert cli._bake_schema_into_project(tmp_path, cfg, None) is True
+    baked = json.loads((tmp_path / ".apx" / "schema.json").read_text())
+    assert baked["catalog"] == "main"
+    assert baked["tables"] == {"orders": ["id(int)"]}
+
+
+def test_bake_schema_skips_placeholder_catalog(tmp_path: Path) -> None:
+    # Unresolved $CATALOG/$SCHEMA → no introspection, no file (agent falls back).
+    from types import SimpleNamespace
+
+    from apx_agent.cli import _bake_schema_into_project
+
+    cfg = SimpleNamespace(template={"catalog": "$CATALOG", "schema": "sales"})
+    assert _bake_schema_into_project(tmp_path, cfg, None) is False
+    assert not (tmp_path / ".apx" / "schema.json").exists()
+
+
+def test_bake_schema_no_template(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from apx_agent.cli import _bake_schema_into_project
+
+    cfg = SimpleNamespace(template=None)
+    assert _bake_schema_into_project(tmp_path, cfg, None) is False
+
+
 def test_status_prompt_outside_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
