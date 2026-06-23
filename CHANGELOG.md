@@ -4,6 +4,28 @@ All notable changes to apx-agent. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are git tags
 (`v*`) and the wheel version is derived from the tag via hatch-vcs.
 
+## [0.4.1] — 2026-06-23
+
+End-user chat at the agent's root URL.
+
+### Added
+
+- **Chat UI at `/`.** A deployed agent now serves a self-contained end-user
+  chat at its root URL, separate from the developer console under `/_apx/*`
+  (which stays off in Apps). The page talks to the live `/responses` contract,
+  inlines its markdown renderer (no CDN, private-link-safe), and titles itself
+  from the served agent's `name` + `description`.
+
+### Fixed
+
+- The root chat targets `/responses` (the ResponsesAgent `{input}`→`{output}`
+  contract served identically on every path), not `/invocations` — which is
+  ChatAgent `{messages}` under `create_app` but ResponsesAgent under Apps, so it
+  400'd on real Apps deploys.
+- `hello-world` and `payroll-coworker` shipped a stale `start_server.py` that
+  imported the renamed `resolve_session_store` — crashing on startup when
+  deployed from `main`. Renamed to `resolve_conversation_store`.
+
 ## [0.4.0] — 2026-06-23
 
 A large release. The headline themes: one canonical Python definition per
@@ -68,4 +90,5 @@ labeling loop.
 - Shared SQL/memory helpers deduplicated (`_sql.sql_str_literal`,
   `_sql.sql_escape`); voynich examples removed.
 
+[0.4.1]: https://github.com/stuagano/apx-agent/releases/tag/v0.4.1
 [0.4.0]: https://github.com/stuagano/apx-agent/releases/tag/v0.4.0
