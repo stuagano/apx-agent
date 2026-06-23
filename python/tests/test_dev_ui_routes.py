@@ -655,3 +655,27 @@ class TestLandingDataCard:
         from apx_agent._ui_chat import _render_landing
         html = _render_landing(self._ctx(None))
         assert "data-card" not in html
+
+
+class TestEditReadOnlyConfigAgent:
+    """The Edit page renders a read-only Python view for config-only agents
+    instead of the empty 'agent source not found' page."""
+
+    def test_render_edit_ui_read_only_shows_code_and_live_tools(self):
+        from apx_agent._ui_edit import _render_edit_ui
+        code = 'from apx_agent.coworker import CoworkerAgent\n\nagent = CoworkerAgent("c", "s")\n'
+        html = _render_edit_ui(
+            code,
+            read_only=True,
+            initial_schemas=[{"name": "run_sql", "description": "runs sql", "parameters": {}}],
+        )
+        assert "CoworkerAgent" in html          # the synthesized code is shown
+        assert "const READ_ONLY = true" in html  # editor is read-only
+        assert "read-only" in html               # informative banner, not "not found"
+        assert "run_sql" in html                 # live tool schema injected
+        assert "agent source not found" not in html
+
+    def test_render_edit_ui_default_is_editable(self):
+        from apx_agent._ui_edit import _render_edit_ui
+        html = _render_edit_ui("agent = 1\n")
+        assert "const READ_ONLY = false" in html

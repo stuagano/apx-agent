@@ -946,7 +946,13 @@ def _compose_agents(
     return result
 
 
-def _render_edit_ui(content: str, not_found: bool = False) -> str:
+def _render_edit_ui(
+    content: str,
+    not_found: bool = False,
+    *,
+    read_only: bool = False,
+    initial_schemas: "list[dict[str, Any]] | None" = None,
+) -> str:
     """Return a split-panel authoring page: CodeMirror left, schema preview right.
 
     Left panel — editable agent source (``agent.py`` in the ADK flat layout
@@ -969,14 +975,23 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
     _alias_m = _re.search(r"^(\w+)\s*=\s*Dependencies\.Client", content, _re.MULTILINE)
     ws_type = _alias_m.group(1) if _alias_m else "AppClient"
     ws_type_js = _json.dumps(ws_type)
-    not_found_banner = (
-        '<div id="apx-banner"><strong>⚠ agent source not found</strong> — '
-        "looked for a top-level <code>agent.py</code> (ADK flat layout) and a "
-        "<code>&lt;pkg&gt;.backend.agent_router</code> module (legacy nested layout); "
-        "neither is loaded in this process.</div>"
-        if not_found
-        else ""
-    )
+    if read_only:
+        not_found_banner = (
+            '<div id="apx-banner"><strong>read-only</strong> — this agent has no '
+            "<code>agent.py</code> on disk; the view below is generated from its live "
+            "config. Scaffold it as Python (<code>apx-agent scaffold</code>) to edit here.</div>"
+        )
+    elif not_found:
+        not_found_banner = (
+            '<div id="apx-banner"><strong>⚠ agent source not found</strong> — '
+            "looked for a top-level <code>agent.py</code> (ADK flat layout) and a "
+            "<code>&lt;pkg&gt;.backend.agent_router</code> module (legacy nested layout); "
+            "neither is loaded in this process.</div>"
+        )
+    else:
+        not_found_banner = ""
+    read_only_js = "true" if read_only else "false"
+    initial_schemas_js = _json.dumps(initial_schemas or [])
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1233,12 +1248,15 @@ def _render_edit_ui(content: str, not_found: bool = False) -> str:
 // keymap comes from @codemirror/view directly (meta-package drops re-exports when state is external).
 import {{ EditorView, basicSetup }} from 'https://esm.sh/codemirror@6.0.1?deps=@codemirror/state@6.6.0';
 import {{ keymap }} from 'https://esm.sh/@codemirror/view@6.41.0?deps=@codemirror/state@6.6.0';
+import {{ EditorState }} from 'https://esm.sh/@codemirror/state@6.6.0';
 import {{ python }} from 'https://esm.sh/@codemirror/lang-python@6.1.6?deps=@codemirror/state@6.6.0';
 import {{ oneDark }} from 'https://esm.sh/@codemirror/theme-one-dark@6.1.2?deps=@codemirror/state@6.6.0';
 
 // ── Editor ──────────────────────────────────────────────────────────────────
 const INITIAL  = {content_js};
 const WS_TYPE  = {ws_type_js};  // AppClient alias detected from source
+const READ_ONLY = {read_only_js};
+const INITIAL_SCHEMAS = {initial_schemas_js};
 
 const view = new EditorView({{
   doc: INITIAL,
@@ -1246,12 +1264,23 @@ const view = new EditorView({{
     basicSetup,
     python(),
     oneDark,
-    keymap.of([{{ key: 'Mod-s', run: () => {{ save(); return true; }} }}]),
+    EditorState.readOnly.of(READ_ONLY),
+    EditorView.editable.of(!READ_ONLY),
+    keymap.of([{{ key: 'Mod-s', run: () => {{ if (!READ_ONLY) save(); return true; }} }}]),
     EditorView.updateListener.of(v => {{ if (v.docChanged) schedulePreview(); }}),
     EditorView.theme({{ '&': {{ height: '100%' }}, '.cm-scroller': {{ overflow: 'auto' }} }}),
   ],
   parent: document.getElementById('editor-wrap'),
 }});
+
+// Read-only (config-only) agents: hide source-mutating controls and show the
+// live tool schemas straight off the running agent (no AST parse to do).
+if (READ_ONLY) {{
+  for (const id of ['btn-save', 'btn-new-tool', 'btn-from-data']) {{
+    const b = document.getElementById(id);
+    if (b) b.style.display = 'none';
+  }}
+}}
 
 // ── Save ────────────────────────────────────────────────────────────────────
 async function save() {{
@@ -1327,7 +1356,8 @@ function renderSchemas(schemas) {{
 }}
 
 // Initial preview
-refreshPreview(INITIAL);
+if (READ_ONLY) renderSchemas(INITIAL_SCHEMAS);
+else refreshPreview(INITIAL);
 
 // ── New Tool modal ───────────────────────────────────────────────────────────
 const overlay = document.getElementById('modal-overlay');

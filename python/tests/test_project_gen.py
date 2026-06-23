@@ -21,8 +21,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from apx_agent import BaseAgent, CoworkerAgent
 from apx_agent._models import AgentConfig, MemoryBackendConfig, SessionBackendConfig, SkillConfig
-from apx_agent._project_gen import generate_project
+from apx_agent._project_gen import generate_project, render_agent_py
 
 
 @pytest.fixture()
@@ -62,6 +63,47 @@ def minimal_config() -> AgentConfig:
     return AgentConfig(name="my-agent")
 
 
+def _tool_names(agent: BaseAgent) -> list[str]:
+    """Stable list of an agent's tool names, regardless of construction path."""
+    return sorted(t.name for t in agent.collect_tools())
+
+
+# ---------------------------------------------------------------------------
+# Faithfulness: the codegen'd agent.py builds the SAME agent as the template
+# registry. This is the core claim of Python-canonical generation.
+# ---------------------------------------------------------------------------
+
+
+def test_render_agent_py_matches_registry_build(coworker_config: AgentConfig) -> None:
+    """exec(render_agent_py(config)) yields the same agent template_registry.build does."""
+    from apx_agent._template import template_registry
+
+    src = render_agent_py(coworker_config)
+    ns = {}
+    exec(compile(src, "agent.py", "exec"), ns)  # noqa: S102 — testing generated code
+    coded = ns["agent"]
+    assert isinstance(coded, CoworkerAgent)
+
+    spec = {k: v for k, v in coworker_config.template.items() if k != "name"}
+    built = template_registry.build("coworker", spec)
+    assert isinstance(built, CoworkerAgent)
+
+    assert coded.join_key == built.join_key == "employee ID"
+    assert coded.catalog == built.catalog == "main"
+    assert coded.schema == built.schema == "payroll"
+    assert _tool_names(coded) == _tool_names(built), (
+        "codegen'd agent and registry-built agent expose different tools"
+    )
+
+
+def test_render_agent_py_unknown_template_falls_back_to_registry() -> None:
+    """An unknown template name codegens a faithful registry.build() call, not a guess."""
+    cfg = AgentConfig(name="x", template={"name": "third_party", "catalog": "c", "schema": "s"})
+    src = render_agent_py(cfg)
+    assert "template_registry.build('third_party'" in src
+    compile(src, "agent.py", "exec")
+
+
 # ---------------------------------------------------------------------------
 # Test 1: pyproject.toml exists with the correct project name
 # ---------------------------------------------------------------------------
@@ -80,20 +122,30 @@ def test_pyproject_name(tmp_path: Path, coworker_config: AgentConfig) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 2: [tool.apx.agent.template] contains join_key when template is set
+# Test 2: a template config codegens a single agent.py (Python-canonical) and
+# no [tool.apx.agent.template] section is emitted.
 # ---------------------------------------------------------------------------
 
 
-def test_template_section_contains_join_key(tmp_path: Path, coworker_config: AgentConfig) -> None:
-    """[tool.apx.agent.template] section must contain the join_key field."""
+def test_template_codegens_agent_py(tmp_path: Path, coworker_config: AgentConfig) -> None:
+    """A template config writes a top-level agent.py constructing the agent in code."""
     generate_project(coworker_config, tmp_path)
 
+    agent_py = tmp_path / "agent.py"
+    assert agent_py.exists(), "agent.py was not generated for a template config"
+    src = agent_py.read_text()
+    assert "from apx_agent.coworker import CoworkerAgent" in src
+    assert "agent = CoworkerAgent(" in src
+    assert "'main'" in src and "'payroll'" in src  # catalog, schema positional
+    assert "join_key='employee ID'" in src
+    # The generated source must be importable Python.
+    compile(src, "agent.py", "exec")
+
+    # The declarative envelope is now in code — no [template] section in pyproject.
     with open(tmp_path / "pyproject.toml", "rb") as f:
         data = tomllib.load(f)
-
-    template_section = data.get("tool", {}).get("apx", {}).get("agent", {}).get("template", {})
-    assert template_section.get("join_key") == "employee ID", (
-        f"join_key not found in [tool.apx.agent.template]: {template_section}"
+    assert "template" not in data.get("tool", {}).get("apx", {}).get("agent", {}), (
+        "[tool.apx.agent.template] must not be emitted once the agent is codegen'd"
     )
 
 
@@ -154,16 +206,17 @@ def test_databricks_yml_contains_agent_name(tmp_path: Path, coworker_config: Age
 
 
 # ---------------------------------------------------------------------------
-# Test 6: module = "agent:agent" does NOT appear when template is set
+# Test 6: module = "agent:agent" is always written (Python-canonical) — the
+# generated agent.py is the single definition whether or not a template is set.
 # ---------------------------------------------------------------------------
 
 
-def test_no_module_line_when_template_set(tmp_path: Path, coworker_config: AgentConfig) -> None:
-    """module = \"agent:agent\" must not appear in pyproject.toml when template is set."""
+def test_module_line_present_when_template_set(tmp_path: Path, coworker_config: AgentConfig) -> None:
+    """module = \"agent:agent\" IS written when a template is set (it codegens agent.py)."""
     generate_project(coworker_config, tmp_path)
     content = (tmp_path / "pyproject.toml").read_text()
-    assert 'module = "agent:agent"' not in content, (
-        "module = 'agent:agent' must not be written when template is set"
+    assert 'module = "agent:agent"' in content, (
+        "module = 'agent:agent' should be present — the template codegens agent.py"
     )
 
 

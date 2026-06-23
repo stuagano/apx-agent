@@ -343,6 +343,47 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
         )
 
 
+def _data_source_from_agent_py(cwd: Path) -> "tuple[str, str] | None":
+    """Read (catalog, schema) from a top-level ``agent.py`` data-agent call.
+
+    Looks for ``DataAgent("cat", "sch", ...)`` / ``CoworkerAgent("cat", "sch", ...)``
+    and returns the first two string args (positional or ``catalog=``/``schema=``).
+    AST-based and best-effort — returns None if agent.py is absent or unparseable.
+    """
+    import ast
+
+    agent_py = cwd / "agent.py"
+    if not agent_py.exists():
+        return None
+    try:
+        tree = ast.parse(agent_py.read_text())
+    except Exception:
+        return None
+    targets = {"DataAgent", "CoworkerAgent"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if isinstance(fn, ast.Name):
+            fname = fn.id
+        elif isinstance(fn, ast.Attribute):
+            fname = fn.attr
+        else:
+            continue
+        if fname not in targets:
+            continue
+        kw = {k.arg: k.value for k in node.keywords if k.arg}
+
+        def _str(v: "ast.expr | None") -> str:
+            return v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else ""
+
+        catalog = _str(node.args[0] if node.args else None) or _str(kw.get("catalog"))
+        schema = _str(node.args[1] if len(node.args) > 1 else None) or _str(kw.get("schema"))
+        if catalog and schema:
+            return catalog, schema
+    return None
+
+
 def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
     """Verify the UC catalog.schema declared in [tool.apx.agent.template] exists.
 
@@ -378,6 +419,11 @@ def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
     )
     catalog = tmpl.get("catalog", "")
     schema = tmpl.get("schema", "")
+    if not catalog or not schema:
+        # Python-canonical projects declare the data source in agent.py
+        # (DataAgent("cat", "sch") / CoworkerAgent(...)) rather than a
+        # [tool.apx.agent.template] section. Fall back to reading it there.
+        catalog, schema = _data_source_from_agent_py(cwd) or (catalog, schema)
     if not catalog or not schema:
         return None
     fqn = f"{catalog}.{schema}"

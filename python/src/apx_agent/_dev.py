@@ -1515,9 +1515,28 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     @router.get("/_apx/edit", include_in_schema=False)
     async def edit_dev_ui(request: Request) -> HTMLResponse:
         path = _find_agent_router_path()
-        if not path or not path.exists():
-            return HTMLResponse(_render_edit_ui("", not_found=True))
-        return HTMLResponse(_render_edit_ui(path.read_text()))
+        if path and path.exists():
+            return HTMLResponse(_render_edit_ui(path.read_text()))
+        # No agent.py on disk (config-only / template agent). Synthesize a
+        # read-only ADK-style view from the live agent config + live tool schemas
+        # so the Edit page shows the agent instead of an empty "not found" page.
+        ctx: AgentContext | None = request.app.state.agent_context
+        if ctx is not None and getattr(ctx.config, "template", None):
+            from ._project_gen import render_agent_py
+            try:
+                code = render_agent_py(ctx.config)
+            except Exception:  # noqa: BLE001 — fall back to the not-found page
+                code = ""
+            if code:
+                schemas = [
+                    {"name": t.name, "description": t.description,
+                     "parameters": t.input_schema or {}}
+                    for t in (ctx.tools or [])
+                ]
+                return HTMLResponse(
+                    _render_edit_ui(code, read_only=True, initial_schemas=schemas)
+                )
+        return HTMLResponse(_render_edit_ui("", not_found=True))
 
     @router.post("/_apx/edit", include_in_schema=False)
     async def save_agent_router(request: Request) -> Any:
