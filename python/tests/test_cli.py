@@ -1203,7 +1203,7 @@ def test_list_no_tagged_models_prints_helpful_message() -> None:
         result = runner.invoke(main, ["agents", "list"])
 
     assert result.exit_code == 0
-    assert "No apx-tagged" in result.output
+    assert "No apx agents found" in result.output
 
 
 # ---------------------------------------------------------------------------
