@@ -992,16 +992,14 @@ def _pick_workspace_defaults(ws: WorkspaceClient) -> "dict[str, str]":
 
 
 def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
-    """Build the /_apx/* dev UI routes."""
-    from fastapi.responses import RedirectResponse
+    """Build the /_apx/* dev UI routes.
 
+    Note: ``/`` is owned by the end-user chat (see ``_ui_root_chat``), not the
+    dev console. The dev console's entry point is ``/_apx/agent``.
+    """
     # Router-level guard: enforces auth on write methods + the SSRF probe.
     # See _dev_write_guard / _enforce_dev_write_auth for the posture (H17/H18).
     router = APIRouter(dependencies=[Depends(_dev_write_guard)])
-
-    @router.get("/", include_in_schema=False)
-    async def root_redirect() -> RedirectResponse:
-        return RedirectResponse(url="/_apx/agent")
 
     @router.get("/_apx/agent", include_in_schema=False)
     async def agent_dev_ui(request: Request) -> HTMLResponse:
