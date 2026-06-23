@@ -235,12 +235,36 @@ class DataAgent(LlmAgent):
             extra_tools=extra_tools,
             knowledge=knowledge,
         )
+        # Late ws-binding state: when the agent is constructed without a ws (the
+        # Python-canonical import path — agent.py runs at import time before any
+        # workspace client exists), the schema's UC functions can't be wired yet.
+        # bind_workspace() wires them once finalize_agent supplies the live ws.
+        self._include_functions = include_functions
+        self._uc_functions_bound = include_functions and ws is not None
+
         super().__init__(
             tools=_components.tools,
             instructions=_components.instructions,
             name=name or f"{schema}_data_agent",
             **kwargs,
         )
+
+    def bind_workspace(self, ws: Any) -> None:
+        """Wire ws-dependent tools (UC functions) once a live ws is available.
+
+        Idempotent: a no-op if functions are disabled or already bound. Called by
+        ``finalize_agent`` on every runtime, so an agent constructed at import with
+        ``ws=None`` ends up with the same UC-function tools as one built with a live
+        ws at construction. Must run before the A2A/MCP card snapshot so the tools
+        are advertised, not just callable — ``finalize_agent`` guarantees that order.
+        """
+        if not self._include_functions or self._uc_functions_bound or ws is None:
+            return
+        from .catalog import uc_function_toolkit
+
+        for fn in uc_function_toolkit(f"{self.catalog}.{self.schema}", ws=ws):
+            self._register_tool(fn)
+        self._uc_functions_bound = True
 
 
 @template
