@@ -2454,6 +2454,25 @@ def test_sanitize_uv_lock_rewrites_internal_index(tmp_path: Path) -> None:
     assert _sanitize_uv_lock(lock) is False  # idempotent
 
 
+def test_sanitize_uv_lock_rewrites_proxy_package_urls(tmp_path: Path) -> None:
+    """Some proxies (pypi-proxy.dev.databricks.com) also serve the wheel files
+    themselves; those /packages/ URLs are unreachable from a deployed App and
+    must be re-pointed at files.pythonhosted.org (same path layout)."""
+    from apx_agent.cli import _sanitize_uv_lock
+
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        'source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }\n'
+        'url = "https://pypi-proxy.dev.databricks.com/packages/09/7d/abc/scipy-1.17.1.whl"\n'
+    )
+    assert _sanitize_uv_lock(lock) is True
+    text = lock.read_text()
+    assert "pypi-proxy.dev.databricks.com" not in text
+    assert (
+        "https://files.pythonhosted.org/packages/09/7d/abc/scipy-1.17.1.whl" in text
+    )
+
+
 def test_stage_build_manifest_no_wheel_stages_and_sanitizes(tmp_path: Path) -> None:
     """git+https install path (no local wheel): the deploy must still stage the
     source pyproject.toml + uv.lock into .build/ so the Apps container has a
