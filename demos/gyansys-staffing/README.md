@@ -5,6 +5,9 @@ by skill similarity, surfaces stalled pipeline and staffing bandwidth.
 
 **As built (live):** workspace profile `fevm-serverless-stable-qh44kx`, UC location
 `serverless_stable_qh44kx_catalog.gyansys_staffing`, VS endpoint `gyansys_demo_vs`.
+Deployed App (Databricks SSO): https://gyansys-staffing-7474652869938903.aws.databricksapps.com —
+RUNNING and answering grounded questions. (The deploy's `/readyz` gate reports a
+false-negative; the apps runtime serves `/health`, which returns 200.)
 (The design target was `gyansys_demo.staffing` on `fe-stable`, but that principal
 lacked catalog/schema/Vector-Search rights there — catalog/schema/profile are
 workspace-specific constants in `load_to_uc.py` / `setup_vector_index.py` /
