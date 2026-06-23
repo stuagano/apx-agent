@@ -452,6 +452,12 @@ async def setup_agent(
 
     _mount_protocol_routes(app)
 
+    # End-user chat at /. Ships in every runtime (unlike the dev UI) — it's the
+    # public face of a deployed agent and talks to the live /invocations route.
+    from ._ui_root_chat import build_root_chat_router
+
+    app.include_router(build_root_chat_router())
+
     # Dev UI (optional). The app must still serve if this fails, so the failure
     # is swallowed — but recorded on app.state for local diagnosis, not hidden.
     app.state.dev_ui_mount_error = None
@@ -863,6 +869,12 @@ def mount_mcp_endpoints(
     # Mount the route shells immediately. They read from app.state — which
     # gets populated in the lifespan startup event below.
     _mount_protocol_routes(app)
+
+    # End-user chat at / — ships in every runtime, including Apps (unlike the
+    # dev UI below). Mounted before the DATABRICKS_APP_PORT gate on purpose.
+    from ._ui_root_chat import build_root_chat_router
+
+    app.include_router(build_root_chat_router())
 
     # Dev UI (/_apx/*) — available when running locally with `apx-agent run`.
     # Absent in production Apps deployments (DATABRICKS_APP_PORT is set by
