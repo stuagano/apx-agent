@@ -15,9 +15,10 @@ ResponsesAgent ``{input}`` under Apps, so it can't be a single contract.
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 _VENDOR = Path(__file__).parent / "_static" / "vendor"
@@ -42,13 +43,16 @@ _PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent</title>
+<title>__TITLE__</title>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
   body { margin: 0; font: 15px/1.5 system-ui, -apple-system, sans-serif;
          display: flex; flex-direction: column; height: 100vh; }
-  header { padding: 12px 16px; border-bottom: 1px solid #8884; font-weight: 600; }
+  header { padding: 12px 16px; border-bottom: 1px solid #8884;
+           display: flex; align-items: baseline; gap: 10px; }
+  header .name { font-weight: 600; }
+  header .desc { font-size: 13px; opacity: .6; }
   #log { flex: 1; overflow-y: auto; padding: 16px; display: flex;
          flex-direction: column; gap: 12px; }
   .msg { max-width: 760px; width: fit-content; padding: 10px 14px;
@@ -73,7 +77,7 @@ _PAGE = """<!doctype html>
 __VENDOR__
 </head>
 <body>
-<header>Agent</header>
+<header>__HEADER__</header>
 <div id="log"></div>
 <form id="f">
   <textarea id="in" rows="1" placeholder="Message the agent..." autofocus></textarea>
@@ -170,20 +174,40 @@ __VENDOR__
 """
 
 
-def render_root_chat() -> str:
-    """The full self-contained chat page."""
-    return _PAGE.replace("__VENDOR__", _inline_vendor())
+def render_root_chat(name: str = "Agent", description: str | None = None) -> str:
+    """The full self-contained chat page, titled for this agent.
+
+    :param name: Agent name shown in the title bar and tab. Escaped.
+    :param description: Optional one-line subtitle next to the name. Escaped.
+    """
+    safe_name = html.escape(name) or "Agent"
+    title = safe_name
+    header = f'<span class="name">{safe_name}</span>'
+    if description:
+        safe_desc = html.escape(description)
+        header += f'<span class="desc">{safe_desc}</span>'
+    return (
+        _PAGE.replace("__VENDOR__", _inline_vendor())
+        .replace("__TITLE__", title)
+        .replace("__HEADER__", header)
+    )
 
 
 def build_root_chat_router() -> APIRouter:
     """Router serving the end-user chat at ``GET /``.
 
-    Mounted in every runtime (including Apps) — unlike the dev UI.
+    Mounted in every runtime (including Apps) — unlike the dev UI. The page is
+    titled from the served agent's config (``app.state.agent_context``), read at
+    request time so it reflects whatever agent this app is serving.
     """
     router = APIRouter()
 
     @router.get("/", include_in_schema=False)
-    async def root_chat() -> HTMLResponse:
-        return HTMLResponse(render_root_chat())
+    async def root_chat(request: Request) -> HTMLResponse:
+        ctx = getattr(request.app.state, "agent_context", None)
+        cfg = getattr(ctx, "config", None)
+        name = getattr(cfg, "name", None) or "Agent"
+        description = getattr(cfg, "description", None)
+        return HTMLResponse(render_root_chat(name, description))
 
     return router

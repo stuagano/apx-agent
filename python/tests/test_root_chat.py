@@ -35,6 +35,21 @@ def test_page_is_self_contained():
     assert "/_apx/vendor" not in html
 
 
+def test_page_is_titled_for_the_agent():
+    html = render_root_chat("Payroll Coworker", "Answers payroll questions")
+    assert "<title>Payroll Coworker</title>" in html
+    assert "Answers payroll questions" in html
+
+
+def test_name_and_description_are_html_escaped():
+    # config strings are attacker-influenced in the general case — must not break
+    # out of the title/header markup.
+    html = render_root_chat("<script>x</script>", "a & b <b>")
+    assert "<script>x</script>" not in html
+    assert "&lt;script&gt;x&lt;/script&gt;" in html
+    assert "a &amp; b &lt;b&gt;" in html
+
+
 @pytest.mark.asyncio
 async def test_root_serves_chat_html():
     app = FastAPI()
@@ -44,6 +59,17 @@ async def test_root_serves_chat_html():
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
     assert "/responses" in r.text
+    # No agent_context on a bare app → falls back to the generic title.
+    assert "<title>Agent</title>" in r.text
+
+
+@pytest.mark.asyncio
+async def test_root_title_reflects_served_agent():
+    app = FastAPI()
+    await setup_agent(app, LlmAgent(tools=[get_weather]), AgentConfig(name="weather-bot"))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get("/")
+    assert "<title>weather-bot</title>" in r.text
 
 
 @pytest.mark.asyncio
