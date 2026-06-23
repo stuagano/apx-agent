@@ -110,6 +110,54 @@ class TestOptions:
         assert any(getattr(t, "__name__", "") == "helper" for t in a._tool_fns)
 
 
+class TestLateWorkspaceBinding:
+    """Python-canonical agents construct at import time with ws=None (render_agent_py
+    emits no ws); finalize_agent later calls bind_workspace with the live ws so UC
+    functions wire — making the import path tool-identical to a build-with-ws."""
+
+    @staticmethod
+    def _names(agent: LlmAgent) -> set[str]:
+        return {t.__name__ for t in agent._tool_fns}
+
+    def test_uc_functions_absent_without_ws(self):
+        # include_functions defaults True; with no ws the UC functions can't wire yet.
+        assert "classify" not in self._names(DataAgent("main", "sales"))
+
+    def test_bind_workspace_wires_uc_functions(self):
+        a = DataAgent("main", "sales")
+        a.bind_workspace(_ws_with_schema({"orders": ["id(INT)"]}, functions=["classify", "score"]))
+        assert {"classify", "score"} <= self._names(a)
+
+    def test_bind_workspace_idempotent(self):
+        a = DataAgent("main", "sales")
+        ws = _ws_with_schema({}, functions=["classify"])
+        a.bind_workspace(ws)
+        a.bind_workspace(ws)
+        assert sum(1 for t in a._tool_fns if t.__name__ == "classify") == 1
+
+    def test_no_op_when_include_functions_false(self):
+        a = DataAgent("main", "sales", include_functions=False)
+        a.bind_workspace(_ws_with_schema({}, functions=["classify"]))
+        assert "classify" not in self._names(a)
+
+    def test_finalize_agent_triggers_bind(self):
+        from apx_agent import AgentConfig
+        from apx_agent._wiring import finalize_agent
+
+        a = DataAgent("main", "sales")
+        finalize_agent(a, AgentConfig(name="x"), ws=_ws_with_schema({}, functions=["classify"]))
+        assert "classify" in self._names(a)
+
+    def test_late_bind_matches_build_with_ws(self):
+        # The discriminator: import-path (ws=None) + late bind == live-ws registry build.
+        ws = _ws_with_schema({"orders": ["id(INT)"]}, functions=["classify", "score"])
+        built = template_registry.build("data", {"catalog": "main", "schema": "sales"}, ws=ws)
+        coded = DataAgent("main", "sales")  # exactly what render_agent_py emits
+        coded.bind_workspace(ws)
+        assert isinstance(built, LlmAgent)
+        assert self._names(coded) == self._names(built)
+
+
 class TestTopology:
     def test_node_type_is_dataagent(self):
         from apx_agent._topology import _agent_class_to_node_type

@@ -1248,7 +1248,7 @@ def _render_edit_ui(
 // keymap comes from @codemirror/view directly (meta-package drops re-exports when state is external).
 import {{ EditorView, basicSetup }} from 'https://esm.sh/codemirror@6.0.1?deps=@codemirror/state@6.6.0';
 import {{ keymap }} from 'https://esm.sh/@codemirror/view@6.41.0?deps=@codemirror/state@6.6.0';
-import {{ EditorState }} from 'https://esm.sh/@codemirror/state@6.6.0';
+import {{ EditorState }} from 'https://esm.sh/@codemirror/state@6.6.0?deps=@codemirror/state@6.6.0';
 import {{ python }} from 'https://esm.sh/@codemirror/lang-python@6.1.6?deps=@codemirror/state@6.6.0';
 import {{ oneDark }} from 'https://esm.sh/@codemirror/theme-one-dark@6.1.2?deps=@codemirror/state@6.6.0';
 

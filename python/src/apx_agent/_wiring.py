@@ -223,6 +223,16 @@ def finalize_agent(
 
         attach_declared_memory(agent, config, ws=ws)
 
+    # Late ws-binding: a DataAgent constructed at import time (the Python-canonical
+    # agent.py path) has ws=None and so couldn't wire its UC-function tools. Now
+    # that the live ws is available, give it one. Idempotent, so it's a no-op for
+    # an agent already built with a ws.
+    if ws is not None:
+        from .data_agent import DataAgent  # noqa: PLC0415 — avoid import cycle
+
+        if isinstance(agent, DataAgent):
+            agent.bind_workspace(ws)
+
 
 class TemplateConfigError(ValueError):
     """Raised when an agent cannot be resolved from the given template config or module."""
