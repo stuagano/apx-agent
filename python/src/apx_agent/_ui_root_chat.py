@@ -1,10 +1,16 @@
 """End-user chat at ``/`` — the public face of a deployed agent.
 
 Distinct from the dev console under ``/_apx/*`` (which is intentionally off in
-Apps deployments). This surface ships in *every* runtime, talks to the live
-``POST /invocations`` contract, and carries no dev write-guard. Markdown libs
-are inlined from ``_static/vendor`` so the page is self-contained (no ``/vendor``
-asset route, no CDN — private-link-safe).
+Apps deployments). This surface ships in *every* runtime and carries no dev
+write-guard. Markdown libs are inlined from ``_static/vendor`` so the page is
+self-contained (no ``/vendor`` asset route, no CDN — private-link-safe).
+
+It talks to ``POST /responses`` (the MLflow ResponsesAgent contract:
+``{input:[...]}`` → ``{output:[...]}``). That endpoint is served identically by
+both serve paths — ``create_app`` (local ``apx-agent run``) and the AgentServer
+used on Apps deploys — so one page works everywhere. ``/invocations`` is NOT
+used here: it means ChatAgent ``{messages}`` under ``create_app`` but
+ResponsesAgent ``{input}`` under Apps, so it can't be a single contract.
 """
 
 from __future__ import annotations
@@ -78,7 +84,7 @@ __VENDOR__
   const input = document.getElementById('in');
   const sendBtn = document.getElementById('send');
   const form = document.getElementById('f');
-  const history = [];  // [{role, content}] sent verbatim to /invocations
+  const history = [];  // [{role, content}] sent as the /responses `input`
 
   const hasMd = typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined';
   function renderMarkdown(el, text) {
@@ -111,16 +117,24 @@ __VENDOR__
     const pending = bubble('assistant', '');
     pending.classList.add('dots');
     try {
-      const resp = await fetch('/invocations', {
+      const resp = await fetch('/responses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({ input: history }),
       });
       if (!resp.ok) throw new Error(resp.status + ' ' + (await resp.text()).slice(0, 300));
       const data = await resp.json();
-      const out = Array.isArray(data.messages) ? data.messages : [];
-      const reply = out.filter(m => m.role === 'assistant')
-                       .map(m => m.content || '').join('\\n\\n');
+      // ResponsesAgent output: items of {type}. Collect assistant text from
+      // `message` items; ignore function_call / function_call_output (tools).
+      const out = Array.isArray(data.output) ? data.output : [];
+      let reply = '';
+      for (const item of out) {
+        if (item.type === 'message' && Array.isArray(item.content)) {
+          for (const p of item.content) {
+            if (p.type === 'output_text' && p.text) reply += p.text;
+          }
+        }
+      }
       pending.classList.remove('dots');
       renderMarkdown(pending, reply || '(empty response)');
       history.push({ role: 'assistant', content: reply });
