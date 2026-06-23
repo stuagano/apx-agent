@@ -479,13 +479,17 @@ EMBED_ENDPOINT = "databricks-gte-large-en"
 
 
 def _ensure_endpoint(w: WorkspaceClient) -> None:
+    from databricks.sdk.service.vectorsearch import EndpointType
+
     names = [e.name for e in w.vector_search_endpoints.list_endpoints()]
-    if ENDPOINT in names:
-        print(f"endpoint {ENDPOINT} exists")
-        return
-    w.vector_search_endpoints.create_endpoint(
-        name=ENDPOINT, endpoint_type="STANDARD",
-    )
+    if ENDPOINT not in names:
+        w.vector_search_endpoints.create_endpoint(
+            name=ENDPOINT, endpoint_type=EndpointType.STANDARD,
+        )
+    # Wait for ONLINE whether we just created it or it was already provisioning.
+    # NOTE: a STANDARD endpoint can take 15-20 min to provision, and the index's
+    # first delta-sync can lag the endpoint going "online" — poll the index
+    # status generously (the demo build needed ~20 min end to end).
     w.vector_search_endpoints.wait_get_endpoint_vector_search_endpoint_online(
         endpoint_name=ENDPOINT,
     )

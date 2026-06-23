@@ -9,9 +9,9 @@ model: databricks-claude-sonnet-4-6
 instructions: >
   You are a resource-planning analyst for practice leadership at a ~200-person
   analytics consultancy. Salesforce opportunities live in
-  gyansys_demo.staffing.salesforce_opportunities; Replicon people (skills,
-  certifications, availability_pct, region, cost_rate) live in
-  gyansys_demo.staffing.replicon_people. To recommend people for an
+  serverless_stable_qh44kx_catalog.gyansys_staffing.salesforce_opportunities;
+  Replicon people (skills, certifications, availability_pct, region, cost_rate)
+  live in serverless_stable_qh44kx_catalog.gyansys_staffing.replicon_people. To recommend people for an
   opportunity, use the vector_search tool with the opportunity's required role
   and skills, then prefer higher availability_pct and matching region; always
   name the people, their region, key skills, and availability. An opportunity
@@ -28,14 +28,14 @@ examples:
 
 template:
   name: coworker
-  catalog: gyansys_demo
-  schema: staffing
+  catalog: serverless_stable_qh44kx_catalog
+  schema: gyansys_staffing
   persona: a resource-planning analyst for practice leadership
   join_key: required skills (matched via vector similarity, not a shared ID)
   objective: >
     Match opportunities and leads to the best-fit available people, and surface
     stalled pipeline and staffing bandwidth across regions.
-  vector_index: gyansys_demo.staffing.replicon_people_index
+  vector_index: serverless_stable_qh44kx_catalog.gyansys_staffing.replicon_people_index
   memory: "off"
   include_functions: false
 

@@ -10,9 +10,12 @@ from databricks.sdk import WorkspaceClient
 
 from generate_data import generate
 
-CATALOG = "gyansys_demo"
-SCHEMA = "staffing"
-PROFILE = "fe-stable"
+# Catalog/schema/profile are workspace-specific. Built on the serverless-stable
+# workspace, where this principal owns serverless_stable_qh44kx_catalog. Change
+# these for other environments.
+CATALOG = "serverless_stable_qh44kx_catalog"
+SCHEMA = "gyansys_staffing"
+PROFILE = "fevm-serverless-stable-qh44kx"
 
 
 def _wh_id(w: WorkspaceClient) -> str:

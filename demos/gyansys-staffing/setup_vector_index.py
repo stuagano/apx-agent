@@ -6,21 +6,23 @@ import time
 
 from databricks.sdk import WorkspaceClient
 
-PROFILE = "fe-stable"
+# Catalog/schema/profile are workspace-specific (see load_to_uc.py).
+PROFILE = "fevm-serverless-stable-qh44kx"
 ENDPOINT = "gyansys_demo_vs"
-SOURCE_TABLE = "gyansys_demo.staffing.replicon_people"
-INDEX_NAME = "gyansys_demo.staffing.replicon_people_index"
+SOURCE_TABLE = "serverless_stable_qh44kx_catalog.gyansys_staffing.replicon_people"
+INDEX_NAME = "serverless_stable_qh44kx_catalog.gyansys_staffing.replicon_people_index"
 EMBED_ENDPOINT = "databricks-gte-large-en"
 
 
 def _ensure_endpoint(w: WorkspaceClient) -> None:
+    from databricks.sdk.service.vectorsearch import EndpointType
+
     names = [e.name for e in w.vector_search_endpoints.list_endpoints()]
-    if ENDPOINT in names:
-        print(f"endpoint {ENDPOINT} exists")
-        return
-    w.vector_search_endpoints.create_endpoint(
-        name=ENDPOINT, endpoint_type="STANDARD",
-    )
+    if ENDPOINT not in names:
+        w.vector_search_endpoints.create_endpoint(
+            name=ENDPOINT, endpoint_type=EndpointType.STANDARD,
+        )
+    # Wait for ONLINE whether we just created it or it was already provisioning.
     w.vector_search_endpoints.wait_get_endpoint_vector_search_endpoint_online(
         endpoint_name=ENDPOINT,
     )
