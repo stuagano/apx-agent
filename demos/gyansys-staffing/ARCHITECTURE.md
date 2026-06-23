@@ -43,8 +43,8 @@ deterministic generator (`generate_data.py`, seeded with `42` and a fixed
 `load_to_uc.py` writes them into `gyansys_demo.staffing.salesforce_opportunities`
 and `gyansys_demo.staffing.replicon_people` through a serverless SQL warehouse.
 Using synthetic seed data is a deliberate phase-1 choice — it lets us plant the
-demo moments (a handful of obviously-stalled high-value opportunities; India
-deliberately tight on Databricks/PySpark) and keeps the build focused on the
+demo moments (a handful of obviously-stalled high-value opportunities; a clear
+view of Databricks-skill bandwidth by region) and keeps the build focused on the
 agent rather than connector plumbing.
 
 **Where live ingestion plugs in.** The two `(...)` labels on the source edges
@@ -257,7 +257,7 @@ _Verified transcript appended after the local run (plan Task 6)._
 |---|---|---|
 | "Match the right people to the right work" — *"Who are the best-fit available people for the highest-value stalled opportunity?"* | SQL tool finds the highest-`amount` opportunity in an open stage with `last_activity_date` > 30 days before 2026-07-01; vector tool embeds its `required_role + required_skills` and queries `replicon_people_index`; candidates ranked by `availability_pct` and `region`. | Names the specific high-value stalled opportunity (Proposal stage, six-figure `amount`) and lists specific people by name with their region, key matching skills, and availability %, preferring higher-availability and region-aligned candidates. Both the vector tool and the SQL tool are exercised. |
 | "Which opportunities are stalled, and why?" | Grounded SQL over `salesforce_opportunities`: open stage (Prospecting / Qualification / Proposal / Negotiation) AND `last_activity_date` older than 30 days before 2026-07-01; selects `stall_reason`. | Lists the planted stalled opportunities (Proposal stage, idle > 30 days, high `amount`) each with its concrete `stall_reason` — e.g. "Awaiting customer security review", "Budget approval pending", "Champion left the account", "Stuck on legal redlines". No invented opportunities. |
-| "Where's our bandwidth?" — *"How much availability do we have for Databricks work in India?"* | Vector tool and/or SQL filter on `region = 'India'` and Databricks/PySpark skills; aggregates `availability_pct`. | Reports the planted India-on-Databricks scarcity: the India people who carry Databricks/PySpark have low availability (single-digit to ~20%), so bandwidth for Databricks work in India is tight — the deliberate bandwidth story. |
+| "Where's our bandwidth?" — *"How much availability do we have for Databricks work in India?"* | SQL filter on `region = 'India'` plus Databricks-ecosystem skills/certs; aggregates `availability_pct`. | Reports a grounded bandwidth view of the India bench: total Databricks-capable headcount, who is highly available (≥75%), who is constrained (≤20%), and who is fully booked — so leadership sees real capacity by region, not a guess. |
 | "Broaden access without more SF licenses" | (No agent call — the Databricks App itself is the answer.) | Demonstrates management reading pipeline and staffing posture through the App without consuming a Salesforce seat each — the license-cost win from Section 2. |
 | "Grounding / no hallucination" | Show the baked `.apx/schema.json` grounding artifact. | The agent cites real columns from `salesforce_opportunities` and `replicon_people` and never invents fields, because the schema is grounded at scaffold time (Section 3). |
 
