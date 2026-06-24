@@ -618,3 +618,20 @@ class ColumnDescriptionsSaveResponse(BaseModel):
 
     ok: bool
     modified: int
+
+
+class ColumnSuggestRequest(BaseModel):
+    """Body of ``POST /_apx/grounding/suggest`` (#292 phase C) — the table to
+    LLM-generate column descriptions for."""
+
+    table: str
+
+
+class ColumnSuggestResponse(BaseModel):
+    """Success shape of ``POST /_apx/grounding/suggest``: ``{ok, suggestions}``
+    where ``suggestions`` maps column → AI-generated description (empty when the
+    LLM/parse failed). The no-model (400) / no-bundle (404) paths return a
+    ``JSONResponse`` and bypass this model."""
+
+    ok: bool
+    suggestions: dict[str, str]
