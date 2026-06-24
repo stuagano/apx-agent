@@ -2008,6 +2008,14 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "used_schemas": used_schemas,
         }
 
+    @router.get("/_apx/grounding")
+    async def grounding_ui() -> Any:
+        """The field-description curation page (#292) — review + accept/edit
+        per-column descriptions for the agent's OKF grounding bundle."""
+        from ._ui_grounding import render_grounding_ui
+
+        return HTMLResponse(render_grounding_ui())
+
     @router.get("/_apx/grounding/columns", response_model=GroundingColumnsResponse)
     async def grounding_columns(request: Request) -> Any:
         """Per-column current-vs-suggested description curation state for the
