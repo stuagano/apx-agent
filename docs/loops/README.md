@@ -1,18 +1,38 @@
 # apx-agent loops
 
-Bounded, repeatable agent loops for the apx-agent lifecycle —
-`doctor` → `scaffold` → `deploy` → `eval` → `traces` / `label` / `fleet`.
+Bounded, repeatable agent loops for two halves of apx-agent's life: the
+**operational lifecycle** of deployed agents, and the **engineering discipline**
+of changing apx-agent itself.
 
 Each loop below is a feedback system with an explicit trigger, one bounded
 action per pass, an observable check, and a named stopping condition. Every
-loop is grounded in a real `apx-agent` command surface. Loops that touch
-deploys, production, or many agents at once ask before the consequential step;
-designing a loop here does **not** enable a schedule or change production —
-run one only when you ask.
+loop is grounded in a real command surface. Loops that touch deploys,
+production, or many agents at once ask before the consequential step; designing
+a loop here does **not** enable a schedule or change production — run one only
+when you ask.
 
-These match the project's goals: agents that are **grounded** in Unity Catalog
-data, **governed** by UC grants and identity passthrough, **observable** through
-MLflow traces, and **evaluated** with judges aligned to human experts.
+Two disciplines run through every loop and are what make looping safe as the
+connective tissue for continuous improvement:
+
+- **Ponytail (don't over-engineer).** apx-agent's thesis is *declared, not
+  wired*: a working agent is one Python object or a `[tool.apx.agent]` block.
+  Every change picks the smallest approach that works and prunes anything not
+  load-bearing — the loop's "choose" step prefers reusing an existing primitive
+  over adding code.
+- **Ctk (claim-vs-reality, read-after-write).** A pass is not "done" because a
+  command exited 0. The repo's vendored `ctk` kit (`python/.ctk`) exists to
+  catch work that *claims success but didn't do the thing* — empty output,
+  swallowed exceptions, unvalidated artifacts. The loop's "verify" step reads
+  the result back (`ctk.verify(Artifact(...))`, a `*_reality_ctk.py` test, a
+  re-read trace) and only then records progress.
+
+---
+
+## Operational lifecycle loops
+
+For deployed agents — keeping them **grounded** in Unity Catalog data,
+**governed** by UC grants, **observable** through MLflow traces, and
+**evaluated** with judges aligned to human experts.
 
 ---
 
@@ -97,3 +117,83 @@ Prompt:
 > batch, re-run `fleet list` to confirm those agents now match, and continue to
 > the next batch. Stop when the selector returns no drifted agents, or a batch
 > fails to converge — then report which agents and why.
+
+---
+
+## Engineering-discipline loops
+
+For changing apx-agent itself — these are the continuous-improvement loops that
+bake **Ponytail** (don't over-engineer) and **Ctk** (read-after-write
+verification) into the coding workflow. They run in `python/`, where
+`ctk` is on the path via `pythonpath = [".ctk"]`.
+
+## Read-after-write change (Ctk)
+
+Closes the loop on a single code change by reading the result back before
+calling it done, so an exit-0-with-empty-output never passes as success.
+
+Prompt:
+> Make one bounded change. Before claiming it works, read the result back:
+> `cd python && uv run pytest` for the affected area, and for any artifact the
+> change produces or modifies, assert it is real — non-empty AND carrying the
+> wiring that makes it work — with `ctk.verify(Artifact(...))` or a
+> `*_reality_ctk.py` test, not just `.exists()`. Keep the change only if the
+> read-back passes. Stop when the reality check is green; if it can't pass in two
+> attempts, revert and report the gap. Never report a passing exit code as
+> success without the read-back.
+
+## Simplicity guard (Ponytail)
+
+Makes a change land at the smallest footprint that works, reusing existing
+primitives over new code and pruning anything not load-bearing.
+
+Prompt:
+> Before writing code, search for an existing apx-agent primitive, helper, or
+> declared option that already does the job (`declared, not wired` is the
+> default). Implement the smallest version that works, then remove any
+> abstraction, flag, or branch the tests don't exercise. Verify the simpler
+> version still passes `cd python && uv run pytest`. Stop when no further removal
+> keeps tests green. Ask before deleting code outside the change's scope.
+
+## Reality-test backfill
+
+Raises claim-vs-reality coverage one feature at a time, adding a real read-back
+test wherever a behaviour is only checked for existence.
+
+Prompt:
+> Find one CLI command or generated artifact covered only by an `.exists()` /
+> exit-code check. Add a `*_reality_ctk.py` test that reads the output back and
+> asserts it is real with `ctk.verify(Artifact(..., min_bytes=..., must_contain=...))`.
+> Confirm the new test passes and fails when the artifact is emptied. Record the
+> feature covered. Stop when no existence-only feature remains, or the next one
+> needs a fixture beyond the kit — then note it. Don't weaken the assertion to
+> make it pass.
+
+## Swallowed-exception sweep
+
+Drives the codebase toward zero error-hiding `except` blocks, fixing one real
+finding per pass with a verified read-back.
+
+Prompt:
+> Run the static scan — `from ctk import find_swallowed_exceptions` over
+> `src/apx_agent/` (or the area in scope). For the first finding, decide whether
+> the handler should re-raise, surface the error, or is a justified no-op; apply
+> the smallest fix (Ponytail — don't restructure surrounding code). Verify with
+> `cd python && uv run pytest` and re-run the scan to confirm that finding is
+> gone without adding others. Stop when the scan returns empty or a remaining
+> finding needs an owner decision — then escalate it.
+
+## Doc-claims-vs-code drift
+
+Keeps the docs honest by verifying each command or flag a doc claims actually
+exists, fixing one drift per pass.
+
+Prompt:
+> Pick a doc page that claims a command, flag, or behaviour (e.g. an
+> `apx-agent ...` invocation). For one claim, verify it against the code —
+> `apx-agent --help`, the CLI source, or a quick run. If it drifted, make the
+> smallest correction to the doc (or the code, if the doc is the intended
+> contract) and confirm the corrected claim now holds by running it. Record the
+> page and claim. Stop when the page's claims all hold, or a drift needs a
+> product decision — then flag it. Never edit a doc to match without checking the
+> code first.
