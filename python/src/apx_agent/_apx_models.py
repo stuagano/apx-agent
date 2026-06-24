@@ -335,3 +335,83 @@ class TraceDetailResponse(BaseModel):
 
     trace_id: str
     spans: list[dict[str, Any]]
+
+
+# ── Wave 1 / PR-R3: orphan JSON reads ────────────────────────────────────────
+#
+# A grab-bag of read-only ``GET`` routes that aren't part of a larger family.
+# Two have clean, stable shapes worth modelling strictly (workspace-context and
+# the topology graph the React UI consumes); the other three (the curated
+# ``/_apx/openapi.json`` document, the composite ``probe/checks`` health
+# response, and the per-node ``topology/inspect`` detail) are large,
+# heterogeneous, or standard-spec JSON objects where a strict model would add
+# brittleness without value — they un-hide with ``response_model=dict[str,
+# Any]`` (documents "a JSON object", validates nothing restrictive) in _dev.py.
+
+
+class ResourceRef(BaseModel):
+    """One agent-declared resource in ``WorkspaceContextResponse.resources``:
+    ``{kind, identifier}`` (e.g. ``{"kind": "uc_table", "identifier":
+    "main.sales.orders"}``)."""
+
+    kind: str
+    identifier: str
+
+
+class WorkspaceContextResponse(BaseModel):
+    """Shape of ``GET /_apx/workspace-context`` — the Context tab's workspace
+    identity + agent resource summary.
+
+    Always 200: ``user`` degrades to ``"unknown"`` and the resource lists to
+    empty rather than erroring, so there is no bypass path.
+    """
+
+    host: str
+    user: str
+    resources: list[ResourceRef]
+    used_catalogs: list[str]
+    used_schemas: list[str]
+
+
+class TopologyNode(BaseModel):
+    """One node of ``TopologyResponse.nodes``: ``{id, type, label,
+    description}``.
+
+    ``extra="allow"`` so any node-type-specific keys a future ``build_topology``
+    adds pass through untouched instead of being silently dropped on the wire.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    type: str
+    label: str
+    description: str | None = None
+
+
+class TopologyEdge(BaseModel):
+    """One edge of ``TopologyResponse.edges``: ``{id, source, target, kind}``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    source: str
+    target: str
+    kind: str
+
+
+class TopologyResponse(BaseModel):
+    """Success shape of ``GET /_apx/topology.json`` — the agent graph the
+    react-flow topology UI renders: ``{rootId, agentName, nodes, edges}``.
+
+    ``rootId`` is the root agent node's id (the graph's entry point) and
+    ``agentName`` is the served agent's name; both must be modelled (a raw
+    return + ``response_model`` would otherwise strip them off the wire). The
+    no-context error path (503 ``{error}``) returns a ``JSONResponse`` and
+    bypasses this model.
+    """
+
+    rootId: str
+    agentName: str
+    nodes: list[TopologyNode]
+    edges: list[TopologyEdge]

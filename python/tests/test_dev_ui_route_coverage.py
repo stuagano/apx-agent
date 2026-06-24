@@ -632,3 +632,63 @@ async def test_r1_tools_schema_success_serialises_schema_alias_on_wire(
     assert data["catalog"] == "main"
     assert data["schema"] == "default"  # aliased field, not "schema_"
     assert data["tables"] == {}
+
+
+# ── PR-R3: un-hidden + typed orphan JSON reads ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_r3_orphan_read_routes_published_to_openapi(client: AsyncClient) -> None:
+    paths = (await client.get("/openapi.json")).json()["paths"]
+    for route in (
+        "/_apx/openapi.json",
+        "/_apx/probe/checks",
+        "/_apx/topology.json",
+        "/_apx/workspace-context",
+    ):
+        assert route in paths and "get" in paths[route], f"{route} not published"
+    inspect = next(p for p in paths if p.startswith("/_apx/topology/inspect/"))
+    assert "get" in paths[inspect]
+
+
+@pytest.mark.asyncio
+async def test_r3_apx_openapi_json_returns_curated_spec(client: AsyncClient) -> None:
+    r = await client.get("/_apx/openapi.json")
+    assert r.status_code == 200
+    spec = r.json()
+    assert spec["openapi"].startswith("3.")
+    assert "paths" in spec
+
+
+@pytest.mark.asyncio
+async def test_r3_topology_json_preserves_rootid_and_agentname(client: AsyncClient) -> None:
+    """``response_model=TopologyResponse`` must NOT strip the ``rootId`` /
+    ``agentName`` top-level keys the react-flow UI needs."""
+    r = await client.get("/_apx/topology.json")
+    assert r.status_code == 200
+    g = r.json()
+    assert set(g) >= {"rootId", "agentName", "nodes", "edges"}
+    assert g["rootId"]  # non-empty entry-point id
+    assert isinstance(g["nodes"], list) and isinstance(g["edges"], list)
+
+
+@pytest.mark.asyncio
+async def test_r3_topology_inspect_round_trips_a_real_node(client: AsyncClient) -> None:
+    root_id = (await client.get("/_apx/topology.json")).json()["rootId"]
+    r = await client.get(f"/_apx/topology/inspect/{root_id}")
+    assert r.status_code == 200
+    assert r.json()["id"] == root_id
+
+
+@pytest.mark.asyncio
+async def test_r3_topology_inspect_unknown_node_is_404(client: AsyncClient) -> None:
+    r = await client.get("/_apx/topology/inspect/nope:nonexistent")
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_r3_topology_routes_degrade_without_context(app: FastAPI) -> None:
+    app.state.agent_context = None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        assert (await ac.get("/_apx/topology.json")).status_code == 503
+        assert (await ac.get("/_apx/topology/inspect/agent:root")).status_code == 503
