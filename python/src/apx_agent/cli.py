@@ -7105,19 +7105,28 @@ def list_agents_cmd(
         click.echo("Deploy one with:  apx-agent deploy")
         click.echo("Then run this command again to see it here.")
         return
-    click.echo(
-        f"{'AGENT':<24}  {'SERVING':<13}  {'UC NAME':<34}  "
-        f"{'MODEL / URL':<46}  {'TOOLS':>6}"
-    )
+
+    # Widths sized to the data so columns stay aligned regardless of name length.
+    # UC NAME is dropped entirely when no agent has one (e.g. an all-Apps fleet),
+    # and the long, variable ENDPOINT/URL goes last so it never shifts the
+    # right-aligned TOOLS column around.
+    show_uc = any(r["uc_name"] for r in rows)
+    name_w = max(len("AGENT"), *(len(r["agent_name"] or "-") for r in rows))
+    uc_w = max(len("UC NAME"), *(len(r["uc_name"] or "-") for r in rows)) if show_uc else 0
+
+    header = f"{'AGENT':<{name_w}}  {'SERVING':<13}  "
+    if show_uc:
+        header += f"{'UC NAME':<{uc_w}}  "
+    header += f"{'TOOLS':>5}  ENDPOINT"
+    click.echo(header)
+
     for r in rows:
         endpoint = r["model_endpoint"] or r["url"] or "-"
-        click.echo(
-            f"{(r['agent_name'] or '-'):<24}  "
-            f"{r['serving']:<13}  "
-            f"{(r['uc_name'] or '-'):<34}  "
-            f"{endpoint:<46}  "
-            f"{(r['tool_count'] or '-'):>6}"
-        )
+        line = f"{(r['agent_name'] or '-'):<{name_w}}  {r['serving']:<13}  "
+        if show_uc:
+            line += f"{(r['uc_name'] or '-'):<{uc_w}}  "
+        line += f"{(r['tool_count'] or '-'):>5}  {endpoint}"
+        click.echo(line)
 
 
 # ---------------------------------------------------------------------------
