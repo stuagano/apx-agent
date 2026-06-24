@@ -15,6 +15,8 @@ Covers:
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -54,7 +56,7 @@ def _ask_gate() -> PolicyGate:
     ])
 
 
-def _make_app(agent: object | None) -> FastAPI:
+def _make_app(agent: Any | None) -> FastAPI:
     config = AgentConfig(name="approval-test", model="claude-fake")
     card = AgentCard(name="approval-test", description="", skills=[])
     ctx = AgentContext(config=config, tools=[], card=card, agent=agent)  # type: ignore[arg-type]
@@ -271,3 +273,35 @@ def test_chat_template_includes_approval_and_history_js():
     assert "/_apx/approvals" in html
     # The history-desync fix: both flows must reset the request payload.
     assert "history.length = 0" in html
+
+
+# ---------------------------------------------------------------------------
+# PR-R2: trace + approval routes are un-hidden + typed, and the trace routes'
+# HTML branch survives the added response_model.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_r2_trace_and_approval_routes_published_to_openapi():
+    spec = (await _get_json(_make_app(agent=None), "/openapi.json")).json()
+    paths = spec["paths"]
+    assert "get" in paths["/_apx/approvals"]
+    assert "post" in paths["/_apx/approvals/{approval_id}/approve"]
+    assert "post" in paths["/_apx/approvals/{approval_id}/deny"]
+    assert "get" in paths["/_apx/traces"]
+    # FastAPI renders the ``{trace_id:path}`` convertor as a plain ``{trace_id}``
+    # path key in the schema.
+    detail = next(p for p in paths if p.startswith("/_apx/traces/") and "{trace_id" in p)
+    assert "get" in paths[detail]
+
+
+@pytest.mark.asyncio
+async def test_r2_traces_html_branch_survives_response_model():
+    """The default (no ``fmt``) branch of ``GET /_apx/traces`` must still return
+    an HTML page — adding ``response_model=list[TraceRow]`` documents only the
+    ``fmt=json`` branch and must not hijack the HTMLResponse the handler
+    returns."""
+    async with AsyncClient(transport=ASGITransport(app=_make_app(agent=None)), base_url="http://t") as ac:
+        r = await ac.get("/_apx/traces")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")

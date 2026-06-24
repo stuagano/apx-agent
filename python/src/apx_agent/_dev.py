@@ -30,6 +30,8 @@ from pydantic import BaseModel
 from ._apx_models import (
     AgentNodeInfo,
     AgentPatternResponse,
+    ApprovalActionResponse,
+    ApprovalInfo,
     EvalCaseIn,
     EvalCaseResponse,
     EvalDataSaveResponse,
@@ -38,6 +40,8 @@ from ._apx_models import (
     ProbeResult,
     ToolInfo,
     ToolSchemaResponse,
+    TraceDetailResponse,
+    TraceRow,
     VsIndexInfo,
     WarehouseInfo,
 )
@@ -1161,15 +1165,15 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 return approvals
         return None
 
-    @router.get("/_apx/approvals", include_in_schema=False)
+    @router.get("/_apx/approvals", response_model=list[ApprovalInfo])
     async def list_approvals_api(request: Request) -> Any:
         """Return pending approval requests as JSON for the chat UI banner."""
         from fastapi.responses import JSONResponse
         store = _find_approval_store(request)
         if store is None:
-            return JSONResponse([])
+            return []
         try:
-            return JSONResponse([
+            return [
                 {
                     "id": a.id,
                     "tool_name": a.tool_name,
@@ -1177,13 +1181,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                     "reason": a.reason,
                 }
                 for a in store.list_pending()
-            ])
+            ]
         except Exception:
             logger.exception("listing approvals failed")
             return JSONResponse({"error": "approval store unavailable"},
                                 status_code=503)
 
-    @router.post("/_apx/approvals/{approval_id}/approve", include_in_schema=False)
+    @router.post("/_apx/approvals/{approval_id}/approve", response_model=ApprovalActionResponse)
     async def approve_approval_api(approval_id: str, request: Request) -> Any:
         """Grant a pending approval — the agent's retry of the call passes."""
         from fastapi.responses import JSONResponse
@@ -1196,9 +1200,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         except KeyError:
             return JSONResponse({"error": f"unknown approval {approval_id}"},
                                 status_code=404)
-        return JSONResponse({"id": approval.id, "status": approval.status})
+        return {"id": approval.id, "status": approval.status}
 
-    @router.post("/_apx/approvals/{approval_id}/deny", include_in_schema=False)
+    @router.post("/_apx/approvals/{approval_id}/deny", response_model=ApprovalActionResponse)
     async def deny_approval_api(approval_id: str, request: Request) -> Any:
         """Refuse a pending approval — the agent's retry becomes a hard DENY."""
         from fastapi.responses import JSONResponse
@@ -1211,12 +1215,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         except KeyError:
             return JSONResponse({"error": f"unknown approval {approval_id}"},
                                 status_code=404)
-        return JSONResponse({"id": approval.id, "status": approval.status})
+        return {"id": approval.id, "status": approval.status}
 
-    @router.get("/_apx/traces", include_in_schema=False)
+    @router.get("/_apx/traces", response_model=list[TraceRow])
     async def traces_list_ui(request: Request) -> Any:
         import os
-        from fastapi.responses import JSONResponse
         ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
         agent_name = ctx.config.name if ctx else None
         fmt = request.query_params.get("fmt")
@@ -1286,10 +1289,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             except Exception:
                 pass
             rows = rows[:max_results]
-            return JSONResponse(rows)
+            return rows
         return HTMLResponse(_render_traces_list(rows, agent_name))
 
-    @router.get("/_apx/traces/{trace_id:path}", include_in_schema=False)
+    @router.get("/_apx/traces/{trace_id:path}", response_model=TraceDetailResponse)
     async def trace_detail_ui(trace_id: str, request: Request) -> Any:
         from fastapi.responses import JSONResponse
         from ._trace_store import get as _ts_get, put as _ts_put
@@ -1302,7 +1305,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         buffered = _ts_get(trace_id)
         if buffered is not None:
             if fmt == "json":
-                return JSONResponse({"trace_id": trace_id, "spans": buffered})
+                return {"trace_id": trace_id, "spans": buffered}
             return HTMLResponse(_render_trace_detail(trace_id, buffered, None))
 
         # 2) Buffer miss — fall through to mlflow.get_trace under a worker-thread
@@ -1352,7 +1355,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if span_dicts:
             _ts_put(trace_id, span_dicts)
         if fmt == "json":
-            return JSONResponse({"trace_id": trace_id, "spans": span_dicts})
+            return {"trace_id": trace_id, "spans": span_dicts}
         return HTMLResponse(_render_trace_detail(trace_id, span_dicts, None))
 
     # ------------------------------------------------------------------
