@@ -1,4 +1,17 @@
-.PHONY: wheel
+.PHONY: wheel check lint
+
+# Read-after-write verify gate (Ctk). Runs the full pytest suite, which includes
+# the *_reality_ctk.py claim-vs-reality tests. Run this before claiming a change
+# works — a green exit code here is the read-back, not just "it ran".
+check:
+	cd python && uv run pytest
+
+# Lint suite from .pre-commit-config.yaml (enforces the Ponytail smells). Uses
+# uvx so it works without pre-commit installed in the project env; needs network
+# the first time to fetch the hooks.
+lint:
+	cd python && uvx pre-commit run --all-files --config ../.pre-commit-config.yaml
+
 
 wheel:
 	cd python && python3 -m hatchling build --target wheel

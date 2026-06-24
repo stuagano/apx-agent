@@ -63,6 +63,10 @@
 
 - [evaluate/overview.md](evaluate/overview.md) — MLflow evaluation, `apx-agent eval`, LLM-as-judge, `eval chain`
 
+## Loops
+
+- [loops/README.md](loops/README.md) — bounded, repeatable **development loops for apx-agent itself** (read-after-write change, simplicity guard, green-CI, reality-test backfill, swallowed-exception sweep, doc drift), built on the Ponytail + Ctk disciplines. See also [CLAUDE.md](../CLAUDE.md).
+
 ## Reference
 
 - [reference/configuration.md](reference/configuration.md) — full `[tool.apx.agent]` field reference

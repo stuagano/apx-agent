@@ -64,6 +64,57 @@ The SQL tool runs queries as the **calling user**, not the app's service
 principal. Their UC grants apply at query time. The agent can't touch what
 they can't touch. No auth code at the tool level — the framework handles it.
 
+### Robustness & day-two ops
+
+Construction never raises. Schema introspection is best-effort — a permission,
+network, or missing-warehouse failure degrades to the ungrounded fallback (a
+working generic SQL assistant) rather than crashing the agent or the deploy.
+
+Crucially, the agent doesn't just log the degradation — it **captures it** as
+structured state you can read on day two:
+
+- `agent._apx_data` is a `DataAgentHealth` (exported from `apx_agent`):
+  `grounded`, `schema_source` (`tables` / `introspect` / `knowledge` / `baked` /
+  `ungrounded`), `table_count`, `uc_functions` (`wired` / `deferred` /
+  `disabled` / `none`), and `warehouse` (`declared` / `auto` / `unavailable`).
+- `agent._apx_data_degraded` is a short reason string (or `None` when healthy);
+  an unavailable warehouse outranks ungrounded since it breaks every query.
+
+The deployed runtime surfaces this at **`GET /readyz`** under `checks.data`,
+alongside `llm`, `tracing`, and `memory`. It is **informational** — an
+ungrounded agent is still a working assistant, so `data` never flips readiness
+to `degraded` (unlike `memory`). Operators poll `/readyz` to spot grounding loss
+or a vanished warehouse after a redeploy or upstream schema change.
+
+UC functions discovered later (the import-time `ws=None` path) are wired by the
+idempotent `bind_workspace(ws)`, which also refreshes `_apx_data` so the
+day-two state stays accurate. See the
+[DataAgent tool discovery and wiring loop](../loops/README.md) for the
+discover → wire → read-back cycle this state supports.
+
+#### Active probe — `agent.probe(ws)`
+
+`/readyz` reports health captured at construction; it does not re-read the
+workspace on every request. For an **active** day-two check — *is the warehouse
+reachable, and does the schema still match what we grounded on right now?* —
+call `probe(ws)` off the hot path (a scheduled job, a notebook, an ops CLI):
+
+```python
+p = agent.probe(ws)                 # best-effort; never raises
+if not p.ok:
+    alert(p.detail)                 # e.g. "schema drift: missing ['customers']; new ['payments']"
+# p.warehouse: "reachable" | "unavailable"
+# p.schema:    "match" | "drift" | "unreachable" | "ungrounded"
+# p.missing_tables / p.new_tables:  the exact drift
+```
+
+It re-introspects the live schema and diffs it against the agent's own
+`uc_table` resources (no extra state to drift), and resolves the warehouse to
+confirm it's reachable. Returns a `DataAgentProbe`. Run it on a cadence to catch
+schema drift or a vanished warehouse before users hit a failed query — the
+"trace regression triage" and discovery-and-wiring loops in
+[docs/loops](../loops/README.md) both build on this signal.
+
 ---
 
 ## Extending a DataAgent

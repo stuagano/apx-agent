@@ -410,3 +410,123 @@ class TestDataAgentOKFGrounding:
             objective=None, tables=None, extra_tools=None,
         )
         assert "Should not appear via introspect." not in comp.instructions
+
+
+class TestDataAgentHealth:
+    """Day-two ops: DataAgent captures its discovery/wiring health as structured
+    state (``_apx_data``) and a short degraded reason (``_apx_data_degraded``)
+    that ``/readyz`` surfaces — robust creation that records *why* it degraded
+    instead of only logging it."""
+
+    def test_grounded_via_tables(self):
+        a = DataAgent("main", "sales", tables={"orders": ["id(INT)"]})
+        assert a._apx_data.grounded is True
+        assert a._apx_data.schema_source == "tables"
+        assert a._apx_data.table_count == 1
+        assert a._apx_data_degraded is None
+
+    def test_ungrounded_marks_degraded(self, tmp_path, monkeypatch):
+        # Empty cwd so no .apx/schema.json is auto-discovered → true ungrounded.
+        monkeypatch.chdir(tmp_path)
+        a = DataAgent("main", "sales")
+        assert a._apx_data.grounded is False
+        assert a._apx_data.schema_source == "ungrounded"
+        assert a._apx_data_degraded is not None
+        assert "no schema grounding" in a._apx_data_degraded
+
+    def test_introspect_source_and_warehouse_declared(self):
+        ws = _ws_with_schema({"orders": ["id(INT)"]})
+        a = DataAgent("main", "sales", warehouse_id="wh-7", ws=ws)
+        assert a._apx_data.schema_source == "introspect"
+        assert a._apx_data.grounded is True
+        assert a._apx_data.warehouse == "declared"
+        # ws present, schema lists no functions → "none" (not deferred).
+        assert a._apx_data.uc_functions == "none"
+        assert a._apx_data_degraded is None
+
+    def test_uc_functions_deferred_then_wired_after_bind(self):
+        a = DataAgent("main", "sales", tables={"orders": ["id(INT)"]})
+        assert a._apx_data.uc_functions == "deferred"
+        a.bind_workspace(_ws_with_schema({"orders": ["id(INT)"]}, functions=["classify"]))
+        assert a._apx_data.uc_functions == "wired"
+
+    def test_uc_functions_disabled(self):
+        a = DataAgent("main", "sales", tables={"orders": ["id(INT)"]}, include_functions=False)
+        assert a._apx_data.uc_functions == "disabled"
+
+    def test_warehouse_unavailable_outranks_grounding(self, monkeypatch):
+        def _boom(ws, **kwargs):
+            raise RuntimeError("no warehouse")
+
+        monkeypatch.setattr("apx_agent._sql.get_warehouse_id", _boom)
+        ws = _ws_with_schema({"orders": ["id(INT)"]})  # introspect succeeds → grounded
+        a = DataAgent("main", "sales", ws=ws)  # warehouse_id=None → auto-resolve attempt
+        assert a._apx_data.grounded is True
+        assert a._apx_data.warehouse == "unavailable"
+        # Warehouse failure outranks grounding in the degraded reason.
+        assert "warehouse" in a._apx_data_degraded
+
+    def test_health_type_exported(self):
+        from apx_agent import DataAgentHealth
+
+        a = DataAgent("main", "sales", tables={"orders": ["id(INT)"]})
+        assert isinstance(a._apx_data, DataAgentHealth)
+
+
+class TestDataAgentProbe:
+    """Active day-two check: probe(ws) re-reads the live workspace to confirm the
+    warehouse is reachable and the schema still matches the grounded tables —
+    off the hot path, best-effort, never raises."""
+
+    def test_match_is_ok(self):
+        a = DataAgent("main", "sales", warehouse_id="wh", tables={"orders": ["id(INT)"]})
+        p = a.probe(_ws_with_schema({"orders": ["id(INT)"]}))
+        assert p.ok is True
+        assert p.warehouse == "reachable"
+        assert p.schema == "match"
+        assert p.missing_tables == () and p.new_tables == ()
+
+    def test_drift_detected(self):
+        a = DataAgent(
+            "main", "sales", warehouse_id="wh",
+            tables={"orders": ["id(INT)"], "customers": ["id(INT)"]},
+        )
+        p = a.probe(_ws_with_schema({"orders": ["id(INT)"], "payments": ["id(INT)"]}))
+        assert p.ok is False
+        assert p.schema == "drift"
+        assert p.missing_tables == ("customers",)
+        assert p.new_tables == ("payments",)
+        assert "drift" in p.detail
+
+    def test_schema_unreachable_does_not_claim_vanished(self):
+        a = DataAgent("main", "sales", warehouse_id="wh", tables={"orders": ["id(INT)"]})
+        ws = MagicMock()
+        ws.statement_execution.execute_statement.side_effect = RuntimeError("no perms")
+        p = a.probe(ws)
+        assert p.ok is False
+        assert p.schema == "unreachable"
+        assert p.missing_tables == ()  # not claiming the table dropped
+
+    def test_warehouse_unavailable(self, monkeypatch):
+        def _boom(ws, **kwargs):
+            raise RuntimeError("no warehouse")
+
+        monkeypatch.setattr("apx_agent._sql.get_warehouse_id", _boom)
+        a = DataAgent("main", "sales", tables={"orders": ["id(INT)"]})  # no warehouse_id
+        p = a.probe(_ws_with_schema({"orders": ["id(INT)"]}))
+        assert p.ok is False
+        assert p.warehouse == "unavailable"
+        assert "warehouse" in p.detail
+
+    def test_ungrounded_has_nothing_to_drift(self):
+        a = DataAgent("main", "sales", warehouse_id="wh", tables={})
+        p = a.probe(_ws_with_schema({"orders": ["id(INT)"]}))
+        assert p.schema == "ungrounded"
+        assert p.ok is True  # warehouse reachable; no grounding to compare
+
+    def test_never_raises_on_hostile_ws(self):
+        from apx_agent import DataAgentProbe
+
+        a = DataAgent("main", "sales", tables={"orders": ["id(INT)"]})  # no warehouse_id
+        p = a.probe(MagicMock())  # warehouses.list() not iterable → caught, not raised
+        assert isinstance(p, DataAgentProbe)
