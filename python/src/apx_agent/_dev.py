@@ -42,13 +42,20 @@ from ._apx_models import (
     JudgeResponse,
     ProbeResult,
     ToolDeleteResponse,
+    ToolFromDescriptionRequest,
+    ToolFromDescriptionResponse,
     ToolInfo,
+    ToolNewRequest,
     ToolSchemaResponse,
+    ToolSuggestRequest,
+    ToolSuggestResponse,
     TopologyResponse,
     TraceDetailResponse,
     TraceRow,
     VsIndexInfo,
     WarehouseInfo,
+    WireAgentRequest,
+    WireAgentResponse,
     WorkspaceContextResponse,
 )
 from ._models import AgentContext, AgentTool
@@ -1664,14 +1671,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         return {"ok": True, "catalog": catalog, "schema": schema, "tables": {}}
 
-    @router.post("/_apx/tools/suggest", include_in_schema=False)
-    async def suggest_tool_spec(request: Request) -> Any:
+    @router.post("/_apx/tools/suggest", response_model=ToolSuggestResponse)
+    async def suggest_tool_spec(request: Request, body: ToolSuggestRequest) -> Any:
         from fastapi.responses import JSONResponse
         import json as _json
         from httpx import AsyncClient
 
-        body = await request.json()
-        prompt: str = body.get("prompt", "").strip()
+        prompt: str = body.prompt.strip()
         if not prompt:
             return JSONResponse({"ok": False, "error": "No description provided"})
 
@@ -1813,22 +1819,21 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if fetched_tables and spec.get("body"):
             spec["body"] = _fix_sql_identifiers(spec["body"], fetched_tables)
 
-        return JSONResponse({"ok": True, "spec": spec})
+        return {"ok": True, "spec": spec}
 
-    @router.post("/_apx/tools/new", include_in_schema=False)
-    async def create_new_tool(request: Request) -> Any:
+    @router.post("/_apx/tools/new", response_model=dict[str, Any])
+    async def create_new_tool(request: Request, body: ToolNewRequest) -> Any:
         from fastapi.responses import JSONResponse
         import re as _re
 
-        req_body = await request.json()
-        name: str = _re.sub(r"\W", "_", req_body.get("name", "").strip()) or "my_tool"
-        description: str = req_body.get("description", "").strip()
+        name: str = _re.sub(r"\W", "_", (body.name or "").strip()) or "my_tool"
+        description: str = (body.description or "").strip()
         params: list[dict[str, Any]] = [
-            p for p in req_body.get("params", []) if p.get("name", "").strip()
+            p for p in body.params if p.get("name", "").strip()
         ]
-        returns: str = req_body.get("returns", "str")
-        fn_body: str | None = req_body.get("body") or None
-        target: str = (req_body.get("agent") or "agent").strip() or "agent"
+        returns: str = body.returns or "str"
+        fn_body: str | None = body.body or None
+        target: str = (body.agent or "agent").strip() or "agent"
 
         path = _find_agent_router_path()
         if not path:
@@ -1856,14 +1861,14 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         wired = any(name in (n.get("tools") or []) for n in nodes)
         if not wired:
             leaves = [n["name"] for n in nodes if n["name"] != "agent" and n.get("wrapper") is None]
-            return JSONResponse({
+            return {
                 "ok": True, "wired": False, "agents": leaves,
                 "note": (
                     f"`{name}` was added to agent.py but not attached to an agent "
                     f"(this agent is composed). Re-add it choosing one of: {', '.join(leaves) or '(define a leaf agent first)'}."
                 ),
-            })
-        return JSONResponse({"ok": True, "wired": True})
+            }
+        return {"ok": True, "wired": True}
 
     @router.delete("/_apx/tools/{fn_name}", response_model=ToolDeleteResponse)
     async def delete_tool(fn_name: str, request: Request) -> Any:
@@ -2196,13 +2201,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             })
         return result
 
-    @router.post("/_apx/setup/create-tool", include_in_schema=False)
-    async def setup_create_tool(request: Request) -> Any:
+    @router.post("/_apx/setup/create-tool", response_model=ToolFromDescriptionResponse)
+    async def setup_create_tool(request: Request, body: ToolFromDescriptionRequest) -> Any:
         from fastapi.responses import JSONResponse
         import httpx
 
-        body = await request.json()
-        desc: str = body.get("description", "").strip()
+        desc: str = body.description.strip()
         if not desc:
             return JSONResponse({"ok": False, "error": "No description provided"}, status_code=400)
 
@@ -2230,15 +2234,14 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             if not new_data.get("ok"):
                 return JSONResponse(new_data)
 
-        return JSONResponse({"ok": True, "tool_name": spec.get("name", "")})
+        return {"ok": True, "tool_name": spec.get("name", "")}
 
-    @router.post("/_apx/wizard/generate-tools", include_in_schema=False)
-    async def wizard_generate_tools(request: Request) -> Any:
+    @router.post("/_apx/wizard/generate-tools", response_model=ToolFromDescriptionResponse)
+    async def wizard_generate_tools(request: Request, body: ToolFromDescriptionRequest) -> Any:
         from fastapi.responses import JSONResponse
         import httpx
 
-        body = await request.json()
-        description: str = body.get("description", "").strip()
+        description: str = body.description.strip()
         if not description:
             return JSONResponse({"ok": False, "error": "No description provided"}, status_code=400)
 
@@ -2265,16 +2268,15 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             if not new_data.get("ok"):
                 return JSONResponse(new_data)
 
-        return JSONResponse({"ok": True, "tool_name": spec.get("name", "")})
+        return {"ok": True, "tool_name": spec.get("name", "")}
 
-    @router.post("/_apx/setup/wire-agent", include_in_schema=False)
-    async def setup_wire_agent(request: Request) -> Any:
+    @router.post("/_apx/setup/wire-agent", response_model=WireAgentResponse)
+    async def setup_wire_agent(request: Request, body: WireAgentRequest) -> Any:
         from fastapi.responses import JSONResponse
         import json as _json
 
-        body = await request.json()
-        behavior: str = body.get("behavior", "").strip()
-        agent_name: str = body.get("agent_name", "agent").strip()
+        behavior: str = body.behavior.strip()
+        agent_name: str = (body.agent_name or "agent").strip()
         if not behavior:
             return JSONResponse({"ok": False, "error": "No behavior description provided"}, status_code=400)
 
@@ -2293,7 +2295,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                     tool_list.append({"name": s["name"], "description": s.get("description", "")})
 
         if not tool_list:
-            return JSONResponse({"ok": True, "tools": [], "instructions": f"You are {agent_name}. {behavior}"})
+            return {"ok": True, "tools": [], "instructions": f"You are {agent_name}. {behavior}"}
 
         tool_names = [t["name"] for t in tool_list]
         tool_summary = "\n".join(f"- {t['name']}: {t['description']}" for t in tool_list)
@@ -2340,7 +2342,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             result = _json.loads(raw)
             selected = [t for t in (result.get("tools") or []) if t in tool_names]
             instructions = str(result.get("instructions") or behavior)
-            return JSONResponse({"ok": True, "tools": selected, "instructions": instructions})
+            return {"ok": True, "tools": selected, "instructions": instructions}
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)})
 

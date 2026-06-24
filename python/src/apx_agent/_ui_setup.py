@@ -553,7 +553,7 @@ document.getElementById('btn-desc-tool').addEventListener('click', async () => {
       body: JSON.stringify({{ description: desc }}),
     }});
     const d = await r.json();
-    if (d.error) throw new Error(d.error);
+    if (!d.ok) throw new Error(d.error || 'creation failed');
     st.style.color = '#4ade80';
     st.textContent = `✓ Created ${{d.tool_name || ''}}`;
     document.getElementById('tool-desc-input').value = '';
@@ -627,6 +627,7 @@ document.getElementById('btn-gen-tools').addEventListener('click', async () => {
           catalog, schema, warehouse_id: wh }}),
       }});
       const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'generation failed');
       document.getElementById(`tp-${{t.name}}`).innerHTML =
         `<span style="color:#22c55e">✓</span> <strong>${{t.name}}</strong>: ${{d.tool_name || 'created'}}`;
       created++;

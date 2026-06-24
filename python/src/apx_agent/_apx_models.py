@@ -466,3 +466,100 @@ class ToolDeleteResponse(BaseModel):
     """
 
     ok: bool
+
+
+# ── Wave 2 / PR-W2b: codegen LLM+ASGI chain ──────────────────────────────────
+#
+# The five coupled codegen-write routes. ``create-tool`` and ``generate-tools``
+# do no work themselves — they ``httpx.ASGITransport``-POST internally into
+# ``/_apx/tools/suggest`` then ``/_apx/tools/new``, and that internal POST
+# RE-RUNS FastAPI body validation. So ``ToolNewRequest`` is load-bearing: it
+# must accept whatever ``suggest``'s LLM emits, hence **every field optional +
+# ``extra="ignore"``** — a required field would 422 the *internal* chain, not
+# just bad UI input. The conditional success shapes (``tools/new``'s
+# ``wired``/``agents``/``note``) use ``dict[str, Any]`` responses so no key is
+# stripped off the wire (the rootId/agentName lesson from #276). Un-hidden per
+# policy #2; execution stays token-gated by ``_dev_write_guard``.
+
+
+class ToolSuggestRequest(BaseModel):
+    """Body of ``POST /_apx/tools/suggest``: ``{prompt}`` (required; blank-after-
+    strip is rejected by the handler with a 200 ``{ok: false}``)."""
+
+    prompt: str
+
+
+class ToolSuggestResponse(BaseModel):
+    """Success shape of ``POST /_apx/tools/suggest``: ``{ok, spec}`` where
+    ``spec`` is the LLM-generated tool scaffold (arbitrary JSON object). The
+    no-prompt / no-agent / non-JSON paths return a 200 ``{ok: false, error}``
+    ``JSONResponse`` that bypasses this model."""
+
+    ok: bool
+    spec: dict[str, Any]
+
+
+class ToolNewRequest(BaseModel):
+    """Body of ``POST /_apx/tools/new`` — a tool spec. **Fully permissive**:
+    every field optional, ``extra="ignore"``. This is the spec ``suggest``
+    emits and the ASGI chain re-POSTs, so it must never 422 on a missing or
+    extra field. ``params`` is a list of ``{name, type, desc}`` dicts.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str | None = None
+    description: str | None = None
+    params: list[dict[str, Any]] = []
+    returns: str | None = None
+    body: str | None = None
+    agent: str | None = None
+
+
+class ToolFromDescriptionRequest(BaseModel):
+    """Shared body of ``POST /_apx/setup/create-tool`` AND
+    ``POST /_apx/wizard/generate-tools`` (functionally identical): ``{description}``.
+
+    ``extra="ignore"`` because the wizard UI also sends
+    ``table``/``catalog``/``schema``/``warehouse_id`` that the handler doesn't
+    read (the extra-fields trap). Blank-after-strip → handler 400.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    description: str
+
+
+class ToolFromDescriptionResponse(BaseModel):
+    """Success shape of create-tool / generate-tools: ``{ok, tool_name}``.
+
+    The chained-failure passthroughs (``suggest``/``new`` ``{ok: false}``) and
+    the no-description 400 return a ``JSONResponse`` and bypass this model.
+    """
+
+    ok: bool
+    tool_name: str
+
+
+class WireAgentRequest(BaseModel):
+    """Body of ``POST /_apx/setup/wire-agent``: ``{behavior, agent_name}``.
+
+    ``behavior`` required (blank-after-strip → handler 400); ``agent_name``
+    defaults to ``"agent"``.
+    """
+
+    behavior: str
+    agent_name: str = "agent"
+
+
+class WireAgentResponse(BaseModel):
+    """Success shape of ``POST /_apx/setup/wire-agent``: ``{ok, tools,
+    instructions}`` — the LLM-selected tool names and generated instructions
+    (``tools`` empty when the agent has no tools yet). The no-agent (503),
+    no-model / no-behavior (400), import-failure (500), and LLM-failure (200)
+    paths return a ``JSONResponse`` and bypass this model.
+    """
+
+    ok: bool
+    tools: list[str]
+    instructions: str

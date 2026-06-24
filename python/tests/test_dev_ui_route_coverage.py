@@ -752,3 +752,72 @@ async def test_w2a_delete_unknown_tool_returns_ok_false(client: AsyncClient) -> 
     r = await client.delete("/_apx/tools/nonexistent_tool")
     assert r.status_code == 200
     assert r.json()["ok"] is False
+
+
+# ── PR-W2b: typed + un-hidden codegen LLM+ASGI chain ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_w2b_chain_routes_published_to_openapi(client: AsyncClient) -> None:
+    paths = (await client.get("/openapi.json")).json()["paths"]
+    for route in (
+        "/_apx/tools/suggest",
+        "/_apx/tools/new",
+        "/_apx/setup/create-tool",
+        "/_apx/wizard/generate-tools",
+        "/_apx/setup/wire-agent",
+    ):
+        assert "post" in paths.get(route, {}), f"{route} not published"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", [
+    "/_apx/tools/suggest",        # missing prompt
+    "/_apx/setup/create-tool",    # missing description
+    "/_apx/wizard/generate-tools",
+    "/_apx/setup/wire-agent",     # missing behavior
+])
+async def test_w2b_missing_required_field_is_422(client: AsyncClient, route: str) -> None:
+    # Missing required body field → FastAPI 422 (policy #1), before the handler runs.
+    assert (await client.post(route, json={})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_w2b_blank_after_strip_stays_handler_400(client: AsyncClient) -> None:
+    # Present-but-blank passes Pydantic, then the handler rejects it with its own
+    # semantic 400 (NOT 422) — the JudgeRequest precedent.
+    assert (await client.post("/_apx/setup/create-tool", json={"description": "   "})).status_code == 400
+    assert (await client.post("/_apx/setup/wire-agent", json={"behavior": "   "})).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_w2b_tools_new_response_keeps_conditional_keys(
+    client: AsyncClient, agent_router_path: Path
+) -> None:
+    """`response_model=dict[str, Any]` must pass the handler's conditional
+    `{ok, wired[, agents, note]}` through verbatim — no strip, no strict-model
+    default keys added (the rootId/agentName regression from #276)."""
+    r = await client.post("/_apx/tools/new", json={
+        "name": "my_new_tool",
+        "description": "A tool.",
+        "params": [{"name": "q", "type": "str", "desc": "query"}],
+        "returns": "str",
+        "body": "    return q",
+    })
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert "wired" in data
+    assert set(data) <= {"ok", "wired", "agents", "note"}  # no stray/added keys
+
+
+@pytest.mark.asyncio
+async def test_w2b_create_tool_tolerates_extra_wizard_fields_at_boundary(client: AsyncClient) -> None:
+    """The wizard sends table/catalog/schema/warehouse_id the handler ignores;
+    `extra=\"ignore\"` must NOT 422 them. Posting blank description + extras still
+    reaches the handler's own 400 (proving the body validated past the model)."""
+    r = await client.post("/_apx/setup/create-tool", json={
+        "description": "   ",  # blank → handler 400, NOT a 422 from extras
+        "table": "orders", "catalog": "main", "schema": "default", "warehouse_id": "wh-1",
+    })
+    assert r.status_code == 400  # handler, not 422 → extras tolerated + body parsed
