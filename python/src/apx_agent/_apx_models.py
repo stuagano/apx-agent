@@ -415,3 +415,54 @@ class TopologyResponse(BaseModel):
     agentName: str
     nodes: list[TopologyNode]
     edges: list[TopologyEdge]
+
+
+# ── Wave 2 / PR-W2a: codegen file-ops writes (edit / preview / delete) ────────
+#
+# The first *request* models on source-mutating routes. These are un-hidden per
+# the locked policy (#2 — full honest swagger): execution stays token-gated by
+# ``_dev_write_guard`` (403 without ``APX_DEV_UI_TOKEN``), so documenting the
+# body shape exposes nothing exploitable. A missing required field now yields
+# ``422`` from FastAPI (policy #1); the handlers' own error paths (syntax error,
+# file-not-found, tool-not-found) stay ``JSONResponse`` and bypass the response
+# models. These three routes are the file-ops half of PR-W2, split from the
+# LLM+ASGI codegen chain (suggest/new/create-tool/generate-tools/wire-agent).
+
+
+class EditSaveRequest(BaseModel):
+    """Body of ``POST /_apx/edit`` — the full new ``agent_router.py`` source.
+
+    ``content`` is required (the editor always sends it); an empty string is a
+    valid save. The handler compiles it first and returns a 200 ``{ok: false,
+    error}`` on ``SyntaxError`` (bypassing :class:`EditSaveResponse`).
+    """
+
+    content: str
+
+
+class EditSaveResponse(BaseModel):
+    """Success shape of ``POST /_apx/edit``: ``{ok: true, restart_required}``.
+
+    ``restart_required`` is ``True`` when the source was also written back to
+    the workspace (a deployed app needs a restart to load it).
+    """
+
+    ok: bool
+    restart_required: bool
+
+
+class EditPreviewRequest(BaseModel):
+    """Body of ``POST /_apx/edit/preview`` — candidate source to extract tool
+    schemas from, without writing anything. ``source`` is required."""
+
+    source: str
+
+
+class ToolDeleteResponse(BaseModel):
+    """Success shape of ``DELETE /_apx/tools/{fn_name}``: ``{ok: true}``.
+
+    The not-found and post-removal syntax-error paths return a 200
+    ``{ok: false, error}`` ``JSONResponse`` that bypasses this model.
+    """
+
+    ok: bool

@@ -692,3 +692,63 @@ async def test_r3_topology_routes_degrade_without_context(app: FastAPI) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         assert (await ac.get("/_apx/topology.json")).status_code == 503
         assert (await ac.get("/_apx/topology/inspect/agent:root")).status_code == 503
+
+
+# ── PR-W2a: typed + un-hidden codegen file-ops writes ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_w2a_file_ops_routes_published_to_openapi(client: AsyncClient) -> None:
+    paths = (await client.get("/openapi.json")).json()["paths"]
+    assert "get" in paths["/_apx/edit"]      # HTML shell, un-hidden
+    assert "post" in paths["/_apx/edit"]
+    assert "post" in paths["/_apx/edit/preview"]
+    tool_del = next(p for p in paths if p.startswith("/_apx/tools/") and "{fn_name" in p)
+    assert "delete" in paths[tool_del]
+
+
+@pytest.mark.asyncio
+async def test_w2a_edit_save_writes_source_and_reports_no_restart(
+    client: AsyncClient, agent_router_path: Path
+) -> None:
+    new_src = "agent = None  # rewritten by test\n"
+    r = await client.post("/_apx/edit", json={"content": new_src})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "restart_required": False}
+    assert agent_router_path.read_text() == new_src  # read-after-write
+
+
+@pytest.mark.asyncio
+async def test_w2a_edit_save_rejects_syntax_error_without_writing(
+    client: AsyncClient, agent_router_path: Path
+) -> None:
+    before = agent_router_path.read_text()
+    r = await client.post("/_apx/edit", json={"content": "def oops(:\n"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is False and "Syntax error" in data["error"]
+    assert agent_router_path.read_text() == before  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_w2a_edit_save_missing_content_is_422(client: AsyncClient) -> None:
+    # Missing required field → FastAPI 422 (policy #1), not a handler 400.
+    assert (await client.post("/_apx/edit", json={})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_w2a_delete_tool_removes_function_from_source(
+    client: AsyncClient, agent_router_path: Path
+) -> None:
+    assert "def existing_tool" in agent_router_path.read_text()
+    r = await client.delete("/_apx/tools/existing_tool")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert "def existing_tool" not in agent_router_path.read_text()  # read-after-write
+
+
+@pytest.mark.asyncio
+async def test_w2a_delete_unknown_tool_returns_ok_false(client: AsyncClient) -> None:
+    r = await client.delete("/_apx/tools/nonexistent_tool")
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
