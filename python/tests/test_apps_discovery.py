@@ -145,3 +145,41 @@ def test_apps_only_rejects_catalog_scope():
     result = CliRunner().invoke(main, ["agents", "list", "--apps-only", "--catalog", "main"])
     assert result.exit_code != 0
     assert "apps-only" in result.output.lower()
+
+
+def test_fetch_app_card_matches_hyphen_underscore(monkeypatch):
+    from apx_agent._apps_discovery import fetch_app_card
+    apps = [_app("data-triage-agent", "https://dt.example", "RUNNING")]
+    monkeypatch.setattr(_apps_discovery, "_probe_card", lambda u, h, t: CARD)
+    # query with underscores resolves the hyphenated app name
+    hit = fetch_app_card(_ws(apps), "data_triage_agent")
+    assert hit is not None
+    assert hit["app_name"] == "data-triage-agent"
+    assert hit["card"] == CARD
+
+
+def test_fetch_app_card_none_when_absent(monkeypatch):
+    from apx_agent._apps_discovery import fetch_app_card
+    monkeypatch.setattr(_apps_discovery, "_probe_card", lambda u, h, t: CARD)
+    assert fetch_app_card(_ws([_app("other", "https://o", "RUNNING")]), "weather") is None
+
+
+def test_describe_app_prints_card(monkeypatch):
+    monkeypatch.setattr("apx_agent.cli._require_sdk", lambda profile: object())
+    monkeypatch.setattr(
+        "apx_agent._apps_discovery.fetch_app_card",
+        lambda ws, name, **k: {"app_name": "weather-app", "url": "https://w.example", "card": CARD},
+    )
+    result = CliRunner().invoke(main, ["agents", "describe", "weather", "--app"])
+    assert result.exit_code == 0, result.output
+    assert "weather" in result.output
+    assert "get_weather" in result.output and "forecast" in result.output
+    assert "https://w.example" in result.output
+
+
+def test_describe_app_not_found_errors(monkeypatch):
+    monkeypatch.setattr("apx_agent.cli._require_sdk", lambda profile: object())
+    monkeypatch.setattr("apx_agent._apps_discovery.fetch_app_card", lambda ws, name, **k: None)
+    result = CliRunner().invoke(main, ["agents", "describe", "nope", "--app"])
+    assert result.exit_code != 0
+    assert "No running app agent" in result.output

@@ -62,6 +62,43 @@ def _probe_card(url: str, headers: dict[str, str], timeout: float) -> dict[str, 
     return None
 
 
+def _norm(s: str | None) -> str:
+    """Normalize a name for matching: drop ``-``/``_``, lowercase.
+
+    App names use hyphens (``data-triage-agent``) while card names often use
+    underscores (``data_triage_agent``); this lets either resolve the app.
+    """
+    return (s or "").replace("-", "").replace("_", "").lower()
+
+
+def fetch_app_card(ws: Any, name: str, *, timeout: float = 4.0) -> dict[str, Any] | None:
+    """Fetch the full A2A card for one Databricks App by name.
+
+    Matches ``name`` against the app name (exact first, then normalized so
+    hyphen/underscore variants resolve), probes its ``/.well-known/agent.json``,
+    and returns ``{"app_name", "url", "card"}`` — or ``None`` if no running app
+    by that name answers with a card.
+    """
+    try:
+        apps = list(ws.apps.list())
+    except Exception:
+        return None
+    headers = _bearer_headers(ws)
+    target = _norm(name)
+    matches = [
+        app for app in apps
+        if getattr(app, "url", None)
+        and (getattr(app, "name", "") == name or _norm(getattr(app, "name", "")) == target)
+    ]
+    # Exact app-name match before a normalized one.
+    matches.sort(key=lambda a: getattr(a, "name", "") != name)
+    for app in matches:
+        card = _probe_card(getattr(app, "url"), headers, timeout)
+        if card is not None:
+            return {"app_name": getattr(app, "name", name), "url": getattr(app, "url"), "card": card}
+    return None
+
+
 def discover_app_agents(
     ws: Any, *, timeout: float = 2.5, max_workers: int = 24
 ) -> list[AppAgentInfo]:
