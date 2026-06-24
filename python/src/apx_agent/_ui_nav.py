@@ -26,6 +26,7 @@ APX_NAV_PAGES: list[tuple[str, str]] = [
     # "setup" is intentionally not a top-level tab — the data-source + tool
     # generation flow is reached via the Edit page's "✨ From data" modal
     # (/_apx/setup?embed=1). The /_apx/setup route still exists for that iframe.
+    ("grounding", "Grounding"),
     ("probe", "Probe"),
     ("topology", "Topology"),
 ]

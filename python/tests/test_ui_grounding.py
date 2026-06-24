@@ -123,3 +123,29 @@ async def test_grounding_routes_published_to_openapi(tmp_path, monkeypatch):
         paths = (await ac.get("/openapi.json")).json()["paths"]
     assert "get" in paths["/_apx/grounding/columns"]
     assert "post" in paths["/_apx/grounding/columns"]
+
+
+# ── Phase B: the curation panel ──────────────────────────────────────────────
+
+
+def test_render_grounding_ui_ships_the_panel():
+    from apx_agent._ui_grounding import render_grounding_ui
+
+    html = render_grounding_ui()
+    assert "<!DOCTYPE html>" in html
+    # fetches the curation state and posts changes back to the same route
+    assert "/_apx/grounding/columns" in html
+    assert "async function load()" in html and "async function save()" in html
+    assert "class=\"accept\"" in html  # per-field accept control
+    assert "!d.ok" in html             # surfaces save failures (policy #4)
+    assert 'href="/_apx/grounding"' in html  # canonical nav, active tab
+
+
+@pytest.mark.asyncio
+async def test_grounding_page_route_serves_html(tmp_path, monkeypatch):
+    app = _app(monkeypatch, None, None)  # the page is static; renders without a bundle
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get("/_apx/grounding")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert "Grounding" in r.text
