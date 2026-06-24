@@ -174,6 +174,51 @@ def _normalize_evalset(evalset: Any) -> Any:
     return normalized
 
 
+_OUTPUT_COLUMN_CANDIDATES = ("outputs", "response", "predictions")
+
+
+def _count_empty_predictions(result: Any) -> int | None:
+    """Count eval rows whose predicted output is None/empty.
+
+    Under MLflow's parallel eval harness, some predictions come back None on
+    transient FMAPI/warehouse failures (sequential runs succeed). The mean
+    score then reads as a bad agent when it's really a concurrency artifact.
+    Surfacing the empty-prediction count lets users tell the two apart.
+
+    Looks at ``result.result_df`` (a pandas DataFrame) and inspects the first
+    of ``outputs`` / ``response`` / ``predictions`` that's present. Returns the
+    number of empty rows, or ``None`` when there's no result_df or none of the
+    candidate columns exist (caller skips the warning gracefully).
+    """
+    import math
+
+    result_df = getattr(result, "result_df", None)
+    if result_df is None:
+        return None
+
+    columns = getattr(result_df, "columns", None)
+    if columns is None:
+        return None
+
+    column = None
+    for candidate in _OUTPUT_COLUMN_CANDIDATES:
+        if candidate in columns:
+            column = candidate
+            break
+    if column is None:
+        return None
+
+    empty = 0
+    for value in result_df[column]:
+        if value is None:
+            empty += 1
+        elif isinstance(value, float) and math.isnan(value):
+            empty += 1
+        elif isinstance(value, str) and not value.strip():
+            empty += 1
+    return empty
+
+
 def _default_scorers(model: str | None = None) -> list[Any]:
     """Return a sensible default scorer bundle from Mosaic AI Agent Evaluation.
 
