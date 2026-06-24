@@ -3,7 +3,8 @@ suggested state from an OKF bundle + UC comments, and write accepted
 descriptions back into the bundle (read-after-write)."""
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -11,7 +12,30 @@ from httpx import ASGITransport, AsyncClient
 
 from apx_agent._dev import build_dev_ui_router
 from apx_agent._okf import okf_columns, write_okf_bundle
-from apx_agent._ui_grounding import apply_column_descriptions, build_column_curation
+from apx_agent._ui_grounding import (
+    apply_column_descriptions,
+    build_column_curation,
+    generate_column_descriptions,
+)
+
+
+def _fake_dbx_openai(monkeypatch, content: str):
+    """Install a fake ``databricks_openai`` whose chat completion returns
+    ``content`` — so the LLM suggestion path is exercised without a real model."""
+    mod = ModuleType("databricks_openai")
+
+    class _Completions:
+        async def create(self, **_kw):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+            )
+
+    class _Client:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=_Completions())
+
+    mod.AsyncDatabricksOpenAI = _Client  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "databricks_openai", mod)
 
 
 class _FakeWs:
@@ -149,3 +173,67 @@ async def test_grounding_page_route_serves_html(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     assert "Grounding" in r.text
+
+
+# ── Phase C: LLM-generated suggestions ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_generate_descriptions_parses_and_filters_to_known_columns(monkeypatch):
+    _fake_dbx_openai(monkeypatch, '{"id": "the order id", "amount": "total in USD", "ghost": "x"}')
+    rows = [{"name": "id", "type": "INT"}, {"name": "amount", "type": "DOUBLE"}]
+    out = await generate_column_descriptions("fake-model", "orders", rows)
+    assert out == {"id": "the order id", "amount": "total in USD"}  # 'ghost' dropped
+
+
+@pytest.mark.asyncio
+async def test_generate_strips_code_fence(monkeypatch):
+    _fake_dbx_openai(monkeypatch, '```json\n{"id": "the id"}\n```')
+    out = await generate_column_descriptions("fake-model", "orders", [{"name": "id", "type": "INT"}])
+    assert out == {"id": "the id"}
+
+
+@pytest.mark.asyncio
+async def test_generate_returns_empty_on_bad_json(monkeypatch):
+    _fake_dbx_openai(monkeypatch, "not json at all")
+    out = await generate_column_descriptions("fake-model", "orders", [{"name": "id", "type": "INT"}])
+    assert out == {}
+
+
+def _app_with_model(monkeypatch, okf_root, model):
+    monkeypatch.setattr("apx_agent._ui_grounding.resolve_okf_root", lambda start=None: okf_root)
+    app = FastAPI()
+    app.state.agent_context = (
+        SimpleNamespace(config=SimpleNamespace(model=model)) if model is not None else None
+    )
+    app.state.workspace_client = None
+    app.include_router(build_dev_ui_router())
+    return app
+
+
+@pytest.mark.asyncio
+async def test_suggest_route_returns_ai_suggestions(tmp_path, monkeypatch):
+    _fake_dbx_openai(monkeypatch, '{"id": "the order id", "amount": "total in USD"}')
+    app = _app_with_model(monkeypatch, _bundle(tmp_path), "fake-model")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.post("/_apx/grounding/suggest", json={"table": "orders"})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["ok"] is True and d["suggestions"]["amount"] == "total in USD"
+
+
+@pytest.mark.asyncio
+async def test_suggest_route_no_model_is_400(tmp_path, monkeypatch):
+    app = _app_with_model(monkeypatch, _bundle(tmp_path), None)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.post("/_apx/grounding/suggest", json={"table": "orders"})
+    assert r.status_code == 400
+
+
+def test_render_ui_ships_the_suggest_control():
+    from apx_agent._ui_grounding import render_grounding_ui
+
+    html = render_grounding_ui()
+    assert "/_apx/grounding/suggest" in html
+    assert "async function suggestTable" in html
+    assert "✨ Suggest" in html
