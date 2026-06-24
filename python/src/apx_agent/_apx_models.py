@@ -563,3 +563,58 @@ class WireAgentResponse(BaseModel):
     ok: bool
     tools: list[str]
     instructions: str
+
+
+# ── Field-description curation: GET/POST /_apx/grounding/columns (#292) ───────
+
+
+class ColumnCuration(BaseModel):
+    """One column's curation row: ``{column, type, current, suggested}``.
+
+    ``current`` is the description in the OKF bundle now; ``suggested`` is the
+    Unity Catalog COMMENT when it is non-empty and differs from ``current``
+    (else ``""``).
+    """
+
+    column: str
+    type: str
+    current: str
+    suggested: str
+
+
+class TableColumns(BaseModel):
+    """One table's columns in the curation view."""
+
+    table: str
+    columns: list[ColumnCuration]
+
+
+class GroundingColumnsResponse(BaseModel):
+    """Success shape of ``GET /_apx/grounding/columns`` — the per-column current-
+    vs-suggested curation state for the agent's OKF bundle. ``tables`` is empty
+    when the project has no OKF bundle. ``schema`` shadows ``BaseModel.schema``
+    so the field is aliased (same trick as :class:`ToolSchemaResponse`).
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    catalog: str
+    schema_: str = Field(alias="schema")
+    tables: list[TableColumns]
+
+
+class ColumnDescriptionsRequest(BaseModel):
+    """Body of ``POST /_apx/grounding/columns`` — accepted descriptions as
+    ``{table: {column: description}}``. Only listed columns are written; blank
+    descriptions are no-ops (reject = don't include it)."""
+
+    accepted: dict[str, dict[str, str]]
+
+
+class ColumnDescriptionsSaveResponse(BaseModel):
+    """Success shape of ``POST /_apx/grounding/columns``: ``{ok, modified}``
+    (number of tables whose bundle file was rewritten). The no-bundle path
+    returns a 404 ``JSONResponse`` that bypasses this model."""
+
+    ok: bool
+    modified: int

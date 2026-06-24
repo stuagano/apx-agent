@@ -375,6 +375,27 @@ def okf_grounding(okf_root: "Path | str") -> "dict | None":
         return None
 
 
+def okf_columns(okf_root: "Path | str") -> "dict[str, list[dict]]":
+    """Every table's columns as ``{name, type, description}`` (description ``""``
+    when unset), keyed by table name — the read-side state for field-description
+    curation. Unlike :func:`okf_grounding` this keeps ALL tables (not only
+    enriched ones) and drops the other enrichment. Totalised — ``{}`` on any
+    miss, never raises.
+    """
+    try:
+        root = Path(okf_root)
+        out: "dict[str, list[dict]]" = {}
+        for table_md in _ordered_table_files(root):
+            doc = OKFDocument.parse(table_md.read_text())
+            name = doc.frontmatter.get("title") or table_md.stem
+            rows = _schema_rows_with_desc(doc.body)
+            if rows:
+                out[name] = rows
+        return out
+    except Exception:
+        return {}
+
+
 def _replace_section(body: str, heading: str, new_block: str) -> str:
     """Replace the ``# <heading>`` section (its heading line through just before
     the next top-level ``# `` heading) with ``new_block`` (which includes its own
