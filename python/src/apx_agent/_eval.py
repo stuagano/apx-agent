@@ -138,6 +138,42 @@ def _extract_response_text(response: Any) -> str:
     return ""
 
 
+def _normalize_evalset(evalset: Any) -> Any:
+    """Normalise evalset rows so single- and double-nested ``inputs`` both work.
+
+    ``evaluate`` builds the in-process predict as ``_predict(inputs)`` — the
+    parameter is named ``inputs``. ``mlflow.genai.evaluate`` therefore requires
+    each row's ``inputs`` dict to be keyed by the predict param name, i.e.
+    double-nested::
+
+        {"inputs": {"inputs": {"question": "..."}}, "expectations": {...}}
+
+    But the docs and ``examples/data-triage-agent/eval/eval_dataset.py`` show the
+    single-nested form::
+
+        {"inputs": {"question": "..."}, "expectations": {...}}
+
+    This wraps the single-nested form into the double-nested shape mlflow needs,
+    while leaving the already-wrapped form untouched (idempotent). Only list-of-
+    dicts evalsets are touched; DataFrames, paths/URIs, and other shapes pass
+    through unchanged so nothing else breaks.
+    """
+    if not isinstance(evalset, list):
+        return evalset
+    normalized: list[Any] = []
+    for row in evalset:
+        if not isinstance(row, dict) or "inputs" not in row:
+            normalized.append(row)
+            continue
+        row_inputs = row["inputs"]
+        already_wrapped = isinstance(row_inputs, dict) and set(row_inputs) == {"inputs"}
+        if already_wrapped:
+            normalized.append(row)
+        else:
+            normalized.append({**row, "inputs": {"inputs": row_inputs}})
+    return normalized
+
+
 def _default_scorers() -> list[Any]:
     """Return a sensible default scorer bundle from Mosaic AI Agent Evaluation.
 
@@ -255,7 +291,7 @@ def evaluate(
     eval_scorers = scorers if scorers is not None else _default_scorers()
 
     return mlflow.genai.evaluate(  # type: ignore[attr-defined]
-        data=evalset,
+        data=_normalize_evalset(evalset),
         predict_fn=_predict,
         scorers=eval_scorers,
         **mlflow_kwargs,

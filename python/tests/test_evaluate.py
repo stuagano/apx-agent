@@ -28,6 +28,7 @@ from apx_agent import Agent, evaluate  # noqa: E402
 from apx_agent._eval import (  # noqa: E402
     _extract_messages,
     _extract_response_text,
+    _normalize_evalset,
 )
 
 
@@ -262,6 +263,72 @@ def test_evaluate_preserves_explicit_empty_scorers_list() -> None:
         evaluate(agent, model="m", evalset=[], scorers=[])
 
     assert fake_eval.call_args.kwargs["scorers"] == []
+
+
+# ---------------------------------------------------------------------------
+# evalset input nesting (#265)
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_wraps_single_nested_inputs() -> None:
+    """A single-nested row (``{"inputs": {"question": ...}}``) — the form the
+    docs and examples show — gets wrapped to the double-nested shape mlflow
+    requires for a predict_fn whose param is named ``inputs``."""
+    agent = Agent(tools=[_trivial_tool])
+    fake_chat = _fake_chat_agent_with_response("ok")
+    fake_eval = MagicMock()
+
+    evalset = [
+        {
+            "inputs": {"question": "what is the lineage?"},
+            "expectations": {"expected_facts": ["upstream"]},
+        },
+    ]
+
+    with patch("apx_agent._eval.compile_to_chat_agent", return_value=fake_chat), \
+         patch("mlflow.genai.evaluate", fake_eval):
+        evaluate(agent, model="m", evalset=evalset, scorers=[])
+
+    assert fake_eval.call_args.kwargs["data"] == [
+        {
+            "inputs": {"inputs": {"question": "what is the lineage?"}},
+            "expectations": {"expected_facts": ["upstream"]},
+        },
+    ]
+
+
+def test_evaluate_leaves_double_nested_inputs_untouched() -> None:
+    """An already double-nested row passes through unchanged (idempotent)."""
+    agent = Agent(tools=[_trivial_tool])
+    fake_chat = _fake_chat_agent_with_response("ok")
+    fake_eval = MagicMock()
+
+    evalset = [
+        {
+            "inputs": {"inputs": {"question": "already wrapped"}},
+            "expectations": {"expected_facts": ["x"]},
+        },
+    ]
+
+    with patch("apx_agent._eval.compile_to_chat_agent", return_value=fake_chat), \
+         patch("mlflow.genai.evaluate", fake_eval):
+        evaluate(agent, model="m", evalset=evalset, scorers=[])
+
+    assert fake_eval.call_args.kwargs["data"] == evalset
+
+
+def test_normalize_evalset_leaves_non_list_untouched() -> None:
+    """DataFrame / path / str shapes pass through unchanged."""
+    assert _normalize_evalset("path/to/dataset.csv") == "path/to/dataset.csv"
+    sentinel = SimpleNamespace(kind="dataframe")
+    assert _normalize_evalset(sentinel) is sentinel
+
+
+def test_normalize_evalset_skips_rows_without_inputs_key() -> None:
+    """Rows lacking an ``inputs`` key (e.g. bare ``{"request": ...}``) are
+    left as-is — the request/input/prompt path stays intact."""
+    rows = [{"request": "what is the lineage?"}]
+    assert _normalize_evalset(rows) == rows
 
 
 # ---------------------------------------------------------------------------
