@@ -92,9 +92,37 @@ Prompt:
 
 When to reach for it: docs that have drifted from a fast-moving CLI or API.
 
+## Pattern: discover-then-wire (invoke a template, verify each capability)
+
+Builds a configured artifact by discovering what its inputs warrant and wiring
+one capability at a time, reading each back as really wired before the next —
+wiring nothing the inputs don't support.
+
+Prompt:
+> Build through the template/factory rather than hand-assembling. Resolve the
+> source of truth by an explicit priority chain and stop at the first that
+> resolves. For each capability the source reveals, wire the **minimal** thing
+> that covers it and nothing more. After wiring each one, read it back: assert it
+> is registered AND surfaced/advertised, not merely constructed — and that any
+> deferred wiring step ran in the right order and is idempotent. Keep a capability
+> only if its read-back passes. Stop when everything discovered is wired and
+> verified, or the chain falls through to the ungrounded fallback — then report
+> the degraded state honestly, never as full success. Don't invent a capability
+> the source doesn't support.
+
+When to reach for it: building agents/clients/pipelines from a template where
+the wired surface should match discovered inputs exactly (over-wiring is the
+failure mode this guards). In this repo it is the `DataAgent` / `DataTemplate`
+flow — schema priority chain (`tables=` → `introspect_schema(ws)` → `knowledge`
+OKF → baked `.apx/schema.json` → ungrounded), `sql_tool` floor with `uc_table`
+resources, `uc_function_toolkit` / `genie_tool` / `vector_search_tool` only when
+present, and `bind_workspace()` read back via `collect_resource_specs` before the
+A2A/MCP card snapshot so UC functions are advertised, not just callable. See
+[`docs/loops/README.md`](../../../../docs/loops/README.md).
+
 ---
 
-These five are grounded, runnable instances in this repo's development workflow —
+These six are grounded, runnable instances in this repo's development workflow —
 see [`docs/loops/README.md`](../../../../docs/loops/README.md), where the gates
 are `make check`, `pre-commit run --all-files`, and the `ctk` kit's
 `ctk.verify(Artifact(...))` / `find_swallowed_exceptions`. Use them as the

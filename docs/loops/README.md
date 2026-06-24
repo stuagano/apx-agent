@@ -120,6 +120,30 @@ Prompt:
 > decision — then flag it. Never edit a doc to match without checking the code
 > first.
 
+## DataAgent tool discovery and wiring (template-driven)
+
+Wires a `DataAgent`'s governed tools from a discovered Unity Catalog schema one
+capability at a time, reading each one back as actually wired-and-advertised
+before moving on — never wiring a tool the schema doesn't warrant.
+
+Prompt:
+> Build the agent through the `DataTemplate` (the `@template` DataAgent path).
+> Resolve the schema by the real priority chain — `tables=` → live `introspect_schema(ws)`
+> → `knowledge=` OKF bundle → baked `.apx/schema.json` → ungrounded — and stop at
+> the first that resolves. For each discovered capability, wire the **minimal**
+> tool that covers it and nothing more: `sql_tool` is the floor (attach the tables
+> as `uc_table` resources); add `uc_function_toolkit` only when the schema has UC
+> functions and a `ws` is present; add `genie_tool` / `vector_search_tool` only
+> when a space id / index is declared. After wiring each one, read it back: assert
+> the tool is registered **and advertised** — confirm `collect_resource_specs`
+> shows the expected `uc_table` / `genie_space` / `vector_search_index`, the tool
+> name appears in `_tool_fns`, and for ws-deferred UC functions that
+> `bind_workspace()` ran before the card snapshot (advertised, not just callable)
+> and is idempotent. Keep a tool only if its read-back passes. Stop when every
+> discovered capability is wired and verified, or the chain falls through to
+> ungrounded — then report it as a working-but-ungrounded SQL assistant, not a
+> grounded agent. Don't invent a tool the schema doesn't support.
+
 ---
 
 These loops are also available as reusable scaffolds in the loop-library skill:
