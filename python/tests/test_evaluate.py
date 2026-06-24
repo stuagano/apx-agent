@@ -26,6 +26,7 @@ pytest.importorskip("mlflow")
 
 from apx_agent import Agent, evaluate  # noqa: E402
 from apx_agent._eval import (  # noqa: E402
+    _default_scorers,
     _extract_messages,
     _extract_response_text,
     _normalize_evalset,
@@ -329,6 +330,47 @@ def test_normalize_evalset_skips_rows_without_inputs_key() -> None:
     left as-is — the request/input/prompt path stays intact."""
     rows = [{"request": "what is the lineage?"}]
     assert _normalize_evalset(rows) == rows
+
+
+# ---------------------------------------------------------------------------
+# _default_scorers — judge model override
+# ---------------------------------------------------------------------------
+
+
+def test_default_scorers_constructs_without_model() -> None:
+    """No judge override → scorers build with their own default judge."""
+    scorers = _default_scorers()
+    # mlflow's eval extra is installed (importorskip above), so the scorer
+    # bundle is non-empty.
+    assert len(scorers) == 2
+
+
+def test_default_scorers_applies_judge_model() -> None:
+    """A judge override is threaded into each scorer's ``model``."""
+    scorers = _default_scorers(model="databricks")
+    assert len(scorers) == 2
+    assert all(s.model == "databricks" for s in scorers)
+
+
+def test_evaluate_threads_judge_model_into_default_scorers() -> None:
+    """evaluate(judge_model=...) forwards to _default_scorers when scorers
+    aren't passed explicitly."""
+    agent = Agent(tools=[_trivial_tool])
+    fake_chat = _fake_chat_agent_with_response("ok")
+    fake_eval = MagicMock()
+    captured: dict[str, Any] = {}
+
+    def _fake_default_scorers(model: str | None = None) -> list[Any]:
+        captured["model"] = model
+        return ["judged_scorer"]
+
+    with patch("apx_agent._eval.compile_to_chat_agent", return_value=fake_chat), \
+         patch("apx_agent._eval._default_scorers", _fake_default_scorers), \
+         patch("mlflow.genai.evaluate", fake_eval):
+        evaluate(agent, model="m", evalset=[], judge_model="databricks")
+
+    assert captured["model"] == "databricks"
+    assert fake_eval.call_args.kwargs["scorers"] == ["judged_scorer"]
 
 
 # ---------------------------------------------------------------------------
