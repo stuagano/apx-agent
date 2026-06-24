@@ -18,7 +18,8 @@ typescript/deploy/*/app.yaml
 .superpowers/
 
 # Claude / agent IDE state
-.claude/
+.claude/*
+!.claude/skills/
 .antigravitycli/
 
 # Git worktrees
