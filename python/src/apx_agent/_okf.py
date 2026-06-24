@@ -396,6 +396,56 @@ def okf_columns(okf_root: "Path | str") -> "dict[str, list[dict]]":
         return {}
 
 
+# ``Synonyms: a, b, c`` inside a glossary entry's body (may share a line with the
+# definition, e.g. "Earnings before deductions. Synonyms: gross, gross wages.").
+_GLOSSARY_SYN_RE = re.compile(r"\bsynonyms?\s*:\s*([^\n]+)", re.IGNORECASE)
+
+
+def _parse_glossary(section: str) -> "list[dict]":
+    """Parse a ``# Glossary`` section body into ``[{term, definition, synonyms}]``.
+
+    Each ``### <term>`` subheading + the prose under it is one entry; an optional
+    ``Synonyms: a, b, c`` line (comma/semicolon separated) becomes ``synonyms``
+    and is stripped from ``definition``. Entries with no term or no definition
+    are skipped. Returns ``[]`` for an empty section.
+    """
+    if not section.strip():
+        return []
+    out: "list[dict]" = []
+    parts = re.split(r"^###\s+(.+?)\s*$", section, flags=re.MULTILINE)
+    # parts = [preamble, term1, body1, term2, body2, …]; preamble ignored.
+    for i in range(1, len(parts), 2):
+        term = parts[i].strip()
+        block = parts[i + 1] if i + 1 < len(parts) else ""
+        syn_m = _GLOSSARY_SYN_RE.search(block)
+        if syn_m:
+            raw_syn = syn_m.group(1).strip().rstrip(".").strip()  # drop a trailing sentence period
+            synonyms = [s.strip() for s in re.split(r"[,;]", raw_syn) if s.strip()]
+            definition = block[: syn_m.start()].strip()
+        else:
+            synonyms = []
+            definition = block.strip()
+        if term and definition:
+            out.append({"term": term, "definition": definition, "synonyms": synonyms})
+    return out
+
+
+def okf_glossary(okf_root: "Path | str") -> "list[dict]":
+    """Glossary entries ``[{term, definition, synonyms}]`` from the bundle's
+    dataset-level doc (``datasets/<schema>.md``) ``# Glossary`` section.
+
+    Bundle-scoped business terms + synonyms for the agent to map user phrasing
+    onto the schema. Totalised — ``[]`` on any miss, never raises.
+    """
+    try:
+        doc = _dataset_concept(Path(okf_root))
+        if doc is None:
+            return []
+        return _parse_glossary(_extract_section(doc.body, "Glossary"))
+    except Exception:
+        return []
+
+
 def _replace_section(body: str, heading: str, new_block: str) -> str:
     """Replace the ``# <heading>`` section (its heading line through just before
     the next top-level ``# `` heading) with ``new_block`` (which includes its own
