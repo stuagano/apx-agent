@@ -119,10 +119,19 @@ def _extract_messages(inputs: Any) -> list[dict[str, Any]]:
 def _extract_response_text(response: Any) -> str:
     """Pull the final assistant message text out of a ChatAgentResponse."""
     messages = getattr(response, "messages", None) or []
-    # Walk from the end — the final assistant message is the response.
+    # Prefer the final assistant message that actually has text content.
     for msg in reversed(messages):
-        role = getattr(msg, "role", None)
-        if role == "assistant":
+        if getattr(msg, "role", None) == "assistant":
+            content = getattr(msg, "content", None)
+            if content:
+                return str(content)
+    # Fallback: the agent terminated on a tool call with no assistant text — e.g.
+    # a LoopAgent ending via finish_loop, whose handler returns the result as the
+    # tool message ("Signal that the iterative task is complete and return the
+    # final result"). Surface the most recent tool output instead of dropping to
+    # "" (which eval scores as a silent failure). See issue #264.
+    for msg in reversed(messages):
+        if getattr(msg, "role", None) == "tool":
             content = getattr(msg, "content", None)
             if content:
                 return str(content)

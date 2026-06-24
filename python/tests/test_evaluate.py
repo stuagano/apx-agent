@@ -96,6 +96,27 @@ def test_extract_response_handles_no_messages() -> None:
     assert _extract_response_text(SimpleNamespace()) == ""
 
 
+def test_extract_response_falls_back_to_tool_output_when_ending_on_tool_call() -> None:
+    # Agent ends on a tool call (e.g. LoopAgent finish_loop) with no assistant
+    # text — the final result lives in the tool message. Issue #264.
+    response = SimpleNamespace(messages=[
+        SimpleNamespace(role="user", content="extract this"),
+        SimpleNamespace(role="assistant", content=""),  # tool-call-only turn
+        SimpleNamespace(role="tool", content='{"claim_id": "ABC12345"}'),
+    ])
+    assert _extract_response_text(response) == '{"claim_id": "ABC12345"}'
+
+
+def test_extract_response_prefers_assistant_text_over_tool_fallback() -> None:
+    # When the agent did emit text earlier, prefer it over a trailing tool turn.
+    response = SimpleNamespace(messages=[
+        SimpleNamespace(role="assistant", content='{"claim_id": "REAL"}'),
+        SimpleNamespace(role="assistant", content=""),  # later tool-call-only turn
+        SimpleNamespace(role="tool", content="finish_loop ack"),
+    ])
+    assert _extract_response_text(response) == '{"claim_id": "REAL"}'
+
+
 # ---------------------------------------------------------------------------
 # evaluate() — happy path
 # ---------------------------------------------------------------------------
