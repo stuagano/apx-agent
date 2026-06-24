@@ -91,6 +91,23 @@ def load_grounding_from_path(okf_root: "Path | str") -> "tuple[dict | None, dict
         return None, None
 
 
+def load_okf_glossary(start: "Path | str | None" = None) -> "list[dict]":
+    """Glossary entries ``[{term, definition, synonyms}]`` for the first
+    ``.apx/okf/`` found walking up from ``start`` (default cwd), or ``[]``.
+    Totalised — never raises."""
+    here = (Path(start) if start is not None else Path.cwd()).resolve()
+    for d in [here, *here.parents]:
+        okf_root = d / APX_DIR / "okf"
+        if okf_root.is_dir():
+            try:
+                from ._okf import okf_glossary
+
+                return okf_glossary(okf_root)
+            except Exception:
+                return []
+    return []
+
+
 def introspect_schema(
     ws: Any,
     catalog: str,
@@ -237,6 +254,21 @@ def _format_grounded_schema_block(
     return "\n".join(lines)
 
 
+_MAX_GLOSSARY = 40
+
+
+def _format_glossary_block(glossary: list[dict], max_terms: int = _MAX_GLOSSARY) -> str:
+    """Render glossary entries as ``- term: definition (also: syn1, syn2)`` lines."""
+    lines: list[str] = []
+    for e in glossary[:max_terms]:
+        syn = e.get("synonyms") or []
+        also = f" (also: {', '.join(syn)})" if syn else ""
+        lines.append(f"- {e['term']}: {e['definition']}{also}")
+    if len(glossary) > max_terms:
+        lines.append(f"- (+{len(glossary) - max_terms} more terms)")
+    return "\n".join(lines)
+
+
 def build_instructions_from_schema(
     catalog: str,
     schema: str,
@@ -244,6 +276,7 @@ def build_instructions_from_schema(
     persona: str | None = None,
     objective: str | None = None,
     grounding: dict | None = None,
+    glossary: "list[dict] | None" = None,
 ) -> str:
     """Build agent instructions from schema metadata without an LLM call.
 
@@ -267,10 +300,20 @@ def build_instructions_from_schema(
     fqn = f"{catalog}.{schema}" if catalog and schema else schema or catalog or "the data"
     table_names = list(tables.keys())
 
+    # Bundle-level business glossary (#296). Gated on a non-empty glossary so the
+    # prompt is byte-identical when there is none.
+    glossary_section = ""
+    if glossary:
+        glossary_section = (
+            "Business glossary — map these terms and their synonyms onto the schema:\n"
+            + _format_glossary_block(glossary) + "\n\n"
+        )
+
     if not table_names:
         # Ungrounded: nothing known — tell the agent to discover first.
         return (
             lead + f"You are a data assistant for {fqn}. Your data includes: {fqn}.\n\n"
+            f"{glossary_section}"
             f"At the start of every session, call the SQL tool to confirm what "
             f"tables and columns are available before answering questions.\n\n"
             f"To answer data questions: use the SQL tool with a targeted SELECT "
@@ -307,6 +350,7 @@ def build_instructions_from_schema(
         f"query the relevant table directly with the SQL tool. Do NOT run "
         f"SHOW TABLES or DESCRIBE to discover the structure; it is given here.\n\n"
         f"Schema:\n{_block}\n\n"
+        f"{glossary_section}"
         f"{chain}\n\n"
         f"When a query returns empty results or an error, try a broader filter or "
         f"verify the column name exists in the schema before telling the user you "
