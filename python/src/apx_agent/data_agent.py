@@ -255,6 +255,20 @@ def _build_data_tools_and_instructions(
         grounding = load_okf_grounding()
     else:
         grounding = None
+
+    # Verified/golden queries (#288 phase 2): when the grounding bundle carries
+    # any, expose a verified_query tool that matches the user's question to a
+    # golden query and runs its TRUSTED SQL with safe named-parameter binding —
+    # the SQL is the verified template, so the LLM only supplies param values.
+    golden = [
+        gq for tg in (grounding or {}).values() for gq in (tg.get("golden_queries") or [])
+    ]
+    if golden:
+        from ._verified_query import verified_query_tool
+        tools.append(verified_query_tool(
+            golden, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
+        ))
+
     resolved_instructions = instructions or build_instructions_from_schema(
         catalog, schema, tables, persona=persona, objective=objective, grounding=grounding
     )
