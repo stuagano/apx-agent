@@ -32,12 +32,15 @@ from ._apx_models import (
     AgentPatternResponse,
     ApprovalActionResponse,
     ApprovalInfo,
+    ColumnDescriptionsRequest,
+    ColumnDescriptionsSaveResponse,
     EditPreviewRequest,
     EditSaveRequest,
     EditSaveResponse,
     EvalCaseIn,
     EvalCaseResponse,
     EvalDataSaveResponse,
+    GroundingColumnsResponse,
     JudgeRequest,
     JudgeResponse,
     ProbeResult,
@@ -2004,6 +2007,37 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "used_catalogs": used_catalogs,
             "used_schemas": used_schemas,
         }
+
+    @router.get("/_apx/grounding/columns", response_model=GroundingColumnsResponse)
+    async def grounding_columns(request: Request) -> Any:
+        """Per-column current-vs-suggested description curation state for the
+        agent's OKF bundle (#292). Suggestions come from Unity Catalog COMMENTs;
+        the response has empty ``tables`` when the project has no OKF bundle."""
+        import asyncio as _asyncio
+        from ._ui_grounding import build_column_curation, resolve_okf_root
+
+        okf_root = resolve_okf_root()
+        if okf_root is None:
+            return {"catalog": "", "schema": "", "tables": []}
+        ws = getattr(request.app.state, "workspace_client", None)
+        return await _asyncio.to_thread(build_column_curation, okf_root, ws)
+
+    @router.post("/_apx/grounding/columns", response_model=ColumnDescriptionsSaveResponse)
+    async def save_grounding_columns(
+        request: Request, body: ColumnDescriptionsRequest
+    ) -> Any:
+        """Write accepted column descriptions into the OKF bundle (#292). Edits
+        the LOCAL bundle only — never Unity Catalog. Token-gated by the dev
+        write guard like every other write route."""
+        import asyncio as _asyncio
+        from fastapi.responses import JSONResponse
+        from ._ui_grounding import apply_column_descriptions, resolve_okf_root
+
+        okf_root = resolve_okf_root()
+        if okf_root is None:
+            return JSONResponse({"ok": False, "error": "No .apx/okf bundle found"}, status_code=404)
+        modified = await _asyncio.to_thread(apply_column_descriptions, okf_root, body.accepted)
+        return {"ok": True, "modified": modified}
 
     @router.get("/_apx/memories", response_model=list[MemoryResponse])
     async def list_memories(request: Request) -> Any:
