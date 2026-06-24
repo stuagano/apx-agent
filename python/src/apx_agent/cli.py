@@ -6096,6 +6096,44 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
             click.echo(f"  - {s}")
 
 
+def _describe_app_agent(name: str, profile: str | None, fmt: str) -> None:
+    """Fetch and print a deployed Databricks App agent's live A2A card."""
+    from ._apps_discovery import fetch_app_card
+
+    ws = _require_sdk(profile)
+    hit = fetch_app_card(ws, name)
+    if hit is None:
+        raise click.ClickException(
+            f"No running app agent named {name!r} found. "
+            "Run `apx-agent agents list` to see what's deployed."
+        )
+    card = hit["card"]
+    if fmt == "json":
+        click.echo(json.dumps(hit, indent=2, default=str))
+        return
+
+    skills = card.get("skills") or []
+    click.echo(f"{card.get('name') or name}   (app: {hit['app_name']})")
+    if card.get("description"):
+        click.echo(card["description"])
+    click.echo(f"URL: {hit['url']}")
+    caps = card.get("capabilities") or {}
+    flags = [k for k in ("streaming", "multiTurn") if caps.get(k)]
+    if flags:
+        click.echo(f"Capabilities: {', '.join(flags)}")
+    click.echo(f"\nTools ({len(skills)}):")
+    if not skills:
+        click.echo("  (none advertised)")
+    for s in skills:
+        sid = s.get("name") or s.get("id") or "?"
+        desc = (s.get("description") or "").strip().splitlines()
+        params = list((s.get("inputSchema") or {}).get("properties", {}).keys())
+        line = f"  {sid:<24}  {desc[0] if desc else ''}"
+        click.echo(line.rstrip())
+        if params:
+            click.echo(f"  {'':<24}  params: {', '.join(params)}")
+
+
 @agents.command("describe")
 @click.argument("spec", required=False, default=None, metavar="[SPEC]")
 @click.option("--module", default="agent:agent", help='Agent module spec.')
@@ -6105,17 +6143,28 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
     default="text",
     help="Output format.",
 )
-def info(spec: str | None, module: str, fmt: str) -> None:
+@click.option("--app", "app", is_flag=True,
+              help="SPEC is a deployed Databricks App name; fetch its live A2A card.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks config profile (~/.databrickscfg). Used with --app.")
+def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None) -> None:
     """Introspect an agent — tools, resources, sub-agents, instructions.
 
     SPEC may be a .yaml spec (shows what it declares). Omit it inside a
     scaffolded project to introspect the materialized agent, or when only a
     lone spec is present it's auto-detected.
 
-    Pure local — no Databricks calls. Useful as a sanity check before
-    deploy and as a programmatic source of truth for what an agent
-    declares.
+    With ``--app``, SPEC is the name of a deployed Databricks App: its live A2A
+    card is fetched and its tools printed (see ``apx-agent agents list``).
+
+    Pure local — no Databricks calls — unless ``--app`` is given.
     """
+    if app:
+        if not spec:
+            raise click.UsageError("--app needs an app name: apx-agent agents describe <name> --app")
+        _describe_app_agent(spec, profile, fmt)
+        return
+
     from apx_agent._resources import (
         _iter_sub_agents,
         _iter_tool_fns,
