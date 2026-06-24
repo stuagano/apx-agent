@@ -174,18 +174,29 @@ def _normalize_evalset(evalset: Any) -> Any:
     return normalized
 
 
-def _default_scorers() -> list[Any]:
+def _default_scorers(model: str | None = None) -> list[Any]:
     """Return a sensible default scorer bundle from Mosaic AI Agent Evaluation.
 
     Imported lazily so the eval extra is only required when actually
     running evaluation, not at apx-agent import time. Falls back to an
     empty list if the scorer classes aren't available in the installed
     mlflow version.
+
+    ``model`` optionally overrides the LLM judge backing each scorer. The
+    default judge (via MLflow's ``get_default_model()``) is
+    ``openai:/gpt-4.1-mini``, which needs ``OPENAI_API_KEY``. Pass
+    ``"databricks"`` to use the workspace default Databricks judge, or a
+    ``"<provider>:/<model>"`` URI (e.g. ``"databricks:/databricks-claude-sonnet-4-6"``)
+    to point the judge at a specific Databricks/Anthropic model. When
+    ``None``, the scorer's own default applies (unchanged behaviour).
     """
     scorers: list[Any] = []
     try:
         from mlflow.genai.scorers import Correctness, RelevanceToQuery  # type: ignore[attr-defined]
-        scorers.extend([Correctness(), RelevanceToQuery()])
+        if model is not None:
+            scorers.extend([Correctness(model=model), RelevanceToQuery(model=model)])
+        else:
+            scorers.extend([Correctness(), RelevanceToQuery()])
     except Exception:
         logger.warning(
             "mlflow.genai.scorers.Correctness / RelevanceToQuery not available; "
@@ -200,6 +211,7 @@ def evaluate(
     model: str,
     evalset: Any,
     scorers: list[Any] | None = None,
+    judge_model: str | None = None,
     user_token: str | None = None,
     workspace_host: str | None = None,
     experiment: str | None = None,
@@ -222,6 +234,11 @@ def evaluate(
         scorers: List of Mosaic AI Agent Evaluation scorers to run.
             Defaults to ``[Correctness(), RelevanceToQuery()]`` when
             available in the installed mlflow.
+        judge_model: Optional LLM judge override for the *default* scorers.
+            Ignored when ``scorers`` is passed explicitly. The default judge
+            needs ``OPENAI_API_KEY``; pass ``"databricks"`` or a
+            ``"<provider>:/<model>"`` URI to use a Databricks/Anthropic judge
+            instead.
         user_token: Optional OBO token. When provided, every evaluated
             request runs as that user — the compiled graph's tools see
             the user's UC grants. When omitted, evaluation runs as the
@@ -288,7 +305,7 @@ def evaluate(
         response = chat_agent.predict(chat_messages, custom_inputs=custom_inputs)
         return _extract_response_text(response)
 
-    eval_scorers = scorers if scorers is not None else _default_scorers()
+    eval_scorers = scorers if scorers is not None else _default_scorers(judge_model)
 
     return mlflow.genai.evaluate(  # type: ignore[attr-defined]
         data=_normalize_evalset(evalset),

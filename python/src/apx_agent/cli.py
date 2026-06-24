@@ -3468,6 +3468,13 @@ def apps_list(profile: str | None, host: str | None) -> None:
     help="MLflow experiment name/path. Falls back to [tool.apx.agent].experiment "
          "in pyproject.toml; falls back to MLflow's default when neither is set.",
 )
+@click.option(
+    "--judge-model", default=None,
+    help="LLM judge override for the default scorers. The default judge needs "
+         "OPENAI_API_KEY; pass 'databricks' or a '<provider>:/<model>' URI (e.g. "
+         "'databricks:/databricks-claude-sonnet-4-6') to use a Databricks/Anthropic "
+         "judge instead. Only used for in-process eval.",
+)
 def eval_cmd(
     evalset: str,
     module: str | None,
@@ -3478,6 +3485,7 @@ def eval_cmd(
     stream: bool,
     user_token: str | None,
     experiment: str | None,
+    judge_model: str | None,
 ) -> None:
     """Run Mosaic AI Agent Evaluation against EVALSET.
 
@@ -3549,6 +3557,7 @@ def eval_cmd(
         agent,
         model=model,
         evalset=data,
+        judge_model=judge_model,
         user_token=user_token,
         experiment=effective_experiment,
     )
