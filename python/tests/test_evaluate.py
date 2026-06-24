@@ -24,8 +24,11 @@ import pytest
 pytest.importorskip("langgraph")
 pytest.importorskip("mlflow")
 
+import pandas as pd  # noqa: E402
+
 from apx_agent import Agent, evaluate  # noqa: E402
 from apx_agent._eval import (  # noqa: E402
+    _count_empty_predictions,
     _default_scorers,
     _extract_messages,
     _extract_response_text,
@@ -422,3 +425,50 @@ def test_evaluate_friendly_error_when_set_experiment_fails() -> None:
                 scorers=[],
                 experiment="/bad/path",
             )
+
+
+# ---------------------------------------------------------------------------
+# _count_empty_predictions — surface None/empty predictions (issue #267)
+# ---------------------------------------------------------------------------
+
+
+def test_count_empty_predictions_mixed_none_empty_whitespace_and_nan() -> None:
+    df = pd.DataFrame(
+        {
+            "outputs": [
+                "real answer",
+                None,
+                "",
+                "   ",
+                float("nan"),
+                "another real answer",
+            ]
+        }
+    )
+    result = SimpleNamespace(result_df=df)
+    # None + "" + whitespace + NaN = 4 empty, 2 real.
+    assert _count_empty_predictions(result) == 4
+
+
+@pytest.mark.parametrize("column", ["outputs", "response", "predictions"])
+def test_count_empty_predictions_detects_each_candidate_column(column: str) -> None:
+    df = pd.DataFrame({column: ["ok", None, "ok"]})
+    result = SimpleNamespace(result_df=df)
+    assert _count_empty_predictions(result) == 1
+
+
+def test_count_empty_predictions_returns_none_when_no_output_column() -> None:
+    df = pd.DataFrame({"request": ["q1", "q2"], "score": [0.9, 0.8]})
+    result = SimpleNamespace(result_df=df)
+    assert _count_empty_predictions(result) is None
+
+
+def test_count_empty_predictions_returns_none_without_result_df() -> None:
+    assert _count_empty_predictions(SimpleNamespace()) is None
+    assert _count_empty_predictions(SimpleNamespace(result_df=None)) is None
+
+
+def test_count_empty_predictions_zero_when_all_present() -> None:
+    df = pd.DataFrame({"outputs": ["a", "b", "c"]})
+    result = SimpleNamespace(result_df=df)
+    assert _count_empty_predictions(result) == 0

@@ -3423,6 +3423,26 @@ def apps_list(profile: str | None, host: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _warn_empty_predictions(result: Any) -> None:
+    """Print a warning when some eval predictions returned no output.
+
+    MLflow's parallel eval harness can drop predictions to None on transient
+    FMAPI/warehouse failures. Without this, the mean score alone misreads a
+    concurrency artifact as a low-quality agent.
+    """
+    from apx_agent._eval import _count_empty_predictions
+
+    empty = _count_empty_predictions(result)
+    if empty is None or empty == 0:
+        return
+    total = len(result.result_df)
+    click.echo(
+        f"⚠ {empty}/{total} predictions returned no output "
+        "(possible transient failures — throttle with "
+        "MLFLOW_GENAI_EVAL_MAX_WORKERS)."
+    )
+
+
 @eval_group.command("run")
 @click.argument("evalset", type=click.Path(exists=True, dir_okay=False))
 @click.option(
@@ -3540,6 +3560,7 @@ def eval_cmd(
         except RuntimeError as e:
             raise click.ClickException(str(e)) from e
         click.echo(f"Eval complete. Result: {result}")
+        _warn_empty_predictions(result)
         return
 
     # In-process eval path.
@@ -3562,6 +3583,7 @@ def eval_cmd(
         experiment=effective_experiment,
     )
     click.echo(f"Eval complete. Result: {result}")
+    _warn_empty_predictions(result)
 
 
 # ---------------------------------------------------------------------------
