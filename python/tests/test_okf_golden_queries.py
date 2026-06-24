@@ -154,14 +154,34 @@ def test_okf_grounding_emits_golden_queries(tmp_path):
     assert "SELECT count(*)" in grounding["orders"]["examples"]
 
 
-def test_step1_does_not_change_the_rendered_prompt(tmp_path):
-    # The renderer still consumes `examples` (not `golden_queries`), so the served
-    # instructions must NOT yet show the golden-query questions — proving step 1
-    # is parse-only and the prompt stays byte-identical to before.
+def test_step2_renders_golden_queries_as_labelled_pairs(tmp_path):
+    # Step 2: the renderer now emits labelled ``Q: <question>`` → SQL few-shot
+    # pairs from golden_queries into the served instructions.
     manifest = _bundle_with_golden_queries(tmp_path)
     grounding = okf_grounding(tmp_path / "okf")
     out = build_instructions_from_schema(
         manifest["catalog"], manifest["schema"], manifest["tables"], grounding=grounding
     )
-    assert "How many orders over $100?" not in out  # questions not rendered yet
-    assert "golden_queries" not in out
+    assert "Q: How many orders over $100?" in out
+    assert "Q: Total amount by id" in out
+    assert "SELECT count(*) FROM" in out
+    assert "golden_queries" not in out  # the key name never leaks into the prompt
+
+
+def test_step2_bare_example_renders_byte_identically(tmp_path):
+    # A bare-code-block ``# Examples`` (question=None) must still render as the
+    # pre-golden-query ``Example:`` form — no ``Q:`` label, no behaviour change.
+    manifest = {"catalog": "c", "schema": "s", "tables": {"orders": ["id", "amount"]}}
+    write_okf_bundle(manifest, tmp_path / "okf", timestamp="z")
+    orders_md = tmp_path / "okf" / "tables" / "orders.md"
+    orders_md.write_text(
+        orders_md.read_text().rstrip()
+        + "\n\n# Examples\n```sql\nSELECT * FROM orders\n```\n"
+    )
+    grounding = okf_grounding(tmp_path / "okf")
+    out = build_instructions_from_schema(
+        manifest["catalog"], manifest["schema"], manifest["tables"], grounding=grounding
+    )
+    assert "    Example:" in out
+    assert "      SELECT * FROM orders" in out
+    assert "Q:" not in out
