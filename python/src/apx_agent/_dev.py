@@ -40,10 +40,12 @@ from ._apx_models import (
     ProbeResult,
     ToolInfo,
     ToolSchemaResponse,
+    TopologyResponse,
     TraceDetailResponse,
     TraceRow,
     VsIndexInfo,
     WarehouseInfo,
+    WorkspaceContextResponse,
 )
 from ._models import AgentContext, AgentTool
 from ._topology import build_topology, inspect_node
@@ -1036,9 +1038,8 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         from starlette.responses import RedirectResponse as _R
         return _R("/_apx/edit", status_code=302)
 
-    @router.get("/_apx/openapi.json", include_in_schema=False)
+    @router.get("/_apx/openapi.json", response_model=dict[str, Any])
     async def apx_openapi_spec(request: Request) -> Any:
-        from fastapi.responses import JSONResponse
         ctx: AgentContext | None = request.app.state.agent_context
         # base_url goes into the openapi `servers` field so Scalar uses the
         # right host in its curl examples. Prefer X-Forwarded-* headers (set
@@ -1051,25 +1052,20 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             base_url = f"{fwd_proto}://{fwd_host}"
         else:
             base_url = str(request.base_url)
-        return JSONResponse(
-            _build_apx_openapi_spec(ctx, api_prefix, base_url=base_url)
-        )
+        return _build_apx_openapi_spec(ctx, api_prefix, base_url=base_url)
 
     @router.get("/_apx/probe", include_in_schema=False)
     async def probe_dev_ui() -> HTMLResponse:
         return HTMLResponse(_render_probe_ui())
 
-    @router.get("/_apx/probe/checks", include_in_schema=False)
+    @router.get("/_apx/probe/checks", response_model=dict[str, Any])
     async def probe_checks(request: Request) -> Any:
-        from fastapi.responses import JSONResponse
         ctx: AgentContext | None = request.app.state.agent_context
         conversation_store = getattr(request.app.state, "conversation_store", None)
-        return JSONResponse(
-            await _run_probe_checks(
-                ctx,
-                headers=dict(request.headers),
-                conversation_store=conversation_store,
-            )
+        return await _run_probe_checks(
+            ctx,
+            headers=dict(request.headers),
+            conversation_store=conversation_store,
         )
 
     @router.get("/_apx/conversations",
@@ -1379,16 +1375,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             )
         return FileResponse(index, media_type="text/html")
 
-    @router.get("/_apx/topology.json", include_in_schema=False)
+    @router.get("/_apx/topology.json", response_model=TopologyResponse)
     async def topology_json(request: Request) -> Any:
         ctx: AgentContext | None = request.app.state.agent_context
         if ctx is None:
             return JSONResponse(
                 {"error": "Agent context not available"}, status_code=503
             )
-        return JSONResponse(build_topology(ctx))
+        return build_topology(ctx)
 
-    @router.get("/_apx/topology/inspect/{node_id:path}", include_in_schema=False)
+    @router.get("/_apx/topology/inspect/{node_id:path}", response_model=dict[str, Any])
     async def topology_inspect(node_id: str, request: Request) -> Any:
         ctx: AgentContext | None = request.app.state.agent_context
         if ctx is None:
@@ -1398,7 +1394,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         details = inspect_node(ctx, node_id)
         if details is None:
             raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
-        return JSONResponse(details)
+        return details
 
     @router.get("/_apx/topology/assets/{path:path}", include_in_schema=False)
     async def topology_assets(path: str) -> Any:
@@ -1959,11 +1955,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         return HTMLResponse(_render_setup_ui(current, embed=embed))
 
-    @router.get("/_apx/workspace-context", include_in_schema=False)
+    @router.get("/_apx/workspace-context", response_model=WorkspaceContextResponse)
     async def workspace_context(request: Request) -> Any:
         """Return workspace identity + agent resource summary for the Context tab."""
         import asyncio as _asyncio
-        from fastapi.responses import JSONResponse
 
         ws: WorkspaceClient = request.app.state.workspace_client
         ctx = request.app.state.agent_context
@@ -1997,13 +1992,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             ".".join(i.split(".")[:2]) for i in uc_ids if i.count(".") >= 1
         })
 
-        return JSONResponse({
+        return {
             "host": host,
             "user": user_name,
             "resources": resources,
             "used_catalogs": used_catalogs,
             "used_schemas": used_schemas,
-        })
+        }
 
     @router.get("/_apx/memories", response_model=list[MemoryResponse])
     async def list_memories(request: Request) -> Any:
