@@ -471,3 +471,62 @@ class TestDataAgentHealth:
 
         a = DataAgent("main", "sales", tables={"orders": ["id(INT)"]})
         assert isinstance(a._apx_data, DataAgentHealth)
+
+
+class TestDataAgentProbe:
+    """Active day-two check: probe(ws) re-reads the live workspace to confirm the
+    warehouse is reachable and the schema still matches the grounded tables —
+    off the hot path, best-effort, never raises."""
+
+    def test_match_is_ok(self):
+        a = DataAgent("main", "sales", warehouse_id="wh", tables={"orders": ["id(INT)"]})
+        p = a.probe(_ws_with_schema({"orders": ["id(INT)"]}))
+        assert p.ok is True
+        assert p.warehouse == "reachable"
+        assert p.schema == "match"
+        assert p.missing_tables == () and p.new_tables == ()
+
+    def test_drift_detected(self):
+        a = DataAgent(
+            "main", "sales", warehouse_id="wh",
+            tables={"orders": ["id(INT)"], "customers": ["id(INT)"]},
+        )
+        p = a.probe(_ws_with_schema({"orders": ["id(INT)"], "payments": ["id(INT)"]}))
+        assert p.ok is False
+        assert p.schema == "drift"
+        assert p.missing_tables == ("customers",)
+        assert p.new_tables == ("payments",)
+        assert "drift" in p.detail
+
+    def test_schema_unreachable_does_not_claim_vanished(self):
+        a = DataAgent("main", "sales", warehouse_id="wh", tables={"orders": ["id(INT)"]})
+        ws = MagicMock()
+        ws.statement_execution.execute_statement.side_effect = RuntimeError("no perms")
+        p = a.probe(ws)
+        assert p.ok is False
+        assert p.schema == "unreachable"
+        assert p.missing_tables == ()  # not claiming the table dropped
+
+    def test_warehouse_unavailable(self, monkeypatch):
+        def _boom(ws, **kwargs):
+            raise RuntimeError("no warehouse")
+
+        monkeypatch.setattr("apx_agent._sql.get_warehouse_id", _boom)
+        a = DataAgent("main", "sales", tables={"orders": ["id(INT)"]})  # no warehouse_id
+        p = a.probe(_ws_with_schema({"orders": ["id(INT)"]}))
+        assert p.ok is False
+        assert p.warehouse == "unavailable"
+        assert "warehouse" in p.detail
+
+    def test_ungrounded_has_nothing_to_drift(self):
+        a = DataAgent("main", "sales", warehouse_id="wh", tables={})
+        p = a.probe(_ws_with_schema({"orders": ["id(INT)"]}))
+        assert p.schema == "ungrounded"
+        assert p.ok is True  # warehouse reachable; no grounding to compare
+
+    def test_never_raises_on_hostile_ws(self):
+        from apx_agent import DataAgentProbe
+
+        a = DataAgent("main", "sales", tables={"orders": ["id(INT)"]})  # no warehouse_id
+        p = a.probe(MagicMock())  # warehouses.list() not iterable → caught, not raised
+        assert isinstance(p, DataAgentProbe)

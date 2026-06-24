@@ -92,6 +92,29 @@ day-two state stays accurate. See the
 [DataAgent tool discovery and wiring loop](../loops/README.md) for the
 discover → wire → read-back cycle this state supports.
 
+#### Active probe — `agent.probe(ws)`
+
+`/readyz` reports health captured at construction; it does not re-read the
+workspace on every request. For an **active** day-two check — *is the warehouse
+reachable, and does the schema still match what we grounded on right now?* —
+call `probe(ws)` off the hot path (a scheduled job, a notebook, an ops CLI):
+
+```python
+p = agent.probe(ws)                 # best-effort; never raises
+if not p.ok:
+    alert(p.detail)                 # e.g. "schema drift: missing ['customers']; new ['payments']"
+# p.warehouse: "reachable" | "unavailable"
+# p.schema:    "match" | "drift" | "unreachable" | "ungrounded"
+# p.missing_tables / p.new_tables:  the exact drift
+```
+
+It re-introspects the live schema and diffs it against the agent's own
+`uc_table` resources (no extra state to drift), and resolves the warehouse to
+confirm it's reachable. Returns a `DataAgentProbe`. Run it on a cadence to catch
+schema drift or a vanished warehouse before users hit a failed query — the
+"trace regression triage" and discovery-and-wiring loops in
+[docs/loops](../loops/README.md) both build on this signal.
+
 ---
 
 ## Extending a DataAgent

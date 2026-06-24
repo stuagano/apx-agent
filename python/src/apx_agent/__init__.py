@@ -20,7 +20,7 @@ Agent = LlmAgent
 from ._agent_tool import agent_tool
 
 # DataAgent — LlmAgent specialized for governed UC data access
-from .data_agent import DataAgent, DataAgentHealth, DataTemplate
+from .data_agent import DataAgent, DataAgentHealth, DataAgentProbe, DataTemplate
 from .coworker import CoworkerAgent, CoworkerTemplate
 
 # Template protocol, registry, and decorator
@@ -381,6 +381,7 @@ __all__ = [
     "CoworkerTemplate",
     "DataAgent",
     "DataAgentHealth",
+    "DataAgentProbe",
     "DataTemplate",
     "HandoffAgent",
     "KeywordRouter",
