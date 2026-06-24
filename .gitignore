@@ -20,6 +20,11 @@ typescript/deploy/*/app.yaml
 # Claude / agent IDE state
 .claude/*
 !.claude/skills/
+# Track the shared SessionStart hook + settings (apx-agent dev disciplines);
+# personal overrides go in the still-ignored settings.local.json.
+!.claude/settings.json
+!.claude/hooks/
+.claude/settings.local.json
 .antigravitycli/
 
 # Git worktrees
