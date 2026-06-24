@@ -28,11 +28,18 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from ._apx_models import (
+    AgentNodeInfo,
+    AgentPatternResponse,
     EvalCaseIn,
     EvalCaseResponse,
     EvalDataSaveResponse,
     JudgeRequest,
     JudgeResponse,
+    ProbeResult,
+    ToolInfo,
+    ToolSchemaResponse,
+    VsIndexInfo,
+    WarehouseInfo,
 )
 from ._models import AgentContext, AgentTool
 from ._topology import build_topology, inspect_node
@@ -1578,7 +1585,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         source: str = body.get("source", "")
         return JSONResponse(_extract_schemas_from_source(source))
 
-    @router.get("/_apx/tools/schema", include_in_schema=False)
+    @router.get("/_apx/tools/schema", response_model=ToolSchemaResponse)
     async def get_tool_schema_context(request: Request) -> Any:
         from fastapi.responses import JSONResponse
         import asyncio
@@ -1640,7 +1647,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             for r in rows:
                 t = r["table_name"]
                 tables.setdefault(t, []).append({"name": r["column_name"], "type": r["data_type"]})
-            return JSONResponse({"ok": True, "catalog": catalog, "schema": schema, "tables": tables})
+            return {"ok": True, "catalog": catalog, "schema": schema, "tables": tables}
 
         path = _find_agent_router_path()
         if path and path.exists():
@@ -1651,12 +1658,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                         for c in cols]
                     for t, cols in mined.items()
                 }
-                return JSONResponse({
+                return {
                     "ok": True, "catalog": catalog, "schema": schema,
                     "tables": tables_fmt, "source": "mined",
-                })
+                }
 
-        return JSONResponse({"ok": True, "catalog": catalog, "schema": schema, "tables": {}})
+        return {"ok": True, "catalog": catalog, "schema": schema, "tables": {}}
 
     @router.post("/_apx/tools/suggest", include_in_schema=False)
     async def suggest_tool_spec(request: Request) -> Any:
@@ -2030,7 +2037,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             logger.exception("/_apx/memories: list failed")
             return []
 
-    @router.get("/_apx/setup/catalogs", include_in_schema=False)
+    @router.get("/_apx/setup/catalogs", response_model=list[str])
     async def setup_catalogs(request: Request) -> Any:
         from fastapi.responses import JSONResponse
         ws: WorkspaceClient = request.app.state.workspace_client
@@ -2038,30 +2045,30 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             cats = [c.name for c in ws.catalogs.list() if c.name]
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
-        return JSONResponse(sorted(cats))
+        return sorted(cats)
 
-    @router.get("/_apx/setup/schemas", include_in_schema=False)
+    @router.get("/_apx/setup/schemas", response_model=list[str])
     async def setup_schemas(request: Request) -> Any:
         from fastapi.responses import JSONResponse
         catalog = request.query_params.get("catalog", "")
         if not catalog:
-            return JSONResponse([])
+            return []
         ws: WorkspaceClient = request.app.state.workspace_client
         try:
             schemas = [s.name for s in ws.schemas.list(catalog_name=catalog) if s.name
                        and s.name not in ("information_schema",)]
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
-        return JSONResponse(sorted(schemas))
+        return sorted(schemas)
 
-    @router.get("/_apx/setup/tables", include_in_schema=False)
+    @router.get("/_apx/setup/tables", response_model=list[str])
     async def setup_tables(request: Request) -> Any:
         from fastapi.responses import JSONResponse
         import asyncio as _asyncio
         catalog = request.query_params.get("catalog", "")
         schema = request.query_params.get("schema", "")
         if not catalog or not schema:
-            return JSONResponse([])
+            return []
         ws: WorkspaceClient = request.app.state.workspace_client
         try:
             tables = await _asyncio.to_thread(
@@ -2069,9 +2076,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             )
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
-        return JSONResponse(sorted(tables))
+        return sorted(tables)
 
-    @router.get("/_apx/setup/warehouses", include_in_schema=False)
+    @router.get("/_apx/setup/warehouses", response_model=list[WarehouseInfo])
     async def setup_warehouses(request: Request) -> Any:
         from fastapi.responses import JSONResponse
         import asyncio as _asyncio
@@ -2083,9 +2090,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             ])
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
-        return JSONResponse(whs)
+        return whs
 
-    @router.get("/_apx/setup/agents", include_in_schema=False)
+    @router.get("/_apx/setup/agents", response_model=list[AgentNodeInfo])
     async def setup_agents(request: Request) -> Any:
         """Return the agents defined in the LOCAL agent.py — the file the editor
         edits and the runtime imports — as ``[{name, tools, instructions, wrapper}]``.
@@ -2093,11 +2100,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         (Previously this discovered deployed *workspace* apps, which is the wrong
         data for the composer: it edits this project's agents, not other apps.)
         """
-        from fastapi.responses import JSONResponse
         path = _find_agent_router_path()
         if not path or not path.exists():
-            return JSONResponse([])
-        return JSONResponse(_parse_agent_nodes(path.read_text()))
+            return []
+        return _parse_agent_nodes(path.read_text())
 
     @router.post("/_apx/setup", include_in_schema=False)
     async def save_setup(request: Request) -> Any:
@@ -2174,12 +2180,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         _persist_instructions(ctx, new_instructions, ws_client=ws_client)
         return JSONResponse({"ok": True})
 
-    @router.get("/_apx/setup/tools", include_in_schema=False)
+    @router.get("/_apx/setup/tools", response_model=list[ToolInfo])
     async def setup_list_tools() -> Any:
-        from fastapi.responses import JSONResponse
         path = _find_agent_router_path()
         if not path or not path.exists():
-            return JSONResponse([])
+            return []
         schemas = _extract_schemas_from_source(path.read_text())
         result = []
         for s in schemas:
@@ -2191,7 +2196,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 "description": s.get("description", ""),
                 "params": [{"name": k, "type": v.get("type", "string")} for k, v in props.items()],
             })
-        return JSONResponse(result)
+        return result
 
     @router.post("/_apx/setup/create-tool", include_in_schema=False)
     async def setup_create_tool(request: Request) -> Any:
@@ -2406,7 +2411,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             )
         return JSONResponse(resp)
 
-    @router.get("/_apx/setup/probe-json", include_in_schema=False)
+    @router.get("/_apx/setup/probe-json", response_model=ProbeResult)
     async def setup_probe_json(request: Request) -> Any:
         import time as _time
         from fastapi.responses import JSONResponse
@@ -2428,12 +2433,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
                 r = await client.get(url)
             latency = int((_time.monotonic() - t0) * 1000)
-            return JSONResponse({"status": r.status_code, "latency_ms": latency, "url": url})
+            return {"status": r.status_code, "latency_ms": latency, "url": url}
         except Exception as exc:
             latency = int((_time.monotonic() - t0) * 1000)
             return JSONResponse({"error": str(exc), "latency_ms": latency, "url": url})
 
-    @router.get("/_apx/setup/vs-indexes", include_in_schema=False)
+    @router.get("/_apx/setup/vs-indexes", response_model=list[VsIndexInfo])
     async def setup_vs_indexes(request: Request) -> Any:
         import asyncio as _asyncio
         from fastapi.responses import JSONResponse
@@ -2442,19 +2447,23 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             indexes = await _asyncio.to_thread(lambda: _discover_vs_indexes(ws))
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
-        return JSONResponse(indexes)
+        # The helper degrades to a single-element ``[{error}]`` (200) when it
+        # can't list endpoints; keep that as a JSONResponse so it bypasses the
+        # VsIndexInfo response_model instead of tripping response validation.
+        if indexes and "error" in indexes[0]:
+            return JSONResponse(indexes)
+        return indexes
 
-    @router.get("/_apx/setup/agent-pattern", include_in_schema=False)
+    @router.get("/_apx/setup/agent-pattern", response_model=AgentPatternResponse)
     async def setup_get_agent_pattern() -> Any:
-        from fastapi.responses import JSONResponse
         path = _find_agent_router_path()
         if not path or not path.exists():
-            return JSONResponse({"type": "Agent"})
+            return {"type": "Agent"}
         nodes = _parse_agent_nodes(path.read_text())
         agent_node = next((n for n in nodes if n["name"] == "agent"), None)
         if not agent_node:
-            return JSONResponse({"type": "Agent"})
-        return JSONResponse({"type": agent_node["wrapper"] or "Agent"})
+            return {"type": "Agent"}
+        return {"type": agent_node["wrapper"] or "Agent"}
 
     @router.post("/_apx/setup/agent-pattern", include_in_schema=False)
     async def setup_set_agent_pattern(request: Request) -> Any:
