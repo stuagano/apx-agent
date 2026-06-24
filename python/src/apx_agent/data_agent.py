@@ -256,6 +256,18 @@ def _build_data_tools_and_instructions(
     else:
         grounding = None
 
+    # Bundle-level business glossary (#296) — term/definition/synonyms from the
+    # OKF dataset doc, rendered into the prompt so the agent maps user phrasing
+    # onto the schema. Same resolution order as grounding above.
+    if knowledge_was_source and knowledge:
+        from ._okf import okf_glossary
+        glossary = okf_glossary(knowledge)
+    elif baked_was_source:
+        from ._schema import load_okf_glossary
+        glossary = load_okf_glossary()
+    else:
+        glossary = None
+
     # Verified/golden queries (#288 phase 2): when the grounding bundle carries
     # any, expose a verified_query tool that matches the user's question to a
     # golden query and runs its TRUSTED SQL with safe named-parameter binding —
@@ -270,7 +282,8 @@ def _build_data_tools_and_instructions(
         ))
 
     resolved_instructions = instructions or build_instructions_from_schema(
-        catalog, schema, tables, persona=persona, objective=objective, grounding=grounding
+        catalog, schema, tables, persona=persona, objective=objective,
+        grounding=grounding, glossary=glossary,
     )
     health = DataAgentHealth(
         grounded=schema_source != "ungrounded",
