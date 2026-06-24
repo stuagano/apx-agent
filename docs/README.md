@@ -63,6 +63,10 @@
 
 - [evaluate/overview.md](evaluate/overview.md) — MLflow evaluation, `apx-agent eval`, LLM-as-judge, `eval chain`
 
+## Loops
+
+- [loops/README.md](loops/README.md) — bounded, repeatable agent loops for the apx-agent lifecycle (pre-deploy readiness, eval-guided quality, judge alignment, grounding freshness, trace triage, fleet remediation)
+
 ## Reference
 
 - [reference/configuration.md](reference/configuration.md) — full `[tool.apx.agent]` field reference
