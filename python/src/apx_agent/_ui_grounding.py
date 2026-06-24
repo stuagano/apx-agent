@@ -133,9 +133,17 @@ _GROUNDING_HTML = """<!DOCTYPE html>
   .col textarea:focus { border-color: #3a7bd5; }
   .col textarea.changed { border-color: #4ade80; }
   .sug { font-size: 11px; color: #888; margin-top: 3px; }
+  .sug[hidden] { display: none; }
   .sug b { color: #aaa; font-weight: 600; }
+  .thead { display: flex; align-items: center; gap: 12px; margin: 22px 0 8px; }
+  .thead h2.tbl { margin: 0; }
+  .suggest { background: #1a1040; color: #a78bfa; border: 1px solid #4c1d95;
+             border-radius: 5px; padding: 4px 10px; font-size: 11px; cursor: pointer; }
+  .suggest:hover { background: #2d1b69; }
+  .suggest:disabled { opacity: .5; cursor: default; }
   .accept { background: #0d2818; color: #4ade80; border: 1px solid #1d5a3a;
             border-radius: 5px; padding: 5px 10px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+  .accept[hidden] { display: none; }
   .accept:hover { background: #11401f; }
   #bar { position: sticky; bottom: 0; background: #0d0d0d; border-top: 1px solid #222;
          padding: 12px 0; margin-top: 18px; display: flex; align-items: center; gap: 14px; }
@@ -176,6 +184,15 @@ async function load() {
   render(data);
 }
 
+const cssEsc = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : s;
+
+function setSug(row, text) {
+  const sug = row.querySelector('.sug'), btn = row.querySelector('.accept');
+  if (!text) { sug.hidden = true; btn.hidden = true; return; }
+  sug.innerHTML = '<b>Suggested:</b> ' + esc(text); sug.hidden = false;
+  btn.dataset.sug = text; btn.hidden = false;
+}
+
 function render(data) {
   const root = document.getElementById('tables');
   if (!data.tables || !data.tables.length) {
@@ -184,18 +201,20 @@ function render(data) {
   }
   root.innerHTML = '';
   for (const t of data.tables) {
-    const h = document.createElement('h2'); h.className = 'tbl'; h.textContent = t.table;
-    root.appendChild(h);
+    const head = document.createElement('div'); head.className = 'thead';
+    head.innerHTML = `<h2 class="tbl">${esc(t.table)}</h2>` +
+      `<button class="suggest" data-table="${esc(t.table)}">✨ Suggest</button>`;
+    root.appendChild(head);
     for (const c of t.columns) {
       const row = document.createElement('div'); row.className = 'col';
-      const sug = c.suggested
-        ? `<div class="sug"><b>Suggested:</b> ${esc(c.suggested)}</div>` : '';
       row.innerHTML =
         `<div class="name">${esc(c.column)} <span class="ty">${esc(c.type)}</span></div>` +
         `<div><textarea data-table="${esc(t.table)}" data-col="${esc(c.column)}" ` +
-        `data-current="${esc(c.current)}">${esc(c.current)}</textarea>${sug}</div>` +
-        (c.suggested ? `<button class="accept" data-sug="${esc(c.suggested)}">Accept</button>` : '<span></span>');
+        `data-current="${esc(c.current)}">${esc(c.current)}</textarea>` +
+        `<div class="sug" hidden></div></div>` +
+        `<button class="accept" hidden>Accept</button>`;
       root.appendChild(row);
+      if (c.suggested) setSug(row, c.suggested);
     }
   }
   root.querySelectorAll('.accept').forEach(btn => btn.addEventListener('click', () => {
@@ -205,6 +224,31 @@ function render(data) {
   root.querySelectorAll('textarea').forEach(ta => ta.addEventListener('input', () => {
     ta.classList.toggle('changed', ta.value !== ta.dataset.current);
   }));
+  root.querySelectorAll('.suggest').forEach(btn =>
+    btn.addEventListener('click', () => suggestTable(btn.dataset.table, btn)));
+}
+
+async function suggestTable(table, btn) {
+  const status = document.getElementById('status');
+  btn.disabled = true; btn.textContent = '✨ …';
+  try {
+    const r = await fetch('/_apx/grounding/suggest', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ table }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    let n = 0;
+    for (const [col, desc] of Object.entries(d.suggestions || {})) {
+      const ta = document.querySelector(
+        `#tables textarea[data-table="${cssEsc(table)}"][data-col="${cssEsc(col)}"]`);
+      if (ta && desc) { setSug(ta.closest('.col'), desc); n++; }
+    }
+    status.textContent = `✨ ${n} AI suggestion${n === 1 ? '' : 's'} for ${table}`;
+    status.className = '';
+  } catch (e) {
+    status.textContent = '✗ ' + e.message; status.className = 'err';
+  } finally { btn.disabled = false; btn.textContent = '✨ Suggest'; }
 }
 
 async function save() {
@@ -248,3 +292,53 @@ def render_grounding_ui() -> str:
     from ._ui_nav import _apx_nav_links
 
     return _GROUNDING_HTML.replace("{{NAV}}", _apx_nav_links("grounding"))
+
+
+async def generate_column_descriptions(
+    model: str, table: str, rows: "list[dict]"
+) -> dict[str, str]:
+    """LLM-generate a one-sentence description per column (#292 phase C) — an
+    AI suggestion source alongside UC comments (the BigQuery-Gemini parity).
+
+    ``rows`` is ``[{name, type, ...}]``. Returns ``{column: description}`` for the
+    known columns only; totalised — ``{}`` on import/LLM/parse failure.
+    """
+    import json as _json
+
+    if not rows or not model:
+        return {}
+    cols_txt = "\n".join(f"- {r['name']} ({r.get('type', '')})" for r in rows)
+    system_msg = (
+        "You write concise one-sentence descriptions for database table columns, "
+        "as grounding metadata for a data agent. Output ONLY a JSON object mapping "
+        "each column name to its description — no prose, no code fences."
+    )
+    user_content = f"Table: {table}\nColumns:\n{cols_txt}\n\nDescribe each column."
+    try:
+        from databricks_openai import AsyncDatabricksOpenAI
+
+        llm = AsyncDatabricksOpenAI()
+        resp = await llm.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=600,
+            temperature=0.0,
+        )
+        choices = getattr(resp, "choices", None) or []
+        raw = ""
+        if choices:
+            msg = getattr(choices[0], "message", None)
+            raw = ((getattr(msg, "content", None) or "") if msg else "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        data = _json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        names = {r["name"] for r in rows}
+        return {k: str(v) for k, v in data.items() if k in names and v}
+    except Exception as e:
+        logger.warning("generate_column_descriptions failed for %s: %s", table, e)
+        return {}

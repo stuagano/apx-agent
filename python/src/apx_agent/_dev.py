@@ -34,6 +34,8 @@ from ._apx_models import (
     ApprovalInfo,
     ColumnDescriptionsRequest,
     ColumnDescriptionsSaveResponse,
+    ColumnSuggestRequest,
+    ColumnSuggestResponse,
     EditPreviewRequest,
     EditSaveRequest,
     EditSaveResponse,
@@ -2046,6 +2048,29 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"ok": False, "error": "No .apx/okf bundle found"}, status_code=404)
         modified = await _asyncio.to_thread(apply_column_descriptions, okf_root, body.accepted)
         return {"ok": True, "modified": modified}
+
+    @router.post("/_apx/grounding/suggest", response_model=ColumnSuggestResponse)
+    async def suggest_grounding_descriptions(
+        request: Request, body: ColumnSuggestRequest
+    ) -> Any:
+        """LLM-generate column descriptions for a table (#292 phase C) — an AI
+        suggestion source alongside UC comments. Reads nothing from / writes
+        nothing to the bundle; the UI offers the result for accept like any
+        other suggestion."""
+        from fastapi.responses import JSONResponse
+        from ._okf import okf_columns
+        from ._ui_grounding import generate_column_descriptions, resolve_okf_root
+
+        ctx: AgentContext | None = request.app.state.agent_context
+        model = (getattr(ctx.config, "model", "") or "") if ctx else ""
+        if not model:
+            return JSONResponse({"ok": False, "error": "No model configured"}, status_code=400)
+        okf_root = resolve_okf_root()
+        if okf_root is None:
+            return JSONResponse({"ok": False, "error": "No .apx/okf bundle found"}, status_code=404)
+        rows = okf_columns(okf_root).get(body.table, [])
+        suggestions = await generate_column_descriptions(model, body.table, rows)
+        return {"ok": True, "suggestions": suggestions}
 
     @router.get("/_apx/memories", response_model=list[MemoryResponse])
     async def list_memories(request: Request) -> Any:
