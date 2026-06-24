@@ -242,3 +242,36 @@ class TestReadyzMcp:
         assert body["checks"]["mcp"] == "not-configured"
         assert resp.status_code == 200
         assert body["status"] == "ready"
+
+
+class TestReadyzData:
+    """checks['data'] surfaces DataAgent discovery/wiring health. Informational —
+    an ungrounded data agent is still a working generic SQL assistant, so it
+    never gates readiness (unlike memory)."""
+
+    def _app_for(self, agent):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        import apx_agent._readyz as rz
+        rz._run_canned_probe = lambda a, m: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
+        app = FastAPI()
+        from apx_agent._readyz import mount_readyz
+        mount_readyz(app, agent)
+        return TestClient(app)
+
+    def test_data_ok_when_not_set(self):
+        from apx_agent import Agent
+        agent = Agent(instructions="x", tools=[])
+        body = self._app_for(agent).get("/readyz").json()
+        assert body["checks"]["data"] == "ok"
+
+    def test_data_degraded_surfaced_but_still_ready(self):
+        from apx_agent import DataAgent
+        # Ungrounded DataAgent — degraded reason set, but readiness not gated.
+        agent = DataAgent("main", "sales", tables={})
+        agent._apx_data_degraded = "no schema grounding — running as a generic SQL assistant"
+        resp = self._app_for(agent).get("/readyz")
+        body = resp.json()
+        assert "no schema grounding" in body["checks"]["data"]
+        assert resp.status_code == 200
+        assert body["status"] == "ready"

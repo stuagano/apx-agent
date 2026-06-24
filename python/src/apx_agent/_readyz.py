@@ -36,6 +36,10 @@ Checks:
     never fails).
   * ``tool_exec`` — best-effort, always ``"skipped"`` for now (running a real
     tool needs OBO / user data access this self-test lacks).
+  * ``data`` — DataAgent discovery/wiring health: ``"ok"`` or a short degraded
+    reason (ungrounded schema / unavailable warehouse). INFORMATIONAL — an
+    ungrounded data agent is still a working generic SQL assistant, so this
+    never gates readiness.
   * ``mcp`` — tri-state and INFORMATIONAL ONLY. ``"degraded"`` when the MCP
     surface was configured but errored at mount (``app.state.mcp_mount_error``
     is a non-empty string); ``"ok"`` when an MCP server mounted; otherwise
@@ -203,6 +207,10 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
             "tools_registered": _count_tools(agent),
             "tool_exec": "skipped",
             "memory": getattr(agent, "_apx_memory_degraded", None) or "ok",
+            # DataAgent discovery/wiring health. Informational: ungrounded is a
+            # working-but-generic state, so this NEVER gates readiness (unlike
+            # memory). Surfaces the schema/warehouse/UC-function state for ops.
+            "data": getattr(agent, "_apx_data_degraded", None) or "ok",
             # Informational tri-state; never gates readiness (extra-gated surface).
             "mcp": _mcp_check(app),
         }

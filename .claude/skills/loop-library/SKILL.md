@@ -125,6 +125,12 @@ from the user's answers instead of asking them to design those parts. Keep
 unknown details generic rather than filling them in. Stop asking questions once
 the remaining details would not change the design materially.
 
+For worked examples of well-formed loops in the delivery format — useful as
+scaffolds when designing or adapting — read
+[references/examples.md](references/examples.md). They are reference templates,
+not published loops: adapt and label them as such, and never present them as
+published catalog entries.
+
 ## Design the feedback cycle
 
 Build every loop around this sequence:
