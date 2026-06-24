@@ -27,6 +27,8 @@ the model is bypassed at runtime, so it can never strip a field off the wire.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 # ── POST /_apx/eval/data ─────────────────────────────────────────────────────
@@ -265,3 +267,71 @@ class ProbeResult(BaseModel):
     status: int
     latency_ms: int
     url: str
+
+
+# ── Wave 1 / PR-R2: trace + approval reads ───────────────────────────────────
+#
+# Two route families. The **approval** routes are plain JSON (a list read plus
+# two no-body POSTs that act on a path id — response models only, no request
+# models). The **trace** routes do HTML/JSON content negotiation on a ``fmt``
+# query param: ``response_model`` documents only the ``fmt=json`` branch, while
+# the default HTML branch returns an ``HTMLResponse`` (a Response object, which
+# FastAPI returns verbatim — never touched by the model) and the error branches
+# return a ``JSONResponse`` that bypasses it.
+
+
+class ApprovalInfo(BaseModel):
+    """One pending approval in ``GET /_apx/approvals`` — the fields the chat
+    banner renders: ``{id, tool_name, arguments, reason}``.
+
+    ``arguments`` is the exact tool-call argument dict the approval covers;
+    ``reason`` is the policy reason that triggered the ASK (``None`` when the
+    gate raised without one). The empty-store and 503 error paths return a
+    ``JSONResponse`` that bypasses this model.
+    """
+
+    id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    reason: str | None = None
+
+
+class ApprovalActionResponse(BaseModel):
+    """Success shape shared by ``POST /_apx/approvals/{id}/approve`` and
+    ``…/deny``: ``{id, status}`` (status is ``"approved"`` | ``"denied"``).
+
+    Both are no-body POSTs keyed by the path id, so there is no request model.
+    The no-store and unknown-id paths (404) return a ``JSONResponse``.
+    """
+
+    id: str
+    status: str
+
+
+class TraceRow(BaseModel):
+    """One row of ``GET /_apx/traces?fmt=json`` — the trace-list panel.
+
+    Merges the MLflow tracking-store search with the in-process ring buffer
+    (ring-buffer-only rows carry ``None`` timings and empty previews). The
+    default (no ``fmt``) HTML rendering of the same route bypasses this model.
+    """
+
+    trace_id: str
+    state: str
+    request_time_ms: int | None = None
+    duration_ms: int | None = None
+    request_preview: str
+    response_preview: str
+
+
+class TraceDetailResponse(BaseModel):
+    """Success shape of ``GET /_apx/traces/{id}?fmt=json``: ``{trace_id,
+    spans}``.
+
+    ``spans`` is the serialised span list (from the ring buffer or a
+    ``mlflow.get_trace`` fetch). The artifact-egress-blocked (200 ``{error}``),
+    not-found (404 ``{error}``), and HTML branches all bypass this model.
+    """
+
+    trace_id: str
+    spans: list[dict[str, Any]]
