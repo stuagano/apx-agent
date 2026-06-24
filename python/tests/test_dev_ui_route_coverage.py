@@ -204,7 +204,7 @@ class _FakeSuggestHTTPClient:
     async def __aenter__(self) -> "_FakeSuggestHTTPClient":
         return self
 
-    async def __aexit__(self, *_args: object) -> None:
+    async def __aexit__(self, *_args: Any) -> None:
         return None
 
     async def post(self, *_args: Any, **_kwargs: Any) -> SimpleNamespace:
@@ -542,3 +542,93 @@ async def test_setup_generate_instructions_degrades_to_error_json(
             "/_apx/setup/generate-instructions",
             json={"catalog": "main", "schema": "default", "warehouse_id": "wh-1"},
         )
+
+
+# ── PR-R1: un-hidden + typed setup-discovery reads ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_r1_setup_discovery_routes_are_published_to_openapi(client: AsyncClient) -> None:
+    """Every PR-R1 read route is now in the native OpenAPI schema (un-hidden).
+
+    The routes that also have a (still-hidden) ``POST`` sibling — ``setup/agents``
+    and ``setup/agent-pattern`` — must expose the ``get`` operation only.
+    """
+    spec = (await client.get("/openapi.json")).json()
+    paths = spec["paths"]
+    for route in (
+        "/_apx/setup/catalogs",
+        "/_apx/setup/schemas",
+        "/_apx/setup/tables",
+        "/_apx/setup/warehouses",
+        "/_apx/setup/agents",
+        "/_apx/setup/tools",
+        "/_apx/tools/schema",
+        "/_apx/setup/vs-indexes",
+        "/_apx/setup/agent-pattern",
+        "/_apx/setup/probe-json",
+    ):
+        assert route in paths, f"{route} missing from OpenAPI schema (still hidden?)"
+        assert "get" in paths[route], f"{route} GET not published"
+    # The source-mutating POST siblings stay hidden.
+    assert "post" not in paths["/_apx/setup/agents"]
+    assert "post" not in paths["/_apx/setup/agent-pattern"]
+
+
+@pytest.mark.asyncio
+async def test_r1_setup_tools_returns_typed_tool_list(client: AsyncClient) -> None:
+    response = await client.get("/_apx/setup/tools")
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "name": "existing_tool",
+            "description": "Existing test helper.",
+            "params": [{"name": "value", "type": "string"}],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_r1_agent_pattern_get_returns_wrapper_type(client: AsyncClient) -> None:
+    response = await client.get("/_apx/setup/agent-pattern")
+    assert response.status_code == 200
+    # BASE_AGENT_ROUTER's ``agent`` is a bare create_react_agent (no wrapper).
+    assert response.json() == {"type": "Agent"}
+
+
+@pytest.mark.asyncio
+async def test_r1_tools_schema_degrades_when_agent_router_unconfigured(client: AsyncClient) -> None:
+    """No imported ``backend.agent_router`` → CATALOG/SCHEMA/WAREHOUSE_ID unset →
+    a 200 ``{ok: false}`` degrade that bypasses the response model."""
+    response = await client.get("/_apx/tools/schema")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is False
+    assert "CATALOG/SCHEMA/WAREHOUSE_ID" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_r1_tools_schema_success_serialises_schema_alias_on_wire(
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the agent_router globals set but no live warehouse query reachable
+    (the fake client has no ``statement_execution``), the handler falls through
+    to an empty-but-typed ``{ok, catalog, schema, tables}`` success — proving the
+    ``ToolSchemaResponse`` model validates and that its aliased field lands on
+    the wire as ``schema`` (not ``schema_``)."""
+    fake_ar = ModuleType("proj.backend.agent_router")
+    fake_ar.CATALOG = "main"  # type: ignore[attr-defined]
+    fake_ar.SCHEMA = "default"  # type: ignore[attr-defined]
+    fake_ar.WAREHOUSE_ID = "wh-1"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "proj.backend.agent_router", fake_ar)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/_apx/tools/schema")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert data["catalog"] == "main"
+    assert data["schema"] == "default"  # aliased field, not "schema_"
+    assert data["tables"] == {}

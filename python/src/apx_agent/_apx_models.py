@@ -131,3 +131,137 @@ class JudgeResponse(BaseModel):
     reason: str
     duration_ms: int
     model: str
+
+
+# ── Wave 1 / PR-R1: setup-discovery reads (GET, no request bodies) ────────────
+#
+# All of these are read-only ``GET`` routes the Setup/composer UI calls to
+# enumerate workspace and source-file state. The pattern matches the eval
+# routes above: the *success* path returns a raw dict/list so ``response_model``
+# both validates the shape and publishes it to the native OpenAPI schema, while
+# each handler's *error* path returns a ``JSONResponse`` (500 ``{error}`` on an
+# SDK failure, or a 200 ``{ok: false}`` / ``[{error}]`` degrade) that bypasses
+# the model. ``catalogs``/``schemas``/``tables`` need no model — they return a
+# bare ``list[str]``.
+
+
+class WarehouseInfo(BaseModel):
+    """One row of ``GET /_apx/setup/warehouses``: ``{id, name, state}``.
+
+    ``name`` falls back to ``id`` in the handler when the warehouse is unnamed,
+    and ``state`` is the SDK enum rendered to its string value.
+    """
+
+    id: str
+    name: str
+    state: str
+
+
+class AgentNodeInfo(BaseModel):
+    """One agent parsed from the local ``agent_router.py`` for the composer.
+
+    Shape produced by ``_parse_agent_nodes`` (AST scan): ``name`` is the
+    assigned variable, ``wrapper`` is the orchestration class wrapping a bare
+    ``Agent`` (``SequentialAgent`` …) or ``None`` for a direct agent, ``tools``
+    is the list of tool function names, and ``instructions`` is the literal
+    instructions string when present.
+    """
+
+    name: str
+    wrapper: str | None = None
+    tools: list[str]
+    instructions: str | None = None
+
+
+class ToolParam(BaseModel):
+    """One parameter of a tool in ``GET /_apx/setup/tools``: ``{name, type}``."""
+
+    name: str
+    type: str
+
+
+class ToolInfo(BaseModel):
+    """One tool of ``GET /_apx/setup/tools``: ``{name, description, params}``.
+
+    Sourced from the JSON-schema blocks mined out of ``agent_router.py``;
+    ``params`` is flattened to ``name``/``type`` pairs for the UI's tool list.
+    """
+
+    name: str
+    description: str
+    params: list[ToolParam]
+
+
+class SchemaColumn(BaseModel):
+    """One column in a ``ToolSchemaResponse`` table: ``{name, type}``."""
+
+    name: str
+    type: str
+
+
+class ToolSchemaResponse(BaseModel):
+    """Success shape of ``GET /_apx/tools/schema`` — the grounding-schema
+    context the agent uses to know its tables and columns.
+
+    ``{ok, catalog, schema, tables}`` where ``tables`` maps a table name to its
+    columns; ``source`` is ``"mined"`` only when the live ``information_schema``
+    query returned nothing and the shape was recovered from source. ``schema``
+    shadows :meth:`BaseModel.schema`, so the field is named ``schema_`` with an
+    alias — FastAPI serialises response models by alias, keeping the wire key
+    ``schema`` (same trick as :class:`JudgeResponse`).
+
+    Both error paths (no agent/config, the catch-all) return a 200
+    ``{ok: false, error}`` ``JSONResponse`` that bypasses this model.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    ok: bool
+    catalog: str
+    schema_: str = Field(alias="schema")
+    tables: dict[str, list[SchemaColumn]]
+    source: str | None = None
+
+
+class VsIndexInfo(BaseModel):
+    """One vector-search index of ``GET /_apx/setup/vs-indexes``.
+
+    ``{endpoint, endpoint_state, index, source_table, ready, columns}`` — enough
+    to pre-fill ``VS_INDEX`` / ``VS_COLUMNS`` in the composer. ``columns`` is the
+    list of source column names. When listing endpoints fails the handler
+    returns a single-element ``[{error}]`` via ``JSONResponse`` (200, bypassing
+    this model) rather than raising.
+    """
+
+    endpoint: str
+    endpoint_state: str
+    index: str
+    source_table: str
+    ready: bool
+    columns: list[str]
+
+
+class AgentPatternResponse(BaseModel):
+    """Shape of ``GET /_apx/setup/agent-pattern``: ``{type}``.
+
+    The orchestration wrapper class of the ``agent`` node (``"Agent"`` when the
+    source can't be read or no wrapper is present).
+    """
+
+    type: str
+
+
+class ProbeResult(BaseModel):
+    """Success shape of ``GET /_apx/setup/probe-json``: ``{status, latency_ms,
+    url}``.
+
+    A token-gated, side-effecting GET (it makes an outbound HTTP request behind
+    the dev-UI write token and an SSRF allowlist), so it is published to OpenAPI
+    for shape only — execution stays 403-gated by ``_dev_write_guard``. The
+    bad-URL / SSRF-reject (400) and connection-failure (200 ``{error, …}``)
+    paths return a ``JSONResponse`` that bypasses this model.
+    """
+
+    status: int
+    latency_ms: int
+    url: str
