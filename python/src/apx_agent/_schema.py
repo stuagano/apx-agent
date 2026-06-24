@@ -182,6 +182,13 @@ def _format_schema_block(
     return "\n".join(lines)
 
 
+# Caps for golden-query few-shot rendering in the grounded schema block. A bare
+# (question=None) example renders identically to the pre-golden-query form, so a
+# single-example bundle stays byte-identical.
+_MAX_GOLDEN_QUERIES = 3
+_MAX_EXAMPLE_LINES = 6
+
+
 def _format_grounded_schema_block(
     tables: dict[str, list[str]],
     grounding: dict,
@@ -212,8 +219,17 @@ def _format_grounded_schema_block(
             lines.append(f"    - {c['name']}: {c['description']}")
         if enr.get("joins"):
             lines.append(f"    Joins: {enr['joins'].splitlines()[0]}")
-        if enr.get("examples"):
-            ex_lines = enr["examples"].strip().splitlines()[:6]
+        # Golden queries: render up to N labelled ``Q: …`` → SQL few-shot pairs.
+        # A bare (question=None) example renders as the pre-golden-query
+        # ``Example:`` form, so single-example bundles stay byte-identical.
+        golden = enr.get("golden_queries") or []
+        for gq in golden[:_MAX_GOLDEN_QUERIES]:
+            sql_lines = gq["sql"].strip().splitlines()[:_MAX_EXAMPLE_LINES]
+            lines.append(f"    Q: {gq['question']}" if gq.get("question") else "    Example:")
+            lines.extend(f"      {l}" for l in sql_lines)
+        if not golden and enr.get("examples"):
+            # Defensive: a grounding dict predating the golden_queries key.
+            ex_lines = enr["examples"].strip().splitlines()[:_MAX_EXAMPLE_LINES]
             lines.append("    Example:")
             lines.extend(f"      {l}" for l in ex_lines)
     if len(tables) > max_tables:
