@@ -32,12 +32,16 @@ from ._apx_models import (
     AgentPatternResponse,
     ApprovalActionResponse,
     ApprovalInfo,
+    EditPreviewRequest,
+    EditSaveRequest,
+    EditSaveResponse,
     EvalCaseIn,
     EvalCaseResponse,
     EvalDataSaveResponse,
     JudgeRequest,
     JudgeResponse,
     ProbeResult,
+    ToolDeleteResponse,
     ToolInfo,
     ToolSchemaResponse,
     TopologyResponse,
@@ -1516,7 +1520,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 "duration_ms": elapsed,
             }, status_code=200)
 
-    @router.get("/_apx/edit", include_in_schema=False)
+    @router.get("/_apx/edit")
     async def edit_dev_ui(request: Request) -> HTMLResponse:
         path = _find_agent_router_path()
         if path and path.exists():
@@ -1542,12 +1546,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 )
         return HTMLResponse(_render_edit_ui("", not_found=True))
 
-    @router.post("/_apx/edit", include_in_schema=False)
-    async def save_agent_router(request: Request) -> Any:
+    @router.post("/_apx/edit", response_model=EditSaveResponse)
+    async def save_agent_router(request: Request, body: EditSaveRequest) -> Any:
         import asyncio as _asyncio
         from fastapi.responses import JSONResponse
-        body = await request.json()
-        content: str = body.get("content", "")
+        content: str = body.content
         try:
             compile(content, "agent_router.py", "exec")
         except SyntaxError as e:
@@ -1575,14 +1578,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             except Exception:
                 pass
 
-        return JSONResponse({"ok": True, "restart_required": restart_required})
+        return {"ok": True, "restart_required": restart_required}
 
-    @router.post("/_apx/edit/preview", include_in_schema=False)
-    async def preview_tool_schemas(request: Request) -> Any:
-        from fastapi.responses import JSONResponse
-        body = await request.json()
-        source: str = body.get("source", "")
-        return JSONResponse(_extract_schemas_from_source(source))
+    @router.post("/_apx/edit/preview", response_model=list[dict[str, Any]])
+    async def preview_tool_schemas(body: EditPreviewRequest) -> Any:
+        return _extract_schemas_from_source(body.source)
 
     @router.get("/_apx/tools/schema", response_model=ToolSchemaResponse)
     async def get_tool_schema_context(request: Request) -> Any:
@@ -1865,7 +1865,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             })
         return JSONResponse({"ok": True, "wired": True})
 
-    @router.delete("/_apx/tools/{fn_name}", include_in_schema=False)
+    @router.delete("/_apx/tools/{fn_name}", response_model=ToolDeleteResponse)
     async def delete_tool(fn_name: str, request: Request) -> Any:
         from fastapi.responses import JSONResponse
         import re as _re
@@ -1886,7 +1886,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         path.write_text(updated)
         await _ws_upload_agent_file(request, path, updated)
-        return JSONResponse({"ok": True})
+        return {"ok": True}
 
     @router.get("/_apx/deploy/stream", include_in_schema=False)
     async def stream_deploy(request: Request) -> Any:
