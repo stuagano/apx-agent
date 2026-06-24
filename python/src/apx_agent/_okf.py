@@ -190,7 +190,13 @@ def _split_col(col: str) -> "tuple[str, str]":
     return col[:i], (col[i + 1:j] if j > i else col[i + 1:])
 
 
-def _schema_row(col: str, comment: str = "") -> str:
+# Default for an absent column comment. A named constant (not a bare ``""``
+# literal) satisfies the no-empty-string-default lint rule; the empty string is
+# the correct "no comment" sentinel here — the body coerces it identically.
+_NO_COMMENT: str = ""
+
+
+def _schema_row(col: str, comment: str = _NO_COMMENT) -> str:
     name, type_text = _split_col(col)
     type_text = type_text.replace("|", r"\|")  # F9
     comment = (comment or "").replace("\n", " ").replace("|", r"\|")
@@ -283,6 +289,53 @@ def _first_code_block(section: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+# ``- @name (type): description`` golden-query parameter line.
+_GQ_PARAM_RE = re.compile(r"^\s*[-*]\s*@(\w+)\s*\(([^)]*)\)\s*:\s*(.*)$")
+
+
+def _parse_gq_params(block: str) -> list[dict]:
+    """Parse ``- @name (type): desc`` lines into ``{name, type, desc}`` dicts."""
+    params: list[dict] = []
+    for line in block.splitlines():
+        m = _GQ_PARAM_RE.match(line)
+        if m:
+            params.append({
+                "name": m.group(1),
+                "type": m.group(2).strip(),
+                "desc": m.group(3).strip(),
+            })
+    return params
+
+
+def _parse_golden_queries(examples_section: str) -> list[dict]:
+    """Parse a ``# Examples`` section body into structured golden queries.
+
+    Each ``### <question>`` subheading + its first fenced ``` block + optional
+    ``- @name (type): desc`` param lines becomes one ``{question, sql, params}``
+    entry, in document order. A section with no ``###`` subheadings but a bare
+    code block yields a single ``{question: None, sql, params: []}`` entry — the
+    legacy freeform ``# Examples`` form, kept working. Subheadings without a code
+    block are skipped. Returns ``[]`` when no SQL is present.
+    """
+    if not examples_section.strip():
+        return []
+    out: list[dict] = []
+    # re.split on the ``### heading`` lines → [preamble, q1, block1, q2, block2…].
+    parts = re.split(r"^###\s+(.+?)\s*$", examples_section, flags=re.MULTILINE)
+    # Any bare code block before the first ``###`` is the legacy single example.
+    pre_sql = _first_code_block(parts[0])
+    if pre_sql:
+        out.append({"question": None, "sql": pre_sql, "params": []})
+    for i in range(1, len(parts), 2):
+        question = parts[i].strip()
+        block = parts[i + 1] if i + 1 < len(parts) else ""
+        sql = _first_code_block(block)
+        if not sql:
+            continue
+        out.append({"question": question, "sql": sql, "params": _parse_gq_params(block)})
+    return out
+
+
 def okf_grounding(okf_root: "Path | str") -> "dict | None":
     """Harvest optional per-table enrichment from an OKF bundle's bodies.
 
@@ -301,6 +354,7 @@ def okf_grounding(okf_root: "Path | str") -> "dict | None":
             joins = _extract_section(body, "Joins").strip()
             examples_sec = _extract_section(body, "Examples")
             examples = _first_code_block(examples_sec) if examples_sec.strip() else ""
+            golden_queries = _parse_golden_queries(examples_sec)
             columns = _schema_rows_with_desc(body)
             has_col_desc = any(c["description"] for c in columns)
             if overview or joins or examples or has_col_desc:
@@ -309,6 +363,12 @@ def okf_grounding(okf_root: "Path | str") -> "dict | None":
                     "columns": columns,
                     "joins": joins,
                     "examples": examples,
+                    # Structured ``{question, sql, params}`` golden queries parsed
+                    # from the same ``# Examples`` section. Step 1 only emits them;
+                    # the renderer (step 2) and matcher (phase 2) consume them. The
+                    # legacy ``examples`` string above is unchanged, so the served
+                    # prompt is byte-identical until the renderer lands.
+                    "golden_queries": golden_queries,
                 }
         return out or None
     except Exception:
