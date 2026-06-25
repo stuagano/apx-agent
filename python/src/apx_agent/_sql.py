@@ -60,7 +60,11 @@ def sql_str_literal(value: str) -> str:
     return "'" + sql_escape(value) + "'"
 
 
-def decode_statement(response: StatementResponse | None) -> list[dict[str, Any]]:
+def decode_statement(
+    response: StatementResponse | None,
+    *,
+    ws: WorkspaceClient | None = None,
+) -> list[dict[str, Any]]:
     """Decode a Databricks ``StatementResponse`` into a list of row dicts.
 
     Shared by ``run_sql`` and any tool that surfaces results as
@@ -68,12 +72,27 @@ def decode_statement(response: StatementResponse | None) -> list[dict[str, Any]]
     (``ws.genie.get_message_query_result_by_attachment(...).statement_response``),
     which returns the same type as direct statement execution.
 
+    INLINE results larger than one chunk are split across chunks linked by
+    ``result.next_chunk_index``; ``execute_statement`` returns only the first.
+    Pass ``ws`` to follow ``next_chunk_index`` and fetch the remaining chunks
+    (via ``get_statement_result_chunk_n``) so large result sets aren't silently
+    truncated. Without ``ws`` only the first chunk is decoded — correct for
+    callers whose results fit one chunk (e.g. the Genie attachment path).
+
     Returns an empty list for statements with no result set or no rows.
     """
     if response is None or response.manifest is None or response.manifest.schema is None:
         return []
     cols = [c.name or "" for c in (response.manifest.schema.columns or [])]
-    rows = response.result.data_array or [] if response.result else []
+    rows = list(response.result.data_array or []) if response.result else []
+    if ws is not None and response.result is not None and response.statement_id is not None:
+        next_idx = response.result.next_chunk_index
+        while next_idx is not None:
+            chunk = ws.statement_execution.get_statement_result_chunk_n(
+                response.statement_id, next_idx
+            )
+            rows.extend(chunk.data_array or [])
+            next_idx = chunk.next_chunk_index
     return [{c: v for c, v in zip(cols, row)} for row in rows]
 
 
@@ -184,6 +203,9 @@ def run_sql(
         run_sql(ws, "SELECT * FROM t WHERE id = :id",
                 parameters=[{"name": "id", "value": "42", "type": "STRING"}])
 
+    Large INLINE result sets span multiple chunks; this follows
+    ``next_chunk_index`` to return every row, not just the first chunk.
+
     Returns an empty list for statements with no result set (DDL, etc.).
     Raises ``RuntimeError`` on query failure.
     """
@@ -207,4 +229,4 @@ def run_sql(
     if status is None or status.state != StatementState.SUCCEEDED:
         error_msg = getattr(status, "error", None) if status else None
         raise RuntimeError(f"Query failed: {error_msg or 'unknown error'}")
-    return decode_statement(result)
+    return decode_statement(result, ws=ws)

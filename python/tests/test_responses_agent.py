@@ -81,8 +81,17 @@ def _make_fake_graph(final_text: str = "done") -> MagicMock:
     def _invoke(state: dict[str, Any]) -> dict[str, Any]:
         return {"messages": [*state["messages"], AIMessage(content=final_text)]}
 
-    def _stream(state: dict[str, Any], stream_mode: str = "updates"):
-        yield {"agent": {"messages": [AIMessage(content=final_text)]}}
+    def _stream(state: dict[str, Any], stream_mode: Any = "updates"):
+        # Combined stream-mode (#287): "messages" yields LLM token chunks (sharing
+        # one message id with the final assembled message), then "updates" yields
+        # the completed step. Mirrors langgraph's (mode, data) tuple contract.
+        from langchain_core.messages import AIMessageChunk
+
+        words = final_text.split(" ")
+        for i, word in enumerate(words):
+            piece = word if i == 0 else " " + word
+            yield ("messages", (AIMessageChunk(content=piece, id="ai-1"), {"langgraph_node": "agent"}))
+        yield ("updates", {"agent": {"messages": [AIMessage(content=final_text, id="ai-1")]}})
 
     graph.invoke.side_effect = _invoke
     graph.stream.side_effect = _stream
@@ -227,6 +236,61 @@ class TestStream:
         assert item["type"] == "message"
         assert item["content"][0]["text"] == "hello world"
 
+    def test_emits_output_text_deltas_for_tokens(self) -> None:
+        """#287: token chunks from the "messages" stream-mode surface as
+        response.output_text.delta events, in addition to the per-step
+        output_item.done — true word-by-word streaming."""
+        agent = LlmAgent(tools=[_trivial_tool])
+        _, streaming = compile_to_responses_agent(agent, model="any")
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._responses_agent.compile_to_langgraph",
+            return_value=_make_fake_graph("hello world from apx"),
+        ):
+            events = list(streaming(_user_request("go")))
+
+        deltas = [e for e in events if e.type == "response.output_text.delta"]
+        assert len(deltas) >= 2, "expected token-by-token deltas, not one block"
+        # The deltas reassemble the final answer text.
+        assert "".join(e.model_dump()["delta"] for e in deltas) == "hello world from apx"
+        # Each delta correlates to its output_item.done via a shared item_id.
+        done = next(e for e in events if e.type == "response.output_item.done")
+        done_item_id = done.model_dump()["item"]["id"]
+        assert all(e.model_dump()["item_id"] == done_item_id for e in deltas)
+        # The terminal completed event still arrives last.
+        assert events[-1].type == "response.completed"
+
+    def test_non_text_chunks_do_not_emit_deltas(self) -> None:
+        """A tool-call argument chunk (empty content) must not emit a text delta;
+        only visible token text streams."""
+        from langchain_core.messages import AIMessage, AIMessageChunk
+
+        agent = LlmAgent(tools=[_trivial_tool])
+        _, streaming = compile_to_responses_agent(agent, model="any")
+
+        def _stream(state: dict[str, Any], stream_mode: Any = "updates"):
+            # empty-content chunk (e.g. tool-call arg delta) → no text delta
+            yield ("messages", (AIMessageChunk(content="", id="ai-9"), {}))
+            yield ("updates", {"agent": {"messages": [AIMessage(content="final", id="ai-9")]}})
+
+        graph = MagicMock(name="graph")
+        graph.stream.side_effect = _stream
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._responses_agent.compile_to_langgraph",
+            return_value=graph,
+        ):
+            events = list(streaming(_user_request("go")))
+
+        assert not [e for e in events if e.type == "response.output_text.delta"]
+        assert [e for e in events if e.type == "response.output_item.done"]
+
     def test_human_message_echo_does_not_crash_stream(self) -> None:
         """Regression: workflow agents (RouterAgent) inject HumanMessages into
         the graph state when handing off to a sub-agent. The streaming path
@@ -238,11 +302,11 @@ class TestStream:
         agent = LlmAgent(tools=[_trivial_tool])
         _, streaming = compile_to_responses_agent(agent, model="any")
 
-        def _stream_with_human(state: dict[str, Any], stream_mode: str = "updates"):
+        def _stream_with_human(state: dict[str, Any], stream_mode: Any = "updates"):
             # router re-states the query to the sub-agent (role=user) ...
-            yield {"router": {"messages": [HumanMessage(content="routed query")]}}
+            yield ("updates", {"router": {"messages": [HumanMessage(content="routed query")]}})
             # ... then the sub-agent answers (role=assistant)
-            yield {"sub": {"messages": [AIMessage(content="the answer")]}}
+            yield ("updates", {"sub": {"messages": [AIMessage(content="the answer")]}})
 
         graph = MagicMock(name="router_graph")
         graph.stream.side_effect = _stream_with_human
