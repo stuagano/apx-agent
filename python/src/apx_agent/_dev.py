@@ -1525,7 +1525,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         t0 = _time.monotonic()
         try:
             client = AsyncDatabricksOpenAI()
-            resp = await client.chat.completions.create(model=model, messages=messages)
+            resp = await client.chat.completions.create(
+                model=model, messages=messages,  # type: ignore[arg-type]  # validated dicts; SDK wants ChatCompletionMessageParam
+            )
             elapsed = int((_time.monotonic() - t0) * 1000)
             choices = getattr(resp, "choices", None) or []
             output = ""
