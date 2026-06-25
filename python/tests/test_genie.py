@@ -56,6 +56,9 @@ def _make_ws(msg: MagicMock, *, rows: list[dict] | None = None) -> MagicMock:
     # Configure the query-result path
     qr = MagicMock()
     qr.statement_response = MagicMock()
+    # Single inline chunk: no next_chunk_index to follow (else decode_statement,
+    # now passed ws=, would loop on the MagicMock auto-attribute).
+    qr.statement_response.result.next_chunk_index = None
     if rows:
         col_names = list(rows[0].keys()) if rows else []
         qr.statement_response.manifest.schema.columns = [

@@ -90,6 +90,10 @@ class TestRunSql:
         result.status.state = StatementState.SUCCEEDED
         result.manifest.schema.columns = col_mocks
         result.result.data_array = rows
+        # Single-chunk by default: no further chunks to follow. Without this the
+        # MagicMock auto-attribute is truthy and the pagination loop never ends.
+        result.result.next_chunk_index = None
+        result.statement_id = "stmt-1"
         return result
 
     def _make_ws(self, result: MagicMock) -> MagicMock:
@@ -155,3 +159,31 @@ class TestRunSql:
         ws = self._make_ws(result)
         rows = run_sql(ws, "CREATE TABLE t", warehouse_id="wh-1")
         assert rows == []
+
+    def test_follows_next_chunk_index_across_chunks(self):
+        """Regression for #228: rows past the first inline chunk aren't dropped."""
+        result = self._make_success_result(["id"], [["1"], ["2"]])
+        result.result.next_chunk_index = 1
+        ws = self._make_ws(result)
+
+        chunk1 = MagicMock()
+        chunk1.data_array = [["3"], ["4"]]
+        chunk1.next_chunk_index = 2
+        chunk2 = MagicMock()
+        chunk2.data_array = [["5"]]
+        chunk2.next_chunk_index = None
+        ws.statement_execution.get_statement_result_chunk_n.side_effect = [chunk1, chunk2]
+
+        rows = run_sql(ws, "SELECT id FROM big", warehouse_id="wh-1")
+        assert rows == [{"id": v} for v in ("1", "2", "3", "4", "5")]
+        # Fetched chunk 1 then chunk 2 by statement id + next index, stopping at None.
+        calls = ws.statement_execution.get_statement_result_chunk_n.call_args_list
+        assert [c.args for c in calls] == [("stmt-1", 1), ("stmt-1", 2)]
+
+    def test_single_chunk_does_not_fetch_more(self):
+        """next_chunk_index=None ⇒ no chunk fetches (the common small-result path)."""
+        result = self._make_success_result(["id"], [["1"]])
+        ws = self._make_ws(result)
+        rows = run_sql(ws, "SELECT id FROM small", warehouse_id="wh-1")
+        assert rows == [{"id": "1"}]
+        ws.statement_execution.get_statement_result_chunk_n.assert_not_called()

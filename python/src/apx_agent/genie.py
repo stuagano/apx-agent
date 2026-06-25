@@ -63,7 +63,7 @@ def _extract_rows(ws: Any, space_id: str, msg: Any) -> list[dict[str, Any]]:
                 message_id=msg.message_id,
                 attachment_id=att.attachment_id,
             )
-            rows.extend(decode_statement(qr.statement_response))
+            rows.extend(decode_statement(qr.statement_response, ws=ws))
         except Exception as exc:
             logger.warning("Failed to fetch Genie query result: %s", exc)
     return rows
