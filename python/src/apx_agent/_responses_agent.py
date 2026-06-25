@@ -429,6 +429,24 @@ def _json_str(value: Any) -> str:
         return str(value)
 
 
+def _token_text(chunk: Any) -> str:
+    """Extract plain text from an LLM message chunk streamed in ``messages`` mode.
+
+    ``stream_mode="messages"`` yields ``AIMessageChunk``s whose ``content`` is a
+    string for most providers, or a list of content-block dicts (Anthropic-style)
+    from which the ``text`` blocks are concatenated. Non-text chunks (e.g. tool-
+    call argument deltas carry empty content) yield ``""`` and are not emitted as
+    output-text deltas.
+    """
+    content = chunk.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [p.get("text") for p in content if isinstance(p, dict)]
+        return "".join(p for p in parts if isinstance(p, str))
+    return ""
+
+
 def _flatten_output_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Flatten ``_multi`` wrapper dicts, dropping non-emittable echoes.
 
@@ -1176,12 +1194,33 @@ def compile_to_responses_agent(
                 graph = compile_to_langgraph(
                     _agent, ws=ws, model=effective_model, headers=req_headers
                 )
-                for chunk in graph.stream(
-                    {"messages": graph_input}, stream_mode="updates"
+                # Combined stream: "messages" surfaces LLM token chunks (emitted
+                # as response.output_text.delta for true word-by-word streaming),
+                # "updates" surfaces completed graph steps (kept as the existing
+                # response.output_item.done events for tool-call/step surfacing).
+                # Clients correlate deltas to their done item via item_id (the
+                # langchain message id, shared by a message's chunks and its final
+                # assembled message).
+                for mode, data in graph.stream(
+                    {"messages": graph_input},
+                    stream_mode=["updates", "messages"],
                 ):
-                    if not isinstance(chunk, dict):
+                    if mode == "messages":
+                        msg_chunk = data[0] if isinstance(data, tuple) else data
+                        delta = _token_text(msg_chunk)
+                        if delta:
+                            item_id = msg_chunk.id if msg_chunk.id is not None else ""
+                            yield ResponsesAgentStreamEvent(
+                                type="response.output_text.delta",
+                                delta=delta,
+                                item_id=item_id,
+                                output_index=output_index,
+                                content_index=0,
+                            )
                         continue
-                    for _node_name, node_output in chunk.items():
+                    if not isinstance(data, dict):
+                        continue
+                    for _node_name, node_output in data.items():
                         if not isinstance(node_output, dict):
                             continue
                         for lc_msg in node_output.get("messages", []) or []:
