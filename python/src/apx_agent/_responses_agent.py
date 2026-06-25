@@ -1209,7 +1209,9 @@ def compile_to_responses_agent(
                         msg_chunk = data[0] if isinstance(data, tuple) else data
                         delta = _token_text(msg_chunk)
                         if delta:
-                            item_id = msg_chunk.id if msg_chunk.id is not None else ""
+                            # Mirror _langchain_to_output_item's id fallback so a
+                            # chunk without an id still correlates to its done item.
+                            item_id = msg_chunk.id or f"msg-{output_index}"
                             yield ResponsesAgentStreamEvent(
                                 type="response.output_text.delta",
                                 delta=delta,
