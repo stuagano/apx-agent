@@ -537,11 +537,53 @@ async def test_setup_generate_instructions_degrades_to_error_json(
 
     monkeypatch.setattr(_dev, "_generate_agent_instructions", failing_generate)
 
-    with pytest.raises(RuntimeError, match="instruction boom"):
-        await client.post(
-            "/_apx/setup/generate-instructions",
-            json={"catalog": "main", "schema": "default", "warehouse_id": "wh-1"},
-        )
+    # PR-W3: the generator failure now returns a graceful 500 {ok: false, error}
+    # instead of bubbling the exception out of the handler.
+    r = await client.post(
+        "/_apx/setup/generate-instructions",
+        json={"catalog": "main", "schema": "default", "warehouse_id": "wh-1"},
+    )
+    assert r.status_code == 500
+    data = r.json()
+    assert data["ok"] is False and "instruction boom" in data["error"]
+
+
+# ── PR-W3: typed + un-hidden setup-write / composition routes ────────────────
+
+
+@pytest.mark.asyncio
+async def test_w3_setup_write_routes_published_to_openapi(client: AsyncClient) -> None:
+    paths = (await client.get("/openapi.json")).json()["paths"]
+    for route in (
+        "/_apx/setup",
+        "/_apx/setup/generate-instructions",
+        "/_apx/setup/apply-instructions",
+        "/_apx/setup/agents",
+        "/_apx/setup/agent-pattern",
+        "/_apx/setup/compose",
+    ):
+        assert "post" in paths.get(route, {}), f"{route} POST not published"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,body", [
+    ("/_apx/setup", {"catalog": "c", "schema": "s"}),            # missing warehouse_id
+    ("/_apx/setup/generate-instructions", {"catalog": "c"}),     # missing schema/warehouse_id
+    ("/_apx/setup/apply-instructions", {}),                      # missing instructions
+    ("/_apx/setup/agent-pattern", {}),                           # missing pattern
+    ("/_apx/setup/agents", {}),                                  # missing nodes
+    ("/_apx/setup/compose", {"pattern": "x"}),                   # missing nodes
+])
+async def test_w3_missing_required_field_is_422(client: AsyncClient, route: str, body: dict) -> None:
+    assert (await client.post(route, json=body)).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_w3_blank_setup_fields_stay_handler_200_okfalse(client: AsyncClient) -> None:
+    # Present-but-blank passes the model, then the handler rejects it with its
+    # own 200 {ok:false} (not a 422) — the JudgeRequest precedent.
+    r = await client.post("/_apx/setup", json={"catalog": "  ", "schema": "  ", "warehouse_id": "  "})
+    assert r.status_code == 200 and r.json()["ok"] is False
 
 
 # ── PR-R1: un-hidden + typed setup-discovery reads ───────────────────────────
@@ -570,9 +612,9 @@ async def test_r1_setup_discovery_routes_are_published_to_openapi(client: AsyncC
     ):
         assert route in paths, f"{route} missing from OpenAPI schema (still hidden?)"
         assert "get" in paths[route], f"{route} GET not published"
-    # The source-mutating POST siblings stay hidden.
-    assert "post" not in paths["/_apx/setup/agents"]
-    assert "post" not in paths["/_apx/setup/agent-pattern"]
+    # The POST siblings are un-hidden by PR-W3 (setup writes).
+    assert "post" in paths["/_apx/setup/agents"]
+    assert "post" in paths["/_apx/setup/agent-pattern"]
 
 
 @pytest.mark.asyncio

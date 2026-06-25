@@ -635,3 +635,76 @@ class ColumnSuggestResponse(BaseModel):
 
     ok: bool
     suggestions: dict[str, str]
+
+
+# ── Wave 2 / PR-W3: setup writes / composition (#280) ─────────────────────────
+#
+# Source-mutating setup/composer writes. Strict request models (missing required
+# field → 422; blank-after-strip stays the handler's 200 ``{ok: false}``). The
+# composer routes (agents / agent-pattern / compose) return conditional-key
+# shapes, so they use ``dict[str, Any]`` responses to avoid stripping keys (the
+# #276 lesson). Un-hidden per policy; the POSTs are token-gated by the dev guard.
+
+
+class SetupSaveRequest(BaseModel):
+    """Body of ``POST /_apx/setup``: ``{catalog, schema, warehouse_id,
+    generate_instructions?}``. Required fields present-but-blank are rejected by
+    the handler (200 ``{ok: false}``). ``schema`` is aliased (shadows
+    ``BaseModel.schema``)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    catalog: str
+    schema_: str = Field(alias="schema")
+    warehouse_id: str
+    generate_instructions: bool = False
+
+
+class GenerateInstructionsRequest(BaseModel):
+    """Body of ``POST /_apx/setup/generate-instructions``: ``{catalog, schema,
+    warehouse_id}``."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    catalog: str
+    schema_: str = Field(alias="schema")
+    warehouse_id: str
+
+
+class SetupInstructionsResponse(BaseModel):
+    """Success shape of ``POST /_apx/setup`` and
+    ``/_apx/setup/generate-instructions``: ``{ok, instructions}`` (the generated
+    text, or ``None`` when not regenerated). Error paths (missing fields,
+    generator failure) return a ``JSONResponse`` and bypass this model."""
+
+    ok: bool
+    instructions: str | None = None
+
+
+class ApplyInstructionsRequest(BaseModel):
+    """Body of ``POST /_apx/setup/apply-instructions``: ``{instructions}``
+    (blank-after-strip → handler 200 ``{ok: false}``)."""
+
+    instructions: str
+
+
+class SaveAgentsRequest(BaseModel):
+    """Body of ``POST /_apx/setup/agents``: ``{nodes}``. Composer nodes carry
+    extra metadata, so each node is a permissive dict."""
+
+    nodes: list[dict[str, Any]]
+
+
+class SetAgentPatternRequest(BaseModel):
+    """Body of ``POST /_apx/setup/agent-pattern``: ``{pattern}``."""
+
+    pattern: str
+
+
+class ComposeRequest(BaseModel):
+    """Body of ``POST /_apx/setup/compose``: ``{pattern, nodes, start?}``. Nodes
+    are permissive dicts (``route_key`` / ``route_description`` extras)."""
+
+    pattern: str
+    nodes: list[dict[str, Any]]
+    start: str | None = None
