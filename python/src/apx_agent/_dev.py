@@ -30,22 +30,29 @@ from pydantic import BaseModel
 from ._apx_models import (
     AgentNodeInfo,
     AgentPatternResponse,
+    ApplyInstructionsRequest,
     ApprovalActionResponse,
     ApprovalInfo,
     ColumnDescriptionsRequest,
     ColumnDescriptionsSaveResponse,
     ColumnSuggestRequest,
     ColumnSuggestResponse,
+    ComposeRequest,
     EditPreviewRequest,
     EditSaveRequest,
     EditSaveResponse,
     EvalCaseIn,
     EvalCaseResponse,
     EvalDataSaveResponse,
+    GenerateInstructionsRequest,
     GroundingColumnsResponse,
     JudgeRequest,
     JudgeResponse,
     ProbeResult,
+    SaveAgentsRequest,
+    SetAgentPatternRequest,
+    SetupInstructionsResponse,
+    SetupSaveRequest,
     ToolDeleteResponse,
     ToolFromDescriptionRequest,
     ToolFromDescriptionResponse,
@@ -2175,15 +2182,14 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return []
         return _parse_agent_nodes(path.read_text())
 
-    @router.post("/_apx/setup", include_in_schema=False)
-    async def save_setup(request: Request) -> Any:
+    @router.post("/_apx/setup", response_model=SetupInstructionsResponse)
+    async def save_setup(request: Request, body: SetupSaveRequest) -> Any:
         import asyncio as _asyncio
         from fastapi.responses import JSONResponse
 
-        body = await request.json()
-        catalog: str = body.get("catalog", "").strip()
-        schema: str = body.get("schema", "").strip()
-        wh_id: str = body.get("warehouse_id", "").strip()
+        catalog: str = body.catalog.strip()
+        schema: str = body.schema_.strip()
+        wh_id: str = body.warehouse_id.strip()
         if not catalog or not schema or not wh_id:
             return JSONResponse({"ok": False, "error": "catalog, schema, and warehouse_id required"})
 
@@ -2216,39 +2222,43 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 pass  # workspace write is best-effort; local write already succeeded
 
         instructions: str | None = None
-        if body.get("generate_instructions"):
+        if body.generate_instructions:
             ctx: AgentContext | None = request.app.state.agent_context
             ws: WorkspaceClient = request.app.state.workspace_client
             instructions = await _generate_agent_instructions(ws, ctx, catalog, schema, wh_id)
             _persist_instructions(ctx, instructions, ws_client=ws)
 
-        return JSONResponse({"ok": True, "instructions": instructions})
+        return {"ok": True, "instructions": instructions}
 
-    @router.post("/_apx/setup/generate-instructions", include_in_schema=False)
-    async def regen_instructions(request: Request) -> Any:
+    @router.post("/_apx/setup/generate-instructions", response_model=SetupInstructionsResponse)
+    async def regen_instructions(request: Request, body: GenerateInstructionsRequest) -> Any:
         from fastapi.responses import JSONResponse
-        body = await request.json()
         ctx: AgentContext | None = request.app.state.agent_context
         ws: WorkspaceClient = request.app.state.workspace_client
-        instructions = await _generate_agent_instructions(
-            ws, ctx, body.get("catalog", ""), body.get("schema", ""), body.get("warehouse_id", ""),
-        )
+        try:
+            instructions = await _generate_agent_instructions(
+                ws, ctx, body.catalog, body.schema_, body.warehouse_id,
+            )
+        except Exception as exc:  # graceful error instead of a bubbled 500 (#280)
+            logger.exception("generate-instructions failed")
+            return JSONResponse(
+                {"ok": False, "error": f"Instruction generation failed: {exc}"}, status_code=500
+            )
         _persist_instructions(ctx, instructions, ws_client=ws)
-        return JSONResponse({"ok": True, "instructions": instructions})
+        return {"ok": True, "instructions": instructions}
 
-    @router.post("/_apx/setup/apply-instructions", include_in_schema=False)
-    async def apply_instructions(request: Request) -> Any:
+    @router.post("/_apx/setup/apply-instructions", response_model=dict[str, Any])
+    async def apply_instructions(request: Request, body: ApplyInstructionsRequest) -> Any:
         from fastapi.responses import JSONResponse
 
-        body = await request.json()
-        new_instructions: str = body.get("instructions", "").strip()
+        new_instructions: str = body.instructions.strip()
         if not new_instructions:
             return JSONResponse({"ok": False, "error": "No instructions provided"})
 
         ctx: AgentContext | None = request.app.state.agent_context
         ws_client: WorkspaceClient | None = getattr(request.app.state, "workspace_client", None)
         _persist_instructions(ctx, new_instructions, ws_client=ws_client)
-        return JSONResponse({"ok": True})
+        return {"ok": True}
 
     @router.get("/_apx/setup/tools", response_model=list[ToolInfo])
     async def setup_list_tools() -> Any:
@@ -2413,17 +2423,14 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)})
 
-    @router.post("/_apx/setup/agents", include_in_schema=False)
-    async def setup_save_agents(request: Request) -> Any:
+    @router.post("/_apx/setup/agents", response_model=dict[str, Any])
+    async def setup_save_agents(request: Request, body: SaveAgentsRequest) -> Any:
         from fastapi.responses import JSONResponse
         import re as _re
 
         from ._ui_edit import _parse_agent_nodes, _set_agent_instructions, _set_agent_tools
 
-        body = await request.json()
-        nodes_data = body.get("nodes", [])
-        if not isinstance(nodes_data, list):
-            return JSONResponse({"ok": False, "error": "nodes must be a list"}, status_code=400)
+        nodes_data = body.nodes
 
         path = _find_agent_router_path()
         if not path or not path.exists():
@@ -2476,7 +2483,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 "Editing existing agents is live; creating + wiring new agents "
                 "(" + ", ".join(skipped) + ") is coming in the multi-agent step."
             )
-        return JSONResponse(resp)
+        return resp
 
     @router.get("/_apx/setup/probe-json", response_model=ProbeResult)
     async def setup_probe_json(request: Request) -> Any:
@@ -2532,12 +2539,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return {"type": "Agent"}
         return {"type": agent_node["wrapper"] or "Agent"}
 
-    @router.post("/_apx/setup/agent-pattern", include_in_schema=False)
-    async def setup_set_agent_pattern(request: Request) -> Any:
+    @router.post("/_apx/setup/agent-pattern", response_model=dict[str, Any])
+    async def setup_set_agent_pattern(request: Request, body: SetAgentPatternRequest) -> Any:
         from fastapi.responses import JSONResponse
 
-        body = await request.json()
-        pattern: str = body.get("pattern", "").strip()
+        pattern: str = body.pattern.strip()
 
         _SNIPPET_PATTERNS: dict[str, str] = {
             "SequentialAgent": (
@@ -2576,7 +2582,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             ),
         }
         if pattern in _SNIPPET_PATTERNS:
-            return JSONResponse({"ok": True, "snippet": _SNIPPET_PATTERNS[pattern]})
+            return {"ok": True, "snippet": _SNIPPET_PATTERNS[pattern]}
 
         # Leaf agent types that can be switched between each other without
         # touching positional args (they all use the same (name, ...) signature).
@@ -2602,7 +2608,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         # args (catalog, schema) that _set_agent_wrapper would corrupt by blindly
         # renaming the class. Edit agent.py directly to change between leaf types.
         if current_type == pattern or (pattern in _LEAF_AGENT_TYPES and current_type in _LEAF_AGENT_TYPES):
-            return JSONResponse({"ok": True, "type": current_type, "changed": False})
+            return {"ok": True, "type": current_type, "changed": False}
 
         # Can't collapse a multi-agent composition back to a single agent here —
         # give a specific, actionable message rather than a raw AST error.
@@ -2628,10 +2634,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if updated != source:
             path.write_text(updated)
             await _ws_upload_agent_file(request, path, updated)
-        return JSONResponse({"ok": True, "type": pattern, "changed": updated != source})
+        return {"ok": True, "type": pattern, "changed": updated != source}
 
-    @router.post("/_apx/setup/compose", include_in_schema=False)
-    async def setup_compose(request: Request) -> Any:
+    @router.post("/_apx/setup/compose", response_model=dict[str, Any])
+    async def setup_compose(request: Request, body: ComposeRequest) -> Any:
         """Compose ≥2 leaf agents into a workflow root via the chosen pattern.
 
         Body: ``{pattern, nodes: [{name, tools, instructions, route_key?,
@@ -2641,12 +2647,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         from fastapi.responses import JSONResponse
         from ._ui_edit import _compose_agents
 
-        body = await request.json()
-        pattern: str = body.get("pattern", "").strip()
-        nodes = body.get("nodes", [])
-        start: str | None = body.get("start") or None
-        if not isinstance(nodes, list):
-            return JSONResponse({"ok": False, "error": "nodes must be a list"}, status_code=400)
+        pattern: str = body.pattern.strip()
+        nodes = body.nodes
+        start: str | None = body.start or None
 
         # Leaves = the named agents (everything but the reserved root wrapper).
         leaves = [n for n in nodes if str(n.get("name", "")).strip() and n.get("name") != "agent"]
@@ -2665,11 +2668,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if updated != source:
             path.write_text(updated)
             await _ws_upload_agent_file(request, path, updated)
-        return JSONResponse({
+        return {
             "ok": True, "type": pattern,
             "agents": [leaf["name"] for leaf in leaves],
             "changed": updated != source,
-        })
+        }
 
     @router.get("/_apx/eval/data", response_model=list[EvalCaseResponse])
     async def eval_data_get() -> Any:
