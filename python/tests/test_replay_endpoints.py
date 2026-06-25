@@ -49,10 +49,29 @@ class TestReplayTool:
         assert "not found" in r.json()["error"].lower()
 
     @pytest.mark.asyncio
-    async def test_returns_400_when_tool_name_missing(self, app_with_tool: FastAPI):
+    async def test_returns_422_when_tool_name_missing(self, app_with_tool: FastAPI):
+        # Strict ReplayToolRequest: a missing required field is rejected by
+        # FastAPI with 422 before the handler runs (policy #1, was a typed 400).
         async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
             r = await ac.post("/_apx/replay/tool", json={"args": {"city": "x"}})
-        assert r.status_code == 400
+        assert r.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_returns_422_when_args_not_a_dict(self, app_with_tool: FastAPI):
+        # The envelope is strict even though args' *contents* are permissive:
+        # args must be an object, not a scalar.
+        async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
+            r = await ac.post("/_apx/replay/tool", json={"tool_name": "get_weather", "args": "nope"})
+        assert r.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_args_optional_defaults_to_empty(self, app_with_tool: FastAPI):
+        # args is permissive AND optional — omitting it defaults to {} (the tool
+        # then validates its own required params and reports ok:false at 200).
+        async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
+            r = await ac.post("/_apx/replay/tool", json={"tool_name": "get_weather"})
+        assert r.status_code == 200
+        assert r.json()["ok"] is False
 
     @pytest.mark.asyncio
     async def test_returns_503_when_no_agent_context(self):
@@ -118,16 +137,25 @@ class TestReplayLlm:
         assert sdk.chat.completions.create.call_args.kwargs["model"] == "claude-other"
 
     @pytest.mark.asyncio
-    async def test_returns_400_for_empty_messages(self, app_with_tool: FastAPI):
+    async def test_returns_422_for_empty_messages(self, app_with_tool: FastAPI):
+        # min_length=1 on ReplayLlmRequest.messages: an empty list is a shape
+        # error → 422 (policy #1, was a typed 400).
         async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
             r = await ac.post("/_apx/replay/llm", json={"messages": []})
-        assert r.status_code == 400
+        assert r.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_returns_400_when_messages_missing(self, app_with_tool: FastAPI):
+    async def test_returns_422_when_messages_missing(self, app_with_tool: FastAPI):
         async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
             r = await ac.post("/_apx/replay/llm", json={})
-        assert r.status_code == 400
+        assert r.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_returns_422_when_messages_not_a_list(self, app_with_tool: FastAPI):
+        # Envelope is strict though message *contents* are permissive dicts.
+        async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
+            r = await ac.post("/_apx/replay/llm", json={"messages": "hi"})
+        assert r.status_code == 422
 
     @pytest.mark.asyncio
     async def test_returns_400_when_no_model_configured_or_passed(self):
@@ -167,3 +195,28 @@ class TestReplayLlm:
                 "messages": [{"role": "user", "content": "x"}],
             })
         assert r.status_code == 503
+
+
+class TestReplayHiddenFromSchema:
+    """#281's defining constraint: the replay pair is typed but KEPT HIDDEN.
+
+    They execute arbitrary tools with forwarded OBO creds / invoke the LLM
+    directly, so — unlike the rest of the un-hidden dev-UI surface — their shape
+    must not appear in the generated OpenAPI/Scalar schema even for an
+    authenticated user. The bodies are still validated (the tests above prove
+    the 422s), but the contract here is *absence* from the schema.
+    """
+
+    @pytest.mark.asyncio
+    async def test_replay_routes_absent_from_openapi(self, app_with_tool: FastAPI):
+        paths = app_with_tool.openapi()["paths"]
+        assert "/_apx/replay/tool" not in paths
+        assert "/_apx/replay/llm" not in paths
+
+    @pytest.mark.asyncio
+    async def test_an_unhidden_route_is_present_for_contrast(self, app_with_tool: FastAPI):
+        # Guard against a vacuous pass: the schema is populated, and a route that
+        # IS meant to be visible shows up — only replay/* is filtered out.
+        paths = app_with_tool.openapi()["paths"]
+        assert paths, "expected a non-empty OpenAPI schema"
+        assert any(p.startswith("/_apx/") for p in paths)

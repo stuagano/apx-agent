@@ -708,3 +708,54 @@ class ComposeRequest(BaseModel):
     pattern: str
     nodes: list[dict[str, Any]]
     start: str | None = None
+
+
+# ── Wave 3 / PR-P1: replay (type but KEEP HIDDEN) (#281) ──────────────────────
+#
+# The one exception to policy #2 (un-hide everything). These two routes stay
+# ``include_in_schema=False``: ``replay/tool`` executes an arbitrary registered
+# tool with the caller's forwarded OBO credentials, and ``replay/llm`` invokes
+# the configured model directly — the most-privileged pair on the surface. We
+# type their bodies for strict validation but do NOT advertise their shape in
+# Scalar/OpenAPI, even to authenticated users. There is no UI wiring; the
+# request models + their tests ARE the contract.
+#
+# Permissiveness (policy #3): ``args`` and ``messages`` carry arbitrary tool
+# arguments / chat messages, so their *contents* stay untyped (``dict[str, Any]``
+# / ``list[dict[str, Any]]``). Only the envelope is strict — a missing
+# ``tool_name`` or a missing/empty ``messages`` now yields ``422`` from FastAPI
+# (policy #1), replacing the handlers' former typed ``400``. Semantic failures
+# stay in the handler and keep their codes: tool-not-found ``404``, no model
+# configured ``400``, no agent context ``503``.
+
+
+class ReplayToolRequest(BaseModel):
+    """Body of ``POST /_apx/replay/tool``: ``{tool_name, args?}``.
+
+    ``tool_name`` is required (missing → ``422``); the handler still returns
+    ``404`` when it names no registered tool. ``args`` is the tool's keyword
+    arguments — an arbitrary JSON object forwarded verbatim to the internal
+    ``/tools/{name}`` POST, which re-runs that tool's own validation — so it is
+    intentionally permissive and defaults to ``{}``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    tool_name: str
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReplayLlmRequest(BaseModel):
+    """Body of ``POST /_apx/replay/llm``: ``{messages, model?}``.
+
+    ``messages`` is a non-empty list of chat-message dicts (missing or empty →
+    ``422``); its elements stay permissive (``dict[str, Any]``) since they are
+    forwarded straight to the model. ``model`` optionally overrides the agent's
+    configured endpoint; when omitted the handler falls back to it and returns a
+    semantic ``400`` if none is configured.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    messages: list[dict[str, Any]] = Field(min_length=1)
+    model: str | None = None
