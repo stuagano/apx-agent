@@ -63,7 +63,10 @@ def app_and_chat_agent():
 
     def _spy_factory(agent_arg, *, model, conversation_store=None, agent_id=None):
         ca = original_factory(agent_arg, model=model)
-        captured["chat_agent"] = ca
+        # create_app builds a chat_agent per protocol route (now /invocations AND
+        # the A2A surface). The /invocations mount is first, so capture that one —
+        # the instance these tests stub predict/predict_stream on.
+        captured.setdefault("chat_agent", ca)
         ca.predict = MagicMock(name="mock_predict")
         ca.predict_stream = MagicMock(name="mock_predict_stream")
         return ca

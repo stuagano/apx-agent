@@ -793,6 +793,15 @@ def create_app(
                 logger.warning("Skipping /invocations mount: %s", exc)
 
             try:
+                from ._a2a import mount_a2a_route
+
+                mount_a2a_route(
+                    app, ctx.agent, ctx.config, conversation_store=_store
+                )
+            except Exception as exc:
+                logger.warning("Skipping A2A mount: %s", exc)
+
+            try:
                 from ._invocations import mount_responses_route
 
                 mount_responses_route(
