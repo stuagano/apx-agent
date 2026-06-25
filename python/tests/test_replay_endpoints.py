@@ -49,10 +49,21 @@ class TestReplayTool:
         assert "not found" in r.json()["error"].lower()
 
     @pytest.mark.asyncio
-    async def test_returns_400_when_tool_name_missing(self, app_with_tool: FastAPI):
+    async def test_returns_422_when_tool_name_missing(self, app_with_tool: FastAPI):
+        # PR-P1: tool_name is now a required model field, so a missing one is a
+        # FastAPI 422 at the boundary (was a handler 400).
         async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
             r = await ac.post("/_apx/replay/tool", json={"args": {"city": "x"}})
-        assert r.status_code == 400
+        assert r.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_replay_routes_stay_hidden_from_openapi(self, app_with_tool: FastAPI):
+        # The one exception to un-hide-everything: typed for validation, but NOT
+        # advertised in OpenAPI (OBO arbitrary tool exec + direct LLM invoke).
+        async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
+            paths = (await ac.get("/openapi.json")).json()["paths"]
+        assert "/_apx/replay/tool" not in paths
+        assert "/_apx/replay/llm" not in paths
 
     @pytest.mark.asyncio
     async def test_returns_503_when_no_agent_context(self):
@@ -124,10 +135,12 @@ class TestReplayLlm:
         assert r.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_returns_400_when_messages_missing(self, app_with_tool: FastAPI):
+    async def test_returns_422_when_messages_missing(self, app_with_tool: FastAPI):
+        # PR-P1: messages is a required model field → missing is a 422 (was 400).
+        # An empty list [] still reaches the handler's own 400 (separate test).
         async with AsyncClient(transport=ASGITransport(app=app_with_tool), base_url="http://test") as ac:
             r = await ac.post("/_apx/replay/llm", json={})
-        assert r.status_code == 400
+        assert r.status_code == 422
 
     @pytest.mark.asyncio
     async def test_returns_400_when_no_model_configured_or_passed(self):

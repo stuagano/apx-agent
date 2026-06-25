@@ -708,3 +708,31 @@ class ComposeRequest(BaseModel):
     pattern: str
     nodes: list[dict[str, Any]]
     start: str | None = None
+
+
+# ── Wave 3 / PR-P1: replay (typed but KEPT HIDDEN) (#281) ─────────────────────
+#
+# The one exception to un-hide-everything: replay executes arbitrary registered
+# tools with forwarded OBO creds (replay/tool) and invokes the LLM directly
+# (replay/llm) — the most-privileged pair. These request models are the typed
+# contract (validated at the boundary), but the routes stay
+# ``include_in_schema=False`` so their shape is NOT advertised in OpenAPI.
+# ``args`` / ``messages`` are permissive.
+
+
+class ReplayToolRequest(BaseModel):
+    """Body of ``POST /_apx/replay/tool`` — re-invoke a registered tool with
+    arbitrary args. Missing ``tool_name`` → 422; a blank one / unknown tool is
+    handled by the route (400 / 404). ``args`` is the permissive tool-arg dict."""
+
+    tool_name: str
+    args: dict[str, Any] = {}
+
+
+class ReplayLlmRequest(BaseModel):
+    """Body of ``POST /_apx/replay/llm`` — re-invoke the model with edited
+    messages. Missing ``messages`` → 422; an empty list is rejected by the route
+    (400). ``model`` falls back to the agent's configured model when omitted."""
+
+    messages: list[dict[str, Any]]
+    model: str | None = None

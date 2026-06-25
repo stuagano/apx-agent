@@ -49,6 +49,8 @@ from ._apx_models import (
     JudgeRequest,
     JudgeResponse,
     ProbeResult,
+    ReplayLlmRequest,
+    ReplayToolRequest,
     SaveAgentsRequest,
     SetAgentPatternRequest,
     SetupInstructionsResponse,
@@ -1441,9 +1443,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         return FileResponse(target, media_type="application/javascript")
 
     @router.post("/_apx/replay/tool", include_in_schema=False)
-    async def replay_tool(request: Request) -> Any:
+    async def replay_tool(request: Request, body: ReplayToolRequest) -> Any:
         """Re-invoke a registered tool with arbitrary args. Used by the
-        trace detail view to debug-iterate without restarting a conversation."""
+        trace detail view to debug-iterate without restarting a conversation.
+
+        KEPT HIDDEN (include_in_schema=False): executes arbitrary registered
+        tools with forwarded OBO creds — typed for validation, not advertised.
+        """
         from fastapi.responses import JSONResponse
         import time as _time
         from httpx import ASGITransport, AsyncClient
@@ -1452,9 +1458,8 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if ctx is None:
             return JSONResponse({"ok": False, "error": "Agent not configured"}, status_code=503)
 
-        body = await request.json()
-        tool_name = body.get("tool_name", "")
-        args = body.get("args", {})
+        tool_name = body.tool_name
+        args = body.args
         if not tool_name:
             return JSONResponse({"ok": False, "error": "tool_name is required"}, status_code=400)
         if tool_name not in ctx._tool_map:
@@ -1497,9 +1502,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             }, status_code=200)
 
     @router.post("/_apx/replay/llm", include_in_schema=False)
-    async def replay_llm(request: Request) -> Any:
+    async def replay_llm(request: Request, body: ReplayLlmRequest) -> Any:
         """Re-invoke the configured model with edited messages. Returns
-        the model's output text — useful for "what if I had asked X instead?"."""
+        the model's output text — useful for "what if I had asked X instead?".
+
+        KEPT HIDDEN (include_in_schema=False): invokes the LLM directly — typed
+        for validation, not advertised.
+        """
         from fastapi.responses import JSONResponse
         import time as _time
 
@@ -1507,11 +1516,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if ctx is None:
             return JSONResponse({"ok": False, "error": "Agent not configured"}, status_code=503)
 
-        body = await request.json()
-        messages = body.get("messages")
-        if not isinstance(messages, list) or not messages:
+        messages = body.messages
+        if not messages:
             return JSONResponse({"ok": False, "error": "messages must be a non-empty list"}, status_code=400)
-        model = body.get("model") or getattr(ctx.config, "model", "")
+        model = body.model or getattr(ctx.config, "model", "")
         if not model:
             return JSONResponse({"ok": False, "error": "No model configured"}, status_code=400)
 
