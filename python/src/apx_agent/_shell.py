@@ -117,6 +117,14 @@ def _handle_builtin(line: str) -> bool:
 
 def run_shell() -> None:
     """Launch the interactive apx-agent REPL."""
+    import sys
+
+    # Interactive line-editing (tab-completion, history, the editable prompt)
+    # only works on a terminal: CPython's input() routes through readline only
+    # when stdin AND stdout are TTYs. Piped/redirected, it still reads & runs
+    # lines (scriptable), just without those niceties — say so plainly.
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+
     try:
         import readline
     except ImportError:  # pragma: no cover — readline absent (rare)
@@ -124,7 +132,7 @@ def run_shell() -> None:
 
     tree = _command_tree()
 
-    if readline is not None:
+    if interactive and readline is not None:
         def _completer(text: str, state: int) -> "str | None":
             buf = readline.get_line_buffer()
             words = buf[: readline.get_begidx()].split()
@@ -136,6 +144,12 @@ def run_shell() -> None:
         readline.parse_and_bind("tab: complete")
 
     click.echo("apx-agent interactive shell · type 'help', Ctrl-D to exit")
+    if not interactive:
+        click.echo(
+            "(not a terminal — tab-completion, history, and line-editing are "
+            "disabled; lines are still read and run. For scripting, prefer "
+            "`apx-agent <cmd> --json` / `describe-cli`.)"
+        )
     while True:
         try:
             line = input(_prompt()).strip()

@@ -116,3 +116,45 @@ def test_exit_raises_eoferror_to_break_loop():
 
 def test_non_builtin_returns_false():
     assert _handle_builtin("status") is False
+
+
+# ── non-TTY behaviour ────────────────────────────────────────────────────────
+
+
+def test_shell_warns_and_still_runs_when_not_a_tty(monkeypatch, capsys):
+    """Piped/redirected: print a clear note that interactive features are off,
+    but still read + dispatch lines (scriptable)."""
+    from apx_agent import _shell
+
+    # Feed two lines then EOF; stdin/stdout are non-TTY under capsys by default.
+    lines = iter(["version", "exit"])
+
+    def fake_input(*_args) -> str:
+        try:
+            return next(lines)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    _shell.run_shell()
+
+    out = capsys.readouterr().out
+    assert "not a terminal" in out          # the clear note
+    assert "interactive shell" in out       # banner still shown
+    # `version` was actually dispatched (its output appears)
+    assert any(ch.isdigit() for ch in out)
+
+
+def test_shell_skips_readline_setup_when_not_a_tty(monkeypatch):
+    # When non-interactive, completer setup must be skipped (readline has no
+    # effect anyway). Assert set_completer is never called.
+    from apx_agent import _shell
+
+    called = {"completer": False}
+    import readline
+
+    monkeypatch.setattr(readline, "set_completer",
+                        lambda *_a, **_k: called.__setitem__("completer", True))
+    monkeypatch.setattr("builtins.input", lambda *_a: (_ for _ in ()).throw(EOFError))
+    _shell.run_shell()
+    assert called["completer"] is False
