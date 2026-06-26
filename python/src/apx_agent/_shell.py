@@ -106,10 +106,41 @@ def _dispatch(line: str) -> None:
 
 
 def _prompt() -> str:
+    """The shell prompt with visual hierarchy: the agent/project context bold
+    cyan, the ``▸ profile`` segment dim+magenta, the ``❯`` bright-green. All
+    readline-safe (see ``_rl``)."""
     from .cli import _status_prompt_string
 
     ctx = _status_prompt_string(Path.cwd())
-    return f"{_rl(ctx, fg='cyan')} {_rl('❯', fg='bright_green', bold=True)} "
+    if " ▸ " in ctx:
+        left, profile = ctx.split(" ▸ ", 1)
+        body = (
+            _rl(left, fg="cyan", bold=True)
+            + _rl(" ▸ ", fg="bright_black")
+            + _rl(profile, fg="magenta")
+        )
+    else:
+        body = _rl(ctx, fg="cyan", bold=True)
+    return f"{body} {_rl('❯', fg='bright_green', bold=True)} "
+
+
+def _banner_lines() -> list[str]:
+    """The styled entry banner — the on-brand ⬡ wordmark, version, and a hint.
+
+    Returns the lines (testable); ``run_shell`` echoes them. Color auto-strips
+    when piped (``click.secho``)."""
+    from .cli import _resolve_version
+
+    version = _resolve_version().split("+", 1)[0]  # drop the long +g<sha> suffix
+    return [
+        click.style("⬡ apx-agent", fg="cyan", bold=True)
+        + click.style(f"  v{version}", fg="bright_black"),
+        click.style("interactive shell — type ", fg="bright_black")
+        + click.style("help", fg="cyan")
+        + click.style(" for commands, ", fg="bright_black")
+        + click.style("Ctrl-D", fg="cyan")
+        + click.style(" to exit", fg="bright_black"),
+    ]
 
 
 def _handle_builtin(line: str) -> bool:
@@ -167,8 +198,8 @@ def run_shell() -> None:
         readline.set_completer_delims(" \t")
         readline.parse_and_bind("tab: complete")
 
-    click.secho("apx-agent interactive shell", fg="cyan", bold=True, nl=False)
-    click.secho(" · type 'help', Ctrl-D to exit", fg="bright_black")
+    for bline in _banner_lines():
+        click.echo(bline)
     if not interactive:
         click.secho(
             "(not a terminal — tab-completion, history, and line-editing are "
@@ -176,6 +207,7 @@ def run_shell() -> None:
             "`apx-agent <cmd> --json` / `describe-cli`.)",
             fg="bright_black",
         )
+    click.echo()  # breathing room before the first prompt
     while True:
         try:
             line = input(_prompt()).strip()
