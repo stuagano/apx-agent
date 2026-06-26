@@ -344,3 +344,16 @@ def test_describe_multiple_specs_uses_local_picklist(monkeypatch, tmp_path):
     result = CliRunner().invoke(main, ["agents", "describe"])
     assert result.exit_code == 0, result.output
     assert captured["name"] == "alpha.yaml"
+
+
+def test_describe_no_local_falls_back_to_deployed_picklist(monkeypatch):
+    # Bare `agents describe` with no local project/specs → deployed picklist.
+    monkeypatch.setattr("apx_agent.cli._detect_module_spec", lambda *a, **k: None)
+    monkeypatch.setattr("apx_agent.cli._find_apx_specs", lambda cwd: [])
+    monkeypatch.setattr("apx_agent.cli._pick_app_agent", lambda profile: "payroll-coworker")
+    captured = {}
+    monkeypatch.setattr("apx_agent.cli._describe_app_agent",
+                        lambda name, profile, fmt: captured.update(name=name))
+    result = CliRunner().invoke(main, ["agents", "describe"])
+    assert result.exit_code == 0, result.output
+    assert captured["name"] == "payroll-coworker"
