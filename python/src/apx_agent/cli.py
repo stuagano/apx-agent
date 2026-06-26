@@ -6421,9 +6421,10 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
 
     SPEC may be a .yaml spec (shows what it declares). Omit it inside a
     scaffolded project to introspect the materialized agent, or when only a
-    lone spec is present it's auto-detected. A BARE name (e.g.
-    ``payroll-coworker``) is taken as a deployed Databricks App — no ``--app``
-    needed; its live A2A card is fetched.
+    lone spec is present it's auto-detected. Omit it OUTSIDE a project to pick
+    from the workspace's deployed agents (the ``--app`` picklist, no flag
+    needed). A BARE name (e.g. ``payroll-coworker``) is taken as a deployed
+    Databricks App — no ``--app`` needed; its live A2A card is fetched.
 
     With ``--app``, SPEC is the name of a deployed Databricks App: its live A2A
     card is fetched and its tools printed (see ``apx-agent agents list``). Run
@@ -6465,7 +6466,9 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
         _describe_from_spec(spec_path, fmt)
         return
 
-    # No explicit module/spec: prefer a materialized project, else a lone spec.
+    # No explicit module/spec: prefer a materialized project, else a lone spec,
+    # else fall back to the DEPLOYED picklist (so a bare `agents describe`
+    # outside a project just lets you pick a deployed agent — no --app needed).
     if module == "agent:agent":
         detected = _detect_module_spec()
         if detected is not None:
@@ -6478,6 +6481,9 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
             if len(specs) > 1:
                 _describe_from_spec(_pick_local_spec(specs), fmt)
                 return
+            # Nothing local here → pick from the workspace's deployed agents.
+            _describe_app_agent(_pick_app_agent(profile), profile, fmt)
+            return
 
     # Finalize so `apx-agent info` reports the same tools/resources the serve and
     # deploy paths will — config-declared [[tool.apx.tools]] included.
