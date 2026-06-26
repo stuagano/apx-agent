@@ -2,6 +2,7 @@
 testable logic lives in pure functions (completion, dispatch, built-ins)."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import click
@@ -204,3 +205,43 @@ def test_subcommand_still_runs_with_invoke_without_command(monkeypatch):
     assert result.exit_code == 0
     assert not rs.called          # shell NOT launched when a command is given
     assert result.output.strip()  # version printed
+
+
+# ── color ────────────────────────────────────────────────────────────────────
+
+
+def test_color_off_when_not_a_tty(monkeypatch):
+    from apx_agent import _shell
+
+    monkeypatch.setattr(_shell.sys.stdout, "isatty", lambda: False)
+    assert _shell._color_on() is False
+
+
+def test_color_respects_no_color_env(monkeypatch):
+    from apx_agent import _shell
+
+    monkeypatch.setattr(_shell.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert _shell._color_on() is False
+
+
+def test_colored_prompt_is_readline_safe(monkeypatch):
+    from apx_agent import _shell
+
+    monkeypatch.setattr(_shell, "_color_on", lambda: True)
+    p = _shell._prompt()
+    assert "\x1b[" in p                      # actually colored
+    # every ANSI escape is bracketed for readline width calc
+    assert "\001" in p and "\002" in p
+    for esc in re.findall(r"\x1b\[[0-9;]*m", p):
+        i = p.index(esc)
+        assert p[i - 1] == "\001" and p[i + len(esc)] == "\002"
+
+
+def test_plain_prompt_has_no_escapes_when_color_off(monkeypatch):
+    from apx_agent import _shell
+
+    monkeypatch.setattr(_shell, "_color_on", lambda: False)
+    p = _shell._prompt()
+    assert "\x1b" not in p and "\001" not in p
+    assert "❯" in p
