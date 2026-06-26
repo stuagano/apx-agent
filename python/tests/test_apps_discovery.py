@@ -183,3 +183,75 @@ def test_describe_app_not_found_errors(monkeypatch):
     result = CliRunner().invoke(main, ["agents", "describe", "nope", "--app"])
     assert result.exit_code != 0
     assert "No running app agent" in result.output
+
+
+# ── agents describe --app: interactive picklist (#discoverability) ────────────
+
+
+def _aai(name, tools):
+    return AppAgentInfo(name=name, app_name=name, url=f"https://{name}",
+                        description=None, tool_count=tools, state="RUNNING")
+
+
+def test_pick_app_agent_returns_chosen_app_name(monkeypatch):
+    import apx_agent.cli as c
+
+    monkeypatch.setattr("apx_agent.cli._require_sdk", lambda profile: object())
+    monkeypatch.setattr(
+        "apx_agent._apps_discovery.discover_app_agents",
+        lambda ws, **k: [_aai("hello-world", 1), _aai("payroll-coworker", 4)],
+    )
+    monkeypatch.setattr(c.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("click.prompt", lambda *a, **k: 2)  # pick #2
+    # sorted by app_name → hello-world(1), payroll-coworker(2)
+    assert c._pick_app_agent(None) == "payroll-coworker"
+
+
+def test_pick_app_agent_non_tty_errors_with_guidance(monkeypatch):
+    import click
+
+    import apx_agent.cli as c
+
+    monkeypatch.setattr("apx_agent.cli._require_sdk", lambda profile: object())
+    monkeypatch.setattr(
+        "apx_agent._apps_discovery.discover_app_agents",
+        lambda ws, **k: [_aai("x", 1)],
+    )
+    monkeypatch.setattr(c.sys.stdin, "isatty", lambda: False)
+    with pytest.raises(click.ClickException, match="pass one"):
+        c._pick_app_agent(None)
+
+
+def test_pick_app_agent_none_deployed_errors(monkeypatch):
+    import click
+
+    import apx_agent.cli as c
+
+    monkeypatch.setattr("apx_agent.cli._require_sdk", lambda profile: object())
+    monkeypatch.setattr("apx_agent._apps_discovery.discover_app_agents", lambda ws, **k: [])
+    with pytest.raises(click.ClickException, match="No deployed app agents"):
+        c._pick_app_agent(None)
+
+
+def test_describe_app_with_no_name_uses_the_picklist(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("apx_agent.cli._pick_app_agent", lambda profile: "payroll-coworker")
+    monkeypatch.setattr(
+        "apx_agent.cli._describe_app_agent",
+        lambda name, profile, fmt: captured.update(name=name),
+    )
+    result = CliRunner().invoke(main, ["agents", "describe", "--app"])
+    assert result.exit_code == 0, result.output
+    assert captured["name"] == "payroll-coworker"
+
+
+def test_list_prints_inspect_footer(monkeypatch):
+    monkeypatch.setattr("apx_agent.cli._require_sdk", lambda profile: object())
+    monkeypatch.setattr("apx_agent.cli._fleet_resolve", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "apx_agent._apps_discovery.discover_app_agents",
+        lambda ws, **k: [_aai("w", 2)],
+    )
+    result = CliRunner().invoke(main, ["agents", "list"])
+    assert result.exit_code == 0, result.output
+    assert "inspect one" in result.output and "describe --app" in result.output
