@@ -612,9 +612,39 @@ _MOVED_COMMANDS: dict[str, str] = {
 }
 
 
+class _ApxCommand(click.Command):
+    """click.Command that auto-adds a universal ``--json`` alias.
+
+    Any command exposing ``--format`` with ``json`` among its choices gets a
+    ``--json`` shorthand (an alias writing to the same ``fmt`` dest via
+    ``flag_value="json"``), so ``--json`` is THE consistent way to ask any
+    apx-agent command for machine-readable output — without editing each
+    handler. Commands whose ``--format`` has no ``json`` choice (e.g. a
+    mermaid/graphviz diagram format) are left untouched.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        fmt = next(
+            (p for p in self.params
+             if isinstance(p, click.Option) and p.name == "fmt"
+             and "json" in (getattr(p.type, "choices", None) or ())),
+            None,
+        )
+        already = any("--json" in p.opts for p in self.params)
+        if fmt is not None and not already:
+            self.params.append(click.Option(
+                ["--json", "fmt"], flag_value="json",
+                help="Shorthand for --format json.",
+            ))
+
+
 class _ApxGroup(click.Group):
     """click.Group that suggests the closest command on a typo, and gives a
     clear redirect for commands that moved to a sub-group."""
+
+    # Every leaf command in an apx group gets the --json alias (see _ApxCommand).
+    command_class = _ApxCommand
 
     def resolve_command(self, ctx, args):
         try:
@@ -5802,7 +5832,7 @@ def advertise(
     )
 
 
-@main.group()
+@main.group(cls=_ApxGroup)
 def supervisor() -> None:
     """Mosaic AI Supervisor Agent — create one, and add deployed agents to it."""
 
@@ -8548,7 +8578,7 @@ def label_align_cmd(
             click.echo(f"  {i}. {g}")
 
 
-@main.group()
+@main.group(cls=_ApxGroup)
 def canary() -> None:
     """Canary / A-B deployment helpers — multi-version traffic split."""
 
@@ -9124,7 +9154,7 @@ _ENV_MCP_URL = "APX_WATCHDOG_MCP_URL"
 _ENV_MCP_TOOL = "APX_WATCHDOG_MCP_TOOL_NAME"
 
 
-@main.group()
+@main.group(cls=_ApxGroup)
 def watchdog() -> None:
     """Inspect databricks-watchdog compliance posture from the CLI.
 
@@ -9420,7 +9450,7 @@ def _emit(payload: Any, fmt: str, *, text_fn: Any = None) -> None:
 # --- memory group ----------------------------------------------------------
 
 
-@main.group()
+@main.group(cls=_ApxGroup)
 def memory() -> None:
     """Operate on a MemoryStore — recall, remember, forget, list.
 
@@ -9644,7 +9674,7 @@ def memory_export_cmd(
 # --- examples group --------------------------------------------------------
 
 
-@main.group()
+@main.group(cls=_ApxGroup)
 def examples() -> None:
     """Operate on an ExampleStore — find, save, remove, list.
 
