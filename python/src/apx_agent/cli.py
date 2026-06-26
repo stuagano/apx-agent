@@ -873,11 +873,17 @@ def _resolve_active_profile() -> str | None:
     "--prompt", "as_prompt", is_flag=True,
     help="Emit a compact one-line summary for a shell prompt (offline, never errors).",
 )
-def status(as_prompt: bool) -> None:
+@click.option(
+    "--json", "as_json", is_flag=True,
+    help="Emit a machine-readable orientation payload (profile, project, declared "
+         "agents, suggested next commands) — one call for an AI agent to get its bearings.",
+)
+def status(as_prompt: bool, as_json: bool) -> None:
     """Show the active profile and project context — offline, no API call.
 
     Run on demand to confirm what you're pointed at before deploying. Pass
-    --prompt for a compact one-liner you can wire into your shell prompt.
+    --prompt for a compact one-liner you can wire into your shell prompt, or
+    --json for a full orientation payload (what's declared here + next steps).
     """
     from . import _doctor as _d
 
@@ -886,6 +892,31 @@ def status(as_prompt: bool) -> None:
     profile = _resolve_active_profile()
     name = _read_apx_agent_config().get("name") if in_project else None
     target = _detect_target(cwd) if in_project else None
+
+    if as_json:
+        agents_here = _discover_local_agents(cwd) if in_project else []
+        if not in_project:
+            nxt = ["apx-agent agents scaffold <NAME>   # create a new agent project"]
+        else:
+            nxt = [
+                "apx-agent agents list --local   # agents declared here (offline)",
+                "apx-agent agents describe        # introspect the agent's tools/resources",
+                "apx-agent doctor                 # full environment + auth check",
+                "apx-agent agents deploy          # deploy to the workspace",
+            ]
+        payload: dict[str, Any] = {
+            "profile": profile,
+            "in_project": in_project,
+            "cwd": str(cwd),
+            "project": None if not in_project else {
+                "name": name,
+                "target": target,
+                "agents": agents_here,
+            },
+            "next": nxt,
+        }
+        click.echo(json.dumps(payload, indent=2, default=str))
+        return
 
     if as_prompt:
         # Never raise: a broken prompt is worse than an empty one.
