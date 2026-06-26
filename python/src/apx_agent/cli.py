@@ -6300,6 +6300,44 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
             click.echo(f"  - {s}")
 
 
+def _pick_app_agent(profile: str | None) -> str:
+    """Interactive picklist of deployed app agents → the chosen app name.
+
+    Used when ``agents describe --app`` is run without a name. In a terminal it
+    discovers the workspace's running apx agents and prompts; non-interactively
+    it lists them and exits with guidance (never hangs)."""
+    from ._apps_discovery import discover_app_agents
+
+    ws = _require_sdk(profile)
+    click.secho("(discovering deployed agents…)", fg="bright_black", err=True)
+    agents_ = sorted(discover_app_agents(ws), key=lambda a: a.app_name)
+    if not agents_:
+        raise click.ClickException(
+            "No deployed app agents found. Run `apx-agent agents list` to check, "
+            "or deploy one with `apx-agent agents deploy`."
+        )
+    if not sys.stdin.isatty():
+        listing = "\n".join(f"  {a.app_name}" for a in agents_)
+        raise click.ClickException(
+            "Multiple deployed agents — pass one:\n"
+            f"  apx-agent agents describe <name> --app\n\n{listing}"
+        )
+    click.secho("\nDeployed agents:", fg="cyan", bold=True)
+    click.echo()
+    for i, a in enumerate(agents_, 1):
+        num = click.style(f"  {i:2})", fg="bright_green", bold=True)
+        tools = f"{a.tool_count} tool{'' if a.tool_count == 1 else 's'}"
+        click.echo(f"{num} {click.style(a.name, fg='cyan')}  "
+                   f"{click.style(tools, fg='bright_black')}")
+    click.echo()
+    idx = click.prompt(
+        click.style("Agent number", fg="cyan", bold=True),
+        type=click.IntRange(1, len(agents_)),
+        default=1,
+    )
+    return agents_[idx - 1].app_name
+
+
 def _describe_app_agent(name: str, profile: str | None, fmt: str) -> None:
     """Fetch and print a deployed Databricks App agent's live A2A card."""
     from ._apps_discovery import fetch_app_card
@@ -6359,13 +6397,14 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
     lone spec is present it's auto-detected.
 
     With ``--app``, SPEC is the name of a deployed Databricks App: its live A2A
-    card is fetched and its tools printed (see ``apx-agent agents list``).
+    card is fetched and its tools printed (see ``apx-agent agents list``). Run
+    ``--app`` WITHOUT a name to pick from a list of deployed agents.
 
     Pure local — no Databricks calls — unless ``--app`` is given.
     """
     if app:
         if not spec:
-            raise click.UsageError("--app needs an app name: apx-agent agents describe <name> --app")
+            spec = _pick_app_agent(profile)  # picklist of deployed agents
         _describe_app_agent(spec, profile, fmt)
         return
 
@@ -7452,6 +7491,12 @@ def list_agents_cmd(
             line += f"{(r['uc_name'] or '-'):<{uc_w}}  "
         line += f"{(r['tool_count'] or '-'):>5}  {endpoint}"
         click.echo(line)
+
+    # Tell the user how to act on a row — close the list→inspect gap.
+    click.secho(
+        "\n↳ inspect one:  apx-agent agents describe --app   (pick from a list)",
+        fg="bright_black",
+    )
 
 
 # ---------------------------------------------------------------------------
