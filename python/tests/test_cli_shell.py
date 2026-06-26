@@ -105,7 +105,11 @@ def test_cd_bad_path_is_graceful(capsys):
 
 def test_help_builtin(capsys):
     assert _handle_builtin("help") is True
-    assert "apx-agent shell" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # content survives the restyle (color auto-strips under capsys/non-TTY)
+    assert "apx-agent shell" in out
+    assert "agents list --local" in out           # the examples line
+    assert "cd <dir>" in out and "Ctrl-D" in out  # the built-ins line
 
 
 def test_exit_raises_eoferror_to_break_loop():
