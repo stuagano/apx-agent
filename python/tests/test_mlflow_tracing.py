@@ -237,6 +237,37 @@ class TestAutologEnvVar:
 
 
 class TestEmitProgress:
+    @pytest.fixture(autouse=True)
+    def _isolate_tracing(self, tmp_path):
+        """De-flake: give each test a fully clean, valid MLflow tracing
+        destination so ``start_span`` always yields a real recording span.
+
+        In the full suite, prior tests can leave tracing in a broken global
+        state — a tracking URI pointing at a since-deleted temp dir, and/or
+        tracing disabled (autolog / repeated trace-export failures act as a
+        circuit-breaker). Either way ``start_span`` returns a NonRecordingSpan,
+        ``emit_progress`` finds no active span and no-ops, and the asserted
+        event is never recorded — so this test failed depending on suite order.
+
+        Fresh ``file://`` store + experiment + ``tracing.enable()`` guarantees a
+        LiveSpan (verified against the worst case: deleted-dir URI + disabled).
+        The original tracking URI is restored after so THIS test's soon-deleted
+        ``tmp_path`` doesn't become the same pollution for whatever runs next.
+        """
+        import mlflow
+
+        old_uri = mlflow.get_tracking_uri()
+        mlflow.set_tracking_uri(f"file://{tmp_path}")
+        try:
+            mlflow.set_experiment("apx-emit-progress-test")
+            mlflow.tracing.enable()
+        except Exception:
+            pass
+        try:
+            yield
+        finally:
+            mlflow.set_tracking_uri(old_uri)
+
     def test_emit_progress_noop_without_active_span(self) -> None:
         from apx_agent._mlflow_tracing import emit_progress
 
@@ -251,9 +282,11 @@ class TestEmitProgress:
         with mlflow.start_span(name="parent") as span:
             emit_progress("Starting SQL warehouse", warehouse_id="wh-1")
         # The span recorded an event named for apx progress carrying the message.
-        events = getattr(span, "events", None) or []
+        # The fixture guarantees tracing is on, so `span` is a real LiveSpan with
+        # `.events` — direct attribute access (no defensive getattr needed).
+        events = span.events or []
         assert any(
-            getattr(e, "name", "") == "apx.progress"
-            and (getattr(e, "attributes", {}) or {}).get("message") == "Starting SQL warehouse"
+            e.name == "apx.progress"
+            and (e.attributes or {}).get("message") == "Starting SQL warehouse"
             for e in events
         )
