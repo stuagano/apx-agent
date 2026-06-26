@@ -6394,17 +6394,28 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
 
     SPEC may be a .yaml spec (shows what it declares). Omit it inside a
     scaffolded project to introspect the materialized agent, or when only a
-    lone spec is present it's auto-detected.
+    lone spec is present it's auto-detected. A BARE name (e.g.
+    ``payroll-coworker``) is taken as a deployed Databricks App — no ``--app``
+    needed; its live A2A card is fetched.
 
     With ``--app``, SPEC is the name of a deployed Databricks App: its live A2A
     card is fetched and its tools printed (see ``apx-agent agents list``). Run
     ``--app`` WITHOUT a name to pick from a list of deployed agents.
 
-    Pure local — no Databricks calls — unless ``--app`` is given.
+    Pure local — no Databricks calls — unless SPEC is a deployed-app name or
+    ``--app`` is given.
     """
     if app:
         if not spec:
             spec = _pick_app_agent(profile)  # picklist of deployed agents
+        _describe_app_agent(spec, profile, fmt)
+        return
+
+    # Auto-detect: a BARE name (not a .yaml/.yml spec, not a `module:attr`
+    # path) is never a local describe target — the local path below only
+    # resolves .yaml specs and module:attr. So treat it as a deployed app name,
+    # making `agents describe payroll-coworker` just work without --app.
+    if spec and not spec.endswith((".yaml", ".yml")) and ":" not in spec:
         _describe_app_agent(spec, profile, fmt)
         return
 
