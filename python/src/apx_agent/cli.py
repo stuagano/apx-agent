@@ -868,6 +868,31 @@ def _resolve_active_profile() -> str | None:
     return saved if isinstance(saved, str) and saved else None
 
 
+def _status_prompt_string(cwd: Path) -> str:
+    """Compact ``apx:name(target) ▸ profile`` context string for a shell prompt.
+
+    Offline and never raises — a broken prompt is worse than an empty one.
+    Shared by ``status --prompt`` and the interactive ``apx-agent shell``.
+    """
+    try:
+        from . import _doctor as _d
+
+        in_project = _d._is_apx_project(cwd)
+        profile = _resolve_active_profile()
+        name = _read_apx_agent_config().get("name") if in_project else None
+        target = _detect_target(cwd) if in_project else None
+        parts = []
+        if in_project:
+            parts.append(f"apx:{name}({target})" if name else f"apx({target})")
+        else:
+            parts.append("apx")
+        if profile:
+            parts.append(f"▸ {profile}")
+        return " ".join(parts)
+    except Exception:
+        return "apx"
+
+
 @main.command()
 @click.option(
     "--prompt", "as_prompt", is_flag=True,
@@ -919,18 +944,7 @@ def status(as_prompt: bool, as_json: bool) -> None:
         return
 
     if as_prompt:
-        # Never raise: a broken prompt is worse than an empty one.
-        try:
-            parts = []
-            if in_project:
-                parts.append(f"apx:{name}({target})" if name else f"apx({target})")
-            else:
-                parts.append("apx")
-            if profile:
-                parts.append(f"▸ {profile}")
-            click.echo(" ".join(parts))
-        except Exception:
-            click.echo("")
+        click.echo(_status_prompt_string(cwd))
         return
 
     click.echo(f"profile: {profile or 'DEFAULT (unset — may be ambiguous)'}")
@@ -940,6 +954,20 @@ def status(as_prompt: bool, as_json: bool) -> None:
     else:
         click.echo(f"project: none ({cwd} is not an apx project)")
     click.echo("\nRun `apx-agent doctor` for a full environment check.")
+
+
+@main.command()
+def shell() -> None:
+    """Interactive REPL — be *in* apx, not firing one-off commands.
+
+    Run any apx-agent command without the prefix (``status``, ``agents list
+    --local``, ``doctor`` …), with an ambient context prompt (project ▸
+    profile), tab-completion of the whole command tree, history, and ``cd`` to
+    move between projects. Ctrl-D or ``exit`` to leave.
+    """
+    from ._shell import run_shell
+
+    run_shell()
 
 
 # ---------------------------------------------------------------------------
