@@ -6300,6 +6300,33 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
             click.echo(f"  - {s}")
 
 
+def _pick_local_spec(specs: "list[Path]") -> Path:
+    """Interactive picklist of local ``.yaml`` agent specs → the chosen path.
+
+    Used when ``agents describe`` finds more than one spec in the project. In a
+    terminal it prompts (same style as the deployed-agent picklist);
+    non-interactively it lists the specs and exits with guidance."""
+    specs = sorted(specs, key=lambda p: p.name)
+    if not sys.stdin.isatty():
+        listing = "\n".join(f"  {p.name}" for p in specs)
+        raise click.ClickException(
+            "Multiple specs here — pass one:\n"
+            f"  apx-agent agents describe <spec>.yaml\n\n{listing}"
+        )
+    click.secho("\nLocal agent specs:", fg="cyan", bold=True)
+    click.echo()
+    for i, p in enumerate(specs, 1):
+        num = click.style(f"  {i:2})", fg="bright_green", bold=True)
+        click.echo(f"{num} {click.style(p.name, fg='cyan')}")
+    click.echo()
+    idx = click.prompt(
+        click.style("Spec number", fg="cyan", bold=True),
+        type=click.IntRange(1, len(specs)),
+        default=1,
+    )
+    return specs[idx - 1]
+
+
 def _pick_app_agent(profile: str | None) -> str:
     """Interactive picklist of deployed app agents → the chosen app name.
 
@@ -6449,11 +6476,8 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
                 _describe_from_spec(specs[0], fmt)
                 return
             if len(specs) > 1:
-                names = ", ".join(p.name for p in specs)
-                raise click.ClickException(
-                    f"Multiple specs here ({names}). "
-                    "Pass one: apx-agent agents describe <spec>.yaml"
-                )
+                _describe_from_spec(_pick_local_spec(specs), fmt)
+                return
 
     # Finalize so `apx-agent info` reports the same tools/resources the serve and
     # deploy paths will — config-declared [[tool.apx.tools]] included.
