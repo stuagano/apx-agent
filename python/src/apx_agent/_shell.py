@@ -160,12 +160,14 @@ def _handle_builtin(line: str) -> bool:
             click.secho(f"cd: {exc}", fg="red")
         return True
     if cmd == "help":
-        click.echo(
-            "apx-agent shell — run any apx command without the prefix.\n"
-            "  e.g.  status · agents list --local · doctor · describe-cli\n"
-            "Built-ins: cd <dir>, clear, help, exit/quit (or Ctrl-D).\n"
-            "Tab-completes commands and flags."
-        )
+        click.secho("apx-agent shell", fg="cyan", bold=True, nl=False)
+        click.secho(" — run any apx command without the prefix.", fg="bright_black")
+        click.echo("  e.g.  " + click.style(
+            "status · agents list --local · doctor · describe-cli", fg="cyan"))
+        click.echo(click.style("  Built-ins: ", fg="bright_black")
+                   + "cd <dir> · clear · help · exit/quit"
+                   + click.style("  (or Ctrl-D)", fg="bright_black"))
+        click.secho("  Tab-completes commands and flags.", fg="bright_black")
         return True
     return False
 

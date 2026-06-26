@@ -7191,19 +7191,23 @@ def _connect_workspace(profile: str | None) -> "tuple[Any, Any]":
         # Prefer profiles marked valid; fall back to all if none are valid.
         display = [(n, h) for n, h, v in profiles if v] or [(n, h) for n, h, _ in profiles]
         if sys.stdin.isatty():
-            click.echo("\nMultiple Databricks profiles found. Pick one:\n")
+            click.secho("\nMultiple Databricks profiles found.", fg="cyan", bold=True)
+            click.echo("Pick one:\n")
             for i, (name, host) in enumerate(display, 1):
-                click.echo(f"  {i:2}) {name}  ({host})")
+                num = click.style(f"  {i:2})", fg="bright_green", bold=True)
+                click.echo(f"{num} {click.style(name, fg='cyan')}  "
+                           f"{click.style(f'({host})', fg='bright_black')}")
             click.echo()
             idx = click.prompt(
-                "Profile number",
+                click.style("Profile number", fg="cyan", bold=True),
                 type=click.IntRange(1, len(display)),
                 default=1,
             )
             chosen = display[idx - 1][0]
-            click.echo(
+            click.secho(
                 f"\nTip: export DATABRICKS_CONFIG_PROFILE={chosen}  "
-                f"(or pass --profile {chosen}) to skip this prompt.\n"
+                f"(or pass --profile {chosen}) to skip this prompt.\n",
+                fg="bright_black",
             )
             return _connect_workspace(chosen)
         # Non-interactive fallback: list profiles and exit cleanly.
