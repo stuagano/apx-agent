@@ -258,6 +258,35 @@ class TestJsonRpcFraming:
         body = _rpc(client, "message/send", {"not_message": 1}).json()
         assert body["error"]["code"] == -32602
 
+    def test_notification_runs_side_effect_but_returns_no_body(self, a2a_client):
+        client, captured = a2a_client
+        _stub_reply(captured, "noti")
+        # No `id` member → JSON-RPC notification: the server MUST run it but MUST
+        # NOT reply. The agent still gets invoked; the HTTP response carries no body.
+        resp = client.post(
+            "/",
+            json={"jsonrpc": "2.0", "method": "message/send", "params": _send_params("hi")},
+        )
+        assert resp.status_code == 204
+        assert resp.content == b""
+        captured["chat_agent"].predict.assert_called_once()
+
+    def test_notification_for_error_method_still_has_no_body(self, a2a_client):
+        client, _ = a2a_client
+        # Even an error-producing method gets no response when sent as a notification.
+        resp = client.post("/", json={"jsonrpc": "2.0", "method": "bogus/method"})
+        assert resp.status_code == 204
+        assert resp.content == b""
+
+    def test_explicit_null_id_still_gets_a_response(self, a2a_client):
+        client, _ = a2a_client
+        # `id: null` is present (a request, discouraged but valid), not a
+        # notification — the server still replies, echoing the null id.
+        resp = client.post("/", json={"jsonrpc": "2.0", "id": None, "method": "bogus/method"})
+        assert resp.status_code == 200
+        assert resp.json()["error"]["code"] == -32601
+        assert resp.json()["id"] is None
+
 
 # ---------------------------------------------------------------------------
 # Reality: the card's claims are now backed by a live method

@@ -291,6 +291,37 @@ class TestStream:
         assert not [e for e in events if e.type == "response.output_text.delta"]
         assert [e for e in events if e.type == "response.output_item.done"]
 
+    def test_idless_token_chunk_correlates_via_index_fallback(self) -> None:
+        """When a token chunk carries no id, its delta must still correlate to
+        the output_item.done — both fall back to ``msg-{output_index}``."""
+        from langchain_core.messages import AIMessage, AIMessageChunk
+
+        agent = LlmAgent(tools=[_trivial_tool])
+        _, streaming = compile_to_responses_agent(agent, model="any")
+
+        def _stream(state: dict[str, Any], stream_mode: Any = "updates"):
+            # token chunk with no id → delta must fall back to the index, not ""
+            yield ("messages", (AIMessageChunk(content="hi", id=None), {}))
+            yield ("updates", {"agent": {"messages": [AIMessage(content="hi", id=None)]}})
+
+        graph = MagicMock(name="graph")
+        graph.stream.side_effect = _stream
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._responses_agent.compile_to_langgraph",
+            return_value=graph,
+        ):
+            events = list(streaming(_user_request("go")))
+
+        deltas = [e for e in events if e.type == "response.output_text.delta"]
+        done = next(e for e in events if e.type == "response.output_item.done")
+        done_item_id = done.model_dump()["item"]["id"]
+        assert done_item_id == "msg-0"
+        assert deltas and all(e.model_dump()["item_id"] == done_item_id for e in deltas)
+
     def test_human_message_echo_does_not_crash_stream(self) -> None:
         """Regression: workflow agents (RouterAgent) inject HumanMessages into
         the graph state when handing off to a sub-agent. The streaming path
