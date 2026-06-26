@@ -255,3 +255,51 @@ def test_list_prints_inspect_footer(monkeypatch):
     result = CliRunner().invoke(main, ["agents", "list"])
     assert result.exit_code == 0, result.output
     assert "inspect one" in result.output and "describe --app" in result.output
+
+
+# ── agents describe <bare-name>: auto-detect a deployed app (no --app) ────────
+
+
+def test_describe_bare_name_auto_routes_to_app(monkeypatch):
+    # `agents describe payroll-coworker` (no --app) → treated as a deployed app.
+    captured = {}
+    monkeypatch.setattr(
+        "apx_agent.cli._describe_app_agent",
+        lambda name, profile, fmt: captured.update(name=name, fmt=fmt),
+    )
+    result = CliRunner().invoke(main, ["agents", "describe", "payroll-coworker"])
+    assert result.exit_code == 0, result.output
+    assert captured == {"name": "payroll-coworker", "fmt": "text"}
+
+
+def test_describe_yaml_spec_does_not_auto_route_to_app(monkeypatch, tmp_path):
+    # A .yaml SPEC stays a LOCAL spec describe — never an app lookup.
+    monkeypatch.setattr(
+        "apx_agent.cli._describe_app_agent",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not hit app path")),
+    )
+    spec = tmp_path / "agent.yaml"
+    spec.write_text("name: demo\n")
+    captured = {}
+    monkeypatch.setattr(
+        "apx_agent.cli._describe_from_spec",
+        lambda path, fmt: captured.update(path=str(path)),
+    )
+    result = CliRunner().invoke(main, ["agents", "describe", str(spec)])
+    assert result.exit_code == 0, result.output
+    assert captured["path"].endswith("agent.yaml")
+
+
+def test_describe_module_spec_does_not_auto_route_to_app(monkeypatch):
+    # A `module:attr` SPEC has a ':' → stays the local module path, not an app.
+    monkeypatch.setattr(
+        "apx_agent.cli._describe_app_agent",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not hit app path")),
+    )
+    monkeypatch.setattr(
+        "apx_agent.cli._load_finalized_agent",
+        lambda module: (_ for _ in ()).throw(RuntimeError(f"tried module {module}")),
+    )
+    result = CliRunner().invoke(main, ["agents", "describe", "pkg.mod:agent"])
+    # it went down the module path (and failed there), NOT the app path
+    assert "tried module pkg.mod:agent" in str(result.exception) or result.exit_code != 0
