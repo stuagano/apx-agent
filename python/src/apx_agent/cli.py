@@ -685,6 +685,64 @@ def version() -> None:
     click.echo(v)
 
 
+def _describe_param(param: click.Parameter) -> dict[str, Any]:
+    """One option/argument as a JSON-serializable descriptor."""
+    ptype = getattr(param, "type", None)
+    type_name = getattr(ptype, "name", "text") if ptype is not None else "text"
+    default = param.default
+    # Keep defaults JSON-safe — callables / sentinels become their repr.
+    if callable(default) or not isinstance(default, (str, int, float, bool, type(None))):
+        default = None if default is None else repr(default)
+    out: dict[str, Any] = {
+        "name": param.name,
+        "kind": "argument" if isinstance(param, click.Argument) else "option",
+        "flags": list(param.opts),
+        "type": type_name,
+        "required": bool(param.required),
+        "is_flag": bool(getattr(param, "is_flag", False)),
+        "default": default,
+        "help": getattr(param, "help", None),
+    }
+    choices = getattr(ptype, "choices", None)
+    if type_name == "choice" and choices:
+        out["choices"] = list(choices)
+    envvar = getattr(param, "envvar", None)
+    if envvar:
+        out["envvar"] = envvar
+    return out
+
+
+def _describe_command(cmd: click.Command, ctx: click.Context) -> dict[str, Any]:
+    """Recursively describe a click Command/Group as a JSON tree."""
+    node: dict[str, Any] = {"help": cmd.get_short_help_str(limit=200) or None}
+    params = [p for p in cmd.params if not (isinstance(p, click.Option) and p.name == "help")]
+    if params:
+        node["params"] = [_describe_param(p) for p in params]
+    if isinstance(cmd, click.Group):
+        sub: dict[str, Any] = {}
+        for name in sorted(cmd.list_commands(ctx)):
+            child = cmd.get_command(ctx, name)
+            if child is not None and not child.hidden:
+                sub[name] = _describe_command(child, ctx)
+        node["commands"] = sub
+    return node
+
+
+@main.command("describe-cli")
+def describe_cli() -> None:
+    """Emit the entire CLI command tree as JSON — every command, flag, type,
+    default, and one-line help in one document.
+
+    A machine-readable manifest so an AI agent (or any tool) can discover the
+    full surface in a single call instead of crawling `--help` screens.
+    """
+    ctx = click.Context(main, info_name="apx")
+    tree = _describe_command(main, ctx)
+    tree["name"] = "apx"
+    tree["version"] = _resolve_version()
+    click.echo(json.dumps(tree, indent=2))
+
+
 # ---------------------------------------------------------------------------
 # doctor
 # ---------------------------------------------------------------------------
@@ -7093,7 +7151,50 @@ def _fleet_select_options(f: Any) -> Any:
     return f
 
 
+def _discover_local_agents(start: Path) -> list[dict[str, Any]]:
+    """Agents DECLARED in the local project — AST-parsed from source, no auth.
+
+    Walks up from ``start`` to the nearest ``pyproject.toml`` (the project root),
+    then AST-parses every ``agent.py`` / ``agent_router.py`` under it for the
+    agents it assigns. Returns ``[{agent_name, kind, tool_count, source}]``.
+    A composition project yields one row per declared leaf + the root wrapper.
+    """
+    from ._ui_edit import _parse_agent_nodes
+
+    root = start.resolve()
+    for d in [root, *root.parents]:
+        if (d / "pyproject.toml").is_file():
+            root = d
+            break
+    skip = {".venv", "node_modules", ".worktrees", ".git", "__pycache__", "dist", "build"}
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for pattern in ("agent.py", "agent_router.py"):
+        for p in sorted(root.rglob(pattern)):
+            if any(part in skip for part in p.parts):
+                continue
+            rel = str(p.relative_to(root))
+            if rel in seen:
+                continue
+            seen.add(rel)
+            try:
+                nodes = _parse_agent_nodes(p.read_text())
+            except Exception:
+                continue
+            for n in nodes:
+                rows.append({
+                    "agent_name": n["name"],
+                    "kind": n.get("wrapper") or "Agent",
+                    "tool_count": len(n.get("tools") or []),
+                    "source": rel,
+                })
+    rows.sort(key=lambda r: (r["source"], r["agent_name"]))
+    return rows
+
+
 @agents.command("list")
+@click.option("--local", "local_only", is_flag=True,
+              help="List agents DECLARED in the current project (offline — no Databricks calls).")
 @click.option("--catalog", default=None,
               help="Restrict to a UC catalog. Default: any.")
 @click.option("--schema", default=None,
@@ -7107,15 +7208,40 @@ def _fleet_select_options(f: Any) -> Any:
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks config profile (~/.databrickscfg).")
 def list_agents_cmd(
-    catalog: str | None, schema: str | None, fmt: str, apps_only: bool, profile: str | None,
+    local_only: bool, catalog: str | None, schema: str | None, fmt: str,
+    apps_only: bool, profile: str | None,
 ) -> None:
-    """Discover apx-agents in the workspace.
+    """Discover apx-agents — locally declared or deployed to the workspace.
 
-    Two sources, merged into one table with a SERVING column: UC-registered
-    models tagged ``apx.agent.name`` (the deploy-time tag flow) and agents
-    running as Databricks Apps (probed via their A2A card). ``--apps-only``
-    skips the UC scan and shows just the Apps-deployed agents.
+    ``--local`` lists agents DECLARED in the current project by AST-parsing its
+    source — fully offline, no Databricks calls (handy in a fresh clone, CI, or
+    before any deploy). Without it, lists agents DEPLOYED to the workspace from
+    two sources merged into one table with a SERVING column: UC-registered
+    models tagged ``apx.agent.name`` and agents running as Databricks Apps
+    (probed via their A2A card). ``--apps-only`` skips the UC scan.
     """
+    if local_only:
+        if catalog or schema or apps_only:
+            raise click.UsageError(
+                "--local reads project source; it can't combine with "
+                "--catalog/--schema/--apps-only (those scope the workspace scan)."
+            )
+        local_rows = _discover_local_agents(Path.cwd())
+        if fmt == "json":
+            click.echo(json.dumps(local_rows, indent=2, default=str))
+            return
+        if not local_rows:
+            click.echo("No agents declared in this project.")
+            click.echo("Scaffold one with:  apx-agent agents scaffold <NAME>")
+            return
+        name_w = max((len(r["agent_name"]) for r in local_rows), default=5)
+        kind_w = max((len(r["kind"]) for r in local_rows), default=4)
+        click.echo(f"{'AGENT':<{name_w}}  {'KIND':<{kind_w}}  TOOLS  SOURCE")
+        for r in local_rows:
+            click.echo(f"{r['agent_name']:<{name_w}}  {r['kind']:<{kind_w}}  "
+                       f"{r['tool_count']:>5}  {r['source']}")
+        return
+
     if schema and not catalog:
         raise click.UsageError("--schema requires --catalog.")
     if apps_only and (catalog or schema):
