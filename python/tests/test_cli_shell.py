@@ -158,3 +158,49 @@ def test_shell_skips_readline_setup_when_not_a_tty(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *_a: (_ for _ in ()).throw(EOFError))
     _shell.run_shell()
     assert called["completer"] is False
+
+
+# ── bare `apx-agent` → shell (interactive) / help (non-TTY) ───────────────────
+
+
+def test_bare_invocation_non_tty_shows_help_not_shell(monkeypatch):
+    # CliRunner stdio is non-TTY → keep the safe help-on-no-args behaviour.
+    from click.testing import CliRunner
+
+    import apx_agent.cli as climod
+
+    result = CliRunner().invoke(climod.main, [])
+    assert result.exit_code == 0
+    assert "Usage:" in result.output  # help, not the shell banner
+    assert "Commands:" in result.output
+    assert "interactive shell ·" not in result.output  # shell banner absent
+
+
+def test_bare_invocation_interactive_launches_shell(monkeypatch):
+    from unittest.mock import patch
+
+    from click.testing import CliRunner
+
+    import apx_agent.cli as climod
+
+    with patch.object(climod, "_stdio_is_interactive", return_value=True), \
+            patch("apx_agent._shell.run_shell") as rs:
+        result = CliRunner().invoke(climod.main, [])
+    assert result.exit_code == 0
+    assert rs.called
+
+
+def test_subcommand_still_runs_with_invoke_without_command(monkeypatch):
+    # A real subcommand must dispatch normally (the group callback returns early).
+    from unittest.mock import patch
+
+    from click.testing import CliRunner
+
+    import apx_agent.cli as climod
+
+    with patch.object(climod, "_stdio_is_interactive", return_value=True), \
+            patch("apx_agent._shell.run_shell") as rs:
+        result = CliRunner().invoke(climod.main, ["version"])
+    assert result.exit_code == 0
+    assert not rs.called          # shell NOT launched when a command is given
+    assert result.output.strip()  # version printed

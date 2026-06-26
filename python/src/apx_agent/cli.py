@@ -662,10 +662,36 @@ class _ApxGroup(click.Group):
             raise click.UsageError(f"No such command '{cmd_name}'.{hint}") from None
 
 
-@click.group(cls=_ApxGroup)
+def _stdio_is_interactive() -> bool:
+    """True when both stdin and stdout are terminals — bare ``apx-agent`` drops
+    into the shell only then, so scripts/CI keep the safe help-on-no-args
+    behaviour (and never hang a REPL on a non-interactive stdin)."""
+    import sys
+
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+@click.group(cls=_ApxGroup, invoke_without_command=True)
 @click.version_option(_resolve_version(), package_name="apx-agent", prog_name="apx")
-def main() -> None:
-    """apx-agent — declarative agents on Databricks. See `apx-agent --help` for commands."""
+@click.pass_context
+def main(ctx: click.Context) -> None:
+    """apx-agent — declarative agents on Databricks. See `apx-agent --help` for commands.
+
+    Run with no command in a terminal to drop into the interactive shell.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    # No subcommand: a terminal user gets the interactive shell; everything else
+    # (pipes, scripts, CI) gets help, exactly as before.
+    if _stdio_is_interactive():
+        from ._shell import run_shell
+
+        run_shell()
+    else:
+        click.echo(ctx.get_help())
 
 
 # ---------------------------------------------------------------------------
