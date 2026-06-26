@@ -303,3 +303,44 @@ def test_describe_module_spec_does_not_auto_route_to_app(monkeypatch):
     result = CliRunner().invoke(main, ["agents", "describe", "pkg.mod:agent"])
     # it went down the module path (and failed there), NOT the app path
     assert "tried module pkg.mod:agent" in str(result.exception) or result.exit_code != 0
+
+
+# ── agents describe: LOCAL picklist when >1 spec (parity with --app) ──────────
+
+
+def test_pick_local_spec_returns_chosen(monkeypatch, tmp_path):
+    import apx_agent.cli as c
+
+    a, b = tmp_path / "alpha.yaml", tmp_path / "beta.yaml"
+    a.write_text("name: a\n"); b.write_text("name: b\n")
+    monkeypatch.setattr(c.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("click.prompt", lambda *a, **k: 2)  # pick #2
+    # sorted by name → alpha(1), beta(2)
+    assert c._pick_local_spec([a, b]).name == "beta.yaml"
+
+
+def test_pick_local_spec_non_tty_errors_with_guidance(monkeypatch, tmp_path):
+    import click
+
+    import apx_agent.cli as c
+
+    a, b = tmp_path / "a.yaml", tmp_path / "b.yaml"
+    a.write_text("x"); b.write_text("x")
+    monkeypatch.setattr(c.sys.stdin, "isatty", lambda: False)
+    with pytest.raises(click.ClickException, match="pass one"):
+        c._pick_local_spec([a, b])
+
+
+def test_describe_multiple_specs_uses_local_picklist(monkeypatch, tmp_path):
+    # >1 local spec routes through the picklist (which picks), then describes it.
+    a, b = tmp_path / "alpha.yaml", tmp_path / "beta.yaml"
+    a.write_text("name: a\n"); b.write_text("name: b\n")
+    monkeypatch.setattr("apx_agent.cli._detect_module_spec", lambda *a, **k: None)
+    monkeypatch.setattr("apx_agent.cli._find_apx_specs", lambda cwd: [a, b])
+    monkeypatch.setattr("apx_agent.cli._pick_local_spec", lambda specs: a)
+    captured = {}
+    monkeypatch.setattr("apx_agent.cli._describe_from_spec",
+                        lambda path, fmt: captured.update(name=path.name))
+    result = CliRunner().invoke(main, ["agents", "describe"])
+    assert result.exit_code == 0, result.output
+    assert captured["name"] == "alpha.yaml"
