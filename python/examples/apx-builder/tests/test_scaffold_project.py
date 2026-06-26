@@ -12,6 +12,14 @@ def test_generate_files_app_yml_specifies_port():
     assert "$DATABRICKS_APP_PORT" in files["app.yml"]
 
 
+def test_generate_files_app_yml_enables_mlflow_tracing():
+    # Deployed apps must point MLflow at Databricks and turn on autolog, else
+    # traces silently vanish — match the canonical scaffolder's app.yml.
+    files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
+    assert "MLFLOW_TRACKING_URI" in files["app.yml"]
+    assert "APX_AGENT_MLFLOW_AUTOLOG" in files["app.yml"]
+
+
 def test_generate_files_pyproject_subdirectory():
     files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
     assert "#subdirectory=python" in files["pyproject.toml"]
