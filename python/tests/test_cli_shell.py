@@ -231,11 +231,25 @@ def test_colored_prompt_is_readline_safe(monkeypatch):
     monkeypatch.setattr(_shell, "_color_on", lambda: True)
     p = _shell._prompt()
     assert "\x1b[" in p                      # actually colored
-    # every ANSI escape is bracketed for readline width calc
     assert "\001" in p and "\002" in p
-    for esc in re.findall(r"\x1b\[[0-9;]*m", p):
-        i = p.index(esc)
-        assert p[i - 1] == "\001" and p[i + len(esc)] == "\002"
+    # EVERY ANSI escape (segmented prompt repeats them) is bracketed for readline
+    for m in re.finditer(r"\x1b\[[0-9;]*m", p):
+        assert p[m.start() - 1] == "\001" and p[m.end()] == "\002"
+
+
+def test_segmented_prompt_colors_profile_separately(monkeypatch):
+    from apx_agent import _shell
+
+    monkeypatch.setattr(_shell, "_color_on", lambda: True)
+    monkeypatch.setattr("apx_agent.cli._status_prompt_string",
+                        lambda _cwd: "apx:demo(apps) ▸ fe-stable")
+    p = _shell._prompt()
+    # context, the ▸ separator, the profile, and ❯ are all present...
+    assert "apx:demo(apps)" in p and "fe-stable" in p and "❯" in p
+    # ...and distinctly colored (more than one fg code in play)
+    assert len(set(re.findall(r"\x1b\[(\d+)m", p))) >= 3
+    for m in re.finditer(r"\x1b\[[0-9;]*m", p):  # still readline-safe
+        assert p[m.start() - 1] == "\001" and p[m.end()] == "\002"
 
 
 def test_plain_prompt_has_no_escapes_when_color_off(monkeypatch):
@@ -245,3 +259,15 @@ def test_plain_prompt_has_no_escapes_when_color_off(monkeypatch):
     p = _shell._prompt()
     assert "\x1b" not in p and "\001" not in p
     assert "❯" in p
+
+
+def test_banner_lines_have_wordmark_and_hint():
+    from apx_agent import _shell
+
+    lines = _shell._banner_lines()
+    text = "".join(lines)
+    assert "⬡ apx-agent" in text   # on-brand wordmark
+    assert "v" in text             # version stamp
+    assert "help" in text and "Ctrl-D" in text  # the hint
+    # version is trimmed of the long +g<sha> build suffix
+    assert "+g" not in text
