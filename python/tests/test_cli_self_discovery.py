@@ -135,3 +135,56 @@ def test_list_local_makes_no_databricks_calls(tmp_path, monkeypatch):
     result = CliRunner().invoke(main, ["agents", "list", "--local", "--format", "json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)[0]["agent_name"] == "agent"
+
+
+# ── universal --json alias (auto-injected by _ApxCommand) ────────────────────
+
+
+def _flags_for(*path: str) -> set[str]:
+    t = _tree()
+    node = t
+    for p in path:
+        node = node["commands"][p]
+    return {f for param in node.get("params", []) for f in param["flags"]}
+
+
+def test_json_alias_auto_added_to_format_commands():
+    # Every command exposing --format with a json choice also exposes --json.
+    for path in (("agents", "list"), ("agents", "describe"), ("uc", "tables"),
+                 ("fleet", "list"), ("traces", "list"), ("memory", "list"),
+                 ("examples", "list")):
+        flags = _flags_for(*path)
+        assert "--format" in flags and "--json" in flags, f"{path} missing --json"
+
+
+def test_json_alias_not_added_to_non_json_format():
+    # uc topology uses --format [mermaid|graphviz] — no json choice, no --json.
+    flags = _flags_for("uc", "topology")
+    assert "--format" in flags
+    assert "--json" not in flags
+
+
+def test_json_alias_equivalent_to_format_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(_project(tmp_path))
+    a = CliRunner().invoke(main, ["agents", "list", "--local", "--json"])
+    b = CliRunner().invoke(main, ["agents", "list", "--local", "--format", "json"])
+    assert a.exit_code == 0 and a.output == b.output
+
+
+def test_json_alias_preserves_a_json_default(monkeypatch):
+    # A command whose --format defaults to json must still default to json with
+    # the injected --json alias present (no default clobber).
+    import click
+    from apx_agent.cli import _ApxCommand
+
+    captured = {}
+    cmd = _ApxCommand(
+        "x",
+        params=[click.Option(["--format", "fmt"],
+                             type=click.Choice(["text", "json"]), default="json")],
+        callback=lambda fmt: captured.update(fmt=fmt),
+    )
+    CliRunner().invoke(cmd, [])
+    assert captured["fmt"] == "json"
+    CliRunner().invoke(cmd, ["--format", "text"])
+    assert captured["fmt"] == "text"
