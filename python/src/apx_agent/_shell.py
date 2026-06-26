@@ -12,13 +12,36 @@ follows), ``help``, ``clear``, ``exit``/``quit`` (or Ctrl-D).
 from __future__ import annotations
 
 import os
+import re
 import shlex
+import sys
 from pathlib import Path
 from typing import Any
 
 import click
 
 _BUILTINS = ("cd", "help", "clear", "exit", "quit")
+
+# Wrap every ANSI escape in a readline-safe prompt with \001…\002 so readline
+# ignores it when measuring the prompt's visible width (else line-editing and
+# history wrapping corrupt).
+_ANSI = re.compile(r"(\x1b\[[0-9;]*m)")
+
+
+def _color_on() -> bool:
+    """Colorize only when stdout is a terminal and NO_COLOR is unset."""
+    try:
+        return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    except Exception:
+        return False
+
+
+def _rl(text: str, **style: Any) -> str:
+    """``click.style`` for a readline prompt — color escapes bracketed so the
+    prompt width stays correct. Returns plain ``text`` when color is off."""
+    if not _color_on():
+        return text
+    return _ANSI.sub("\001\\1\002", click.style(text, **style))
 
 
 def _command_tree() -> dict[str, Any]:
@@ -66,7 +89,7 @@ def _dispatch(line: str) -> None:
     try:
         args = shlex.split(line)
     except ValueError as exc:
-        click.echo(f"parse error: {exc}")
+        click.secho(f"parse error: {exc}", fg="red")
         return
     if not args:
         return
@@ -75,17 +98,18 @@ def _dispatch(line: str) -> None:
     except click.exceptions.ClickException as exc:
         exc.show()
     except (click.exceptions.Abort, KeyboardInterrupt):
-        click.echo("^C")
+        click.secho("^C", fg="yellow")
     except SystemExit:
         pass  # a command called sys.exit — don't leave the shell
     except Exception as exc:  # noqa: BLE001 — a bad command must not kill the REPL
-        click.echo(f"error: {exc}")
+        click.secho(f"error: {exc}", fg="red")
 
 
 def _prompt() -> str:
     from .cli import _status_prompt_string
 
-    return f"{_status_prompt_string(Path.cwd())} ❯ "
+    ctx = _status_prompt_string(Path.cwd())
+    return f"{_rl(ctx, fg='cyan')} {_rl('❯', fg='bright_green', bold=True)} "
 
 
 def _handle_builtin(line: str) -> bool:
@@ -102,7 +126,7 @@ def _handle_builtin(line: str) -> bool:
         try:
             os.chdir(os.path.expanduser(target))
         except OSError as exc:
-            click.echo(f"cd: {exc}")
+            click.secho(f"cd: {exc}", fg="red")
         return True
     if cmd == "help":
         click.echo(
@@ -143,12 +167,14 @@ def run_shell() -> None:
         readline.set_completer_delims(" \t")
         readline.parse_and_bind("tab: complete")
 
-    click.echo("apx-agent interactive shell · type 'help', Ctrl-D to exit")
+    click.secho("apx-agent interactive shell", fg="cyan", bold=True, nl=False)
+    click.secho(" · type 'help', Ctrl-D to exit", fg="bright_black")
     if not interactive:
-        click.echo(
+        click.secho(
             "(not a terminal — tab-completion, history, and line-editing are "
             "disabled; lines are still read and run. For scripting, prefer "
-            "`apx-agent <cmd> --json` / `describe-cli`.)"
+            "`apx-agent <cmd> --json` / `describe-cli`.)",
+            fg="bright_black",
         )
     while True:
         try:
@@ -157,7 +183,7 @@ def run_shell() -> None:
             click.echo()
             break
         except KeyboardInterrupt:
-            click.echo("^C  (Ctrl-D or 'exit' to leave)")
+            click.secho("^C  (Ctrl-D or 'exit' to leave)", fg="yellow")
             continue
         if not line:
             continue
