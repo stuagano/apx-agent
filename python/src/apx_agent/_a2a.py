@@ -17,7 +17,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -216,6 +216,9 @@ def mount_a2a_route(
         req_id = rpc.id
         method = rpc.method
         params = rpc.params or {}
+        # A notification is a request without an ``id`` member; per JSON-RPC 2.0
+        # the server MUST run it for side effects but MUST NOT send a response.
+        is_notification = "id" not in raw
 
         with safe_span(
             "POST / (A2A)",
@@ -226,42 +229,50 @@ def mount_a2a_route(
                 try:
                     send_params = MessageSendParams(**params)
                 except ValidationError as exc:
-                    return _error_response(
+                    resp = _error_response(
                         req_id, _INVALID_PARAMS, "Invalid params", data=exc.errors()
                     )
-                task = _run_message_send(send_params, request)
-                return _success_response(req_id, task)
-
-            if method == "tasks/get":
+                else:
+                    task = _run_message_send(send_params, request)
+                    resp = _success_response(req_id, task)
+            elif method == "tasks/get":
                 try:
                     q = TaskQueryParams(**params)
                 except ValidationError as exc:
-                    return _error_response(
+                    resp = _error_response(
                         req_id, _INVALID_PARAMS, "Invalid params", data=exc.errors()
                     )
-                task = store.get(q.id)
-                if task is None:
-                    return _error_response(req_id, _TASK_NOT_FOUND, "Task not found")
-                return _success_response(req_id, task)
-
-            if method == "tasks/cancel":
+                else:
+                    task = store.get(q.id)
+                    if task is None:
+                        resp = _error_response(req_id, _TASK_NOT_FOUND, "Task not found")
+                    else:
+                        resp = _success_response(req_id, task)
+            elif method == "tasks/cancel":
                 try:
                     c = TaskIdParams(**params)
                 except ValidationError as exc:
-                    return _error_response(
+                    resp = _error_response(
                         req_id, _INVALID_PARAMS, "Invalid params", data=exc.errors()
                     )
-                task = store.get(c.id)
-                if task is None:
-                    return _error_response(req_id, _TASK_NOT_FOUND, "Task not found")
-                # Sync-complete tasks are already terminal — nothing to cancel.
-                return _error_response(
-                    req_id, _TASK_NOT_CANCELABLE, "Task is not cancelable"
+                else:
+                    task = store.get(c.id)
+                    if task is None:
+                        resp = _error_response(req_id, _TASK_NOT_FOUND, "Task not found")
+                    else:
+                        # Sync-complete tasks are already terminal — nothing to cancel.
+                        resp = _error_response(
+                            req_id, _TASK_NOT_CANCELABLE, "Task is not cancelable"
+                        )
+            else:
+                resp = _error_response(
+                    req_id, _METHOD_NOT_FOUND, f"Method not found: {method}"
                 )
 
-            return _error_response(
-                req_id, _METHOD_NOT_FOUND, f"Method not found: {method}"
-            )
+        # Notifications get no body; the work above (and its side effects) still ran.
+        if is_notification:
+            return Response(status_code=204)
+        return resp
 
     logger.info("Mounted A2A task surface (POST /) for agent %r", config.name)
     return True
