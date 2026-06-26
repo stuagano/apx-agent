@@ -121,10 +121,17 @@ httpx>=0.27.0
 command:
   - uvicorn
   - app:app
+  - --host
+  - 0.0.0.0
   - --port
   - $DATABRICKS_APP_PORT
   - --workers
   - "1"
+env:
+  - name: MLFLOW_TRACKING_URI
+    value: databricks
+  - name: APX_AGENT_MLFLOW_AUTOLOG
+    value: "1"
 '''
 
     return {
