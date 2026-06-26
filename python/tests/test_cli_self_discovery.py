@@ -83,7 +83,11 @@ agent = Agent(tools=[lookup])
 
 
 def _project(tmp_path: Path) -> Path:
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n")
+    # The [tool.apx.agent] marker is what _is_apx_project() keys on (used by
+    # `status`); _discover_local_agents only needs the pyproject + agent.py.
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='demo'\n\n[tool.apx.agent]\nname='demo'\n"
+    )
     (tmp_path / "agent.py").write_text(_AGENT_PY)
     return tmp_path
 
@@ -188,3 +192,40 @@ def test_json_alias_preserves_a_json_default(monkeypatch):
     assert captured["fmt"] == "json"
     CliRunner().invoke(cmd, ["--format", "text"])
     assert captured["fmt"] == "text"
+
+
+# ── status --json: one-shot orientation ──────────────────────────────────────
+
+
+def test_status_json_in_project_reports_declared_agents_and_next_steps(tmp_path, monkeypatch):
+    monkeypatch.chdir(_project(tmp_path))
+    result = CliRunner().invoke(main, ["status", "--json"])
+    assert result.exit_code == 0, result.output
+    p = json.loads(result.output)
+    assert p["in_project"] is True
+    assert p["project"]["agents"][0]["agent_name"] == "agent"
+    assert any("--local" in step for step in p["next"])
+    assert any("deploy" in step for step in p["next"])
+
+
+def test_status_json_outside_project_points_to_scaffold(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # no pyproject / agent.py
+    result = CliRunner().invoke(main, ["status", "--json"])
+    assert result.exit_code == 0, result.output
+    p = json.loads(result.output)
+    assert p["in_project"] is False
+    assert p["project"] is None
+    assert any("scaffold" in step for step in p["next"])
+
+
+def test_status_json_is_offline(tmp_path, monkeypatch):
+    import apx_agent.cli as climod
+
+    def boom(*_a, **_k):
+        raise AssertionError("status --json must stay offline")
+
+    monkeypatch.setattr(climod, "_require_sdk", boom)
+    monkeypatch.chdir(_project(tmp_path))
+    result = CliRunner().invoke(main, ["status", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["in_project"] is True
