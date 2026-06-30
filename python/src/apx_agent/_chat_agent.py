@@ -767,6 +767,23 @@ def chat_agent_for(
                     is_new=conv.is_new if conv is not None else False,
                 )
 
+    # Short-term memory is on by default for a served LlmAgent: when the caller
+    # wired neither a checkpointer NOR a (durable) conversation store to own the
+    # transcript, default to a process-scoped InMemorySaver. This makes an
+    # otherwise-stateless agent remember within a ``session_id`` — and it's
+    # non-regressing: agents WITH a durable conversation store keep their replay
+    # path untouched (swapping in an in-process saver would lose history on
+    # restart). Only LlmAgent — composite agents can't take a checkpointer
+    # (``compile_to_langgraph`` raises). InMemory is per-process; a durable
+    # cross-restart backend (Lakebase) is tracked in #329.
+    if checkpointer is None and conversation_store is None:
+        from ._agents import LlmAgent  # noqa: PLC0415
+
+        if isinstance(agent, LlmAgent):
+            from langgraph.checkpoint.memory import InMemorySaver  # noqa: PLC0415
+
+            checkpointer = InMemorySaver()
+
     return _ApxChatAgent(
         agent, model, conversation_store=conversation_store, agent_id=agent_id,
         checkpointer=checkpointer,
