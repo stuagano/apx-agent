@@ -20,7 +20,7 @@ from typing import Any, Callable
 import pytest
 
 from apx_agent._memory import MemoryFilter, MemoryStore, RecallOptions
-from apx_agent._memory_managed import ManagedMemoryStore
+from apx_agent._memory_managed import ManagedMemoryStore, provision_managed_memory
 
 STORE = "main.agents.mem"
 BASE = f"/api/2.1/unity-catalog/memory-stores/{STORE}/entries"
@@ -270,3 +270,60 @@ class TestConstruction:
 
     def test_conforms_to_memory_store_protocol(self) -> None:
         assert isinstance(_store(FakeApi()), MemoryStore)
+
+
+# ---------------------------------------------------------------------------
+# store_exists (boot-time probe)
+# ---------------------------------------------------------------------------
+
+
+class TestStoreExists:
+    def test_true_when_get_returns_dict(self) -> None:
+        assert _store(FakeApi(lambda m, p, q, b: {"name": "x"})).store_exists() is True
+
+    def test_false_when_get_raises(self) -> None:
+        def boom(m: str, p: str, q: Any, b: Any) -> Any:
+            raise RuntimeError("404 not found")
+
+        assert _store(FakeApi(boom)).store_exists() is False
+
+    def test_false_when_get_returns_none(self) -> None:
+        assert _store(FakeApi(lambda m, p, q, b: None)).store_exists() is False
+
+
+# ---------------------------------------------------------------------------
+# provision_managed_memory (deploy/admin step)
+# ---------------------------------------------------------------------------
+
+
+class TestProvision:
+    def test_creates_store_when_absent(self) -> None:
+        # GET (existence probe) raises → absent → POST create.
+        def handler(m: str, p: str, q: Any, b: Any) -> Any:
+            if m == "GET":
+                raise RuntimeError("404")
+            return {}
+
+        api = FakeApi(handler)
+        status = provision_managed_memory(api, "main.agents.mem")
+        assert "Created" in status
+        post = next(c for c in api.calls if c["method"] == "POST")
+        assert post["path"] == "/api/2.1/unity-catalog/memory-stores"
+        assert post["body"] == {
+            "name": "mem",
+            "catalog_name": "main",
+            "schema_name": "agents",
+            "description": "apx-agent managed agent memory",
+        }
+        # Grant guidance is surfaced (admin must grant the serving principal).
+        assert "MEMORY STORE" in status
+
+    def test_idempotent_when_present(self) -> None:
+        api = FakeApi(lambda m, p, q, b: {"name": "mem"})  # GET → exists
+        status = provision_managed_memory(api, "main.agents.mem")
+        assert "already exists" in status
+        assert not any(c["method"] == "POST" for c in api.calls)
+
+    def test_rejects_non_three_part_name(self) -> None:
+        with pytest.raises(ValueError, match="3-part"):
+            provision_managed_memory(FakeApi(), "main.mem")

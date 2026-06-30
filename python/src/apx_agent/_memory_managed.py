@@ -132,6 +132,26 @@ class ManagedMemoryStore:
         """The entries endpoint path for this store (callers append ``:get`` etc.)."""
         return f"/api/2.1/unity-catalog/memory-stores/{self._store}/entries"
 
+    def store_exists(self) -> bool:
+        """Return ``True`` if the UC memory store exists and is reachable.
+
+        Boot-time probe so an un-provisioned (or ungranted) store fails **loud**
+        — ``/readyz`` degraded — instead of silently no-op'ing at recall time.
+        Any failure (404 missing, 403 perms, transport) is treated as "not
+        usable" and returns ``False``; the cause is logged.
+        """
+        try:
+            resp = self._api.do(
+                "GET", f"/api/2.1/unity-catalog/memory-stores/{self._store}"
+            )
+        except Exception as exc:
+            logger.warning(
+                "ManagedMemoryStore: memory store %s not reachable: %s",
+                self._store, exc,
+            )
+            return False
+        return resp is not None
+
     def _trusted_scope(self) -> str | None:
         """Resolve the current scope from the trusted resolver, or ``None``."""
         if self._scope_resolver is None:
@@ -342,7 +362,63 @@ class ManagedMemoryStore:
 _: type[MemoryStore] = ManagedMemoryStore
 
 
+def provision_managed_memory(
+    api: ApiCaller,
+    store_name: str,
+    *,
+    description: str = "apx-agent managed agent memory",
+) -> str:
+    """Create the UC memory store ``store_name`` (idempotent). Deploy/admin step.
+
+    This is **admin provisioning by the developer at deploy time**, not a
+    runtime action — the served app principal won't hold ``CREATE MEMORY
+    STORE``, so apx never auto-creates the store on first write (that would
+    silently degrade). Mirrors ``_publish.py``'s ``CREATE SCHEMA`` precedent.
+
+    Idempotent via :meth:`ManagedMemoryStore.store_exists` — re-running is a
+    no-op when the store is already present.
+
+    Grants are intentionally NOT executed here (the grantee — usually the app's
+    service principal — and the privilege set are deploy-specific). The returned
+    status names the grants the serving principal needs.
+
+    :param api: Databricks REST caller (``ws.api_client``), with admin rights.
+    :param store_name: Three-part ``catalog.schema.name`` of the store.
+    :returns: A human-readable status string (created / already-exists) plus the
+        grant the serving principal requires.
+    """
+    validate_table_name(store_name)
+    parts = store_name.split(".")
+    if len(parts) != 3:
+        raise ValueError(
+            f"store_name must be a 3-part 'catalog.schema.name'; got {store_name!r}"
+        )
+    catalog, schema, name = parts
+
+    grant_hint = (
+        f"\nGrant the serving principal access:\n"
+        f"  GRANT READ MEMORY STORE, WRITE MEMORY STORE ON {store_name} "
+        f"TO `<app-service-principal>`;"
+    )
+
+    if ManagedMemoryStore(api=api, store_name=store_name).store_exists():
+        return f"Memory store {store_name} already exists.{grant_hint}"
+
+    api.do(
+        "POST",
+        "/api/2.1/unity-catalog/memory-stores",
+        body={
+            "name": name,
+            "catalog_name": catalog,
+            "schema_name": schema,
+            "description": description,
+        },
+    )
+    return f"Created memory store {store_name}.{grant_hint}"
+
+
 __all__ = [
     "ApiCaller",
     "ManagedMemoryStore",
+    "provision_managed_memory",
 ]

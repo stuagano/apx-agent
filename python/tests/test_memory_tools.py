@@ -465,3 +465,63 @@ class TestDepPrincipalFallsBackToDefault:
         tools = make_memory_tools(store=InMemoryMemoryStore(), _use_dep_principal=True)
         out = _find_tool(tools, "remember")(content="x", principal=None)
         assert out == "No principal_id available; cannot recall memories."
+
+
+# ---------------------------------------------------------------------------
+# dep-path forget publishes the per-request principal for scoped backends
+# ---------------------------------------------------------------------------
+
+
+class _ScopeRecordingStore(InMemoryMemoryStore):
+    """Records the principal visible via current_principal() at delete time."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.delete_scope: str | None = "UNSET"
+
+    def delete(self, memory_id: str) -> bool:
+        from apx_agent._memory_tools import current_principal
+
+        self.delete_scope = current_principal()
+        return super().delete(memory_id)
+
+
+class TestForgetPublishesPrincipal:
+    @pytest.fixture(autouse=True)
+    def _reset_principal_ctx(self) -> Any:
+        # forget sets the request-scoped contextvar; ASGI isolates it per
+        # request but pytest shares one context, so reset around each test.
+        from apx_agent._memory_tools import _PRINCIPAL_CTX
+
+        tok = _PRINCIPAL_CTX.set("")
+        yield
+        _PRINCIPAL_CTX.reset(tok)
+
+    def test_dep_forget_carries_principal_dep(self) -> None:
+        from apx_agent._inspection import _inspect_tool_fn
+
+        tools = make_memory_tools(store=InMemoryMemoryStore(), _use_dep_principal=True)
+        _, dep_names = _inspect_tool_fn(_find_tool(tools, "forget"))
+        assert "principal" in dep_names
+
+    def test_non_dep_forget_has_no_principal_dep(self) -> None:
+        from apx_agent._inspection import _inspect_tool_fn
+
+        tools = make_memory_tools(store=InMemoryMemoryStore())  # default False
+        plain, dep_names = _inspect_tool_fn(_find_tool(tools, "forget"))
+        assert "principal" not in dep_names
+        assert "id" in plain
+
+    def test_dep_forget_publishes_injected_principal(self) -> None:
+        store = _ScopeRecordingStore()
+        tools = make_memory_tools(store=store, _use_dep_principal=True)
+        _find_tool(tools, "forget")(id="mem_x", principal="alice")
+        assert store.delete_scope == "alice"
+
+    def test_dep_forget_falls_back_to_default_principal(self) -> None:
+        store = _ScopeRecordingStore()
+        tools = make_memory_tools(
+            store=store, _use_dep_principal=True, default_principal_id="bob"
+        )
+        _find_tool(tools, "forget")(id="x", principal=None)
+        assert store.delete_scope == "bob"

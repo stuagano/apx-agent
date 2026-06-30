@@ -9640,6 +9640,33 @@ def memory() -> None:
     """
 
 
+@memory.command("provision")
+@click.option("--store", "store_name", required=True,
+              help="UC memory store name: catalog.schema.name")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile.")
+@click.option("--description", default="apx-agent managed agent memory",
+              help="Description recorded on the memory store.")
+def memory_provision_cmd(
+    store_name: str,
+    profile: str | None,
+    description: str,
+) -> None:
+    """Create a Databricks Managed Agent Memory store (Unity Catalog).
+
+    Run once (per store) before deploying an agent configured with
+    ``memory='managed'`` or ``[tool.apx.agent.memory] type='managed'``. The
+    served app principal cannot create the store itself, so this is an
+    admin / deploy-time step. Idempotent — safe to re-run.
+    """
+    from databricks.sdk import WorkspaceClient  # noqa: PLC0415
+
+    from ._memory_managed import provision_managed_memory  # noqa: PLC0415
+
+    ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    click.echo(provision_managed_memory(ws.api_client, store_name, description=description))
+
+
 @memory.command("recall")
 @click.option("--principal-id", required=True, help="Scopes recall to one principal.")
 @click.option("--query", required=True, help="Natural-language query.")

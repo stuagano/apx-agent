@@ -105,7 +105,7 @@ class GuardrailsConfig(BaseModel):
     ingestion time."""
 
 
-StoreType = Literal["inmemory", "delta", "lakebase"]
+StoreType = Literal["inmemory", "delta", "lakebase", "managed"]
 
 
 class MemoryBackendConfig(BaseModel):
@@ -123,6 +123,8 @@ class MemoryBackendConfig(BaseModel):
     database: str | None = None
     host: str | None = None
     ensure_extension: bool = True
+    store_name: str | None = None
+    """For ``type='managed'``: the UC memory store's ``catalog.schema.name``."""
     namespace_default: str = "default"
     tool_prefix: str = ""
     include: list[str] | None = None
@@ -173,6 +175,7 @@ _KNOB_TO_TYPE: dict[str, StoreType | None] = {
     "local": "inmemory",
     "persistent": "delta",
     "delta": "delta",
+    "managed": "managed",
 }
 
 
@@ -210,6 +213,18 @@ def normalize_memory_knob(
     tier = _KNOB_TO_TYPE[v]
     if tier is None:
         return (None, None)
+    if tier == "managed":
+        # Managed Agent Memory is a UC memory store named like the delta memory
+        # table. It configures LONG-TERM memory only; short-term/session is
+        # deferred to the LangGraph checkpointer (or an explicit
+        # [tool.apx.agent.session] block) — so no session backend here.
+        if catalog and schema:
+            raw = (name or schema).lower()
+            slug = re.sub(r"[^a-z0-9_]", "_", raw).strip("_") or "agent"
+            store_name = f"{catalog}.{schema}.apx_{slug}_memory"
+        else:
+            store_name = "main.default.apx_memories"
+        return (MemoryBackendConfig(type="managed", store_name=store_name), None)
     if tier == "delta":
         if catalog and schema:
             raw = (name or schema).lower()

@@ -655,3 +655,113 @@ class TestLocalDevPrincipal:
             me=lambda: SimpleNamespace(user_name="me@corp.com")))
         mw.attach_declared_memory(agent, cfg, ws=ws)
         assert captured.get("default_principal_id") == "me@corp.com"
+
+
+# ---------------------------------------------------------------------------
+# Managed Agent Memory backend (_build_memory_store type="managed")
+# ---------------------------------------------------------------------------
+
+
+class TestBuildManagedStore:
+    @pytest.fixture(autouse=True)
+    def _reset_principal_ctx(self) -> Any:
+        from apx_agent._memory_tools import _PRINCIPAL_CTX
+
+        tok = _PRINCIPAL_CTX.set("")
+        yield
+        _PRINCIPAL_CTX.reset(tok)
+
+    def _ws(self) -> Any:
+        ws = MagicMock()
+        ws.current_user.me.return_value.user_name = "me@corp.com"
+        return ws
+
+    def test_builds_managed_store_with_store_name_and_api(self) -> None:
+        from apx_agent._memory_wiring import _build_memory_store
+        from apx_agent._memory_managed import ManagedMemoryStore
+        from apx_agent._models import MemoryBackendConfig
+
+        cfg = MemoryBackendConfig(type="managed", store_name="main.agents.mem")
+        store = _build_memory_store(cfg, self._ws())
+        assert isinstance(store, ManagedMemoryStore)
+        assert store._store == "main.agents.mem"
+
+    def test_returns_none_without_ws(self) -> None:
+        from apx_agent._memory_wiring import _build_memory_store
+        from apx_agent._models import MemoryBackendConfig
+
+        cfg = MemoryBackendConfig(type="managed", store_name="main.agents.mem")
+        assert _build_memory_store(cfg, None) is None
+
+    def test_missing_store_name_raises(self) -> None:
+        from apx_agent._memory_wiring import _build_memory_store
+        from apx_agent._models import MemoryBackendConfig
+
+        cfg = MemoryBackendConfig(type="managed")
+        with pytest.raises(ValueError, match="store_name"):
+            _build_memory_store(cfg, self._ws())
+
+    def test_scope_resolver_reads_forget_published_principal(self) -> None:
+        # The id-only delete resolves scope from the per-request principal the
+        # forget tool publishes — never from the model-supplied id.
+        from apx_agent._memory_wiring import _build_memory_store
+        from apx_agent._memory_tools import _PRINCIPAL_CTX
+        from apx_agent._models import MemoryBackendConfig
+
+        cfg = MemoryBackendConfig(type="managed", store_name="main.agents.mem")
+        store = _build_memory_store(cfg, self._ws())
+        token = _PRINCIPAL_CTX.set("alice")
+        try:
+            store.delete("/prefs/1")
+        finally:
+            _PRINCIPAL_CTX.reset(token)
+        deletes = [c for c in store._api.do.call_args_list if c.args[0] == "DELETE"]
+        assert deletes and deletes[0].kwargs["query"] == {
+            "scope": "alice",
+            "path": "/prefs/1",
+        }
+
+    def test_delete_falls_back_to_default_principal(self) -> None:
+        # No published principal → the local CLI identity (default) is used.
+        from apx_agent._memory_wiring import _build_memory_store
+        from apx_agent._models import MemoryBackendConfig
+
+        cfg = MemoryBackendConfig(type="managed", store_name="main.agents.mem")
+        store = _build_memory_store(cfg, self._ws())
+        store.delete("/prefs/1")
+        deletes = [c for c in store._api.do.call_args_list if c.args[0] == "DELETE"]
+        assert deletes and deletes[0].kwargs["query"]["scope"] == "me@corp.com"
+
+    def test_attach_missing_store_marks_degraded_no_tools(self) -> None:
+        # Boot probe: an un-provisioned managed store fails LOUD (degraded),
+        # never silently no-ops at recall time.
+        from apx_agent import Agent
+        from apx_agent._memory_wiring import attach_declared_memory
+        from apx_agent._models import AgentConfig, MemoryBackendConfig
+
+        agent = Agent(tools=[])
+        cfg = AgentConfig(
+            name="t", memory=MemoryBackendConfig(type="managed", store_name="main.agents.mem")
+        )
+        ws = self._ws()
+        ws.api_client.do.side_effect = RuntimeError("404")  # store_exists → False
+        attach_declared_memory(agent, cfg, ws=ws)
+        assert agent._tool_fns == []
+        degraded = vars(agent).get("_apx_memory_degraded")
+        assert degraded and "not reachable" in degraded
+
+    def test_attach_present_store_wires_tools(self) -> None:
+        from apx_agent import Agent
+        from apx_agent._memory_wiring import attach_declared_memory
+        from apx_agent._models import AgentConfig, MemoryBackendConfig
+
+        agent = Agent(tools=[])
+        cfg = AgentConfig(
+            name="t", memory=MemoryBackendConfig(type="managed", store_name="main.agents.mem")
+        )
+        ws = self._ws()
+        ws.api_client.do.return_value = {"name": "mem"}  # store_exists → True
+        attach_declared_memory(agent, cfg, ws=ws)
+        names = {fn.__name__ for fn in agent._tool_fns}
+        assert {"recall", "remember", "forget"} <= names
+        assert not vars(agent).get("_apx_memory_degraded")
