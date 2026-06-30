@@ -43,6 +43,21 @@ class TestNormalizeMemoryKnob:
         with pytest.raises(ValueError, match="lakebase"):
             normalize_memory_knob("lakebase")
 
+    def test_managed_derives_store_name_and_no_session(self):
+        mem, sess = normalize_memory_knob(
+            "managed", catalog="acme", schema="hr", name="hr_coworker"
+        )
+        assert mem.type == "managed"
+        assert mem.store_name == "acme.hr.apx_hr_coworker_memory"
+        # Managed configures long-term only; short-term/session is deferred.
+        assert sess is None
+
+    def test_managed_bare_falls_back_to_main_default(self):
+        mem, sess = normalize_memory_knob("managed")
+        assert mem.type == "managed"
+        assert mem.store_name == "main.default.apx_memories"
+        assert sess is None
+
     def test_unknown_value_errors_with_valid_rungs(self):
         with pytest.raises(ValueError, match="off|inmemory|persistent"):
             normalize_memory_knob("sometimes")
