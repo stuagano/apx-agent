@@ -18,7 +18,8 @@ REST surface (base ``/api/2.1/unity-catalog/memory-stores/{store}/entries``):
 Mapping onto :class:`~apx_agent._memory.Memory`:
 
   * ``scope``      ← ``principal_id`` (per-user isolation boundary)
-  * ``path``       ← ``/{namespace}/{uuid}`` and IS the memory ``id``
+  * ``path``       ← ``/memories/{namespace}/{uuid}`` and IS the memory ``id``
+    (the store requires paths under ``/memories/``)
   * ``contents``   ← ``content``
   * ``description``← first line of ``content`` (the store uses it to improve
     retrieval; the entry model has no separate summary field)
@@ -173,7 +174,10 @@ class ManagedMemoryStore:
         namespace = str(memory.get("namespace") or "default")
         content = str(memory["content"])
         leaf = new_memory_id()
-        path = f"/{namespace}/{leaf}"
+        # The managed store requires entry paths under /memories/ (verified
+        # live: a path outside it is rejected with "path must start with
+        # /memories/"). apx's namespace becomes the folder under it.
+        path = f"/memories/{namespace}/{leaf}"
         self._api.do(
             "POST",
             self._entries(),
@@ -203,11 +207,17 @@ class ManagedMemoryStore:
         scope = self._trusted_scope()
         if not scope:
             return None
-        entry = self._api.do(
-            "GET",
-            self._entries() + ":get",
-            query={"scope": scope, "path": memory_id},
-        )
+        try:
+            entry = self._api.do(
+                "GET",
+                self._entries() + ":get",
+                query={"scope": scope, "path": memory_id},
+            )
+        except Exception as exc:
+            # A missing entry surfaces as a not-found error from the REST API;
+            # the protocol contract is None-for-missing. Mirrors DeltaMemoryStore.
+            logger.warning("ManagedMemoryStore.get(%s): %s — returning None.", memory_id, exc)
+            return None
         if not entry:
             return None
         return self._entry_to_memory(entry, scope=scope, path=memory_id)
@@ -279,7 +289,7 @@ class ManagedMemoryStore:
         scope = filter.principal_id
         resp = self._api.do("GET", self._entries(), query={"scope": scope})
         entries = (resp or {}).get("entries") or []
-        prefix = f"/{filter.namespace}/" if filter.namespace is not None else None
+        prefix = f"/memories/{filter.namespace}/" if filter.namespace is not None else None
         out: list[Memory] = []
         for e in entries:
             path = str(e.get("path") or "")
@@ -299,29 +309,26 @@ class ManagedMemoryStore:
         result. Infra errors propagate.
         """
         scope = opts.principal_id
+        # Verified live: scope AND query are query params (a body `query` is
+        # ignored → empty). Results come back as {results: [{memory_entry: {…},
+        # score: <float>}]}.
         resp = self._api.do(
             "POST",
             self._entries() + ":search",
-            query={"scope": scope},
-            body={"query": opts.query},
+            query={"scope": scope, "query": opts.query},
         )
-        rows = (resp or {}).get("entries") or (resp or {}).get("results") or []
-        prefix = f"/{opts.namespace}/" if opts.namespace is not None else None
+        rows = (resp or {}).get("results") or []
+        prefix = f"/memories/{opts.namespace}/" if opts.namespace is not None else None
         out: list[RecallResult] = []
         for row in rows:
-            path = str(row.get("path") or "")
+            entry = row.get("memory_entry") or {}
+            path = str(entry.get("path") or "")
             if prefix is not None and not path.startswith(prefix):
                 continue
-            score = (
-                row.get("score")
-                if row.get("score") is not None
-                else row.get("_score")
-                if row.get("_score") is not None
-                else 0.0
-            )
+            score = row.get("score")
             out.append(
                 RecallResult(
-                    memory=self._entry_to_memory(row, scope=scope, path=path),
+                    memory=self._entry_to_memory(entry, scope=scope, path=path),
                     score=float(score or 0.0),
                 )
             )
@@ -342,7 +349,11 @@ class ManagedMemoryStore:
         does not persist them.
         """
         content = str(entry.get("contents") or entry.get("description") or "")
-        namespace = path[1:].split("/", 1)[0] if path.startswith("/") else "default"
+        # path is /memories/{namespace}/{leaf}; recover the namespace folder.
+        segments = [s for s in path.split("/") if s]
+        namespace = (
+            segments[1] if len(segments) >= 2 and segments[0] == "memories" else "default"
+        )
         now = iso_now()
         return Memory(
             id=path,
@@ -353,8 +364,8 @@ class ManagedMemoryStore:
             importance=0.5,
             embedding=None,
             metadata={},
-            created_at=str(entry.get("created_at") or now),
-            updated_at=str(entry.get("updated_at") or now),
+            created_at=str(entry.get("create_time") or entry.get("created_at") or now),
+            updated_at=str(entry.get("update_time") or entry.get("updated_at") or now),
         )
 
 
