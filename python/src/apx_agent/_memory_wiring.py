@@ -121,9 +121,31 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
             ensure_extension=cfg.ensure_extension,
         )
 
+    if cfg.type == "managed":
+        if ws is None:
+            return None
+        if not cfg.store_name:
+            raise ValueError(
+                "[tool.apx.agent.memory] type='managed' requires store_name "
+                "(e.g. 'catalog.schema.name')."
+            )
+        from ._memory_managed import ManagedMemoryStore  # noqa: PLC0415
+        from ._memory_tools import current_principal  # noqa: PLC0415
+
+        # Scope for the id-only get/update/delete comes from the trusted
+        # per-request principal (published by the forget tool), falling back to
+        # the local CLI identity. add/recall/list take principal_id from their
+        # own (dep-injected) args, so they don't use this resolver.
+        default_principal = _resolve_default_principal(ws)
+        return ManagedMemoryStore(
+            api=ws.api_client,
+            store_name=cfg.store_name,
+            scope_resolver=lambda: current_principal() or default_principal,
+        )
+
     raise ValueError(
         f"[tool.apx.agent.memory] unknown type {cfg.type!r}. "
-        "Known: inmemory, delta, lakebase."
+        "Known: inmemory, delta, lakebase, managed."
     )
 
 
@@ -277,12 +299,29 @@ def attach_declared_memory(
                 "[tool.apx.agent.memory] build failed — skipping memory tools: %s",
                 exc,
             )
+        # Managed memory has no runtime auto-create, so probe that the UC store
+        # actually exists/is reachable at boot. A missing or ungranted store
+        # drops to degraded (loud /readyz) instead of silently no-op'ing every
+        # recall/remember at request time.
+        if store is not None and mcfg.type == "managed" and not store.store_exists():
+            store = None
         if store is None:
             # A declared memory that produced no store marks the agent degraded
             # so /readyz reports it honestly — for ANY backend type. Previously
             # this only fired for delta/lakebase, so a different type that failed
             # to build would leave /readyz reporting memory="ok" with no store.
-            if mcfg.type in ("lakebase", "delta") and ws is None:
+            if mcfg.type == "managed":
+                logger.warning(
+                    "[tool.apx.agent.memory] managed store %r not active (missing "
+                    "workspace creds or not provisioned). Provision it with "
+                    "`apx-agent memory provision --store %s`. Memory tools will be absent.",
+                    mcfg.store_name, mcfg.store_name,
+                )
+                msg = (
+                    f"managed memory store {mcfg.store_name!r} not reachable — "
+                    f"run `apx-agent memory provision --store {mcfg.store_name}`"
+                )
+            elif mcfg.type in ("lakebase", "delta") and ws is None:
                 logger.warning(
                     "[tool.apx.agent.memory] type=%r requires ws; ws=None at this point "
                     "(deploy with valid Databricks credentials). Memory tools will be absent.",

@@ -18,12 +18,29 @@ itself; it just wires :func:`apx_agent.tool` against the injected store.
 
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 from ._defaults import PrincipalDependency  # module-level — resolvable by get_type_hints
 from ._memory import MemoryStore, RecallOptions, RecallResult
 from ._tool import tool
+
+# Request-scoped principal for scoped backends (e.g. Managed Agent Memory),
+# whose id-only ``delete`` needs the caller's scope. The dep-path ``forget``
+# tool publishes its trusted principal here right before calling
+# ``store.delete``; the store's ``scope_resolver`` reads it in the same
+# synchronous frame. Mirrors the request-scoped auth contextvars in _mcp.py.
+# Empty string = unset (recall/remember don't use it — they pass principal_id
+# as an explicit store argument).
+_PRINCIPAL_CTX: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_apx_memory_principal", default=""
+)
+
+
+def current_principal() -> str | None:
+    """Return the request-scoped principal published by ``forget``, or ``None``."""
+    return _PRINCIPAL_CTX.get() or None
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -282,21 +299,43 @@ def make_memory_tools(
                 tools.append(_remember_resolver)
 
         elif name == "forget":
+            if _use_dep_principal:
 
-            @tool(name=f"{tool_prefix}forget")
-            def forget(id: str) -> str:
-                """Delete a memory by id.
+                @tool(name=f"{tool_prefix}forget")
+                def _forget_dep(id: str, *, principal: PrincipalDependency) -> str:
+                    """Delete a memory by id.
 
-                Returns ``"Forgot memory {id}."`` on hit or
-                ``"No memory with id {id}."`` on miss. Principal-agnostic
-                — operates by id only.
-                """
-                deleted = store.delete(id)
-                if deleted:
-                    return f"Forgot memory {id}."
-                return f"No memory with id {id}."
+                    Returns ``"Forgot memory {id}."`` on hit or
+                    ``"No memory with id {id}."`` on miss.
+                    """
+                    # Publish the trusted per-request principal so scoped
+                    # backends (Managed Agent Memory) resolve the caller's own
+                    # scope for this id-only delete — never a model-supplied
+                    # scope. Set in the same sync frame store.delete runs in.
+                    _PRINCIPAL_CTX.set((principal or default_principal_id) or "")
+                    deleted = store.delete(id)
+                    if deleted:
+                        return f"Forgot memory {id}."
+                    return f"No memory with id {id}."
 
-            tools.append(forget)
+                tools.append(_forget_dep)
+
+            else:
+
+                @tool(name=f"{tool_prefix}forget")
+                def forget(id: str) -> str:
+                    """Delete a memory by id.
+
+                    Returns ``"Forgot memory {id}."`` on hit or
+                    ``"No memory with id {id}."`` on miss. Principal-agnostic
+                    — operates by id only.
+                    """
+                    deleted = store.delete(id)
+                    if deleted:
+                        return f"Forgot memory {id}."
+                    return f"No memory with id {id}."
+
+                tools.append(forget)
 
         else:  # pragma: no cover - guarded by Literal type
             raise ValueError(f"unknown memory tool name: {name!r}")
@@ -307,5 +346,6 @@ def make_memory_tools(
 __all__ = [
     "MemoryToolName",
     "NO_PRINCIPAL",
+    "current_principal",
     "make_memory_tools",
 ]
