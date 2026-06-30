@@ -190,6 +190,7 @@ from ._example import (
 from ._memory_lakebase import LakebaseMemoryStore
 from ._example_lakebase import LakebaseExampleStore
 from ._memory_delta import DeltaMemoryStore, VectorSearchLike
+from ._memory_managed import ApiCaller, ManagedMemoryStore
 from ._example_delta import DeltaExampleStore
 
 # Agent-facing memory / example tools (LLM-callable wrappers around the stores)
@@ -529,6 +530,8 @@ __all__ = [
     "DeltaMemoryStore",
     "DeltaExampleStore",
     "VectorSearchLike",
+    "ManagedMemoryStore",
+    "ApiCaller",
     # Agent-facing memory / example tools
     "make_memory_tools",
     "make_example_tools",
