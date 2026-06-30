@@ -435,6 +435,20 @@ def chat_agent_for(
             e.g. ``"my-agent"``. Pass the SAME name readers filter by — the
             dev-UI History panel lists ``list_conversations(agent_id=
             config.name)``. Falls back to ``agent.name`` when omitted.
+        checkpointer: Optional LangGraph checkpointer (BaseCheckpointSaver) for
+            thread-scoped short-term memory.
+
+    Short-term memory — two tiers, by what you wire:
+        * **Durable** — pass a ``conversation_store`` (Lakebase/Delta). Prior
+          turns are replayed and persisted across restarts/replicas. This is
+          the durable path; a memory store is where durability lives.
+        * **In-process (default)** — wire NEITHER a checkpointer nor a store and
+          (for an ``LlmAgent``) this defaults to a process-scoped
+          ``InMemorySaver``: the agent remembers across turns within one running
+          replica, keyed by ``session_id``, but **forgets on restart and does
+          not span replicas**. Configure a ``conversation_store`` for durability.
+        These never stack: a ``conversation_store`` keeps its replay path and no
+        checkpointer is injected (an in-process saver would lose its history).
 
     Returns:
         An instance of an ``mlflow.pyfunc.ChatAgent`` subclass. Usable
@@ -783,6 +797,14 @@ def chat_agent_for(
             from langgraph.checkpoint.memory import InMemorySaver  # noqa: PLC0415
 
             checkpointer = InMemorySaver()
+            logger.info(
+                "Short-term memory: in-process (InMemorySaver) for agent %r — "
+                "remembers within a replica per session_id, but resets on "
+                "restart and does not span replicas. Configure "
+                "[tool.apx.agent.session] (a conversation store) for durable "
+                "cross-restart memory.",
+                getattr(agent, "name", None),
+            )
 
     return _ApxChatAgent(
         agent, model, conversation_store=conversation_store, agent_id=agent_id,
