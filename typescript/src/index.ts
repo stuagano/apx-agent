@@ -249,8 +249,9 @@ export {
   getResources,
   subAgentToEndpoint,
   collectResourceSpecs,
+  mlflowResourcesFor,
 } from './resources.js';
-export type { CollectResourceSpecsOptions } from './resources.js';
+export type { CollectResourceSpecsOptions, MlflowResource } from './resources.js';
 
 // Trace exporter — MLflow traces → Delta table
 export {
