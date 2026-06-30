@@ -89,6 +89,11 @@ class CompileContext:
     ws: "WorkspaceClient"
     model: str
     headers: Any | None = None  # DatabricksAppsHeaders or None for local dev
+    checkpointer: Any | None = None
+    """Optional LangGraph checkpointer (BaseCheckpointSaver) for thread-scoped
+    short-term memory. Applied to the ``create_agent`` runtime (LlmAgent path).
+    Must be process-scoped (shared across per-request compiles) to persist
+    across turns. Requires a ``thread_id`` in the invoke config."""
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +341,10 @@ def _compile_llm_agent(
     }
     if _agent_has_state_tool(agent):
         create_kwargs["state_schema"] = state_schema()
+    if ctx.checkpointer is not None:
+        # Thread-scoped short-term memory: the create_agent runtime persists
+        # graph state per ``thread_id`` between turns via this saver.
+        create_kwargs["checkpointer"] = ctx.checkpointer
     runnable = create_agent(**create_kwargs)
     config: dict[str, Any] = {}
     handler = build_callback_handler(agent)
@@ -975,6 +984,7 @@ def compile_to_langgraph(
     ws: "WorkspaceClient | None",
     model: str,
     headers: Any | None = None,
+    checkpointer: Any | None = None,
 ) -> Any:
     """Compile an apx-agent declarative agent tree to a LangGraph runtime.
 
@@ -1022,5 +1032,14 @@ def compile_to_langgraph(
         from ._defaults import _make_workspace_client
 
         ws = _make_workspace_client()
-    ctx = CompileContext(ws=ws, model=model, headers=headers)
+    if checkpointer is not None and not isinstance(agent, LlmAgent):
+        # Scope: thread-scoped short-term memory is wired only on the LlmAgent
+        # (create_agent) path for now. Composite agents (Sequential/Parallel/
+        # Loop/Router/Handoff) would need the saver threaded into each
+        # graph.compile() site — deferred until something needs it.
+        raise NotImplementedError(
+            "checkpointer (short-term memory) is currently supported only for "
+            f"LlmAgent, not {type(agent).__name__}."
+        )
+    ctx = CompileContext(ws=ws, model=model, headers=headers, checkpointer=checkpointer)
     return _compile_any(agent, ctx)

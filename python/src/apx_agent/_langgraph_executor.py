@@ -171,6 +171,7 @@ class LangGraphExecutor:
         agent: "BaseAgent",
         ws: "WorkspaceClient | None",
         model: str | None = None,
+        checkpointer: Any | None = None,
     ) -> None:
         """Initialise a LangGraphExecutor without compiling the graph yet.
 
@@ -180,10 +181,15 @@ class LangGraphExecutor:
             :func:`~apx_agent._compile.compile_to_langgraph`.
         :param model: Default model endpoint name.  Overridable per-turn via
             :class:`~apx_agent._executor.ExecutorConfig`.
+        :param checkpointer: Optional LangGraph checkpointer for thread-scoped
+            short-term memory.  Must be **process-scoped** (shared across
+            per-request executors) to persist across turns; when set, each
+            :meth:`run_turn` requires a ``thread_id`` in its config.
         """
         self._agent = agent
         self._ws = ws
         self._model = model
+        self._checkpointer = checkpointer
         # Cache: model_key (str) -> compiled graph
         self._compiled_cache: dict[str, Any] = {}
 
@@ -222,7 +228,7 @@ class LangGraphExecutor:
             from ._compile import compile_to_langgraph
 
             self._compiled_cache[model] = compile_to_langgraph(
-                self._agent, ws=self._ws, model=model
+                self._agent, ws=self._ws, model=model, checkpointer=self._checkpointer
             )
         return self._compiled_cache[model]
 
@@ -257,6 +263,18 @@ class LangGraphExecutor:
         """
         resolved_model = (config.model if config and config.model else None) or self._model or ""
 
+        thread_id = config.thread_id if config else None
+        # A compiled-in checkpointer REQUIRES a thread_id at invoke time, or
+        # LangGraph raises mid-turn. Couple them explicitly with a clear error.
+        if self._checkpointer is not None and not thread_id:
+            raise ValueError(
+                "LangGraphExecutor was given a checkpointer (short-term memory) "
+                "but ExecutorConfig.thread_id is unset — pass the conversation id "
+                "as thread_id so state can be keyed to the thread."
+            )
+        # None config is harmless on a checkpointer-less graph (ignored).
+        lg_config = {"configurable": {"thread_id": thread_id}} if thread_id else None
+
         try:
             compiled = self._get_compiled(resolved_model)
             lc_messages = _to_langchain_messages(messages, system_prompt=system_prompt)
@@ -269,7 +287,7 @@ class LangGraphExecutor:
 
             try:
                 async for chunk in compiled.astream(
-                    {"messages": lc_messages}, stream_mode="updates"
+                    {"messages": lc_messages}, stream_mode="updates", config=lg_config
                 ):
                     for text in _texts_from_chunk(chunk):
                         collected_texts.append(text)
@@ -289,7 +307,9 @@ class LangGraphExecutor:
             else:
                 # astream raised (graph is a sync-only stub or the provider
                 # doesn't support streaming) — fall back to ainvoke once.
-                result = await compiled.ainvoke({"messages": lc_messages})
+                result = await compiled.ainvoke(
+                    {"messages": lc_messages}, config=lg_config
+                )
                 final_text = _final_text_from_messages(result.get("messages", []))
                 yield TurnComplete(response=final_text)
 
