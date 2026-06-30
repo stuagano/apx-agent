@@ -118,3 +118,50 @@ def test_served_predict_stream_recalls_prior_turn() -> None:
         if isinstance(m, HumanMessage)
     ]
     assert "I live in Oslo" in humans and "where do I live" in humans
+
+
+# ---------------------------------------------------------------------------
+# Default-on: short-term memory is part of a served LlmAgent without wiring
+# ---------------------------------------------------------------------------
+
+
+def test_short_term_on_by_default_for_llm_agent() -> None:
+    """No checkpointer, no conversation_store, no config — yet a served LlmAgent
+    remembers across turns within a session_id (auto InMemorySaver)."""
+    agent = _agent()
+    chat = chat_agent_for(agent, model="m")  # nothing wired
+    ci = {"session_id": "D"}
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        chat.predict(
+            [ChatAgentMessage(role="user", content="my favorite color is teal", id="u1")],
+            custom_inputs=ci,
+        )
+        chat.predict(
+            [ChatAgentMessage(role="user", content="what is my favorite color", id="u2")],
+            custom_inputs=ci,
+        )
+        probe = compile_to_langgraph(agent, ws=_ws(), model="m", checkpointer=chat._checkpointer)
+    humans = [
+        m.content
+        for m in probe.get_state({"configurable": {"thread_id": "D"}}).values["messages"]
+        if isinstance(m, HumanMessage)
+    ]
+    assert "my favorite color is teal" in humans and "what is my favorite color" in humans
+
+
+def test_no_auto_checkpointer_when_conversation_store_present() -> None:
+    """A durable conversation store keeps its replay path — don't swap in an
+    in-process saver (would lose history on restart)."""
+    from apx_agent import InMemoryConversationStore
+
+    chat = chat_agent_for(_agent(), model="m", conversation_store=InMemoryConversationStore())
+    assert chat._checkpointer is None
+
+
+def test_no_auto_checkpointer_for_composite_agent() -> None:
+    """Composite agents can't take a checkpointer (compile would raise) — no
+    auto-enable, no crash."""
+    from apx_agent import SequentialAgent
+
+    chat = chat_agent_for(SequentialAgent(agents=[_agent()]), model="m")
+    assert chat._checkpointer is None
