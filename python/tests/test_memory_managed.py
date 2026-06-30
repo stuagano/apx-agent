@@ -74,9 +74,10 @@ class TestAdd:
         assert call["query"] == {"scope": "alice"}
         assert call["body"]["contents"] == "Likes oat milk"
         assert call["body"]["description"] == "Likes oat milk"
-        # id IS the path; path is /{namespace}/{uuid}
+        # id IS the path; path is /memories/{namespace}/{uuid} (store requires
+        # the /memories/ prefix — verified live).
         assert call["body"]["path"] == mem.id
-        assert mem.id.startswith("/prefs/")
+        assert mem.id.startswith("/memories/prefs/")
         assert mem.principal_id == "alice"
         assert mem.namespace == "prefs"
         assert mem.content == "Likes oat milk"
@@ -111,31 +112,30 @@ class TestAdd:
 
 
 class TestRecall:
-    def _search_api(self, rows: list[dict]) -> FakeApi:
-        return FakeApi(lambda m, p, q, b: {"entries": rows})
+    def _search_api(self, rows: list[tuple[str, str, float]]) -> FakeApi:
+        # Real shape (verified live): {results: [{memory_entry: {…}, score}]}.
+        results = [
+            {"memory_entry": {"path": p, "contents": c}, "score": s} for p, c, s in rows
+        ]
+        return FakeApi(lambda m, pa, q, b: {"results": results})
 
     def test_searches_and_maps_rows_to_scored_results(self) -> None:
         api = self._search_api(
-            [
-                {"path": "/default/1", "contents": "first", "score": 0.9},
-                {"path": "/default/2", "contents": "second", "score": 0.7},
-            ]
+            [("/memories/default/1", "first", 0.9), ("/memories/default/2", "second", 0.7)]
         )
         out = _store(api).recall(RecallOptions(principal_id="alice", query="q"))
         call = api.calls[0]
         assert call["method"] == "POST"
         assert call["path"] == f"{BASE}:search"
-        assert call["query"] == {"scope": "alice"}
-        assert call["body"] == {"query": "q"}
+        # scope AND query are query params (verified live); no body.
+        assert call["query"] == {"scope": "alice", "query": "q"}
+        assert call["body"] is None
         assert [r.memory.content for r in out] == ["first", "second"]
         assert [r.score for r in out] == [0.9, 0.7]
 
     def test_namespace_is_a_path_prefix_post_filter(self) -> None:
         api = self._search_api(
-            [
-                {"path": "/prefs/1", "contents": "keep", "score": 0.9},
-                {"path": "/other/2", "contents": "drop", "score": 0.8},
-            ]
+            [("/memories/prefs/1", "keep", 0.9), ("/memories/other/2", "drop", 0.8)]
         )
         out = _store(api).recall(
             RecallOptions(principal_id="u", query="q", namespace="prefs")
@@ -145,7 +145,7 @@ class TestRecall:
     def test_tags_and_min_importance_are_ignored_not_emptying(self) -> None:
         # The managed model has no tags/importance; a tags filter must NOT
         # post-filter the results to empty.
-        api = self._search_api([{"path": "/default/1", "contents": "hit", "score": 0.5}])
+        api = self._search_api([("/memories/default/1", "hit", 0.5)])
         out = _store(api).recall(
             RecallOptions(
                 principal_id="u", query="q", tags=("nope",), min_importance=0.99
@@ -154,17 +154,25 @@ class TestRecall:
         assert [r.memory.content for r in out] == ["hit"]
 
     def test_respects_k(self) -> None:
-        rows = [{"path": f"/default/{i}", "contents": str(i), "score": 1.0} for i in range(5)]
+        rows = [(f"/memories/default/{i}", str(i), 1.0) for i in range(5)]
         out = _store(self._search_api(rows)).recall(
             RecallOptions(principal_id="u", query="q", k=2)
         )
         assert len(out) == 2
 
-    def test_falls_back_to_results_key_and_default_score(self) -> None:
-        api = FakeApi(lambda m, p, q, b: {"results": [{"path": "/d/1", "contents": "x"}]})
+    def test_missing_score_defaults_to_zero(self) -> None:
+        api = FakeApi(
+            lambda m, p, q, b: {"results": [{"memory_entry": {"path": "/memories/d/1", "contents": "x"}}]}
+        )
         out = _store(api).recall(RecallOptions(principal_id="u", query="q"))
         assert len(out) == 1
         assert out[0].score == 0.0
+
+    def test_empty_results_returns_empty(self) -> None:
+        out = _store(FakeApi(lambda m, p, q, b: {})).recall(
+            RecallOptions(principal_id="u", query="q")
+        )
+        assert out == []
 
 
 # ---------------------------------------------------------------------------
@@ -177,17 +185,18 @@ class TestList:
         api = FakeApi(
             lambda m, p, q, b: {
                 "entries": [
-                    {"path": "/prefs/1", "description": "a"},
-                    {"path": "/prefs/2", "description": "b"},
-                    {"path": "/other/3", "description": "c"},
+                    {"path": "/memories/prefs/1", "description": "a"},
+                    {"path": "/memories/prefs/2", "description": "b"},
+                    {"path": "/memories/other/3", "description": "c"},
                 ]
             }
         )
         out = _store(api).list(MemoryFilter(principal_id="alice", namespace="prefs", limit=10))
         assert api.calls[0]["query"] == {"scope": "alice"}
-        assert [m.id for m in out] == ["/prefs/1", "/prefs/2"]
-        # content falls back to description when contents absent
+        assert [m.id for m in out] == ["/memories/prefs/1", "/memories/prefs/2"]
+        # list rows carry only description (no contents) — content falls back to it.
         assert out[0].content == "a"
+        assert out[0].namespace == "prefs"
 
     def test_empty_store_returns_empty(self) -> None:
         # `entries` key omitted entirely when empty — must not blow up.
@@ -209,9 +218,9 @@ class TestList:
 class TestScopeSafety:
     def test_get_uses_trusted_scope_not_the_id(self) -> None:
         api = FakeApi(lambda m, p, q, b: {"contents": "v"})
-        mem = _store(api, scope="alice").get("/prefs/1")
+        mem = _store(api, scope="alice").get("/memories/prefs/1")
         assert mem is not None
-        assert api.calls[0]["query"] == {"scope": "alice", "path": "/prefs/1"}
+        assert api.calls[0]["query"] == {"scope": "alice", "path": "/memories/prefs/1"}
         assert mem.principal_id == "alice"
         assert mem.namespace == "prefs"
 
@@ -222,7 +231,15 @@ class TestScopeSafety:
 
     def test_get_missing_entry_returns_none(self) -> None:
         api = FakeApi(lambda m, p, q, b: {})
-        assert _store(api, scope="alice").get("/prefs/1") is None
+        assert _store(api, scope="alice").get("/memories/prefs/1") is None
+
+    def test_get_returns_none_when_api_raises_not_found(self) -> None:
+        # Verified live: a missing entry surfaces as a not-found ERROR, not an
+        # empty body — get must still honor the None-for-missing contract.
+        def boom(m: str, p: str, q: Any, b: Any) -> Any:
+            raise RuntimeError("memory entry not found at path")
+
+        assert _store(FakeApi(boom), scope="alice").get("/memories/prefs/1") is None
 
     def test_delete_uses_trusted_scope(self) -> None:
         api = FakeApi()
