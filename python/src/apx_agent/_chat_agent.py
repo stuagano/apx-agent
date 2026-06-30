@@ -417,6 +417,7 @@ def chat_agent_for(
     model: str,
     conversation_store: ConversationStore | None = None,
     agent_id: str | None = None,
+    checkpointer: Any | None = None,
 ) -> Any:
     """Return an MLflow ``ChatAgent`` wrapping ``agent``.
 
@@ -459,13 +460,36 @@ def chat_agent_for(
             model_endpoint: str,
             conversation_store: ConversationStore | None = None,
             agent_id: str | None = None,
+            checkpointer: Any | None = None,
         ) -> None:
             self._agent = inner
             self._model = model_endpoint
             self._conversation_store = conversation_store
+            # Process-scoped LangGraph checkpointer (BaseCheckpointSaver) for
+            # thread-scoped short-term memory. When set, the checkpointer owns
+            # the transcript: we DON'T replay history (avoids double-context),
+            # key state by the session id, and still persist to the
+            # conversation store for the dev-UI / observability.
+            self._checkpointer = checkpointer
             # Bound onto conversations at creation so agent-filtered readers
             # (dev-UI History panel) can see them.
             self._agent_id = agent_id if agent_id is not None else getattr(inner, "name", None)
+
+        def _short_term_thread(
+            self, custom_inputs: dict[str, Any] | None
+        ) -> str | None:
+            """Session id to key short-term memory by, or ``None`` for a
+            stateless (history-replay) turn.
+
+            Returns an id only when a checkpointer is wired AND the caller
+            supplied a ``session_id`` — a checkpointer-compiled graph requires a
+            ``thread_id``, and the served ``graph.invoke``/``stream`` path is not
+            covered by the executor's guard, so a missing id must fall back to
+            stateless rather than crash.
+            """
+            if self._checkpointer is None or not custom_inputs:
+                return None
+            return custom_inputs.get("session_id")
 
         def _resolve_model(self) -> str:
             """Return the model endpoint to use for this request.
@@ -586,8 +610,16 @@ def chat_agent_for(
             conv_id = conv.conversation_id if conv is not None else None
             history_msgs = conv.messages if conv is not None else []
 
-            prepended_messages: list[ChatAgentMessage] = (
-                history_msgs + list(messages) if history_msgs else list(messages)
+            # Short-term memory: when a checkpointer is active it holds the
+            # transcript, so send ONLY the new turn (no replay → no double
+            # context) and key state by thread_id. Otherwise replay history.
+            thread_id = self._short_term_thread(custom_inputs)
+            checkpointer = self._checkpointer if thread_id else None
+            lg_config = {"configurable": {"thread_id": thread_id}} if thread_id else None
+            effective_messages: list[ChatAgentMessage] = (
+                list(messages)
+                if thread_id
+                else (history_msgs + list(messages) if history_msgs else list(messages))
             )
 
             user_token_provided = bool(
@@ -597,13 +629,13 @@ def chat_agent_for(
             with safe_span(
                 "ApxChatAgent.predict",
                 span_type="AGENT",
-                inputs={"messages": [m.model_dump() for m in prepended_messages]},
+                inputs={"messages": [m.model_dump() for m in effective_messages]},
                 attributes={
                     AuditAttrs.OPERATION: "predict",
                     AuditAttrs.MODEL_ENDPOINT: effective_model,
-                    AuditAttrs.MODEL_INPUT_MESSAGES: len(prepended_messages),
+                    AuditAttrs.MODEL_INPUT_MESSAGES: len(effective_messages),
                     AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
-                    AuditAttrs.SESSION_ID: conv_id,
+                    AuditAttrs.SESSION_ID: conv_id or thread_id,
                     AuditAttrs.MODEL_STREAMING: False,
                 },
             ) as span:
@@ -615,12 +647,16 @@ def chat_agent_for(
                     graph = compile_to_langgraph(
                         self._agent, ws=_auth.ws, model=effective_model,
                         headers=_auth.headers,
+                        **({"checkpointer": checkpointer} if checkpointer else {}),
                     )
 
-                lc_input = _to_langchain_messages(prepended_messages)
+                lc_input = _to_langchain_messages(effective_messages)
                 input_count = len(lc_input)
                 with safe_span("graph.invoke", span_type="CHAIN") as inv_span:
-                    result = graph.invoke({"messages": lc_input})
+                    result = graph.invoke(
+                        {"messages": lc_input},
+                        **({"config": lg_config} if lg_config else {}),
+                    )
                     set_audit_attrs(
                         inv_span,
                         model_input_messages=input_count,
@@ -659,8 +695,15 @@ def chat_agent_for(
             conv_id = conv.conversation_id if conv is not None else None
             history_msgs = conv.messages if conv is not None else []
 
-            prepended_messages: list[ChatAgentMessage] = (
-                history_msgs + list(messages) if history_msgs else list(messages)
+            # Short-term memory: see predict — checkpointer active → send only
+            # the new turn (no replay) and key state by thread_id.
+            thread_id = self._short_term_thread(custom_inputs)
+            checkpointer = self._checkpointer if thread_id else None
+            lg_config = {"configurable": {"thread_id": thread_id}} if thread_id else None
+            effective_messages: list[ChatAgentMessage] = (
+                list(messages)
+                if thread_id
+                else (history_msgs + list(messages) if history_msgs else list(messages))
             )
 
             user_token_provided = bool(
@@ -670,13 +713,13 @@ def chat_agent_for(
             with safe_span(
                 "ApxChatAgent.predict_stream",
                 span_type="AGENT",
-                inputs={"messages": [m.model_dump() for m in prepended_messages]},
+                inputs={"messages": [m.model_dump() for m in effective_messages]},
                 attributes={
                     AuditAttrs.OPERATION: "predict_stream",
                     AuditAttrs.MODEL_ENDPOINT: effective_model,
-                    AuditAttrs.MODEL_INPUT_MESSAGES: len(prepended_messages),
+                    AuditAttrs.MODEL_INPUT_MESSAGES: len(effective_messages),
                     AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
-                    AuditAttrs.SESSION_ID: conv_id,
+                    AuditAttrs.SESSION_ID: conv_id or thread_id,
                     AuditAttrs.MODEL_STREAMING: True,
                 },
             ) as span:
@@ -684,15 +727,17 @@ def chat_agent_for(
                 graph = compile_to_langgraph(
                     self._agent, ws=_auth.ws, model=effective_model,
                     headers=_auth.headers,
+                    **({"checkpointer": checkpointer} if checkpointer else {}),
                 )
-                lc_input = _to_langchain_messages(prepended_messages)
+                lc_input = _to_langchain_messages(effective_messages)
                 emitted = 0
                 new_messages: list[ChatAgentMessage] = []
 
                 # stream_mode="updates" yields {node_name: {"messages": [...new...]}}
                 # per node completion — same pattern Rand's shortage_intel uses.
                 for chunk in graph.stream(
-                    {"messages": lc_input}, stream_mode="updates"
+                    {"messages": lc_input}, stream_mode="updates",
+                    **({"config": lg_config} if lg_config else {}),
                 ):
                     if not isinstance(chunk, dict):
                         continue
@@ -722,7 +767,10 @@ def chat_agent_for(
                     is_new=conv.is_new if conv is not None else False,
                 )
 
-    return _ApxChatAgent(agent, model, conversation_store=conversation_store, agent_id=agent_id)
+    return _ApxChatAgent(
+        agent, model, conversation_store=conversation_store, agent_id=agent_id,
+        checkpointer=checkpointer,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -736,6 +784,7 @@ def compile_to_chat_agent(
     model: str,
     conversation_store: ConversationStore | None = None,
     agent_id: str | None = None,
+    checkpointer: Any | None = None,
 ) -> Any:
     """Canonical name for ``chat_agent_for`` — apx-agent compiles to a ChatAgent.
 
@@ -746,7 +795,8 @@ def compile_to_chat_agent(
         chat = compile_to_chat_agent(my_agent, model="databricks-claude-sonnet-4-6")
     """
     return chat_agent_for(
-        agent, model=model, conversation_store=conversation_store, agent_id=agent_id
+        agent, model=model, conversation_store=conversation_store, agent_id=agent_id,
+        checkpointer=checkpointer,
     )
 
 
