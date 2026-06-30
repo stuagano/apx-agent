@@ -145,6 +145,10 @@ class ExecutorConfig:
     model: str | None = None
     temperature: float = 0.0
     max_tokens: int = 100_000
+    thread_id: str | None = None
+    """Conversation/thread id for thread-scoped short-term memory. When a
+    checkpointer is wired into the executor, this keys the persisted graph
+    state so a later turn resumes the same thread. ``None`` runs stateless."""
 
 
 # ---------------------------------------------------------------------------
