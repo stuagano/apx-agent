@@ -125,22 +125,6 @@ def _to_langchain(messages: list[Message], system_prompt: str = "") -> list[Any]
     return out
 
 
-def _final_text(messages: list[Any]) -> str:
-    """Extract the final assistant text from a LangGraph result's messages."""
-    from langchain_core.messages import AIMessage
-
-    for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
-            content = msg.content
-            return content if isinstance(content, str) else str(content)
-    # Fallback — return last message content of any kind
-    if messages:
-        last = messages[-1]
-        content = getattr(last, "content", "")
-        return content if isinstance(content, str) else str(content)
-    return ""
-
-
 # ---------------------------------------------------------------------------
 # run / stream entry points
 # ---------------------------------------------------------------------------
@@ -175,23 +159,32 @@ async def run_via_compile(
     Returns:
         The final assistant text.
     """
-    # TODO(Phase-B): migrate to executor.run_turn() once run_via_compile's
-    # callers can tolerate the async streaming contract change.  For now this
-    # path stays unchanged from pre-seam to guarantee zero behavior change.
-    from ._compile import compile_to_langgraph
+    # Drive the same LangGraphExecutor that stream_via_compile / the served
+    # /invocations path use, so every entry point shares one runtime.  We drain
+    # the event stream and return the final text from TurnComplete; an
+    # ExecutorError surfaces as a RuntimeError rather than a silent empty
+    # string (mirrors _responses_agent's executor consumer).
+    from ._executor import ExecutorConfig, ExecutorError, TurnComplete
+    from ._langgraph_executor import LangGraphExecutor
 
     model = _get_model(request)
     ws = _resolve_request_ws(request)
 
-    compiled = compile_to_langgraph(agent, ws=ws, model=model)
-    lc_messages = _to_langchain(input_messages, system_prompt=instructions)
-
-    # Use the async graph API so the multi-step LLM + tool loop runs without
-    # blocking the event loop.  Compiled LangGraph graphs always expose
-    # ``ainvoke``; tool execution is already offloaded off-loop inside
-    # ``_compile._make_langchain_tool``, so we never touch the sync ``invoke``.
-    result = await compiled.ainvoke({"messages": lc_messages})
-    return _final_text(result.get("messages", []))
+    executor = LangGraphExecutor(agent, ws=ws, model=model)
+    final = ""
+    async for event in executor.run_turn(
+        messages=input_messages,
+        tools=[],
+        system_prompt=instructions,
+        config=ExecutorConfig(model=model),
+    ):
+        # TurnComplete.response is None for a tool-only turn with no text;
+        # leave ``final`` as "" in that case (matches the old _final_text).
+        if isinstance(event, TurnComplete) and event.response is not None:
+            final = event.response
+        elif isinstance(event, ExecutorError):
+            raise RuntimeError(f"Executor error: {event.message}")
+    return final
 
 
 async def stream_via_compile(
