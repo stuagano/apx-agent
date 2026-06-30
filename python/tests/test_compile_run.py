@@ -6,8 +6,8 @@ Verifies:
   1. ``_resolve_request_ws`` prefers the OBO header over the SP fallback.
   2. ``_resolve_request_ws`` falls back to ``request.app.state.workspace_client``
      when the OBO header is absent.
-  3. ``run_via_compile`` compiles the agent against the resolved ws, invokes
-     the graph, and returns the final assistant text.
+  3. ``run_via_compile`` drives a ``LangGraphExecutor`` against the resolved ws
+     and returns the final assistant text (raising on an ExecutorError).
   4. ``stream_via_compile`` yields one chunk per non-tool-call AIMessage from
      the graph's node updates.
   5. The agent classes' public ``.run()`` / ``.stream()`` API still works
@@ -28,12 +28,12 @@ from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
 from apx_agent import LlmAgent, AgentConfig, Message  # noqa: E402
 from apx_agent._compile_run import (  # noqa: E402
-    _final_text,
     _resolve_request_ws,
     _to_langchain,
     run_via_compile,
     stream_via_compile,
 )
+from apx_agent._langgraph_executor import _final_text_from_messages  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -117,12 +117,15 @@ class TestMessageConversion:
         assert systems[0].content == "Existing system"
 
     def test_final_text_picks_last_assistant_message(self) -> None:
+        # run_via_compile no longer has its own _final_text; the surviving
+        # extractor is _langgraph_executor._final_text_from_messages (used by
+        # the executor's ainvoke fallback).
         msgs = [
             HumanMessage(content="hi"),
             AIMessage(content="thinking", tool_calls=[{"id": "t1", "name": "x", "args": {}}]),
             AIMessage(content="final answer"),
         ]
-        assert _final_text(msgs) == "final answer"
+        assert _final_text_from_messages(msgs) == "final answer"
 
 
 # ---------------------------------------------------------------------------
@@ -136,12 +139,14 @@ class TestRunViaCompile:
         agent = LlmAgent(tools=[_trivial_tool])
         req = _fake_request()
 
+        # run_via_compile now drives the LangGraphExecutor, whose production
+        # path is astream(stream_mode="updates").  Mock it to yield one final
+        # AIMessage node update.
+        async def _fake_astream(*args: Any, **kwargs: Any) -> Any:
+            yield {"agent": {"messages": [AIMessage(content="hello!")]}}
+
         fake_graph = MagicMock()
-        # H1: run_via_compile now awaits compiled.ainvoke(...) — the async
-        # graph API — so ainvoke must be an awaitable returning the result dict.
-        fake_graph.ainvoke = AsyncMock(return_value={
-            "messages": [HumanMessage(content="hi"), AIMessage(content="hello!")]
-        })
+        fake_graph.astream = _fake_astream
 
         with patch(
             "apx_agent._compile.compile_to_langgraph", return_value=fake_graph
@@ -177,6 +182,62 @@ class TestRunViaCompile:
 
         _, kwargs = mock_compile.call_args
         assert kwargs["ws"] is obo_ws
+
+    @pytest.mark.asyncio
+    async def test_returns_last_text_via_astream_multinode(self) -> None:
+        """Production path: run_via_compile drives the executor's astream loop.
+        For a multi-node graph (Sequential/Router/Handoff/…) the returned text
+        is the LAST user-visible AIMessage, with tool-call messages skipped."""
+        agent = LlmAgent(tools=[_trivial_tool])
+        req = _fake_request()
+
+        chunks_to_yield = [
+            {"node_a": {"messages": [AIMessage(content="intermediate")]}},
+            {"node_b": {"messages": [AIMessage(
+                content="thinking",
+                tool_calls=[{"id": "t1", "name": "x", "args": {}}],
+            )]}},
+            {"node_c": {"messages": [AIMessage(content="final answer")]}},
+        ]
+
+        async def _fake_astream(*args: Any, **kwargs: Any) -> Any:
+            for chunk in chunks_to_yield:
+                yield chunk
+
+        fake_graph = MagicMock()
+        fake_graph.astream = _fake_astream
+
+        with patch(
+            "apx_agent._compile.compile_to_langgraph", return_value=fake_graph
+        ):
+            text = await run_via_compile(
+                agent, [Message(role="user", content="hi")], req
+            )
+
+        assert text == "final answer"
+
+    @pytest.mark.asyncio
+    async def test_executor_error_raises_not_silent_empty(self) -> None:
+        """A runtime failure surfaces as RuntimeError — the executor swallows
+        the native exception into an ExecutorError, and run_via_compile must
+        re-raise it rather than return an empty string."""
+        agent = LlmAgent(tools=[_trivial_tool])
+        req = _fake_request()
+
+        async def _boom(*args: Any, **kwargs: Any) -> Any:
+            raise ValueError("kaboom")
+            yield  # pragma: no cover — makes this an async generator
+
+        fake_graph = MagicMock()
+        fake_graph.astream = _boom
+
+        with patch(
+            "apx_agent._compile.compile_to_langgraph", return_value=fake_graph
+        ):
+            with pytest.raises(RuntimeError, match="kaboom"):
+                await run_via_compile(
+                    agent, [Message(role="user", content="hi")], req
+                )
 
 
 class TestStreamViaCompile:
@@ -231,10 +292,11 @@ class TestAgentRunIntegratesCompile:
         agent = LlmAgent(tools=[_trivial_tool])
         req = _fake_request()
 
+        async def _fake_astream(*args: Any, **kwargs: Any) -> Any:
+            yield {"agent": {"messages": [AIMessage(content="answer")]}}
+
         fake_graph = MagicMock()
-        fake_graph.ainvoke = AsyncMock(
-            return_value={"messages": [AIMessage(content="answer")]}
-        )
+        fake_graph.astream = _fake_astream
 
         with patch(
             "apx_agent._compile.compile_to_langgraph", return_value=fake_graph
