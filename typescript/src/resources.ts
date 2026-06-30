@@ -33,9 +33,9 @@
  *   keeps `resources.ts` decoupled from the concrete agent classes while
  *   preserving the exact ordering/dedup semantics of the Python version.
  *
- * TODO: when the TS package adds an MLflow SDK consumer, port the Python
- * `mlflow_resources_for` materialiser here (maps each `ResourceSpec` to its
- * `mlflow.models.resources.Databricks*` class).
+ *   - {@link mlflowResourcesFor} — materialise specs into MLflow's serialized
+ *     resource shape (the mlflow-SDK-free port of Python's
+ *     `mlflow_resources_for`). Plugs into `logAgent`'s `materializeResources`.
  */
 
 import { z } from 'zod';
@@ -299,4 +299,49 @@ export function collectResourceSpecs<Agent>(
   }
 
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// mlflow resource materialisation (mlflow-SDK-free)
+// ---------------------------------------------------------------------------
+
+/**
+ * One serialized MLflow resource entry, e.g. `{ serving_endpoint: [{ name: 'ep' }] }`.
+ * Mirrors the shape `mlflow.models.resources.Databricks*.to_dict()` produces.
+ */
+export interface MlflowResource {
+  readonly [resourceKey: string]: ReadonlyArray<{ readonly name: string }>;
+}
+
+/**
+ * Map each apx {@link ResourceKind} to the key MLflow uses in its serialized
+ * resource dict. Four match 1:1; `uc_function`→`function` and `uc_table`→`table`
+ * are the two renames. Total over the union, so a new kind is a compile error.
+ */
+const KIND_TO_MLFLOW_KEY: Record<ResourceKind, string> = {
+  uc_function: 'function',
+  genie_space: 'genie_space',
+  serving_endpoint: 'serving_endpoint',
+  sql_warehouse: 'sql_warehouse',
+  vector_search_index: 'vector_search_index',
+  uc_table: 'table',
+};
+
+/**
+ * Materialise {@link ResourceSpec}s into MLflow's serialized resource shape —
+ * the mlflow-SDK-free port of Python's `mlflow_resources_for`.
+ *
+ * Returns one per-resource dict per spec, in order, mirroring Python's
+ * `list[mlflow.models.resources.Databricks*]` (each element ≈ one object's
+ * `.to_dict()`). Pass it straight into `logAgent`'s `materializeResources`.
+ *
+ * There is no MLflow JS SDK, so this emits plain dicts, not resource objects.
+ * The consuming `mlflowLogModel` shim is responsible for AGGREGATING these
+ * per-resource entries into MLflow's grouped
+ * `{ databricks: { … }, api_version: '1' }` form — exactly what mlflow's
+ * `_ResourceBuilder` does internally on the Python side — before POSTing to
+ * the log-model REST endpoint.
+ */
+export function mlflowResourcesFor(specs: readonly ResourceSpec[]): MlflowResource[] {
+  return specs.map((spec) => ({ [KIND_TO_MLFLOW_KEY[spec.kind]]: [{ name: spec.identifier }] }));
 }

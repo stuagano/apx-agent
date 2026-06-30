@@ -20,6 +20,7 @@ import {
   collectResourceSpecs,
   getResources,
   makeResourceSpec,
+  mlflowResourcesFor,
   subAgentToEndpoint,
   type ResourceSpec,
 } from '../src/resources.js';
@@ -340,5 +341,50 @@ describe('collectResourceSpecs', () => {
       subAgentIterator,
     });
     expect(specs).toContainEqual(spec);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mlflowResourcesFor — serialised MLflow resource shape
+// ---------------------------------------------------------------------------
+
+describe('mlflowResourcesFor — serialised resource shape', () => {
+  it('renames uc_function → function and uc_table → table', () => {
+    expect(mlflowResourcesFor([makeResourceSpec('uc_function', 'c.s.fn')])).toEqual([
+      { function: [{ name: 'c.s.fn' }] },
+    ]);
+    expect(mlflowResourcesFor([makeResourceSpec('uc_table', 'c.s.tbl')])).toEqual([
+      { table: [{ name: 'c.s.tbl' }] },
+    ]);
+  });
+
+  it('passes the other four kinds through under their own key', () => {
+    const specs: ResourceSpec[] = [
+      makeResourceSpec('genie_space', 'gid'),
+      makeResourceSpec('serving_endpoint', 'ep'),
+      makeResourceSpec('sql_warehouse', 'wid'),
+      makeResourceSpec('vector_search_index', 'c.s.idx'),
+    ];
+    expect(mlflowResourcesFor(specs)).toEqual([
+      { genie_space: [{ name: 'gid' }] },
+      { serving_endpoint: [{ name: 'ep' }] },
+      { sql_warehouse: [{ name: 'wid' }] },
+      { vector_search_index: [{ name: 'c.s.idx' }] },
+    ]);
+  });
+
+  it('emits one entry per spec, preserving order incl. same-kind repeats', () => {
+    const specs: ResourceSpec[] = [
+      makeResourceSpec('serving_endpoint', 'ep'),
+      makeResourceSpec('serving_endpoint', 'ep2'),
+    ];
+    expect(mlflowResourcesFor(specs)).toEqual([
+      { serving_endpoint: [{ name: 'ep' }] },
+      { serving_endpoint: [{ name: 'ep2' }] },
+    ]);
+  });
+
+  it('returns an empty list for no specs', () => {
+    expect(mlflowResourcesFor([])).toEqual([]);
   });
 });
