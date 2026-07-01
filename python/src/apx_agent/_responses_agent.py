@@ -942,6 +942,7 @@ def compile_to_responses_agent(
     conversation_store: ConversationStore | None = None,
     executor: str = "langgraph",
     agent_id: str | None = None,
+    checkpointer: Any | None = None,
 ) -> CompiledResponsesAgent:
     """Compile an apx-agent ``BaseAgent`` to the Databricks Apps ResponsesAgent contract.
 
@@ -996,6 +997,30 @@ def compile_to_responses_agent(
     _executor_name = executor
     _agent_id = agent_id if agent_id is not None else getattr(agent, "name", None)
 
+    # Short-term memory (mirrors chat_agent_for): default a served LlmAgent to a
+    # process-scoped InMemorySaver when neither a checkpointer nor a durable
+    # conversation store was wired — so it remembers across turns within a
+    # thread_id, in-process. Not for the claude-sdk path (no LangGraph) and not
+    # for composite agents (compile_to_langgraph would raise). See #329.
+    _checkpointer = checkpointer
+    if (
+        _checkpointer is None
+        and _conversation_store is None
+        and _executor_name != "claude-sdk"
+    ):
+        from ._agents import LlmAgent as _LlmAgentCp  # noqa: PLC0415
+
+        if isinstance(_agent, _LlmAgentCp):
+            from langgraph.checkpoint.memory import InMemorySaver  # noqa: PLC0415
+
+            _checkpointer = InMemorySaver()
+            logger.info(
+                "Short-term memory: in-process (InMemorySaver) for ResponsesAgent "
+                "%r — per-replica, resets on restart. Configure "
+                "[tool.apx.agent.session] for durable memory.",
+                _agent_id,
+            )
+
     # -----------------------------------------------------------------------
     # Non-streaming
     # -----------------------------------------------------------------------
@@ -1038,10 +1063,16 @@ def compile_to_responses_agent(
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
             ws, req_headers = auth.ws, auth.headers
 
-            # Prepend conversation history (if any)
+            # Short-term memory: when a checkpointer is active + a thread key is
+            # present, it owns the transcript — send only the new turn (no
+            # history prepend) and key state by thread_id. See #329.
+            thread_id = custom_inputs.get("thread_id") or custom_inputs.get("session_id")
+            cp = _checkpointer if thread_id else None
+            lg_config = {"configurable": {"thread_id": thread_id}} if cp else None
+
             lc_history = _conv_items_to_lc_messages(conv_items)
             lc_input = _responses_input_to_langchain(list(request.input))
-            graph_input = lc_history + lc_input
+            graph_input = lc_input if cp else lc_history + lc_input
 
             _use_sdk = _executor_name == "claude-sdk"
             if _use_sdk:
@@ -1075,12 +1106,25 @@ def compile_to_responses_agent(
                     attributes={AuditAttrs.MODEL_ENDPOINT: effective_model},
                 ):
                     graph = compile_to_langgraph(
-                        _agent, ws=ws, model=effective_model, headers=req_headers
+                        _agent, ws=ws, model=effective_model, headers=req_headers,
+                        **({"checkpointer": cp} if cp else {}),
                     )
                 input_count = len(graph_input)
+                # With a checkpointer, invoke returns the FULL thread state
+                # (prior history + this turn's input + output), not just
+                # input+output — so slice new output after the prior state too.
+                pre_count = 0
+                if cp is not None:
+                    try:
+                        pre_count = len(graph.get_state(lg_config).values.get("messages", []))
+                    except Exception:
+                        pre_count = 0
                 with safe_span("graph.invoke", span_type="CHAIN"):
-                    result = graph.invoke({"messages": graph_input})
-                new_lc = result["messages"][input_count:]
+                    result = graph.invoke(
+                        {"messages": graph_input},
+                        **({"config": lg_config} if lg_config else {}),
+                    )
+                new_lc = result["messages"][pre_count + input_count:]
                 raw_items = [_langchain_to_output_item(m, i) for i, m in enumerate(new_lc)]
                 output_items = _flatten_output_items(raw_items)
 
@@ -1151,9 +1195,16 @@ def compile_to_responses_agent(
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
             ws, req_headers = auth.ws, auth.headers
 
+            # Short-term memory (see non-streaming): checkpointer active + thread
+            # key → send only the new turn, key state by thread_id. The stream's
+            # "updates" mode yields only new messages, so no slice fix is needed.
+            thread_id = custom_inputs.get("thread_id") or custom_inputs.get("session_id")
+            cp = _checkpointer if thread_id else None
+            lg_config = {"configurable": {"thread_id": thread_id}} if cp else None
+
             lc_history = _conv_items_to_lc_messages(conv_items)
             lc_input = _responses_input_to_langchain(list(request.input))
-            graph_input = lc_history + lc_input
+            graph_input = lc_input if cp else lc_history + lc_input
 
             _use_sdk = _executor_name == "claude-sdk"
             if _use_sdk:
@@ -1192,7 +1243,8 @@ def compile_to_responses_agent(
                     output_index += 1
             else:
                 graph = compile_to_langgraph(
-                    _agent, ws=ws, model=effective_model, headers=req_headers
+                    _agent, ws=ws, model=effective_model, headers=req_headers,
+                    **({"checkpointer": cp} if cp else {}),
                 )
                 # Combined stream: "messages" surfaces LLM token chunks (emitted
                 # as response.output_text.delta for true word-by-word streaming),
@@ -1204,6 +1256,7 @@ def compile_to_responses_agent(
                 for mode, data in graph.stream(
                     {"messages": graph_input},
                     stream_mode=["updates", "messages"],
+                    **({"config": lg_config} if lg_config else {}),
                 ):
                     if mode == "messages":
                         msg_chunk = data[0] if isinstance(data, tuple) else data
