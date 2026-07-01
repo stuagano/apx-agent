@@ -666,6 +666,17 @@ def chat_agent_for(
 
                 lc_input = _to_langchain_messages(effective_messages)
                 input_count = len(lc_input)
+                # With a checkpointer, invoke returns the FULL thread state
+                # (prior history + this turn's input + output), not just
+                # input+output — so slice the new output past the prior state
+                # too, or turn 2+ would echo prior turns. (Mirrors
+                # _responses_agent; the #333 test only checked get_state.)
+                pre_count = 0
+                if checkpointer is not None:
+                    try:
+                        pre_count = len(graph.get_state(lg_config).values.get("messages", []))
+                    except Exception:
+                        pre_count = 0
                 with safe_span("graph.invoke", span_type="CHAIN") as inv_span:
                     result = graph.invoke(
                         {"messages": lc_input},
@@ -676,7 +687,7 @@ def chat_agent_for(
                         model_input_messages=input_count,
                     )
 
-                new_lc_messages = result["messages"][input_count:]
+                new_lc_messages = result["messages"][pre_count + input_count:]
                 new_messages = [
                     _from_langchain_message(m, idx)
                     for idx, m in enumerate(new_lc_messages)
