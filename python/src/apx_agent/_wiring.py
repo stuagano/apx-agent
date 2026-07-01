@@ -809,7 +809,8 @@ def create_app(
                 from ._a2a import mount_a2a_route
 
                 mount_a2a_route(
-                    app, ctx.agent, ctx.config, conversation_store=_store
+                    app, ctx.agent, ctx.config,
+                    conversation_store=_store, checkpointer=_checkpointer,
                 )
             except Exception as exc:
                 logger.warning("Skipping A2A mount: %s", exc)
