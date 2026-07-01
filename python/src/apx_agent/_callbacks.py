@@ -50,6 +50,20 @@ except ImportError:  # pragma: no cover — exercised only without langchain
 logger = logging.getLogger(__name__)
 
 
+def _is_graph_interrupt(exc: BaseException) -> bool:
+    """True when ``exc`` is a LangGraph ``GraphInterrupt`` (mid-turn approval).
+
+    Import is lazy + defensive so this module keeps loading without langgraph;
+    falls back to a name check if the import path ever moves.
+    """
+    try:
+        from langgraph.errors import GraphInterrupt  # noqa: PLC0415
+
+        return isinstance(exc, GraphInterrupt)
+    except Exception:
+        return type(exc).__name__ == "GraphInterrupt"
+
+
 def _run_hook(hook: Any, *args: Any) -> None:
     """Invoke a sync or async hook with ``args``, running it to completion.
 
@@ -222,7 +236,12 @@ class _AgentCallbackHandler(BaseCallbackHandler):
             return
         try:
             _run_hook(self._before_tool, tool_name, inputs)
-        except Exception:
+        except Exception as exc:
+            # A LangGraph interrupt (mid-turn approval pause) is control flow,
+            # not an error — let it propagate to the pregel runner without a
+            # misleading exception log.
+            if _is_graph_interrupt(exc):
+                raise
             logger.exception("before_tool hook raised for %s", tool_name)
             raise
 

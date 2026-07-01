@@ -505,6 +505,66 @@ class ApprovalRequired(PermissionError):
         )
 
 
+def _active_thread_id() -> str | None:
+    """Return the current LangGraph thread_id when the run is checkpointed.
+
+    Reads the runtime config via ``langgraph.config.get_config`` (valid inside a
+    graph node — the ``before_tool`` hook runs there). Returns ``None`` outside a
+    graph run, without a checkpointer, or if langgraph isn't installed — in which
+    case ASK falls back to the turn-boundary approval flow.
+    """
+    try:
+        from langgraph.config import get_config  # noqa: PLC0415
+
+        cfg = get_config()
+    except Exception:
+        return None
+    if not cfg:
+        return None
+    thread_id = cfg.get("configurable", {}).get("thread_id")
+    return thread_id if thread_id else None
+
+
+def _interrupt_for_approval(
+    approval: "Approval",
+    tool_name: str,
+    arguments: dict[str, Any],
+    reason: str | None,
+) -> Any:
+    """Suspend the graph for human approval; returns the resume decision value."""
+    from langgraph.types import interrupt  # noqa: PLC0415
+
+    return interrupt(
+        {
+            "type": "approval_required",
+            "approval_id": approval.id,
+            "tool_name": tool_name,
+            "arguments": dict(arguments),
+            "reason": reason,
+        }
+    )
+
+
+_APPROVE_WORDS = frozenset({"approve", "approved", "yes", "allow", "grant", "granted"})
+
+
+def _is_approved(decision: Any) -> bool:
+    """Interpret a resume value as approve (True) or deny (False).
+
+    Accepts ``True``, an approving word (``"approve"``/``"yes"``/…), or a dict
+    carrying ``decision``/``action``. Everything else (including ``None`` and any
+    unrecognized value) is a denial — fail closed.
+    """
+    if decision is True:
+        return True
+    if isinstance(decision, str):
+        return decision.strip().lower() in _APPROVE_WORDS
+    if isinstance(decision, dict):
+        inner = decision.get("decision") or decision.get("action")
+        return isinstance(inner, str) and inner.strip().lower() in _APPROVE_WORDS
+    return False
+
+
 class PolicyGate:
     """Adapts a policy list into a ``before_tool``-compatible hook.
 
@@ -600,5 +660,27 @@ class PolicyGate:
             approval = self.approvals.request(
                 tool_name, arguments, reason=result.reason,
             )
+            # True mid-turn suspension when the run is checkpointed (a thread_id
+            # is present): pause EXACTLY here via LangGraph interrupt() and wait
+            # for the human decision, delivered as the resume value. Without a
+            # checkpointer (no thread_id) fall back to the turn-boundary flow —
+            # abort with ApprovalRequired and let the retry-next-turn dance run.
+            thread_id = _active_thread_id()
+            if thread_id is not None:
+                decision = _interrupt_for_approval(
+                    approval, tool_name, arguments, result.reason
+                )
+                if _is_approved(decision):
+                    self.approvals.approve(approval.id)
+                    logger.info(
+                        "PolicyGate: approval %s granted mid-turn for %s",
+                        approval.id, tool_name,
+                    )
+                    return
+                self.approvals.deny(approval.id)
+                raise PermissionError(
+                    f"The user denied approval {approval.id} for the call to "
+                    f"{tool_name!r}. Do not retry it."
+                )
             raise ApprovalRequired(approval)
         # ALLOW — fall through.
