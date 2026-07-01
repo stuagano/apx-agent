@@ -21,7 +21,7 @@ def test_build_lakebase_engine_returns_engine():
     sqlalchemy = pytest.importorskip("sqlalchemy")
     from apx_agent._lakebase_engine import build_lakebase_engine
     ws = _mock_ws()
-    engine = build_lakebase_engine(ws=ws, instance_name="test-lakebase", database="agentdb", host="localhost")
+    engine = build_lakebase_engine(ws=ws, database="agentdb", host="localhost")
     assert engine is not None
     assert hasattr(engine, "connect")
     assert hasattr(engine, "url")
@@ -32,7 +32,7 @@ def test_do_connect_listener_injects_oauth_token():
     pytest.importorskip("sqlalchemy")
     from apx_agent._lakebase_engine import build_lakebase_engine
     ws = _mock_ws("fresh-tok")
-    engine = build_lakebase_engine(ws=ws, instance_name="my-instance", database="agentdb", host="testhost")
+    engine = build_lakebase_engine(ws=ws, database="agentdb", host="testhost")
     # Fire the do_connect listener directly with a mutable ckwargs dict. The
     # listener is registered on the engine but dispatched through the dialect.
     ckwargs: dict = {}
@@ -47,7 +47,7 @@ def test_build_lakebase_engine_host_defaults_to_provided():
     pytest.importorskip("sqlalchemy")
     from apx_agent._lakebase_engine import build_lakebase_engine
     ws = _mock_ws()
-    engine = build_lakebase_engine(ws=ws, instance_name="inst", database="db", host="myhost.example.com")
+    engine = build_lakebase_engine(ws=ws, database="db", host="myhost.example.com")
     assert "myhost.example.com" in str(engine.url)
 
 
@@ -58,7 +58,7 @@ def test_engine_connects_as_principal_and_requires_ssl():
     pytest.importorskip("sqlalchemy")
     from apx_agent._lakebase_engine import build_lakebase_engine
     engine = build_lakebase_engine(
-        ws=_mock_ws(), instance_name="i", database="db", host="h.example.com"
+        ws=_mock_ws(), database="db", host="h.example.com"
     )
     assert engine.url.username == "me@databricks.com"
     assert "apx-agent" not in str(engine.url)

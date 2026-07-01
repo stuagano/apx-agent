@@ -120,6 +120,10 @@ class MemoryBackendConfig(BaseModel):
     index_name: str | None = None
     auto_create: bool = True
     instance_name: str | None = None
+    """Deprecated for connection — Lakebase is reached by ``host`` (a project
+    endpoint or instance DNS) with an OAuth token; the instance name is no longer
+    needed. Still accepted, and used only to auto-provision a CLASSIC instance at
+    boot (``bootstrap``). Prefer setting ``host`` + ``database``."""
     database: str | None = None
     host: str | None = None
     ensure_extension: bool = True
@@ -143,6 +147,10 @@ class ExampleBackendConfig(BaseModel):
     index_name: str | None = None
     auto_create: bool = True
     instance_name: str | None = None
+    """Deprecated for connection — Lakebase is reached by ``host`` (a project
+    endpoint or instance DNS) with an OAuth token; the instance name is no longer
+    needed. Still accepted, and used only to auto-provision a CLASSIC instance at
+    boot (``bootstrap``). Prefer setting ``host`` + ``database``."""
     database: str | None = None
     host: str | None = None
     ensure_extension: bool = True
@@ -162,6 +170,10 @@ class SessionBackendConfig(BaseModel):
     table_name: str | None = None
     auto_create: bool = True
     instance_name: str | None = None
+    """Deprecated for connection — Lakebase is reached by ``host`` (a project
+    endpoint or instance DNS) with an OAuth token; the instance name is no longer
+    needed. Still accepted, and used only to auto-provision a CLASSIC instance at
+    boot (``bootstrap``). Prefer setting ``host`` + ``database``."""
     database: str | None = None
     host: str | None = None
     warehouse_id: str | None = None

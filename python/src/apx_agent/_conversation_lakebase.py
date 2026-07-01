@@ -116,7 +116,8 @@ class LakebaseConversationStore(ConversationStore):
         from apx_agent import build_lakebase_engine, LakebaseConversationStore
 
         engine = build_lakebase_engine(
-            ws=ws, instance_name="my-lakebase", database="agentdb"
+            ws=ws, database="agentdb",
+            host="ep-xxxx.database.us-east-1.cloud.databricks.com",
         )
         store = LakebaseConversationStore(engine=engine)
     """
