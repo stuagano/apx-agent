@@ -74,16 +74,14 @@ def build_lakebase_checkpointer(
         raise ImportError(_MISSING) from e
 
     def _mint_token() -> str:
-        # NOTE: generate_database_credential resolves only CLASSIC database
-        # instances; it returns "not found" for the new autoscaling-project
-        # Lakebase. Project-instance credentials need a different API (tracked,
-        # #329). Everything else here is validated live against a project instance
-        # (see scripts/lakebase_checkpointer_smoke.py --token-file).
-        cred = ws.database.generate_database_credential(
-            instance_names=[instance_name],
-            request_id="apx-agent-lakebase",
-        )
-        return cred.token
+        # Lakebase takes a Databricks OAuth access token (the /oidc/v1/token the
+        # UI's "Copy OAuth token" uses) as the password — instance-agnostic, so it
+        # works for BOTH classic and autoscaling-project instances. The older
+        # generate_database_credential(instance_names=…) only resolves classic
+        # instances ("not found" for a project). The SDK refreshes the underlying
+        # token; max_lifetime recycles connections before it expires. Verified live
+        # against a project AND a classic instance.
+        return ws.config.authenticate()["Authorization"].split(" ", 1)[1]
 
     # The Postgres role IS the authenticated Databricks principal (the token is
     # minted for it) — a user connects as its email, a service principal as its

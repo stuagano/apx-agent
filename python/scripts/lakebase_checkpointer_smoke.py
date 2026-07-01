@@ -44,13 +44,6 @@ def main() -> int:
     p.add_argument("--host", required=True, help="Lakebase endpoint host (…database.<region>.cloud.databricks.com).")
     p.add_argument("--database", default="databricks_postgres", help="Postgres database name.")
     p.add_argument("--keep", action="store_true", help="Skip cleanup of the smoke thread's checkpoints.")
-    p.add_argument(
-        "--token-file",
-        help="Path to a file holding a pre-minted OAuth token. Use for the NEW "
-        "autoscaling-project Lakebase, which generate_database_credential does not "
-        "support — the credential call is stubbed with this token. Omit to mint via "
-        "the SDK (classic database instances).",
-    )
     args = p.parse_args()
 
     # The script runs as the profile's own identity (no OBO token to thread).
@@ -96,21 +89,6 @@ def main() -> int:
 
     ws = WorkspaceClient(profile=args.profile)
     principal = ws.current_user.me().user_name
-
-    # New project-based Lakebase: generate_database_credential can't resolve it, so
-    # stub the mint with a pre-copied OAuth token. Everything else (connect override,
-    # sslmode, principal, .setup(), the durable round-trip) still runs for real.
-    if args.token_file:
-        token = open(args.token_file).read().strip()
-        if not token:
-            _fail(f"--token-file {args.token_file} is empty")
-
-        class _Cred:
-            def __init__(self, t: str) -> None:
-                self.token = t
-
-        ws.database.generate_database_credential = lambda **kw: _Cred(token)  # type: ignore[assignment]
-        print("(using pre-minted OAuth token; SDK credential mint stubbed)")
     thread_id = f"apx-smoke-{uuid.uuid4().hex[:8]}"
     print(f"profile={args.profile}  principal={principal}")
     print(f"instance={args.instance}  host={args.host}  db={args.database}")

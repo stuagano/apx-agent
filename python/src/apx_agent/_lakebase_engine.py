@@ -1,12 +1,17 @@
 """Shared Lakebase (Databricks managed Postgres) engine builder.
 
 ``LakebaseMemoryStore`` and ``LakebaseConversationStore`` require a SQLAlchemy
-``Engine`` whose ``do_connect`` listener mints fresh OAuth tokens from the
-Databricks SDK. This module is the single source of truth for that.
+``Engine`` whose ``do_connect`` listener injects a fresh Databricks OAuth token
+as the password on every connect. This module is the single source of truth.
 
-**Credential API:** ``ws.database.generate_database_credential`` (``DatabaseAPI``)
-is correct — accepts ``instance_names`` + ``request_id``. ``ws.postgres`` takes a
-positional ``endpoint`` and does NOT accept ``instance_names``.
+**Credential:** Lakebase accepts a Databricks OAuth access token (the
+``/oidc/v1/token`` the workspace UI's "Copy OAuth token" uses) as the Postgres
+password — obtained from ``ws.config.authenticate()``. It is instance-agnostic,
+so it works for both classic AND autoscaling-project Lakebase (the newer model);
+the older ``ws.database.generate_database_credential(instance_names=…)`` only
+resolves classic instances. Connect as the authenticated principal (a user's
+email / an SP's identity), with ``sslmode=require``. Verified live against a
+project and a classic instance.
 """
 
 from __future__ import annotations
@@ -70,16 +75,15 @@ def build_lakebase_engine(
 
     @sa_event.listens_for(engine, "do_connect")
     def _mint_token(_dialect: Any, _conn_rec: Any, _cargs: Any, ckwargs: dict[str, Any]) -> None:
-        """Mint a fresh OAuth token from the Databricks SDK on every connect.
+        """Inject a fresh Databricks OAuth token as the password on every connect.
 
-        NOTE: ``generate_database_credential`` resolves only CLASSIC database
-        instances; it returns "not found" for the new autoscaling-project
-        Lakebase. Project-instance credentials need a different API (tracked, #329).
+        Lakebase takes a Databricks OAuth access token (the ``/oidc/v1/token`` the
+        UI's "Copy OAuth token" uses) as the password — instance-agnostic, so it
+        works for BOTH classic and autoscaling-project instances. The older
+        ``generate_database_credential(instance_names=…)`` only resolves classic
+        instances. The SDK refreshes the underlying token; ``pool_recycle``
+        recycles connections before it expires.
         """
-        cred = ws.database.generate_database_credential(
-            instance_names=[instance_name],
-            request_id="apx-agent-lakebase",
-        )
-        ckwargs["password"] = cred.token
+        ckwargs["password"] = ws.config.authenticate()["Authorization"].split(" ", 1)[1]
 
     return engine
