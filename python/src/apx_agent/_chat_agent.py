@@ -407,6 +407,60 @@ def _from_langchain_message(msg: Any, idx: int) -> "ChatAgentMessage":
 
 
 # ---------------------------------------------------------------------------
+# Mid-turn approval (LangGraph interrupt) — serving helpers
+# ---------------------------------------------------------------------------
+
+
+def _resume_decision(custom_inputs: dict[str, Any] | None) -> Any | None:
+    """The approval decision from a resume request, or ``None`` for a fresh turn.
+
+    A client resumes a paused mid-turn approval by resending with
+    ``custom_inputs={"session_id": <thread>, "resume": "approve"|"deny"|<value>}``.
+    """
+    if not custom_inputs:
+        return None
+    return custom_inputs.get("resume")
+
+
+def _pending_interrupt(graph: Any, lg_config: dict[str, Any] | None) -> Any | None:
+    """Approval payload if the run paused at a gated tool, else ``None``."""
+    if lg_config is None:
+        return None
+    try:
+        interrupts = graph.get_state(lg_config).interrupts
+    except Exception:
+        return None
+    return interrupts[0].value if interrupts else None
+
+
+def _approval_required_response(payload: Any, thread_id: str | None) -> Any:
+    """A ChatAgentResponse conveying a mid-turn approval request.
+
+    The structured ``payload`` (approval_id / tool_name / arguments / reason) is
+    returned under ``custom_outputs["approval_required"]`` so a client can render
+    an approve/deny control; the assistant message states the ask in prose.
+    """
+    from mlflow.types.agent import ChatAgentMessage, ChatAgentResponse
+
+    tool = payload.get("tool_name") if isinstance(payload, dict) else None
+    reason = payload.get("reason") if isinstance(payload, dict) else None
+    text = (
+        f"Approval required to run {tool!r}"
+        + (f": {reason}" if reason else "")
+        + f". Resume by resending with custom_inputs={{'session_id': {thread_id!r}, "
+        + "'resume': 'approve' or 'deny'}."
+    )
+    return ChatAgentResponse(
+        messages=[
+            ChatAgentMessage(
+                role="assistant", content=text, id=f"appr-{uuid.uuid4().hex[:8]}"
+            )
+        ],
+        custom_outputs={"approval_required": payload},
+    )
+
+
+# ---------------------------------------------------------------------------
 # ApxChatAgent — the MLflow-compatible wrapper
 # ---------------------------------------------------------------------------
 
@@ -677,17 +731,36 @@ def chat_agent_for(
                         pre_count = len(graph.get_state(lg_config).values.get("messages", []))
                     except Exception:
                         pre_count = 0
+                # Approval resume: when the caller sends {"resume": <decision>}
+                # for a checkpointed thread, feed a Command(resume=…) instead of
+                # new messages — the graph continues from the paused tool call.
+                resume = _resume_decision(custom_inputs) if lg_config else None
                 with safe_span("graph.invoke", span_type="CHAIN") as inv_span:
-                    result = graph.invoke(
-                        {"messages": lc_input},
-                        **({"config": lg_config} if lg_config else {}),
-                    )
+                    if resume is not None:
+                        from langgraph.types import Command  # noqa: PLC0415
+                        result = graph.invoke(Command(resume=resume), config=lg_config)
+                    else:
+                        result = graph.invoke(
+                            {"messages": lc_input},
+                            **({"config": lg_config} if lg_config else {}),
+                        )
                     set_audit_attrs(
                         inv_span,
                         model_input_messages=input_count,
                     )
 
-                new_lc_messages = result["messages"][pre_count + input_count:]
+                # Mid-turn approval: if a gated tool suspended the run, return an
+                # approval-required response instead of output. The client
+                # approves/denies by resending with {"resume": "approve"|"deny"}.
+                paused = _pending_interrupt(graph, lg_config)
+                if paused is not None:
+                    response = _approval_required_response(paused, thread_id)
+                    set_span_outputs(span, response.model_dump())
+                    return response
+
+                # No new input on a resume turn — slice only past the prior state.
+                slice_start = pre_count if resume is not None else pre_count + input_count
+                new_lc_messages = result["messages"][slice_start:]
                 new_messages = [
                     _from_langchain_message(m, idx)
                     for idx, m in enumerate(new_lc_messages)
