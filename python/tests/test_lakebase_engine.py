@@ -13,6 +13,8 @@ def _mock_ws(token: str = "test-tok") -> Any:
     database_api.generate_database_credential.return_value = cred
     ws = MagicMock()
     ws.database = database_api
+    # The pg role is the authenticated principal, not a literal "apx-agent".
+    ws.current_user.me.return_value = types.SimpleNamespace(user_name="me@databricks.com")
     return ws
 
 
@@ -51,6 +53,20 @@ def test_build_lakebase_engine_host_defaults_to_provided():
     ws = _mock_ws()
     engine = build_lakebase_engine(ws=ws, instance_name="inst", database="db", host="myhost.example.com")
     assert "myhost.example.com" in str(engine.url)
+
+
+def test_engine_connects_as_principal_and_requires_ssl():
+    """The role is the authenticated principal (not 'apx-agent') and Lakebase's
+    mandated SSL is set — the two bugs the live checkpointer smoke surfaced."""
+    pytest.importorskip("psycopg")
+    pytest.importorskip("sqlalchemy")
+    from apx_agent._lakebase_engine import build_lakebase_engine
+    engine = build_lakebase_engine(
+        ws=_mock_ws(), instance_name="i", database="db", host="h.example.com"
+    )
+    assert engine.url.username == "me@databricks.com"
+    assert "apx-agent" not in str(engine.url)
+    assert "sslmode=require" in str(engine.url)
 
 
 def test_postgres_api_has_wrong_signature_for_instance_names():

@@ -74,6 +74,11 @@ def build_lakebase_checkpointer(
         raise ImportError(_MISSING) from e
 
     def _mint_token() -> str:
+        # NOTE: generate_database_credential resolves only CLASSIC database
+        # instances; it returns "not found" for the new autoscaling-project
+        # Lakebase. Project-instance credentials need a different API (tracked,
+        # #329). Everything else here is validated live against a project instance
+        # (see scripts/lakebase_checkpointer_smoke.py --token-file).
         cred = ws.database.generate_database_credential(
             instance_names=[instance_name],
             request_id="apx-agent-lakebase",

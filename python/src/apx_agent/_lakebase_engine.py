@@ -51,18 +51,31 @@ def build_lakebase_engine(
     Raises ``ImportError`` if sqlalchemy is not installed.
     """
     _require_sqlalchemy()
-    from sqlalchemy import create_engine, event as sa_event  # noqa: PLC0415
+    from sqlalchemy import URL, create_engine, event as sa_event  # noqa: PLC0415
 
-    if host:
-        url = f"postgresql+psycopg://apx-agent@{host}:{port}/{database}"
-    else:
-        url = f"postgresql+psycopg://apx-agent@localhost:{port}/{database}"
+    # The Postgres role IS the authenticated Databricks principal (the token is
+    # minted for it), NOT a literal "apx-agent". Lakebase also requires SSL.
+    # URL.create handles percent-encoding the principal's "@". (Validated live in
+    # _checkpoint_lakebase — the Lakebase connect dialog confirms Role=<principal>.)
+    url = URL.create(
+        "postgresql+psycopg",
+        username=ws.current_user.me().user_name,
+        host=host or "localhost",
+        port=port,
+        database=database,
+        query={"sslmode": "require"},
+    )
 
     engine = create_engine(url, pool_pre_ping=pool_pre_ping, pool_recycle=pool_recycle)
 
     @sa_event.listens_for(engine, "do_connect")
     def _mint_token(_dialect: Any, _conn_rec: Any, _cargs: Any, ckwargs: dict[str, Any]) -> None:
-        """Mint a fresh OAuth token from the Databricks SDK on every connect."""
+        """Mint a fresh OAuth token from the Databricks SDK on every connect.
+
+        NOTE: ``generate_database_credential`` resolves only CLASSIC database
+        instances; it returns "not found" for the new autoscaling-project
+        Lakebase. Project-instance credentials need a different API (tracked, #329).
+        """
         cred = ws.database.generate_database_credential(
             instance_names=[instance_name],
             request_id="apx-agent-lakebase",
