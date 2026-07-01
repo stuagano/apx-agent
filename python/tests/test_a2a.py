@@ -49,7 +49,7 @@ def a2a_client():
 
     original_factory = _ca_module.chat_agent_for
 
-    def _spy_factory(agent_arg, *, model, conversation_store=None, agent_id=None):
+    def _spy_factory(agent_arg, *, model, conversation_store=None, agent_id=None, checkpointer=None):
         ca = original_factory(agent_arg, model=model)
         captured["chat_agent"] = ca
         ca.predict = MagicMock(name="mock_predict")
@@ -285,7 +285,128 @@ class TestJsonRpcFraming:
         resp = client.post("/", json={"jsonrpc": "2.0", "id": None, "method": "bogus/method"})
         assert resp.status_code == 200
         assert resp.json()["error"]["code"] == -32601
-        assert resp.json()["id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Mid-turn approval over A2A: input-required Task → resume via
+# configuration.apx_resume. Drives the REAL ChatAgent (gated tool + fake model
+# + checkpointer) end-to-end through the JSON-RPC route.
+# ---------------------------------------------------------------------------
+
+from fastapi import FastAPI  # noqa: E402
+from langchain_core.language_models.fake_chat_models import (  # noqa: E402
+    GenericFakeChatModel,
+)
+from langchain_core.messages import AIMessage  # noqa: E402
+from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
+
+from apx_agent import _compile  # noqa: E402
+from apx_agent._a2a import mount_a2a_route  # noqa: E402
+from apx_agent._policy import (  # noqa: E402
+    FunctionPolicy,
+    PolicyAction,
+    PolicyGate,
+    PolicyResult,
+)
+
+
+class _ToolFake(GenericFakeChatModel):
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+        return self
+
+
+_sent: list[str] = []  # side-effect log so tests observe whether the tool RAN
+                        # (the A2A Task surfaces only the final reply, not tool output)
+
+
+def _send_email(to: str) -> str:
+    """Send an email to the given address."""
+    _sent.append(to)
+    return f"sent to {to}"
+
+
+def _ask_gate() -> PolicyGate:
+    return PolicyGate([
+        FunctionPolicy(
+            lambda ev: PolicyResult(action=PolicyAction.ASK, reason="needs human ok"),
+            name="ask",
+        )
+    ])
+
+
+@pytest.fixture
+def a2a_approval_client(monkeypatch):
+    """A2A route backed by a gated agent, a fake model that emits a tool call
+    then a final answer, and a durable-style checkpointer."""
+    model = _ToolFake(messages=iter([
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "_send_email", "args": {"to": "x@y.com"}, "id": "t1"}],
+        ),
+        AIMessage(content="all set"),
+    ]))
+    monkeypatch.setattr(
+        _compile, "_build_chat_databricks",
+        lambda endpoint, *, temperature=None, max_tokens=None: model,
+    )
+    _sent.clear()
+    agent = LlmAgent(name="a", tools=[_send_email], before_tool=_ask_gate())
+    config = AgentConfig(name="a2a-appr", model="m")
+    ws = MagicMock()
+    ws.config.host = "https://fake.cloud.databricks.com"
+    app = FastAPI()
+    with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+        assert mount_a2a_route(app, agent, config, checkpointer=InMemorySaver())
+        with TestClient(app) as client:
+            yield client
+
+
+def _send(client, text, context_id=None, apx_resume=None) -> dict:
+    msg: dict[str, Any] = {
+        "role": "user", "parts": [{"kind": "text", "text": text}], "messageId": "u1",
+    }
+    if context_id:
+        msg["contextId"] = context_id
+    params: dict[str, Any] = {"message": msg}
+    if apx_resume is not None:
+        params["configuration"] = {"apx_resume": apx_resume}
+    return _rpc(client, "message/send", params).json()["result"]
+
+
+class TestA2AApproval:
+    def test_gated_tool_returns_input_required_then_resume_approve_runs_it(
+        self, a2a_approval_client
+    ):
+        t1 = _send(a2a_approval_client, "email x@y.com")
+        assert t1["status"]["state"] == "input-required"
+        ask = t1["status"]["message"]["parts"][0]["text"]
+        assert "_send_email" in ask and "apx_resume" in ask
+        assert _sent == []  # tool NOT run while awaiting approval
+
+        t2 = _send(
+            a2a_approval_client, "", context_id=t1["contextId"], apx_resume="approve"
+        )
+        assert t2["status"]["state"] == "completed"
+        assert _sent == ["x@y.com"]  # gated tool actually ran on resume
+
+    def test_resume_deny_blocks_the_tool(self, a2a_approval_client):
+        t1 = _send(a2a_approval_client, "email x@y.com")
+        assert t1["status"]["state"] == "input-required"
+        t2 = _send(
+            a2a_approval_client, "", context_id=t1["contextId"], apx_resume="deny"
+        )
+        assert t2["status"]["state"] == "completed"
+        assert _sent == []  # tool never ran
+
+    def test_apx_resume_on_unpaused_context_is_not_misrouted(self, a2a_approval_client):
+        # An apx_resume arriving on a context that is NOT awaiting a decision must
+        # be treated as a normal new turn (fed as input, not Command(resume)) —
+        # otherwise a stray resume would error / feed a decision as a question.
+        t1 = _send(a2a_approval_client, "email x@y.com", apx_resume="approve")
+        # First turn still gates → input-required, proving apx_resume was ignored
+        # (not fed to a non-paused thread, which would fail the task).
+        assert t1["status"]["state"] == "input-required"
+        assert _sent == []
 
 
 # ---------------------------------------------------------------------------

@@ -78,6 +78,29 @@ class TestNoDeadNavLinks:
         )
 
 
+class TestStandardEndpointLinks:
+    """The dev shell surfaces the agent's standard endpoints (A2A card, API spec,
+    health, readiness) so they're reachable from the UI — previously invisible."""
+
+    @pytest.mark.asyncio
+    async def test_agent_shell_links_standard_endpoints(self, app: FastAPI):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.get("/_apx/agent")
+        assert r.status_code == 200
+        for path in ("/.well-known/agent.json", "/_apx/openapi.json", "/health", "/readyz"):
+            assert f'href="{path}"' in r.text, (
+                f"Endpoints menu is missing a link to {path}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_openapi_endpoint_link_is_not_dead(self, app: FastAPI):
+        # The one standard link the dev router itself mounts — prove it resolves
+        # (the others are covered by the protocol/readyz suites).
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            r = await ac.get("/_apx/openapi.json")
+        assert r.status_code == 200
+
+
 class TestLegacyRedirects:
     """Removed pages still redirect somewhere valid (no hard 404)."""
 

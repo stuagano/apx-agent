@@ -528,7 +528,7 @@ class TestInvocationsSessionBridge:
         mock_ca = MagicMock()
         mock_ca.predict.return_value = ChatAgentResponse(messages=[])
 
-        def _spy(agent_arg, *, model, conversation_store=None, agent_id=None):
+        def _spy(agent_arg, *, model, conversation_store=None, agent_id=None, checkpointer=None):
             captured["chat_agent"] = mock_ca
             return mock_ca
 
@@ -564,7 +564,7 @@ class TestInvocationsSessionBridge:
         mock_ca = MagicMock()
         mock_ca.predict.return_value = ChatAgentResponse(messages=[])
 
-        def _spy(agent_arg, *, model, conversation_store=None, agent_id=None):
+        def _spy(agent_arg, *, model, conversation_store=None, agent_id=None, checkpointer=None):
             captured["chat_agent"] = mock_ca
             return mock_ca
 

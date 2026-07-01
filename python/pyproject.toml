@@ -36,6 +36,9 @@ uc = [
 lakebase = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
+    # Durable served short-term memory / mid-turn approvals (#329 Slice C):
+    # langgraph PostgresSaver over Lakebase; pulls psycopg_pool for the pool.
+    "langgraph-checkpoint-postgres>=2.0",
 ]
 all = ["apx-agent[eval,uc,lakebase,align]"]
 

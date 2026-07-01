@@ -59,6 +59,7 @@ from ._conversation import (
     FunctionCallOutputData,
     MessageData,
     NewConversationItem,
+    drop_orphaned_tool_outputs,
     synthesize_conversation_title,
 )
 from ._mlflow_tracing import safe_span, set_span_outputs
@@ -157,6 +158,11 @@ def _conv_items_to_chat_msgs(items: list[ConversationItem]) -> list["ChatAgentMe
         to the current turn's messages.
     """
     from mlflow.types.agent import ChatAgentMessage
+
+    # Drop any tool result whose function_call was never stored (e.g. an approval
+    # turn's tool-call lived only in a since-gone checkpointer) — replaying an
+    # orphaned tool message makes the LLM reject the whole request.
+    items = drop_orphaned_tool_outputs(items)
 
     result: list[ChatAgentMessage] = []
     i = 0
@@ -433,6 +439,23 @@ def _pending_interrupt(graph: Any, lg_config: dict[str, Any] | None) -> Any | No
     return interrupts[0].value if interrupts else None
 
 
+def approval_prose(payload: Any, thread_id: str | None, key: str = "session_id") -> str:
+    """Prose stating a mid-turn approval ask and how to resume.
+
+    ``key`` is the ``custom_inputs`` field the caller keys the thread by —
+    ``"session_id"`` on the ChatAgent surface, ``"thread_id"`` on ResponsesAgent
+    — so the instruction names the right field on each served path.
+    """
+    tool = payload.get("tool_name") if isinstance(payload, dict) else None
+    reason = payload.get("reason") if isinstance(payload, dict) else None
+    return (
+        f"Approval required to run {tool!r}"
+        + (f": {reason}" if reason else "")
+        + f". Resume by resending with custom_inputs={{{key!r}: {thread_id!r}, "
+        + "'resume': 'approve' or 'deny'}."
+    )
+
+
 def _approval_required_response(payload: Any, thread_id: str | None) -> Any:
     """A ChatAgentResponse conveying a mid-turn approval request.
 
@@ -442,20 +465,32 @@ def _approval_required_response(payload: Any, thread_id: str | None) -> Any:
     """
     from mlflow.types.agent import ChatAgentMessage, ChatAgentResponse
 
-    tool = payload.get("tool_name") if isinstance(payload, dict) else None
-    reason = payload.get("reason") if isinstance(payload, dict) else None
-    text = (
-        f"Approval required to run {tool!r}"
-        + (f": {reason}" if reason else "")
-        + f". Resume by resending with custom_inputs={{'session_id': {thread_id!r}, "
-        + "'resume': 'approve' or 'deny'}."
-    )
     return ChatAgentResponse(
         messages=[
             ChatAgentMessage(
-                role="assistant", content=text, id=f"appr-{uuid.uuid4().hex[:8]}"
+                role="assistant",
+                content=approval_prose(payload, thread_id),
+                id=f"appr-{uuid.uuid4().hex[:8]}",
             )
         ],
+        custom_outputs={"approval_required": payload},
+    )
+
+
+def _approval_required_chunk(payload: Any, thread_id: str | None) -> Any:
+    """A ChatAgentChunk conveying a mid-turn approval request (streaming path).
+
+    Same payload/prose convention as :func:`_approval_required_response`, but as
+    a single streamed delta so ``predict_stream`` can surface the ask and stop.
+    """
+    from mlflow.types.agent import ChatAgentChunk, ChatAgentMessage
+
+    return ChatAgentChunk(
+        delta=ChatAgentMessage(
+            role="assistant",
+            content=approval_prose(payload, thread_id),
+            id=f"appr-{uuid.uuid4().hex[:8]}",
+        ),
         custom_outputs={"approval_required": payload},
     )
 
@@ -492,17 +527,28 @@ def chat_agent_for(
         checkpointer: Optional LangGraph checkpointer (BaseCheckpointSaver) for
             thread-scoped short-term memory.
 
-    Short-term memory — two tiers, by what you wire:
-        * **Durable** — pass a ``conversation_store`` (Lakebase/Delta). Prior
-          turns are replayed and persisted across restarts/replicas. This is
-          the durable path; a memory store is where durability lives.
-        * **In-process (default)** — wire NEITHER a checkpointer nor a store and
-          (for an ``LlmAgent``) this defaults to a process-scoped
-          ``InMemorySaver``: the agent remembers across turns within one running
-          replica, keyed by ``session_id``, but **forgets on restart and does
-          not span replicas**. Configure a ``conversation_store`` for durability.
-        These never stack: a ``conversation_store`` keeps its replay path and no
-        checkpointer is injected (an in-process saver would lose its history).
+    Short-term memory — what you wire decides where state lives:
+        * **Durable checkpointer** — pass a ``checkpointer`` (a Lakebase
+          ``PostgresSaver``; ``resolve_checkpointer`` wires one for a
+          ``type='lakebase'`` session). It owns thread state keyed by
+          ``session_id``, so context AND a **pending mid-turn approval** survive
+          a restart and span replicas (#329 Slice C). Composes with a
+          ``conversation_store`` — the store still persists completed turns for
+          the dev-UI / observability; the checkpointer owns live context (no
+          replay).
+        * **Conversation-store replay** — pass a ``conversation_store``
+          (Lakebase/Delta) with no checkpointer. Prior *completed* turns are
+          replayed and persisted across restarts/replicas — but this cannot
+          resurrect a pending approval (that's checkpoint state, never persisted
+          to the store).
+        * **In-process (default)** — wire NEITHER and (for an ``LlmAgent``) this
+          defaults to a process-scoped ``InMemorySaver``: remembers across turns
+          within one replica, but **forgets on restart and does not span
+          replicas**.
+        Auto-injection never stacks: the ``InMemorySaver`` default is added only
+        when NEITHER a checkpointer nor a store is wired (an in-process saver
+        alongside a store would lose its history on restart). An *explicitly*
+        passed checkpointer is always used as-is, store or not.
 
     Returns:
         An instance of an ``mlflow.pyfunc.ChatAgent`` subclass. Usable
@@ -756,6 +802,17 @@ def chat_agent_for(
                 if paused is not None:
                     response = _approval_required_response(paused, thread_id)
                     set_span_outputs(span, response.model_dump())
+                    # Persist the user's prompt (+ synthesize the title) on the
+                    # approval turn — the tool result + answer are appended on
+                    # resume. Without this the prompt is lost if the turn pauses.
+                    self._persist_conv_turn(
+                        conv_id,
+                        input_messages=messages,
+                        new_messages=[],
+                        model=effective_model,
+                        response_id=str(uuid.uuid4()),
+                        is_new=conv.is_new if conv is not None else False,
+                    )
                     return response
 
                 # No new input on a resume turn — slice only past the prior state.
@@ -831,10 +888,20 @@ def chat_agent_for(
                 emitted = 0
                 new_messages: list[ChatAgentMessage] = []
 
+                # Approval resume: a checkpointed thread resends
+                # {"resume": <decision>} to continue from the paused tool call
+                # instead of sending new messages (mirrors predict).
+                resume = _resume_decision(custom_inputs) if lg_config else None
+                if resume is not None:
+                    from langgraph.types import Command  # noqa: PLC0415
+                    stream_input: Any = Command(resume=resume)
+                else:
+                    stream_input = {"messages": lc_input}
+
                 # stream_mode="updates" yields {node_name: {"messages": [...new...]}}
                 # per node completion — same pattern Rand's shortage_intel uses.
                 for chunk in graph.stream(
-                    {"messages": lc_input}, stream_mode="updates",
+                    stream_input, stream_mode="updates",
                     **({"config": lg_config} if lg_config else {}),
                 ):
                     if not isinstance(chunk, dict):
@@ -852,6 +919,26 @@ def chat_agent_for(
                         span.set_attribute("apx.chunks_emitted", emitted)
                     except Exception:  # pragma: no cover
                         pass
+
+                # Mid-turn approval: if a gated tool suspended the run, surface
+                # the ask as a final chunk and stop — the tool has NOT run, and
+                # nothing is persisted (mirrors predict's early return).
+                # ponytail: updates mode emits the empty-content tool-call delta
+                # before this chunk; consistent with predict's state, left as-is.
+                paused = _pending_interrupt(graph, lg_config)
+                if paused is not None:
+                    yield _approval_required_chunk(paused, thread_id)
+                    # Persist the user's prompt (+ title) on the approval turn;
+                    # the tool result + answer are appended on resume.
+                    self._persist_conv_turn(
+                        conv_id,
+                        input_messages=messages,
+                        new_messages=[],
+                        model=effective_model,
+                        response_id=str(uuid.uuid4()),
+                        is_new=conv.is_new if conv is not None else False,
+                    )
+                    return
 
                 # Persist the inbound turn + the new messages — mirrors
                 # ``predict`` so streaming multi-turn conversations remember
@@ -872,8 +959,10 @@ def chat_agent_for(
     # non-regressing: agents WITH a durable conversation store keep their replay
     # path untouched (swapping in an in-process saver would lose history on
     # restart). Only LlmAgent — composite agents can't take a checkpointer
-    # (``compile_to_langgraph`` raises). InMemory is per-process; a durable
-    # cross-restart backend (Lakebase) is tracked in #329.
+    # (``compile_to_langgraph`` raises). InMemory is per-process; for a durable
+    # cross-restart checkpointer (so a pending approval survives a restart), a
+    # Lakebase session wires a PostgresSaver — see ``resolve_checkpointer`` (#329
+    # Slice C).
     if checkpointer is None and conversation_store is None:
         from ._agents import LlmAgent  # noqa: PLC0415
 
@@ -884,9 +973,10 @@ def chat_agent_for(
             logger.info(
                 "Short-term memory: in-process (InMemorySaver) for agent %r — "
                 "remembers within a replica per session_id, but resets on "
-                "restart and does not span replicas. Configure "
-                "[tool.apx.agent.session] (a conversation store) for durable "
-                "cross-restart memory.",
+                "restart and does not span replicas. Configure a "
+                "[tool.apx.agent.session] type='lakebase' block for a durable "
+                "cross-restart checkpointer (PostgresSaver) so thread state and "
+                "pending approvals survive restarts.",
                 getattr(agent, "name", None),
             )
 

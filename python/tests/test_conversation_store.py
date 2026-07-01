@@ -512,6 +512,34 @@ def test_parse_item_data_unknown_type_raises():
         parse_item_data("made_up_type", {})
 
 
+def test_drop_orphaned_tool_outputs_removes_result_without_matching_call():
+    """A function_call_output whose call_id has no function_call is dropped;
+    a well-formed call/result pair is kept (read-boundary guard, #329)."""
+    from apx_agent._conversation import (
+        ConversationItem,
+        FunctionCallData,
+        FunctionCallOutputData,
+        drop_orphaned_tool_outputs,
+    )
+
+    def _item(item_id, type_, data):
+        return ConversationItem(
+            id=item_id, type=type_, status="completed", response_id="r1",
+            created_at=1000, data=data,
+        )
+
+    items = [
+        _item("i1", "function_call",
+              FunctionCallData(agent="bot", name="f", arguments="{}", call_id="c1")),
+        _item("i2", "function_call_output", FunctionCallOutputData(call_id="c1", output="ok")),
+        # orphan: no function_call with call_id "orphan"
+        _item("i3", "function_call_output", FunctionCallOutputData(call_id="orphan", output="x")),
+    ]
+    kept = drop_orphaned_tool_outputs(items)
+    kept_ids = [it.id for it in kept]
+    assert kept_ids == ["i1", "i2"]  # the paired result survives; the orphan is gone
+
+
 def test_conversation_item_to_api_dict():
     """to_api_dict() returns a flat, JSON-safe representation."""
     from apx_agent._conversation import ConversationItem
