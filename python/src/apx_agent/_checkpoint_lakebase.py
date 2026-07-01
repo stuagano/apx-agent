@@ -27,7 +27,7 @@ Requires the ``lakebase`` extra (``PostgresSaver`` + ``psycopg_pool``)::
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from langgraph.checkpoint.postgres import PostgresSaver
@@ -80,6 +80,11 @@ def build_lakebase_checkpointer(
         )
         return cred.token
 
+    # The Postgres role IS the authenticated Databricks principal (the token is
+    # minted for it) — a user connects as its email, a service principal as its
+    # own identity. NOT a literal "apx-agent".
+    principal = ws.current_user.me().user_name
+
     # Fresh token per connection attempt — a pooled connection must never outlive
     # its short-lived Lakebase token. This is psycopg's supported rotation hook.
     class _LakebaseConnection(psycopg.Connection):  # type: ignore[type-arg]
@@ -91,24 +96,37 @@ def build_lakebase_checkpointer(
             return super().connect(conninfo, **kwargs)
 
     hostname = host or "localhost"
-    conninfo = f"postgresql://apx-agent@{hostname}:{port}/{database}"
     pool = ConnectionPool(
-        conninfo=conninfo,
+        conninfo="",  # connection params passed as kwargs (avoids URL-encoding the principal's @)
         connection_class=_LakebaseConnection,
-        # PostgresSaver requires autocommit (so .setup() commits DDL) and
-        # dict_row (it reads rows by name). prepare_threshold=None DISABLES
-        # server-side prepared statements — Lakebase fronts Postgres with a
-        # transaction-mode pooler that reassigns backends per transaction, and a
-        # prepared statement bound to one backend then errors ("prepared statement
-        # already exists"/"does not exist") on the next. (langgraph's docs use 0,
-        # but that assumes a direct/session-pooled Postgres.)
-        kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": None},
+        # Lakebase requires SSL and connects as the principal. PostgresSaver
+        # requires autocommit (so .setup() commits DDL) and dict_row (it reads
+        # rows by name). prepare_threshold=None DISABLES server-side prepared
+        # statements — Lakebase fronts Postgres with a transaction-mode pooler
+        # that reassigns backends per transaction, and a prepared statement bound
+        # to one backend then errors ("prepared statement already exists"/"does
+        # not exist") on the next. (langgraph's docs use 0, but that assumes a
+        # direct/session-pooled Postgres.)
+        kwargs={
+            "host": hostname,
+            "port": port,
+            "dbname": database,
+            "user": principal,
+            "sslmode": "require",
+            "autocommit": True,
+            "row_factory": dict_row,
+            "prepare_threshold": None,
+        },
         min_size=1,
         max_size=5,
         max_lifetime=_MAX_LIFETIME_SECONDS,
         open=True,
     )
-    saver = PostgresSaver(pool)
+    # cast: ConnectionPool is invariant in its connection type, so a
+    # ConnectionPool[_LakebaseConnection] isn't assignable to PostgresSaver's
+    # ConnectionPool[Connection] param even though _LakebaseConnection IS a
+    # Connection. Runtime-correct; only visible to pyright with the extra installed.
+    saver = PostgresSaver(cast("Any", pool))
     saver.setup()  # idempotent — creates the checkpoint tables on first use
     logger.info(
         "Durable short-term memory: Lakebase PostgresSaver on instance %r db %r — "
