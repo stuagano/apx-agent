@@ -72,6 +72,17 @@ export default function ChatPanel({ agent }: { agent: AgentCard }) {
             {agent.description}
           </span>
         </div>
+        {agent.url && (
+          <a
+            href={`${agent.url}/.well-known/agent.json`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="A2A discovery card (/.well-known/agent.json)"
+            className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 shrink-0 transition-colors"
+          >
+            A2A card <ExternalLink size={11} />
+          </a>
+        )}
         <Link
           to="/agents/$agentId"
           params={{ agentId: agent.id }}
