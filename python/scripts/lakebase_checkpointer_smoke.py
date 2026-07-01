@@ -17,7 +17,6 @@ instance)::
     cd python
     uv run --extra lakebase python scripts/lakebase_checkpointer_smoke.py \\
         --profile <profile> \\
-        --instance <lakebase-instance-name> \\
         --host ep-xxxx.database.<region>.cloud.databricks.com \\
         --database databricks_postgres
 
@@ -40,7 +39,6 @@ def _fail(msg: str) -> None:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--profile", required=True, help="Databricks CLI profile that owns the instance.")
-    p.add_argument("--instance", required=True, help="Lakebase database instance NAME (for the credential API).")
     p.add_argument("--host", required=True, help="Lakebase endpoint host (…database.<region>.cloud.databricks.com).")
     p.add_argument("--database", default="databricks_postgres", help="Postgres database name.")
     p.add_argument("--keep", action="store_true", help="Skip cleanup of the smoke thread's checkpoints.")
@@ -91,12 +89,12 @@ def main() -> int:
     principal = ws.current_user.me().user_name
     thread_id = f"apx-smoke-{uuid.uuid4().hex[:8]}"
     print(f"profile={args.profile}  principal={principal}")
-    print(f"instance={args.instance}  host={args.host}  db={args.database}")
+    print(f"host={args.host}  db={args.database}")
     print(f"thread_id={thread_id}\n")
 
     def _build():  # type: ignore[no-untyped-def]
         return build_lakebase_checkpointer(
-            ws=ws, instance_name=args.instance, database=args.database, host=args.host
+            ws=ws, database=args.database, host=args.host
         )
 
     # 1) Suspend at the gated tool under a durable checkpointer (state → Lakebase).
