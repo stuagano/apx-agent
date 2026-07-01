@@ -504,7 +504,59 @@ def resolve_conversation_store(
         return None
 
 
+def resolve_checkpointer(
+    config: "AgentConfig | None",
+    ws: Any | None,
+    agent: Any | None = None,
+    store_override: Any | None = None,
+) -> Any | None:
+    """Return a durable LangGraph checkpointer for this agent, or ``None``.
+
+    Only a **Lakebase** session backend yields a durable checkpointer (a
+    ``PostgresSaver``); for every other backend (delta / inmemory / none) return
+    ``None`` so the served agent keeps its in-process ``InMemorySaver`` default.
+
+    A durable checkpointer is what lets a mid-turn approval — checkpoint state,
+    not a completed turn the ConversationStore persists — survive a restart. See
+    #329 Slice C. Built from the same Lakebase coords as the conversation store.
+
+    :param store_override: The explicit ``conversation_store`` passed to
+        ``create_app`` (mirrors ``resolve_conversation_store``'s ``override``).
+        When set, the caller owns session state, so return ``None`` rather than
+        spinning up an unrequested ``PostgresSaver`` from ``config.session``.
+
+    Degrades to ``None`` (in-process memory) on any failure — a missing
+    ``lakebase`` extra or an unreachable Lakebase must not crash startup.
+    """
+    if store_override is not None:
+        return None
+    config_session = config.session if config is not None else None
+    scfg = config_session if config_session is not None else getattr(agent, "session_config", None)
+    if scfg is None or scfg.type != "lakebase":
+        return None
+    if ws is None or not scfg.instance_name or not scfg.database:
+        return None
+    try:
+        from ._checkpoint_lakebase import build_lakebase_checkpointer  # noqa: PLC0415
+        from ._wiring import _resolve_env_var  # noqa: PLC0415
+
+        host = _resolve_env_var(scfg.host) if scfg.host else None
+        return build_lakebase_checkpointer(
+            ws=ws, instance_name=scfg.instance_name, database=scfg.database, host=host
+        )
+    except Exception as exc:
+        # Broad by design: build eagerly opens a pool and runs .setup(), so this
+        # can fail with connection/credential errors, not just import/config ones.
+        logger.warning(
+            "[tool.apx.agent.session] durable checkpointer unavailable — served "
+            "agent falls back to in-process memory (approvals won't survive a "
+            "restart): %s", exc,
+        )
+        return None
+
+
 __all__ = [
     "attach_declared_memory",
+    "resolve_checkpointer",
     "resolve_conversation_store",
 ]

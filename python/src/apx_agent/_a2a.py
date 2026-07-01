@@ -98,6 +98,19 @@ def _reply_text(response: Any) -> str:
     return ""
 
 
+def _approval_ask_text(payload: Any) -> str:
+    """A2A-appropriate approval prose — resume is via ``configuration.apx_resume``,
+    NOT the ChatAgent's ``custom_inputs`` (which is meaningless over A2A)."""
+    tool = payload.get("tool_name") if isinstance(payload, dict) else None
+    reason = payload.get("reason") if isinstance(payload, dict) else None
+    return (
+        f"Approval required to run {tool!r}"
+        + (f": {reason}" if reason else "")
+        + ". Resume by sending message/send on the same contextId with "
+        + "configuration={'apx_resume': 'approve' or 'deny'}."
+    )
+
+
 def _error_response(
     req_id: str | int | None, code: int, message: str, data: Any = None
 ) -> JSONResponse:
@@ -116,6 +129,7 @@ def mount_a2a_route(
     agent: BaseAgent,
     config: AgentConfig,
     conversation_store: Any | None = None,
+    checkpointer: Any | None = None,
 ) -> bool:
     """Mount the A2A JSON-RPC surface at ``POST /`` onto ``app``.
 
@@ -124,6 +138,18 @@ def mount_a2a_route(
     Returns ``False`` (logged) when the MLflow ChatAgent dep is missing, so a
     missing optional dep never breaks app startup — same posture as
     ``mount_invocations_route``.
+
+    :param checkpointer: Optional durable LangGraph checkpointer (e.g. a Lakebase
+        ``PostgresSaver``). Threaded into the ChatAgent so multi-turn A2A memory
+        — and a pending mid-turn approval — survive a restart. ``None`` falls
+        back to an in-process ``InMemorySaver``.
+
+    Mid-turn approval over A2A: when a gated tool suspends, ``message/send``
+    returns an ``input-required`` Task whose status message states the ask. The
+    client resumes on the SAME ``contextId`` by sending ``message/send`` with
+    ``configuration={"apx_resume": "approve"|"deny"}`` — approve runs the tool,
+    deny blocks it. A message WITHOUT ``apx_resume`` (or on a context that isn't
+    awaiting approval) is treated as a normal new turn, never as a resume.
     """
     try:
         from ._chat_agent import chat_agent_for
@@ -137,10 +163,16 @@ def mount_a2a_route(
 
     chat_agent = chat_agent_for(
         agent, model=config.model, conversation_store=conversation_store,
-        agent_id=config.name,
+        agent_id=config.name, checkpointer=checkpointer,
     )
     store = TaskStore()
     app.state.a2a_task_store = store
+    # Context ids currently awaiting an approval decision. Disambiguates a resume
+    # (apx_resume on a paused context) from a normal message: an apx_resume that
+    # arrives on a context NOT in this set is treated as a new turn, not fed to
+    # Command(resume). In-process; the durable checkpointer still holds the paused
+    # thread across a restart, but this routing hint does not span restarts.
+    awaiting_approval: set[str] = set()
 
     def _run_message_send(params: MessageSendParams, request: Request) -> Task:
         """Run the agent to completion and return a terminal Task."""
@@ -157,12 +189,46 @@ def mount_a2a_route(
         # store exactly as the /invocations context bridge does.
         custom_inputs.setdefault("session_id", context_id)
 
+        # Resume only when the client sent apx_resume AND this context is actually
+        # awaiting a decision — otherwise it's a normal new turn.
+        cfg = params.configuration or {}
+        resume = cfg.get("apx_resume") if context_id in awaiting_approval else None
+
         inbound = message.model_copy(update={"taskId": task_id, "contextId": context_id})
         try:
+            if resume is not None:
+                custom_inputs["resume"] = resume
+                predict_messages: list[Any] = []  # resume feeds Command, not input
+            else:
+                predict_messages = [ChatAgentMessage(role="user", content=message.text())]
             response = chat_agent.predict(
-                [ChatAgentMessage(role="user", content=message.text())],
+                predict_messages,
                 custom_inputs=custom_inputs or None,
             )
+
+            # Mid-turn approval: a gated tool suspended → input-required Task.
+            approval = (response.custom_outputs or {}).get("approval_required")
+            if approval is not None:
+                awaiting_approval.add(context_id)
+                ask_msg = Message(
+                    role="agent",
+                    parts=[TextPart(text=_approval_ask_text(approval))],
+                    messageId=_new_id(),
+                    taskId=task_id,
+                    contextId=context_id,
+                )
+                task = Task(
+                    id=task_id,
+                    contextId=context_id,
+                    status=TaskStatus(
+                        state=TaskState.input_required, timestamp=_now(), message=ask_msg
+                    ),
+                    history=[inbound, ask_msg],
+                )
+                store.put(task)
+                return task
+
+            awaiting_approval.discard(context_id)
             reply = _reply_text(response)
             agent_msg = Message(
                 role="agent",

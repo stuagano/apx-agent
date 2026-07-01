@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any, Callable, Generator, NamedTuple
 
 from ._agents import BaseAgent
 from ._audit import AuditAttrs
+from ._chat_agent import _pending_interrupt, _resume_decision
 from ._compile import compile_to_langgraph
 from ._conversation import (
     ConversationItem,
@@ -67,6 +68,7 @@ from ._conversation import (
     FunctionCallOutputData,
     MessageData,
     NewConversationItem,
+    drop_orphaned_tool_outputs,
     synthesize_conversation_title,
 )
 from ._mlflow_tracing import safe_span, set_span_outputs
@@ -417,6 +419,29 @@ def _langchain_to_output_item(msg: Any, idx: int) -> dict[str, Any]:
     }
 
 
+def _approval_output_item(payload: Any, thread_id: str | None) -> dict[str, Any]:
+    """A ResponsesAgent output message item stating a mid-turn approval ask.
+
+    Reuses the ChatAgent prose builder keyed on ``thread_id`` (ResponsesAgent's
+    convention) so the resume instruction names the right ``custom_inputs`` field.
+    """
+    from ._chat_agent import approval_prose  # noqa: PLC0415
+
+    return {
+        "type": "message",
+        "role": "assistant",
+        "id": f"appr-{uuid.uuid4().hex[:8]}",
+        "status": "completed",
+        "content": [
+            {
+                "type": "output_text",
+                "text": approval_prose(payload, thread_id, key="thread_id"),
+                "annotations": [],
+            }
+        ],
+    }
+
+
 def _json_str(value: Any) -> str:
     """Render ``value`` as a JSON string; safe fallback for non-serializables."""
     import json
@@ -529,6 +554,11 @@ def _conv_items_to_lc_messages(items: list[ConversationItem]) -> list[Any]:
     :returns: A list of langchain BaseMessage objects.
     """
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    # Drop any tool result whose function_call was never stored (e.g. an approval
+    # turn's tool-call lived only in a since-gone checkpointer) — an orphaned tool
+    # message replays as a tool_result with no matching call and the LLM rejects it.
+    items = drop_orphaned_tool_outputs(items)
 
     result: list[Any] = []
     i = 0
@@ -1119,12 +1149,51 @@ def compile_to_responses_agent(
                         pre_count = len(graph.get_state(lg_config).values.get("messages", []))
                     except Exception:
                         pre_count = 0
+                # Approval resume: a checkpointed thread resends
+                # {"resume": <decision>} to continue from the paused tool call
+                # instead of new input (mirrors the ChatAgent predict path).
+                resume = _resume_decision(custom_inputs) if lg_config else None
                 with safe_span("graph.invoke", span_type="CHAIN"):
-                    result = graph.invoke(
-                        {"messages": graph_input},
-                        **({"config": lg_config} if lg_config else {}),
+                    if resume is not None:
+                        from langgraph.types import Command  # noqa: PLC0415
+                        result = graph.invoke(Command(resume=resume), config=lg_config)
+                    else:
+                        result = graph.invoke(
+                            {"messages": graph_input},
+                            **({"config": lg_config} if lg_config else {}),
+                        )
+
+                # Mid-turn approval: a gated tool suspended the run → return an
+                # approval-required response (tool NOT run) before persisting.
+                paused = _pending_interrupt(graph, lg_config)
+                if paused is not None:
+                    response = ResponsesAgentResponse(
+                        id=f"resp-{uuid.uuid4().hex[:12]}",
+                        output=[_approval_output_item(paused, thread_id)],
+                        custom_outputs={"approval_required": paused},
                     )
-                new_lc = result["messages"][pre_count + input_count:]
+                    set_span_outputs(span, response.model_dump())
+                    # Persist the user's input (+ title) on the approval turn;
+                    # the tool result + answer are appended on resume. Without
+                    # this the prompt is lost when the turn pauses.
+                    if conv_id is not None:
+                        _persist_conv_turn(
+                            _conversation_store,
+                            conv_id,
+                            input_items=list(request.input),
+                            output_items=[],
+                            model=effective_model,
+                            response_id=str(uuid.uuid4()),
+                            is_new=conv.is_new if conv is not None else False,
+                        )
+                    return response
+
+                # On a resume there is no new input in graph state (Command was
+                # fed, not messages), so slice only past the prior state — else a
+                # client that resent its input would drop that many new messages
+                # (mirrors ChatAgent.predict's slice_start).
+                slice_start = pre_count if resume is not None else pre_count + input_count
+                new_lc = result["messages"][slice_start:]
                 raw_items = [_langchain_to_output_item(m, i) for i, m in enumerate(new_lc)]
                 output_items = _flatten_output_items(raw_items)
 
@@ -1246,6 +1315,14 @@ def compile_to_responses_agent(
                     _agent, ws=ws, model=effective_model, headers=req_headers,
                     **({"checkpointer": cp} if cp else {}),
                 )
+                # Approval resume: a checkpointed thread resends
+                # {"resume": <decision>} to continue from the paused tool call.
+                resume = _resume_decision(custom_inputs) if lg_config else None
+                if resume is not None:
+                    from langgraph.types import Command  # noqa: PLC0415
+                    stream_input: Any = Command(resume=resume)
+                else:
+                    stream_input = {"messages": graph_input}
                 # Combined stream: "messages" surfaces LLM token chunks (emitted
                 # as response.output_text.delta for true word-by-word streaming),
                 # "updates" surfaces completed graph steps (kept as the existing
@@ -1254,7 +1331,7 @@ def compile_to_responses_agent(
                 # langchain message id, shared by a message's chunks and its final
                 # assembled message).
                 for mode, data in graph.stream(
-                    {"messages": graph_input},
+                    stream_input,
                     stream_mode=["updates", "messages"],
                     **({"config": lg_config} if lg_config else {}),
                 ):
@@ -1288,6 +1365,39 @@ def compile_to_responses_agent(
                                     output_index=output_index,
                                 )
                                 output_index += 1
+
+                # Mid-turn approval: a gated tool suspended the run → surface the
+                # ask (done item + completed event carrying the payload). The tool
+                # has NOT run; only the user's input is persisted here (the tool
+                # result + answer are appended on resume).
+                paused = _pending_interrupt(graph, lg_config)
+                if paused is not None:
+                    appr_item = _approval_output_item(paused, thread_id)
+                    yield ResponsesAgentStreamEvent(
+                        type="response.output_item.done",
+                        item=appr_item,
+                        output_index=output_index,
+                    )
+                    yield ResponsesAgentStreamEvent(
+                        type="response.completed",
+                        response={
+                            "id": f"resp-{uuid.uuid4().hex[:12]}",
+                            "object": "response",
+                            "output": [appr_item],
+                        },
+                        custom_outputs={"approval_required": paused},
+                    )
+                    if conv_id is not None:
+                        _persist_conv_turn(
+                            _conversation_store,
+                            conv_id,
+                            input_items=list(request.input),
+                            output_items=[],
+                            model=effective_model,
+                            response_id=str(uuid.uuid4()),
+                            is_new=conv.is_new if conv is not None else False,
+                        )
+                    return
 
             # Terminal event with the assembled response
             final_response = {

@@ -61,7 +61,7 @@ def app_and_chat_agent():
 
     original_factory = _ca_module.chat_agent_for
 
-    def _spy_factory(agent_arg, *, model, conversation_store=None, agent_id=None):
+    def _spy_factory(agent_arg, *, model, conversation_store=None, agent_id=None, checkpointer=None):
         ca = original_factory(agent_arg, model=model)
         # create_app builds a chat_agent per protocol route (now /invocations AND
         # the A2A surface). The /invocations mount is first, so capture that one —
@@ -281,7 +281,7 @@ def app_with_responses():
 
     captured: dict[str, Any] = {}
 
-    def _fake_compile(agent_arg, *, model, conversation_store=None, executor="langgraph", agent_id=None):
+    def _fake_compile(agent_arg, *, model, conversation_store=None, executor="langgraph", agent_id=None, checkpointer=None):
         captured["invoke"] = fake_invoke
         captured["stream"] = fake_stream
         return fake_invoke, fake_stream

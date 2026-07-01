@@ -425,6 +425,35 @@ class ConversationItem(BaseModel):
         }
 
 
+def drop_orphaned_tool_outputs(
+    items: list[ConversationItem],
+) -> list[ConversationItem]:
+    """Drop a ``function_call_output`` whose ``call_id`` has no matching
+    ``function_call`` in ``items``.
+
+    An orphaned tool result — e.g. an approval turn persisted the tool result
+    while its ``function_call`` lived only in a checkpointer that is since gone —
+    replays as a tool message with no preceding tool call, which the LLM rejects
+    (Databricks-Claude 400s the whole request). Well-formed history is unchanged:
+    every stored result has its call, so nothing is dropped. Called at the head of
+    the two history-replay conversions (ChatAgent + ResponsesAgent).
+    """
+    call_ids = {
+        it.data.call_id
+        for it in items
+        if it.type == "function_call" and isinstance(it.data, FunctionCallData)
+    }
+    return [
+        it
+        for it in items
+        if not (
+            it.type == "function_call_output"
+            and isinstance(it.data, FunctionCallOutputData)
+            and it.data.call_id not in call_ids
+        )
+    ]
+
+
 def synthesize_conversation_title(
     content: list[dict[str, Any]],
     *,
