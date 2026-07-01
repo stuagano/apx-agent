@@ -521,17 +521,28 @@ def chat_agent_for(
         checkpointer: Optional LangGraph checkpointer (BaseCheckpointSaver) for
             thread-scoped short-term memory.
 
-    Short-term memory — two tiers, by what you wire:
-        * **Durable** — pass a ``conversation_store`` (Lakebase/Delta). Prior
-          turns are replayed and persisted across restarts/replicas. This is
-          the durable path; a memory store is where durability lives.
-        * **In-process (default)** — wire NEITHER a checkpointer nor a store and
-          (for an ``LlmAgent``) this defaults to a process-scoped
-          ``InMemorySaver``: the agent remembers across turns within one running
-          replica, keyed by ``session_id``, but **forgets on restart and does
-          not span replicas**. Configure a ``conversation_store`` for durability.
-        These never stack: a ``conversation_store`` keeps its replay path and no
-        checkpointer is injected (an in-process saver would lose its history).
+    Short-term memory — what you wire decides where state lives:
+        * **Durable checkpointer** — pass a ``checkpointer`` (a Lakebase
+          ``PostgresSaver``; ``resolve_checkpointer`` wires one for a
+          ``type='lakebase'`` session). It owns thread state keyed by
+          ``session_id``, so context AND a **pending mid-turn approval** survive
+          a restart and span replicas (#329 Slice C). Composes with a
+          ``conversation_store`` — the store still persists completed turns for
+          the dev-UI / observability; the checkpointer owns live context (no
+          replay).
+        * **Conversation-store replay** — pass a ``conversation_store``
+          (Lakebase/Delta) with no checkpointer. Prior *completed* turns are
+          replayed and persisted across restarts/replicas — but this cannot
+          resurrect a pending approval (that's checkpoint state, never persisted
+          to the store).
+        * **In-process (default)** — wire NEITHER and (for an ``LlmAgent``) this
+          defaults to a process-scoped ``InMemorySaver``: remembers across turns
+          within one replica, but **forgets on restart and does not span
+          replicas**.
+        Auto-injection never stacks: the ``InMemorySaver`` default is added only
+        when NEITHER a checkpointer nor a store is wired (an in-process saver
+        alongside a store would lose its history on restart). An *explicitly*
+        passed checkpointer is always used as-is, store or not.
 
     Returns:
         An instance of an ``mlflow.pyfunc.ChatAgent`` subclass. Usable
@@ -921,8 +932,10 @@ def chat_agent_for(
     # non-regressing: agents WITH a durable conversation store keep their replay
     # path untouched (swapping in an in-process saver would lose history on
     # restart). Only LlmAgent — composite agents can't take a checkpointer
-    # (``compile_to_langgraph`` raises). InMemory is per-process; a durable
-    # cross-restart backend (Lakebase) is tracked in #329.
+    # (``compile_to_langgraph`` raises). InMemory is per-process; for a durable
+    # cross-restart checkpointer (so a pending approval survives a restart), a
+    # Lakebase session wires a PostgresSaver — see ``resolve_checkpointer`` (#329
+    # Slice C).
     if checkpointer is None and conversation_store is None:
         from ._agents import LlmAgent  # noqa: PLC0415
 
@@ -933,9 +946,10 @@ def chat_agent_for(
             logger.info(
                 "Short-term memory: in-process (InMemorySaver) for agent %r — "
                 "remembers within a replica per session_id, but resets on "
-                "restart and does not span replicas. Configure "
-                "[tool.apx.agent.session] (a conversation store) for durable "
-                "cross-restart memory.",
+                "restart and does not span replicas. Configure a "
+                "[tool.apx.agent.session] type='lakebase' block for a durable "
+                "cross-restart checkpointer (PostgresSaver) so thread state and "
+                "pending approvals survive restarts.",
                 getattr(agent, "name", None),
             )
 
