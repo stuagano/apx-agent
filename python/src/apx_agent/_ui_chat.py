@@ -80,6 +80,20 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
                  display: inline-flex; align-items: center; gap: 6px; }}
     .util-btn:hover {{ color: var(--text); border-color: #555; }}
     .util-btn .ico {{ font-size: 13px; line-height: 1; }}
+    /* Native <details> dropdown for standard agent endpoints — no JS. */
+    .util-menu {{ position: relative; }}
+    .util-menu > summary {{ list-style: none; }}
+    .util-menu > summary::-webkit-details-marker {{ display: none; }}
+    .util-menu-panel {{ position: absolute; right: 0; top: calc(100% + 6px); z-index: 60;
+                        min-width: 210px; background: var(--panel);
+                        border: 1px solid var(--border-strong); border-radius: 6px;
+                        padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }}
+    .util-menu-panel a {{ display: flex; align-items: center; gap: 10px; padding: 7px 9px;
+                          color: var(--text-muted); text-decoration: none;
+                          border-radius: 4px; font-size: 12px; white-space: nowrap; }}
+    .util-menu-panel a:hover {{ background: var(--accent-bg); color: var(--text); }}
+    .util-menu-panel a .path {{ margin-left: auto; color: #555; font-size: 10px;
+                                font-family: ui-monospace, monospace; }}
     #btn-sidebar-toggle {{ background: none; border: none; color: #555; font-size: 16px;
                            cursor: pointer; padding: 4px 8px; border-radius: 5px; line-height: 1;
                            flex-shrink: 0; }}
@@ -176,6 +190,17 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
     <a href="/_apx/traces" target="_blank" class="util-btn" title="Browse trace history">
       <span class="ico">⏱</span> Traces
     </a>
+    <details class="util-menu">
+      <summary class="util-btn" title="Standard agent endpoints">
+        <span class="ico">◇</span> Endpoints
+      </summary>
+      <div class="util-menu-panel">
+        <a href="/.well-known/agent.json" target="_blank">A2A card <span class="path">/.well-known/agent.json</span></a>
+        <a href="/_apx/openapi.json" target="_blank">API spec <span class="path">/_apx/openapi.json</span></a>
+        <a href="/health" target="_blank">Health <span class="path">/health</span></a>
+        <a href="/readyz" target="_blank">Readiness <span class="path">/readyz</span></a>
+      </div>
+    </details>
   </header>
   <div class="shell-body">
     <aside id="sidebar">
