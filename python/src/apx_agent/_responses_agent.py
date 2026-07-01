@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any, Callable, Generator, NamedTuple
 
 from ._agents import BaseAgent
 from ._audit import AuditAttrs
+from ._chat_agent import _pending_interrupt, _resume_decision
 from ._compile import compile_to_langgraph
 from ._conversation import (
     ConversationItem,
@@ -414,6 +415,29 @@ def _langchain_to_output_item(msg: Any, idx: int) -> dict[str, Any]:
         "id": msg_id,
         "status": "completed",
         "content": [{"type": "output_text", "text": text, "annotations": []}],
+    }
+
+
+def _approval_output_item(payload: Any, thread_id: str | None) -> dict[str, Any]:
+    """A ResponsesAgent output message item stating a mid-turn approval ask.
+
+    Reuses the ChatAgent prose builder keyed on ``thread_id`` (ResponsesAgent's
+    convention) so the resume instruction names the right ``custom_inputs`` field.
+    """
+    from ._chat_agent import approval_prose  # noqa: PLC0415
+
+    return {
+        "type": "message",
+        "role": "assistant",
+        "id": f"appr-{uuid.uuid4().hex[:8]}",
+        "status": "completed",
+        "content": [
+            {
+                "type": "output_text",
+                "text": approval_prose(payload, thread_id, key="thread_id"),
+                "annotations": [],
+            }
+        ],
     }
 
 
@@ -1119,11 +1143,32 @@ def compile_to_responses_agent(
                         pre_count = len(graph.get_state(lg_config).values.get("messages", []))
                     except Exception:
                         pre_count = 0
+                # Approval resume: a checkpointed thread resends
+                # {"resume": <decision>} to continue from the paused tool call
+                # instead of new input (mirrors the ChatAgent predict path).
+                resume = _resume_decision(custom_inputs) if lg_config else None
                 with safe_span("graph.invoke", span_type="CHAIN"):
-                    result = graph.invoke(
-                        {"messages": graph_input},
-                        **({"config": lg_config} if lg_config else {}),
+                    if resume is not None:
+                        from langgraph.types import Command  # noqa: PLC0415
+                        result = graph.invoke(Command(resume=resume), config=lg_config)
+                    else:
+                        result = graph.invoke(
+                            {"messages": graph_input},
+                            **({"config": lg_config} if lg_config else {}),
+                        )
+
+                # Mid-turn approval: a gated tool suspended the run → return an
+                # approval-required response (tool NOT run) before persisting.
+                paused = _pending_interrupt(graph, lg_config)
+                if paused is not None:
+                    response = ResponsesAgentResponse(
+                        id=f"resp-{uuid.uuid4().hex[:12]}",
+                        output=[_approval_output_item(paused, thread_id)],
+                        custom_outputs={"approval_required": paused},
                     )
+                    set_span_outputs(span, response.model_dump())
+                    return response
+
                 new_lc = result["messages"][pre_count + input_count:]
                 raw_items = [_langchain_to_output_item(m, i) for i, m in enumerate(new_lc)]
                 output_items = _flatten_output_items(raw_items)
@@ -1246,6 +1291,14 @@ def compile_to_responses_agent(
                     _agent, ws=ws, model=effective_model, headers=req_headers,
                     **({"checkpointer": cp} if cp else {}),
                 )
+                # Approval resume: a checkpointed thread resends
+                # {"resume": <decision>} to continue from the paused tool call.
+                resume = _resume_decision(custom_inputs) if lg_config else None
+                if resume is not None:
+                    from langgraph.types import Command  # noqa: PLC0415
+                    stream_input: Any = Command(resume=resume)
+                else:
+                    stream_input = {"messages": graph_input}
                 # Combined stream: "messages" surfaces LLM token chunks (emitted
                 # as response.output_text.delta for true word-by-word streaming),
                 # "updates" surfaces completed graph steps (kept as the existing
@@ -1254,7 +1307,7 @@ def compile_to_responses_agent(
                 # langchain message id, shared by a message's chunks and its final
                 # assembled message).
                 for mode, data in graph.stream(
-                    {"messages": graph_input},
+                    stream_input,
                     stream_mode=["updates", "messages"],
                     **({"config": lg_config} if lg_config else {}),
                 ):
@@ -1288,6 +1341,28 @@ def compile_to_responses_agent(
                                     output_index=output_index,
                                 )
                                 output_index += 1
+
+                # Mid-turn approval: a gated tool suspended the run → surface the
+                # ask (done item + completed event carrying the payload) and stop
+                # before persisting. The tool has NOT run.
+                paused = _pending_interrupt(graph, lg_config)
+                if paused is not None:
+                    appr_item = _approval_output_item(paused, thread_id)
+                    yield ResponsesAgentStreamEvent(
+                        type="response.output_item.done",
+                        item=appr_item,
+                        output_index=output_index,
+                    )
+                    yield ResponsesAgentStreamEvent(
+                        type="response.completed",
+                        response={
+                            "id": f"resp-{uuid.uuid4().hex[:12]}",
+                            "object": "response",
+                            "output": [appr_item],
+                        },
+                        custom_outputs={"approval_required": paused},
+                    )
+                    return
 
             # Terminal event with the assembled response
             final_response = {

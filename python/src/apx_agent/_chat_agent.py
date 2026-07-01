@@ -433,6 +433,23 @@ def _pending_interrupt(graph: Any, lg_config: dict[str, Any] | None) -> Any | No
     return interrupts[0].value if interrupts else None
 
 
+def approval_prose(payload: Any, thread_id: str | None, key: str = "session_id") -> str:
+    """Prose stating a mid-turn approval ask and how to resume.
+
+    ``key`` is the ``custom_inputs`` field the caller keys the thread by —
+    ``"session_id"`` on the ChatAgent surface, ``"thread_id"`` on ResponsesAgent
+    — so the instruction names the right field on each served path.
+    """
+    tool = payload.get("tool_name") if isinstance(payload, dict) else None
+    reason = payload.get("reason") if isinstance(payload, dict) else None
+    return (
+        f"Approval required to run {tool!r}"
+        + (f": {reason}" if reason else "")
+        + f". Resume by resending with custom_inputs={{{key!r}: {thread_id!r}, "
+        + "'resume': 'approve' or 'deny'}."
+    )
+
+
 def _approval_required_response(payload: Any, thread_id: str | None) -> Any:
     """A ChatAgentResponse conveying a mid-turn approval request.
 
@@ -442,20 +459,32 @@ def _approval_required_response(payload: Any, thread_id: str | None) -> Any:
     """
     from mlflow.types.agent import ChatAgentMessage, ChatAgentResponse
 
-    tool = payload.get("tool_name") if isinstance(payload, dict) else None
-    reason = payload.get("reason") if isinstance(payload, dict) else None
-    text = (
-        f"Approval required to run {tool!r}"
-        + (f": {reason}" if reason else "")
-        + f". Resume by resending with custom_inputs={{'session_id': {thread_id!r}, "
-        + "'resume': 'approve' or 'deny'}."
-    )
     return ChatAgentResponse(
         messages=[
             ChatAgentMessage(
-                role="assistant", content=text, id=f"appr-{uuid.uuid4().hex[:8]}"
+                role="assistant",
+                content=approval_prose(payload, thread_id),
+                id=f"appr-{uuid.uuid4().hex[:8]}",
             )
         ],
+        custom_outputs={"approval_required": payload},
+    )
+
+
+def _approval_required_chunk(payload: Any, thread_id: str | None) -> Any:
+    """A ChatAgentChunk conveying a mid-turn approval request (streaming path).
+
+    Same payload/prose convention as :func:`_approval_required_response`, but as
+    a single streamed delta so ``predict_stream`` can surface the ask and stop.
+    """
+    from mlflow.types.agent import ChatAgentChunk, ChatAgentMessage
+
+    return ChatAgentChunk(
+        delta=ChatAgentMessage(
+            role="assistant",
+            content=approval_prose(payload, thread_id),
+            id=f"appr-{uuid.uuid4().hex[:8]}",
+        ),
         custom_outputs={"approval_required": payload},
     )
 
@@ -831,10 +860,20 @@ def chat_agent_for(
                 emitted = 0
                 new_messages: list[ChatAgentMessage] = []
 
+                # Approval resume: a checkpointed thread resends
+                # {"resume": <decision>} to continue from the paused tool call
+                # instead of sending new messages (mirrors predict).
+                resume = _resume_decision(custom_inputs) if lg_config else None
+                if resume is not None:
+                    from langgraph.types import Command  # noqa: PLC0415
+                    stream_input: Any = Command(resume=resume)
+                else:
+                    stream_input = {"messages": lc_input}
+
                 # stream_mode="updates" yields {node_name: {"messages": [...new...]}}
                 # per node completion — same pattern Rand's shortage_intel uses.
                 for chunk in graph.stream(
-                    {"messages": lc_input}, stream_mode="updates",
+                    stream_input, stream_mode="updates",
                     **({"config": lg_config} if lg_config else {}),
                 ):
                     if not isinstance(chunk, dict):
@@ -852,6 +891,16 @@ def chat_agent_for(
                         span.set_attribute("apx.chunks_emitted", emitted)
                     except Exception:  # pragma: no cover
                         pass
+
+                # Mid-turn approval: if a gated tool suspended the run, surface
+                # the ask as a final chunk and stop — the tool has NOT run, and
+                # nothing is persisted (mirrors predict's early return).
+                # ponytail: updates mode emits the empty-content tool-call delta
+                # before this chunk; consistent with predict's state, left as-is.
+                paused = _pending_interrupt(graph, lg_config)
+                if paused is not None:
+                    yield _approval_required_chunk(paused, thread_id)
+                    return
 
                 # Persist the inbound turn + the new messages — mirrors
                 # ``predict`` so streaming multi-turn conversations remember
