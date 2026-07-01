@@ -79,9 +79,15 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
     if cfg.type == "lakebase":
         if ws is None:
             return None
-        if not cfg.instance_name:
+        # Resolve $ENV_VAR in host — imported locally to avoid top-level
+        # _memory_wiring → _wiring cycle (Task 1.5 makes _wiring import us).
+        from ._wiring import _resolve_env_var  # noqa: PLC0415
+
+        host = _resolve_env_var(cfg.host) if cfg.host else None
+        if not host:
             raise ValueError(
-                "[tool.apx.agent.memory] type='lakebase' requires instance_name."
+                "[tool.apx.agent.memory] type='lakebase' requires host (the "
+                "Lakebase project endpoint or instance DNS)."
             )
         if not cfg.database:
             raise ValueError(
@@ -99,18 +105,7 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
         from ._embeddings import make_embedding_fn  # noqa: PLC0415
         from ._memory_lakebase import LakebaseMemoryStore  # noqa: PLC0415
 
-        # Resolve $ENV_VAR in host — imported locally to avoid top-level
-        # _memory_wiring → _wiring cycle (Task 1.5 makes _wiring import us).
-        from ._wiring import _resolve_env_var  # noqa: PLC0415
-
-        host = _resolve_env_var(cfg.host) if cfg.host else None
-
-        engine = build_lakebase_engine(
-            ws=ws,
-            instance_name=cfg.instance_name,
-            database=cfg.database,
-            host=host,
-        )
+        engine = build_lakebase_engine(ws=ws, database=cfg.database, host=host)
         embed_fn = make_embedding_fn(ws, cfg.embedding_model)
         return LakebaseMemoryStore(
             engine=engine,
@@ -195,9 +190,13 @@ def _build_example_store(cfg: Any, ws: Any | None) -> Any | None:
     if cfg.type == "lakebase":
         if ws is None:
             return None
-        if not cfg.instance_name or not cfg.database:
+        from ._wiring import _resolve_env_var  # noqa: PLC0415
+
+        host = _resolve_env_var(cfg.host) if cfg.host else None
+        if not host or not cfg.database:
             raise ValueError(
-                "[tool.apx.agent.example] type='lakebase' requires instance_name and database."
+                "[tool.apx.agent.example] type='lakebase' requires host (the "
+                "Lakebase endpoint) and database."
             )
         if not cfg.embedding_model or cfg.embedding_dim is None:
             raise ValueError(
@@ -206,12 +205,8 @@ def _build_example_store(cfg: Any, ws: Any | None) -> Any | None:
         from ._lakebase_engine import build_lakebase_engine  # noqa: PLC0415
         from ._embeddings import make_embedding_fn  # noqa: PLC0415
         from ._example_lakebase import LakebaseExampleStore  # noqa: PLC0415
-        from ._wiring import _resolve_env_var  # noqa: PLC0415
 
-        host = _resolve_env_var(cfg.host) if cfg.host else None
-        engine = build_lakebase_engine(
-            ws=ws, instance_name=cfg.instance_name, database=cfg.database, host=host
-        )
+        engine = build_lakebase_engine(ws=ws, database=cfg.database, host=host)
         embed_fn = make_embedding_fn(ws, cfg.embedding_model)
         # LakebaseExampleStore.__init__(engine, embedding_fn, embedding_dim, table_name,
         # auto_create, ensure_extension) — verified against _example_lakebase.py:154-177.
@@ -442,18 +437,17 @@ def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
                 "skipping conversation store (deploy with valid Databricks credentials)."
             )
             return None
-        if not cfg.instance_name or not cfg.database:
-            raise ValueError(
-                "[tool.apx.agent.session] type='lakebase' requires instance_name and database."
-            )
         from ._lakebase_engine import build_lakebase_engine  # noqa: PLC0415
         from ._conversation_lakebase import LakebaseConversationStore  # noqa: PLC0415
         from ._wiring import _resolve_env_var  # noqa: PLC0415
 
         host = _resolve_env_var(cfg.host) if cfg.host else None
-        engine = build_lakebase_engine(
-            ws=ws, instance_name=cfg.instance_name, database=cfg.database, host=host
-        )
+        if not host or not cfg.database:
+            raise ValueError(
+                "[tool.apx.agent.session] type='lakebase' requires host (the "
+                "Lakebase project endpoint or instance DNS) and database."
+            )
+        engine = build_lakebase_engine(ws=ws, database=cfg.database, host=host)
         base = cfg.table_name or "apx"
         return LakebaseConversationStore(
             engine=engine,
@@ -534,15 +528,16 @@ def resolve_checkpointer(
     scfg = config_session if config_session is not None else getattr(agent, "session_config", None)
     if scfg is None or scfg.type != "lakebase":
         return None
-    if ws is None or not scfg.instance_name or not scfg.database:
+    from ._wiring import _resolve_env_var  # noqa: PLC0415
+
+    host = _resolve_env_var(scfg.host) if scfg.host else None
+    if ws is None or not host or not scfg.database:
         return None
     try:
         from ._checkpoint_lakebase import build_lakebase_checkpointer  # noqa: PLC0415
-        from ._wiring import _resolve_env_var  # noqa: PLC0415
 
-        host = _resolve_env_var(scfg.host) if scfg.host else None
         return build_lakebase_checkpointer(
-            ws=ws, instance_name=scfg.instance_name, database=scfg.database, host=host
+            ws=ws, database=scfg.database, host=host
         )
     except Exception as exc:
         # Broad by design: build eagerly opens a pool and runs .setup(), so this

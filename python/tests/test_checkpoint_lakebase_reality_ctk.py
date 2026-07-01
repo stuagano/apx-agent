@@ -53,14 +53,14 @@ def test_resolve_checkpointer_builds_postgres_saver_for_lakebase(
     captured: dict[str, Any] = {}
     sentinel = object()
 
-    def fake_build(*, ws: Any, instance_name: str, database: str, host: Any = None) -> Any:
-        captured.update(instance_name=instance_name, database=database, host=host)
+    def fake_build(*, ws: Any, database: str, host: str) -> Any:
+        captured.update(database=database, host=host)
         return sentinel
 
     monkeypatch.setattr(cp, "build_lakebase_checkpointer", fake_build)
     result = resolve_checkpointer(_lakebase_config(), ws=MagicMock())
     assert result is sentinel
-    assert captured == {"instance_name": "inst", "database": "db", "host": "h.example"}
+    assert captured == {"database": "db", "host": "h.example"}
 
 
 def test_resolve_checkpointer_none_for_non_lakebase() -> None:
@@ -118,7 +118,7 @@ def test_build_checkpointer_requires_extra() -> None:
         pytest.skip("lakebase extra installed — ImportError path not exercised here")
 
     with pytest.raises(ImportError, match="lakebase"):
-        build_lakebase_checkpointer(ws=MagicMock(), instance_name="i", database="d")
+        build_lakebase_checkpointer(ws=MagicMock(), database="d", host="h.example")
 
 
 # ── mount functions thread the checkpointer into the served agents ────────────

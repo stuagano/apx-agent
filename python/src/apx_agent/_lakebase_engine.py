@@ -41,17 +41,19 @@ def _require_sqlalchemy() -> Any:
 def build_lakebase_engine(
     *,
     ws: Any,
-    instance_name: str,
     database: str,
-    host: str | None = None,
+    host: str,
     port: int = 5432,
     pool_pre_ping: bool = True,
     pool_recycle: int = 1800,
 ) -> "Engine":
     """Build a SQLAlchemy ``Engine`` for a Databricks Lakebase instance.
 
-    Attaches a ``do_connect`` listener that mints a fresh OAuth token via
-    ``ws.database.generate_database_credential`` on every connection.
+    Connects to ``host`` (the Lakebase endpoint — a project endpoint or a classic
+    instance's DNS) as the authenticated principal, with SSL, and a ``do_connect``
+    listener that injects a fresh Databricks OAuth token as the password on every
+    connection. No instance name is needed — the OAuth token is instance-agnostic
+    and the host targets the instance.
 
     Raises ``ImportError`` if sqlalchemy is not installed.
     """
@@ -65,7 +67,7 @@ def build_lakebase_engine(
     url = URL.create(
         "postgresql+psycopg",
         username=ws.current_user.me().user_name,
-        host=host or "localhost",
+        host=host,
         port=port,
         database=database,
         query={"sslmode": "require"},

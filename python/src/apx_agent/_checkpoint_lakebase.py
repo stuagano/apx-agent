@@ -47,17 +47,18 @@ _MISSING = (
 def build_lakebase_checkpointer(
     *,
     ws: Any,
-    instance_name: str,
     database: str,
-    host: str | None = None,
+    host: str,
     port: int = 5432,
 ) -> "PostgresSaver":
     """Build a durable ``PostgresSaver`` for a Databricks Lakebase instance.
 
-    The returned saver owns a psycopg connection pool that mints a fresh OAuth
-    token per connection (via ``ws.database.generate_database_credential``) and
-    recycles connections before the token expires. ``.setup()`` has already run,
-    so the checkpoint tables exist.
+    Connects to ``host`` (the Lakebase endpoint — a project endpoint or a classic
+    instance's DNS) as the authenticated principal, with SSL. The returned saver
+    owns a psycopg pool that injects a fresh Databricks OAuth token per connection
+    and recycles connections before it expires. ``.setup()`` has already run, so
+    the checkpoint tables exist. No instance name is needed — the OAuth token is
+    instance-agnostic and the host targets the instance.
 
     The pool lives for the app lifetime; process exit reclaims it (no explicit
     teardown — mirrors how the served agent holds its saver).
@@ -98,7 +99,6 @@ def build_lakebase_checkpointer(
             kwargs["password"] = _mint_token()
             return super().connect(conninfo, **kwargs)
 
-    hostname = host or "localhost"
     pool = ConnectionPool(
         conninfo="",  # connection params passed as kwargs (avoids URL-encoding the principal's @)
         connection_class=_LakebaseConnection,
@@ -111,7 +111,7 @@ def build_lakebase_checkpointer(
         # not exist") on the next. (langgraph's docs use 0, but that assumes a
         # direct/session-pooled Postgres.)
         kwargs={
-            "host": hostname,
+            "host": host,
             "port": port,
             "dbname": database,
             "user": principal,
@@ -132,8 +132,8 @@ def build_lakebase_checkpointer(
     saver = PostgresSaver(cast("Any", pool))
     saver.setup()  # idempotent — creates the checkpoint tables on first use
     logger.info(
-        "Durable short-term memory: Lakebase PostgresSaver on instance %r db %r — "
+        "Durable short-term memory: Lakebase PostgresSaver on host %r db %r — "
         "pending approvals and thread state survive restarts and span replicas.",
-        instance_name, database,
+        host, database,
     )
     return saver
