@@ -95,9 +95,14 @@ def build_lakebase_checkpointer(
     pool = ConnectionPool(
         conninfo=conninfo,
         connection_class=_LakebaseConnection,
-        # PostgresSaver requires these three; autocommit lets .setup() commit DDL,
-        # dict_row lets it read rows by name, prepare_threshold=0 suits pgbouncer.
-        kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": 0},
+        # PostgresSaver requires autocommit (so .setup() commits DDL) and
+        # dict_row (it reads rows by name). prepare_threshold=None DISABLES
+        # server-side prepared statements — Lakebase fronts Postgres with a
+        # transaction-mode pooler that reassigns backends per transaction, and a
+        # prepared statement bound to one backend then errors ("prepared statement
+        # already exists"/"does not exist") on the next. (langgraph's docs use 0,
+        # but that assumes a direct/session-pooled Postgres.)
+        kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": None},
         min_size=1,
         max_size=5,
         max_lifetime=_MAX_LIFETIME_SECONDS,

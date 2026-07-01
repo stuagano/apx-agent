@@ -792,8 +792,11 @@ def create_app(
                 )
                 # Durable checkpointer (Lakebase → PostgresSaver) so a pending
                 # mid-turn approval survives a restart. None → in-process default.
+                # An explicit conversation_store override means the caller owns
+                # session state, so no auto-checkpointer is built (store_override).
                 _checkpointer = resolve_checkpointer(
-                    ctx.config, ws=app.state.workspace_client, agent=ctx.agent
+                    ctx.config, ws=app.state.workspace_client, agent=ctx.agent,
+                    store_override=conversation_store,
                 )
                 mount_invocations_route(
                     app, ctx.agent, ctx.config,

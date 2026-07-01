@@ -49,7 +49,7 @@ def a2a_client():
 
     original_factory = _ca_module.chat_agent_for
 
-    def _spy_factory(agent_arg, *, model, conversation_store=None, agent_id=None):
+    def _spy_factory(agent_arg, *, model, conversation_store=None, agent_id=None, checkpointer=None):
         ca = original_factory(agent_arg, model=model)
         captured["chat_agent"] = ca
         ca.predict = MagicMock(name="mock_predict")

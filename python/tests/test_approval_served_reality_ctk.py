@@ -241,6 +241,23 @@ def test_responses_invoke_surfaces_approval_then_resume_approve_runs_tool(
     assert "sent to x@y.com" in _out_blob(r2.output)  # gated tool ran on resume
 
 
+def test_responses_invoke_resume_approve_with_resent_input_keeps_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The prose says "resume by resending" — a client that resends the ORIGINAL
+    # input alongside resume must still get the tool result + answer, not a slice
+    # that drops them (Command(resume) is fed, so the resent input never enters
+    # graph state; input_count must be ignored on resume).
+    _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="done")])
+    non_stream, _ = compile_to_responses_agent(
+        _agent(), model="m", checkpointer=InMemorySaver()
+    )
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        non_stream(_req("email x@y.com", thread_id="T"))
+        r2 = non_stream(_req("email x@y.com", thread_id="T", resume="approve"))
+    assert "sent to x@y.com" in _out_blob(r2.output)  # tool result NOT sliced away
+
+
 def test_responses_invoke_resume_deny_blocks_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="cancelled")])
     non_stream, _ = compile_to_responses_agent(

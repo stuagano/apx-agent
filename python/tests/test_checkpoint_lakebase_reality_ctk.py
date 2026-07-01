@@ -94,6 +94,16 @@ def test_resolve_checkpointer_none_without_ws() -> None:
     assert resolve_checkpointer(_lakebase_config(), ws=None) is None
 
 
+def test_resolve_checkpointer_none_when_store_override_given() -> None:
+    # An explicit conversation_store override means the caller owns session
+    # state — don't spin up an unrequested PostgresSaver from config.session.
+    from apx_agent._memory_wiring import resolve_checkpointer
+
+    assert resolve_checkpointer(
+        _lakebase_config(), ws=MagicMock(), store_override=object()
+    ) is None
+
+
 # ── build_lakebase_checkpointer gating ────────────────────────────────────────
 
 

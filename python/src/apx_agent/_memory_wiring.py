@@ -508,6 +508,7 @@ def resolve_checkpointer(
     config: "AgentConfig | None",
     ws: Any | None,
     agent: Any | None = None,
+    store_override: Any | None = None,
 ) -> Any | None:
     """Return a durable LangGraph checkpointer for this agent, or ``None``.
 
@@ -519,9 +520,16 @@ def resolve_checkpointer(
     not a completed turn the ConversationStore persists — survive a restart. See
     #329 Slice C. Built from the same Lakebase coords as the conversation store.
 
+    :param store_override: The explicit ``conversation_store`` passed to
+        ``create_app`` (mirrors ``resolve_conversation_store``'s ``override``).
+        When set, the caller owns session state, so return ``None`` rather than
+        spinning up an unrequested ``PostgresSaver`` from ``config.session``.
+
     Degrades to ``None`` (in-process memory) on any failure — a missing
     ``lakebase`` extra or an unreachable Lakebase must not crash startup.
     """
+    if store_override is not None:
+        return None
     config_session = config.session if config is not None else None
     scfg = config_session if config_session is not None else getattr(agent, "session_config", None)
     if scfg is None or scfg.type != "lakebase":

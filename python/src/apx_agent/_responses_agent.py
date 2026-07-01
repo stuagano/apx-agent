@@ -1169,7 +1169,12 @@ def compile_to_responses_agent(
                     set_span_outputs(span, response.model_dump())
                     return response
 
-                new_lc = result["messages"][pre_count + input_count:]
+                # On a resume there is no new input in graph state (Command was
+                # fed, not messages), so slice only past the prior state — else a
+                # client that resent its input would drop that many new messages
+                # (mirrors ChatAgent.predict's slice_start).
+                slice_start = pre_count if resume is not None else pre_count + input_count
+                new_lc = result["messages"][slice_start:]
                 raw_items = [_langchain_to_output_item(m, i) for i, m in enumerate(new_lc)]
                 output_items = _flatten_output_items(raw_items)
 
