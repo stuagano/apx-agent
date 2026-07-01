@@ -269,9 +269,15 @@ function AgentDetail() {
                   </div>
                   <div>
                     <span className="text-xs text-muted-foreground font-medium">A2A Discovery</span>
-                    <code className="block mt-1 text-sm font-mono bg-muted px-3 py-2 rounded-lg break-all">
-                      GET {agent.url}/.well-known/agent.json
-                    </code>
+                    <a
+                      href={`${agent.url}/.well-known/agent.json`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 flex items-center justify-between gap-2 text-sm font-mono bg-muted px-3 py-2 rounded-lg break-all hover:bg-accent hover:text-foreground transition-colors"
+                    >
+                      <span>GET {agent.url}/.well-known/agent.json</span>
+                      <ExternalLink size={12} className="shrink-0" />
+                    </a>
                   </div>
                   {agent.mcp_endpoint && (
                     <div>
