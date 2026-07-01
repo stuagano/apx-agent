@@ -1167,6 +1167,19 @@ def compile_to_responses_agent(
                         custom_outputs={"approval_required": paused},
                     )
                     set_span_outputs(span, response.model_dump())
+                    # Persist the user's input (+ title) on the approval turn;
+                    # the tool result + answer are appended on resume. Without
+                    # this the prompt is lost when the turn pauses.
+                    if conv_id is not None:
+                        _persist_conv_turn(
+                            _conversation_store,
+                            conv_id,
+                            input_items=list(request.input),
+                            output_items=[],
+                            model=effective_model,
+                            response_id=str(uuid.uuid4()),
+                            is_new=conv.is_new if conv is not None else False,
+                        )
                     return response
 
                 # On a resume there is no new input in graph state (Command was
@@ -1348,8 +1361,9 @@ def compile_to_responses_agent(
                                 output_index += 1
 
                 # Mid-turn approval: a gated tool suspended the run → surface the
-                # ask (done item + completed event carrying the payload) and stop
-                # before persisting. The tool has NOT run.
+                # ask (done item + completed event carrying the payload). The tool
+                # has NOT run; only the user's input is persisted here (the tool
+                # result + answer are appended on resume).
                 paused = _pending_interrupt(graph, lg_config)
                 if paused is not None:
                     appr_item = _approval_output_item(paused, thread_id)
@@ -1367,6 +1381,16 @@ def compile_to_responses_agent(
                         },
                         custom_outputs={"approval_required": paused},
                     )
+                    if conv_id is not None:
+                        _persist_conv_turn(
+                            _conversation_store,
+                            conv_id,
+                            input_items=list(request.input),
+                            output_items=[],
+                            model=effective_model,
+                            response_id=str(uuid.uuid4()),
+                            is_new=conv.is_new if conv is not None else False,
+                        )
                     return
 
             # Terminal event with the assembled response

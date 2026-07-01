@@ -796,6 +796,17 @@ def chat_agent_for(
                 if paused is not None:
                     response = _approval_required_response(paused, thread_id)
                     set_span_outputs(span, response.model_dump())
+                    # Persist the user's prompt (+ synthesize the title) on the
+                    # approval turn — the tool result + answer are appended on
+                    # resume. Without this the prompt is lost if the turn pauses.
+                    self._persist_conv_turn(
+                        conv_id,
+                        input_messages=messages,
+                        new_messages=[],
+                        model=effective_model,
+                        response_id=str(uuid.uuid4()),
+                        is_new=conv.is_new if conv is not None else False,
+                    )
                     return response
 
                 # No new input on a resume turn — slice only past the prior state.
@@ -911,6 +922,16 @@ def chat_agent_for(
                 paused = _pending_interrupt(graph, lg_config)
                 if paused is not None:
                     yield _approval_required_chunk(paused, thread_id)
+                    # Persist the user's prompt (+ title) on the approval turn;
+                    # the tool result + answer are appended on resume.
+                    self._persist_conv_turn(
+                        conv_id,
+                        input_messages=messages,
+                        new_messages=[],
+                        model=effective_model,
+                        response_id=str(uuid.uuid4()),
+                        is_new=conv.is_new if conv is not None else False,
+                    )
                     return
 
                 # Persist the inbound turn + the new messages — mirrors

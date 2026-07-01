@@ -314,6 +314,34 @@ def _restart(saver: InMemorySaver) -> InMemorySaver:
     return fresh
 
 
+def test_predict_approval_turn_persists_user_prompt_and_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The approval turn early-returns before the normal persist; without an
+    # explicit persist the user's prompt (and title) would be lost. Assert the
+    # STORE contents, not just the response (the #338 lesson).
+    from apx_agent._conversation import InMemoryConversationStore
+
+    _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="done")])
+    store = InMemoryConversationStore()
+    chat = chat_agent_for(
+        _agent(), model="m", conversation_store=store, checkpointer=InMemorySaver()
+    )
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        r1 = chat.predict(
+            [ChatAgentMessage(role="user", content="email x@y.com please", id="u1")],
+            custom_inputs={"session_id": "T"},
+        )
+    assert r1.custom_outputs["approval_required"]["tool_name"] == "send_email"
+    # The prompt landed in the store on the approval turn (not lost) ...
+    items = store.list_items("T", order="asc", limit=100).data
+    blob = " ".join(str(it.data) for it in items)
+    assert "email x@y.com please" in blob
+    # ... and the conversation got a synthesized title.
+    conv = store.get_conversation("T")
+    assert conv is not None and conv.title
+
+
 def test_predict_approval_survives_a_restart(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="done")])
     saver = InMemorySaver()
