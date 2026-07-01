@@ -80,6 +80,26 @@ def test_served_predict_recalls_prior_turn_via_checkpointer() -> None:
     assert "what is my name" in humans
 
 
+def test_served_predict_turn2_returns_only_new_output() -> None:
+    """Regression: with a checkpointer, turn 2's response is ONLY the new
+    assistant output — not leaked prior-turn history / echoed input. (invoke
+    returns the full thread state; the slice must offset past the prior state.)"""
+    saver = InMemorySaver()
+    chat = chat_agent_for(_agent(), model="m", conversation_store=None, checkpointer=saver)
+    ci = {"session_id": "T"}
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        chat.predict(
+            [ChatAgentMessage(role="user", content="my name is Zara", id="u1")],
+            custom_inputs=ci,
+        )
+        r2 = chat.predict(
+            [ChatAgentMessage(role="user", content="what is my name", id="u2")],
+            custom_inputs=ci,
+        )
+    assert len(r2.messages) == 1 and r2.messages[0].role == "assistant"
+    assert "my name is Zara" not in " ".join(m.content for m in r2.messages if m.content)
+
+
 def test_served_predict_without_session_id_does_not_crash() -> None:
     """No session_id → a checkpointer-compiled graph would demand a thread_id.
     The served path must fall back to a stateless turn, not 500."""
