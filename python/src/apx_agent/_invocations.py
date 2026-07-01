@@ -100,6 +100,7 @@ def mount_invocations_route(
     agent: BaseAgent,
     config: "AgentConfig",
     conversation_store: Any | None = None,
+    checkpointer: Any | None = None,
 ) -> bool:
     """Mount POST ``/invocations`` (MLflow ChatAgent protocol) onto ``app``.
 
@@ -114,6 +115,10 @@ def mount_invocations_route(
         conversation_store: Optional ``ConversationStore`` for multi-turn memory.
             When provided, conversation history is persisted across requests keyed
             by the ``conversation_id`` in ``context``.
+        checkpointer: Optional durable LangGraph checkpointer (e.g. a Lakebase
+            ``PostgresSaver``). When provided it owns thread state, so a pending
+            mid-turn approval survives a restart; when ``None`` the ChatAgent
+            defaults to an in-process ``InMemorySaver``.
 
     Returns:
         ``True`` if the route was mounted; ``False`` if the ``eval`` extra
@@ -135,7 +140,7 @@ def mount_invocations_route(
     # (dev-UI History panel) look up.
     chat_agent = chat_agent_for(
         agent, model=config.model, conversation_store=conversation_store,
-        agent_id=config.name,
+        agent_id=config.name, checkpointer=checkpointer,
     )
 
     @app.post("/invocations", include_in_schema=False)
@@ -242,6 +247,7 @@ def mount_responses_route(
     agent: BaseAgent,
     config: "AgentConfig",
     conversation_store: Any | None = None,
+    checkpointer: Any | None = None,
 ) -> bool:
     """Mount POST ``/responses`` (MLflow ResponsesAgent protocol) onto ``app``.
 
@@ -255,6 +261,9 @@ def mount_responses_route(
         agent: The apx-agent ``BaseAgent`` to serve.
         config: The ``AgentConfig`` — ``config.model`` is the serving endpoint.
         conversation_store: Optional ``ConversationStore`` for multi-turn memory.
+        checkpointer: Optional durable LangGraph checkpointer (e.g. a Lakebase
+            ``PostgresSaver``) so a pending mid-turn approval survives a restart;
+            ``None`` falls back to an in-process ``InMemorySaver``.
 
     Returns:
         ``True`` if the route was mounted; ``False`` if the ``eval`` extra
@@ -279,6 +288,7 @@ def mount_responses_route(
             # Bind the SAME name the dev-UI History panel filters by, or
             # conversations created here stay invisible to it.
             agent_id=config.name,
+            checkpointer=checkpointer,
         )
     except Exception as exc:
         logger.warning("Cannot compile ResponsesAgent for /responses: %s", exc)

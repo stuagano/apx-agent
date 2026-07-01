@@ -776,9 +776,13 @@ def create_app(
         # optional deps log a warning and skip the affected route only.
         if ctx is not None:
             _store: Any = None
+            _checkpointer: Any = None
             try:
                 from ._invocations import mount_invocations_route, mount_responses_route
-                from ._memory_wiring import resolve_conversation_store  # noqa: PLC0415
+                from ._memory_wiring import (  # noqa: PLC0415
+                    resolve_checkpointer,
+                    resolve_conversation_store,
+                )
 
                 _store = resolve_conversation_store(
                     ctx.config,
@@ -786,8 +790,14 @@ def create_app(
                     override=conversation_store,
                     agent=ctx.agent,
                 )
+                # Durable checkpointer (Lakebase → PostgresSaver) so a pending
+                # mid-turn approval survives a restart. None → in-process default.
+                _checkpointer = resolve_checkpointer(
+                    ctx.config, ws=app.state.workspace_client, agent=ctx.agent
+                )
                 mount_invocations_route(
-                    app, ctx.agent, ctx.config, conversation_store=_store
+                    app, ctx.agent, ctx.config,
+                    conversation_store=_store, checkpointer=_checkpointer,
                 )
             except Exception as exc:
                 logger.warning("Skipping /invocations mount: %s", exc)
@@ -805,7 +815,8 @@ def create_app(
                 from ._invocations import mount_responses_route
 
                 mount_responses_route(
-                    app, ctx.agent, ctx.config, conversation_store=_store
+                    app, ctx.agent, ctx.config,
+                    conversation_store=_store, checkpointer=_checkpointer,
                 )
             except Exception as exc:
                 logger.warning("Skipping /responses mount: %s", exc)

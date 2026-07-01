@@ -279,3 +279,41 @@ def test_responses_stream_resume_deny_blocks_tool(monkeypatch: pytest.MonkeyPatc
         list(streaming(_req("email x@y.com", thread_id="S")))
         e2 = list(streaming(_req("", thread_id="S", resume="deny")))
     assert "sent to" not in _events_blob(e2)
+
+
+# ── durable checkpointer: approval survives a restart (Slice C) ───────────────
+
+
+def _restart(saver: InMemorySaver) -> InMemorySaver:
+    """A FRESH saver instance backed by the SAME state — simulates a process
+    restart onto durable storage (what the Lakebase PostgresSaver provides). If a
+    pending approval resumes through this, the round-trip survived losing the
+    original saver instance, which is the whole point of Slice C.
+    """
+    fresh = InMemorySaver()
+    fresh.storage = saver.storage
+    fresh.writes = saver.writes
+    fresh.blobs = saver.blobs
+    return fresh
+
+
+def test_predict_approval_survives_a_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="done")])
+    saver = InMemorySaver()
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        chat1 = chat_agent_for(
+            _agent(), model="m", conversation_store=None, checkpointer=saver
+        )
+        r1 = chat1.predict(
+            [ChatAgentMessage(role="user", content="email x@y.com", id="u1")],
+            custom_inputs={"session_id": "T"},
+        )
+        assert r1.custom_outputs["approval_required"]["tool_name"] == "send_email"
+
+        # Restart: original agent + saver instance are gone; a fresh checkpointer
+        # on the same durable backing resumes the pending approval.
+        chat2 = chat_agent_for(
+            _agent(), model="m", conversation_store=None, checkpointer=_restart(saver)
+        )
+        r2 = chat2.predict([], custom_inputs={"session_id": "T", "resume": "approve"})
+    assert "sent to x@y.com" in _contents(r2)  # gated tool ran after the restart
