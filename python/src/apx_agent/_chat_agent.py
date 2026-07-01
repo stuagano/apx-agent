@@ -59,6 +59,7 @@ from ._conversation import (
     FunctionCallOutputData,
     MessageData,
     NewConversationItem,
+    drop_orphaned_tool_outputs,
     synthesize_conversation_title,
 )
 from ._mlflow_tracing import safe_span, set_span_outputs
@@ -157,6 +158,11 @@ def _conv_items_to_chat_msgs(items: list[ConversationItem]) -> list["ChatAgentMe
         to the current turn's messages.
     """
     from mlflow.types.agent import ChatAgentMessage
+
+    # Drop any tool result whose function_call was never stored (e.g. an approval
+    # turn's tool-call lived only in a since-gone checkpointer) — replaying an
+    # orphaned tool message makes the LLM reject the whole request.
+    items = drop_orphaned_tool_outputs(items)
 
     result: list[ChatAgentMessage] = []
     i = 0

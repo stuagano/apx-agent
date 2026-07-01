@@ -68,6 +68,7 @@ from ._conversation import (
     FunctionCallOutputData,
     MessageData,
     NewConversationItem,
+    drop_orphaned_tool_outputs,
     synthesize_conversation_title,
 )
 from ._mlflow_tracing import safe_span, set_span_outputs
@@ -553,6 +554,11 @@ def _conv_items_to_lc_messages(items: list[ConversationItem]) -> list[Any]:
     :returns: A list of langchain BaseMessage objects.
     """
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    # Drop any tool result whose function_call was never stored (e.g. an approval
+    # turn's tool-call lived only in a since-gone checkpointer) — an orphaned tool
+    # message replays as a tool_result with no matching call and the LLM rejects it.
+    items = drop_orphaned_tool_outputs(items)
 
     result: list[Any] = []
     i = 0
