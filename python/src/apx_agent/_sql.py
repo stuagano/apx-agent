@@ -27,8 +27,8 @@ Or via dependency injection (no explicit ws needed):
 
     Avoid interpolating user input directly into SQL strings. Use the
     ``parameters`` argument (Databricks SQL bind parameters) whenever possible.
-    If you must interpolate, always escape with ``s.replace("'", "''")`` and
-    validate the value against an allowlist.
+    If you must interpolate, always escape with ``sql_str_literal(value)``
+    (which handles backslashes and quotes) and validate against an allowlist.
 """
 
 from __future__ import annotations
@@ -46,8 +46,14 @@ logger = logging.getLogger(__name__)
 
 
 def sql_escape(value: str) -> str:
-    """Escape a string for inline SQL — single quotes doubled (no wrapping quotes)."""
-    return value.replace("'", "''")
+    """Escape a string for inline SQL (no wrapping quotes).
+
+    Escapes backslash **first**, then single quotes. Spark/Databricks SQL treats
+    backslash as a live escape character inside a string literal, so a value
+    ending in ``\\`` would otherwise escape the closing quote and break out of
+    the literal (SQL injection). Quote-only doubling is not sufficient.
+    """
+    return value.replace("\\", "\\\\").replace("'", "''")
 
 
 def sql_str_literal(value: str) -> str:

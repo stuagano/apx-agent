@@ -238,10 +238,12 @@ WHEN NOT MATCHED THEN INSERT (
 
 
 def _q(s: str | None) -> str:
-    """SQL-escape a string literal (single-quote doubling)."""
+    """Render a value as a safe single-quoted SQL literal, or ``NULL``."""
     if s is None:
         return "NULL"
-    return "'" + str(s).replace("'", "''") + "'"
+    from ._sql import sql_str_literal  # lazy: keep SDK import off module load
+
+    return sql_str_literal(str(s))
 
 
 def publish_to_registry(
