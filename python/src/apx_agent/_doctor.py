@@ -630,17 +630,48 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
             )
 
     if mem.type == "lakebase":
-        if not mem.host or not mem.database:
+        # Resolve ${ENV_VAR} the same way the runtime does — a config that only
+        # *mentions* a host isn't reachable if the env var is unset (the scaffold
+        # default is host="${LAKEBASE_HOST}").
+        from ._wiring import _resolve_env_var  # noqa: PLC0415
+        host = _resolve_env_var(mem.host) if mem.host else ""
+        database = _resolve_env_var(mem.database) if mem.database else ""
+        if not host or not database:
             return Check(
                 label, Status.WARN,
-                "type=lakebase but no host/database — memory will degrade at runtime",
-                "Set host (the Lakebase endpoint DNS) and database in "
-                "[tool.apx.agent.memory].",
+                f"type=lakebase but host/database resolve to empty "
+                f"(host={mem.host!r} database={mem.database!r}) — memory will "
+                "degrade to in-process at runtime",
+                "Set host + database in [tool.apx.agent.memory]; if either is a "
+                "${ENV_VAR}, make sure the variable is exported.",
             )
-        return Check(
-            label, Status.OK,
-            f"lakebase configured: host={mem.host} database={mem.database}", None,
-        )
+        # Live reachability probe (matches the delta branch's SELECT 1 rigor):
+        # build the same OAuth-token engine the runtime uses and round-trip a
+        # trivial query. Dispose the probe pool so the check doesn't leak it.
+        engine = None
+        try:
+            from sqlalchemy import text  # noqa: PLC0415
+
+            from ._defaults import _make_workspace_client  # noqa: PLC0415
+            from ._lakebase_engine import build_lakebase_engine  # noqa: PLC0415
+            ws = _make_workspace_client()
+            engine = build_lakebase_engine(ws=ws, database=database, host=host)
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return Check(
+                label, Status.OK,
+                f"lakebase reachable: host={host} database={database}", None,
+            )
+        except Exception as exc:
+            short = str(exc)[:120]
+            return Check(
+                label, Status.WARN,
+                f"lakebase not reachable ({short})",
+                "Check host/database and that this principal has Lakebase access.",
+            )
+        finally:
+            if engine is not None:
+                engine.dispose()
 
     return Check(label, Status.SKIP, f"unknown type {mem.type!r}", None)
 
