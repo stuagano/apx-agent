@@ -582,14 +582,21 @@ def publish_standalone_tools_to_registry(
     for fn in tool_fns:
         fn_name = getattr(fn, "__name__", None) or str(fn)
         # Delete the existing standalone row for this tool before re-inserting.
+        # The insert is a plain INSERT (not a MERGE), so it MUST be gated on the
+        # delete succeeding — a swallowed delete failure would leave a duplicate
+        # (name, agent_id IS NULL) row that multiplies on every republish.
         try:
             run_sql(
                 ws,
                 _TOOLS_DELETE_STANDALONE.format(table=tools_table, name=_q(fn_name)),
                 warehouse_id=warehouse_id,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error(
+                "Skipping republish of tool %r: deleting its existing registry "
+                "row failed (%s) — inserting now would duplicate it.", fn_name, exc,
+            )
+            continue
         count += _insert_tool_row(
             ws=ws,
             table=tools_table,
