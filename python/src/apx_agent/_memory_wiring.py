@@ -396,8 +396,7 @@ def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
     """Build a ConversationStore from SessionBackendConfig. Returns None on failure.
 
     :param cfg: A ``SessionBackendConfig`` object with ``type``, ``table_name``,
-        ``instance_name``, ``database``, ``host``, ``warehouse_id``, and
-        ``auto_create`` fields.
+        ``database``, ``host``, ``warehouse_id``, and ``auto_create`` fields.
     :param ws: ``WorkspaceClient`` required for Delta and Lakebase backends.
         ``None`` causes Delta/Lakebase to return ``None`` with a warning.
     :returns: A :class:`ConversationStore` instance, or ``None`` when the

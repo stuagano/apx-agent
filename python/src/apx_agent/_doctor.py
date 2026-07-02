@@ -630,24 +630,17 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
             )
 
     if mem.type == "lakebase":
-        if not mem.instance_name:
+        if not mem.host or not mem.database:
             return Check(
                 label, Status.WARN,
-                "type=lakebase but no instance_name — memory will degrade at runtime",
-                "Add instance_name to [tool.apx.agent.memory] and re-run `uv run quickstart`.",
+                "type=lakebase but no host/database — memory will degrade at runtime",
+                "Set host (the Lakebase endpoint DNS) and database in "
+                "[tool.apx.agent.memory].",
             )
-        try:
-            from ._defaults import _make_workspace_client  # noqa: PLC0415
-            ws = _make_workspace_client()
-            ws.database.get_database_instance(mem.instance_name)
-            return Check(label, Status.OK, f"lakebase instance exists: {mem.instance_name}", None)
-        except Exception as exc:
-            short = str(exc)[:120]
-            return Check(
-                label, Status.WARN,
-                f"lakebase instance '{mem.instance_name}' not found ({short})",
-                "Run `uv run quickstart` to provision the lakebase instance.",
-            )
+        return Check(
+            label, Status.OK,
+            f"lakebase configured: host={mem.host} database={mem.database}", None,
+        )
 
     return Check(label, Status.SKIP, f"unknown type {mem.type!r}", None)
 

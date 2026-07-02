@@ -36,7 +36,7 @@ def _lakebase_config() -> AgentConfig:
         name="t",
         model="m",
         session=SessionBackendConfig(
-            type="lakebase", instance_name="inst", database="db", host="h.example"
+            type="lakebase", database="db", host="h.example"
         ),
     )
 

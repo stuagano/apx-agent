@@ -982,7 +982,7 @@ class TestMemoryBackendConfig:
 
             [tool.apx.agent.memory]
             type = "lakebase"
-            instance_name = "coworker-lakebase"
+            host = "coworker-lakebase.db.databricks.com"
             database = "agentdb"
             table_name = "apx_memories"
             embedding_model = "databricks-bge-large-en"
@@ -992,7 +992,7 @@ class TestMemoryBackendConfig:
         assert config is not None
         assert config.memory is not None
         assert config.memory.type == "lakebase"
-        assert config.memory.instance_name == "coworker-lakebase"
+        assert config.memory.host == "coworker-lakebase.db.databricks.com"
         assert config.memory.embedding_dim == 1024
 
     def test_agent_config_session_field_loads_from_toml(self, tmp_path):
@@ -1114,7 +1114,7 @@ class TestMemoryWiringIntegration:
 def test_public_exports_memory_config_models():
     import apx_agent
     from apx_agent import MemoryBackendConfig, ExampleBackendConfig, SessionBackendConfig
-    cfg = MemoryBackendConfig(type="lakebase", instance_name="inst", database="db",
+    cfg = MemoryBackendConfig(type="lakebase", host="h.example", database="db",
                                embedding_model="bge", embedding_dim=1024)
     assert cfg.type == "lakebase"
     assert cfg.validate_at_boot is True

@@ -73,7 +73,7 @@ type = "delta"
 # Production: pgvector on Lakebase (semantic similarity)
 [tool.apx.agent.memory]
 type           = "lakebase"
-instance_name  = "my-lakebase"
+host           = "my-lakebase.db.databricks.com"
 database       = "agentdb"
 embedding_model = "databricks-bge-large-en"
 embedding_dim  = 1024
@@ -88,9 +88,8 @@ without writing.
 | `type` | yes | `"inmemory"` / `"delta"` / `"lakebase"` |
 | `embedding_model` | lakebase | Databricks serving endpoint for embeddings |
 | `embedding_dim` | lakebase | Embedding dimensionality |
-| `instance_name` | lakebase | Lakebase instance name |
 | `database` | lakebase | Postgres database name |
-| `host` | lakebase | Lakebase host; supports `$ENV_VAR` |
+| `host` | lakebase | Lakebase endpoint DNS; supports `$ENV_VAR` |
 | `table_name` | delta | UC table path (`catalog.schema.table`) |
 | `auto_create` | no | Create table on first use (default `true`) |
 | `namespace_default` | no | Default namespace (default `"default"`) |
@@ -115,7 +114,7 @@ table_name = "main.agents.sessions"
 # Lakebase (low-latency, chat-style)
 [tool.apx.agent.session]
 type          = "lakebase"
-instance_name = "my-lakebase"
+host          = "my-lakebase.db.databricks.com"
 database      = "agentdb"
 ```
 

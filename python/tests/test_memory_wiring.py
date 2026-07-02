@@ -323,7 +323,7 @@ class TestAttachDeclaredMemory:
         agent = Agent(tools=[])
         cfg = self._minimal_config(
             type="lakebase",
-            instance_name="inst",
+            host="h.example",
             database="db",
             embedding_model="bge",
             embedding_dim=4,
@@ -341,14 +341,14 @@ class TestAttachDeclaredMemory:
         import logging
 
         agent = Agent(tools=[])
-        # ws IS provided, but instance_name is missing → _build_memory_store raises ValueError
+        # ws IS provided, but host is missing → _build_memory_store raises ValueError
         cfg = self._minimal_config(
             type="lakebase", database="db", embedding_model="bge", embedding_dim=4
-        )  # no instance_name
+        )  # no host
         with caplog.at_level(logging.WARNING):
             attach_declared_memory(agent, cfg, ws=MagicMock())
         assert agent._tool_fns == []  # skipped, no crash
-        assert "build failed" in caplog.text.lower() or "instance_name" in caplog.text.lower()
+        assert "build failed" in caplog.text.lower() or "host" in caplog.text.lower()
         # and NOT the misleading ws=None message (ws was provided):
         assert "ws=None at this point" not in caplog.text
 
