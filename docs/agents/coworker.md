@@ -100,7 +100,7 @@ declare the backend explicitly in `pyproject.toml`:
 ```toml
 [tool.apx.agent.memory]
 type           = "lakebase"
-instance_name  = "my-lakebase"
+host           = "my-lakebase.db.databricks.com"
 database       = "agentdb"
 embedding_model = "databricks-bge-large-en"
 embedding_dim  = 1024

@@ -798,6 +798,9 @@ def create_app(
                     ctx.config, ws=app.state.workspace_client, agent=ctx.agent,
                     store_override=conversation_store,
                 )
+                # Held for shutdown: a durable checkpointer owns a Lakebase pool
+                # that must be closed on teardown (#346).
+                app.state.checkpointer = _checkpointer
                 mount_invocations_route(
                     app, ctx.agent, ctx.config,
                     conversation_store=_store, checkpointer=_checkpointer,
@@ -837,6 +840,9 @@ def create_app(
                 yield
             finally:
                 logger.info("Shutting down agent runtime")
+                from ._memory_wiring import close_checkpointer  # noqa: PLC0415
+
+                close_checkpointer(getattr(app.state, "checkpointer", None))
                 ws = getattr(app.state, "workspace_client", None)
                 if ws and hasattr(ws, "close"):
                     try:

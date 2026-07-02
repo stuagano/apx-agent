@@ -179,36 +179,6 @@ CREATE TABLE IF NOT EXISTS {table} (
 ) USING DELTA"""
 
 
-def _ensure_lakebase_instance(ws: Any, instance_name: str) -> list[str]:
-    """Get-or-create a Lakebase Postgres instance. Idempotent.
-
-    The instance is a workspace-level resource (~2 min to create) and is meant
-    to be shared across agents — per-agent isolation is the *database*, not the
-    instance. Per-agent tables are auto-created by the conversation/memory store
-    on first use, so this only ensures the instance exists.
-
-    Returns status lines for printing.
-    """
-    from databricks.sdk.service.database import DatabaseInstance  # noqa: PLC0415
-
-    try:
-        existing = ws.database.get_database_instance(instance_name)
-        host = existing.read_write_dns or "(host pending)"
-        return [f"  exists lakebase instance '{instance_name}'  host={host}"]
-    except Exception:
-        lines = [f"  create lakebase instance '{instance_name}' (this may take ~2 min)…"]
-        try:
-            result = ws.database.create_database_instance_and_wait(
-                DatabaseInstance(name=instance_name)
-            )
-            host = result.read_write_dns or "(host not yet available — re-run quickstart)"
-            lines.append(f"  done   lakebase instance '{instance_name}'")
-            lines.append(f"         host = {host}")
-        except Exception as exc:
-            lines.append(f"  FAIL   lakebase provisioning: {exc}")
-        return lines
-
-
 def provision_memory_backends(
     *,
     pyproject_path: str | None = None,
@@ -217,9 +187,10 @@ def provision_memory_backends(
 
     - **delta**: runs ``CREATE TABLE IF NOT EXISTS`` for the memory and session
       tables.  Idempotent — safe to re-run.
-    - **lakebase**: get-or-creates the named instance via the Databricks SDK.
-      A single shared instance is reused across agents, so memory and session
-      pointing at the same ``instance_name`` provision it once.
+    - **lakebase**: nothing to provision here — the instance is reached by
+      ``host`` (a Lakebase project endpoint or instance DNS) with an OAuth token,
+      and the per-agent tables auto-create on first use. Create the Lakebase
+      database in the workspace and point ``host`` at it.
 
     Reads both ``[tool.apx.agent.memory]`` and ``[tool.apx.agent.session]`` —
     either block alone is enough to trigger provisioning. Returns a list of
@@ -256,18 +227,10 @@ def provision_memory_backends(
             except Exception as exc:
                 lines.append(f"  WARN  table {table}: {exc}")
 
-    # Lakebase instances — shared, so dedup by name (memory + session may share one).
-    wanted = []
-    if mem and mem.type == "lakebase" and mem.instance_name:
-        wanted.append(mem.instance_name)
-    if sess and sess.type == "lakebase" and sess.instance_name:
-        wanted.append(sess.instance_name)
-    if (mem and mem.type == "lakebase" and not mem.instance_name) or (
-        sess and sess.type == "lakebase" and not sess.instance_name
-    ):
-        lines.append("  skip   lakebase — no instance_name in config")
-    for instance_name in dict.fromkeys(wanted):  # dedup, preserve order
-        lines += _ensure_lakebase_instance(ws, instance_name)
+    # Lakebase needs no provisioning step — connection is host + OAuth token and
+    # tables auto-create on first use. Point host at an existing Lakebase database.
+    if (mem and mem.type == "lakebase") or (sess and sess.type == "lakebase"):
+        lines.append("  skip   lakebase — no provisioning needed (set host to your Lakebase endpoint)")
 
     return lines
 

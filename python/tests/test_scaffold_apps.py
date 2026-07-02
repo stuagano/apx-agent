@@ -164,7 +164,7 @@ def test_scaffold_apps_defaults_to_lakebase_session(tmp_path: Path) -> None:
     parsed = tomllib.loads(content)
     session = parsed["tool"]["apx"]["agent"]["session"]
     assert session["type"] == "lakebase"
-    assert session["instance_name"] == "apx-agent"  # shared instance
+    assert session["host"] == "${LAKEBASE_HOST}"  # endpoint from env
     assert session["database"] == "my_agent"  # per-agent database (name slug)
 
 
@@ -183,12 +183,8 @@ def test_scaffold_apps_no_lakebase_omits_session_block(tmp_path: Path) -> None:
     assert "session" not in parsed.get("tool", {}).get("apx", {}).get("agent", {})
 
 
-def test_scaffold_apps_echoes_lakebase_guidance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The default scaffold guides the user to create the Lakebase instance."""
-    # Force the read-only instance probe to "no workspace" for a deterministic message.
-    monkeypatch.setattr("apx_agent.cli._make_ws_for_scaffold", lambda profile: None)
+def test_scaffold_apps_echoes_lakebase_guidance(tmp_path: Path) -> None:
+    """The default scaffold tells the user how to make Lakebase sessions durable."""
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -196,26 +192,7 @@ def test_scaffold_apps_echoes_lakebase_guidance(
     )
     assert result.exit_code == 0, result.output
     assert "durable on Lakebase" in result.output
-    assert "apx-agent" in result.output  # shared instance name
-    assert "uv run quickstart" in result.output  # how to create it
-
-
-def test_scaffold_apps_echoes_existing_lakebase_instance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When the shared instance already exists, the guidance says so."""
-    from unittest.mock import MagicMock
-
-    ws = MagicMock()
-    ws.database.get_database_instance.return_value = object()  # found
-    monkeypatch.setattr("apx_agent.cli._make_ws_for_scaffold", lambda profile: ws)
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--no-yaml"],
-    )
-    assert result.exit_code == 0, result.output
-    assert "already exists" in result.output
+    assert "LAKEBASE_HOST" in result.output  # the env var to set
 
 
 def test_scaffold_apps_no_lakebase_skips_guidance(
