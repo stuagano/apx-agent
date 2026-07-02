@@ -10,6 +10,7 @@ push notifications are deferred. See docs/design/a2a-tasks-surface.md.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import uuid
@@ -299,7 +300,11 @@ def mount_a2a_route(
                         req_id, _INVALID_PARAMS, "Invalid params", data=exc.errors()
                     )
                 else:
-                    task = _run_message_send(send_params, request)
+                    # Offload the sync agent turn to a worker thread so it
+                    # doesn't block the event loop for the whole turn. Only
+                    # request.headers is read inside (sync); the body was
+                    # already consumed above.
+                    task = await asyncio.to_thread(_run_message_send, send_params, request)
                     resp = _success_response(req_id, task)
             elif method == "tasks/get":
                 try:
