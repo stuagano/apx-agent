@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 _DEFAULT_BUNDLE_TARGET = "dev"  # fall back to local dev mode when BUNDLE_TARGET not set
 _DEFAULT_MLFLOW_TRACKING_URI = "databricks"  # MLflow default for Databricks workspaces
@@ -238,5 +238,4 @@ def provision_memory_backends(
 __all__ = [
     "init_apps_experiment",
     "provision_memory_backends",
-    "_ensure_lakebase_instance",
 ]
