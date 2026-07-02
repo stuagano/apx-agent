@@ -216,12 +216,12 @@ If you build a custom serving wrapper (the builder-app pattern), this ordering m
 import mlflow
 mlflow.anthropic.autolog()         # or mlflow.openai.autolog() etc.
 
-from apx_agent import ClaudeSDKClient
-client = ClaudeSDKClient(...)
+from anthropic import Anthropic
+client = Anthropic()
 
 # WRONG — autolog won't patch the already-instantiated client.
-from apx_agent import ClaudeSDKClient
-client = ClaudeSDKClient(...)
+from anthropic import Anthropic
+client = Anthropic()
 import mlflow; mlflow.anthropic.autolog()
 ```
 
@@ -232,11 +232,17 @@ The autolog hook patches the module at import time; an instance constructed befo
 The framework exposes `apx.tool.name`, `apx.principal.id`, `apx.cost.usd`, etc., as MLflow span attributes — but only when the tool calls `set_audit_attrs(...)`. There is no automatic `apx.tool.name = <function>.__name__` capture. If your traces are missing these fields, audit the tool body:
 
 ```python
-from apx_agent import set_audit_attrs
+from apx_agent import set_audit_attrs, current_active_span
 
 @tool(uc="main.tools.lookup_customer")
 def lookup_customer(customer_id: str) -> dict:
-    set_audit_attrs(tool_name="lookup_customer", principal_id="auto")
+    # set_audit_attrs takes the active span first, then short-key fields
+    # (see _audit._KWARG_TO_KEY for the supported keys). A None span is a no-op.
+    set_audit_attrs(
+        current_active_span(),
+        tool_name="lookup_customer",
+        tool_uc_function="main.tools.lookup_customer",
+    )
     # ... rest of the tool
 ```
 
