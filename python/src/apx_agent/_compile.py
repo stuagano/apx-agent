@@ -315,19 +315,30 @@ def _governance_exception_middleware() -> Any:
 
 
 def _compile_llm_agent(
-    agent: LlmAgent, ctx: CompileContext, *, bake_prompt: bool = True
+    agent: LlmAgent,
+    ctx: CompileContext,
+    *,
+    bake_prompt: bool = True,
+    extra_tools: list[Any] | None = None,
 ) -> Any:
     """Compile an ``LlmAgent`` into a ``create_agent`` runnable.
 
     ``bake_prompt=False`` builds the agent with no system prompt — used for
     ``{key}``-templated agents, where the wrapper node renders the instructions
     from state per-invocation and injects them as a SystemMessage (G3).
+
+    ``extra_tools`` are appended after the agent's own tools — used by
+    ``LoopAgent`` (finish-loop tool) and ``HandoffAgent`` (transfer tools) so a
+    wrapped inner agent is compiled through this governed path (middleware,
+    callbacks, state_schema, generation config) instead of a bare create_agent.
     """
     from langchain.agents import create_agent
 
     from ._callbacks import build_callback_handler
 
     tools = [_make_langchain_tool(fn, ctx) for fn in agent._tool_fns]
+    if extra_tools:
+        tools = tools + list(extra_tools)
     llm = _build_chat_databricks(
         ctx.model,
         temperature=getattr(agent, "_temperature", None),
@@ -547,7 +558,6 @@ def _compile_loop_agent(agent: LoopAgent, ctx: CompileContext) -> Any:
     accordingly.
     """
     from langgraph.graph import END, START, StateGraph
-    from langchain.agents import create_agent
 
     inner = agent._inner
     max_iter = agent._max_iterations
@@ -566,11 +576,10 @@ def _compile_loop_agent(agent: LoopAgent, ctx: CompileContext) -> Any:
         ),
         marker="LOOP_FINISHED",
     )
-    inner_tools = [_make_langchain_tool(fn, ctx) for fn in inner._tool_fns] + [finish_tool]
-    llm = _build_chat_databricks(ctx.model)
-    inner_node = create_agent(
-        model=llm, tools=inner_tools, system_prompt=inner._instructions or None
-    )
+    # Compile the inner agent through the governed path so its middleware,
+    # callbacks, state_schema, and generation config survive being looped (#370);
+    # the finish-loop tool rides along as an extra tool.
+    inner_node = _compile_llm_agent(inner, ctx, extra_tools=[finish_tool])
 
     def _check_done_node(state: dict) -> dict[str, Any]:
         return {"iteration": state.get("iteration", 0) + 1}
@@ -715,7 +724,6 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
     ``max_handoffs`` enforced via state counter.
     """
     from langgraph.graph import END, START, StateGraph
-    from langchain.agents import create_agent
 
     agents = dict(agent._agents)  # {name: LlmAgent}
     names = list(agents.keys())
@@ -728,11 +736,8 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
         state: Annotated[dict[str, Any], _merge_state]
         handoffs: int
 
-    llm = _build_chat_databricks(ctx.model)
-
     def _build_node(current_name: str) -> Any:
         inner = agents[current_name]
-        own_tools = [_make_langchain_tool(fn, ctx) for fn in inner._tool_fns]
         transfer_tools = [
             _build_synthetic_tool(
                 name=f"{prefix}{other}",
@@ -742,11 +747,10 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
             for other in names
             if other != current_name
         ]
-        react = create_agent(
-            model=llm,
-            tools=own_tools + transfer_tools,
-            system_prompt=inner._instructions or None,
-        )
+        # Compile each sub-agent through the governed path so its middleware,
+        # callbacks, state_schema, and generation config survive the handoff
+        # (#370); the transfer tools ride along as extra tools.
+        react = _compile_llm_agent(inner, ctx, extra_tools=transfer_tools)
         # The start agent receives the user's original input directly from
         # the graph (state["messages"] == [HumanMessage(query)]), so its
         # conversation tail is already user — no scrub needed.
