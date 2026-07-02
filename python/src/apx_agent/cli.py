@@ -1351,14 +1351,15 @@ _SCAFFOLD_MEMORY_BLOCK = '''
 '''
 
 # Default session backend: durable history + keyed state on Databricks Lakebase.
-# `uv run quickstart` get-or-creates the shared "apx-agent" instance (one instance
-# reused across all your scaffolded agents); each agent gets its own database, and
-# the per-agent tables auto-create on first use. Pass --no-lakebase at scaffold time
-# (or delete this block) to fall back to non-durable in-memory sessions.
+# `host` is the Lakebase endpoint DNS (a project endpoint or instance DNS); set the
+# LAKEBASE_HOST env var in your app to point at an existing Lakebase database. Until
+# it's set, sessions fall back to non-durable in-memory. The per-agent tables
+# auto-create on first use. Pass --no-lakebase at scaffold time (or delete this
+# block) to opt out.
 _SCAFFOLD_SESSION_LAKEBASE_BLOCK = '''
 [tool.apx.agent.session]
 type = "lakebase"
-instance_name = "apx-agent"
+host = "${LAKEBASE_HOST}"
 database = "<APP_NAME_SLUG>"
 '''
 
@@ -1613,37 +1614,21 @@ def _ws_is_connected(ws) -> bool:
         return False
 
 
-def _echo_lakebase_guidance(profile: str | None, instance_name: str = "apx-agent") -> None:
-    """Tell the user about the durable Lakebase session store and how to create it.
+def _echo_lakebase_guidance() -> None:
+    """Tell the user how to make the durable Lakebase session store live.
 
-    Best-effort, read-only: probes whether the shared instance already exists so
-    the next-step message is accurate. Never creates anything (that's
-    ``uv run quickstart``) and never fails the scaffold — auth/network errors
-    fall back to the generic "quickstart will create it" message.
+    The scaffold points ``host`` at the ``LAKEBASE_HOST`` env var. Until that's
+    set to an existing Lakebase endpoint, sessions run non-durable in-memory —
+    say so, and never fail the scaffold.
     """
     click.echo()
-    click.echo(f"Sessions: durable on Lakebase — shared instance '{instance_name}'.")
-
-    ws = _make_ws_for_scaffold(profile)
-    exists = False
-    if ws is not None:
-        try:
-            ws.database.get_database_instance(instance_name)
-            exists = True
-        except Exception:
-            exists = False
-
-    if exists:
-        click.echo(
-            f"      ✓ instance '{instance_name}' already exists — "
-            "`uv run quickstart` wires this agent's tables."
-        )
-    else:
-        click.echo(
-            f"      uv run quickstart        # get-or-creates '{instance_name}' "
-            "(~2 min, reused across your agents) + tables"
-        )
-    click.echo("      (--no-lakebase next time for non-durable in-memory sessions)")
+    click.echo("Sessions: durable on Lakebase once you point host at an endpoint.")
+    click.echo(
+        "      Set LAKEBASE_HOST to your Lakebase database's endpoint DNS "
+        "(project endpoint or instance DNS)."
+    )
+    click.echo("      Per-agent tables auto-create on first use; until then, sessions are in-memory.")
+    click.echo("      (--no-lakebase next time to omit the session block entirely)")
 
 
 def _list_databricks_profiles() -> list[tuple[str, str, bool]]:
@@ -2841,7 +2826,7 @@ def scaffold(
         )
 
     if scaffold_target == "apps" and lakebase:
-        _echo_lakebase_guidance(profile)
+        _echo_lakebase_guidance()
 
 
 # ---------------------------------------------------------------------------
