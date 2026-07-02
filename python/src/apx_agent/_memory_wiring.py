@@ -550,8 +550,29 @@ def resolve_checkpointer(
         return None
 
 
+def close_checkpointer(checkpointer: Any | None) -> None:
+    """Close a durable checkpointer's connection pool on shutdown (#346).
+
+    Only the Lakebase ``PostgresSaver`` owns a pool — its ``.conn``, the
+    ``ConnectionPool`` ``build_lakebase_checkpointer`` opened with ``open=True``.
+    The in-process default (``None``) owns nothing. A no-op for one-app-per-process
+    production (the pool dies with the process), but any path that rebuilds the app
+    in one process — tests, multi-app hosting, reloaders — leaks a live pool + its
+    connections + its background worker thread each time without this.
+
+    Idempotent and best-effort: shutdown must never raise.
+    """
+    pool = getattr(checkpointer, "conn", None)
+    if pool is not None and hasattr(pool, "close"):
+        try:
+            pool.close()
+        except Exception:
+            logger.debug("Checkpointer pool close failed on shutdown", exc_info=True)
+
+
 __all__ = [
     "attach_declared_memory",
+    "close_checkpointer",
     "resolve_checkpointer",
     "resolve_conversation_store",
 ]

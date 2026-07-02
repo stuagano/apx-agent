@@ -60,8 +60,9 @@ def build_lakebase_checkpointer(
     the checkpoint tables exist. No instance name is needed — the OAuth token is
     instance-agnostic and the host targets the instance.
 
-    The pool lives for the app lifetime; process exit reclaims it (no explicit
-    teardown — mirrors how the served agent holds its saver).
+    The pool lives for the app lifetime; the FastAPI lifespan closes it on
+    shutdown via ``close_checkpointer`` (the saver's ``.conn``), so rebuilding
+    the app in one process doesn't leak pools (#346).
 
     :raises ImportError: if the ``lakebase`` extra (langgraph Postgres saver /
         psycopg_pool) is not installed.
