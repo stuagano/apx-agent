@@ -409,6 +409,49 @@ class TestA2AApproval:
         assert _sent == []
 
 
+def test_a2a_resume_survives_a_restart(monkeypatch):
+    # The resume routing is decided from the DURABLE checkpointer, not an
+    # in-process hint — so a client can resume a paused approval over A2A after a
+    # restart / on another replica. Fresh mount + fresh saver on the SAME backing
+    # (the in-process state is gone); only the durable pause survives.
+    _sent.clear()
+    model = _ToolFake(messages=iter([
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "_send_email", "args": {"to": "x@y.com"}, "id": "t1"}],
+        ),
+        AIMessage(content="done"),
+    ]))
+    monkeypatch.setattr(
+        _compile, "_build_chat_databricks",
+        lambda endpoint, *, temperature=None, max_tokens=None: model,
+    )
+    agent = LlmAgent(name="a", tools=[_send_email], before_tool=_ask_gate())
+    config = AgentConfig(name="a2a-appr", model="m")
+    ws = MagicMock()
+    ws.config.host = "https://fake.cloud.databricks.com"
+
+    saver1 = InMemorySaver()
+    with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+        app1 = FastAPI()
+        assert mount_a2a_route(app1, agent, config, checkpointer=saver1)
+        with TestClient(app1) as c1:
+            t1 = _send(c1, "email x@y.com")
+        assert t1["status"]["state"] == "input-required"
+        assert _sent == []  # tool not run; state written to saver1
+
+        # Restart: fresh app + fresh saver on saver1's backing (in-process
+        # awaiting-approval hint would be gone — only the durable state remains).
+        saver2 = InMemorySaver()
+        saver2.storage, saver2.writes, saver2.blobs = saver1.storage, saver1.writes, saver1.blobs
+        app2 = FastAPI()
+        assert mount_a2a_route(app2, agent, config, checkpointer=saver2)
+        with TestClient(app2) as c2:
+            t2 = _send(c2, "", context_id=t1["contextId"], apx_resume="approve")
+    assert t2["status"]["state"] == "completed"
+    assert _sent == ["x@y.com"]  # resumed the pending approval AFTER the restart
+
+
 # ---------------------------------------------------------------------------
 # Reality: the card's claims are now backed by a live method
 # ---------------------------------------------------------------------------

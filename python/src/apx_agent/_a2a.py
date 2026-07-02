@@ -167,12 +167,6 @@ def mount_a2a_route(
     )
     store = TaskStore()
     app.state.a2a_task_store = store
-    # Context ids currently awaiting an approval decision. Disambiguates a resume
-    # (apx_resume on a paused context) from a normal message: an apx_resume that
-    # arrives on a context NOT in this set is treated as a new turn, not fed to
-    # Command(resume). In-process; the durable checkpointer still holds the paused
-    # thread across a restart, but this routing hint does not span restarts.
-    awaiting_approval: set[str] = set()
 
     def _run_message_send(params: MessageSendParams, request: Request) -> Task:
         """Run the agent to completion and return a terminal Task."""
@@ -189,10 +183,18 @@ def mount_a2a_route(
         # store exactly as the /invocations context bridge does.
         custom_inputs.setdefault("session_id", context_id)
 
-        # Resume only when the client sent apx_resume AND this context is actually
-        # awaiting a decision — otherwise it's a normal new turn.
+        # Resume only when the client sent apx_resume AND this thread is actually
+        # paused awaiting a decision — checked against the DURABLE checkpointer, so
+        # a resume works after a restart / on another replica, not just in-process.
+        # Otherwise it's a normal new turn.
         cfg = params.configuration or {}
-        resume = cfg.get("apx_resume") if context_id in awaiting_approval else None
+        apx_resume = cfg.get("apx_resume")
+        resume = (
+            apx_resume
+            if apx_resume is not None
+            and chat_agent.thread_interrupt(context_id, custom_inputs) is not None
+            else None
+        )
 
         inbound = message.model_copy(update={"taskId": task_id, "contextId": context_id})
         try:
@@ -209,7 +211,6 @@ def mount_a2a_route(
             # Mid-turn approval: a gated tool suspended → input-required Task.
             approval = (response.custom_outputs or {}).get("approval_required")
             if approval is not None:
-                awaiting_approval.add(context_id)
                 ask_msg = Message(
                     role="agent",
                     parts=[TextPart(text=_approval_ask_text(approval))],
@@ -228,7 +229,6 @@ def mount_a2a_route(
                 store.put(task)
                 return task
 
-            awaiting_approval.discard(context_id)
             reply = _reply_text(response)
             agent_msg = Message(
                 role="agent",
