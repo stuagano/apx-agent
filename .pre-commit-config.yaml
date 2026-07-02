@@ -1,5 +1,6 @@
 # Optional local guard. Install once with:  pip install pre-commit && pre-commit install
-# CI enforces the same check regardless, so this is just a faster local fail.
+# CI does not run these hooks — this is a local-only fast fail. The behaviours
+# they enforce are also covered by the pytest gate (make check), which CI runs.
 repos:
   - repo: local
     hooks:
