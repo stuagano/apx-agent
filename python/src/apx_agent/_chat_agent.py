@@ -615,6 +615,27 @@ def chat_agent_for(
             """
             return os.environ.get("APX_AGENT_MODEL_OVERRIDE") or self._model
 
+        def thread_interrupt(
+            self, session_id: str, custom_inputs: dict[str, Any] | None = None
+        ) -> Any | None:
+            """The pending mid-turn approval payload for ``session_id``'s thread,
+            or ``None`` if it isn't paused.
+
+            Durable: reads the checkpointer state, so a paused approval is detected
+            after a restart or on another replica — unlike an in-process routing
+            hint. Callers (e.g. the A2A surface) use this to tell a resume decision
+            from a fresh turn. Returns ``None`` when no checkpointer is wired.
+            """
+            if self._checkpointer is None or not session_id:
+                return None
+            lg_config = {"configurable": {"thread_id": session_id}}
+            auth = _resolve_ws_and_headers(custom_inputs)
+            graph = compile_to_langgraph(
+                self._agent, ws=auth.ws, model=self._resolve_model(),
+                headers=auth.headers, checkpointer=self._checkpointer,
+            )
+            return _pending_interrupt(graph, lg_config)
+
         def _load_or_create_conversation(
             self,
             custom_inputs: dict[str, Any] | None,
