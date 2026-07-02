@@ -48,6 +48,7 @@ Requires the ``eval`` extra (mlflow)::
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -56,6 +57,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ._agents import BaseAgent
+from ._async_bridge import make_async_stream
 from ._mlflow_tracing import safe_span
 
 if TYPE_CHECKING:
@@ -200,13 +202,20 @@ def mount_invocations_route(
             },
         ):
             if stream:
+                # Run the sync predict_stream on a dedicated worker thread (one
+                # thread for the whole generator, so OTel span attach/detach stay
+                # paired) instead of iterating it on the event loop.
                 return StreamingResponse(
-                    _stream_chunks(chat_agent, messages, custom_inputs),
+                    make_async_stream(
+                        lambda _req: _stream_chunks(chat_agent, messages, custom_inputs)
+                    )(None),
                     media_type="text/event-stream",
                 )
 
-            response = chat_agent.predict(
-                messages, custom_inputs=custom_inputs or None
+            # Offload the sync agent turn to a worker thread so one slow tool
+            # call doesn't freeze the event loop (and every other request).
+            response = await asyncio.to_thread(
+                chat_agent.predict, messages, custom_inputs=custom_inputs or None
             )
             return response.model_dump()
 
@@ -217,16 +226,17 @@ def mount_invocations_route(
     return True
 
 
-async def _stream_chunks(
+def _stream_chunks(
     chat_agent: Any,
     messages: list,
     custom_inputs: dict[str, Any],
 ):
     """SSE generator — yields one ``data: <ChatAgentChunk JSON>`` per chunk.
 
-    ``predict_stream`` is a sync generator, but FastAPI's ``StreamingResponse``
-    accepts an async one. We bridge by yielding from a sync iterator inside an
-    async function. Each chunk is its own SSE event terminated by a blank line.
+    A **sync** generator: it runs to completion on one worker thread (via
+    :func:`~apx_agent._async_bridge.make_async_stream`) so ``predict_stream``
+    never blocks the event loop and the OTel span context stays on one thread.
+    Each chunk is its own SSE event terminated by a blank line.
     """
     custom = custom_inputs or None
     try:
@@ -337,10 +347,10 @@ def mount_responses_route(
         ):
             if stream:
                 return StreamingResponse(
-                    _stream_response_events(_stream_fn, req),
+                    make_async_stream(lambda _req: _stream_response_events(_stream_fn, req))(None),
                     media_type="text/event-stream",
                 )
-            result = _invoke_fn(req)
+            result = await asyncio.to_thread(_invoke_fn, req)
             return result.model_dump() if hasattr(result, "model_dump") else result
 
     logger.info(
@@ -350,11 +360,13 @@ def mount_responses_route(
     return True
 
 
-async def _stream_response_events(stream_fn: Any, req: Any):
+def _stream_response_events(stream_fn: Any, req: Any):
     """SSE generator for the ``/responses`` endpoint.
 
-    Wraps a sync ``ResponsesAgent`` streaming generator in an async context.
-    Each ``ResponsesAgentStreamEvent`` is serialised as a ``data:`` SSE frame.
+    A **sync** generator run on one worker thread (via
+    :func:`~apx_agent._async_bridge.make_async_stream`) so the ResponsesAgent
+    stream never blocks the event loop. Each ``ResponsesAgentStreamEvent`` is
+    serialised as a ``data:`` SSE frame.
     """
     try:
         for event in stream_fn(req):
