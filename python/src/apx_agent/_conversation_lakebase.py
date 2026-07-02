@@ -82,6 +82,16 @@ _SQLALCHEMY_MISSING = (
 )
 
 
+def _ilike_escape(value: str) -> str:
+    """Escape ILIKE wildcards so a literal ``%`` or ``_`` in a query stays literal.
+
+    Postgres ILIKE uses ``%``/``_`` as wildcards and ``\\`` as the default escape
+    character, so a bare ``%`` in a user query would otherwise match anything.
+    Mirrors the Delta store's ``_like_escape`` (:mod:`apx_agent._conversation_delta`).
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _require_sqlalchemy() -> Any:
     """
     Import and return sqlalchemy, raising a friendly error if absent.
@@ -601,7 +611,7 @@ class LakebaseConversationStore(ConversationStore):
                 f"  WHERE search_text ILIKE :sq"
                 f"))"
             )
-            params["sq"] = f"%{search_query}%"
+            params["sq"] = f"%{_ilike_escape(search_query)}%"
         return predicates
 
     def search(
@@ -621,7 +631,7 @@ class LakebaseConversationStore(ConversationStore):
         self._ensure_tables()
         sa = _require_sqlalchemy()
         predicates = ["search_text ILIKE :sq"]
-        params: dict[str, Any] = {"sq": f"%{query}%", "lim": limit}
+        params: dict[str, Any] = {"sq": f"%{_ilike_escape(query)}%", "lim": limit}
         if conversation_id is not None:
             predicates.append("conversation_id = :conv_id")
             params["conv_id"] = conversation_id
