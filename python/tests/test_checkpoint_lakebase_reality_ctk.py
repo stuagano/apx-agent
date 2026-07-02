@@ -36,7 +36,7 @@ def _lakebase_config() -> AgentConfig:
         name="t",
         model="m",
         session=SessionBackendConfig(
-            type="lakebase", instance_name="inst", database="db", host="h.example"
+            type="lakebase", database="db", host="h.example"
         ),
     )
 
@@ -163,3 +163,54 @@ def test_mount_responses_threads_checkpointer(monkeypatch: pytest.MonkeyPatch) -
         checkpointer=sentinel,
     )
     assert ok and captured["checkpointer"] is sentinel
+
+
+# ── close_checkpointer: the durable pool is released on shutdown (#346) ────────
+
+
+def test_close_checkpointer_closes_the_pool() -> None:
+    # A PostgresSaver's pool is its ``.conn`` (the ConnectionPool we opened).
+    # Shutdown must close it or the pool + its connections + worker thread leak.
+    from apx_agent._memory_wiring import close_checkpointer
+
+    saver = MagicMock()
+    close_checkpointer(saver)
+    saver.conn.close.assert_called_once_with()
+
+
+def test_close_checkpointer_noop_for_none() -> None:
+    # In-process default owns no pool — closing None must not raise.
+    from apx_agent._memory_wiring import close_checkpointer
+
+    close_checkpointer(None)  # no raise
+
+
+def test_close_checkpointer_swallows_close_error() -> None:
+    # Shutdown must never raise, even if the pool's close() blows up.
+    from apx_agent._memory_wiring import close_checkpointer
+
+    saver = MagicMock()
+    saver.conn.close.side_effect = RuntimeError("pool already gone")
+    close_checkpointer(saver)  # no raise
+    saver.conn.close.assert_called_once_with()
+
+
+def test_lifespan_closes_checkpointer_on_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Prove the wiring, not just the helper: the FastAPI lifespan stashes the
+    # resolved checkpointer on app.state and closes its pool when the app shuts
+    # down. Uses a TestClient context manager, which runs startup + shutdown.
+    from apx_agent import create_app
+    from fastapi.testclient import TestClient
+
+    saver = MagicMock()
+
+    def fake_resolve(*_: Any, **__: Any) -> Any:
+        return saver
+
+    import apx_agent._memory_wiring as mw
+
+    monkeypatch.setattr(mw, "resolve_checkpointer", fake_resolve)
+    app = create_app(LlmAgent(name="t", tools=[]), AgentConfig(name="t", model="m"))
+    with TestClient(app):
+        pass  # startup mounts + stashes; exiting the block runs shutdown
+    saver.conn.close.assert_called_once_with()

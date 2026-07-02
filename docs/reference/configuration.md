@@ -195,7 +195,7 @@ type = "inmemory"
 # or Lakebase (production):
 # [tool.apx.agent.memory]
 # type = "lakebase"
-# instance_name = "coworker-lakebase"
+# host = "coworker-lakebase.db.databricks.com"
 # database = "agentdb"
 # embedding_model = "databricks-bge-large-en"
 # embedding_dim = 1024
@@ -207,9 +207,8 @@ type = "inmemory"
 | `embedding_model` | `str` | absent | Databricks serving-endpoint name for embeddings |
 | `embedding_dim` | `int` | absent | Embedding dimensionality (required for lakebase) |
 | `table_name` | `str` | absent | UC table (delta) or plain name (lakebase) |
-| `instance_name` | `str` | absent | Lakebase instance name |
 | `database` | `str` | absent | Postgres database name |
-| `host` | `str` | absent | Lakebase host; supports `$ENV_VAR` |
+| `host` | `str` | absent | Lakebase endpoint DNS; supports `$ENV_VAR` |
 | `auto_create` | `bool` | `true` | Create table on first use |
 | `ensure_extension` | `bool` | `true` | Run `CREATE EXTENSION IF NOT EXISTS vector` |
 | `namespace_default` | `str` | `"default"` | Default namespace for memory tools |
@@ -234,7 +233,7 @@ An `[tool.apx.agent.example]` table (same fields, plus `agent_id`) declares a co
 [tool.apx.agent.session]
 type = "inmemory"
 # or delta: type="delta", table_name="main.coworker.apx_sessions"
-# or lakebase: type="lakebase", instance_name="...", database="..."
+# or lakebase: type="lakebase", host="...", database="..."
 ```
 
 **Precedence:** An explicit `create_app(conversation_store=X)` arg wins over config session (code is more specific intent). Config session is the fallback (e.g. template-only projects). `DeltaConversationStore` takes a three-part UC `table_prefix` (used as the base for the `_conversations` and `_items` tables); the wiring maps config `table_name` → `table_prefix` automatically.
