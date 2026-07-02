@@ -65,7 +65,7 @@ from ._conversation import (
     paginate_in_memory,
     parse_item_data,
 )
-from ._sql import run_sql
+from ._sql import run_sql, sql_str_literal
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -76,10 +76,12 @@ logger = logging.getLogger(__name__)
 def _sql_str(value: str) -> str:
     """SQL-escape a string literal for Spark SQL (backslashes then single quotes).
 
+    Thin alias for the canonical :func:`apx_agent._sql.sql_str_literal`.
+
     :param value: The raw string to escape, e.g. ``"it's a test"``.
     :returns: A quoted SQL literal, e.g. ``"'it''s a test'"``.
     """
-    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+    return sql_str_literal(value)
 
 
 def _like_escape(value: str) -> str:

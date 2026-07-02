@@ -6,11 +6,18 @@ _inspection.py sees the real Annotated[...] type, not a string.
 """
 
 import logging
+import math
+import re
 from typing import Any
 
-from ._sql import run_sql
+from ._sql import run_sql, sql_str_literal
 
 logger = logging.getLogger(__name__)
+
+# A plain finite decimal literal: optional sign, digits, optional fraction and
+# exponent. Deliberately excludes ``nan``/``inf`` and Python underscore/hex forms
+# that ``float()`` accepts but SQL does not.
+_NUMERIC_LITERAL = re.compile(r"[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?")
 
 
 # ---------------------------------------------------------------------------
@@ -25,16 +32,20 @@ def _to_sql_literal(value: Any, type_name: str) -> str:
     if type_upper in ("BOOLEAN",):
         return "TRUE" if value else "FALSE"
     if type_upper in ("STRING", "CHAR", "VARCHAR", "TEXT"):
-        escaped = str(value).replace("'", "''")
-        return f"'{escaped}'"
-    # Numeric types — validate then pass raw
+        return sql_str_literal(str(value))
+    # Numeric types — pass raw only if the value is a clean, finite decimal
+    # literal. ``float()`` also accepts ``nan``/``inf`` and Python underscore/hex
+    # forms (``1_000``, ``0x10``) that are junk or invalid as raw SQL tokens, so
+    # anything that isn't a plain numeric literal falls back to a quoted string
+    # (a clean type error at UC beats an unquoted token in the statement).
+    raw = str(value)
     try:
-        float(str(value))
-        return str(value)
+        num = float(raw)
     except (ValueError, TypeError):
-        # Unknown type — fall back to quoted string
-        escaped = str(value).replace("'", "''")
-        return f"'{escaped}'"
+        return sql_str_literal(raw)
+    if math.isfinite(num) and _NUMERIC_LITERAL.fullmatch(raw):
+        return raw
+    return sql_str_literal(raw)
 
 
 def catalog_tool(
