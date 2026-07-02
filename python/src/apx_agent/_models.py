@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 if TYPE_CHECKING:
     from ._agents import BaseAgent
@@ -108,10 +108,28 @@ class GuardrailsConfig(BaseModel):
 StoreType = Literal["inmemory", "delta", "lakebase", "managed"]
 
 
-class MemoryBackendConfig(BaseModel):
-    """Declarative memory backend — maps to ``[tool.apx.agent.memory]``."""
+class _BackendConfig(BaseModel):
+    """Base for the three backend configs — ``extra="forbid"`` plus tolerance
+    for the obsolete ``instance_name`` key (dropped in #349, but still present
+    in pre-#349 scaffolds, which must keep booting rather than crash at parse)."""
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_obsolete_instance_name(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "instance_name" in data:
+            logger.warning(
+                "'instance_name' in a [tool.apx.agent.*] backend block is obsolete "
+                "since #349 (Lakebase connects via host + OAuth token, not the "
+                "instance name) — ignoring it. Remove the key to silence this."
+            )
+            return {k: v for k, v in data.items() if k != "instance_name"}
+        return data
+
+
+class MemoryBackendConfig(_BackendConfig):
+    """Declarative memory backend — maps to ``[tool.apx.agent.memory]``."""
 
     type: StoreType = "inmemory"
     embedding_model: str | None = None
@@ -130,10 +148,8 @@ class MemoryBackendConfig(BaseModel):
     validate_at_boot: bool = True
 
 
-class ExampleBackendConfig(BaseModel):
+class ExampleBackendConfig(_BackendConfig):
     """Declarative example backend — maps to ``[tool.apx.agent.example]``."""
-
-    model_config = ConfigDict(extra="forbid")
 
     type: StoreType = "inmemory"
     embedding_model: str | None = None
@@ -151,10 +167,8 @@ class ExampleBackendConfig(BaseModel):
     validate_at_boot: bool = True
 
 
-class SessionBackendConfig(BaseModel):
+class SessionBackendConfig(_BackendConfig):
     """Declarative session backend — maps to ``[tool.apx.agent.session]``."""
-
-    model_config = ConfigDict(extra="forbid")
 
     type: StoreType = "inmemory"
     table_name: str | None = None
