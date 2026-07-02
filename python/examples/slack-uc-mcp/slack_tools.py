@@ -42,26 +42,33 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_user_identity() -> str | None:
-    """Pull the Slack `user_identity` from the calling user's request context.
+    """Resolve the calling user's identity for the Slack UC connection.
 
-    The request context is set by apx-agent's chat-agent / Apps wiring when
-    an OBO header chain arrives. The `slack_user_identity` key is the
-    application-level mapping from the calling Databricks user to their
-    Slack user ID / email — typically set by the calling app's session
-    bootstrap or by a UC table lookup.
+    In a served request, Databricks Apps inject ``X-Forwarded-Email`` (and the
+    OBO token); apx surfaces those incoming headers via mlflow's
+    ``get_request_headers``, and ``extract_obo_headers`` normalizes them to
+    ``user_email``. The README allows any unique string as ``user_identity``, so
+    the caller's email is used directly.
 
-    Falls back to the `SLACK_USER_IDENTITY` env var for batch / dev use.
+    Falls back to the ``SLACK_USER_IDENTITY`` env var for batch / dev use (or
+    when not running under the MLflow agent server).
     """
     try:
-        from apx_agent import get_request_context  # type: ignore[attr-defined]
+        from mlflow.genai.agent_server import get_request_headers
+    except ImportError:
+        # Not running under the MLflow agent server — no per-request headers.
+        return os.environ.get("SLACK_USER_IDENTITY")
 
-        ctx = get_request_context()
-        if ctx and isinstance(ctx, dict):
-            ident = ctx.get("slack_user_identity")
-            if isinstance(ident, str) and ident:
-                return ident
-    except Exception:  # pragma: no cover — request context optional
-        pass
+    try:
+        headers = get_request_headers()
+    except Exception:  # pragma: no cover — no active request (batch/dev)
+        headers = None
+    if headers:
+        from apx_agent import extract_obo_headers
+
+        email = extract_obo_headers(custom_inputs={}, headers=headers).get("user_email")
+        if email:
+            return email
     return os.environ.get("SLACK_USER_IDENTITY")
 
 
