@@ -41,29 +41,12 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementResponse
 
 from ._mlflow_tracing import emit_progress, safe_span
+# Canonical inline-SQL escapers live in the dependency-free _sql_escape module
+# (so SDK-light callers can import them without pulling databricks.sdk).
+# Re-exported here for back-compat with `from ._sql import sql_escape`.
+from ._sql_escape import sql_escape, sql_str_literal  # noqa: F401
 
 logger = logging.getLogger(__name__)
-
-
-def sql_escape(value: str) -> str:
-    """Escape a string for inline SQL (no wrapping quotes).
-
-    Escapes backslash **first**, then single quotes. Spark/Databricks SQL treats
-    backslash as a live escape character inside a string literal, so a value
-    ending in ``\\`` would otherwise escape the closing quote and break out of
-    the literal (SQL injection). Quote-only doubling is not sufficient.
-    """
-    return value.replace("\\", "\\\\").replace("'", "''")
-
-
-def sql_str_literal(value: str) -> str:
-    """Render a Python string as a safe single-quoted SQL literal.
-
-    Prefer bind parameters where the driver supports them; use this only when
-    a value must be interpolated directly (e.g. identifiers, or the SQL
-    Statements API where binds aren't available).
-    """
-    return "'" + sql_escape(value) + "'"
 
 
 def decode_statement(
