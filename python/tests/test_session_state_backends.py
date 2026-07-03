@@ -37,6 +37,7 @@ def test_lakebase_set_session_state_builds_update(monkeypatch):
 
     store = mod.LakebaseConversationStore.__new__(mod.LakebaseConversationStore)
     store._conv_table = "conversations"
+    store._tables_created = True  # set_session_state now calls _ensure_tables() (#381)
 
     conn = MagicMock()
     engine_ctx = MagicMock()
