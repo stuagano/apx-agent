@@ -3957,11 +3957,14 @@ _MODEL_SERVING_ONLY_DEPLOY_FLAGS = (
 )
 @click.option(
     "--readyz-gate/--no-readyz-gate", default=True,
-    help="After the app reaches RUNNING, gate the deploy on its `/readyz` "
-         "capability self-test: GET <app_url>/readyz and FAIL the deploy if "
-         "the agent doesn't report ready (i.e. it doesn't actually answer + "
-         "trace). A green deploy then means the agent works, not just that the "
-         "container booted. ON by default. Only used by --target apps.",
+    help="Post-deploy health gate, ON by default for BOTH targets. With "
+         "--target apps: after the app reaches RUNNING, GET <app_url>/readyz "
+         "and FAIL the deploy if the agent doesn't report ready (answer + "
+         "trace). With --target model-serving: after databricks.agents.deploy, "
+         "poll the serving endpoint to READY and send one smoke invocation, "
+         "FAILING the deploy if the endpoint never answers. A green deploy "
+         "then means the agent works, not just that the container booted / "
+         "the endpoint update was accepted.",
 )
 @click.option(
     "--register-uc/--no-register-uc", default=True,
@@ -4073,10 +4076,12 @@ def deploy(
       1. publish_tools_to_uc(agent)    — register any @tool(uc=...) tools
       2. log_agent(agent, ...)         — log to MLflow + register in UC
       3. databricks.agents.deploy(...) — promote to a serving endpoint
-      4. set_uc_tags_for_agent(...)    — write apx.agent.* tags
+      4. health gate                   — poll the endpoint to READY + one
+         smoke invocation; FAIL the deploy if the agent doesn't answer
+      5. set_uc_tags_for_agent(...)    — write apx.agent.* tags
 
-    Toggle individual stages with --no-publish-tools, --no-deploy, or
-    --no-set-uc-tags.
+    Toggle individual stages with --no-publish-tools, --no-deploy,
+    --no-readyz-gate, or --no-set-uc-tags.
 
     With ``--target apps`` runs the Databricks Asset Bundle deploy flow:
 
@@ -4258,6 +4263,7 @@ def deploy(
         "publish_tools": "skipped",
         "log": "skipped",
         "deploy": "skipped",
+        "gate": "skipped",
         "set_uc_tags": "skipped",
     }
     step_failures: list[str] = []
@@ -4420,6 +4426,34 @@ def deploy(
         )
         _say(f"  Endpoint: {endpoint_name}")
         _say("  View in workspace: Serving → Endpoints")
+
+        # 3b. Health gate (#406): a green deploy must mean "the agent
+        # answers", not "endpoint update accepted". Poll the endpoint to
+        # READY, then send one smoke invocation — the model-serving mirror
+        # of the apps /readyz gate, behind the same flag.
+        if readyz_gate:
+            assert endpoint_name is not None  # set just above from the deploy
+            gate_error = _serving_health_gate(endpoint_name, log=_say)
+            if gate_error is None:
+                step_outcomes["gate"] = "ok"
+                _say("  health gate: endpoint READY + smoke invocation answered")
+            else:
+                _fail(
+                    "gate",
+                    f"health gate failed — {registered_model_name} version "
+                    f"{registered_version} deployed to endpoint "
+                    f"{endpoint_name!r} but did not answer: {gate_error} "
+                    f"The endpoint update WAS accepted, so version "
+                    f"{registered_version} is live-but-unverified — roll "
+                    "forward with a new deploy or roll the endpoint back to "
+                    "the previous version. Re-run with --no-readyz-gate to "
+                    "accept the deploy without the health check.",
+                )
+        else:
+            _say(
+                "# --no-readyz-gate: skipping endpoint readiness poll + "
+                "smoke invocation"
+            )
     else:
         _say("Skipping deploy (--no-deploy).")
 
@@ -4465,6 +4499,93 @@ def deploy(
             "endpoint": endpoint_name,
             "steps": step_outcomes,
         }))
+
+
+def _serving_health_gate(
+    endpoint_name: str,
+    *,
+    log: Any,
+    timeout_seconds: int = 300,
+) -> str | None:
+    """Post-deploy health gate for ``--target model-serving`` (#406).
+
+    Polls ``ws.serving_endpoints.get(endpoint_name)`` until the endpoint
+    reports ``state.ready == READY`` with no config update in progress
+    (bounded by ``timeout_seconds``, exponential backoff capped at 15s,
+    fast-failing on a terminal UPDATE_FAILED / UPDATE_CANCELED — the
+    serving mirror of ``_poll_app_ready``), then sends ONE minimal smoke
+    invocation through ``ws.serving_endpoints.query``. Success is any
+    non-error structured response: the agent parsed a request and answered.
+
+    Returns ``None`` when the endpoint answers, or an error-detail string
+    otherwise. Never raises — the CALLER owns the failure contract.
+    """
+    try:
+        from databricks.sdk import WorkspaceClient
+        ws = WorkspaceClient()
+    except Exception as exc:
+        return f"could not build a workspace client to verify the endpoint: {exc}."
+
+    log(f"# health gate: polling endpoint {endpoint_name!r} for READY")
+    deadline = time.time() + timeout_seconds
+    delay = 1.0
+    last_state: tuple[str, str] = ("", "")
+    while True:
+        try:
+            info = ws.serving_endpoints.get(endpoint_name)
+        except Exception as exc:
+            # The endpoint may not be visible yet right after deploy —
+            # treat get() errors as transient until the deadline.
+            log(f"  (serving_endpoints.get failed: {exc}; retrying)")
+        else:
+            state = getattr(info, "state", None)
+            raw_ready = getattr(state, "ready", None)
+            raw_update = getattr(state, "config_update", None)
+            ready = (
+                str(getattr(raw_ready, "value", raw_ready)).upper()
+                if raw_ready is not None else ""
+            )
+            update = (
+                str(getattr(raw_update, "value", raw_update)).upper()
+                if raw_update is not None else ""
+            )
+            if (ready, update) != last_state:
+                log(f"  status: ready={ready or '?'} config_update={update or '?'}")
+                last_state = (ready, update)
+            if update in ("UPDATE_FAILED", "UPDATE_CANCELED"):
+                return (
+                    f"endpoint {endpoint_name!r} config update ended in "
+                    f"{update}. Inspect the build with `apx-agent logs "
+                    f"--endpoint {endpoint_name} --build`."
+                )
+            if ready == "READY" and update in ("", "NOT_UPDATING"):
+                break
+
+        if time.time() >= deadline:
+            return (
+                f"timed out after {timeout_seconds}s waiting for endpoint "
+                f"{endpoint_name!r} to reach READY (last observed: "
+                f"ready={last_state[0] or '?'} "
+                f"config_update={last_state[1] or '?'})."
+            )
+        time.sleep(min(delay, max(0.0, deadline - time.time())))
+        delay = min(delay * 1.5, 15.0)
+
+    log(f"# health gate: smoke invocation on {endpoint_name!r}")
+    try:
+        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+        response = ws.serving_endpoints.query(
+            name=endpoint_name,
+            messages=[ChatMessage(role=ChatMessageRole.USER, content="ping")],
+        )
+    except Exception as exc:
+        return (
+            f"endpoint {endpoint_name!r} is READY but the smoke invocation "
+            f"failed: {exc}."
+        )
+    if response is None:
+        return f"endpoint {endpoint_name!r} returned an empty smoke response."
+    return None
 
 
 # ---------------------------------------------------------------------------
