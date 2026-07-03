@@ -204,7 +204,8 @@ class LakebaseConversationStore(ConversationStore):
             f"  data            TEXT   NOT NULL,"
             f"  search_text     TEXT,"
             f"  created_by      TEXT,"
-            f"  created_at      BIGINT NOT NULL"
+            f"  created_at      BIGINT NOT NULL,"
+            f"  UNIQUE (conversation_id, position)"  # defense-in-depth vs duplicate positions (#373)
             f")"
         )
 
@@ -453,6 +454,17 @@ class LakebaseConversationStore(ConversationStore):
         now = _now_ms()
         sa = _require_sqlalchemy()
         with self.engine.begin() as conn:
+            # Serialize concurrent appends to THIS conversation (#373): lock the
+            # conversation row so a second appender blocks until we commit and
+            # then reads the true MAX(position). Without this, two writers at
+            # READ COMMITTED read the same max and assign duplicate positions.
+            conn.execute(
+                sa.text(
+                    f"SELECT 1 FROM {self._conv_table} "
+                    f"WHERE conversation_id = :cid FOR UPDATE"
+                ),
+                {"cid": conversation_id},
+            )
             base_pos = self._next_base_position(sa, conn, conversation_id)
             persisted = self._insert_items(sa, conn, conversation_id, items, base_pos, now)
             self._bump_updated_at(sa, conn, conversation_id, now)
