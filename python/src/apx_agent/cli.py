@@ -3859,6 +3859,20 @@ def _deploy_from_yaml(
             os.chdir(orig)
 
 
+# deploy options only the model-serving branch consumes (issue #413):
+# param name → flag spelling, echoed in the "ignored with --target apps"
+# warning when the caller passed one explicitly. --experiment is handled
+# separately with a pointer at the apps-flow equivalent.
+_MODEL_SERVING_ONLY_DEPLOY_FLAGS = (
+    ("publish_tools", "--publish-tools/--no-publish-tools"),
+    ("set_uc_tags", "--set-uc-tags/--no-set-uc-tags"),
+    ("agent_name", "--agent-name"),
+    ("no_deploy", "--no-deploy"),
+    ("capture_env_vars", "--capture-env-vars/--no-capture-env-vars"),
+    ("allow_env_vars", "--allow-env-var"),
+)
+
+
 @agents.command()
 @click.argument("spec", required=False, default=None, metavar="[SPEC.yaml]")
 @click.option("--module", default=None, help='Agent module spec. Default '
@@ -3957,26 +3971,31 @@ def _deploy_from_yaml(
          "Progress logs are routed to stderr.",
 )
 @click.option("--no-deploy", is_flag=True,
-              help="Log + register only, skip databricks.agents.deploy.")
+              help="Log + register only, skip databricks.agents.deploy. "
+                   "Only used by --target model-serving.")
 @click.option(
     "--experiment", default=None,
     help="MLflow experiment name/path. Falls back to [tool.apx.agent].experiment "
-         "in pyproject.toml; falls back to MLflow's default when neither is set.",
+         "in pyproject.toml; falls back to MLflow's default when neither is set. "
+         "Only used by --target model-serving.",
 )
 @click.option(
     "--publish-tools/--no-publish-tools", default=True,
     help="Publish @tool(uc=...) decorated tools to Unity Catalog before logging. "
-         "On by default; pass --no-publish-tools to skip.",
+         "On by default; pass --no-publish-tools to skip. "
+         "Only used by --target model-serving.",
 )
 @click.option(
     "--set-uc-tags/--no-set-uc-tags", default=True,
     help="Write apx.agent.* UC tags on the registered model after deploy so "
-         "the agent shows up in apx-agent list / topology / watchdog crawls. On by default.",
+         "the agent shows up in apx-agent list / topology / watchdog crawls. "
+         "On by default. Only used by --target model-serving.",
 )
 @click.option(
     "--agent-name", default=None,
     help="Friendly agent name used for the apx.agent.name UC tag. Falls back to "
-         "[tool.apx.agent].name in pyproject.toml; falls back to the short part of --name.",
+         "[tool.apx.agent].name in pyproject.toml; falls back to the short part "
+         "of --name. Only used by --target model-serving.",
 )
 @click.option(
     "--capture-env-vars/--no-capture-env-vars", default=False,
@@ -3985,7 +4004,8 @@ def _deploy_from_yaml(
          "developer-shell secrets (ATLASSIAN_API_KEY, GEMINI_API_KEY, etc.) "
          "from being baked into the deployed image. Sets "
          "MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING=false for the duration of "
-         "log_agent and restores the caller's environment afterward.",
+         "log_agent and restores the caller's environment afterward. "
+         "Only used by --target model-serving.",
 )
 @click.option(
     "--allow-env-var", "allow_env_vars", multiple=True, metavar="NAME",
@@ -3994,7 +4014,7 @@ def _deploy_from_yaml(
          "Note: MLflow's MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING is all-or-nothing; "
          "passing any --allow-env-var flips capture back on for everything and "
          "prints a warning listing what you asked to allow vs the full capture "
-         "set you'll actually get.",
+         "set you'll actually get. Only used by --target model-serving.",
 )
 @click.option(
     "--yes", "-y", "assume_yes", is_flag=True,
@@ -4043,7 +4063,8 @@ def deploy(
       1. databricks bundle validate    — sanity check the bundle config
       2. databricks bundle deploy      — push the app + sync resources
       3. databricks bundle run <app>   — start the app (skipped with --no-run)
-      4. databricks apps get           — poll until ACTIVE/RUNNING
+      4. databricks apps get           — poll until ACTIVE/RUNNING + readyz
+         gate (both skipped with --no-run: the app was never started)
       5. register_apps_manifest(...)   — register a UC version manifest + tags
          (skipped with --no-register-uc, or when no UC name / model resolves)
 
@@ -4076,6 +4097,29 @@ def deploy(
         )
 
     if target == "apps":
+        # Flag hygiene (issue #413): the apps branch never reads the
+        # model-serving-only options — warn instead of silently dropping them.
+        # Warn (not error) so one script can be shared across targets.
+        if experiment is not None:
+            click.echo(
+                "# WARNING: --experiment is ignored with --target apps — it is "
+                "only used by --target model-serving. For apps, pass "
+                "--var mlflow_experiment_id=<id> or rely on --auto-experiment "
+                "(on by default).",
+                err=True,
+            )
+        ctx = click.get_current_context()
+        ignored = [
+            flag for param, flag in _MODEL_SERVING_ONLY_DEPLOY_FLAGS
+            if ctx.get_parameter_source(param)
+            == click.core.ParameterSource.COMMANDLINE
+        ]
+        if ignored:
+            click.echo(
+                "# WARNING: ignored with --target apps (only used by "
+                f"--target model-serving): {', '.join(ignored)}",
+                err=True,
+            )
         _deploy_apps(
             module=module or "agent:agent",
             profile=profile,
@@ -5821,18 +5865,27 @@ def _deploy_apps_impl(
     else:
         log("# --no-run: skipping `databricks bundle run`")
 
-    # 6. Poll for ACTIVE/RUNNING via `databricks apps get`
-    log(f"# polling `databricks apps get {app_name}` for ACTIVE/RUNNING")
-    payload = _poll_app_ready(app_name, profile, timeout_seconds=300, log=log)
-    app_url = payload.get("url") or ""
+    # 6. Poll for ACTIVE/RUNNING via `databricks apps get`. Skipped with
+    # --no-run (issue #413): the app was never started, so polling would just
+    # burn the timeout, and the readyz gate below self-skips on the empty
+    # app_url. The UC manifest registration (6d) still runs — it records
+    # intent/version and doesn't need the app up.
+    app_url = ""
+    if no_run:
+        log("# --no-run: app not started — skipping readiness poll + readyz gate")
+    else:
+        log(f"# polling `databricks apps get {app_name}` for ACTIVE/RUNNING")
+        payload = _poll_app_ready(app_name, profile, timeout_seconds=300, log=log)
+        app_url = payload.get("url") or ""
 
-    # 6b. Grant the app's service principal access to the tracing experiment.
-    # The experiment is created under the deploying user, but the app runs as
-    # its SP — without this grant every span is dropped. Best-effort.
-    sp = payload.get("service_principal_client_id")
-    if sp and resolved_exp_id:
-        if _grant_experiment_to_sp(resolved_exp_id, sp, profile=profile):
-            log("  granted app SP CAN_MANAGE on tracing experiment")
+        # 6b. Grant the app's service principal access to the tracing
+        # experiment. The experiment is created under the deploying user, but
+        # the app runs as its SP — without this grant every span is dropped.
+        # Best-effort.
+        sp = payload.get("service_principal_client_id")
+        if sp and resolved_exp_id:
+            if _grant_experiment_to_sp(resolved_exp_id, sp, profile=profile):
+                log("  granted app SP CAN_MANAGE on tracing experiment")
 
     # 6c. readyz gate: prove the app actually answers + traces, not just that
     # the container booted. A green deploy should mean "the agent works".
@@ -5929,6 +5982,9 @@ def _deploy_apps_impl(
             "deploy_seconds": deploy_seconds,
             "run_seconds": run_seconds,
         }))
+    elif no_run:
+        log(f"# app not started (--no-run); run `databricks bundle run "
+            f"{bundle_key} --target {bundle_target}` or rerun without --no-run")
     else:
         log(f"# app ready: {app_name}")
         click.echo(app_url)
@@ -9398,6 +9454,16 @@ def canary_deploy(
     # --target apps
     if not canary_version:
         raise click.UsageError("--canary-version is required for --target apps.")
+    # Flag hygiene (issue #413): Apps has no platform-level traffic split —
+    # the value is recorded as a hint only, it routes nothing.
+    if (click.get_current_context().get_parameter_source("traffic_pct")
+            == click.core.ParameterSource.COMMANDLINE):
+        click.echo(
+            "# WARNING: --traffic is a recorded hint only for --target apps — "
+            "Databricks Apps has no platform-level traffic split; clients hit "
+            "whichever App URL they call.",
+            err=True,
+        )
     from apx_agent import deploy_canary_app
 
     cwd = Path.cwd()
@@ -9516,7 +9582,7 @@ def canary_promote(
 
     cwd = Path.cwd()
     doc = _read_databricks_yml(cwd)
-    bundle_key, base_app_name = _resolve_app_name(doc)
+    _, base_app_name = _resolve_app_name(doc)
     config = _read_apx_agent_config()
     uc_name = _resolve_apps_uc_name(config, base_app_name)
     if uc_name is None:
@@ -9627,7 +9693,7 @@ def canary_rollback(
 
     cwd = Path.cwd()
     doc = _read_databricks_yml(cwd)
-    bundle_key, base_app_name = _resolve_app_name(doc)
+    _, base_app_name = _resolve_app_name(doc)
     config = _read_apx_agent_config()
     uc_name = _resolve_apps_uc_name(config, base_app_name)
     if uc_name is None:

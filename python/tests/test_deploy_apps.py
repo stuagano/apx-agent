@@ -270,17 +270,22 @@ def test_validate_failure_surfaces_friendly_error(
 def test_no_run_skips_bundle_run(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """--no-run elides the `databricks bundle run` subprocess."""
+    """--no-run elides the `databricks bundle run` subprocess AND the
+    readiness poll — the app was never started, so `apps get` would just
+    burn the 300s timeout (issue #413)."""
     calls = _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(main, ["agents", "deploy", "--target", "apps", "--no-run"])
     assert result.exit_code == 0, result.output
     seq = [c[:2] for c in calls]
     assert ["bundle", "run"] not in seq
-    # validate, deploy, and apps get still happened
+    assert ["apps", "get"] not in seq
+    # validate and deploy still happened
     assert ["bundle", "validate"] in seq
     assert ["bundle", "deploy"] in seq
-    assert ["apps", "get"] in seq
+    # ...and the deploy says how to start the app.
+    assert "app not started (--no-run)" in result.output
+    assert "databricks bundle run" in result.output
 
 
 def test_auto_update_yml_adds_missing_resources(
@@ -418,7 +423,9 @@ def test_polling_stops_on_active_running(
         ],
     )
     runner = CliRunner()
-    result = runner.invoke(main, ["agents", "deploy", "--target", "apps", "--no-run"])
+    # No --no-run: it now skips the poll entirely (issue #413); bundle run is
+    # mocked to rc 0 so the poll is still what this test exercises.
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code == 0, result.output
     # Three apps get calls, then stop.
     get_calls = [c for c in calls if c[:2] == ["apps", "get"]]
@@ -445,7 +452,8 @@ def test_polling_times_out(
     monkeypatch.setattr("apx_agent.cli.time.time", lambda: next(counter))
 
     runner = CliRunner()
-    result = runner.invoke(main, ["agents", "deploy", "--target", "apps", "--no-run"])
+    # No --no-run: it now skips the poll entirely (issue #413).
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code != 0
     assert "Timed out" in result.output
 
@@ -550,7 +558,8 @@ def test_terminal_error_state_fails_fast(
         ],
     )
     runner = CliRunner()
-    result = runner.invoke(main, ["agents", "deploy", "--target", "apps", "--no-run"])
+    # No --no-run: it now skips the poll entirely (issue #413).
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code != 0
     assert "terminal failure" in result.output.lower() or "ERROR" in result.output
 
@@ -1402,3 +1411,115 @@ def test_plain_deploy_threads_provenance_to_registrar(
             (scaffold / "uv.lock").read_bytes()
         ).hexdigest(),
     }
+
+# ---------------------------------------------------------------------------
+# issue #413: deploy flag hygiene — warn on ignored flags, --no-run skips poll
+# ---------------------------------------------------------------------------
+
+
+def test_experiment_flag_warns_under_apps_target(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--experiment is model-serving-only; under --target apps the deploy
+    succeeds but warns loudly and points at the apps-flow equivalent."""
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--experiment", "/Users/me/my-exp",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "--experiment is ignored with --target apps" in result.output
+    # The warning names the apps-flow equivalents.
+    assert "mlflow_experiment_id" in result.output
+    assert "--auto-experiment" in result.output
+
+
+def test_model_serving_only_flags_warn_when_explicit_under_apps(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicitly passing model-serving-only flags under --target apps prints
+    one combined warning naming every ignored flag."""
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--no-publish-tools", "--agent-name", "my-agent",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "ignored with --target apps" in result.output
+    assert "--publish-tools/--no-publish-tools" in result.output
+    assert "--agent-name" in result.output
+    # Flags left at their defaults are NOT named.
+    assert "--no-deploy" not in result.output
+
+
+def test_default_apps_deploy_does_not_warn_about_ignored_flags(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain apps deploy (all model-serving-only flags at defaults) prints
+    no ignored-flag warnings — defaults are detected via ParameterSource, not
+    value comparison."""
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+    assert result.exit_code == 0, result.output
+    assert "ignored with --target apps" not in result.output
+    assert "--experiment is ignored" not in result.output
+
+
+def test_no_run_skips_readiness_poll_and_still_registers_manifest(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--no-run never calls _poll_app_ready or the readyz gate (the app was
+    never started), but the UC manifest registration still runs — it records
+    intent/version and doesn't need the app up."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    registered: list[dict[str, Any]] = []
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        registered.append({"uc_name": uc_name, "app_name": app_name})
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
+
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.register_apps_manifest", _fake_registrar,
+    )
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    _install_subprocess_mock(monkeypatch)
+
+    with patch("apx_agent.cli._poll_app_ready") as poll, \
+         patch("apx_agent.cli._check_readyz") as readyz:
+        result = CliRunner().invoke(main, [
+            "agents", "deploy", "--target", "apps", "--no-run",
+            "--uc-name", "main.agents.my_app",
+        ])
+    assert result.exit_code == 0, result.output
+    poll.assert_not_called()
+    readyz.assert_not_called()
+    assert registered == [{"uc_name": "main.agents.my_app", "app_name": "my-app"}]
+    assert "app not started (--no-run)" in result.output
+
+
+def test_canary_deploy_apps_explicit_traffic_warns(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit --traffic under `canary deploy --target apps` warns that Apps
+    has no platform traffic split — the value is a recorded hint only."""
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "canary", "deploy", "--target", "apps",
+        "--canary-version", "v42", "--traffic", "25",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "no platform-level traffic split" in result.output
+
+
+def test_canary_deploy_apps_default_traffic_does_not_warn(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leaving --traffic at its default prints no traffic warning for apps."""
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "canary", "deploy", "--target", "apps", "--canary-version", "v42",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "no platform-level traffic split" not in result.output
