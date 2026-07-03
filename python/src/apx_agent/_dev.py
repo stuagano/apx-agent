@@ -1631,14 +1631,17 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         ws_client = request.app.state.workspace_client
 
         def _query(wh_id: str) -> list[dict[str, Any]]:
+            from databricks.sdk.service.sql import StatementParameterListItem
+
             resp = ws_client.statement_execution.execute_statement(
                 warehouse_id=wh_id,
                 statement=(
-                    f"SELECT table_name, column_name, data_type, ordinal_position "
-                    f"FROM information_schema.columns "
-                    f"WHERE table_schema = '{schema}' "
-                    f"ORDER BY table_name, ordinal_position"
+                    "SELECT table_name, column_name, data_type, ordinal_position "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema = :schema "
+                    "ORDER BY table_name, ordinal_position"
                 ),
+                parameters=[StatementParameterListItem(name="schema", value=schema, type="STRING")],
                 catalog=catalog,
                 schema=schema,
             )
@@ -1731,14 +1734,19 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             def _fetch_schemas() -> dict[str, list[str]]:
                 ws_client = request.app.state.workspace_client
                 def _do(wh_id: str) -> dict[str, list[str]]:
+                    from databricks.sdk.service.sql import StatementParameterListItem
+
                     resp = ws_client.statement_execution.execute_statement(
                         warehouse_id=wh_id,
                         statement=(
-                            f"SELECT table_name, column_name, data_type "
-                            f"FROM information_schema.columns "
-                            f"WHERE table_schema = '{uc_schema}' "
-                            f"ORDER BY table_name, ordinal_position"
+                            "SELECT table_name, column_name, data_type "
+                            "FROM information_schema.columns "
+                            "WHERE table_schema = :schema "
+                            "ORDER BY table_name, ordinal_position"
                         ),
+                        parameters=[
+                            StatementParameterListItem(name="schema", value=uc_schema, type="STRING")
+                        ],
                         catalog=uc_catalog,
                         schema=uc_schema,
                     )
