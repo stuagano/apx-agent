@@ -82,6 +82,26 @@ class _BundleUpdateResult(NamedTuple):
     skipped: list[str]
 
 
+class _EnvMergeResult(NamedTuple):
+    """Outcome of merging --env / --secret-env into databricks.yml."""
+    env_added: list[str]
+    secret_added: list[str]
+    skipped: list[str]
+
+
+class _EnvPair(NamedTuple):
+    """A parsed ``--env KEY=VALUE`` pair."""
+    name: str
+    value: str
+
+
+class _SecretEnvRef(NamedTuple):
+    """A parsed ``--secret-env KEY=scope/key`` reference (never a value)."""
+    name: str
+    scope: str
+    key: str
+
+
 class _AdvertiseResult(NamedTuple):
     """Outcome of advertising an agent — the resolved workspace client plus the
     endpoint/description the discovery registry recorded, consumed together by
@@ -3892,6 +3912,14 @@ _MODEL_SERVING_ONLY_DEPLOY_FLAGS = (
     ("allow_env_vars", "--allow-env-var"),
 )
 
+# deploy options only the apps branch consumes (issue #415): the mirror of
+# _MODEL_SERVING_ONLY_DEPLOY_FLAGS above — echoed in the "ignored with
+# --target model-serving" warning when the caller passed one explicitly.
+_APPS_ONLY_DEPLOY_FLAGS = (
+    ("env_pairs", "--env"),
+    ("secret_env_pairs", "--secret-env"),
+)
+
 
 @agents.command()
 @click.argument("spec", required=False, default=None, metavar="[SPEC.yaml]")
@@ -3989,6 +4017,26 @@ _MODEL_SERVING_ONLY_DEPLOY_FLAGS = (
          "wire in a vector_search_index, etc.",
 )
 @click.option(
+    "--env", "env_pairs", multiple=True, metavar="KEY=VALUE",
+    help="Runtime env var for the deployed app. Repeatable. Merged into "
+         "resources.apps.<app>.config.env in databricks.yml BEFORE the "
+         "bundle deploy so the value reaches the running app. The merge "
+         "PERSISTS in databricks.yml — commit it to keep it, revert the "
+         "file to drop it. An entry whose name already exists in "
+         "config.env is NEVER clobbered: it is skipped with a warning "
+         "(edit databricks.yml to change it). Only used by --target apps.",
+)
+@click.option(
+    "--secret-env", "secret_env_pairs", multiple=True, metavar="KEY=SCOPE/KEY",
+    help="Secret-backed runtime env var: KEY=scope/key names a Databricks "
+         "secret REFERENCE, never the secret value. Declares a secret app "
+         "resource (permission READ) plus an env entry pointing at it via "
+         "valueFrom, so the app resolves the value at runtime — the literal "
+         "secret never appears in databricks.yml or the deploy output. Same "
+         "persistence and never-clobber semantics as --env. Only used by "
+         "--target apps.",
+)
+@click.option(
     "--json-output", is_flag=True, default=False,
     help="Emit a single JSON object on stdout summarising the run. "
          "Progress logs are routed to stderr.",
@@ -4059,6 +4107,8 @@ def deploy(
     register_uc: bool,
     uc_name: str | None,
     vars: tuple[str, ...],
+    env_pairs: tuple[str, ...],
+    secret_env_pairs: tuple[str, ...],
     json_output: bool,
     no_deploy: bool,
     experiment: str | None,
@@ -4154,6 +4204,8 @@ def deploy(
             auto_build_wheel=auto_build_wheel,
             auto_experiment=auto_experiment,
             vars=vars,
+            env_pairs=env_pairs,
+            secret_env_pairs=secret_env_pairs,
             json_output=json_output,
             readyz_gate=readyz_gate,
             register_uc=register_uc,
@@ -4162,6 +4214,22 @@ def deploy(
         return
 
     # --- model-serving target (the legacy path) ---
+    # Flag hygiene (issue #415, mirroring #413): the model-serving branch
+    # never reads the apps-only runtime-env options — warn instead of
+    # silently dropping them. Warn (not error) so one script can be shared
+    # across targets.
+    ms_ctx = click.get_current_context()
+    ignored_apps_flags = [
+        flag for param, flag in _APPS_ONLY_DEPLOY_FLAGS
+        if ms_ctx.get_parameter_source(param)
+        == click.core.ParameterSource.COMMANDLINE
+    ]
+    if ignored_apps_flags:
+        click.echo(
+            "# WARNING: ignored with --target model-serving (only used by "
+            f"--target apps): {', '.join(ignored_apps_flags)}",
+            err=True,
+        )
     if model is None:
         raise click.UsageError(
             "--model is required when --target model-serving. "
@@ -5466,6 +5534,137 @@ def _validate_responses_agent_compiler() -> None:
         ) from e
 
 
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _parse_env_flag(raw: str) -> _EnvPair:
+    """Parse one ``--env KEY=VALUE`` pair."""
+    key, sep, value = raw.partition("=")
+    if not sep or not _ENV_NAME_RE.fullmatch(key):
+        raise click.ClickException(
+            f"--env expects KEY=VALUE with an env-var-shaped KEY "
+            f"([A-Za-z_][A-Za-z0-9_]*), got: {raw!r}"
+        )
+    return _EnvPair(name=key, value=value)
+
+
+def _parse_secret_env_flag(raw: str) -> _SecretEnvRef:
+    """Parse one ``--secret-env KEY=scope/key`` pair.
+
+    The value side is a Databricks secret REFERENCE (scope/key), never the
+    secret value itself.
+    """
+    key, sep, ref = raw.partition("=")
+    scope, slash, secret_key = ref.partition("/")
+    if (
+        not sep or not slash or not scope or not secret_key
+        or not _ENV_NAME_RE.fullmatch(key)
+    ):
+        raise click.ClickException(
+            f"--secret-env expects KEY=scope/key (a Databricks secret "
+            f"reference — never the secret value), got: {raw!r}"
+        )
+    return _SecretEnvRef(name=key, scope=scope, key=secret_key)
+
+
+def _merge_env_into_databricks_yml(
+    cwd: Path,
+    *,
+    bundle_key: str,
+    env_pairs: list[_EnvPair],
+    secret_env_pairs: list[_SecretEnvRef],
+    log: Any,
+) -> _EnvMergeResult:
+    """Merge --env / --secret-env entries into ``resources.apps.<key>.config.env``.
+
+    Same contract as ``_auto_update_databricks_yml``: the merge PERSISTS in
+    databricks.yml, and an entry whose ``name`` already exists in
+    ``config.env`` is NEVER clobbered — it is skipped with a warning.
+
+    ``--secret-env`` additionally declares a Databricks secret app resource
+    (permission READ) and points the env entry at it via ``valueFrom``; only
+    the scope/key reference is written, never a secret value. If a resource
+    with the derived name already exists it is reused, not clobbered.
+    """
+    import yaml
+
+    path = cwd / "databricks.yml"
+    doc = _read_databricks_yml(cwd)
+    # resources.apps.<bundle_key> presence was already validated by
+    # _resolve_app_name on this same document.
+    app_block = doc["resources"]["apps"][bundle_key]
+    config = app_block.setdefault("config", {})
+    env_list = config.setdefault("env", [])
+    existing_env = {
+        e["name"] for e in env_list
+        if isinstance(e, dict) and isinstance(e.get("name"), str)
+    }
+
+    env_added: list[str] = []
+    secret_added: list[str] = []
+    skipped: list[str] = []
+
+    for name, value in env_pairs:
+        if name in existing_env:
+            skipped.append(name)
+            continue
+        env_list.append({"name": name, "value": value})
+        existing_env.add(name)
+        env_added.append(name)
+
+    resources: list[dict[str, Any]] = app_block.setdefault("resources", [])
+    resource_names: set[str] = set()
+    for entry in resources:
+        if not isinstance(entry, dict):
+            continue
+        if isinstance(entry.get("name"), str):
+            resource_names.add(entry["name"])
+        for v in entry.values():
+            if isinstance(v, dict) and isinstance(v.get("name"), str):
+                resource_names.add(v["name"])
+
+    for name, scope, secret_key in secret_env_pairs:
+        if name in existing_env:
+            skipped.append(name)
+            continue
+        res_name = "secret-" + name.lower().replace("_", "-")
+        if res_name not in resource_names:
+            resources.append({
+                "name": res_name,
+                "description": (
+                    f"Secret backing the {name} env var "
+                    "(added by apx-agent deploy --secret-env)."
+                ),
+                "secret": {
+                    "scope": scope,
+                    "key": secret_key,
+                    "permission": "READ",
+                },
+            })
+            resource_names.add(res_name)
+        env_list.append({"name": name, "valueFrom": res_name})
+        existing_env.add(name)
+        secret_added.append(name)
+
+    if env_added or secret_added:
+        path.write_text(
+            yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
+        )
+
+    if env_added:
+        log(f"  env → config.env: {', '.join(env_added)} (values not echoed)")
+    if secret_added:
+        log("  secret-env → config.env (valueFrom secret reference): "
+            f"{', '.join(secret_added)}")
+    if skipped:
+        log("  WARNING: skipped --env/--secret-env entries already declared "
+            "in config.env (never clobbered — edit databricks.yml to "
+            f"change them): {', '.join(skipped)}")
+    return _EnvMergeResult(
+        env_added=env_added, secret_added=secret_added, skipped=skipped,
+    )
+
+
 def _auto_update_databricks_yml(
     cwd: Path,
     *,
@@ -5833,6 +6032,8 @@ def _deploy_apps(
     auto_build_wheel: bool,
     auto_experiment: bool = True,
     vars: tuple[str, ...] = (),
+    env_pairs: tuple[str, ...] = (),
+    secret_env_pairs: tuple[str, ...] = (),
     json_output: bool,
     readyz_gate: bool = True,
     register_uc: bool = True,
@@ -5865,6 +6066,8 @@ def _deploy_apps(
             auto_build_wheel=auto_build_wheel,
             auto_experiment=auto_experiment,
             vars=vars,
+            env_pairs=env_pairs,
+            secret_env_pairs=secret_env_pairs,
             json_output=json_output, readyz_gate=readyz_gate,
             register_uc=register_uc, uc_name=uc_name,
             app_name_override=app_name_override,
@@ -5889,6 +6092,8 @@ def _deploy_apps_impl(
     auto_build_wheel: bool,
     auto_experiment: bool = True,
     vars: tuple[str, ...] = (),
+    env_pairs: tuple[str, ...] = (),
+    secret_env_pairs: tuple[str, ...] = (),
     json_output: bool,
     readyz_gate: bool = True,
     register_uc: bool = True,
@@ -5922,6 +6127,24 @@ def _deploy_apps_impl(
         _auto_update_databricks_yml(
             cwd, agent=agent, bundle_key=bundle_key, log=log,
         )
+
+    # 2a. --env / --secret-env (issue #415): merge caller-supplied runtime
+    # env into resources.apps.<key>.config.env before the bundle deploy.
+    # The merge PERSISTS in databricks.yml; existing entries are never
+    # clobbered. Only key NAMES are logged — never values.
+    injected_env_keys: list[str] = []
+    injected_secret_env_keys: list[str] = []
+    if env_pairs or secret_env_pairs:
+        parsed_env = [_parse_env_flag(e) for e in env_pairs]
+        parsed_secret = [_parse_secret_env_flag(s) for s in secret_env_pairs]
+        log("# env config: merging --env/--secret-env into databricks.yml "
+            "(the merge persists in the file)")
+        merge = _merge_env_into_databricks_yml(
+            cwd, bundle_key=bundle_key,
+            env_pairs=parsed_env, secret_env_pairs=parsed_secret, log=log,
+        )
+        injected_env_keys = merge.env_added
+        injected_secret_env_keys = merge.secret_added
 
     # 2b. Auto-build apx-agent wheel + populate .build/
     wheel_path: Path | None = None
@@ -6192,6 +6415,9 @@ def _deploy_apps_impl(
             "git_sha": prov.get(GIT_SHA_TAG),
             "git_dirty": None if dirty_tag is None else dirty_tag == "true",
             "lock_sha256": prov.get(LOCK_SHA256_TAG),
+            # --env / --secret-env (issue #415): key NAMES only, never values.
+            "env_keys": injected_env_keys,
+            "secret_env_keys": injected_secret_env_keys,
             "readyz": readyz_checks,
         }, default=str))
     elif no_run:
