@@ -19,12 +19,13 @@ import sys
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NamedTuple
 from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner, Result
 
-from apx_agent.cli import _load_agent, _parse_module_spec, main
+from apx_agent.cli import _load_agent, _parse_module_spec, _ReadyzResult, main
 
 
 # ---------------------------------------------------------------------------
@@ -5119,3 +5120,229 @@ def test_deploy_model_serving_provenance_failure_is_non_fatal(
     result = _invoke_provenance_deploy(monkeypatch, tmp_path, fake_client)
     assert result.exit_code == 0, result.output
     assert "provenance tags failed (non-fatal): UC down" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `apx agents status` — post-deploy health + provenance (issue #410)
+# ---------------------------------------------------------------------------
+
+_STATUS_HEAD = "a" * 40
+_STATUS_OTHER = "0" * 40
+_STATUS_UC = "main.agents.x"
+
+
+class _StatusInvocation(NamedTuple):
+    result: Result
+    readyz_mock: MagicMock
+    ws: MagicMock
+
+
+def _status_version(version: str, tags: dict[str, str]) -> SimpleNamespace:
+    return SimpleNamespace(version=version, tags=tags)
+
+
+def _apps_version(
+    *, sha: str = _STATUS_HEAD, dirty: str = "false",
+) -> SimpleNamespace:
+    return _status_version("7", {
+        "apx.serving": "apps",
+        "apx.apps.app_name": "my-app",
+        "apx.apps.git_sha": sha,
+        "apx.git_dirty": dirty,
+    })
+
+
+def _running_app() -> SimpleNamespace:
+    return SimpleNamespace(
+        app_status=SimpleNamespace(state=SimpleNamespace(value="RUNNING")),
+        url="https://my-app.example.com",
+    )
+
+
+def _invoke_status(
+    args: list[str],
+    *,
+    versions: list[SimpleNamespace] | None = None,
+    search_error: Exception | None = None,
+    app: SimpleNamespace | None = None,
+    app_error: Exception | None = None,
+    endpoint: SimpleNamespace | None = None,
+    rm_tags: dict[str, str] | None = None,
+    readyz: _ReadyzResult | None = None,
+    head_sha: str | None = _STATUS_HEAD,
+) -> _StatusInvocation:
+    """Run `agents status` with the workspace + UC surface fully mocked."""
+    fake_ws = MagicMock()
+    if app_error is not None:
+        fake_ws.apps.get.side_effect = app_error
+    elif app is not None:
+        fake_ws.apps.get.return_value = app
+    if endpoint is not None:
+        fake_ws.serving_endpoints.get.return_value = endpoint
+    fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[
+        SimpleNamespace(key=k, value=v) for k, v in (rm_tags or {}).items()
+    ])
+
+    client = MagicMock()
+    if search_error is not None:
+        client.search_model_versions.side_effect = search_error
+    else:
+        client.search_model_versions.return_value = list(versions or [])
+
+    readyz_mock = MagicMock(
+        return_value=readyz
+        if readyz is not None
+        else _ReadyzResult(is_ready=True, checks={"agent": "ok"}),
+    )
+    fake_cfg = SimpleNamespace(host="https://ws.example.com")
+    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, fake_cfg)), \
+         patch("mlflow.tracking.MlflowClient", return_value=client), \
+         patch("apx_agent.cli._check_readyz", readyz_mock), \
+         patch("apx_agent.cli._git_head_sha", return_value=head_sha):
+        result = CliRunner().invoke(main, ["agents", "status", *args])
+    return _StatusInvocation(result=result, readyz_mock=readyz_mock, ws=fake_ws)
+
+
+def test_agents_status_apps_healthy_exits_zero_with_sha_and_drift() -> None:
+    """RUNNING app + ready /readyz → exit 0, sha shown, drift line says match."""
+    inv = _invoke_status(
+        [_STATUS_UC], versions=[_apps_version()], app=_running_app(),
+    )
+    assert inv.result.exit_code == 0, inv.result.output
+    assert "RUNNING" in inv.result.output
+    assert _STATUS_HEAD[:12] in inv.result.output
+    assert "matches local HEAD" in inv.result.output
+    assert "HEALTHY" in inv.result.output and "yes" in inv.result.output
+    # Snappy status probe: fewer attempts than the deploy gate's default 5.
+    assert inv.readyz_mock.call_args.kwargs["attempts"] == 2
+
+
+def test_agents_status_apps_drift_line_on_sha_mismatch() -> None:
+    """Deployed sha != local HEAD → drift line names both commits, still exit 0."""
+    inv = _invoke_status(
+        [_STATUS_UC],
+        versions=[_apps_version(sha=_STATUS_OTHER)],
+        app=_running_app(),
+    )
+    assert inv.result.exit_code == 0, inv.result.output
+    assert _STATUS_OTHER[:12] in inv.result.output
+    assert _STATUS_HEAD[:12] in inv.result.output
+    assert "re-deploy to ship HEAD" in inv.result.output
+
+
+def test_agents_status_apps_readyz_failed_exits_one() -> None:
+    """App RUNNING but /readyz degraded → unhealthy, exit 1."""
+    inv = _invoke_status(
+        [_STATUS_UC],
+        versions=[_apps_version()],
+        app=_running_app(),
+        readyz=_ReadyzResult(is_ready=False, checks={"agent": "llm timeout"}),
+    )
+    assert inv.result.exit_code == 1, inv.result.output
+    assert "failed" in inv.result.output
+    assert "llm timeout" in inv.result.output
+    assert "no" in inv.result.output
+
+
+def test_agents_status_serving_ready_exits_zero() -> None:
+    """Model-serving target: endpoint READY → healthy, exit 0."""
+    inv = _invoke_status(
+        [_STATUS_UC],
+        versions=[_status_version("3", {"apx.apps.git_sha": _STATUS_HEAD})],
+        rm_tags={"apx.agent.model": "my-endpoint"},
+        endpoint=SimpleNamespace(
+            state=SimpleNamespace(ready=SimpleNamespace(value="READY")),
+        ),
+    )
+    assert inv.result.exit_code == 0, inv.result.output
+    assert "model-serving" in inv.result.output
+    assert "my-endpoint" in inv.result.output
+    assert "READY" in inv.result.output
+    inv.ws.serving_endpoints.get.assert_called_once_with("my-endpoint")
+    # No smoke invocation in this iteration — status never posts traffic.
+    inv.readyz_mock.assert_not_called()
+
+
+def test_agents_status_serving_not_ready_exits_one() -> None:
+    inv = _invoke_status(
+        [_STATUS_UC],
+        versions=[_status_version("3", {})],
+        rm_tags={"apx.agent.model": "my-endpoint"},
+        endpoint=SimpleNamespace(
+            state=SimpleNamespace(ready=SimpleNamespace(value="NOT_READY")),
+        ),
+    )
+    assert inv.result.exit_code == 1, inv.result.output
+    assert "NOT_READY" in inv.result.output
+
+
+def test_agents_status_nothing_deployed_is_clean_error() -> None:
+    """No registered versions → actionable ClickException, no traceback."""
+    inv = _invoke_status([_STATUS_UC], versions=[])
+    assert inv.result.exit_code != 0
+    assert "nothing deployed" in inv.result.output
+    assert "Traceback" not in inv.result.output
+
+
+def test_agents_status_no_name_outside_project_is_clean_error() -> None:
+    """No NAME and no resolvable project → actionable error, not a crash."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(main, ["agents", "status"])
+    assert result.exit_code != 0
+    assert "No agent to check" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_agents_status_resolves_uc_name_from_project(tmp_path: Path) -> None:
+    """NAME omitted inside a project → registered_model resolves, same as doctor."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("pyproject.toml").write_text(
+            '[tool.apx.agent]\nregistered_model = "main.agents.x"\n'
+        )
+        client = MagicMock()
+        client.search_model_versions.return_value = []
+        with patch("mlflow.tracking.MlflowClient", return_value=client):
+            result = runner.invoke(main, ["agents", "status"])
+    assert "main.agents.x" in result.output
+    client.search_model_versions.assert_called_once_with("name='main.agents.x'")
+
+
+def test_agents_status_json_emits_one_parseable_object() -> None:
+    inv = _invoke_status(
+        [_STATUS_UC, "--json"], versions=[_apps_version()], app=_running_app(),
+    )
+    assert inv.result.exit_code == 0, inv.result.output
+    payload = json.loads(inv.result.output)
+    assert payload["uc_name"] == _STATUS_UC
+    assert payload["target"] == "apps"
+    assert payload["name"] == "my-app"
+    assert payload["state"] == "RUNNING"
+    assert payload["url"] == "https://my-app.example.com"
+    assert payload["version"] == "7"
+    assert payload["git_sha"] == _STATUS_HEAD
+    assert payload["git_dirty"] is False
+    assert payload["drift"] == "match"
+    assert payload["readyz"] is True
+    assert payload["healthy"] is True
+
+
+def test_agents_status_app_unreachable_is_clean_error() -> None:
+    """Network error probing the app → 'could not reach', non-zero, no traceback."""
+    inv = _invoke_status(
+        [_STATUS_UC],
+        versions=[_apps_version()],
+        app_error=ConnectionError("network is down"),
+    )
+    assert inv.result.exit_code != 0
+    assert "could not reach app 'my-app'" in inv.result.output
+    assert "network is down" in inv.result.output
+    assert "Traceback" not in inv.result.output
+
+
+def test_agents_status_uc_unreachable_is_clean_error() -> None:
+    inv = _invoke_status([_STATUS_UC], search_error=ConnectionError("offline"))
+    assert inv.result.exit_code != 0
+    assert "could not reach Unity Catalog" in inv.result.output
+    assert "Traceback" not in inv.result.output
