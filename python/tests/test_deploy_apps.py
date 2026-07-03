@@ -479,6 +479,62 @@ def test_json_output_shape(
     assert "app_url" in payload
 
 
+def test_json_output_enriched_with_uc_version_provenance_readyz(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The success JSON records what shipped (issue #417): uc_name, registered
+    version, git/lock provenance threaded from the manifest tags, and the
+    readyz checks — and stdout is EXACTLY one JSON object."""
+    import hashlib
+
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "uv.lock").write_text("version = 1\n")
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="3", app_name=app_name)
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: "a" * 40)
+    monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: False)
+    _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--uc-name", "main.agents.my_app", "--json-output",
+    ])
+    assert result.exit_code == 0, result.output
+    # stdout carries exactly one JSON object — progress went to stderr.
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["uc_name"] == "main.agents.my_app"
+    assert payload["version"] == "3"
+    assert payload["git_sha"] == "a" * 40
+    assert payload["git_dirty"] is False
+    assert payload["lock_sha256"] == hashlib.sha256(
+        (scaffold / "uv.lock").read_bytes()
+    ).hexdigest()
+    assert payload["readyz"] == {}  # the stubbed gate returned (True, {})
+
+
+def test_json_output_no_run_has_null_readyz(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--no-run never probes /readyz, so the JSON reports readyz: null (not a
+    fake pass), and registration was skipped so version is null too."""
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--no-run", "--json-output",
+    ])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["readyz"] is None
+    assert payload["version"] is None  # no UC name configured → not registered
+
+
 def test_readyz_gate_fails_deploy_when_degraded(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1224,6 +1280,43 @@ def test_promote_apps_keep_canary_skips_teardown(
     assert cap["alias"] == ("main.agents.my_app", "5")
 
 
+def test_promote_apps_json_success(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--json on a successful promote: stdout is EXACTLY one JSON object with
+    the alias move + soaked commit; all progress went to stderr (issue #417)."""
+    _setup_promote_mocks(scaffold, monkeypatch, canary_sha="aaa111", head_sha="aaa111")
+    result = CliRunner().invoke(main, [
+        "canary", "promote", "--target", "apps", "--canary-version", "v42", "--json",
+    ])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["target"] == "apps"
+    assert payload["uc_name"] == "main.agents.my_app"
+    assert payload["app_name"] == "my-app"
+    assert payload["git_sha"] == "aaa111"
+    assert payload["prod_version"] == "5"
+    assert payload["previous_prod_version"] == "2"
+    assert payload["canary_removed"] is True
+
+
+def test_promote_apps_json_failure(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--json on a refused promote (HEAD != soaked SHA): stdout is EXACTLY one
+    {ok: false, error: ...} object and the exit code is non-zero."""
+    cap = _setup_promote_mocks(scaffold, monkeypatch, canary_sha="aaa111", head_sha="bbb222")
+    result = CliRunner().invoke(main, [
+        "canary", "promote", "--target", "apps", "--canary-version", "v42", "--json",
+    ])
+    assert result.exit_code != 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "git checkout aaa111" in payload["error"]
+    assert cap["alias"] is None  # never moved prod
+
+
 # ---------------------------------------------------------------------------
 # P2: gate-don't-mutate rollback + apps status
 # ---------------------------------------------------------------------------
@@ -1320,6 +1413,34 @@ def test_status_apps_shows_prod_and_canary(
     assert "@prod  → version 5" in result.output
     assert "canary → version 8" in result.output
     assert "promote ships canarysha678" in result.output
+
+
+def test_status_apps_json(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """canary status --target apps --json emits exactly one JSON object with
+    the prod/canary versions + commits (issue #417)."""
+    from apx_agent._apps_registry import CanaryManifest
+
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+    monkeypatch.setattr("apx_agent.get_prod_alias_version", lambda uc, **k: "5")
+    monkeypatch.setattr("apx_agent.get_version_git_sha", lambda uc, v, **k: "prodsha12345")
+    monkeypatch.setattr(
+        "apx_agent.find_latest_canary_version",
+        lambda uc, **k: CanaryManifest(version="8", git_sha="canarysha6789"),
+    )
+    result = CliRunner().invoke(main, ["canary", "status", "--target", "apps", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "ok": True,
+        "target": "apps",
+        "uc_name": "main.agents.my_app",
+        "prod_version": "5",
+        "prod_git_sha": "prodsha12345",
+        "canary_version": "8",
+        "canary_git_sha": "canarysha6789",
+    }
 
 
 # ---------------------------------------------------------------------------

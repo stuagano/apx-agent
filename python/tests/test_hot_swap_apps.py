@@ -7,6 +7,7 @@ and the ``apx hot-swap --target apps`` CLI dispatch. Mocks the
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -258,6 +259,49 @@ def test_cli_hot_swap_apps_requires_llm_endpoint(
     result = runner.invoke(main, ["agents", "hot-swap", "--target", "apps"])
     assert result.exit_code != 0
     assert "--llm-endpoint" in result.output
+
+
+def test_cli_hot_swap_apps_json_success(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--json emits EXACTLY one JSON object on stdout naming the swap: app,
+    var, new + previous value (issue #417)."""
+    _install_mock(monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["agents", "hot-swap", "--target", "apps",
+         "--llm-endpoint", "databricks-claude-opus-4-7", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "ok": True,
+        "target": "apps",
+        "app_name": "my-app",
+        "bundle_target": "prod",
+        "var_name": DEFAULT_LLM_VAR_NAME,
+        "new_value": "databricks-claude-opus-4-7",
+        "previous_value": "databricks-claude-sonnet-4-6",
+    }
+
+
+def test_cli_hot_swap_apps_json_failure(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--json on a failed swap (bundle deploy non-zero) emits EXACTLY one
+    {ok: false, error: ...} object on stdout and exits non-zero."""
+    _install_mock(monkeypatch, deploy_rc=1)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["agents", "hot-swap", "--target", "apps",
+         "--llm-endpoint", "databricks-claude-opus-4-7", "--json"],
+    )
+    assert result.exit_code != 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "hot-swap --target apps failed" in payload["error"]
 
 
 def test_cli_hot_swap_default_target_still_model_serving(
