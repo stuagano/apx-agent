@@ -278,6 +278,11 @@ def attach_declared_memory(
 
     existing = {getattr(fn, "__name__", None) for fn in getattr(agent, "_tool_fns", [])}
 
+    # Collect the stores we build so the app lifespan can dispose their Lakebase
+    # engines on shutdown (#376). Reset per fresh attach (idempotency).
+    declared_stores: list[Any] = []
+    agent._declared_stores = declared_stores
+
     from ._memory_tools import make_memory_tools  # noqa: PLC0415
     from ._example_tools import make_example_tools  # noqa: PLC0415
 
@@ -327,6 +332,7 @@ def attach_declared_memory(
                 msg = f"{mcfg.type} memory build failed — check logs for details"
             setattr(agent, "_apx_memory_degraded", msg)
         if store is not None:
+            declared_stores.append(store)  # dispose its engine on shutdown (#376)
             default_principal = _resolve_default_principal(ws)
             # Expose store + scoping info for the dev UI /_apx/memories endpoint.
             setattr(agent, "_apx_memory_store", store)
@@ -369,6 +375,7 @@ def attach_declared_memory(
                 exc,
             )
         if estore is not None:
+            declared_stores.append(estore)  # dispose its engine on shutdown (#376)
             agent_id = ecfg.agent_id or config.name
             example_tools = make_example_tools(
                 store=estore,
@@ -569,9 +576,29 @@ def close_checkpointer(checkpointer: Any | None) -> None:
             logger.debug("Checkpointer pool close failed on shutdown", exc_info=True)
 
 
+def dispose_store_engine(store: Any | None) -> None:
+    """Dispose a store's SQLAlchemy engine (its connection pool) on shutdown (#376).
+
+    The Lakebase conversation/memory/example stores each build their own
+    ``build_lakebase_engine`` pool (with a do_connect OAuth-token listener). #346
+    closed the checkpointer pool but left these sibling engines open, so any path
+    that rebuilds the app in one process leaks a live pool per cycle. Non-Lakebase
+    stores (Delta/in-memory) have no ``.engine`` and are a no-op.
+
+    Idempotent and best-effort: shutdown must never raise.
+    """
+    engine = getattr(store, "engine", None)
+    if engine is not None and hasattr(engine, "dispose"):
+        try:
+            engine.dispose()
+        except Exception:
+            logger.debug("Store engine dispose failed on shutdown", exc_info=True)
+
+
 __all__ = [
     "attach_declared_memory",
     "close_checkpointer",
+    "dispose_store_engine",
     "resolve_checkpointer",
     "resolve_conversation_store",
 ]
