@@ -853,6 +853,126 @@ def test_register_uc_forwards_extra_version_tags(
     assert seen["tags"] == {"apx.apps.role": "canary"}
 
 
+# ---------------------------------------------------------------------------
+# readyz failure: ledger + recovery path (issue #401)
+# ---------------------------------------------------------------------------
+
+
+def _degraded_readyz(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Override the default 'ready' stub with a degraded /readyz result."""
+    monkeypatch.setattr(
+        "apx_agent.cli._check_readyz",
+        lambda app_url, *, profile, **_kw: (False, {"llm": "fail"}),
+    )
+
+
+def test_readyz_failure_registers_manifest_with_failed_tag(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed readyz gate still ledgers the deploy: the UC manifest is
+    registered, tagged apx.apps.readyz=failed, and the deploy exits non-zero
+    naming the live URL (issue #401)."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    seen: dict[str, Any] = {}
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        seen["tags"] = extra_version_tags
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="7", app_name=app_name)
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    # No prior @prod version — keep the recovery hint on the generic path.
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.get_prod_alias_version", lambda uc, **k: None,
+    )
+    _install_subprocess_mock(monkeypatch)
+    _degraded_readyz(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--uc-name", "main.agents.my_app",
+    ])
+    assert result.exit_code != 0
+    # The bad deploy is ledgered, marked as failed.
+    assert seen["tags"] == {"apx.apps.readyz": "failed"}
+    # The error says the app is live, where, and how to recover.
+    assert "readyz gate failed" in result.output
+    assert "STILL LIVE" in result.output
+    assert "https://my-app.example.databricksapps.com" in result.output
+    assert "re-deploy a known-good commit" in result.output
+
+
+def test_readyz_failure_names_rollback_when_prior_prod_exists(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a prior @prod version with recorded git provenance exists, the
+    readyz failure names the exact canary rollback command."""
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.get_prod_alias_version", lambda uc, **k: "5",
+    )
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.get_version_git_sha",
+        lambda uc, v, **k: "aaa111",
+    )
+    _install_subprocess_mock(monkeypatch)
+    _degraded_readyz(monkeypatch)
+
+    # Default scaffold pyproject has no model, so UC registration skips with a
+    # notice — but the --uc-name override still resolves for the hint lookup.
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--uc-name", "main.agents.my_app", "--profile", "demo-profile",
+    ])
+    assert result.exit_code != 0
+    assert "readyz gate failed" in result.output
+    assert (
+        "apx-agent canary rollback --target apps --to-version 5 "
+        "--profile demo-profile"
+    ) in result.output
+    assert "main.agents.my_app" in result.output
+
+
+def test_readyz_failure_recovery_hint_lookup_never_masks_the_failure(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A throwing prior-version lookup must not replace the readyz error."""
+    def _boom(uc, **k):
+        raise RuntimeError("UC unreachable")
+
+    monkeypatch.setattr("apx_agent._apps_registry.get_prod_alias_version", _boom)
+    _install_subprocess_mock(monkeypatch)
+    _degraded_readyz(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--uc-name", "main.agents.my_app",
+    ])
+    assert result.exit_code != 0
+    assert "readyz gate failed" in result.output
+    assert "recovery-hint lookup failed (non-fatal): UC unreachable" in result.output
+    # Falls back to the generic recovery path.
+    assert "re-deploy a known-good commit" in result.output
+
+
+def test_readyz_failure_json_output_carries_url_and_detail(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--json-output on a readyz failure emits app_url + readyz checks."""
+    _install_subprocess_mock(monkeypatch)
+    _degraded_readyz(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--json-output",
+    ])
+    assert result.exit_code != 0
+    payload = json.loads(result.output.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["app_name"] == "my-app"
+    assert payload["app_url"] == "https://my-app.example.databricksapps.com"
+    assert payload["readyz"] == {"llm": "fail"}
+    assert "readyz gate failed" in payload["error"]
+
+
 def test_canary_deploy_apps_uses_full_path(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
