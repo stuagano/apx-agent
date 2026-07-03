@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from ._sql_exec import execute_and_poll
+
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
     from .loop_agent import Hypothesis, LoopConfig
@@ -445,21 +447,6 @@ class PopulationStore:
     # ------------------------------------------------------------------
 
     def _sql_exec(self, sql: str) -> list[dict]:
-        from databricks.sdk.service.sql import StatementState
-        resp = self.ws.statement_execution.execute_statement(
-            warehouse_id=self.config.warehouse_id,
-            statement=sql.strip(),
-            wait_timeout="50s",
-        )
-        assert resp.status is not None  # SDK always populates status
-        if resp.status.state == StatementState.FAILED:
-            assert resp.status.error is not None  # populated when state is FAILED
-            raise RuntimeError(
-                f"SQL failed [{resp.status.error.error_code}]: {resp.status.error.message}\n"
-                f"SQL: {sql[:200]}"
-            )
-        if not resp.result or not resp.result.data_array:
-            return []
-        assert resp.manifest is not None and resp.manifest.schema is not None and resp.manifest.schema.columns is not None
-        cols = [c.name for c in resp.manifest.schema.columns]
-        return [dict(zip(cols, row)) for row in resp.result.data_array]
+        # Poll to a terminal state (#372) — a statement still RUNNING after the
+        # 50s wait must not be reported as an empty result / silent success.
+        return execute_and_poll(self.ws, self.config.warehouse_id, sql)
