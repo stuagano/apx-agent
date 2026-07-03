@@ -749,6 +749,10 @@ class LakebaseConversationStore(ConversationStore):
         :param conversation_id: Unique conversation identifier.
         :param session_state: JSON-serializable dict to persist.
         """
+        # Self-create tables on first use like every other write method (#381) —
+        # otherwise a resume/approval flow that persists state before any
+        # create_conversation/append hits "relation ... does not exist".
+        self._ensure_tables()
         import json as _json
 
         sa = _require_sqlalchemy()
