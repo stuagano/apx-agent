@@ -106,6 +106,11 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
     uc_check = check_uc_data_source(cwd, auth_ok=auth.status is Status.OK)
     if uc_check is not None:
         project.append(uc_check)
+    provenance_check = check_deploy_provenance(
+        cwd, auth_ok=auth.status is Status.OK
+    )
+    if provenance_check is not None:
+        project.append(provenance_check)
     project.extend(check_declared_tools(cwd, auth_ok=auth.status is Status.OK))
     return [
         ("Environment", environment),
@@ -529,6 +534,95 @@ def check_apps_enabled(*, auth_ok: bool) -> Check | None:
             )
         # Any other error (network, auth) — don't fail the check hard
         return None
+
+
+def check_deploy_provenance(cwd: Path, *, auth_ok: bool) -> Check | None:
+    """Compare the latest deployed version's recorded git provenance to HEAD.
+
+    Every deploy stamps ``apx.apps.git_sha`` / ``apx.git_dirty`` on the UC
+    version it registers (issue #403); this check answers "does what's
+    deployed match my working tree?". WARNs on drift (different commit) or a
+    dirty-tree deploy; degrades to SKIP — never FAIL — when nothing is
+    deployed yet, the project isn't a git repo, or UC can't be reached
+    (offline). Returns None when cwd isn't an apx project, no UC name
+    resolves, or auth isn't available (nothing to compare against).
+    """
+    if not auth_ok or not _is_apx_project(cwd):
+        return None
+    from ._apps_registry import GIT_DIRTY_TAG, GIT_SHA_TAG
+    from .cli import (
+        _git_head_sha,
+        _read_apx_agent_config,
+        _read_databricks_yml,
+        _resolve_app_name,
+        _resolve_apps_uc_name,
+    )
+
+    config = _read_apx_agent_config(cwd / "pyproject.toml")
+    try:
+        _bundle_key, app_name = _resolve_app_name(_read_databricks_yml(cwd))
+    except Exception:
+        app_name = None  # not an Apps bundle — registered_model may still resolve
+    if app_name:
+        uc_name = _resolve_apps_uc_name(config, app_name)
+    else:
+        registered = config.get("registered_model")
+        uc_name = (
+            registered.strip()
+            if isinstance(registered, str) and registered.strip()
+            else None
+        )
+    if uc_name is None:
+        return None
+
+    label = f"Deploy provenance ({uc_name})"
+    head = _git_head_sha(cwd)
+    if head is None:
+        return Check(
+            label, Status.SKIP, "not a git repo — no local commit to compare", None
+        )
+    try:
+        from mlflow.tracking import MlflowClient
+
+        versions = MlflowClient().search_model_versions(f"name='{uc_name}'")
+    except Exception as e:
+        # Offline / no UC access must never hard-fail doctor — degrade to a
+        # "could not verify" notice.
+        return Check(
+            label, Status.SKIP, f"could not verify deployed provenance ({e})", None
+        )
+    if not versions:
+        return Check(label, Status.SKIP, "no deployed versions recorded yet", None)
+    latest = max(versions, key=lambda v: int(v.version))
+    tags: dict = getattr(latest, "tags", None) or {}
+    deployed_sha = tags.get(GIT_SHA_TAG)
+    if not deployed_sha:
+        return Check(
+            label, Status.SKIP,
+            f"version {latest.version} has no recorded git provenance "
+            "(deployed before provenance stamping)",
+            "Re-deploy with this apx-agent version to stamp git provenance.",
+        )
+    if deployed_sha != head:
+        return Check(
+            label, Status.WARN,
+            f"drift: deployed version {latest.version} is commit "
+            f"{deployed_sha[:12]}, local HEAD is {head[:12]}",
+            "Re-deploy to ship local HEAD, or check out the deployed commit "
+            "to match what's live.",
+        )
+    if tags.get(GIT_DIRTY_TAG) == "true":
+        return Check(
+            label, Status.WARN,
+            f"deployed version {latest.version} matches HEAD {head[:12]} but "
+            "was deployed from a tree with uncommitted changes",
+            "Commit and re-deploy so the recorded commit is the code that shipped.",
+        )
+    return Check(
+        label, Status.OK,
+        f"deployed version {latest.version} matches local HEAD ({head[:12]})",
+        None,
+    )
 
 
 def _is_apx_project(cwd: Path) -> bool:

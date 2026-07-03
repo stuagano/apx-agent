@@ -582,3 +582,92 @@ class TestCheckAppsEnabled:
         with patch("databricks.sdk.WorkspaceClient", return_value=ws):
             c = doctor.check_apps_enabled(auth_ok=True)
         assert c is None
+
+
+# ---------------------------------------------------------------------------
+# check_deploy_provenance (issue #403)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckDeployProvenance:
+    """Drift check: latest deployed version's git provenance vs local HEAD."""
+
+    HEAD = "a" * 40
+    OTHER = "0" * 40
+
+    def _project(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nregistered_model = "main.agents.x"\n'
+        )
+
+    def _mv(self, version: str, tags: dict):
+        from types import SimpleNamespace
+        return SimpleNamespace(version=version, tags=tags)
+
+    def _run(self, tmp_path: Path, monkeypatch, *, versions=None, error=None):
+        self._project(tmp_path)
+        monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: self.HEAD)
+        client = MagicMock()
+        if error is not None:
+            client.search_model_versions.side_effect = error
+        else:
+            client.search_model_versions.return_value = versions or []
+        with patch("mlflow.tracking.MlflowClient", return_value=client):
+            return doctor.check_deploy_provenance(tmp_path, auth_ok=True)
+
+    def test_none_outside_apx_project(self, tmp_path: Path):
+        assert doctor.check_deploy_provenance(tmp_path, auth_ok=True) is None
+
+    def test_none_when_auth_unavailable(self, tmp_path: Path):
+        self._project(tmp_path)
+        assert doctor.check_deploy_provenance(tmp_path, auth_ok=False) is None
+
+    def test_none_when_no_uc_name_resolves(self, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        assert doctor.check_deploy_provenance(tmp_path, auth_ok=True) is None
+
+    def test_skip_when_not_a_git_repo(self, tmp_path: Path, monkeypatch):
+        self._project(tmp_path)
+        monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: None)
+        c = doctor.check_deploy_provenance(tmp_path, auth_ok=True)
+        assert c is not None and c.status is Status.SKIP
+        assert "not a git repo" in c.detail
+
+    def test_ok_when_latest_deploy_matches_head(self, tmp_path: Path, monkeypatch):
+        c = self._run(tmp_path, monkeypatch, versions=[
+            self._mv("1", {"apx.apps.git_sha": self.OTHER}),
+            self._mv("2", {"apx.apps.git_sha": self.HEAD, "apx.git_dirty": "false"}),
+        ])
+        assert c.status is Status.OK
+        assert "version 2 matches local HEAD" in c.detail
+
+    def test_warn_on_drift(self, tmp_path: Path, monkeypatch):
+        c = self._run(tmp_path, monkeypatch, versions=[
+            self._mv("3", {"apx.apps.git_sha": self.OTHER, "apx.git_dirty": "false"}),
+        ])
+        assert c.status is Status.WARN
+        assert "drift" in c.detail
+        assert self.OTHER[:12] in c.detail and self.HEAD[:12] in c.detail
+        assert c.fix is not None
+
+    def test_warn_on_dirty_tree_deploy(self, tmp_path: Path, monkeypatch):
+        c = self._run(tmp_path, monkeypatch, versions=[
+            self._mv("4", {"apx.apps.git_sha": self.HEAD, "apx.git_dirty": "true"}),
+        ])
+        assert c.status is Status.WARN
+        assert "uncommitted changes" in c.detail
+
+    def test_skip_when_nothing_deployed(self, tmp_path: Path, monkeypatch):
+        c = self._run(tmp_path, monkeypatch, versions=[])
+        assert c.status is Status.SKIP
+        assert "no deployed versions" in c.detail
+
+    def test_skip_when_version_predates_provenance(self, tmp_path: Path, monkeypatch):
+        c = self._run(tmp_path, monkeypatch, versions=[self._mv("5", {})])
+        assert c.status is Status.SKIP
+        assert "no recorded git provenance" in c.detail
+
+    def test_degrades_to_skip_when_uc_unreachable(self, tmp_path: Path, monkeypatch):
+        c = self._run(tmp_path, monkeypatch, error=ConnectionError("offline"))
+        assert c.status is Status.SKIP
+        assert "could not verify deployed provenance" in c.detail
