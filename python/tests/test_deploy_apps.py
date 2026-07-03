@@ -1644,3 +1644,97 @@ def test_canary_deploy_apps_default_traffic_does_not_warn(
     ])
     assert result.exit_code == 0, result.output
     assert "no platform-level traffic split" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# issue #404: version correlation — inject APX_GIT_SHA into the app env
+# ---------------------------------------------------------------------------
+
+
+_DATABRICKS_YML_WITH_CORRELATION_VAR = _DATABRICKS_YML + """
+variables:
+  apx_git_sha:
+    default: ""
+"""
+
+
+def _bundle_deploy_call(calls: list[list[str]]) -> list[str]:
+    return next(c for c in calls if c[:2] == ["bundle", "deploy"])
+
+
+def test_deploy_injects_apx_git_sha_var_when_bundle_declares_it(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the bundle declares the `apx_git_sha` variable (post-#404
+    scaffolds), deploy passes the HEAD sha as `--var apx_git_sha=<sha>` so the
+    app container gets APX_GIT_SHA and traces carry version identity."""
+    (scaffold / "databricks.yml").write_text(_DATABRICKS_YML_WITH_CORRELATION_VAR)
+    monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: "e" * 40)
+    monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: False)
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--bundle-target", "dev",
+    ])
+    assert result.exit_code == 0, result.output
+    deploy_call = _bundle_deploy_call(calls)
+    var_values = [
+        deploy_call[i + 1]
+        for i, a in enumerate(deploy_call)
+        if a == "--var"
+    ]
+    assert f"apx_git_sha={'e' * 40}" in var_values
+
+
+def test_deploy_skips_apx_git_sha_var_for_pre_404_bundles(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bundles that don't declare the variable (pre-#404 scaffolds) deploy
+    untouched — passing an undeclared --var would fail `bundle deploy`."""
+    monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: "e" * 40)
+    monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: False)
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--bundle-target", "dev",
+    ])
+    assert result.exit_code == 0, result.output
+    deploy_call = _bundle_deploy_call(calls)
+    assert not any(a.startswith("apx_git_sha=") for a in deploy_call)
+
+
+def test_deploy_explicit_apx_git_sha_var_wins_over_injection(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator-passed `--var apx_git_sha=` is forwarded verbatim and the
+    auto-injection stands down (no duplicate --var)."""
+    (scaffold / "databricks.yml").write_text(_DATABRICKS_YML_WITH_CORRELATION_VAR)
+    monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: "e" * 40)
+    monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: False)
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--bundle-target", "dev",
+        "--var", "apx_git_sha=operator-pinned",
+    ])
+    assert result.exit_code == 0, result.output
+    deploy_call = _bundle_deploy_call(calls)
+    sha_vars = [a for a in deploy_call if a.startswith("apx_git_sha=")]
+    assert sha_vars == ["apx_git_sha=operator-pinned"]
+
+
+def test_deploy_skips_apx_git_sha_var_outside_a_git_repo(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No HEAD sha (not a git repo) → nothing to inject, even when the bundle
+    declares the variable; the yml default ("") applies."""
+    (scaffold / "databricks.yml").write_text(_DATABRICKS_YML_WITH_CORRELATION_VAR)
+    monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: None)
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--bundle-target", "dev",
+    ])
+    assert result.exit_code == 0, result.output
+    deploy_call = _bundle_deploy_call(calls)
+    assert not any(a.startswith("apx_git_sha=") for a in deploy_call)

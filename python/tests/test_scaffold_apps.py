@@ -111,6 +111,19 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     assert "prod" in parsed["targets"]
     assert parsed["targets"]["dev"]["default"] is True
 
+    # Version correlation (issue #404): the bundle declares the correlation
+    # vars and threads them into the app container env, so deploy can inject
+    # `--var apx_git_sha=<sha>` and traces carry per-version identity.
+    variables = parsed["variables"]
+    assert "apx_git_sha" in variables
+    assert "apx_model_version" in variables
+    env_entries = {
+        e["name"]: e["value"]
+        for e in parsed["resources"]["apps"]["my_agent"]["config"]["env"]
+    }
+    assert env_entries["APX_GIT_SHA"] == "${var.apx_git_sha}"
+    assert env_entries["APX_MODEL_VERSION"] == "${var.apx_model_version}"
+
 
 # ---------------------------------------------------------------------------
 # Test 3: pyproject.toml is valid TOML + lists required dependencies

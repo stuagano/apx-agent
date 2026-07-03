@@ -58,7 +58,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Generator, NamedTuple
 
 from ._agents import BaseAgent
-from ._audit import AuditAttrs
+from ._audit import AuditAttrs, stamp_version_correlation
 from ._chat_agent import _pending_interrupt, _resume_decision
 from ._compile import compile_to_langgraph
 from ._conversation import (
@@ -1090,6 +1090,7 @@ def compile_to_responses_agent(
                 AuditAttrs.MODEL_STREAMING: False,
             },
         ) as span:
+            stamp_version_correlation(span)
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
             ws, req_headers = auth.ws, auth.headers
 
@@ -1264,7 +1265,8 @@ def compile_to_responses_agent(
                 AuditAttrs.SESSION_ID: conv_id,
                 AuditAttrs.MODEL_STREAMING: True,
             },
-        ):
+        ) as span:
+            stamp_version_correlation(span)
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
             ws, req_headers = auth.ws, auth.headers
 

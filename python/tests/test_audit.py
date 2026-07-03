@@ -9,11 +9,14 @@ Covers:
   - hash_for_audit is deterministic and truncates to the requested length
   - output_summary returns (type_name, size_estimate) for common shapes
   - input_keys_summary handles dict / string / other arg types
+  - version_correlation_attrs / stamp_version_correlation read
+    APX_MODEL_VERSION / APX_GIT_SHA from the env (issue #404) and are a
+    strict no-op when the env vars are absent
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -23,6 +26,8 @@ from apx_agent import (
     input_keys_summary,
     output_summary,
     set_audit_attrs,
+    stamp_version_correlation,
+    version_correlation_attrs,
 )
 
 
@@ -54,6 +59,8 @@ def test_audit_attrs_namespace() -> None:
         ("WATCHDOG_ACTION", "apx.watchdog.action"),
         ("WATCHDOG_POLICY_ID", "apx.watchdog.policy_id"),
         ("USER_TOKEN_PROVIDED", "apx.user.token_provided"),
+        ("MODEL_VERSION", "apx.model_version"),
+        ("GIT_SHA", "apx.git_sha"),
     ],
 )
 def test_audit_attrs_specific_keys(name: str, expected: str) -> None:
@@ -113,6 +120,77 @@ def test_set_audit_attrs_swallows_span_exceptions() -> None:
     span.set_attribute.side_effect = RuntimeError("span broken")
     # Should not raise
     set_audit_attrs(span, agent_name="triage")
+
+
+# ---------------------------------------------------------------------------
+# Version correlation (issue #404) — APX_MODEL_VERSION / APX_GIT_SHA → attrs
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _clean_correlation_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APX_MODEL_VERSION", raising=False)
+    monkeypatch.delenv("APX_GIT_SHA", raising=False)
+
+
+def test_version_correlation_attrs_empty_without_env(
+    _clean_correlation_env: None,
+) -> None:
+    assert version_correlation_attrs() == {}
+
+
+def test_version_correlation_attrs_reads_both_env_vars(
+    _clean_correlation_env: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APX_MODEL_VERSION", "7")
+    monkeypatch.setenv("APX_GIT_SHA", "a" * 40)
+    assert version_correlation_attrs() == {
+        "apx.model_version": "7",
+        "apx.git_sha": "a" * 40,
+    }
+
+
+def test_version_correlation_attrs_skips_empty_values(
+    _clean_correlation_env: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The bundle template defaults the vars to "" — an empty value must not
+    # produce an empty-string attribute.
+    monkeypatch.setenv("APX_MODEL_VERSION", "")
+    monkeypatch.setenv("APX_GIT_SHA", "b" * 40)
+    assert version_correlation_attrs() == {"apx.git_sha": "b" * 40}
+
+
+def test_stamp_version_correlation_sets_span_attrs_and_trace_tags(
+    _clean_correlation_env: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APX_GIT_SHA", "c" * 40)
+    span = MagicMock()
+    with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+        stamp_version_correlation(span)
+    span.set_attribute.assert_called_once_with("apx.git_sha", "c" * 40)
+    tags_mock.assert_called_once_with({"apx.git_sha": "c" * 40})
+
+
+def test_stamp_version_correlation_no_op_without_env(
+    _clean_correlation_env: None,
+) -> None:
+    # Absent env → no span writes, no trace-tag call: zero behavior change
+    # for locally-run agents and pre-#404 deploys.
+    span = MagicMock()
+    with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+        stamp_version_correlation(span)
+    span.set_attribute.assert_not_called()
+    tags_mock.assert_not_called()
+
+
+def test_stamp_version_correlation_survives_none_span(
+    _clean_correlation_env: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A None span (tracing off) still stamps the trace tags and never raises.
+    monkeypatch.setenv("APX_MODEL_VERSION", "3")
+    with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+        stamp_version_correlation(None)
+    tags_mock.assert_called_once_with({"apx.model_version": "3"})
 
 
 # ---------------------------------------------------------------------------

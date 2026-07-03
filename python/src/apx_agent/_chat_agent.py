@@ -50,7 +50,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generator, cast
 
 from ._agents import BaseAgent
-from ._audit import AuditAttrs, set_audit_attrs
+from ._audit import AuditAttrs, set_audit_attrs, stamp_version_correlation
 from ._compile import compile_to_langgraph
 from ._conversation import (
     ConversationItem,
@@ -774,6 +774,7 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: False,
                 },
             ) as span:
+                stamp_version_correlation(span)
                 _auth = _resolve_ws_and_headers(custom_inputs)
                 with safe_span(
                     "compile_to_langgraph", span_type="CHAIN",
@@ -903,6 +904,7 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: True,
                 },
             ) as span:
+                stamp_version_correlation(span)
                 _auth = _resolve_ws_and_headers(custom_inputs)
                 graph = compile_to_langgraph(
                     self._agent, ws=_auth.ws, model=effective_model,
