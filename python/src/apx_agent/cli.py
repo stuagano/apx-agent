@@ -225,21 +225,28 @@ _RUN_MODULE_BY_TARGET = {
 _APPS_DEFAULT_MODEL = "databricks-claude-sonnet-4-6"
 
 
-def _detect_target(cwd: Path | None = None) -> str:
+class _DetectedTarget(NamedTuple):
+    target: str
+    reason: str
+
+
+def _detect_target(cwd: Path | None = None) -> _DetectedTarget:
     """Infer the project's target (model-serving vs apps) from its layout.
 
-    The apps scaffold writes ``agent_server/start_server.py``; the flat
-    model-serving scaffold writes a top-level ``app.py``. Lets ``apx-agent run`` and
-    ``apx-agent deploy`` work without an explicit ``--module``/``--target`` regardless
-    of which scaffold the user chose. Defaults to model-serving when neither
-    marker is present.
+    Rules, in order: apps when ``agent_server/start_server.py`` exists;
+    model-serving when a top-level ``app.py`` exists without ``databricks.yml``;
+    otherwise apps — the catch-all default (covers ``databricks.yml``-only and
+    bare layouts). ``reason`` names the marker that decided, so callers can
+    echo why a target was auto-detected. Pass ``--target`` to override.
     """
     cwd = cwd or Path.cwd()
     if (cwd / "agent_server" / "start_server.py").exists():
-        return "apps"
+        return _DetectedTarget("apps", "agent_server/start_server.py present")
     if (cwd / "app.py").exists() and not (cwd / "databricks.yml").exists():
-        return "model-serving"
-    return "apps"
+        return _DetectedTarget("model-serving", "app.py present without databricks.yml")
+    if (cwd / "databricks.yml").exists():
+        return _DetectedTarget("apps", "databricks.yml present")
+    return _DetectedTarget("apps", "no layout markers; apps is the default")
 
 
 def _detect_module_spec(cwd: Path | None = None) -> str | None:
@@ -906,7 +913,7 @@ def _status_prompt_string(cwd: Path) -> str:
         in_project = _d._is_apx_project(cwd)
         profile = _resolve_active_profile()
         name = _read_apx_agent_config().get("name") if in_project else None
-        target = _detect_target(cwd) if in_project else None
+        target = _detect_target(cwd).target if in_project else None
         parts = []
         if in_project:
             parts.append(f"apx:{name}({target})" if name else f"apx({target})")
@@ -942,7 +949,7 @@ def status(as_prompt: bool, as_json: bool) -> None:
     in_project = _d._is_apx_project(cwd)
     profile = _resolve_active_profile()
     name = _read_apx_agent_config().get("name") if in_project else None
-    target = _detect_target(cwd) if in_project else None
+    target = _detect_target(cwd).target if in_project else None
 
     if as_json:
         agents_here = _discover_local_agents(cwd) if in_project else []
@@ -3331,9 +3338,13 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
 
     if module is None:
         detected = _detect_target()
-        module = _RUN_MODULE_BY_TARGET[detected]
-        click.echo(f"# Detected {detected} layout → serving {module}", err=True)
-        if detected == "apps":
+        module = _RUN_MODULE_BY_TARGET[detected.target]
+        click.echo(
+            f"target: {detected.target} (auto-detected: {detected.reason}) "
+            f"→ serving {module}",
+            err=True,
+        )
+        if detected.target == "apps":
             model = os.environ.get("APX_MODEL", _APPS_DEFAULT_MODEL)
             click.echo(
                 f"# apps runtime uses APX_MODEL={model} (export APX_MODEL to override)",
@@ -3834,8 +3845,9 @@ def _deploy_from_yaml(
     "--target", "target", default=None,
     type=click.Choice(["model-serving", "apps"]),
     help="Deployment target. Auto-detected from the project layout when "
-         "omitted (apps if agent_server/start_server.py exists, else "
-         "model-serving). 'model-serving' runs the canonical log_agent + "
+         "omitted: apps if agent_server/start_server.py exists; model-serving "
+         "if app.py exists without databricks.yml; apps otherwise (the "
+         "catch-all default). 'model-serving' runs the canonical log_agent + "
          "databricks.agents.deploy flow. 'apps' runs the Databricks Asset "
          "Bundle deploy + run flow. The two targets accept different option "
          "sets — see --help for details.",
@@ -4032,9 +4044,11 @@ def deploy(
         return
 
     if target is None:
-        target = _detect_target()
+        detected = _detect_target()
+        target = detected.target
         click.echo(
-            f"# Detected {target} project layout (override with --target).",
+            f"target: {detected.target} (auto-detected: {detected.reason}; "
+            "override with --target)",
             err=True,
         )
 
@@ -4058,12 +4072,12 @@ def deploy(
     # --- model-serving target (the legacy path) ---
     if model is None:
         raise click.UsageError(
-            "--model is required when --target model-serving (the default). "
+            "--model is required when --target model-serving. "
             "Pass --target apps to use the Databricks Apps flow instead."
         )
     if registered_model_name is None:
         raise click.UsageError(
-            "--name is required when --target model-serving (the default). "
+            "--name is required when --target model-serving. "
             "Pass --target apps to use the Databricks Apps flow instead."
         )
     effective_module = module or "agent:agent"
@@ -5131,11 +5145,25 @@ def _preflight_apps(cwd: Path) -> None:
     if not (cwd / "agent_server").is_dir():
         missing.append("agent_server/")
     if missing:
-        raise click.ClickException(
+        msg = (
             "Pre-flight failed for --target apps. Missing in current "
-            f"directory: {', '.join(missing)}. Run `apx-agent scaffold <name> "
-            "--target apps` to generate the expected layout."
+            f"directory: {', '.join(missing)}."
         )
+        if (cwd / "app.py").exists() or (cwd / "agent.py").exists():
+            # ADK-style / model-serving lookalike misrouted to apps by the
+            # catch-all default — the likely fix is the other target, not a
+            # rescaffold.
+            msg += (
+                " This directory looks like a model-serving layout (agent.py/"
+                "app.py present) — the likely fix is re-running with "
+                "--target model-serving."
+            )
+        else:
+            msg += (
+                " Run `apx-agent scaffold <name> --target apps` to generate "
+                "the expected layout."
+            )
+        raise click.ClickException(msg)
 
 
 def _validate_responses_agent_compiler() -> None:
