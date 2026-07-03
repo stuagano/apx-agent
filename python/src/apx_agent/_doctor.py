@@ -514,7 +514,7 @@ def check_project_layout(cwd: Path) -> Check:
         )
     from apx_agent.cli import _detect_target
 
-    target = _detect_target(cwd)
+    target = _detect_target(cwd).target
     marker = "agent_server/" if target == "apps" else "agent.py"
     if target == "apps":
         ok = (cwd / "agent_server").is_dir()
@@ -536,7 +536,8 @@ def check_target(cwd: Path) -> Check:
     from apx_agent.cli import _detect_target
 
     # _detect_target only ever returns "apps" or "model-serving"; no failure mode to surface.
-    return Check("Target", Status.OK, _detect_target(cwd), None)
+    detected = _detect_target(cwd)
+    return Check("Target", Status.OK, f"{detected.target} ({detected.reason})", None)
 
 
 def check_extras(cwd: Path) -> Check:
@@ -544,7 +545,7 @@ def check_extras(cwd: Path) -> Check:
         return Check("Required extra", Status.SKIP, "not in an apx project", None)
     from apx_agent.cli import _detect_target
 
-    target = _detect_target(cwd)
+    target = _detect_target(cwd).target
     if target == "apps":
         module, label, fix = (
             "mlflow.genai.agent_server",
