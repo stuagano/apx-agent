@@ -4124,6 +4124,77 @@ class TestAgentsDelete:
         fake_ws.registered_models.delete.assert_called_once_with("main.schema.m")
         fake_ws.apps.delete.assert_called_once_with("my-app")
 
+    def test_app_auto_resolved_from_uc_tag(self):
+        fake_ws = MagicMock()
+        # Apps-target agent: manifest carries the apx.apps.app_name tag
+        fake_model = SimpleNamespace(tags=[
+            SimpleNamespace(key="apx.agent.model", value="my-ep"),
+            SimpleNamespace(key="apx.apps.app_name", value="tag-app"),
+        ])
+        fake_ws.registered_models.get.return_value = fake_model
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        # App delete must have been called using the UC-tag-resolved name
+        fake_ws.apps.delete.assert_called_once_with("tag-app")
+        assert "tag-app" in result.output
+
+    def test_explicit_app_overrides_uc_tag(self):
+        fake_ws = MagicMock()
+        fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[
+            SimpleNamespace(key="apx.apps.app_name", value="tag-app"),
+        ])
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.m",
+                "--app", "explicit-app",
+                "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        fake_ws.apps.delete.assert_called_once_with("explicit-app")
+
+    def test_no_app_tag_skips_app_deletion(self):
+        fake_ws = MagicMock()
+        # Pure model-serving agent: no apx.apps.app_name tag
+        fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[
+            SimpleNamespace(key="apx.agent.model", value="my-ep"),
+        ])
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.m",
+                "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        fake_ws.apps.delete.assert_not_called()
+
+    def test_resolved_app_shown_in_confirmation_summary(self):
+        fake_ws = MagicMock()
+        fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[
+            SimpleNamespace(key="apx.apps.app_name", value="tag-app"),
+        ])
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            # Answer "n" at the prompt — we only want the summary, not the delete.
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.m",
+            ], input="n\n")
+
+        assert "Databricks App: tag-app" in result.output
+        fake_ws.apps.delete.assert_not_called()
+
     def test_missing_uc_name_fails(self):
         result = CliRunner().invoke(main, ["agents", "delete", "--yes"])
         assert result.exit_code != 0
