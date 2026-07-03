@@ -27,6 +27,7 @@ ergonomics. Implementation should stay narrow.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import importlib
 import importlib.metadata
@@ -37,6 +38,7 @@ import re
 import sys
 import time
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, NoReturn, cast
 
@@ -5559,13 +5561,16 @@ def _register_apps_manifest_step(
     uc_name_override: str | None,
     extra_version_tags: dict[str, str] | None = None,
     log: Any,
-) -> None:
+) -> str | None:
     """Register a UC version manifest for a freshly-deployed App (best-effort).
 
     Runs AFTER the App is live. Skips with a loud, actionable stderr notice when
     a UC name or LLM model can't be resolved (so a bare apps deploy still
     succeeds). Treats any logging/registration failure as non-fatal — the App is
     already running; a missing manifest must not turn a green deploy red.
+
+    Returns the registered manifest version, or None when registration was
+    skipped or failed (issue #417 — the deploy JSON reports what shipped).
     """
     uc_name = _resolve_apps_uc_name(config, app_name, override=uc_name_override)
     if uc_name is None:
@@ -5576,7 +5581,7 @@ def _register_apps_manifest_step(
             "ledger (discovery in `apx agents list` / topology / watchdog). "
             "Pass --no-register-uc to silence this."
         )
-        return
+        return None
 
     model = config.get("model")
     if not model:
@@ -5585,7 +5590,7 @@ def _register_apps_manifest_step(
             f"to log {uc_name} with. Set a model, or pass --no-register-uc to "
             "silence this."
         )
-        return
+        return None
 
     agent_name = config.get("name") or app_name
     try:
@@ -5604,12 +5609,14 @@ def _register_apps_manifest_step(
             f"# registered {res.uc_name} version {res.version} "
             f"(manifest for App {res.app_name}; not promoted to serving)"
         )
+        return res.version
     except Exception as e:  # non-fatal: the App is live regardless
         log(
             f"# UC registration failed (non-fatal — App is live): {e}\n"
             "# the App is running; only the version-ledger entry is missing. "
             "Re-run deploy or register manually to add it."
         )
+        return None
 
 
 def _apps_readyz_recovery_hint(
@@ -5650,6 +5657,23 @@ def _apps_readyz_recovery_hint(
         "Recovery: no prior @prod version with recorded provenance found — "
         "re-deploy a known-good commit to replace the broken app."
     )
+
+
+@contextlib.contextmanager
+def _json_cli_errors(as_json: bool) -> Iterator[None]:
+    """Mirror the deploy ``--json-output`` failure contract for other
+    mutation commands (issue #417): under ``--json``, a ``ClickException``
+    (incl. ``UsageError``) becomes a single ``{"ok": false, "error": ...}``
+    object on stdout + exit 1, instead of click's stderr rendering. Without
+    the flag, the exception propagates unchanged.
+    """
+    try:
+        yield
+    except click.ClickException as e:
+        if not as_json:
+            raise
+        click.echo(json.dumps({"ok": False, "error": str(e)}))
+        raise click.exceptions.Exit(1) from e
 
 
 def _deploy_apps(
@@ -5889,9 +5913,13 @@ def _deploy_apps_impl(
 
     # 6c. readyz gate: prove the app actually answers + traces, not just that
     # the container booted. A green deploy should mean "the agent works".
+    # The check dict is kept for the JSON summary (issue #417); it stays None
+    # when the gate is off or --no-run left the app without a URL.
+    readyz_checks: dict[str, Any] | None = None
     if readyz_gate and app_url:
         log(f"# readyz gate: GET {app_url}/readyz")
         ok, checks = _check_readyz(app_url, profile=profile)
+        readyz_checks = checks
         if ok:
             log(f"  readyz: ready ({checks})")
         else:
@@ -5959,8 +5987,9 @@ def _deploy_apps_impl(
     # 6d. Register a UC version manifest for the deployed App (best-effort).
     # Runs after the App is live so a registration failure never blocks the
     # deploy. Skips with a loud notice when no UC name / model is configured.
+    registered_version: str | None = None
     if register_uc:
-        _register_apps_manifest_step(
+        registered_version = _register_apps_manifest_step(
             module=module,
             config=_read_apx_agent_config(),
             app_name=app_name,
@@ -5974,6 +6003,12 @@ def _deploy_apps_impl(
 
     # 7. Final report
     if json_output:
+        # Enriched summary (issue #417): a CI job records what it shipped —
+        # UC name + registered version, git/lock provenance (threaded from the
+        # tags stamped on the manifest, never recomputed), and readyz checks.
+        from ._apps_registry import GIT_DIRTY_TAG, GIT_SHA_TAG, LOCK_SHA256_TAG
+        prov = extra_version_tags or {}
+        dirty_tag = prov.get(GIT_DIRTY_TAG)
         click.echo(json.dumps({
             "ok": True,
             "app_name": app_name,
@@ -5981,7 +6016,15 @@ def _deploy_apps_impl(
             "bundle_target": bundle_target,
             "deploy_seconds": deploy_seconds,
             "run_seconds": run_seconds,
-        }))
+            "uc_name": _resolve_apps_uc_name(
+                _read_apx_agent_config(), app_name, override=uc_name,
+            ),
+            "version": registered_version,
+            "git_sha": prov.get(GIT_SHA_TAG),
+            "git_dirty": None if dirty_tag is None else dirty_tag == "true",
+            "lock_sha256": prov.get(LOCK_SHA256_TAG),
+            "readyz": readyz_checks,
+        }, default=str))
     elif no_run:
         log(f"# app not started (--no-run); run `databricks bundle run "
             f"{bundle_key} --target {bundle_target}` or rerun without --no-run")
@@ -7390,6 +7433,9 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
 @click.option("--app-name", default=None,
               help="Workspace App name for the apps result record. "
                    "Defaults to the resolved app name from databricks.yml.")
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit a single JSON result object on stdout "
+                   "(ok:false + error on failure).")
 def hot_swap_cmd(
     deploy_target: str,
     endpoint: str | None,
@@ -7400,6 +7446,7 @@ def hot_swap_cmd(
     bundle_target: str,
     var_name: str | None,
     app_name: str | None,
+    as_json: bool,
 ) -> None:
     """Hot-swap a deployed agent's LLM endpoint.
 
@@ -7415,38 +7462,41 @@ def hot_swap_cmd(
     For full artifact-version A/B with traffic split (model-serving)
     or canary soak environments (apps), use `apx-agent canary` instead.
     """
-    if deploy_target == "model-serving":
-        if not endpoint:
-            raise click.UsageError(
-                "--endpoint is required for --target model-serving."
+    with _json_cli_errors(as_json):
+        if deploy_target == "model-serving":
+            if not endpoint:
+                raise click.UsageError(
+                    "--endpoint is required for --target model-serving."
+                )
+            model_value = llm_arg or llm_endpoint
+            if not model_value:
+                raise click.UsageError(
+                    "--model is required for --target model-serving."
+                )
+            _hot_swap_model_serving(
+                endpoint=endpoint, model=model_value, no_wait=no_wait,
+                as_json=as_json,
             )
-        model_value = llm_arg or llm_endpoint
-        if not model_value:
-            raise click.UsageError(
-                "--model is required for --target model-serving."
-            )
-        _hot_swap_model_serving(
-            endpoint=endpoint, model=model_value, no_wait=no_wait,
-        )
-        return
+            return
 
-    # --target apps
-    new_value = llm_endpoint or llm_arg
-    if not new_value:
-        raise click.UsageError(
-            "--llm-endpoint is required for --target apps."
+        # --target apps
+        new_value = llm_endpoint or llm_arg
+        if not new_value:
+            raise click.UsageError(
+                "--llm-endpoint is required for --target apps."
+            )
+        _hot_swap_apps_cli(
+            new_value=new_value,
+            profile=profile,
+            bundle_target=bundle_target,
+            var_name=var_name,
+            app_name=app_name,
+            as_json=as_json,
         )
-    _hot_swap_apps_cli(
-        new_value=new_value,
-        profile=profile,
-        bundle_target=bundle_target,
-        var_name=var_name,
-        app_name=app_name,
-    )
 
 
 def _hot_swap_model_serving(
-    *, endpoint: str, model: str, no_wait: bool,
+    *, endpoint: str, model: str, no_wait: bool, as_json: bool = False,
 ) -> None:
     """Click handler body for the Model Serving hot-swap path."""
     from ._hot_swap import hot_swap_model
@@ -7456,6 +7506,16 @@ def _hot_swap_model_serving(
     except Exception as e:
         raise click.ClickException(f"hot-swap failed: {type(e).__name__}: {e}") from e
 
+    if as_json:
+        click.echo(json.dumps({
+            "ok": True,
+            "target": "model-serving",
+            "endpoint": result.endpoint_name,
+            "new_model": result.new_model,
+            "previous_model": result.previous_model,
+            "served_entities_updated": result.served_entities_updated,
+        }))
+        return
     click.echo(f"apx-agent hot-swap: {result.endpoint_name}")
     click.echo(f"  new model:      {result.new_model}")
     if result.previous_model:
@@ -7474,6 +7534,7 @@ def _hot_swap_apps_cli(
     bundle_target: str,
     var_name: str | None,
     app_name: str | None,
+    as_json: bool = False,
 ) -> None:
     """Click handler body for the Apps hot-swap path."""
     from ._hot_swap_apps import DEFAULT_LLM_VAR_NAME, hot_swap_apps
@@ -7497,6 +7558,17 @@ def _hot_swap_apps_cli(
     except Exception as e:
         raise click.ClickException(f"hot-swap --target apps failed: {type(e).__name__}: {e}") from e
 
+    if as_json:
+        click.echo(json.dumps({
+            "ok": True,
+            "target": "apps",
+            "app_name": result.app_name,
+            "bundle_target": result.bundle_target,
+            "var_name": result.var_name,
+            "new_value": result.new_value,
+            "previous_value": result.previous_value,
+        }))
+        return
     click.echo(f"apx-agent hot-swap --target apps: {result.app_name}")
     click.echo(f"  bundle target:  {result.bundle_target}")
     click.echo(f"  var:            {result.var_name}")
@@ -8812,6 +8884,7 @@ def _apps_deploy_prod_at_commit(
     prod_target: str,
     expected_sha: str,
     prev_prod_version: str | None,
+    as_json: bool = False,
     log: Any,
 ) -> str | None:
     """Shared gate-don't-mutate prod deploy for ``promote`` and ``rollback``.
@@ -8822,6 +8895,10 @@ def _apps_deploy_prod_at_commit(
     then points the ``@prod`` alias at the new version. Returns the new version,
     or None if it couldn't be resolved. Raises ``click.ClickException`` on a
     gate failure or a failed/unhealthy prod deploy (alias left untouched).
+
+    ``as_json`` routes the nested deploy's stdout (its final app-URL echo) to
+    stderr so the caller's ``--json`` contract — exactly one JSON object on
+    stdout — holds (issue #417).
     """
     from apx_agent import get_latest_prod_version, set_prod_alias_version
 
@@ -8844,15 +8921,17 @@ def _apps_deploy_prod_at_commit(
         )
 
     try:
-        _deploy_apps_impl(
-            cwd=cwd, module="agent:agent", profile=profile,
-            bundle_target=prod_target, no_run=False, auto_update_yml=False,
-            auto_build_wheel=True, auto_experiment=True, vars=(),
-            json_output=False, readyz_gate=True, register_uc=True, uc_name=uc_name,
-            app_name_override=prod_app_name,
-            extra_version_tags={"apx.apps.role": "prod", "apx.apps.git_sha": expected_sha},
-            log=log,
-        )
+        with (contextlib.redirect_stdout(sys.stderr) if as_json
+              else contextlib.nullcontext()):
+            _deploy_apps_impl(
+                cwd=cwd, module="agent:agent", profile=profile,
+                bundle_target=prod_target, no_run=False, auto_update_yml=False,
+                auto_build_wheel=True, auto_experiment=True, vars=(),
+                json_output=False, readyz_gate=True, register_uc=True, uc_name=uc_name,
+                app_name_override=prod_app_name,
+                extra_version_tags={"apx.apps.role": "prod", "apx.apps.git_sha": expected_sha},
+                log=log,
+            )
     except Exception as e:
         hint = (
             f" Last good prod version was {prev_prod_version}; to recover: "
@@ -9321,10 +9400,26 @@ def canary() -> None:
               help="Model Serving endpoint name (model-serving target only).")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks CLI profile (~/.databrickscfg).")
-def canary_status(deploy_target: str, endpoint: str | None, profile: str | None) -> None:
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit a single JSON result object on stdout "
+                   "(ok:false + error on failure).")
+def canary_status(
+    deploy_target: str, endpoint: str | None, profile: str | None, as_json: bool,
+) -> None:
     """Show the live canary/prod state — served entities + traffic split
     (model-serving), or the @prod alias + latest canary version with their
     commits (apps)."""
+    with _json_cli_errors(as_json):
+        _canary_status_impl(
+            deploy_target=deploy_target, endpoint=endpoint,
+            profile=profile, as_json=as_json,
+        )
+
+
+def _canary_status_impl(
+    *, deploy_target: str, endpoint: str | None, profile: str | None, as_json: bool,
+) -> None:
+    """Body of ``canary status`` — see the command docstring."""
     if deploy_target == "model-serving":
         if not endpoint:
             raise click.UsageError("--endpoint is required for --target model-serving.")
@@ -9332,6 +9427,18 @@ def canary_status(deploy_target: str, endpoint: str | None, profile: str | None)
 
         ws, _ = _connect_workspace(profile)
         cfg = get_canary_config(endpoint, ws=ws)
+        if as_json:
+            click.echo(json.dumps({
+                "ok": True,
+                "target": "model-serving",
+                "endpoint": cfg.endpoint,
+                "served_entities": [
+                    {"name": name, "entity": entity, "version": version,
+                     "traffic_pct": cfg.traffic_split.get(name, 0)}
+                    for name, entity, version in cfg.served_entities
+                ],
+            }))
+            return
         click.echo(f"# canary status: {cfg.endpoint}")
         if not cfg.served_entities:
             click.echo("  (no served entities)")
@@ -9362,15 +9469,29 @@ def canary_status(deploy_target: str, endpoint: str | None, profile: str | None)
             "catalog + schema)."
         )
 
-    click.echo(f"# canary status (apps): {uc_name}")
+    if not as_json:
+        click.echo(f"# canary status (apps): {uc_name}")
     prod_v = get_prod_alias_version(uc_name)
     prod_sha = get_version_git_sha(uc_name, prod_v) if prod_v else None
+    canary = find_latest_canary_version(uc_name)
+
+    if as_json:
+        click.echo(json.dumps({
+            "ok": True,
+            "target": "apps",
+            "uc_name": uc_name,
+            "prod_version": prod_v,
+            "prod_git_sha": prod_sha,
+            "canary_version": canary.version if canary else None,
+            "canary_git_sha": canary.git_sha if canary else None,
+        }))
+        return
+
     if prod_v:
         click.echo(f"  @prod  → version {prod_v}  (commit {(prod_sha or '?')[:12]})")
     else:
         click.echo("  @prod  → (unset — nothing promoted yet)")
 
-    canary = find_latest_canary_version(uc_name)
     if canary:
         click.echo(
             f"  canary → version {canary.version}  "
@@ -9415,6 +9536,9 @@ def canary_status(deploy_target: str, endpoint: str | None, profile: str | None)
               help="For model-serving: percentage of traffic to route to "
                    "the new version. For apps: recorded as a hint only — "
                    "Apps has no platform-level traffic split. Default 10.")
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit a single JSON result object on stdout "
+                   "(ok:false + error on failure; progress → stderr).")
 def canary_deploy(
     deploy_target: str,
     endpoint: str | None,
@@ -9426,8 +9550,34 @@ def canary_deploy(
     canary_version: str | None,
     profile: str | None,
     base_target: str,
+    as_json: bool,
 ) -> None:
     """Add a new model version (or App) as a canary."""
+    with _json_cli_errors(as_json):
+        _canary_deploy_impl(
+            deploy_target=deploy_target, endpoint=endpoint,
+            registered_model_name=registered_model_name, version=version,
+            traffic_pct=traffic_pct, workload_size=workload_size,
+            no_scale_to_zero=no_scale_to_zero, canary_version=canary_version,
+            profile=profile, base_target=base_target, as_json=as_json,
+        )
+
+
+def _canary_deploy_impl(
+    *,
+    deploy_target: str,
+    endpoint: str | None,
+    registered_model_name: str | None,
+    version: str | None,
+    traffic_pct: int,
+    workload_size: str,
+    no_scale_to_zero: bool,
+    canary_version: str | None,
+    profile: str | None,
+    base_target: str,
+    as_json: bool,
+) -> None:
+    """Body of ``canary deploy`` — see the command docstring."""
     if deploy_target == "model-serving":
         if not endpoint:
             raise click.UsageError("--endpoint is required for --target model-serving.")
@@ -9447,6 +9597,17 @@ def canary_deploy(
             scale_to_zero_enabled=not no_scale_to_zero,
             workload_size=workload_size,
         )
+        if as_json:
+            click.echo(json.dumps({
+                "ok": True,
+                "target": "model-serving",
+                "endpoint": endpoint,
+                "model": registered_model_name,
+                "version": version,
+                "traffic_pct": traffic_pct,
+                "traffic_split": cfg.traffic_split,
+            }))
+            return
         click.echo(f"Deployed {registered_model_name} v{version} at {traffic_pct}% on {endpoint}.")
         click.echo(f"New split: {cfg.traffic_split}")
         return
@@ -9485,24 +9646,28 @@ def canary_deploy(
 
     def _deploy_fn(*, bundle_target: str, app_name_override: str,
                    extra_version_tags: dict[str, str]) -> None:
-        _deploy_apps_impl(
-            cwd=cwd,
-            module="agent:agent",
-            profile=profile,
-            bundle_target=bundle_target,
-            no_run=False,
-            auto_update_yml=False,
-            auto_build_wheel=True,
-            auto_experiment=True,
-            vars=(),
-            json_output=False,
-            readyz_gate=True,
-            register_uc=True,
-            uc_name=None,
-            app_name_override=app_name_override,
-            extra_version_tags=extra_version_tags,
-            log=log,
-        )
+        # Under --json the nested deploy's stdout (its final app-URL echo)
+        # routes to stderr so stdout stays a single JSON object (issue #417).
+        with (contextlib.redirect_stdout(sys.stderr) if as_json
+              else contextlib.nullcontext()):
+            _deploy_apps_impl(
+                cwd=cwd,
+                module="agent:agent",
+                profile=profile,
+                bundle_target=bundle_target,
+                no_run=False,
+                auto_update_yml=False,
+                auto_build_wheel=True,
+                auto_experiment=True,
+                vars=(),
+                json_output=False,
+                readyz_gate=True,
+                register_uc=True,
+                uc_name=None,
+                app_name_override=app_name_override,
+                extra_version_tags=extra_version_tags,
+                log=log,
+            )
 
     cfg = deploy_canary_app(
         cwd=cwd,
@@ -9514,6 +9679,17 @@ def canary_deploy(
         base_target=base_target,
         git_sha=git_sha,
     )
+    if as_json:
+        click.echo(json.dumps({
+            "ok": True,
+            "target": "apps",
+            "canary_app_name": cfg.canary_app_name,
+            "prod_app_name": cfg.prod_app_name,
+            "bundle_target": cfg.bundle_target,
+            "canary_version": cfg.canary_version,
+            "git_sha": git_sha,
+        }))
+        return
     click.echo(f"Canary App deployed: {cfg.canary_app_name}")
     click.echo(f"  prod App:   {cfg.prod_app_name}")
     click.echo("  soak via the full deploy path (validate->build->readyz->UC).")
@@ -9538,6 +9714,9 @@ def canary_deploy(
               help="Prod DAB target name (apps target only). Default 'prod'.")
 @click.option("--keep-canary", is_flag=True,
               help="Don't tear down the canary App after promote (apps target only).")
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit a single JSON result object on stdout "
+                   "(ok:false + error on failure; progress → stderr).")
 def canary_promote(
     deploy_target: str,
     endpoint: str | None,
@@ -9547,10 +9726,33 @@ def canary_promote(
     profile: str | None,
     prod_target: str,
     keep_canary: bool,
+    as_json: bool,
 ) -> None:
     """Send 100% of traffic to a version (model-serving) or re-deploy prod
     off the canary tree (apps).
     """
+    with _json_cli_errors(as_json):
+        _canary_promote_impl(
+            deploy_target=deploy_target, endpoint=endpoint,
+            registered_model_name=registered_model_name, version=version,
+            canary_version=canary_version, profile=profile,
+            prod_target=prod_target, keep_canary=keep_canary, as_json=as_json,
+        )
+
+
+def _canary_promote_impl(
+    *,
+    deploy_target: str,
+    endpoint: str | None,
+    registered_model_name: str | None,
+    version: str | None,
+    canary_version: str | None,
+    profile: str | None,
+    prod_target: str,
+    keep_canary: bool,
+    as_json: bool,
+) -> None:
+    """Body of ``canary promote`` — see the command docstring."""
     if deploy_target == "model-serving":
         if not endpoint or not registered_model_name or not version:
             raise click.UsageError(
@@ -9566,6 +9768,16 @@ def canary_promote(
             version=version,
             ws=ws,
         )
+        if as_json:
+            click.echo(json.dumps({
+                "ok": True,
+                "target": "model-serving",
+                "endpoint": endpoint,
+                "model": registered_model_name,
+                "version": version,
+                "traffic_split": cfg.traffic_split,
+            }))
+            return
         click.echo(f"Promoted {registered_model_name} v{version} to 100% on {endpoint}.")
         click.echo(f"Split: {cfg.traffic_split}")
         return
@@ -9612,10 +9824,10 @@ def canary_promote(
         click.echo(msg, err=True)
 
     prev_prod_version = get_prod_alias_version(uc_name)
-    _apps_deploy_prod_at_commit(
+    new_version = _apps_deploy_prod_at_commit(
         cwd=cwd, uc_name=uc_name, prod_app_name=base_app_name, profile=profile,
         prod_target=prod_target, expected_sha=canary.git_sha,
-        prev_prod_version=prev_prod_version, log=log,
+        prev_prod_version=prev_prod_version, as_json=as_json, log=log,
     )
 
     # 6. Teardown the canary (unless --keep-canary).
@@ -9630,6 +9842,19 @@ def canary_promote(
         except Exception as e:
             click.echo(f"# warning: canary teardown failed (non-fatal): {e}", err=True)
 
+    if as_json:
+        click.echo(json.dumps({
+            "ok": True,
+            "target": "apps",
+            "uc_name": uc_name,
+            "app_name": base_app_name,
+            "git_sha": canary.git_sha,
+            "canary_version": canary_version,
+            "prod_version": new_version,
+            "previous_prod_version": prev_prod_version,
+            "canary_removed": removed,
+        }))
+        return
     click.echo(f"Promoted canary (commit {canary.git_sha[:12]}) → prod App {base_app_name}.")
     click.echo(f"  canary target removed: {removed}")
 
@@ -9651,6 +9876,9 @@ def canary_promote(
 @click.option("--profile", default=None, help="Databricks CLI profile (apps target only).")
 @click.option("--prod-target", default="prod",
               help="Prod DAB target name (apps target only). Default 'prod'.")
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit a single JSON result object on stdout "
+                   "(ok:false + error on failure; progress → stderr).")
 def canary_rollback(
     deploy_target: str,
     endpoint: str | None,
@@ -9659,9 +9887,31 @@ def canary_rollback(
     to_version: str | None,
     profile: str | None,
     prod_target: str,
+    as_json: bool,
 ) -> None:
     """Roll back to a prior version. Gate-don't-mutate for apps (verifies your
     tree is at the target version's commit before re-deploying prod)."""
+    with _json_cli_errors(as_json):
+        _canary_rollback_impl(
+            deploy_target=deploy_target, endpoint=endpoint,
+            registered_model_name=registered_model_name, version=version,
+            to_version=to_version, profile=profile, prod_target=prod_target,
+            as_json=as_json,
+        )
+
+
+def _canary_rollback_impl(
+    *,
+    deploy_target: str,
+    endpoint: str | None,
+    registered_model_name: str | None,
+    version: str | None,
+    to_version: str | None,
+    profile: str | None,
+    prod_target: str,
+    as_json: bool,
+) -> None:
+    """Body of ``canary rollback`` — see the command docstring."""
     if deploy_target == "model-serving":
         if not endpoint or not registered_model_name or not version:
             raise click.UsageError(
@@ -9677,6 +9927,16 @@ def canary_rollback(
             version=version,
             ws=ws,
         )
+        if as_json:
+            click.echo(json.dumps({
+                "ok": True,
+                "target": "model-serving",
+                "endpoint": endpoint,
+                "model": registered_model_name,
+                "version": version,
+                "traffic_split": cfg.traffic_split,
+            }))
+            return
         click.echo(f"Rolled back to {registered_model_name} v{version} on {endpoint}.")
         click.echo(f"Split: {cfg.traffic_split}")
         return
@@ -9715,11 +9975,23 @@ def canary_rollback(
         click.echo(msg, err=True)
 
     prev_prod_version = get_prod_alias_version(uc_name)
-    _apps_deploy_prod_at_commit(
+    new_version = _apps_deploy_prod_at_commit(
         cwd=cwd, uc_name=uc_name, prod_app_name=base_app_name, profile=profile,
         prod_target=prod_target, expected_sha=target_sha,
-        prev_prod_version=prev_prod_version, log=log,
+        prev_prod_version=prev_prod_version, as_json=as_json, log=log,
     )
+    if as_json:
+        click.echo(json.dumps({
+            "ok": True,
+            "target": "apps",
+            "uc_name": uc_name,
+            "app_name": base_app_name,
+            "to_version": to_version,
+            "git_sha": target_sha,
+            "prod_version": new_version,
+            "previous_prod_version": prev_prod_version,
+        }))
+        return
     click.echo(
         f"Rolled back prod App {base_app_name} to the commit of version "
         f"{to_version} (commit {target_sha[:12]})."
