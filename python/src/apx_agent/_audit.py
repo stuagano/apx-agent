@@ -39,7 +39,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from ._mlflow_tracing import set_span_attribute
+from ._mlflow_tracing import set_span_attribute, set_trace_tags
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,12 @@ class AuditAttrs:
     WATCHDOG_REASON = "apx.watchdog.reason"
     WATCHDOG_DOMAIN = "apx.watchdog.domain"
 
+    # Deploy / version correlation (issue #404). Stamped from the container
+    # env (APX_MODEL_VERSION / APX_GIT_SHA — injected at deploy time) so
+    # `canary analyze --target apps` can attribute traces per version.
+    MODEL_VERSION = "apx.model_version"
+    GIT_SHA = "apx.git_sha"
+
 
 # ---------------------------------------------------------------------------
 # Short kwarg → standard key mapping
@@ -138,7 +144,59 @@ _KWARG_TO_KEY: dict[str, str] = {
     "watchdog_policy_id": AuditAttrs.WATCHDOG_POLICY_ID,
     "watchdog_reason": AuditAttrs.WATCHDOG_REASON,
     "watchdog_domain": AuditAttrs.WATCHDOG_DOMAIN,
+    "model_version": AuditAttrs.MODEL_VERSION,
+    "git_sha": AuditAttrs.GIT_SHA,
 }
+
+
+# ---------------------------------------------------------------------------
+# Version correlation (issue #404)
+# ---------------------------------------------------------------------------
+
+
+# Env vars the deploy path injects into the App container. The UC manifest
+# version is registered AFTER the App is live, so APX_GIT_SHA (known before
+# deploy) is the primary correlation key; APX_MODEL_VERSION is honored when a
+# caller can resolve a version pre-deploy (e.g. a promote re-deploy).
+ENV_MODEL_VERSION = "APX_MODEL_VERSION"
+ENV_GIT_SHA = "APX_GIT_SHA"
+
+
+def version_correlation_attrs() -> dict[str, str]:
+    """Read APX_MODEL_VERSION / APX_GIT_SHA from the env → audit attrs.
+
+    Returns ``{AuditAttrs.MODEL_VERSION: ..., AuditAttrs.GIT_SHA: ...}`` for
+    whichever env vars are set and non-empty. Absent env → empty dict, so
+    callers stamping these attrs are a zero-behavior-change no-op outside a
+    deployed App.
+    """
+    import os
+
+    attrs: dict[str, str] = {}
+    for env_name, key in (
+        (ENV_MODEL_VERSION, AuditAttrs.MODEL_VERSION),
+        (ENV_GIT_SHA, AuditAttrs.GIT_SHA),
+    ):
+        value = os.environ.get(env_name)
+        if value:
+            attrs[key] = value
+    return attrs
+
+
+def stamp_version_correlation(span: Any) -> None:
+    """Stamp version-correlation identity on the current trace (issue #404).
+
+    Sets ``apx.model_version`` / ``apx.git_sha`` (when the corresponding env
+    vars are present) both as span attributes on ``span`` (the audit schema)
+    and as trace-level tags — the tags are what ``canary analyze`` reads with
+    a metadata-only ``search_traces``. No env → no-op.
+    """
+    attrs = version_correlation_attrs()
+    if not attrs:
+        return
+    for key, value in attrs.items():
+        set_span_attribute(span, key, value)
+    set_trace_tags(attrs)
 
 
 # ---------------------------------------------------------------------------

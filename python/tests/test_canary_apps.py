@@ -361,6 +361,93 @@ def test_analyze_canary_app_partitions_by_app_tag(
     assert best_err is not None and best_err.app_name == "my-app-canary-feat-x"
 
 
+def _version_trace_dict(
+    tags: dict[str, str], latency_ms: int, status: str = "OK",
+) -> dict:
+    """Trace row carrying explicit tags (version-correlation shapes, #404)."""
+    return {"tags": tags, "execution_time_ms": latency_ms, "status": status}
+
+
+def test_analyze_canary_app_groups_by_git_sha_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Traces stamped with apx.git_sha (issue #404) partition per version:
+    one row per observed sha, appended after the two app rows."""
+    prod_sha, canary_sha = "a" * 40, "b" * 40
+    mlflow_stub = SimpleNamespace()
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
+    fake_rows = [
+        _version_trace_dict({"apx.git_sha": prod_sha}, 100),
+        _version_trace_dict({"apx.git_sha": prod_sha}, 300, status="ERROR"),
+        _version_trace_dict({"apx.git_sha": canary_sha}, 50),
+        _version_trace_dict({"apx.git_sha": canary_sha}, 60),
+    ]
+    mlflow_stub.search_traces = lambda **_: fake_rows  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mlflow", mlflow_stub)
+
+    report = analyze_canary_app(
+        prod_app_name="my-app",
+        canary_app_name="my-app-canary-feat-x",
+        experiment="exp",
+        lookback_hours=24,
+    )
+
+    # The two fixed app rows stay (zero — no app-name tags in the window)…
+    prod_app_row = report.by_name("my-app")
+    assert prod_app_row is not None and prod_app_row.requests == 0
+    # …and each sha gets its own per-version row.
+    prod_row = report.by_name(prod_sha)
+    canary_row = report.by_name(canary_sha)
+    assert prod_row is not None and canary_row is not None
+    assert prod_row.requests == 2 and prod_row.errors == 1
+    assert canary_row.requests == 2 and canary_row.errors == 0
+    assert canary_row.latency_p95_ms == 60
+    # The comparison helpers see the version rows.
+    best_err = report.best_by_error_rate()
+    assert best_err is not None and best_err.app_name == canary_sha
+
+
+def test_analyze_canary_app_prefers_model_version_over_git_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """apx.model_version (explicit UC version) wins over apx.git_sha —
+    mirrors the model-serving analyzer's explicit-first ordering."""
+    mlflow_stub = SimpleNamespace()
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
+    fake_rows = [
+        _version_trace_dict({"apx.model_version": "7", "apx.git_sha": "c" * 40}, 100),
+    ]
+    mlflow_stub.search_traces = lambda **_: fake_rows  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mlflow", mlflow_stub)
+
+    report = analyze_canary_app(
+        prod_app_name="my-app", canary_app_name="my-app-canary-x",
+        experiment="exp", lookback_hours=24,
+    )
+    assert report.by_name("7") is not None
+    assert report.by_name("c" * 40) is None
+
+
+def test_analyze_canary_app_untagged_traces_fall_back_to_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Traces without version OR app tags keep today's behavior: bucketed as
+    "unknown" and NOT surfaced as a version row — no invented attribution."""
+    mlflow_stub = SimpleNamespace()
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
+    fake_rows = [_trace_dict(None, 100), _trace_dict(None, 200)]
+    mlflow_stub.search_traces = lambda **_: fake_rows  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mlflow", mlflow_stub)
+
+    report = analyze_canary_app(
+        prod_app_name="my-app", canary_app_name="my-app-canary-x",
+        experiment="exp", lookback_hours=24,
+    )
+    # Exactly the two zero-filled app rows — no "unknown" row, no extras.
+    assert len(report.apps) == 2
+    assert all(a.requests == 0 for a in report.apps)
+
+
 def test_analyze_canary_app_returns_zero_buckets_when_no_traces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -91,6 +91,47 @@ class TestSafeSpan:
 
 
 # ---------------------------------------------------------------------------
+# set_trace_tags unit tests (issue #404 — version-correlation trace tags)
+# ---------------------------------------------------------------------------
+
+
+class TestSetTraceTags:
+    def test_no_op_when_mlflow_missing(self) -> None:
+        from apx_agent._mlflow_tracing import set_trace_tags
+
+        with patch("apx_agent._mlflow_tracing.is_mlflow_available", return_value=False):
+            set_trace_tags({"apx.git_sha": "abc"})  # must not raise
+
+    def test_no_op_for_empty_tags(self) -> None:
+        import mlflow
+        from apx_agent._mlflow_tracing import set_trace_tags
+
+        with patch.object(mlflow, "update_current_trace") as mock_update:
+            set_trace_tags({})
+            mock_update.assert_not_called()
+
+    def test_calls_update_current_trace(self) -> None:
+        import mlflow
+        from apx_agent._mlflow_tracing import set_trace_tags
+
+        with patch.object(mlflow, "update_current_trace") as mock_update:
+            set_trace_tags({"apx.git_sha": "abc", "apx.model_version": "3"})
+            mock_update.assert_called_once_with(
+                tags={"apx.git_sha": "abc", "apx.model_version": "3"}
+            )
+
+    def test_swallows_update_failure(self) -> None:
+        """No active trace / tagging failure must never fail the request."""
+        import mlflow
+        from apx_agent._mlflow_tracing import set_trace_tags
+
+        with patch.object(
+            mlflow, "update_current_trace", side_effect=RuntimeError("no trace"),
+        ):
+            set_trace_tags({"apx.git_sha": "abc"})  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # ChatAgent.predict span emission
 # ---------------------------------------------------------------------------
 
@@ -139,6 +180,56 @@ class TestChatAgentSpans:
         assert "graph.invoke" in span_names
         assert "AGENT" in span_types
         assert "CHAIN" in span_types
+
+    def test_predict_stamps_version_correlation_from_env(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With APX_GIT_SHA in the env (injected at deploy — issue #404), the
+        root predict span gets the apx.git_sha attribute and the trace gets
+        the matching trace tag so `canary analyze` can partition on it."""
+        from apx_agent import chat_agent_for
+        from mlflow.types.agent import ChatAgentMessage
+
+        monkeypatch.delenv("APX_MODEL_VERSION", raising=False)
+        monkeypatch.setenv("APX_GIT_SHA", "d" * 40)
+
+        agent = LlmAgent(tools=[])
+        wrapped = chat_agent_for(agent, model="databricks-claude-sonnet-4-6")
+
+        fake_graph = MagicMock()
+        from langchain_core.messages import AIMessage
+
+        def _fake_invoke(state):
+            return {"messages": [*state["messages"], AIMessage(content="ok")]}
+
+        fake_graph.invoke.side_effect = _fake_invoke
+
+        observed_attrs: list[tuple[str, Any]] = []
+
+        def _spy_start_span(name, span_type="UNKNOWN", **kwargs):
+            mock_span = MagicMock()
+            mock_span.set_attribute.side_effect = (
+                lambda k, v: observed_attrs.append((k, v))
+            )
+            cm = MagicMock()
+            cm.__enter__ = MagicMock(return_value=mock_span)
+            cm.__exit__ = MagicMock(return_value=None)
+            return cm
+
+        import mlflow
+
+        with patch("apx_agent._chat_agent.compile_to_langgraph", return_value=fake_graph), patch(
+            "apx_agent._defaults._make_workspace_client", return_value=MagicMock()
+        ), patch.object(mlflow, "start_span", side_effect=_spy_start_span), patch.object(
+            mlflow, "update_current_trace"
+        ) as mock_update:
+            wrapped.predict(
+                messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
+                custom_inputs={"user_token": "tok"},
+            )
+
+        assert ("apx.git_sha", "d" * 40) in observed_attrs
+        mock_update.assert_called_once_with(tags={"apx.git_sha": "d" * 40})
 
 
 # ---------------------------------------------------------------------------

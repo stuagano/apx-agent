@@ -270,6 +270,24 @@ def set_span_attribute(span: Any, key: str, value: Any) -> None:
         logger.debug("Failed to set span attribute %r: %s", key, exc)
 
 
+def set_trace_tags(tags: dict[str, str]) -> None:
+    """Safely set trace-level tags on the ACTIVE trace.
+
+    Trace tags (unlike span attributes) are readable from a metadata-only
+    ``search_traces(include_spans=False)`` — which is how ``canary analyze``
+    partitions traffic. No-op when MLflow is missing, no trace is active, or
+    the write fails: a request must never fail because tagging failed.
+    """
+    if not tags or not is_mlflow_available():
+        return
+    import mlflow
+
+    try:
+        mlflow.update_current_trace(tags=tags)
+    except Exception as exc:
+        logger.debug("Failed to set trace tags %r: %s", sorted(tags), exc)
+
+
 def emit_progress(message: str, **attributes: Any) -> None:
     """Record a progress marker as an event on the current active MLflow span.
 
