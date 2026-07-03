@@ -347,10 +347,12 @@ def test_list_full_filter() -> None:
     assert "LIMIT 7" in select
 
 
-def test_list_returns_empty_on_error() -> None:
+def test_list_propagates_infra_error() -> None:
+    # #380: an infra failure must propagate, not masquerade as "no examples".
     sql = RecordingSqlExecutor(patterns=[(r"^SELECT", RuntimeError)])
     store = DeltaExampleStore(run_sql=sql)
-    assert store.list(ExampleFilter(agent_id="a1")) == []
+    with pytest.raises(RuntimeError):
+        store.list(ExampleFilter(agent_id="a1"))
 
 
 # ---------------------------------------------------------------------------
