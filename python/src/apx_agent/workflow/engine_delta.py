@@ -19,6 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
+from ._sql_exec import execute_and_poll
 from .engine import (
     RunFilter,
     RunSnapshot,
@@ -361,24 +362,7 @@ class DeltaEngine(WorkflowEngine):
         return await asyncio.to_thread(self._exec_sync, sql)
 
     def _exec_sync(self, sql: str) -> list[dict]:
-        from databricks.sdk.service.sql import StatementState
-
-        resp = self._ws.statement_execution.execute_statement(
-            warehouse_id=self._warehouse_id,
-            statement=sql.strip(),
-            wait_timeout="50s",
-        )
-        assert resp.status is not None  # synchronous execute_statement always returns status
-        if resp.status.state == StatementState.FAILED:
-            err = resp.status.error
-            error_code = err.error_code if err else None
-            message = err.message if err else None
-            raise RuntimeError(
-                f"Databricks SQL failed [{error_code}]: {message}\n"
-                f"SQL: {sql[:200]}"
-            )
-        if not resp.result or not resp.result.data_array:
-            return []
-        assert resp.manifest is not None and resp.manifest.schema is not None
-        cols = [c.name for c in (resp.manifest.schema.columns or [])]
-        return [dict(zip(cols, row)) for row in resp.result.data_array]
+        # Poll to a terminal state (#372) — execute_statement returns after its
+        # 50s wait even if the statement is still RUNNING; returning [] then
+        # silently loses slow reads and reports slow writes as success.
+        return execute_and_poll(self._ws, self._warehouse_id, sql)
