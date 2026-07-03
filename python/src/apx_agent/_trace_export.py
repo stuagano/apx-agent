@@ -69,11 +69,9 @@ class ExportResult:
 def _escape_sql(value: str | None) -> str:
     if value is None:
         return "NULL"
-    # Spark SQL treats backslash as an escape character by default, so a
-    # value ending in a backslash (or containing ``\'``) would otherwise
-    # break out of the string literal. Escape backslashes *before* quotes.
-    escaped = value.replace("\\", "\\\\").replace("'", "''")
-    return "'" + escaped + "'"
+    from ._sql_escape import sql_str_literal  # canonical escaper (#351/#352)
+
+    return sql_str_literal(value)
 
 
 def _normalise_trace(trace: Any) -> dict[str, Any] | None:

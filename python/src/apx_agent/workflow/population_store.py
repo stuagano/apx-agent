@@ -25,13 +25,10 @@ if TYPE_CHECKING:
 
 
 def _esc_sql_str(v: str) -> str:
-    """Escape a value for an inline SQL string literal.
+    """Escape a value for an inline SQL string literal (canonical, #351/#352)."""
+    from .._sql_escape import sql_escape
 
-    Escapes backslashes before single quotes (Spark SQL treats backslash as an
-    escape character). Mirrors ``engine_delta._esc`` so backslash-terminated
-    sub-agent output cannot break out of the literal.
-    """
-    return str(v).replace("\\", "\\\\").replace("'", "''")
+    return sql_escape(str(v))
 
 
 # ---------------------------------------------------------------------------

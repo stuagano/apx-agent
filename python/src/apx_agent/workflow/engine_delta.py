@@ -41,8 +41,10 @@ def _now() -> str:
 
 
 def _esc(s: str) -> str:
-    """Escape values for inline SQL string literals."""
-    return s.replace("\\", "\\\\").replace("'", "''")
+    """Escape values for inline SQL string literals (canonical, #351/#352)."""
+    from .._sql_escape import sql_escape
+
+    return sql_escape(s)
 
 
 def _safe_name(s: str, label: str) -> str:
