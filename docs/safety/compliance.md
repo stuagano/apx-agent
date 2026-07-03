@@ -32,7 +32,7 @@ metadata = emit_agent_metadata(agent, name="customer_triage",
 #   whatever stable shape watchdog crawls.
 ```
 
-Watchdog returns `WatchdogDecision(action, reason, policy_id, domain, redacted_content, metadata)`. `reject` short-circuits the call; `redact` rewrites content (for outputs); `allow` is pass-through. On transport failure the guard fails open (logs a warning, allows the request) — the runtime decides its own fail-open vs fail-closed policy on top of this.
+Watchdog returns `WatchdogDecision(action, reason, policy_id, domain, redacted_content, metadata)`. `reject` short-circuits the call; `redact` rewrites content (for outputs); `allow` is pass-through. **On transport failure (or a non-decision response) the client fails *closed* — `action="reject"` — by default**, so a configured-but-unreachable governance gate blocks rather than silently allowing (fail-open governance is worse than none). Construct `WatchdogClient(transport=..., fail_closed=False)` to restore fail-open for availability-first deployments. The default no-op transport never errors, so agents with no watchdog configured are unaffected.
 
 ### End-to-end wiring
 
