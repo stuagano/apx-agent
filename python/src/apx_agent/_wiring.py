@@ -496,7 +496,7 @@ def _schedule_registration(
     import httpx
     from starlette.middleware.base import BaseHTTPMiddleware
 
-    async def _register() -> None:
+    async def _register() -> bool:
         await asyncio.sleep(2)
 
         url = registry_url.rstrip("/")
@@ -521,19 +521,35 @@ def _schedule_registration(
                     url,
                     data.get("id", "unknown"),
                 )
+                return True
         except Exception as e:
             logger.warning(
                 "Failed to register with agent registry at %s: %s", url, e
             )
+        return False
 
     class _RegisterOnceMiddleware(BaseHTTPMiddleware):
         _registered = False
+        # Strong reference to the in-flight attempt so the event loop (which
+        # keeps only a weak ref to bare tasks) can't GC it mid-flight (#378).
+        _task: "asyncio.Task[Any] | None" = None
 
         async def dispatch(self, request: Any, call_next: Any) -> Any:
-            if not _RegisterOnceMiddleware._registered:
-                _RegisterOnceMiddleware._registered = True
-                asyncio.create_task(_register())
+            cls = _RegisterOnceMiddleware
+            # Launch one attempt when not yet registered and none in flight.
+            # The check→set is synchronous (no await), so it can't double-launch.
+            if not cls._registered and cls._task is None:
+                cls._task = asyncio.create_task(cls._attempt())
             return await call_next(request)
+
+        @staticmethod
+        async def _attempt() -> None:
+            try:
+                # Only mark registered on SUCCESS, so a failed attempt retries on
+                # the next request instead of being permanently skipped (#378).
+                _RegisterOnceMiddleware._registered = await _register()
+            finally:
+                _RegisterOnceMiddleware._task = None
 
     app.add_middleware(_RegisterOnceMiddleware)
 
