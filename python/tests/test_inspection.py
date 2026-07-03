@@ -260,3 +260,16 @@ def test_load_agent_config_examples_defaults_empty(tmp_path):
     cfg = _load_agent_config(pyproject_path=str(pyproject))
     assert cfg is not None
     assert cfg.examples == []
+
+
+def test_load_agent_config_deploy_only_section_returns_none(tmp_path):
+    """#407/#434 CI regression: a [tool.apx.agent] holding only deploy-envelope
+    keys (registered_model, experiment) declares no agent config — the loader
+    must return None, not crash AgentConfig validation on an empty field set."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[tool.apx.agent]\n'
+        'registered_model = "main.agents.from_cfg"\n'
+        'experiment = "/Users/me/exp"\n'
+    )
+    assert _load_agent_config(pyproject_path=str(pyproject)) is None
