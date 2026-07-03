@@ -848,7 +848,11 @@ def chat_agent_for(
 
                 self._persist_conv_turn(
                     conv_id,
-                    input_messages=messages,
+                    # On resume the client resends the original input, but it was
+                    # already persisted on the pause turn (and Command(resume) is
+                    # fed, not the messages). Persist empty input here to avoid
+                    # double-writing the prompt (#375).
+                    input_messages=[] if resume is not None else messages,
                     new_messages=new_messages,
                     model=effective_model,
                     response_id=str(uuid.uuid4()),
