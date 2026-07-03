@@ -3329,7 +3329,10 @@ def _drive_deploy_to_gate(tmp_path, monkeypatch, *, readyz_gate, check_result):
             module="agent:agent",
             profile=None,
             bundle_target="dev",
-            no_run=True,
+            # no_run must be False: --no-run now skips the readiness poll and
+            # the readyz gate entirely (issue #413), and this helper exists to
+            # drive the deploy INTO the gate. bundle run is mocked to rc 0.
+            no_run=False,
             auto_update_yml=False,
             auto_build_wheel=False,
             auto_experiment=False,
