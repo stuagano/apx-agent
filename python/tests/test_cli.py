@@ -2529,18 +2529,63 @@ def test_run_passes_app_dir_to_uvicorn() -> None:
 
 
 def test_detect_target_distinguishes_layouts(tmp_path: Path) -> None:
-    """apps layout has agent_server/start_server.py; model-serving has app.py (no databricks.yml)."""
+    """Each layout maps to a (target, reason) pair; apps is the catch-all default (#411)."""
     from apx_agent.cli import _detect_target
 
-    # Empty directory → apps (default)
-    assert _detect_target(tmp_path) == "apps"
+    # Empty directory → apps (catch-all default)
+    assert _detect_target(tmp_path) == ("apps", "no layout markers; apps is the default")
     # Flat app.py without databricks.yml → model-serving
     (tmp_path / "app.py").write_text("app = None\n")
-    assert _detect_target(tmp_path) == "model-serving"
-    # apps layout overrides app.py presence
+    assert _detect_target(tmp_path) == (
+        "model-serving", "app.py present without databricks.yml",
+    )
+    # databricks.yml routes to apps even alongside app.py (the ADK-style case)
+    (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
+    assert _detect_target(tmp_path) == ("apps", "databricks.yml present")
+    # apps layout marker wins over everything else
     (tmp_path / "agent_server").mkdir()
     (tmp_path / "agent_server" / "start_server.py").write_text("app = None\n")
-    assert _detect_target(tmp_path) == "apps"
+    assert _detect_target(tmp_path) == ("apps", "agent_server/start_server.py present")
+
+
+def test_deploy_echoes_autodetected_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auto-detection echoes target + reason; explicit --target stays silent (#411)."""
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
+    with patch("apx_agent.cli._deploy_apps", return_value=None):
+        detected = runner.invoke(main, ["agents", "deploy"])
+        assert detected.exit_code == 0, detected.output
+        assert "target: apps (auto-detected: databricks.yml present" in detected.stderr
+
+        explicit = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
+        assert explicit.exit_code == 0, explicit.output
+        assert "auto-detected" not in explicit.stderr
+
+
+def test_preflight_apps_suggests_model_serving_for_adk_layout(tmp_path: Path) -> None:
+    """agent.py + databricks.yml misrouted to apps → suggest --target model-serving (#411)."""
+    import click
+
+    from apx_agent.cli import _preflight_apps
+
+    (tmp_path / "agent.py").write_text("agent = None\n")
+    (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname = 'x'\n")
+    with pytest.raises(click.ClickException) as excinfo:
+        _preflight_apps(tmp_path)
+    assert "--target model-serving" in excinfo.value.message
+    assert "scaffold" not in excinfo.value.message
+
+    # A bare directory keeps the scaffold hint — nothing suggests model-serving.
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    with pytest.raises(click.ClickException) as excinfo:
+        _preflight_apps(bare)
+    assert "scaffold" in excinfo.value.message
+    assert "--target model-serving" not in excinfo.value.message
 
 
 def test_run_autodetects_apps_module() -> None:
