@@ -212,7 +212,12 @@ def _load_agent_config(
         if not section:
             return None
 
-    return AgentConfig(**{k: v for k, v in section.items() if k in AgentConfig.model_fields})
+    fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields}
+    if not fields:
+        # The section holds only deploy-envelope keys (registered_model,
+        # experiment, ...) — no agent config is declared, same as no section.
+        return None
+    return AgentConfig(**fields)
 
 
 # ---------------------------------------------------------------------------
