@@ -377,12 +377,11 @@ class LakebaseExampleStore:
             f"ORDER BY updated_at DESC "
             f"LIMIT :limit"
         )
-        try:
-            with self.engine.connect() as conn:
-                rows = conn.execute(sql, params).mappings().all()
-        except Exception as e:
-            logger.warning("LakebaseExampleStore.list failed: %s — returning [].", e)
-            return []
+        # Let infra failures propagate: a swallowed error here would read as "no
+        # examples" to prompt assembly and silently degrade answer quality.
+        # Reserve [] for a genuinely empty result set. (matches the memory store, H21) (#380)
+        with self.engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings().all()
         return [_row_to_example(dict(r)) for r in rows]
 
     def find_similar(self, opts: FindSimilarOptions) -> list[ExampleResult]:
@@ -418,14 +417,10 @@ class LakebaseExampleStore:
             f"ORDER BY embedding <=> CAST(:query_vec AS vector) ASC "
             f"LIMIT :k"
         )
-        try:
-            with self.engine.connect() as conn:
-                rows = conn.execute(sql, params).mappings().all()
-        except Exception as e:
-            logger.warning(
-                "LakebaseExampleStore.find_similar failed: %s — returning [].", e
-            )
-            return []
+        # Let infra failures propagate (see .list) — a swallowed error would read
+        # as "no examples" and silently degrade answer quality. (#380)
+        with self.engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings().all()
         results: list[ExampleResult] = []
         for r in rows:
             d = dict(r)
