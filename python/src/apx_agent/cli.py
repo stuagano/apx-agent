@@ -304,6 +304,29 @@ def _sanitize_uv_lock(lock_path: Path) -> bool:
     return True
 
 
+def _warn_unknown_lock_mirrors(lock_path: Path) -> None:
+    """Warn about non-public package hosts ``_sanitize_uv_lock`` can't rewrite.
+
+    The sanitizer only knows the Databricks dev proxy; any other internal
+    mirror (Artifactory, a prod proxy variant) survives it, and the deployed
+    container's ``uv sync`` will likely fail on it (#416). Warn — don't block —
+    since the mirror may be reachable from the target environment.
+    """
+    if not lock_path.exists():
+        return
+    hosts = _doctor_mod.nonpublic_lock_hosts(lock_path.read_text())
+    if not hosts:
+        return
+    click.echo(
+        f"# WARNING: {lock_path.name} still resolves packages from non-public "
+        f"host(s): {', '.join(hosts)}. There is no rewrite rule for them, so "
+        "the deployed container's `uv sync` will likely fail. Re-point the "
+        "lock at public PyPI manually (unset custom index env vars, then "
+        "`uv lock`).",
+        err=True,
+    )
+
+
 def _databrickscfg_profiles() -> list[str]:
     """Section names from ~/.databrickscfg (best-effort; includes DEFAULT)."""
     path = Path.home() / ".databrickscfg"
@@ -4177,6 +4200,10 @@ def deploy(
     published_tools: list[str] = []
     registered_version: str | None = None
     endpoint_name: str | None = None
+    # uv.lock restore state (#416): set when _sanitize_uv_lock rewrites the
+    # project's own lock in place, so a failed deploy puts the original back.
+    lock_path = Path.cwd() / "uv.lock"
+    original_lock: bytes | None = None
 
     def _orphans() -> str:
         """Name already-created resources so the operator knows what's left behind."""
@@ -4196,6 +4223,16 @@ def deploy(
         )
 
     def _emit_failure(msg: str) -> NoReturn:
+        # The deploy failed after sanitizing the project's own uv.lock in
+        # place — put the original bytes back so the working tree isn't left
+        # silently mutated (#416).
+        if original_lock is not None:
+            lock_path.write_bytes(original_lock)
+            click.echo(
+                "# restored original uv.lock (deploy failed after it was "
+                "sanitized in place)",
+                err=True,
+            )
         if json_output:
             click.echo(json.dumps({
                 "ok": False,
@@ -4241,9 +4278,18 @@ def deploy(
 
     # MLflow captures the project's uv.lock into the logged model. Re-point its
     # internal Databricks PyPI proxy at public PyPI so the deployed serving
-    # endpoint can install deps (it can't reach the dev proxy).
-    if _sanitize_uv_lock(Path.cwd() / "uv.lock"):
-        click.echo("# sanitized uv.lock → public PyPI for the logged model", err=True)
+    # endpoint can install deps (it can't reach the dev proxy). This rewrites
+    # the project's OWN uv.lock in place: kept on success (public-PyPI locks
+    # are repo policy), restored by _emit_failure if the deploy fails (#416).
+    pre_sanitize_lock = lock_path.read_bytes() if lock_path.exists() else None
+    if _sanitize_uv_lock(lock_path):
+        original_lock = pre_sanitize_lock
+        click.echo(
+            "# rewrote uv.lock in place → public PyPI for the logged model "
+            "(kept on success; restored if the deploy fails)",
+            err=True,
+        )
+    _warn_unknown_lock_mirrors(lock_path)
 
     # 2. Log + register
     #
@@ -4778,6 +4824,7 @@ def _stage_build_manifest(
             click.echo("  staged .build/uv.lock", err=True)
             if _sanitize_uv_lock(lockfile):
                 click.echo("  sanitized .build/uv.lock → public PyPI", err=True)
+            _warn_unknown_lock_mirrors(lockfile)
         else:
             click.echo(
                 "  no source uv.lock — container will re-resolve from pyproject",
@@ -4864,6 +4911,7 @@ def _stage_build_manifest(
     click.echo("  regenerated .build/uv.lock", err=True)
     if _sanitize_uv_lock(lockfile):
         click.echo("  sanitized .build/uv.lock → public PyPI", err=True)
+    _warn_unknown_lock_mirrors(lockfile)
 
 
 def _ensure_experiment_id(

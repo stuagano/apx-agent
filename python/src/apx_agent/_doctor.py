@@ -13,6 +13,7 @@ import enum
 import importlib
 import importlib.metadata
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,25 @@ MIN_PYTHON = (3, 11)
 _PYPI_PROXY_HOST = "pypi-proxy.dev.databricks.com"
 _INDEX_ENV_VARS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "PIP_INDEX_URL")
 _MISSING_ENV_VALUE = ""  # env vars not set compare as empty when checking for proxy host
+
+# The only hosts a public-PyPI uv.lock resolves packages from. Anything else
+# in an index (`registry = ...`) or package-download (`url = ...`) entry is a
+# mirror `cli._sanitize_uv_lock` has no rewrite rule for (#416).
+_PUBLIC_PYPI_HOSTS = frozenset({"pypi.org", "files.pythonhosted.org"})
+_LOCK_URL_RE = re.compile(r'(?:registry|url) = "https://([^/"]+)')
+
+
+def nonpublic_lock_hosts(lock_text: str) -> list[str]:
+    """Index/download hosts in a uv.lock that are not public PyPI, sorted.
+
+    Only ``registry = "https://..."`` and ``url = "https://..."`` entries are
+    scanned — git sources (``git = "https://..."``) are not package indexes and
+    stay out of scope. Shared by ``cli._warn_unknown_lock_mirrors`` and
+    ``check_pypi_index``.
+    """
+    return sorted(
+        {h for h in _LOCK_URL_RE.findall(lock_text) if h not in _PUBLIC_PYPI_HOSTS}
+    )
 
 
 class Status(enum.Enum):
@@ -131,27 +151,45 @@ def check_uv() -> Check:
 
 
 def check_pypi_index(cwd: Path) -> Check:
-    """Flag the internal Databricks PyPI proxy in uv.lock or an index env var.
+    """Flag non-public package hosts in uv.lock or an index env var.
 
     A `uv.lock` pinned to ``pypi-proxy.dev.databricks.com`` fails ``uv sync``
-    for external users and deployed Apps (the blocking case). Absent that, an
-    index env var pointed at the proxy silently re-records it on the next
-    ``uv sync`` (the about-to-break case). See ``cli._sanitize_uv_lock`` and the
+    for external users and deployed Apps (the blocking case) — FAIL, and
+    ``apx-agent deploy`` sanitizes it. Any *other* non-public registry/download
+    host (Artifactory, a corp mirror) has no rewrite rule, so a deployed
+    container's ``uv sync`` will likely fail — WARN, not FAIL, since the mirror
+    may be reachable for this user (#416). Absent both, an index env var
+    pointed at the proxy silently re-records it on the next ``uv sync`` (the
+    about-to-break case). See ``cli._sanitize_uv_lock`` and the
     ``scripts/check-uv-lock-registry.sh`` CI guard.
     """
     lock = cwd / "uv.lock"
     try:
-        if lock.exists() and _PYPI_PROXY_HOST in lock.read_text():
-            return Check(
-                "PyPI index",
-                Status.FAIL,
-                f"uv.lock pins packages to the internal proxy "
-                f"({_PYPI_PROXY_HOST}) — unreachable for external users and "
-                "deployed Apps, so `uv sync`/deploy will fail off the corp network",
-                "Unset the proxy index env var, then `uv lock` to re-resolve "
-                "from public PyPI (`apx-agent deploy` also sanitizes the lock before "
-                "bundling).",
-            )
+        if lock.exists():
+            lock_text = lock.read_text()
+            if _PYPI_PROXY_HOST in lock_text:
+                return Check(
+                    "PyPI index",
+                    Status.FAIL,
+                    f"uv.lock pins packages to the internal proxy "
+                    f"({_PYPI_PROXY_HOST}) — unreachable for external users and "
+                    "deployed Apps, so `uv sync`/deploy will fail off the corp network",
+                    "Unset the proxy index env var, then `uv lock` to re-resolve "
+                    "from public PyPI (`apx-agent deploy` also sanitizes the lock before "
+                    "bundling).",
+                )
+            unknown = nonpublic_lock_hosts(lock_text)
+            if unknown:
+                return Check(
+                    "PyPI index",
+                    Status.WARN,
+                    "uv.lock resolves packages from non-public host(s): "
+                    f"{', '.join(unknown)} — a deployed container's `uv sync` "
+                    "will fail unless it can reach them, and `apx-agent deploy` "
+                    "only rewrites the known Databricks proxy",
+                    "Re-point the lock at public PyPI: unset any custom index "
+                    "env vars, then `uv lock` to re-resolve.",
+                )
     except OSError:
         pass
 

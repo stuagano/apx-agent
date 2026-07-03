@@ -91,6 +91,33 @@ def test_pypi_index_poisoned_lock_outranks_env(monkeypatch, tmp_path: Path):
     assert c.status is doctor.Status.FAIL  # the on-disk lock is the blocking case
 
 
+def test_pypi_index_unknown_mirror_is_warn(monkeypatch, tmp_path: Path):
+    """#416: a non-public host other than the known Databricks proxy
+    (Artifactory, a corp mirror) has no rewrite rule in the deploy sanitizer —
+    doctor warns and names it, but doesn't hard-fail (it may be reachable)."""
+    _clear_index_env(monkeypatch)
+    (tmp_path / "uv.lock").write_text(
+        'source = { registry = "https://artifactory.corp.example.com/api/pypi/simple" }\n'
+    )
+    c = doctor.check_pypi_index(tmp_path)
+    assert c.status is doctor.Status.WARN
+    assert "artifactory.corp.example.com" in c.detail
+    assert c.fix is not None
+
+
+def test_pypi_index_public_lock_with_git_source_is_ok(monkeypatch, tmp_path: Path):
+    """#416: git+https sources (e.g. apx-agent pinned from GitHub) are not
+    package indexes and must not trip the unknown-mirror warning."""
+    _clear_index_env(monkeypatch)
+    (tmp_path / "uv.lock").write_text(
+        'source = { registry = "https://pypi.org/simple" }\n'
+        'source = { git = "https://github.com/stuagano/apx-agent.git?rev=abc" }\n'
+        'url = "https://files.pythonhosted.org/x/foo-1.0-py3-none-any.whl"\n'
+    )
+    c = doctor.check_pypi_index(tmp_path)
+    assert c.status is doctor.Status.OK
+
+
 def test_databricks_cli_missing_is_warn(monkeypatch):
     monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
     c = doctor.check_databricks_cli()
@@ -202,7 +229,7 @@ def _make_apps_project(tmp_path: Path) -> Path:
 def test_project_layout_missing(tmp_path: Path):
     c = doctor.check_project_layout(tmp_path)
     assert c.status is doctor.Status.SKIP
-    assert "scaffold" in (c.fix or "")
+    assert c.fix is not None and "scaffold" in c.fix
 
 
 def test_project_layout_apps(tmp_path: Path):
