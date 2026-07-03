@@ -172,6 +172,33 @@ def _normalise_action(raw: Any) -> str:
 TransportFn = Callable[[dict[str, Any]], dict[str, Any]]
 
 
+def _run_coro_blocking(make_coro: Callable[[], Any], timeout: float) -> Any:
+    """Run an async call to completion from a sync caller, loop-safe.
+
+    ``asyncio.run`` raises ``RuntimeError`` if an event loop is already running
+    on this thread — which happens when the (sync) watchdog guard is invoked
+    from an async serving path. That error used to be swallowed into an
+    allow decision, silently disabling governance. Detect an active loop and run
+    the coroutine on a dedicated thread with its own loop instead, so the call
+    works in both sync and async contexts and real transport errors propagate.
+
+    ``make_coro`` is a zero-arg callable returning a fresh coroutine (called on
+    whichever thread actually runs it, so the coroutine binds to that loop).
+    """
+    import asyncio
+    import concurrent.futures
+
+    def _run() -> Any:
+        return asyncio.run(asyncio.wait_for(make_coro(), timeout))
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _run()  # no active loop — safe to run on this thread
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(_run).result()
+
+
 def _noop_transport(_request: dict[str, Any]) -> dict[str, Any]:
     """Default transport — allow everything, report nothing.
 
@@ -207,9 +234,15 @@ class WatchdogClient:
         endpoint: str | None = None,
         *,
         transport: TransportFn | None = None,
+        fail_closed: bool = True,
     ) -> None:
         self.endpoint = endpoint
         self._transport = transport or _noop_transport
+        # A configured governance gate that can't be reached should block, not
+        # silently allow (fail-open governance is worse than none). Set
+        # fail_closed=False to restore fail-open for availability-first setups.
+        # The default noop transport never errors, so no-watchdog is unaffected.
+        self._fail_closed = fail_closed
 
     def evaluate(
         self,
@@ -229,10 +262,11 @@ class WatchdogClient:
                 to the transport.
 
         Returns:
-            A ``WatchdogDecision``. Falls back to ``allow`` (with a
-            warning) on transport failure so a watchdog outage doesn't
-            black-hole production traffic — the runtime decides its
-            own fail-open vs fail-closed policy on top of this.
+            A ``WatchdogDecision``. On transport failure (or a non-decision
+            response) it fails **closed** — ``reject`` — by default, so a
+            configured-but-unreachable governance gate blocks rather than
+            silently allowing. Construct with ``fail_closed=False`` to restore
+            fail-open (allow) for availability-first deployments.
         """
         request: dict[str, Any] = {
             "operation": operation,
@@ -242,12 +276,21 @@ class WatchdogClient:
             response = self._transport(request)
         except Exception as e:
             logger.warning(
-                "Watchdog transport failed for operation %s: %s — falling back to allow.",
-                operation, e,
+                "Watchdog transport failed for operation %s: %s — failing %s.",
+                operation, e, "closed (reject)" if self._fail_closed else "open (allow)",
             )
+            if self._fail_closed:
+                return WatchdogDecision(action="reject", reason=f"watchdog unreachable: {e}")
             return WatchdogDecision(action="allow", reason=f"watchdog transport error: {e}")
         if not isinstance(response, dict):
-            logger.warning("Watchdog transport returned %s, expected dict — allowing.", type(response))
+            logger.warning(
+                "Watchdog transport returned %s, expected a decision dict — failing %s.",
+                type(response), "closed (reject)" if self._fail_closed else "open (allow)",
+            )
+            if self._fail_closed:
+                return WatchdogDecision(
+                    action="reject", reason="watchdog returned a non-decision response"
+                )
             return WatchdogDecision(action="allow")
         return WatchdogDecision(
             action=_normalise_action(response.get("action", "allow")),
@@ -832,12 +875,11 @@ def make_mcp_transport(
         auth_headers: Optional headers to send on the connection
             (e.g. ``{"Authorization": "Bearer <token>"}``).
 
-    The MCP call runs synchronously via ``asyncio.run`` — fine for the
-    apx-agent runtime since the WatchdogClient API is sync. For
-    high-frequency call sites, consider wrapping this in a thread pool
-    or replacing with a custom async-aware transport.
+    The MCP call runs synchronously via ``_run_coro_blocking`` (loop-safe —
+    works whether or not an event loop is already running). Transport errors
+    propagate to ``WatchdogClient.evaluate``, which applies the fail-open vs
+    fail-closed policy; they are not swallowed into an allow here.
     """
-    import asyncio
     import json
 
     def _transport(req: dict[str, Any]) -> dict[str, Any]:
@@ -868,22 +910,20 @@ def make_mcp_transport(
                             continue
                         try:
                             return json.loads(text)
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                "Watchdog MCP tool %s returned non-JSON text — allowing.",
-                                tool_name,
-                            )
-                            return {"action": "allow"}
-                    return {"action": "allow"}
+                        except json.JSONDecodeError as e:
+                            # Not a clear decision — raise so WatchdogClient
+                            # applies its fail_closed policy instead of allowing.
+                            raise ValueError(
+                                f"watchdog MCP tool {tool_name} returned non-JSON text"
+                            ) from e
+                    raise ValueError(
+                        f"watchdog MCP tool {tool_name} returned no decision content"
+                    )
 
-        try:
-            return asyncio.run(asyncio.wait_for(_call(), timeout_seconds))
-        except Exception as e:
-            logger.warning(
-                "Watchdog MCP call to %s failed: %s — falling back to allow.",
-                tool_name, e,
-            )
-            return {"action": "allow", "reason": f"watchdog mcp transport error: {e}"}
+        # Run loop-safe (works whether or not a loop is already running) and let
+        # transport errors propagate to WatchdogClient.evaluate, which decides
+        # fail-open vs fail-closed. Swallowing them here would force fail-open.
+        return _run_coro_blocking(_call, timeout_seconds)
 
     return _transport
 
