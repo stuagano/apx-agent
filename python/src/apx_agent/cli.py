@@ -38,7 +38,7 @@ import sys
 import time
 import warnings
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, cast
+from typing import Any, Literal, NamedTuple, NoReturn, cast
 
 import click
 
@@ -4096,8 +4096,12 @@ def deploy(
             err=True,
         )
 
+    def _say(msg: str) -> None:
+        """Progress log: stdout normally, stderr under --json-output."""
+        click.echo(msg, err=json_output)
+
     # Pre-flight: tell the user what mode we're running in.
-    click.echo(
+    _say(
         f"Logging with: env-var-capture="
         f"{'on' if effective_capture else 'off'}, secrets-scan=on",
     )
@@ -4145,21 +4149,81 @@ def deploy(
     if effective_experiment:
         click.echo(f"# experiment: {effective_experiment}", err=True)
 
+    # Sub-step ledger (#402/#405): every step lands in ok/failed/skipped, a
+    # best-effort step failure is collected instead of swallowed, and the
+    # command exits non-zero (with the failures named) if any step failed —
+    # mirroring delete's best-effort-then-aggregate pattern.
+    step_outcomes: dict[str, str] = {
+        "publish_tools": "skipped",
+        "log": "skipped",
+        "deploy": "skipped",
+        "set_uc_tags": "skipped",
+    }
+    step_failures: list[str] = []
+    published_tools: list[str] = []
+    registered_version: str | None = None
+    endpoint_name: str | None = None
+
+    def _orphans() -> str:
+        """Name already-created resources so the operator knows what's left behind."""
+        parts: list[str] = []
+        if published_tools:
+            parts.append(f"published UC tools: {', '.join(published_tools)}")
+        if registered_version is not None:
+            parts.append(
+                f"registered model version: {registered_model_name} "
+                f"v{registered_version}"
+            )
+        if not parts:
+            return ""
+        return (
+            " Already-created resources (NOT rolled back — clean up manually "
+            "if needed): " + "; ".join(parts) + "."
+        )
+
+    def _emit_failure(msg: str) -> NoReturn:
+        if json_output:
+            click.echo(json.dumps({
+                "ok": False,
+                "error": msg,
+                "uc_name": registered_model_name,
+                "version": registered_version,
+                "endpoint": endpoint_name,
+                "steps": step_outcomes,
+            }))
+            raise click.exceptions.Exit(1)
+        raise click.ClickException(msg)
+
+    def _fail(step: str, msg: str) -> NoReturn:
+        step_outcomes[step] = "failed"
+        _emit_failure(msg + _orphans())
+
     # 1. Publish @tool(uc=...) tools first so they exist in UC by the
     # time log_agent's resource collector picks them up.
     if publish_tools:
         try:
             from apx_agent import publish_tools_to_uc
             results = publish_tools_to_uc(agent)
+            step_outcomes["publish_tools"] = "ok"
+            published_tools = [r.uc_name for r in results]
             if results:
                 for r in results:
                     grants = ", ".join(r.grants_applied) or "none"
-                    click.echo(f"  published {r.uc_name} (grants: {grants})")
+                    _say(f"  published {r.uc_name} (grants: {grants})")
             else:
-                click.echo("  (no @tool(uc=...) decorated tools to publish)")
+                _say("  (no @tool(uc=...) decorated tools to publish)")
         except Exception as e:
+            # Best-effort by design (log + deploy can still succeed without
+            # the tools), but the failure is collected and fails the exit
+            # code at the end instead of vanishing (#402).
+            step_outcomes["publish_tools"] = "failed"
+            step_failures.append(f"publish-tools: {e}")
             click.echo(f"# publish-tools failed: {e}", err=True)
-            click.echo("# continuing with log + deploy", err=True)
+            click.echo(
+                "# continuing with log + deploy — this failure will still "
+                "fail the command's exit code",
+                err=True,
+            )
 
     # MLflow captures the project's uv.lock into the logged model. Re-point its
     # internal Databricks PyPI proxy at public PyPI so the deployed serving
@@ -4172,37 +4236,47 @@ def deploy(
     # (Config knobs + persona overlay + declared tools are applied inside
     # log_agent via finalize_agent — no separate call needed here.)
 
-    if effective_experiment:
-        _exp = mlflow.set_experiment(effective_experiment)
-        resolved_experiment_id = _exp.experiment_id
-    with _EnvVarGuard(capture=effective_capture), mlflow.start_run():
-        info = log_agent(
-            agent,
-            model=model,
-            registered_model_name=registered_model_name,
-            experiment=effective_experiment,
-        )
-    click.echo(f"Logged {registered_model_name} version {info.registered_model_version}")
+    try:
+        if effective_experiment:
+            _exp = mlflow.set_experiment(effective_experiment)
+            resolved_experiment_id = _exp.experiment_id
+        with _EnvVarGuard(capture=effective_capture), mlflow.start_run():
+            info = log_agent(
+                agent,
+                model=model,
+                registered_model_name=registered_model_name,
+                experiment=effective_experiment,
+            )
+    except Exception as e:
+        _fail("log", f"log_agent failed: {e}.")
+    step_outcomes["log"] = "ok"
+    registered_version = info.registered_model_version
+    _say(f"Logged {registered_model_name} version {registered_version}")
 
     # 3. Deploy to Model Serving
     if not no_deploy:
         try:
             from databricks import agents  # type: ignore[attr-defined]
         except ImportError as e:
-            raise click.ClickException(
+            _fail(
+                "deploy",
                 "databricks-agents is required for deployment. "
-                "Install with: uv add databricks-agents"
-            ) from e
-        deployment = agents.deploy(registered_model_name, model_version=info.registered_model_version)
+                f"Install with: uv add databricks-agents ({e}).",
+            )
+        try:
+            deployment = agents.deploy(registered_model_name, model_version=registered_version)
+        except Exception as e:
+            _fail("deploy", f"databricks.agents.deploy failed: {e}.")
+        step_outcomes["deploy"] = "ok"
         endpoint_name = getattr(deployment, "endpoint_name", None) or registered_model_name.rsplit(".", 1)[-1]
-        click.echo(
+        _say(
             f"Deployed {registered_model_name} version "
-            f"{info.registered_model_version} as a serving endpoint."
+            f"{registered_version} as a serving endpoint."
         )
-        click.echo(f"  Endpoint: {endpoint_name}")
-        click.echo("  View in workspace: Serving → Endpoints")
+        _say(f"  Endpoint: {endpoint_name}")
+        _say("  View in workspace: Serving → Endpoints")
     else:
-        click.echo("Skipping deploy (--no-deploy).")
+        _say("Skipping deploy (--no-deploy).")
 
     # 4. Set UC tags so the agent shows up in apx-agent list / topology / watchdog
     if set_uc_tags:
@@ -4215,9 +4289,10 @@ def deploy(
                 name=effective_agent_name,
                 experiment_id=resolved_experiment_id,   # lets `apx-agent label` resolve traces without --experiment
             )
+            step_outcomes["set_uc_tags"] = "ok"
             if written:
-                click.echo(f"  {len(written)} apx.agent.* tags written on {registered_model_name} "
-                           f"(agent_name={effective_agent_name})")
+                _say(f"  {len(written)} apx.agent.* tags written on {registered_model_name} "
+                     f"(agent_name={effective_agent_name})")
             else:
                 click.echo(
                     f"# set-uc-tags: 0 tags written on {registered_model_name} "
@@ -4225,7 +4300,26 @@ def deploy(
                     err=True,
                 )
         except Exception as e:
+            # Collected, not swallowed: an untagged agent silently never
+            # shows up in list / topology / watchdog (#402).
+            step_outcomes["set_uc_tags"] = "failed"
+            step_failures.append(f"set-uc-tags: {e}")
             click.echo(f"# set-uc-tags failed: {e}", err=True)
+
+    # 5. Aggregate: a "green" deploy must not hide failed sub-steps (#402).
+    if step_failures:
+        _emit_failure(
+            f"deploy completed with {len(step_failures)} failed sub-step(s): "
+            + "; ".join(step_failures) + "." + _orphans()
+        )
+    if json_output:
+        click.echo(json.dumps({
+            "ok": True,
+            "uc_name": registered_model_name,
+            "version": registered_version,
+            "endpoint": endpoint_name,
+            "steps": step_outcomes,
+        }))
 
 
 # ---------------------------------------------------------------------------
