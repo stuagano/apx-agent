@@ -8354,6 +8354,14 @@ def register_agent_cmd(
     "--yes", "-y", "assume_yes", is_flag=True,
     help="Skip confirmation prompt.",
 )
+@click.option(
+    "--purge", is_flag=True,
+    help="Also delete the discoverable deploy leftovers: the auto-created "
+         "MLflow experiment (/Users/<you>/<app>-<target>), any soaking "
+         "canary App (<app>-canary-*), and the DAB workspace files "
+         "(~/.bundle/<app>/<target>). Lakebase session tables are NEVER "
+         "dropped — data deletion stays manual; a notice names them.",
+)
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks CLI profile (~/.databrickscfg).")
 def delete_agent_cmd(
@@ -8361,6 +8369,7 @@ def delete_agent_cmd(
     endpoint_name: str | None,
     app_name: str | None,
     assume_yes: bool,
+    purge: bool,
     profile: str | None,
 ) -> None:
     """Delete a deployed agent — UC model registration, serving endpoint, and app.
@@ -8372,23 +8381,135 @@ def delete_agent_cmd(
       2. The registered model in Unity Catalog (--uc-name)
       3. The Databricks App (--app or auto-detected from UC tags)
 
+    With --purge, also removes what is discoverable from tags and naming
+    conventions (best-effort, aggregated errors):
+
+    \b
+      4. The auto-created MLflow experiment — the apx.mlflow.experiment_id
+         tag when recorded, else /Users/<you>/<app>-<target>
+      5. Any soaking canary App (<app>-canary-<version>)
+      6. The DAB deploy root in the workspace (~/.bundle/<app>/<target>)
+
+    Lakebase session-store tables are never dropped automatically — the
+    command prints the tables to DROP instead. Anything --purge cannot
+    derive with confidence is reported as "not removed: <reason>".
+
     Pass --yes to skip the interactive confirmation prompt.
     """
     ws, _ = _connect_workspace(profile)
 
     # Resolve endpoint and app from UC tags when not explicitly given.
+    # --purge always needs the tags (bundle_target, experiment id).
     resolved_endpoint = endpoint_name
     resolved_app = app_name
-    if not resolved_endpoint or not resolved_app:
+    uc_tags: dict[str, str] = {}
+    if purge or not resolved_endpoint or not resolved_app:
         try:
             model = ws.registered_models.get(uc_name)
-            tags = {t.key: t.value for t in (getattr(model, "tags", None) or [])}
-            if not resolved_endpoint:
-                resolved_endpoint = tags.get("apx.agent.model")
-            if not resolved_app:
-                resolved_app = tags.get("apx.apps.app_name")
+            uc_tags = {t.key: t.value for t in (getattr(model, "tags", None) or [])}
         except Exception:
             pass
+    if not resolved_endpoint:
+        resolved_endpoint = uc_tags.get("apx.agent.model")
+    if not resolved_app:
+        resolved_app = uc_tags.get("apx.apps.app_name")
+
+    # --purge: enumerate the discoverable leftovers BEFORE the confirmation
+    # prompt so the summary lists everything that will (and won't) go.
+    purge_notices: list[str] = []
+    experiment_id: str | None = None
+    experiment_label: str | None = None
+    canary_apps: list[str] = []
+    bundle_path: str | None = None
+    if purge:
+        bundle_target = uc_tags.get("apx.apps.bundle_target") or "dev"
+        user_name: str | None = None
+        try:
+            user_name = ws.current_user.me().user_name
+        except Exception as exc:
+            purge_notices.append(
+                "not removed: MLflow experiment + bundle workspace files "
+                f"(could not resolve current user: {exc})"
+            )
+
+        # a. MLflow experiment — explicit tag first, else the canonical path
+        # deploy --auto-experiment creates (/Users/<you>/<app>-<target>).
+        experiment_id = uc_tags.get("apx.mlflow.experiment_id")
+        if experiment_id:
+            experiment_label = (
+                f"MLflow experiment id {experiment_id} "
+                "(from apx.mlflow.experiment_id tag)"
+            )
+        elif user_name and resolved_app:
+            exp_path = f"/Users/{user_name}/{resolved_app}-{bundle_target}"
+            try:
+                got = ws.experiments.get_by_name(exp_path)
+                experiment_id = getattr(
+                    getattr(got, "experiment", None), "experiment_id", None,
+                )
+            except Exception:
+                experiment_id = None
+            if experiment_id:
+                experiment_label = f"MLflow experiment: {exp_path} (id {experiment_id})"
+            else:
+                purge_notices.append(
+                    f"not removed: MLflow experiment (nothing at {exp_path})"
+                )
+        elif user_name:
+            purge_notices.append(
+                "not removed: MLflow experiment (no App name to derive "
+                "/Users/<you>/<app>-<target> from)"
+            )
+
+        # b. Soaking canary Apps — canary deploy names them
+        # <app>-canary-<version> (see _canary_apps.canary_app_name).
+        if resolved_app:
+            prefix = f"{resolved_app}-canary-"
+            try:
+                canary_apps = sorted(
+                    a.name for a in ws.apps.list()
+                    if a.name and a.name.startswith(prefix)
+                )
+            except Exception as exc:
+                purge_notices.append(
+                    f"not removed: canary Apps (could not list Apps: {exc})"
+                )
+        else:
+            purge_notices.append(
+                "not removed: canary Apps (no App name to derive "
+                "<app>-canary-* from)"
+            )
+
+        # c. DAB workspace files — scaffolded bundles set bundle.name to the
+        # app name, so the deploy root is ~/.bundle/<app>/<target>. Only
+        # delete when that exact path exists in the workspace.
+        if user_name and resolved_app:
+            candidate = f"/Users/{user_name}/.bundle/{resolved_app}/{bundle_target}"
+            try:
+                ws.workspace.get_status(candidate)
+                bundle_path = candidate
+            except Exception:
+                purge_notices.append(
+                    f"not removed: bundle workspace files (nothing at {candidate})"
+                )
+        elif user_name:
+            purge_notices.append(
+                "not removed: bundle workspace files (no App name to derive "
+                "~/.bundle/<app>/<target> from)"
+            )
+
+        # d. Lakebase session tables — data deletion stays manual by design;
+        # never drop tables, just say what to drop. (# ponytail)
+        db_hint = (
+            re.sub(r"[^a-z0-9_]", "_", resolved_app.lower()).strip("_")
+            if resolved_app else "<app-slug>"
+        )
+        purge_notices.append(
+            "not removed: Lakebase session tables (data deletion stays "
+            "manual) — if the scaffold session store was used, run "
+            "DROP TABLE apx_conversations, apx_conversation_items in "
+            f"Lakebase database {db_hint!r} yourself."
+        )
 
     # Build a summary of what will be deleted for the confirmation prompt.
     to_delete: list[str] = [f"  • UC registered model: {uc_name}"]
@@ -8396,6 +8517,15 @@ def delete_agent_cmd(
         to_delete.append(f"  • Model Serving endpoint: {resolved_endpoint}")
     if resolved_app:
         to_delete.append(f"  • Databricks App: {resolved_app}")
+    if experiment_label:
+        to_delete.append(f"  • {experiment_label}")
+    for capp in canary_apps:
+        to_delete.append(f"  • Canary App: {capp}")
+    if bundle_path:
+        to_delete.append(f"  • Bundle workspace files: {bundle_path}")
+
+    for notice in purge_notices:
+        click.echo(notice)
 
     if not assume_yes:
         click.echo("This will permanently delete:")
@@ -8430,6 +8560,37 @@ def delete_agent_cmd(
         except Exception as exc:
             errors.append(f"app {resolved_app!r}: {exc}")
             click.echo(f"Warning: could not delete app {resolved_app!r}: {exc}", err=True)
+
+    # 4. --purge extras (lists/ids are only populated when --purge was passed).
+    for capp in canary_apps:
+        try:
+            ws.apps.delete(capp)
+            click.echo(f"Deleted canary app: {capp}")
+        except Exception as exc:
+            errors.append(f"canary app {capp!r}: {exc}")
+            click.echo(f"Warning: could not delete canary app {capp!r}: {exc}", err=True)
+
+    if experiment_id:
+        try:
+            ws.experiments.delete_experiment(experiment_id)
+            click.echo(f"Deleted MLflow experiment: {experiment_id}")
+        except Exception as exc:
+            errors.append(f"experiment {experiment_id!r}: {exc}")
+            click.echo(
+                f"Warning: could not delete experiment {experiment_id!r}: {exc}",
+                err=True,
+            )
+
+    if bundle_path:
+        try:
+            ws.workspace.delete(bundle_path, recursive=True)
+            click.echo(f"Deleted bundle workspace files: {bundle_path}")
+        except Exception as exc:
+            errors.append(f"bundle files {bundle_path!r}: {exc}")
+            click.echo(
+                f"Warning: could not delete bundle files {bundle_path!r}: {exc}",
+                err=True,
+            )
 
     if errors:
         raise click.ClickException(

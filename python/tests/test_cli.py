@@ -4532,6 +4532,166 @@ class TestAgentsDelete:
         assert result.exit_code != 0
         assert "failed" in result.output.lower() or "error" in result.output.lower()
 
+    # --- --purge (issue #409) -------------------------------------------
+
+    @staticmethod
+    def _purgeable_ws():
+        """A workspace where every --purge leftover is discoverable."""
+        fake_ws = MagicMock()
+        fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[
+            SimpleNamespace(key="apx.agent.model", value="my-ep"),
+            SimpleNamespace(key="apx.apps.app_name", value="my-app"),
+            SimpleNamespace(key="apx.apps.bundle_target", value="prod"),
+        ])
+        fake_ws.current_user.me.return_value = SimpleNamespace(user_name="me@x.com")
+        fake_ws.experiments.get_by_name.return_value = SimpleNamespace(
+            experiment=SimpleNamespace(experiment_id="exp-123"),
+        )
+        fake_ws.apps.list.return_value = [
+            SimpleNamespace(name="my-app-canary-v1"),
+            SimpleNamespace(name="unrelated-app"),
+        ]
+        return fake_ws
+
+    def test_purge_deletes_experiment_canary_and_bundle_files(self):
+        fake_ws = self._purgeable_ws()
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--purge", "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        # Experiment resolved by the deploy --auto-experiment path convention.
+        fake_ws.experiments.get_by_name.assert_called_once_with(
+            "/Users/me@x.com/my-app-prod"
+        )
+        fake_ws.experiments.delete_experiment.assert_called_once_with("exp-123")
+        # Prod app AND the soaking canary go; unrelated apps stay.
+        deleted_apps = [c.args[0] for c in fake_ws.apps.delete.call_args_list]
+        assert deleted_apps == ["my-app", "my-app-canary-v1"]
+        # Bundle deploy root removed recursively after an existence check.
+        fake_ws.workspace.get_status.assert_called_once_with(
+            "/Users/me@x.com/.bundle/my-app/prod"
+        )
+        fake_ws.workspace.delete.assert_called_once_with(
+            "/Users/me@x.com/.bundle/my-app/prod", recursive=True,
+        )
+        # Lakebase carve-out: tables are named but never dropped.
+        assert "apx_conversations" in result.output
+        assert "manual" in result.output
+
+    def test_purge_uses_explicit_experiment_tag_when_recorded(self):
+        fake_ws = self._purgeable_ws()
+        fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[
+            SimpleNamespace(key="apx.apps.app_name", value="my-app"),
+            SimpleNamespace(key="apx.mlflow.experiment_id", value="exp-77"),
+        ])
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--purge", "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        fake_ws.experiments.delete_experiment.assert_called_once_with("exp-77")
+        fake_ws.experiments.get_by_name.assert_not_called()
+
+    def test_purge_unresolvable_app_prints_not_removed_and_skips(self):
+        fake_ws = MagicMock()
+        # No apx.apps.app_name tag → canary + bundle path underivable.
+        fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[
+            SimpleNamespace(key="apx.agent.model", value="my-ep"),
+        ])
+        fake_ws.current_user.me.return_value = SimpleNamespace(user_name="me@x.com")
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--purge", "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "not removed" in result.output
+        fake_ws.workspace.delete.assert_not_called()
+        fake_ws.experiments.delete_experiment.assert_not_called()
+        fake_ws.apps.list.assert_not_called()
+        fake_ws.apps.delete.assert_not_called()
+
+    def test_purge_missing_bundle_path_prints_not_removed(self):
+        fake_ws = self._purgeable_ws()
+        fake_ws.workspace.get_status.side_effect = RuntimeError("RESOURCE_DOES_NOT_EXIST")
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--purge", "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "not removed: bundle workspace files" in result.output
+        fake_ws.workspace.delete.assert_not_called()
+
+    def test_without_purge_no_extra_deletions(self):
+        fake_ws = self._purgeable_ws()
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        fake_ws.apps.delete.assert_called_once_with("my-app")
+        fake_ws.experiments.delete_experiment.assert_not_called()
+        fake_ws.workspace.delete.assert_not_called()
+        fake_ws.apps.list.assert_not_called()
+        fake_ws.current_user.me.assert_not_called()
+
+    def test_purge_confirmation_lists_purge_set(self):
+        fake_ws = self._purgeable_ws()
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            # Answer "n" — we want the summary, not the deletions.
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--purge",
+            ], input="n\n")
+
+        assert "/Users/me@x.com/my-app-prod" in result.output
+        assert "Canary App: my-app-canary-v1" in result.output
+        assert "/Users/me@x.com/.bundle/my-app/prod" in result.output
+        assert "apx_conversations" in result.output
+        fake_ws.apps.delete.assert_not_called()
+        fake_ws.experiments.delete_experiment.assert_not_called()
+        fake_ws.workspace.delete.assert_not_called()
+
+    def test_purge_failures_aggregate_to_nonzero_exit(self):
+        fake_ws = self._purgeable_ws()
+        fake_ws.experiments.delete_experiment.side_effect = RuntimeError("boom")
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--purge", "--yes",
+            ])
+
+        assert result.exit_code != 0
+        assert "failed" in result.output.lower()
+        # Best-effort: the other purge deletions still ran.
+        fake_ws.workspace.delete.assert_called_once()
+        deleted_apps = [c.args[0] for c in fake_ws.apps.delete.call_args_list]
+        assert "my-app-canary-v1" in deleted_apps
+
 
 # ---------------------------------------------------------------------------
 # `apx-agent uc validate`
