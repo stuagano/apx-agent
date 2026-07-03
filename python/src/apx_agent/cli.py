@@ -7541,7 +7541,7 @@ def list_agents_cmd(
 )
 @click.option(
     "--app", "app_name", default=None,
-    help="Databricks App name to delete (optional; only relevant for apps-target deploys).",
+    help="Databricks App name to delete. Auto-detected from UC tags when omitted.",
 )
 @click.option(
     "--yes", "-y", "assume_yes", is_flag=True,
@@ -7563,19 +7563,23 @@ def delete_agent_cmd(
     \b
       1. The Model Serving endpoint (--endpoint or auto-detected from UC tags)
       2. The registered model in Unity Catalog (--uc-name)
-      3. The Databricks App (--app, if provided)
+      3. The Databricks App (--app or auto-detected from UC tags)
 
     Pass --yes to skip the interactive confirmation prompt.
     """
     ws, _ = _connect_workspace(profile)
 
-    # Resolve endpoint from UC tags when not explicitly given.
+    # Resolve endpoint and app from UC tags when not explicitly given.
     resolved_endpoint = endpoint_name
-    if not resolved_endpoint:
+    resolved_app = app_name
+    if not resolved_endpoint or not resolved_app:
         try:
             model = ws.registered_models.get(uc_name)
             tags = {t.key: t.value for t in (getattr(model, "tags", None) or [])}
-            resolved_endpoint = tags.get("apx.agent.model")
+            if not resolved_endpoint:
+                resolved_endpoint = tags.get("apx.agent.model")
+            if not resolved_app:
+                resolved_app = tags.get("apx.apps.app_name")
         except Exception:
             pass
 
@@ -7583,8 +7587,8 @@ def delete_agent_cmd(
     to_delete: list[str] = [f"  • UC registered model: {uc_name}"]
     if resolved_endpoint:
         to_delete.append(f"  • Model Serving endpoint: {resolved_endpoint}")
-    if app_name:
-        to_delete.append(f"  • Databricks App: {app_name}")
+    if resolved_app:
+        to_delete.append(f"  • Databricks App: {resolved_app}")
 
     if not assume_yes:
         click.echo("This will permanently delete:")
@@ -7612,13 +7616,13 @@ def delete_agent_cmd(
         click.echo(f"Warning: could not delete UC model {uc_name!r}: {exc}", err=True)
 
     # 3. Delete the Databricks App (best-effort).
-    if app_name:
+    if resolved_app:
         try:
-            ws.apps.delete(app_name)
-            click.echo(f"Deleted app: {app_name}")
+            ws.apps.delete(resolved_app)
+            click.echo(f"Deleted app: {resolved_app}")
         except Exception as exc:
-            errors.append(f"app {app_name!r}: {exc}")
-            click.echo(f"Warning: could not delete app {app_name!r}: {exc}", err=True)
+            errors.append(f"app {resolved_app!r}: {exc}")
+            click.echo(f"Warning: could not delete app {resolved_app!r}: {exc}", err=True)
 
     if errors:
         raise click.ClickException(
