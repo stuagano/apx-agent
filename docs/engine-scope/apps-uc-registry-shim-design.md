@@ -181,5 +181,7 @@ at) is a useful `apx-agent doctor` check.
   ones? Leaning dedicated schema for a clean `apx-agent agents list` filter.
 - **Async logging.** Is post-deploy async registration worth the added failure
   mode (App live, UC version missing) versus blocking the deploy a bit longer?
+  When that failure mode does hit, `apx-agent agents register` backfills the
+  missing manifest for a single agent (issue #418).
 - **Drift policy.** When `apx-agent doctor` finds App-vs-alias drift, warn only, or
   offer to re-point / re-register?

@@ -5560,6 +5560,7 @@ def _register_apps_manifest_step(
     bundle_target: str,
     uc_name_override: str | None,
     extra_version_tags: dict[str, str] | None = None,
+    profile: str | None = None,  # only names the repair command on failure
     log: Any,
 ) -> str | None:
     """Register a UC version manifest for a freshly-deployed App (best-effort).
@@ -5611,10 +5612,17 @@ def _register_apps_manifest_step(
         )
         return res.version
     except Exception as e:  # non-fatal: the App is live regardless
+        # Name the exact single-agent repair command (issue #418) so the
+        # operator doesn't reach for a workspace-wide `fleet backfill`.
+        repair = "apx-agent agents register"
+        if uc_name_override:
+            repair += f" --uc-name {uc_name_override}"
+        if profile:
+            repair += f" --profile {profile}"
         log(
             f"# UC registration failed (non-fatal — App is live): {e}\n"
             "# the App is running; only the version-ledger entry is missing. "
-            "Re-run deploy or register manually to add it."
+            f"Backfill it with:\n#   {repair}"
         )
         return None
 
@@ -5954,6 +5962,7 @@ def _deploy_apps_impl(
                         **(extra_version_tags or {}),
                         "apx.apps.readyz": "failed",
                     },
+                    profile=profile,
                     log=log,
                 )
             recovery = _apps_readyz_recovery_hint(
@@ -5996,6 +6005,7 @@ def _deploy_apps_impl(
             bundle_target=bundle_target,
             uc_name_override=uc_name,
             extra_version_tags=extra_version_tags,
+            profile=profile,
             log=log,
         )
     else:
@@ -8160,6 +8170,128 @@ def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> Non
 
     if not healthy:
         raise click.exceptions.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# agents register — single-agent UC manifest backfill (issue #418)
+# ---------------------------------------------------------------------------
+
+
+@agents.command("register")
+@click.option("--module", default="agent:agent", help="Agent module spec.")
+@click.option(
+    "--uc-name", default=None,
+    help="UC three-part name (catalog.schema.model) to register the manifest "
+         "under. Overrides [tool.apx.agent].registered_model and the "
+         "catalog/schema-composed default.",
+)
+@click.option(
+    "--bundle-target", default="dev",
+    help="DAB target recorded on the manifest's apx.apps.bundle_target tag. "
+         "Default: dev.",
+)
+@click.option(
+    "--yes", "-y", "assume_yes", is_flag=True,
+    help="Skip the confirmation prompt.",
+)
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks config profile (~/.databrickscfg).")
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit a single JSON result object on stdout "
+                   "(ok:false + error on failure).")
+def register_agent_cmd(
+    module: str,
+    uc_name: str | None,
+    bundle_target: str,
+    assume_yes: bool,
+    profile: str | None,
+    as_json: bool,
+) -> None:
+    """Backfill the UC version manifest for an already-live Apps deploy.
+
+    Deploy-time registration is best-effort: when it fails, the App stays
+    live but has NO ledger entry — invisible to `agents list` / topology /
+    watchdog (issue #418). Run this from the project directory to register
+    the manifest for one agent, without a workspace-wide `fleet backfill`.
+
+    Resolves the app name and UC name exactly as `agents deploy --target
+    apps` does, verifies the App actually exists in the workspace (refuses
+    to ledger a nonexistent app), then registers the manifest with fresh
+    git/lock provenance tags. Unlike the deploy-time step, a registration
+    failure here IS fatal — a backfill has no green deploy to protect.
+    """
+    with _json_cli_errors(as_json):
+        cwd = Path.cwd()
+        config = _read_apx_agent_config()
+        profile = profile or config.get("profile")
+        if profile:
+            # register_apps_manifest logs via ambient mlflow auth — make the
+            # chosen profile the ambient one, like `uc publish` does.
+            os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+
+        _bundle_key, app_name = _resolve_app_name(_read_databricks_yml(cwd))
+        resolved_uc = _resolve_apps_uc_name(config, app_name, override=uc_name)
+        if resolved_uc is None:
+            raise click.ClickException(
+                "no UC model name resolved. Set "
+                "[tool.apx.agent].registered_model (or a non-placeholder "
+                "catalog + schema) in pyproject.toml, or pass --uc-name."
+            )
+        model = config.get("model")
+        if not model:
+            raise click.ClickException(
+                "no LLM model in [tool.apx.agent].model to log "
+                f"{resolved_uc} with. Set a model first."
+            )
+
+        # Refuse to ledger an app that isn't actually deployed.
+        ws, _cfg = _connect_workspace(profile)
+        try:
+            ws.apps.get(app_name)
+        except Exception as exc:
+            raise click.ClickException(
+                f"app {app_name!r} not found in the workspace — refusing to "
+                f"register a manifest for an app that isn't deployed: {exc}\n"
+                "Deploy it first: apx-agent agents deploy --target apps"
+            ) from exc
+
+        if not assume_yes:
+            click.echo("Will register a UC version manifest:")
+            click.echo(f"  • app:       {app_name} (verified live)")
+            click.echo(f"  • UC name:   {resolved_uc}")
+            click.echo(f"  • DAB target: {bundle_target}")
+            click.confirm("Proceed?", abort=True)
+
+        agent = _load_finalized_agent(module)
+        from ._apps_registry import register_apps_manifest
+        try:
+            res = register_apps_manifest(
+                agent,
+                uc_name=resolved_uc,
+                model=model,
+                app_name=app_name,
+                bundle_target=bundle_target,
+                agent_name=config.get("name") or app_name,
+                extra_version_tags=_provenance_version_tags(cwd),
+            )
+        except Exception as exc:
+            raise click.ClickException(
+                f"UC registration failed: {exc}"
+            ) from exc
+
+        if as_json:
+            click.echo(json.dumps({
+                "ok": True,
+                "uc_name": res.uc_name,
+                "version": res.version,
+                "app_name": res.app_name,
+                "bundle_target": bundle_target,
+            }))
+        else:
+            click.echo(
+                f"registered {res.uc_name} version {res.version} "
+                f"(manifest for App {res.app_name}; not promoted to serving)"
+            )
 
 
 # ---------------------------------------------------------------------------
