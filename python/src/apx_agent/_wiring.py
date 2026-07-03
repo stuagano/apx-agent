@@ -790,6 +790,14 @@ def create_app(
                     override=conversation_store,
                     agent=ctx.agent,
                 )
+                # Held for shutdown: dispose the Lakebase engines we built here
+                # (#376). Only when WE built the store — an explicit override is
+                # caller-owned. The declared memory/example stores (built in
+                # finalize_agent) are reachable via ctx.agent._declared_stores.
+                if conversation_store is None:
+                    app.state.disposable_stores = [_store, *getattr(ctx.agent, "_declared_stores", [])]
+                else:
+                    app.state.disposable_stores = list(getattr(ctx.agent, "_declared_stores", []))
                 # Durable checkpointer (Lakebase → PostgresSaver) so a pending
                 # mid-turn approval survives a restart. None → in-process default.
                 # An explicit conversation_store override means the caller owns
@@ -840,9 +848,11 @@ def create_app(
                 yield
             finally:
                 logger.info("Shutting down agent runtime")
-                from ._memory_wiring import close_checkpointer  # noqa: PLC0415
+                from ._memory_wiring import close_checkpointer, dispose_store_engine  # noqa: PLC0415
 
                 close_checkpointer(getattr(app.state, "checkpointer", None))
+                for _s in getattr(app.state, "disposable_stores", []):
+                    dispose_store_engine(_s)
                 ws = getattr(app.state, "workspace_client", None)
                 if ws and hasattr(ws, "close"):
                     try:
