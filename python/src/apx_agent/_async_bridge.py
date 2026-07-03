@@ -46,6 +46,7 @@ Usage (this is what the Apps scaffold's ``start_server.py`` generates)::
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import threading
 from typing import Any, AsyncGenerator, Callable, Generator
@@ -60,6 +61,11 @@ _STREAM_QUEUE_MAXSIZE = 256
 # Queue sentinel marking normal generator exhaustion. An object() identity
 # token can't collide with any chunk value.
 _DONE = object()
+
+# How often a blocked _put re-checks whether the consumer has gone away. Small
+# enough that a disconnect frees the worker promptly, large enough to avoid busy
+# spinning while it waits for a healthy consumer to drain a full queue.
+_PUT_POLL_INTERVAL_S = 0.1
 
 
 def make_async_invoke(
@@ -111,23 +117,36 @@ def make_async_stream(
         # the worker stops pulling chunks instead of producing into a void.
         consumer_gone = threading.Event()
 
-        def _put(item: Any) -> None:
+        def _put(item: Any) -> bool:
             """Hand one item to the loop, honoring queue backpressure.
 
             ``put_nowait`` would drop backpressure; a plain blocking put
             can't work on an asyncio.Queue from a thread. Schedule the
-            put on the loop and wait for it from the worker thread.
+            put on the loop and wait for it from the worker thread — but
+            re-check ``consumer_gone`` while waiting so a client disconnect on a
+            FULL queue frees the worker instead of blocking it forever (#379).
+
+            Returns ``True`` if delivered, ``False`` if the consumer went away.
             """
             future = asyncio.run_coroutine_threadsafe(queue.put(item), loop)
-            future.result()
+            while not consumer_gone.is_set():
+                try:
+                    future.result(timeout=_PUT_POLL_INTERVAL_S)
+                    return True
+                except concurrent.futures.TimeoutError:
+                    continue
+            future.cancel()  # consumer abandoned the stream — don't wait to enqueue
+            return False
 
         def _worker() -> None:
+            gen = stream_fn(request)
             try:
-                for chunk in stream_fn(request):
-                    if consumer_gone.is_set():
+                for chunk in gen:
+                    # Stop as soon as the consumer disconnects — either detected
+                    # up front or surfaced by _put returning False on a full queue.
+                    if consumer_gone.is_set() or not _put(chunk):
                         logger.debug("stream consumer gone — stopping worker early")
                         return
-                    _put(chunk)
                 _put(_DONE)
             except BaseException as exc:  # noqa: BLE001 — re-raised on the loop
                 try:
@@ -135,6 +154,15 @@ def make_async_stream(
                 except Exception:
                     # Loop already closed (shutdown race) — nothing to tell.
                     logger.debug("could not deliver stream error; loop closed")
+            finally:
+                # Close the compiled generator so its DB connections, tool handles
+                # and OTel span context are released even on early disconnect.
+                close = getattr(gen, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:
+                        logger.debug("stream generator close failed", exc_info=True)
 
         worker = threading.Thread(
             target=_worker,
