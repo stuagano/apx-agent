@@ -1906,3 +1906,181 @@ def test_deploy_skips_apx_git_sha_var_outside_a_git_repo(
     assert result.exit_code == 0, result.output
     deploy_call = _bundle_deploy_call(calls)
     assert not any(a.startswith("apx_git_sha=") for a in deploy_call)
+
+
+# ---------------------------------------------------------------------------
+# issue #415: --env / --secret-env runtime config for apps deploys
+# ---------------------------------------------------------------------------
+
+
+def test_env_flag_merges_into_bundle_config_env(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--env KEY=VALUE lands in resources.apps.<key>.config.env before the
+    bundle deploy, key NAMES are echoed, and values are never echoed."""
+    calls = _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--env", "FEATURE_FLAG=on",
+        "--env", "LOG_LEVEL=debug",
+    ])
+    assert result.exit_code == 0, result.output
+
+    updated = yaml.safe_load((scaffold / "databricks.yml").read_text())
+    env = updated["resources"]["apps"]["my-app"]["config"]["env"]
+    assert {"name": "FEATURE_FLAG", "value": "on"} in env
+    assert {"name": "LOG_LEVEL", "value": "debug"} in env
+    # The merge happened BEFORE bundle validate/deploy ran.
+    assert [c[:2] for c in calls][0] == ["bundle", "validate"]
+    # Key names are echoed; values are not.
+    assert "FEATURE_FLAG" in result.output
+    assert "LOG_LEVEL" in result.output
+    assert "debug" not in result.output
+    # Persistence semantics are stated plainly.
+    assert "persists" in result.output
+
+
+def test_env_flag_never_clobbers_user_authored_entry(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An existing config.env entry with the same name is left untouched —
+    the deploy warns and skips instead of clobbering."""
+    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
+    doc["resources"]["apps"]["my-app"]["config"] = {
+        "env": [{"name": "FEATURE_FLAG", "value": "user-set"}],
+    }
+    (scaffold / "databricks.yml").write_text(
+        yaml.safe_dump(doc, default_flow_style=False, sort_keys=False),
+    )
+    _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--env", "FEATURE_FLAG=clobber-attempt",
+    ])
+    assert result.exit_code == 0, result.output
+
+    updated = yaml.safe_load((scaffold / "databricks.yml").read_text())
+    env = updated["resources"]["apps"]["my-app"]["config"]["env"]
+    matching = [e for e in env if e["name"] == "FEATURE_FLAG"]
+    assert matching == [{"name": "FEATURE_FLAG", "value": "user-set"}]
+    assert "clobber-attempt" not in (scaffold / "databricks.yml").read_text()
+    assert "skipped" in result.output
+    assert "FEATURE_FLAG" in result.output
+
+
+def test_secret_env_emits_value_from_reference_never_a_value(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--secret-env KEY=scope/key writes a secret app resource (READ) plus a
+    valueFrom env entry — no literal value anywhere in the yml or output."""
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--secret-env", "OPENAI_API_KEY=llm-secrets/openai",
+    ])
+    assert result.exit_code == 0, result.output
+
+    updated = yaml.safe_load((scaffold / "databricks.yml").read_text())
+    app = updated["resources"]["apps"]["my-app"]
+    env_entry = [
+        e for e in app["config"]["env"] if e["name"] == "OPENAI_API_KEY"
+    ]
+    assert env_entry == [
+        {"name": "OPENAI_API_KEY", "valueFrom": "secret-openai-api-key"},
+    ]
+    # The env entry is a reference — it must not carry a literal value.
+    assert "value" not in env_entry[0]
+    secret_res = [
+        r for r in app["resources"] if r.get("name") == "secret-openai-api-key"
+    ]
+    assert len(secret_res) == 1
+    assert secret_res[0]["secret"] == {
+        "scope": "llm-secrets", "key": "openai", "permission": "READ",
+    }
+    assert "OPENAI_API_KEY" in result.output
+
+
+def test_env_flags_warn_and_are_ignored_under_model_serving(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--env / --secret-env are apps-only; --target model-serving warns and
+    never touches databricks.yml (mirror of the #413 hygiene warnings)."""
+    before = (scaffold / "databricks.yml").read_text()
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "model-serving",
+        "--env", "FEATURE_FLAG=on",
+        "--secret-env", "TOK=scope/key",
+    ])
+    # The warning fires before the --model requirement aborts the command.
+    assert "ignored with --target model-serving" in result.output
+    assert "--env" in result.output
+    assert "--secret-env" in result.output
+    assert (scaffold / "databricks.yml").read_text() == before
+
+
+def test_model_serving_without_env_flags_does_not_warn(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defaults are detected via ParameterSource — a plain model-serving
+    invocation prints no apps-only-flag warning."""
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "model-serving",
+    ])
+    assert "ignored with --target model-serving" not in result.output
+
+
+def test_json_output_lists_env_key_names_only(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The JSON summary carries the injected key NAMES — never values."""
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--json-output",
+        "--env", "FEATURE_FLAG=super-sensitive",
+        "--secret-env", "OPENAI_API_KEY=llm-secrets/openai",
+    ])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["env_keys"] == ["FEATURE_FLAG"]
+    assert payload["secret_env_keys"] == ["OPENAI_API_KEY"]
+    assert "super-sensitive" not in result.output
+    assert "super-sensitive" not in result.stdout
+
+
+def test_json_output_without_env_flags_has_empty_key_lists(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No --env/--secret-env → the summary keys are present but empty."""
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--json-output",
+    ])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["env_keys"] == []
+    assert payload["secret_env_keys"] == []
+
+
+@pytest.mark.parametrize("flag,raw,expect", [
+    ("--env", "NO_EQUALS", "KEY=VALUE"),
+    ("--env", "1BAD=x", "KEY=VALUE"),
+    ("--secret-env", "TOK=noslash", "scope/key"),
+    ("--secret-env", "TOK=/key", "scope/key"),
+    ("--secret-env", "TOK=scope/", "scope/key"),
+])
+def test_malformed_env_flags_fail_fast(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+    flag: str, raw: str, expect: str,
+) -> None:
+    """Malformed pairs abort the deploy with a message naming the shape."""
+    calls = _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", flag, raw,
+    ])
+    assert result.exit_code != 0
+    assert expect in result.output
+    # Nothing was deployed and the yml was not rewritten with a bad entry.
+    assert ["bundle", "deploy"] not in [c[:2] for c in calls]
+    assert raw.split("=", 1)[0] not in (scaffold / "databricks.yml").read_text()
