@@ -130,8 +130,16 @@ def build_lakebase_checkpointer(
     # ConnectionPool[_LakebaseConnection] isn't assignable to PostgresSaver's
     # ConnectionPool[Connection] param even though _LakebaseConnection IS a
     # Connection. Runtime-correct; only visible to pyright with the extra installed.
-    saver = PostgresSaver(cast("Any", pool))
-    saver.setup()  # idempotent — creates the checkpoint tables on first use
+    # The pool is already open (open=True). If PostgresSaver/setup fails (a
+    # transient error or a role lacking DDL privilege), close the pool before
+    # re-raising — otherwise the caller never gets a handle and each startup/retry
+    # leaks a live pool + its maintenance thread (#377).
+    try:
+        saver = PostgresSaver(cast("Any", pool))
+        saver.setup()  # idempotent — creates the checkpoint tables on first use
+    except Exception:
+        pool.close()
+        raise
     logger.info(
         "Durable short-term memory: Lakebase PostgresSaver on host %r db %r — "
         "pending approvals and thread state survive restarts and span replicas.",
