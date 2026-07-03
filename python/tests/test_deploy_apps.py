@@ -918,6 +918,174 @@ def test_register_uc_forwards_extra_version_tags(
     assert seen["tags"] == {"apx.apps.role": "canary"}
 
 
+def test_register_uc_failure_notice_names_register_repair(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When deploy-time registration fails, the non-fatal notice names the
+    exact single-agent repair command — `apx-agent agents register` with the
+    deploy's --uc-name/--profile — not just 'register manually' (issue #418)."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("UC write denied")
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _boom)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--uc-name", "main.agents.my_app", "--profile", "my-prof",
+    ])
+    assert result.exit_code == 0, result.output
+    assert (
+        "apx-agent agents register --uc-name main.agents.my_app --profile my-prof"
+        in result.output
+    )
+
+
+# ---------------------------------------------------------------------------
+# agents register — single-agent UC manifest backfill (issue #418)
+# ---------------------------------------------------------------------------
+
+
+def _install_workspace_mock(
+    monkeypatch: pytest.MonkeyPatch, *, app_exists: bool = True,
+) -> list[str]:
+    """Patch ``_connect_workspace`` with a fake ws; return the apps.get log."""
+    got: list[str] = []
+
+    class _Apps:
+        def get(self, name: str) -> Any:
+            got.append(name)
+            if not app_exists:
+                raise RuntimeError(f"no app named {name}")
+            return object()
+
+    class _WS:
+        apps = _Apps()
+
+    monkeypatch.setattr(
+        "apx_agent.cli._connect_workspace", lambda profile: (_WS(), None),
+    )
+    return got
+
+
+def test_agents_register_backfills_manifest(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: verifies the app exists, registers via the same registrar
+    the deploy uses (with fresh provenance tags), and echoes the version."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    calls: list[dict[str, Any]] = []
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        calls.append({
+            "uc_name": uc_name, "model": model, "app_name": app_name,
+            "bundle_target": bundle_target, "agent_name": agent_name,
+            "extra_version_tags": extra_version_tags,
+        })
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="5", app_name=app_name)
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr(
+        "apx_agent.cli._provenance_version_tags",
+        lambda cwd: {"apx.apps.git_sha": "abc123"},
+    )
+    apps_got = _install_workspace_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "register", "--uc-name", "main.agents.my_app", "-y",
+    ])
+    assert result.exit_code == 0, result.output
+    assert apps_got == ["my-app"], "must verify the app exists before ledgering"
+    assert len(calls) == 1, f"expected exactly one registration, got {calls}"
+    assert calls[0]["uc_name"] == "main.agents.my_app"
+    assert calls[0]["model"] == "databricks-claude-sonnet-4-6"
+    assert calls[0]["app_name"] == "my-app"
+    assert calls[0]["bundle_target"] == "dev"
+    assert calls[0]["extra_version_tags"] == {"apx.apps.git_sha": "abc123"}
+    assert "registered main.agents.my_app version 5" in result.output
+
+
+def test_agents_register_json_output(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--json emits a single result object on stdout, per the mutation-command
+    convention (issue #417); --bundle-target lands on the record."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="9", app_name=app_name)
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    _install_workspace_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "register", "--uc-name", "main.agents.my_app",
+        "--bundle-target", "prod", "-y", "--json",
+    ])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {
+        "ok": True,
+        "uc_name": "main.agents.my_app",
+        "version": "9",
+        "app_name": "my-app",
+        "bundle_target": "prod",
+    }
+
+
+def test_agents_register_refuses_missing_app(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the app doesn't exist in the workspace, register exits non-zero
+    and never touches the registrar — no ledger entry for a nonexistent app."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    called: list[Any] = []
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.register_apps_manifest",
+        lambda *a, **k: called.append((a, k)),
+    )
+    _install_workspace_mock(monkeypatch, app_exists=False)
+
+    result = CliRunner().invoke(main, [
+        "agents", "register", "--uc-name", "main.agents.my_app", "-y",
+    ])
+    assert result.exit_code != 0
+    assert not called, "registrar must not run for a nonexistent app"
+    assert "refusing to register" in result.output
+    assert "agents deploy --target apps" in result.output  # names the fix
+
+
+def test_agents_register_failure_is_fatal(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unlike the deploy-time best-effort step, a registrar failure here exits
+    non-zero — a backfill has no green deploy to protect. Also exercises the
+    confirmation prompt (no -y)."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("UC write denied")
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _boom)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    _install_workspace_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "register", "--uc-name", "main.agents.my_app",
+    ], input="y\n")
+    assert result.exit_code != 0
+    assert "UC registration failed" in result.output
+    assert "UC write denied" in result.output
+
+
 # ---------------------------------------------------------------------------
 # readyz failure: ledger + recovery path (issue #401)
 # ---------------------------------------------------------------------------
