@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from apx_agent.cli import _load_agent, _parse_module_spec, main
 
@@ -408,6 +408,7 @@ def test_deploy_forwards_experiment_flag_to_log_agent(
                 "--name", "main.agents.x",
                 "--experiment", "/Users/me/agents/x",
                 "--no-deploy",
+                "--no-publish-tools",
             ],
         )
     sys.modules.pop("tmp_test_agent", None)
@@ -442,6 +443,7 @@ def test_deploy_falls_back_to_pyproject_experiment(
                 "--name", "main.agents.x",
                 # no --experiment flag
                 "--no-deploy",
+                "--no-publish-tools",
             ],
         )
     sys.modules.pop("tmp_test_agent", None)
@@ -476,6 +478,7 @@ def test_deploy_cli_flag_wins_over_pyproject(
                 "--name", "main.agents.x",
                 "--experiment", "/Users/me/agents/from-cli",
                 "--no-deploy",
+                "--no-publish-tools",
             ],
         )
     sys.modules.pop("tmp_test_agent", None)
@@ -631,11 +634,166 @@ def test_deploy_no_experiment_when_absent(
                 "--model", "databricks-claude-sonnet-4-6",
                 "--name", "main.agents.x",
                 "--no-deploy",
+                "--no-publish-tools",
             ],
         )
     sys.modules.pop("tmp_test_agent", None)
 
     assert fake_log_agent.call_args.kwargs["experiment"] is None
+
+
+# ---------------------------------------------------------------------------
+# model-serving deploy: sub-step failure contract (#402) + --json-output (#405)
+# ---------------------------------------------------------------------------
+
+
+def _invoke_model_serving_deploy(
+    extra_args: list[str],
+    *,
+    log_agent: MagicMock | None = None,
+    publish: MagicMock | None = None,
+    set_tags: MagicMock | None = None,
+) -> Result:
+    """Invoke `agents deploy --target model-serving` with mocked sub-steps.
+
+    log_agent / publish / set_tags default to succeeding fakes.
+    """
+    if log_agent is None:
+        log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+    if publish is None:
+        publish = MagicMock(return_value=[])
+    if set_tags is None:
+        set_tags = MagicMock(return_value={"apx.agent.name": "x"})
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", log_agent), \
+         patch("apx_agent.publish_tools_to_uc", publish), \
+         patch("apx_agent.set_uc_tags_for_agent", set_tags), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(
+            main,
+            [
+                "agents", "deploy",
+                "--target", "model-serving",
+                "--module", "tmp_test_agent:agent",
+                "--model", "databricks-claude-sonnet-4-6",
+                "--name", "main.agents.x",
+                "--no-deploy",
+            ] + extra_args,
+        )
+    sys.modules.pop("tmp_test_agent", None)
+    return result
+
+
+def test_deploy_publish_tools_failure_fails_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#402: a publish_tools failure is best-effort (log still runs) but must
+    NOT vanish — it is aggregated and fails the command's exit code."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+    fake_publish = MagicMock(side_effect=RuntimeError("UC permission denied"))
+
+    result = _invoke_model_serving_deploy(
+        [], log_agent=fake_log_agent, publish=fake_publish,
+    )
+
+    assert result.exit_code != 0, result.output
+    # Best-effort semantics preserved: log + register still ran.
+    fake_log_agent.assert_called_once()
+    # The failure is named in the final error, not just a mid-flow warning.
+    assert "publish-tools" in result.output
+    assert "UC permission denied" in result.output
+    assert "failed sub-step" in result.output
+
+
+def test_deploy_set_uc_tags_failure_fails_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#402: a set_uc_tags failure must exit non-zero — an untagged agent
+    silently never shows up in list / topology / watchdog."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_set_tags = MagicMock(side_effect=RuntimeError("tag write denied"))
+
+    result = _invoke_model_serving_deploy([], set_tags=fake_set_tags)
+
+    assert result.exit_code != 0, result.output
+    assert "set-uc-tags" in result.output
+    assert "tag write denied" in result.output
+
+
+def test_deploy_midflow_abort_names_orphaned_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#402: if log_agent raises after tools were published, the error names
+    the already-created (orphaned) UC tools."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_publish = MagicMock(return_value=[
+        SimpleNamespace(uc_name="main.tools.classify_intent", grants_applied=["agent_consumers"]),
+    ])
+    fake_log_agent = MagicMock(side_effect=RuntimeError("mlflow exploded"))
+
+    result = _invoke_model_serving_deploy(
+        [], log_agent=fake_log_agent, publish=fake_publish,
+    )
+
+    assert result.exit_code != 0, result.output
+    assert "log_agent failed" in result.output
+    assert "mlflow exploded" in result.output
+    # The orphaned published tool is named so the operator can clean up.
+    assert "main.tools.classify_intent" in result.output
+    assert "NOT rolled back" in result.output
+
+
+def test_deploy_model_serving_json_output_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#405: --json-output emits one parseable JSON object on stdout with
+    ok / uc_name / version / per-step outcomes; progress goes to stderr."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = _invoke_model_serving_deploy(["--json-output"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)   # stdout is ONLY the JSON object
+    assert payload["ok"] is True
+    assert payload["uc_name"] == "main.agents.x"
+    assert payload["version"] == "1"
+    assert payload["steps"] == {
+        "publish_tools": "ok",
+        "log": "ok",
+        "deploy": "skipped",   # --no-deploy
+        "set_uc_tags": "ok",
+    }
+    # Progress logs were routed to stderr, not stdout.
+    assert "Logged main.agents.x" in result.stderr
+
+
+def test_deploy_model_serving_json_output_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#405: --json-output emits {ok: false, error, steps} and exits 1 when a
+    sub-step fails."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_set_tags = MagicMock(side_effect=RuntimeError("tag write denied"))
+
+    result = _invoke_model_serving_deploy(["--json-output"], set_tags=fake_set_tags)
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "set-uc-tags: tag write denied" in payload["error"]
+    assert payload["steps"]["set_uc_tags"] == "failed"
+    assert payload["steps"]["log"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -1955,6 +2113,7 @@ def test_deploy_no_capture_env_vars_default_sets_mlflow_kill_switch(
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
             "--no-deploy",
+            "--no-publish-tools",
         ])
     sys.modules.pop("tmp_test_agent", None)
 
@@ -1990,6 +2149,7 @@ def test_deploy_capture_env_vars_flag_lets_mlflow_record(
             "--name", "main.agents.x",
             "--capture-env-vars",
             "--no-deploy",
+            "--no-publish-tools",
         ])
     sys.modules.pop("tmp_test_agent", None)
 
@@ -2022,6 +2182,7 @@ def test_deploy_env_var_guard_restores_preexisting_value(
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
             "--no-deploy",
+            "--no-publish-tools",
         ])
     sys.modules.pop("tmp_test_agent", None)
 
@@ -2083,6 +2244,7 @@ def test_deploy_allow_env_var_with_capture_flag_combines_and_warns(
             "--allow-env-var", "DATABRICKS_HOST",
             "--allow-env-var", "DATABRICKS_TOKEN",
             "--no-deploy",
+            "--no-publish-tools",
         ])
     sys.modules.pop("tmp_test_agent", None)
 
@@ -2119,6 +2281,7 @@ def test_deploy_secret_scan_warns_on_secret_referenced_in_source(
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
             "--no-deploy",
+            "--no-publish-tools",
         ])
     sys.modules.pop("tmp_test_agent", None)
 
@@ -2192,6 +2355,7 @@ def test_deploy_yes_flag_skips_secret_scan_prompt(
             "--capture-env-vars",
             "--yes",
             "--no-deploy",
+            "--no-publish-tools",
         ])
     sys.modules.pop("tmp_test_agent", None)
 
@@ -2229,6 +2393,7 @@ def test_deploy_secret_scan_picks_up_dotenv_keys(
             "--model", "databricks-claude-sonnet-4-6",
             "--name", "main.agents.x",
             "--no-deploy",
+            "--no-publish-tools",
         ])
     sys.modules.pop("tmp_test_agent", None)
 
