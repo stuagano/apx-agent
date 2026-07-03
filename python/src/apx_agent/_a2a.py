@@ -190,15 +190,19 @@ def mount_a2a_route(
         # Otherwise it's a normal new turn.
         cfg = params.configuration or {}
         apx_resume = cfg.get("apx_resume")
-        resume = (
-            apx_resume
-            if apx_resume is not None
-            and chat_agent.thread_interrupt(context_id, custom_inputs) is not None
-            else None
-        )
 
         inbound = message.model_copy(update={"taskId": task_id, "contextId": context_id})
         try:
+            # thread_interrupt compiles the graph, resolves OBO (can raise
+            # ApxIdentityError from the fail-closed guard), and reads checkpointer
+            # state (can raise on a Lakebase/get_state error). Keep it INSIDE the
+            # try so those become a failed Task, not a raw HTTP 500 (#374).
+            resume = (
+                apx_resume
+                if apx_resume is not None
+                and chat_agent.thread_interrupt(context_id, custom_inputs) is not None
+                else None
+            )
             if resume is not None:
                 custom_inputs["resume"] = resume
                 predict_messages: list[Any] = []  # resume feeds Command, not input
@@ -304,8 +308,14 @@ def mount_a2a_route(
                     # doesn't block the event loop for the whole turn. Only
                     # request.headers is read inside (sync); the body was
                     # already consumed above.
-                    task = await asyncio.to_thread(_run_message_send, send_params, request)
-                    resp = _success_response(req_id, task)
+                    try:
+                        task = await asyncio.to_thread(_run_message_send, send_params, request)
+                        resp = _success_response(req_id, task)
+                    except Exception as exc:  # noqa: BLE001 — JSON-RPC error, not a raw 500 (#374)
+                        logger.exception("A2A message/send failed before producing a Task")
+                        resp = _error_response(
+                            req_id, _INTERNAL_ERROR, f"message/send failed: {exc}"
+                        )
             elif method == "tasks/get":
                 try:
                     q = TaskQueryParams(**params)
