@@ -3910,6 +3910,9 @@ _MODEL_SERVING_ONLY_DEPLOY_FLAGS = (
     ("no_deploy", "--no-deploy"),
     ("capture_env_vars", "--capture-env-vars/--no-capture-env-vars"),
     ("allow_env_vars", "--allow-env-var"),
+    ("scale_to_zero", "--scale-to-zero/--no-scale-to-zero"),
+    ("workload_size", "--workload-size"),
+    ("env_suffix", "--env-suffix"),
 )
 
 # deploy options only the apps branch consumes (issue #415): the mirror of
@@ -3942,7 +3945,8 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 @click.option(
     "--name", "registered_model_name", default=None,
     help="UC three-part name to register the model under (catalog.schema.model). "
-         "Required when --target model-serving.",
+         "Falls back to [tool.apx.agent].registered_model in pyproject.toml; "
+         "required when --target model-serving and neither is set.",
 )
 @click.option(
     "--profile", default=None,
@@ -4088,6 +4092,28 @@ _APPS_ONLY_DEPLOY_FLAGS = (
          "set you'll actually get. Only used by --target model-serving.",
 )
 @click.option(
+    "--scale-to-zero/--no-scale-to-zero", "scale_to_zero", default=None,
+    help="Scale the serving endpoint to zero when idle. When neither flag is "
+         "passed, databricks.agents.deploy's own default applies — the flag "
+         "is only forwarded when set explicitly. "
+         "Only used by --target model-serving.",
+)
+@click.option(
+    "--workload-size", default=None,
+    type=click.Choice(["Small", "Medium", "Large"]),
+    help="Serving endpoint workload size. When omitted, "
+         "databricks.agents.deploy's own default applies — the value is only "
+         "forwarded when set explicitly. Only used by --target model-serving.",
+)
+@click.option(
+    "--env-suffix", default=None, metavar="SUFFIX",
+    help="Append '-SUFFIX' to the UC model short name, so --env-suffix "
+         "staging registers catalog.schema.model-staging (and the serving "
+         "endpoint name derived from it follows). This is naming-convention "
+         "support for dev/staging/prod, NOT per-environment config "
+         "management. Only used by --target model-serving.",
+)
+@click.option(
     "--yes", "-y", "assume_yes", is_flag=True,
     help="Skip the secret-scan confirmation prompt. Use in CI / scripts.",
 )
@@ -4117,6 +4143,9 @@ def deploy(
     agent_name: str | None,
     capture_env_vars: bool,
     allow_env_vars: tuple[str, ...],
+    scale_to_zero: bool | None,
+    workload_size: str | None,
+    env_suffix: str | None,
     assume_yes: bool,
 ) -> None:
     """Log the agent to MLflow + deploy + UC-tag in one command.
@@ -4230,16 +4259,27 @@ def deploy(
             f"--target apps): {', '.join(ignored_apps_flags)}",
             err=True,
         )
+    config = _read_apx_agent_config()
     if model is None:
         raise click.UsageError(
             "--model is required when --target model-serving. "
             "Pass --target apps to use the Databricks Apps flow instead."
         )
     if registered_model_name is None:
-        raise click.UsageError(
-            "--name is required when --target model-serving. "
-            "Pass --target apps to use the Databricks Apps flow instead."
-        )
+        configured = config.get("registered_model")
+        if isinstance(configured, str) and configured.strip():
+            registered_model_name = configured.strip()
+        else:
+            raise click.UsageError(
+                "--name is required when --target model-serving (or set "
+                "[tool.apx.agent].registered_model in pyproject.toml). "
+                "Pass --target apps to use the Databricks Apps flow instead."
+            )
+    if env_suffix:
+        # Environment story (#407): a naming convention, not config
+        # management — the suffixed UC short name flows through to the
+        # endpoint/agent naming derived from it.
+        registered_model_name = f"{registered_model_name}-{env_suffix}"
     effective_module = module or "agent:agent"
 
     import mlflow
@@ -4312,7 +4352,6 @@ def deploy(
     from ._inspection import _load_agent_config as _load_cfg
     _deploy_config = _load_cfg(pyproject_path=None)
     agent = _resolve_agent(effective_module, _deploy_config, ws=_deploy_ws(_deploy_config))
-    config = _read_apx_agent_config()
     effective_experiment = experiment or config.get("experiment")
     effective_agent_name = (
         agent_name
@@ -4482,8 +4521,18 @@ def deploy(
                 "databricks-agents is required for deployment. "
                 f"Install with: uv add databricks-agents ({e}).",
             )
+        # Scale passthrough (#407): forwarded ONLY when set explicitly so
+        # databricks.agents.deploy's own defaults stay in charge otherwise.
+        deploy_kwargs: dict[str, Any] = {}
+        if scale_to_zero is not None:
+            deploy_kwargs["scale_to_zero"] = scale_to_zero
+        if workload_size is not None:
+            deploy_kwargs["workload_size"] = workload_size
         try:
-            deployment = agents.deploy(registered_model_name, model_version=registered_version)
+            deployment = agents.deploy(
+                registered_model_name, model_version=registered_version,
+                **deploy_kwargs,
+            )
         except Exception as e:
             _fail("deploy", f"databricks.agents.deploy failed: {e}.")
         step_outcomes["deploy"] = "ok"
@@ -4560,13 +4609,19 @@ def deploy(
             + "; ".join(step_failures) + "." + _orphans()
         )
     if json_output:
-        click.echo(json.dumps({
+        summary: dict[str, Any] = {
             "ok": True,
             "uc_name": registered_model_name,
             "version": registered_version,
             "endpoint": endpoint_name,
             "steps": step_outcomes,
-        }))
+        }
+        # Present only when set explicitly — mirrors what was forwarded.
+        if scale_to_zero is not None:
+            summary["scale_to_zero"] = scale_to_zero
+        if workload_size is not None:
+            summary["workload_size"] = workload_size
+        click.echo(json.dumps(summary))
 
 
 def _serving_health_gate(

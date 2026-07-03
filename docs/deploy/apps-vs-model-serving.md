@@ -42,7 +42,7 @@ the single biggest source of iteration pain in the SDK today.
 | **Hot-swap LLM endpoint** | `apx-agent agents hot-swap` (default) — rewrites `APX_AGENT_MODEL_OVERRIDE` env_var on the served entity | `apx-agent agents hot-swap --target apps --llm-endpoint NEW` — re-deploys with `--var llm_endpoint_name=NEW`. App restarts off the new env. See [apps-canary-hotswap-design.md](../engine-scope/apps-canary-hotswap-design.md) |
 | **Review App integration** | Native — `agent_evaluation` Review App reads from a registered model | Indirect — log traces to MLflow, evaluate offline |
 | **Mosaic AI Supervisor publish** | Native via `apx-agent supervisor add --supervisor <id>` | Not supported as of 2026-05 — Supervisor consumes Model-Serving endpoints |
-| **Autoscale model** | Per-endpoint, scale-to-zero with cold-start cost | Per-app, manual `min/max` workers; scale-to-zero supported via auto-suspend |
+| **Autoscale model** | Per-endpoint, scale-to-zero with cold-start cost — set from the CLI via `agents deploy --scale-to-zero` / `--workload-size` | Per-app, manual `min/max` workers; scale-to-zero supported via auto-suspend |
 | **Async background work** | No (request-bound) | Yes — same process can run background tasks, schedulers, queues |
 | **Custom routes / non-agent endpoints** | No — single predict path | Yes — health, admin, debug, batch endpoints all in the same App |
 | **MLflow tracing wiring** | Automatic — Model Serving enables tracing on every request | Automatic via `AgentServer(agent_type="ResponsesAgent")` — same OTLP exporter |

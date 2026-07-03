@@ -1732,11 +1732,17 @@ def test_model_serving_only_flags_warn_when_explicit_under_apps(
     result = CliRunner().invoke(main, [
         "agents", "deploy", "--target", "apps",
         "--no-publish-tools", "--agent-name", "my-agent",
+        "--scale-to-zero", "--workload-size", "Small",
+        "--env-suffix", "staging",
     ])
     assert result.exit_code == 0, result.output
     assert "ignored with --target apps" in result.output
     assert "--publish-tools/--no-publish-tools" in result.output
     assert "--agent-name" in result.output
+    # #407: scale + env-suffix flags are model-serving-only too.
+    assert "--scale-to-zero/--no-scale-to-zero" in result.output
+    assert "--workload-size" in result.output
+    assert "--env-suffix" in result.output
     # Flags left at their defaults are NOT named.
     assert "--no-deploy" not in result.output
 
