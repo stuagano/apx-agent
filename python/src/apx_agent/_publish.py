@@ -456,6 +456,16 @@ def publish_tools_to_registry(
             warehouse_id=warehouse_id,
         )
 
+    # The DELETE already ran, so a partial insert leaves the registry advertising
+    # FEWER tools than the agent actually has. Fail loudly (#382) instead of
+    # silently returning a short count — re-running the publish restores the set.
+    if count != len(tool_fns):
+        raise RuntimeError(
+            f"Published only {count}/{len(tool_fns)} tool rows for agent "
+            f"{agent_name!r} to {tools_table} — the registry is now incomplete "
+            f"(see the prior warnings for the failed rows). Re-run the publish."
+        )
+
     logger.info("Published %d tools for agent %s to %s", count, agent_name, tools_table)
     return count
 
