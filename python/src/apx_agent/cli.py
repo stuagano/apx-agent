@@ -9143,11 +9143,7 @@ def fleet_backfill_cmd(
         raise SystemExit(code)
 
 
-@fleet.command("redeploy")
-@_fleet_select_options
-@click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
-@click.option("--fail-fast", is_flag=True, help="Stop at the first failure.")
-def fleet_redeploy_cmd(
+def _do_fleet_repoint(
     catalog: str | None,
     schema: str | None,
     name_glob: str | None,
@@ -9157,13 +9153,7 @@ def fleet_redeploy_cmd(
     apply: bool,
     fail_fast: bool,
 ) -> None:
-    """Re-promote each selected agent's @prod alias to its latest prod version.
-
-    "Latest" means the highest version carrying a prod manifest tag — never a
-    canary. Mirrors the single-agent prod-promote path and avoids pointing @prod
-    at an un-soaked canary (see _apps_registry.get_latest_prod_version). Agents
-    with no prod manifest (canary-only or non-apps) are skipped.
-    """
+    """Shared by `fleet repoint` and the deprecated `fleet redeploy` alias."""
     from apx_agent import _apps_registry, _fleet
 
     if schema and not catalog:
@@ -9183,7 +9173,9 @@ def fleet_redeploy_cmd(
             latest = _apps_registry.get_latest_prod_version(a.uc_name)
             current = _apps_registry.get_prod_alias_version(a.uc_name)
             if latest is None:
-                outcomes.append(_fleet.AgentOutcome(a.uc_name, "skipped", "no prod versions"))
+                outcomes.append(_fleet.AgentOutcome(
+                    a.uc_name, "skipped",
+                    "no prod-tagged versions (model-serving or never prod-deployed)"))
                 continue
             if latest == current:
                 outcomes.append(_fleet.AgentOutcome(
@@ -9202,6 +9194,67 @@ def fleet_redeploy_cmd(
     click.echo(text)
     if code:
         raise SystemExit(code)
+
+
+@fleet.command("repoint")
+@_fleet_select_options
+@click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
+@click.option("--fail-fast", is_flag=True, help="Stop at the first failure.")
+def fleet_repoint_cmd(
+    catalog: str | None,
+    schema: str | None,
+    name_glob: str | None,
+    where_exprs: tuple[str, ...],
+    uc_names: tuple[str, ...],
+    profile: str | None,
+    apply: bool,
+    fail_fast: bool,
+) -> None:
+    """Move each selected agent's @prod UC alias to its latest prod version.
+
+    This moves a pointer, nothing more: no wheel build, no bundle deploy, no
+    app restart. Fleet has no access to per-agent source checkouts, so it
+    cannot rebuild — use `apx-agent agents deploy` from an agent's project for
+    an actual redeploy.
+
+    "Latest" means the highest version carrying a prod manifest tag — never a
+    canary. Mirrors the single-agent prod-promote path (see
+    _apps_registry.get_latest_prod_version). Applies only to apps-target
+    agents with prod-tagged versions; model-serving agents and agents never
+    prod-deployed are reported as skipped with the reason.
+    """
+    _do_fleet_repoint(
+        catalog=catalog, schema=schema, name_glob=name_glob,
+        where_exprs=where_exprs, uc_names=uc_names, profile=profile,
+        apply=apply, fail_fast=fail_fast,
+    )
+
+
+@fleet.command("redeploy", hidden=True)
+@_fleet_select_options
+@click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
+@click.option("--fail-fast", is_flag=True, help="Stop at the first failure.")
+def fleet_redeploy_cmd(
+    catalog: str | None,
+    schema: str | None,
+    name_glob: str | None,
+    where_exprs: tuple[str, ...],
+    uc_names: tuple[str, ...],
+    profile: str | None,
+    apply: bool,
+    fail_fast: bool,
+) -> None:
+    """DEPRECATED — renamed to ``fleet repoint``. This alias still works."""
+    click.echo(
+        "# `fleet redeploy` is renamed to `fleet repoint` — this only moves the "
+        "@prod alias, it does not rebuild or redeploy.",
+        err=True,
+    )
+    _do_fleet_repoint(
+        catalog=catalog, schema=schema, name_glob=name_glob,
+        where_exprs=where_exprs, uc_names=uc_names, profile=profile,
+        apply=apply, fail_fast=fail_fast,
+    )
 
 
 # ---------------------------------------------------------------------------
