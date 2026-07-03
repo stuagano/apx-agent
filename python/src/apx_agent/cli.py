@@ -5485,6 +5485,27 @@ def _resolve_apps_uc_name(
     return None
 
 
+def _resolve_project_uc_name(cwd: Path) -> str | None:
+    """Resolve the UC name the current project's deploys register under, or None.
+
+    Shared by ``agents status`` and doctor's deploy-provenance check so both
+    answer "which registered model is THIS project's deploy?" identically:
+    an Apps bundle name (``databricks.yml``) composed via
+    ``_resolve_apps_uc_name``, else ``[tool.apx.agent].registered_model``.
+    """
+    config = _read_apx_agent_config(cwd / "pyproject.toml")
+    try:
+        _bundle_key, app_name = _resolve_app_name(_read_databricks_yml(cwd))
+    except Exception:
+        app_name = None  # not an Apps bundle — registered_model may still resolve
+    if app_name:
+        return _resolve_apps_uc_name(config, app_name)
+    registered = config.get("registered_model")
+    if isinstance(registered, str) and registered.strip():
+        return registered.strip()
+    return None
+
+
 def _register_apps_manifest_step(
     *,
     module: str,
@@ -7823,6 +7844,194 @@ def list_agents_cmd(
         "\n↳ inspect one:  apx-agent agents describe --app   (pick from a list)",
         fg="bright_black",
     )
+
+
+# ---------------------------------------------------------------------------
+# agents status — post-deploy health + provenance in one command (issue #410)
+# ---------------------------------------------------------------------------
+
+
+@agents.command("status")
+@click.argument("uc_name", metavar="[NAME]", required=False)
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks config profile (~/.databrickscfg).")
+def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> None:
+    """Is the deployed agent up, and what's running? — post-deploy health check.
+
+    Resolves the latest deployed version from Unity Catalog, then probes the
+    live target: a Databricks Apps deploy gets its app state plus a quick
+    ``/readyz`` probe; a model-serving deploy gets its endpoint ready state.
+    Prints target, state, URL, deployed version, and git provenance — with a
+    drift line comparing the deployed commit to local HEAD when run inside a
+    git repo.
+
+    NAME is a three-part UC name (``catalog.schema.model``); when omitted, the
+    current project's UC name resolves the same way ``apx-agent doctor``'s
+    deploy-provenance check does.
+
+    Exit code: 0 when healthy; 1 when the deployed target exists but is not
+    healthy (app not RUNNING, /readyz failed, endpoint not ready) or the
+    target / UC could not be reached.
+    """
+    from ._apps_registry import APP_NAME_TAG, GIT_DIRTY_TAG, GIT_SHA_TAG, SERVING_TAG
+
+    resolved = uc_name or _resolve_project_uc_name(Path.cwd())
+    if resolved is None:
+        raise click.ClickException(
+            "No agent to check: pass a three-part UC name "
+            "(apx-agent agents status catalog.schema.model), or run inside an "
+            "apx project with [tool.apx.agent].registered_model (or a "
+            "databricks.yml Apps bundle + non-placeholder catalog/schema)."
+        )
+
+    # 1. What's deployed, per the UC version ledger.
+    try:
+        from mlflow.tracking import MlflowClient
+        versions = MlflowClient().search_model_versions(f"name='{resolved}'")
+    except Exception as exc:
+        raise click.ClickException(
+            f"could not reach Unity Catalog for {resolved!r}: {exc}"
+        ) from exc
+    if not versions:
+        raise click.ClickException(
+            f"nothing deployed under {resolved!r} — no registered versions. "
+            "Deploy with `apx-agent agents deploy` first."
+        )
+    latest = max(versions, key=lambda v: int(v.version))
+    version = str(latest.version)
+    tags: dict[str, str] = {}
+    ws, cfg = _connect_workspace(profile)
+    try:
+        model = ws.registered_models.get(resolved)
+        tags = {t.key: t.value for t in (getattr(model, "tags", None) or [])}
+    except Exception:
+        pass  # version tags alone usually carry the target — keep going
+    tags.update(dict(getattr(latest, "tags", None) or {}))  # version tags win
+
+    # 2. Probe the live target.
+    target = "apps" if tags.get(SERVING_TAG) == "apps" else "model-serving"
+    readyz: bool | None = None
+    readyz_detail: str | None = None
+    if target == "apps":
+        name = tags.get(APP_NAME_TAG)
+        if not name:
+            raise click.ClickException(
+                f"{resolved} version {version} is an Apps deploy but records "
+                f"no {APP_NAME_TAG} tag — cannot locate the App. Re-deploy, or "
+                "re-stamp tags with `apx-agent agents adopt --app <name>`."
+            )
+        try:
+            app = ws.apps.get(name)
+        except Exception as exc:
+            raise click.ClickException(f"could not reach app {name!r}: {exc}") from exc
+        raw_state = getattr(getattr(app, "app_status", None), "state", None)
+        state = (
+            str(getattr(raw_state, "value", raw_state))
+            if raw_state is not None else "UNKNOWN"
+        )
+        url = getattr(app, "url", None)
+        if url:
+            # Fewer attempts than the deploy gate: status should be snappy —
+            # the app has been up for a while (or plainly isn't).
+            result = _check_readyz(url, profile=profile, attempts=2, delay_s=2.0)
+            readyz = result.is_ready
+            if not result.is_ready:
+                readyz_detail = str(result.checks)
+        healthy = state == "RUNNING" and readyz is True
+    else:
+        name = tags.get("apx.agent.model")
+        if not name:
+            raise click.ClickException(
+                f"{resolved} version {version} records no apx.agent.model tag "
+                "— cannot locate its serving endpoint. Re-deploy with this "
+                "apx-agent version to stamp it."
+            )
+        try:
+            endpoint = ws.serving_endpoints.get(name)
+        except Exception as exc:
+            raise click.ClickException(
+                f"could not reach serving endpoint {name!r}: {exc}"
+            ) from exc
+        ready = getattr(getattr(endpoint, "state", None), "ready", None)
+        state = (
+            str(getattr(ready, "value", ready)) if ready is not None else "UNKNOWN"
+        )
+        url = (
+            f"{cfg.host.rstrip('/')}/serving-endpoints/{name}/invocations"
+            if cfg.host else None
+        )
+        # ponytail: endpoint state + version is the ceiling for this iteration
+        # — no smoke invocation; state.ready already answers "is it up".
+        healthy = state == "READY"
+
+    # 3. Provenance + drift vs local HEAD (issue #403 tags).
+    git_sha = tags.get(GIT_SHA_TAG)
+    dirty = tags.get(GIT_DIRTY_TAG) == "true"
+    local_sha = _git_head_sha(Path.cwd())
+    drift: str | None = None  # None: not a git repo, or no recorded provenance
+    drift_line: str | None = None
+    if git_sha and local_sha:
+        if git_sha == local_sha:
+            drift = "match"
+            drift_line = (
+                f"none — deployed commit matches local HEAD ({local_sha[:12]})"
+            )
+        else:
+            drift = "drift"
+            drift_line = (
+                f"deployed {git_sha[:12]} != local HEAD {local_sha[:12]} "
+                "— re-deploy to ship HEAD"
+            )
+
+    if fmt == "json":
+        click.echo(json.dumps({
+            "uc_name": resolved,
+            "target": target,
+            "name": name,
+            "state": state,
+            "url": url,
+            "version": version,
+            "git_sha": git_sha,
+            "git_dirty": dirty if git_sha else None,
+            "local_sha": local_sha,
+            "drift": drift,
+            "readyz": readyz,
+            "healthy": healthy,
+        }, indent=2))
+    else:
+        rows = [
+            ("AGENT", resolved),
+            ("TARGET", target),
+            ("APP" if target == "apps" else "ENDPOINT", name),
+            ("STATE", state),
+        ]
+        if target == "apps":
+            if readyz is True:
+                rows.append(("READYZ", "ready"))
+            elif readyz is False:
+                rows.append(("READYZ", f"failed — {readyz_detail}"))
+            else:
+                rows.append(("READYZ", "not probed (app has no URL)"))
+        rows.append(("URL", url if url else "-"))
+        rows.append(("VERSION", version))
+        if git_sha:
+            sha_display = f"{git_sha[:12]} (dirty tree)" if dirty else git_sha[:12]
+        else:
+            sha_display = "(none recorded — deployed before provenance stamping)"
+        rows.append(("GIT SHA", sha_display))
+        if drift_line:
+            rows.append(("DRIFT", drift_line))
+        rows.append(("HEALTHY", "yes" if healthy else "no"))
+        width = max(len(key) for key, _ in rows)
+        for key, value in rows:
+            click.echo(f"{key:<{width}}  {value}")
+
+    if not healthy:
+        raise click.exceptions.Exit(1)
 
 
 # ---------------------------------------------------------------------------

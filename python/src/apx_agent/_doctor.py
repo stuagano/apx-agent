@@ -550,28 +550,9 @@ def check_deploy_provenance(cwd: Path, *, auth_ok: bool) -> Check | None:
     if not auth_ok or not _is_apx_project(cwd):
         return None
     from ._apps_registry import GIT_DIRTY_TAG, GIT_SHA_TAG
-    from .cli import (
-        _git_head_sha,
-        _read_apx_agent_config,
-        _read_databricks_yml,
-        _resolve_app_name,
-        _resolve_apps_uc_name,
-    )
+    from .cli import _git_head_sha, _resolve_project_uc_name
 
-    config = _read_apx_agent_config(cwd / "pyproject.toml")
-    try:
-        _bundle_key, app_name = _resolve_app_name(_read_databricks_yml(cwd))
-    except Exception:
-        app_name = None  # not an Apps bundle — registered_model may still resolve
-    if app_name:
-        uc_name = _resolve_apps_uc_name(config, app_name)
-    else:
-        registered = config.get("registered_model")
-        uc_name = (
-            registered.strip()
-            if isinstance(registered, str) and registered.strip()
-            else None
-        )
+    uc_name = _resolve_project_uc_name(cwd)
     if uc_name is None:
         return None
 
