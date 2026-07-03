@@ -195,11 +195,12 @@ class PopulationStore:
             ddls.append(constraints_ddl)
         if agent_evals_ddl:
             ddls.append(agent_evals_ddl)
+        # CREATE TABLE IF NOT EXISTS never errors on existence, so a swallow here
+        # only hides REAL failures (permission denied, invalid catalog/namespace),
+        # which then resurface later as an opaque "table not found" (#383). Let
+        # DDL errors propagate.
         for ddl in ddls:
-            try:
-                self._sql_exec(ddl)
-            except Exception:
-                pass  # table likely already exists
+            self._sql_exec(ddl)
 
     # ------------------------------------------------------------------
     # Write path — Spark (bulk, preferred)
