@@ -5329,6 +5329,46 @@ def _register_apps_manifest_step(
         )
 
 
+def _apps_readyz_recovery_hint(
+    app_name: str,
+    *,
+    profile: str | None,
+    uc_name_override: str | None,
+    log: Any,
+) -> str:
+    """Best-effort recovery hint for a failed readyz gate (issue #401).
+
+    If a prior ``@prod`` UC version with recorded ``apx.apps.git_sha``
+    provenance exists, name the exact ``canary rollback`` command that restores
+    it; otherwise say plainly that re-deploying a known-good commit is the
+    path. Never raises — a hint-lookup failure must not mask the readyz
+    failure itself.
+    """
+    try:
+        config = _read_apx_agent_config()
+        uc_name = _resolve_apps_uc_name(config, app_name, override=uc_name_override)
+        if uc_name is not None:
+            from ._apps_registry import get_prod_alias_version, get_version_git_sha
+            prod_version = get_prod_alias_version(uc_name)
+            if prod_version and get_version_git_sha(uc_name, prod_version):
+                cmd = (
+                    "apx-agent canary rollback --target apps "
+                    f"--to-version {prod_version}"
+                )
+                if profile:
+                    cmd += f" --profile {profile}"
+                return (
+                    f"Recovery: prior @prod version {prod_version} of {uc_name} "
+                    f"has recorded provenance — restore it with:\n  {cmd}"
+                )
+    except Exception as e:  # never mask the readyz failure with a hint failure
+        log(f"# recovery-hint lookup failed (non-fatal): {e}")
+    return (
+        "Recovery: no prior @prod version with recorded provenance found — "
+        "re-deploy a known-good commit to replace the broken app."
+    )
+
+
 def _deploy_apps(
     *,
     module: str,
@@ -5572,15 +5612,50 @@ def _deploy_apps_impl(
             logs_cmd = f"databricks apps logs {app_name}"
             if profile:
                 logs_cmd += f" --profile {profile}"
-            raise click.ClickException(
-                f"readyz gate failed — app is running but not healthy:\n{detail}\n\n"
+            # Ledger the failed deploy (issue #401): the broken app IS live,
+            # so the UC version trail must record it — tagged failed so no
+            # one mistakes it for a healthy version. Best-effort, like the
+            # success-path registration.
+            if register_uc:
+                _register_apps_manifest_step(
+                    module=module,
+                    config=_read_apx_agent_config(),
+                    app_name=app_name,
+                    bundle_target=bundle_target,
+                    uc_name_override=uc_name,
+                    extra_version_tags={
+                        **(extra_version_tags or {}),
+                        "apx.apps.readyz": "failed",
+                    },
+                    log=log,
+                )
+            recovery = _apps_readyz_recovery_hint(
+                app_name, profile=profile, uc_name_override=uc_name, log=log,
+            )
+            msg = (
+                f"readyz gate failed — the app is STILL LIVE, serving in a "
+                f"failed state:\n"
+                f"  app: {app_name}\n"
+                f"  url: {app_url}\n"
+                f"{detail}\n\n"
                 f"App logs (last 40 lines):\n"
                 f"{'─' * 60}\n"
                 f"{log_tail}\n"
                 f"{'─' * 60}\n\n"
                 f"Full logs:  {logs_cmd}\n"
-                f"Re-deploy, or re-run with --no-readyz-gate to skip the gate."
+                f"{recovery}\n"
+                f"(Or re-run with --no-readyz-gate to accept this state.)"
             )
+            if json_output:
+                click.echo(json.dumps({
+                    "ok": False,
+                    "error": msg,
+                    "app_name": app_name,
+                    "app_url": app_url,
+                    "readyz": checks,
+                }, default=str))
+                raise click.exceptions.Exit(1)
+            raise click.ClickException(msg)
 
     # 6d. Register a UC version manifest for the deployed App (best-effort).
     # Runs after the App is live so a registration failure never blocks the
