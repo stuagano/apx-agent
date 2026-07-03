@@ -369,6 +369,8 @@ from ._audit import (
     input_keys_summary,
     output_summary,
     set_audit_attrs,
+    stamp_version_correlation,
+    version_correlation_attrs,
 )
 
 # Bootstrap helpers for Apps-target quickstart
@@ -670,6 +672,8 @@ __all__ = [
     "hash_for_audit",
     "input_keys_summary",
     "output_summary",
+    "stamp_version_correlation",
+    "version_correlation_attrs",
     # Bootstrap
     "init_apps_experiment",
 ]

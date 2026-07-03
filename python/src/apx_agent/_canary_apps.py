@@ -64,7 +64,7 @@ class AppsCanaryConfig:
         prod_app_name: Workspace App name for production.
         canary_app_name: Workspace App name for the canary
             (``<prod>-canary-<version>``).
-        canary_app_url: URL of the deployed canary App, or ``""`` if
+        canary_app_url: URL of the deployed canary App, or ``None`` if
             the deploy step did not return one.
         traffic_hint: The ``--traffic`` value the operator passed.
             Not a routing directive — Apps has no platform traffic
@@ -76,13 +76,18 @@ class AppsCanaryConfig:
     canary_version: str
     prod_app_name: str
     canary_app_name: str
-    canary_app_url: str = ""
+    canary_app_url: str | None = None
     traffic_hint: int = 0
 
 
 @dataclass(frozen=True)
 class AppsVersionMetrics:
-    """Per-App aggregate metrics from MLflow traces."""
+    """Per-partition aggregate metrics from MLflow traces.
+
+    ``app_name`` holds the partition label: a workspace App name for the
+    app-tag fallback rows, or a version identity (``apx.model_version`` /
+    ``apx.git_sha`` value) for version-keyed rows (issue #404).
+    """
 
     app_name: str
     requests: int
@@ -258,6 +263,14 @@ def write_databricks_yml(path: Path, doc: dict[str, Any]) -> None:
 # just lands under ``"unknown"`` and the operator gets a warning.
 TRACE_APP_NAME_TAG = "apx.app.name"
 
+# Version-correlation tags (issue #404): the runtime stamps these trace
+# tags from the APX_MODEL_VERSION / APX_GIT_SHA env vars the deploy path
+# injects. When present, analyze partitions on them — real per-version
+# attribution. Absent (pre-#404 deploys) → today's app-name / "unknown"
+# fallback. Keys are the AuditAttrs schema in ``_audit.py``.
+TRACE_MODEL_VERSION_TAG = "apx.model_version"
+TRACE_GIT_SHA_TAG = "apx.git_sha"
+
 
 def _trace_attrs(t: Any) -> dict[str, Any]:
     if isinstance(t, dict):
@@ -271,6 +284,20 @@ def _trace_app(attrs: dict[str, Any]) -> str:
     if val:
         return str(val)
     return "unknown"
+
+
+def _trace_version_key(attrs: dict[str, Any]) -> str | None:
+    """Version identity for a trace, or None when it carries none.
+
+    Prefers the explicit UC version (``apx.model_version``) over the git
+    sha (``apx.git_sha``) — mirrors ``_canary._trace_version``'s
+    explicit-first ordering.
+    """
+    for tag in (TRACE_MODEL_VERSION_TAG, TRACE_GIT_SHA_TAG):
+        val = attrs.get(tag)
+        if val:
+            return str(val)
+    return None
 
 
 def _trace_status(t: Any) -> str | None:
@@ -315,14 +342,18 @@ def analyze_canary_app(
     lookback_hours: int = 24,
     max_traces: int = 2000,
 ) -> AppsCanaryReport:
-    """Partition MLflow traces by ``apx.app.name`` and aggregate per App.
+    """Partition MLflow traces per version / App and aggregate metrics.
 
     Both Apps emit traces to the same experiment via the
     ResponsesAgent compile path. This function:
 
     1. Calls ``mlflow.search_traces`` for the experiment.
-    2. Groups by the ``apx.app.name`` tag.
-    3. Returns per-App request count, error count, latency P50/P95/avg.
+    2. Groups by ``apx.model_version`` / ``apx.git_sha`` when present
+       (issue #404 — stamped by #404+ deploys), else the ``apx.app.name``
+       tag, else ``"unknown"``.
+    3. Returns request count, error count, latency P50/P95/avg per
+       partition: always one row per App name, plus one row per observed
+       version key.
 
     Args:
         prod_app_name: Workspace name of the production App.
@@ -376,10 +407,17 @@ def analyze_canary_app(
     buckets: dict[str, dict[str, Any]] = {}
     for r in rows:
         attrs = _trace_attrs(r)
-        app = _trace_app(attrs)
-        if app not in (prod_app_name, canary_app_name, "unknown"):
-            continue
-        bucket = buckets.setdefault(app, {"requests": 0, "errors": 0, "latencies": []})
+        # Version identity first (issue #404): traces from #404+ deploys
+        # carry apx.model_version / apx.git_sha and partition per version.
+        # Older traces fall back to the app-name tag, then "unknown".
+        version = _trace_version_key(attrs)
+        if version is not None:
+            key = version
+        else:
+            key = _trace_app(attrs)
+            if key not in (prod_app_name, canary_app_name, "unknown"):
+                continue
+        bucket = buckets.setdefault(key, {"requests": 0, "errors": 0, "latencies": []})
         bucket["requests"] += 1
         status = _trace_status(r)
         if status and str(status).upper() not in ("OK", "SUCCESS"):
@@ -387,6 +425,17 @@ def analyze_canary_app(
         latency = _trace_latency_ms(r)
         if latency is not None:
             bucket["latencies"].append(latency)
+
+    def _metrics(name: str, bucket: dict[str, Any]) -> AppsVersionMetrics:
+        latencies = sorted(bucket["latencies"])
+        return AppsVersionMetrics(
+            app_name=name,
+            requests=bucket["requests"],
+            errors=bucket["errors"],
+            latency_p50_ms=_percentile(latencies, 50),
+            latency_p95_ms=_percentile(latencies, 95),
+            latency_avg_ms=(sum(latencies) / len(latencies) if latencies else None),
+        )
 
     apps: list[AppsVersionMetrics] = []
     for name in (prod_app_name, canary_app_name):
@@ -397,15 +446,14 @@ def analyze_canary_app(
                 latency_p50_ms=None, latency_p95_ms=None, latency_avg_ms=None,
             ))
             continue
-        latencies = sorted(bucket["latencies"])
-        apps.append(AppsVersionMetrics(
-            app_name=name,
-            requests=bucket["requests"],
-            errors=bucket["errors"],
-            latency_p50_ms=_percentile(latencies, 50),
-            latency_p95_ms=_percentile(latencies, 95),
-            latency_avg_ms=(sum(latencies) / len(latencies) if latencies else None),
-        ))
+        apps.append(_metrics(name, bucket))
+
+    # Version-keyed rows (issue #404) follow the two app rows, sorted for
+    # stable output. "unknown" stays unreported, exactly as before.
+    for key in sorted(buckets):
+        if key in (prod_app_name, canary_app_name, "unknown"):
+            continue
+        apps.append(_metrics(key, buckets[key]))
 
     return AppsCanaryReport(
         prod_app_name=prod_app_name,
@@ -491,7 +539,7 @@ def deploy_canary_app(
         canary_version=sanitize_version(canary_version),
         prod_app_name=base_app_name,
         canary_app_name=new_app_name,
-        canary_app_url="",  # URL now surfaced by the shared deploy path's output
+        canary_app_url=None,  # URL now surfaced by the shared deploy path's output
         traffic_hint=traffic_hint,
     )
 

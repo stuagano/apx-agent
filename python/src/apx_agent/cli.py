@@ -1422,6 +1422,20 @@ variables:
       MLflow experiment ID for tracing. Populated by scripts/quickstart.py
       into a local .env file and surfaced here for the app environment.
     default: ""
+  apx_git_sha:
+    description: |
+      Git commit the deploy was cut from. Injected automatically by
+      `apx-agent deploy --target apps` so every trace the app emits carries
+      an apx.git_sha tag and `canary analyze` can attribute traffic per
+      version (issue #404). Leave the default.
+    default: ""
+  apx_model_version:
+    description: |
+      UC registered-model version this app serves, when known BEFORE the
+      deploy (e.g. a promote re-deploy: --var apx_model_version=7). The
+      first deploy of a version registers UC AFTER the app is live, so this
+      is usually empty and apx.git_sha is the correlation key.
+    default: ""
 
 # ``artifacts.default.build`` packages the deploy bundle into ``./.build``.
 # ``apx-agent deploy --target apps`` runs this script BEFORE ``bundle validate`` so
@@ -1497,6 +1511,10 @@ resources:
             value: ${var.mlflow_experiment_id}
           - name: APX_AGENT_MLFLOW_AUTOLOG
             value: "1"
+          - name: APX_GIT_SHA
+            value: ${var.apx_git_sha}
+          - name: APX_MODEL_VERSION
+            value: ${var.apx_model_version}
 
 targets:
   dev:
@@ -5835,6 +5853,26 @@ def _deploy_apps_impl(
         if eid:
             resolved_exp_id = eid
             extra_vars.append(f"mlflow_experiment_id={eid}")
+
+    # 2d. Version correlation (issue #404): pass the deploy commit into the
+    # app container as APX_GIT_SHA so every trace carries an apx.git_sha tag
+    # and `canary analyze --target apps` can attribute traffic per version.
+    # The sha is read from the provenance tags already computed for this
+    # deploy (single source — never recomputed). Only injected when the
+    # bundle declares the `apx_git_sha` variable (new scaffolds do), so
+    # pre-#404 bundles keep deploying untouched; an explicit caller
+    # `--var apx_git_sha=` always wins.
+    from ._apps_registry import GIT_SHA_TAG
+    correlation_sha = (extra_version_tags or {}).get(GIT_SHA_TAG)
+    declared_bundle_vars = doc.get("variables")
+    if (
+        correlation_sha
+        and isinstance(declared_bundle_vars, dict)
+        and "apx_git_sha" in declared_bundle_vars
+        and not any(v.startswith("apx_git_sha=") for v in vars or ())
+    ):
+        extra_vars.append(f"apx_git_sha={correlation_sha}")
+        log(f"  version correlation: APX_GIT_SHA={correlation_sha[:12]} → app env")
 
     deploy_var_args: list[str] = []
     for v in list(vars or ()) + extra_vars:
@@ -10319,11 +10357,12 @@ def canary_analyze(
     if total_requests == 0:
         click.echo(
             "No traces matched either App. Either no traffic in the window "
-            f"or the `{ 'apx.app.name' }` tag isn't on emitted traces — "
+            "or the `apx.git_sha` / `apx.app.name` tags aren't on emitted "
+            "traces (version tags require a #404+ re-deploy) — "
             "fall back to `databricks apps logs <name>` for unstructured logs."
         )
         return
-    click.echo(f"{'APP':<40}  {'REQUESTS':>9}  {'ERRORS':>7}  "
+    click.echo(f"{'APP / VERSION':<40}  {'REQUESTS':>9}  {'ERRORS':>7}  "
                f"{'ERR %':>6}  {'P50 ms':>7}  {'P95 ms':>7}  {'AVG ms':>7}")
     for a in apps_report.apps:
         err_pct = f"{a.error_rate * 100:.1f}" if a.requests else "-"
