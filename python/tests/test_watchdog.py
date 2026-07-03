@@ -58,7 +58,7 @@ def _make_transport(responses: dict[str, dict[str, Any]] | None = None) -> Any:
         _transport.calls.append(req)  # type: ignore[attr-defined]
         if req.get("type") == "violation_report":
             return responses.get("violation_report", {})
-        op = req.get("operation", "")
+        op = req.get("operation")
         return responses.get(op, {"action": "allow"})
 
     _transport.calls = []  # type: ignore[attr-defined]
@@ -113,21 +113,33 @@ def test_evaluate_parses_transport_response() -> None:
     assert d.metadata == {"owner": "data-team@x.com"}
 
 
-def test_evaluate_falls_back_to_allow_on_transport_exception() -> None:
+def test_evaluate_fails_closed_on_transport_exception() -> None:
+    # #371: a configured watchdog that errors fails CLOSED (reject) by default.
     def _broken(_req: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("network down")
 
     client = WatchdogClient(transport=_broken)
+    d = client.evaluate(operation="tool_call")
+    assert d.action == "reject"
+    assert d.reason is not None
+    assert "unreachable" in d.reason
+
+
+def test_evaluate_fail_closed_false_restores_allow_on_transport_exception() -> None:
+    def _broken(_req: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("network down")
+
+    client = WatchdogClient(transport=_broken, fail_closed=False)
     d = client.evaluate(operation="tool_call")
     assert d.action == "allow"
     assert d.reason is not None
     assert "transport error" in d.reason
 
 
-def test_evaluate_falls_back_when_transport_returns_non_dict() -> None:
+def test_evaluate_fails_closed_when_transport_returns_non_dict() -> None:
     client = WatchdogClient(transport=lambda _req: "garbage")  # type: ignore[arg-type,return-value]
     d = client.evaluate(operation="tool_call")
-    assert d.action == "allow"
+    assert d.action == "reject"
 
 
 def test_evaluate_forwards_operation_and_context() -> None:
