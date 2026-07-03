@@ -878,22 +878,26 @@ def _invoke_serving_deploy_with_gate(
     extra_args: list[str],
     *,
     ws: MagicMock,
+    deploy_mock: MagicMock | None = None,
 ) -> Result:
     """Invoke `agents deploy --target model-serving` WITHOUT --no-deploy.
 
     ``databricks.agents`` (not installed in the test venv) is faked with a
-    deploy() returning an endpoint name, and the SDK WorkspaceClient behind
-    the health gate is replaced with ``ws``.
+    deploy() returning an endpoint name (pass ``deploy_mock`` to inspect the
+    kwargs it received), and the SDK WorkspaceClient behind the health gate
+    is replaced with ``ws``.
     """
     import types as _types
 
     _write_agent_module(tmp_path)
     monkeypatch.chdir(tmp_path)
 
+    if deploy_mock is None:
+        deploy_mock = MagicMock(
+            return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
+        )
     fake_agents = _types.ModuleType("databricks.agents")
-    fake_agents.deploy = MagicMock(  # type: ignore[attr-defined]
-        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
-    )
+    fake_agents.deploy = deploy_mock  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "databricks.agents", fake_agents)
 
     runner = CliRunner()
@@ -1052,6 +1056,174 @@ def test_deploy_serving_no_deploy_skips_gate(
     payload = json.loads(result.stdout)
     assert payload["steps"]["deploy"] == "skipped"
     assert payload["steps"]["gate"] == "skipped"
+
+
+# ---------------------------------------------------------------------------
+# model-serving deploy: scale passthrough + --env-suffix naming (#407)
+# ---------------------------------------------------------------------------
+
+
+def _ready_ws() -> MagicMock:
+    """A WorkspaceClient fake whose endpoint is READY and answers the smoke."""
+    ws = MagicMock()
+    ws.serving_endpoints.get.return_value = _endpoint_state("READY", "NOT_UPDATING")
+    ws.serving_endpoints.query.return_value = SimpleNamespace(choices=[])
+    return ws
+
+
+def test_deploy_serving_scale_flags_reach_agents_deploy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#407: --scale-to-zero + --workload-size are forwarded verbatim to
+    databricks.agents.deploy and land in the --json-output summary."""
+    deploy_mock = MagicMock(
+        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
+    )
+
+    result = _invoke_serving_deploy_with_gate(
+        tmp_path, monkeypatch,
+        ["--scale-to-zero", "--workload-size", "Medium", "--json-output"],
+        ws=_ready_ws(), deploy_mock=deploy_mock,
+    )
+
+    assert result.exit_code == 0, result.output
+    kwargs = deploy_mock.call_args.kwargs
+    assert kwargs["scale_to_zero"] is True
+    assert kwargs["workload_size"] == "Medium"
+    payload = json.loads(result.stdout)
+    assert payload["scale_to_zero"] is True
+    assert payload["workload_size"] == "Medium"
+
+
+def test_deploy_serving_no_scale_to_zero_forwards_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#407: the flag is tri-state — --no-scale-to-zero forwards an explicit
+    False (distinct from "not passed", which forwards nothing)."""
+    deploy_mock = MagicMock(
+        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
+    )
+
+    result = _invoke_serving_deploy_with_gate(
+        tmp_path, monkeypatch, ["--no-scale-to-zero", "--json-output"],
+        ws=_ready_ws(), deploy_mock=deploy_mock,
+    )
+
+    assert result.exit_code == 0, result.output
+    kwargs = deploy_mock.call_args.kwargs
+    assert kwargs["scale_to_zero"] is False
+    assert "workload_size" not in kwargs
+    payload = json.loads(result.stdout)
+    assert payload["scale_to_zero"] is False
+    assert "workload_size" not in payload
+
+
+def test_deploy_serving_unset_scale_flags_are_not_forwarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#407: when neither scale flag is passed, NOTHING is forwarded —
+    databricks.agents.deploy's own defaults stay in charge — and the JSON
+    summary omits the keys."""
+    deploy_mock = MagicMock(
+        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
+    )
+
+    result = _invoke_serving_deploy_with_gate(
+        tmp_path, monkeypatch, ["--json-output"],
+        ws=_ready_ws(), deploy_mock=deploy_mock,
+    )
+
+    assert result.exit_code == 0, result.output
+    kwargs = deploy_mock.call_args.kwargs
+    assert "scale_to_zero" not in kwargs
+    assert "workload_size" not in kwargs
+    payload = json.loads(result.stdout)
+    assert "scale_to_zero" not in payload
+    assert "workload_size" not in payload
+
+
+def test_deploy_env_suffix_suffixes_uc_name_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#407: --env-suffix staging registers + deploys under
+    catalog.schema.model-staging — a naming convention, applied once, that
+    flows through log, deploy, and the JSON summary."""
+    deploy_mock = MagicMock(
+        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x-staging"),
+    )
+
+    result = _invoke_serving_deploy_with_gate(
+        tmp_path, monkeypatch, ["--env-suffix", "staging", "--json-output"],
+        ws=_ready_ws(), deploy_mock=deploy_mock,
+    )
+
+    assert result.exit_code == 0, result.output
+    # databricks.agents.deploy saw the suffixed UC name (positional arg 0).
+    assert deploy_mock.call_args.args[0] == "main.agents.x-staging"
+    payload = json.loads(result.stdout)
+    assert payload["uc_name"] == "main.agents.x-staging"
+    assert payload["steps"]["deploy"] == "ok"
+
+
+def test_deploy_name_falls_back_to_configured_registered_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#407: --name is optional when [tool.apx.agent].registered_model is set
+    in pyproject.toml — the configured UC name is used end-to-end."""
+    _write_agent_module(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.apx.agent]\nregistered_model = "main.agents.from_cfg"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+
+    fake_log_agent = MagicMock(
+        return_value=SimpleNamespace(registered_model_version="1"),
+    )
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("apx_agent.set_uc_tags_for_agent",
+               MagicMock(return_value={"apx.agent.name": "x"})), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(main, [
+            "agents", "deploy",
+            "--target", "model-serving",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--no-publish-tools",
+            "--no-deploy",
+            "--json-output",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    assert (
+        fake_log_agent.call_args.kwargs["registered_model_name"]
+        == "main.agents.from_cfg"
+    )
+    payload = json.loads(result.stdout)
+    assert payload["uc_name"] == "main.agents.from_cfg"
+
+
+def test_deploy_name_missing_and_unconfigured_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#407: with no --name and no configured registered_model, the error
+    names BOTH ways to provide the UC name."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy",
+        "--target", "model-serving",
+        "--module", "tmp_test_agent:agent",
+        "--model", "databricks-claude-sonnet-4-6",
+        "--no-deploy",
+    ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code != 0
+    assert "--name is required" in result.output
+    assert "[tool.apx.agent].registered_model" in result.output
 
 
 # ---------------------------------------------------------------------------
