@@ -351,13 +351,10 @@ class DeltaExampleStore:
             f"WHERE {' AND '.join(where)} "
             f"ORDER BY updated_at DESC LIMIT {int(filter.limit)}"
         )
-        try:
-            rows = self._run_sql(sql)
-        except Exception as e:
-            logger.warning(
-                "DeltaExampleStore.list failed: %s — returning [].", e,
-            )
-            return []
+        # Let infra failures propagate: a swallowed error would read as "no
+        # examples" and silently degrade answer quality — reserve [] for a
+        # genuinely empty result. (matches the memory store, H21) (#380)
+        rows = self._run_sql(sql)
         return [_row_to_example(r) for r in (rows or [])]
 
     def find_similar(self, opts: FindSimilarOptions) -> list[ExampleResult]:
