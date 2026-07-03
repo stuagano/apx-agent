@@ -1208,7 +1208,11 @@ def compile_to_responses_agent(
                 _persist_conv_turn(
                     _conversation_store,
                     conv_id,
-                    input_items=list(request.input),
+                    # On resume the client resends the original input, but it was
+                    # already persisted on the pause turn (and Command(resume) is
+                    # fed, not the messages). Persist empty input here to avoid
+                    # double-writing the prompt (#375).
+                    input_items=[] if resume is not None else list(request.input),
                     output_items=output_items,
                     model=effective_model,
                     response_id=response_id,
@@ -1415,7 +1419,11 @@ def compile_to_responses_agent(
                 _persist_conv_turn(
                     _conversation_store,
                     conv_id,
-                    input_items=list(request.input),
+                    # On resume the client resends the original input, but it was
+                    # already persisted on the pause turn (and Command(resume) is
+                    # fed, not the messages). Persist empty input here to avoid
+                    # double-writing the prompt (#375).
+                    input_items=[] if resume is not None else list(request.input),
                     output_items=output_items,
                     model=effective_model,
                     response_id=response_id,

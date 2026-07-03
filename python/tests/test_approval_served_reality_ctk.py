@@ -258,6 +258,40 @@ def test_responses_invoke_resume_approve_with_resent_input_keeps_output(
     assert "sent to x@y.com" in _out_blob(r2.output)  # tool result NOT sliced away
 
 
+def test_responses_resume_with_resent_input_does_not_double_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #375: the pause turn persists the user's input; a resume that RESENDS the
+    # original input (as the approval prose instructs) must NOT persist it again.
+    import apx_agent._responses_agent as _ra
+    from apx_agent import InMemoryConversationStore
+
+    _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="done")])
+
+    persisted_inputs: list[list[Any]] = []
+    orig = _ra._persist_conv_turn
+
+    def _spy(store: Any, conv_id: Any, *, input_items: Any, output_items: Any, **kw: Any) -> Any:
+        persisted_inputs.append(list(input_items))
+        return orig(store, conv_id, input_items=input_items, output_items=output_items, **kw)
+
+    monkeypatch.setattr(_ra, "_persist_conv_turn", _spy)
+
+    store = InMemoryConversationStore()
+    non_stream, _ = compile_to_responses_agent(
+        _agent(), model="m", conversation_store=store, checkpointer=InMemorySaver()
+    )
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        non_stream(_req("email x@y.com", thread_id="T"))  # pause → persists input
+        non_stream(_req("email x@y.com", thread_id="T", resume="approve"))  # resume RESENDS input
+
+    assert len(persisted_inputs) == 2, f"expected a pause + a resume persist: {persisted_inputs}"
+    assert persisted_inputs[0], "pause turn must persist the user input"
+    assert persisted_inputs[1] == [], (
+        f"resume turn re-persisted the input (double-write): {persisted_inputs[1]}"
+    )
+
+
 def test_responses_invoke_resume_deny_blocks_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="cancelled")])
     non_stream, _ = compile_to_responses_agent(
