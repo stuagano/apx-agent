@@ -98,7 +98,9 @@ def _quote_string(value: str) -> str:
     SQL statement. Identifier names (table_name) are validated separately
     by the constructor.
     """
-    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+    from ._sql_escape import sql_str_literal  # canonical escaper (#351/#352)
+
+    return sql_str_literal(value)
 
 
 def _sql_array_str(items: Sequence[str] | None) -> str:
