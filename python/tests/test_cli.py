@@ -796,6 +796,68 @@ def test_deploy_model_serving_json_output_failure(
     assert payload["steps"]["log"] == "ok"
 
 
+_POISONED_LOCK = (
+    'source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }\n'
+    'url = "https://pypi-proxy.dev.databricks.com/packages/ab/cd/foo-1.0-py3-none-any.whl"\n'
+)
+
+
+def test_deploy_failure_restores_sanitized_uv_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#416: the model-serving deploy sanitizes the project's OWN uv.lock in
+    place; if the deploy then fails, the original bytes must come back — the
+    working tree must not be left silently mutated."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "uv.lock").write_text(_POISONED_LOCK)
+
+    fake_log_agent = MagicMock(side_effect=RuntimeError("mlflow exploded"))
+    result = _invoke_model_serving_deploy([], log_agent=fake_log_agent)
+
+    assert result.exit_code != 0, result.output
+    assert (tmp_path / "uv.lock").read_text() == _POISONED_LOCK  # byte-identical
+    assert "restored original uv.lock" in result.output
+
+
+def test_deploy_success_keeps_sanitized_uv_lock_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#416: on success the sanitized (public-PyPI) lock is kept — repo policy —
+    and the in-place rewrite is announced instead of happening silently."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "uv.lock").write_text(_POISONED_LOCK)
+
+    result = _invoke_model_serving_deploy([])
+
+    assert result.exit_code == 0, result.output
+    text = (tmp_path / "uv.lock").read_text()
+    assert "pypi-proxy.dev.databricks.com" not in text
+    assert 'registry = "https://pypi.org/simple"' in text
+    assert "rewrote uv.lock in place" in result.output
+
+
+def test_deploy_warns_on_unknown_mirror_in_uv_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#416: an unknown mirror host in uv.lock isn't rewritten (no invented
+    rules) and doesn't block the deploy, but the warning names the host."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    mirror_lock = (
+        'source = { registry = "https://artifactory.corp.example.com/api/pypi/simple" }\n'
+    )
+    (tmp_path / "uv.lock").write_text(mirror_lock)
+
+    result = _invoke_model_serving_deploy([])
+
+    assert result.exit_code == 0, result.output  # warn, don't block
+    assert (tmp_path / "uv.lock").read_text() == mirror_lock  # untouched
+    assert "WARNING" in result.output
+    assert "artifactory.corp.example.com" in result.output
+
+
 # ---------------------------------------------------------------------------
 # `apx watchdog violations` / `apx watchdog status`
 # ---------------------------------------------------------------------------
@@ -2675,6 +2737,45 @@ def test_sanitize_uv_lock_rewrites_proxy_package_urls(tmp_path: Path) -> None:
     assert (
         "https://files.pythonhosted.org/packages/09/7d/abc/scipy-1.17.1.whl" in text
     )
+
+
+def test_warn_unknown_lock_mirrors_names_hosts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#416: a mirror with no rewrite rule (Artifactory, a prod proxy variant)
+    survives _sanitize_uv_lock unchanged; the deploy must warn loudly, name the
+    host, and say the container's `uv sync` will likely fail."""
+    from apx_agent.cli import _sanitize_uv_lock, _warn_unknown_lock_mirrors
+
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        'source = { registry = "https://artifactory.corp.example.com/api/pypi/simple" }\n'
+        'url = "https://artifactory.corp.example.com/pypi/foo-1.0-py3-none-any.whl"\n'
+    )
+    # No rewrite rule is invented for unknown mirrors — the file is untouched.
+    assert _sanitize_uv_lock(lock) is False
+    _warn_unknown_lock_mirrors(lock)
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "artifactory.corp.example.com" in err
+    assert "uv sync" in err
+
+
+def test_warn_unknown_lock_mirrors_silent_on_public_lock(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#416: public-PyPI locks — including git+https sources like apx-agent
+    pinned from GitHub — produce no mirror warning."""
+    from apx_agent.cli import _warn_unknown_lock_mirrors
+
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        'source = { registry = "https://pypi.org/simple" }\n'
+        'source = { git = "https://github.com/stuagano/apx-agent.git?rev=abc" }\n'
+        'url = "https://files.pythonhosted.org/x/foo-1.0-py3-none-any.whl"\n'
+    )
+    _warn_unknown_lock_mirrors(lock)
+    assert capsys.readouterr().err == ""
 
 
 def test_stage_build_manifest_no_wheel_stages_and_sanitizes(tmp_path: Path) -> None:
