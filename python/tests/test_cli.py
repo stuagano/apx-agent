@@ -770,7 +770,8 @@ def test_deploy_model_serving_json_output_success(
     assert payload["steps"] == {
         "publish_tools": "ok",
         "log": "ok",
-        "deploy": "skipped",   # --no-deploy
+        "deploy": "skipped",     # --no-deploy
+        "gate": "skipped",       # --no-deploy: nothing to health-check (#406)
         "set_uc_tags": "ok",
     }
     # Progress logs were routed to stderr, not stdout.
@@ -857,6 +858,200 @@ def test_deploy_warns_on_unknown_mirror_in_uv_lock(
     assert (tmp_path / "uv.lock").read_text() == mirror_lock  # untouched
     assert "WARNING" in result.output
     assert "artifactory.corp.example.com" in result.output
+
+
+# ---------------------------------------------------------------------------
+# model-serving deploy: health gate (#406) — endpoint READY + smoke invocation
+# ---------------------------------------------------------------------------
+
+
+def _endpoint_state(ready: str, config_update: str) -> SimpleNamespace:
+    """Shape of ``ws.serving_endpoints.get(...)`` the gate reads."""
+    return SimpleNamespace(
+        state=SimpleNamespace(ready=ready, config_update=config_update),
+    )
+
+
+def _invoke_serving_deploy_with_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extra_args: list[str],
+    *,
+    ws: MagicMock,
+) -> Result:
+    """Invoke `agents deploy --target model-serving` WITHOUT --no-deploy.
+
+    ``databricks.agents`` (not installed in the test venv) is faked with a
+    deploy() returning an endpoint name, and the SDK WorkspaceClient behind
+    the health gate is replaced with ``ws``.
+    """
+    import types as _types
+
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_agents = _types.ModuleType("databricks.agents")
+    fake_agents.deploy = MagicMock(  # type: ignore[attr-defined]
+        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
+    )
+    monkeypatch.setitem(sys.modules, "databricks.agents", fake_agents)
+
+    runner = CliRunner()
+    with patch(
+        "apx_agent.log_agent",
+        MagicMock(return_value=SimpleNamespace(registered_model_version="1")),
+    ), \
+         patch("apx_agent.set_uc_tags_for_agent",
+               MagicMock(return_value={"apx.agent.name": "x"})), \
+         patch("databricks.sdk.WorkspaceClient", return_value=ws), \
+         patch("mlflow.start_run"):
+        result = runner.invoke(main, [
+            "agents", "deploy",
+            "--target", "model-serving",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--no-publish-tools",
+        ] + extra_args)
+    sys.modules.pop("tmp_test_agent", None)
+    return result
+
+
+def test_deploy_serving_gate_pass_is_green(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#406: endpoint READY + smoke invocation answered → exit 0, steps.gate=ok."""
+    ws = MagicMock()
+    ws.serving_endpoints.get.return_value = _endpoint_state("READY", "NOT_UPDATING")
+    ws.serving_endpoints.query.return_value = SimpleNamespace(choices=[])
+
+    result = _invoke_serving_deploy_with_gate(
+        tmp_path, monkeypatch, ["--json-output"], ws=ws,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["endpoint"] == "agents_main-agents-x"
+    assert payload["steps"]["deploy"] == "ok"
+    assert payload["steps"]["gate"] == "ok"
+    # Exactly one smoke invocation, against the endpoint the deploy named.
+    ws.serving_endpoints.query.assert_called_once()
+    assert ws.serving_endpoints.query.call_args.kwargs["name"] == "agents_main-agents-x"
+
+
+def test_deploy_serving_gate_update_failed_fails_and_names_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#406: a terminal UPDATE_FAILED fast-fails the deploy — non-zero exit,
+    version + endpoint named, escape hatch mentioned, no smoke query sent."""
+    ws = MagicMock()
+    ws.serving_endpoints.get.return_value = _endpoint_state(
+        "NOT_READY", "UPDATE_FAILED",
+    )
+
+    result = _invoke_serving_deploy_with_gate(tmp_path, monkeypatch, [], ws=ws)
+
+    assert result.exit_code != 0, result.output
+    assert "version 1" in result.output
+    assert "agents_main-agents-x" in result.output
+    assert "UPDATE_FAILED" in result.output
+    assert "--no-readyz-gate" in result.output
+    ws.serving_endpoints.query.assert_not_called()
+
+
+def test_deploy_serving_gate_timeout_names_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#406: an endpoint that never reaches READY times out the gate — the
+    deploy fails and the error names the deployed version. Time is faked so
+    the 300s poll budget elapses instantly."""
+    from apx_agent import cli as cli_mod
+
+    class _Clock:
+        now = 0.0
+
+        def time(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.now += seconds
+
+    monkeypatch.setattr(cli_mod, "time", _Clock())
+
+    ws = MagicMock()
+    ws.serving_endpoints.get.return_value = _endpoint_state(
+        "NOT_READY", "IN_PROGRESS",
+    )
+
+    result = _invoke_serving_deploy_with_gate(tmp_path, monkeypatch, [], ws=ws)
+
+    assert result.exit_code != 0, result.output
+    assert "timed out after 300s" in result.output
+    assert "version 1" in result.output
+    assert "--no-readyz-gate" in result.output
+    ws.serving_endpoints.query.assert_not_called()
+
+
+def test_deploy_serving_gate_smoke_failure_fails_with_json_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#406: READY endpoint whose smoke invocation errors → non-zero exit;
+    the --json-output failure carries the gate detail + step ledger."""
+    ws = MagicMock()
+    ws.serving_endpoints.get.return_value = _endpoint_state("READY", "NOT_UPDATING")
+    ws.serving_endpoints.query.side_effect = RuntimeError("boom")
+
+    result = _invoke_serving_deploy_with_gate(
+        tmp_path, monkeypatch, ["--json-output"], ws=ws,
+    )
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["steps"]["deploy"] == "ok"
+    assert payload["steps"]["gate"] == "failed"
+    assert payload["version"] == "1"
+    assert payload["endpoint"] == "agents_main-agents-x"
+    assert "smoke invocation failed" in payload["error"]
+    assert "boom" in payload["error"]
+    assert "--no-readyz-gate" in payload["error"]
+
+
+def test_deploy_serving_no_readyz_gate_skips_poll_and_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#406: --no-readyz-gate is the escape hatch — no poll, no smoke query,
+    steps.gate=skipped, deploy still green."""
+    ws = MagicMock()
+
+    result = _invoke_serving_deploy_with_gate(
+        tmp_path, monkeypatch, ["--no-readyz-gate", "--json-output"], ws=ws,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["steps"]["deploy"] == "ok"
+    assert payload["steps"]["gate"] == "skipped"
+    ws.serving_endpoints.get.assert_not_called()
+    ws.serving_endpoints.query.assert_not_called()
+
+
+def test_deploy_serving_no_deploy_skips_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#406: --no-deploy never touches the gate — nothing was deployed, so
+    there is nothing to health-check (steps.gate=skipped, exit 0)."""
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = _invoke_model_serving_deploy(["--json-output"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["steps"]["deploy"] == "skipped"
+    assert payload["steps"]["gate"] == "skipped"
 
 
 # ---------------------------------------------------------------------------
