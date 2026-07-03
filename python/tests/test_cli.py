@@ -4905,3 +4905,71 @@ class TestPullComments:
         result = CliRunner().invoke(agents, ["pull-comments"])
         assert result.exit_code != 0
         assert "Could not read comments" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Model-serving deploy: provenance version tags (issue #403)
+# ---------------------------------------------------------------------------
+
+
+_PROVENANCE = {
+    "apx.apps.git_sha": "b" * 40,
+    "apx.git_dirty": "false",
+    "apx.lock_sha256": "c" * 64,
+}
+
+
+def _invoke_provenance_deploy(monkeypatch, tmp_path, fake_client):
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "apx_agent.cli._provenance_version_tags", lambda cwd: dict(_PROVENANCE),
+    )
+    fake_log_agent = MagicMock(
+        return_value=SimpleNamespace(registered_model_version="7")
+    )
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("mlflow.start_run"), \
+         patch("mlflow.tracking.MlflowClient", return_value=fake_client):
+        result = CliRunner().invoke(main, [
+            "agents", "deploy",
+            "--target", "model-serving",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--no-deploy", "--no-publish-tools", "--no-set-uc-tags",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+    return result
+
+
+def test_deploy_model_serving_stamps_provenance_on_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After log+register, the registered model VERSION carries the same
+    provenance tags the Apps manifest gets (issue #403)."""
+    fake_client = MagicMock()
+    result = _invoke_provenance_deploy(monkeypatch, tmp_path, fake_client)
+    assert result.exit_code == 0, result.output
+    written = {
+        call.args[2]: call.args[3]
+        for call in fake_client.set_model_version_tag.call_args_list
+    }
+    assert written == _PROVENANCE
+    # Every write targeted the registered name + version just logged.
+    assert all(
+        call.args[:2] == ("main.agents.x", "7")
+        for call in fake_client.set_model_version_tag.call_args_list
+    )
+    assert "provenance: 3 tags written on version 7" in result.output
+
+
+def test_deploy_model_serving_provenance_failure_is_non_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provenance tag-write failure warns but never reddens the deploy."""
+    fake_client = MagicMock()
+    fake_client.set_model_version_tag.side_effect = RuntimeError("UC down")
+    result = _invoke_provenance_deploy(monkeypatch, tmp_path, fake_client)
+    assert result.exit_code == 0, result.output
+    assert "provenance tags failed (non-fatal): UC down" in result.output

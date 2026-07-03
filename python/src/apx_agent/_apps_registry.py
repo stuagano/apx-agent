@@ -54,6 +54,11 @@ BUNDLE_TARGET_TAG = "apx.apps.bundle_target"
 # GIT_SHA records the exact commit a version was deployed from (P1 provenance).
 ROLE_TAG = "apx.apps.role"
 GIT_SHA_TAG = "apx.apps.git_sha"
+# Provenance stamped on EVERY deploy (issue #403): whether the deploying tree
+# had uncommitted changes, and the sha256 of the uv.lock that shipped — so
+# "does what's deployed match my working tree?" is answerable after the fact.
+GIT_DIRTY_TAG = "apx.git_dirty"
+LOCK_SHA256_TAG = "apx.lock_sha256"
 # UC alias that records which version is live in prod (P2 bookkeeping).
 PROD_ALIAS = "prod"
 

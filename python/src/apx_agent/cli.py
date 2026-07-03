@@ -4253,6 +4253,27 @@ def deploy(
     registered_version = info.registered_model_version
     _say(f"Logged {registered_model_name} version {registered_version}")
 
+    # 2b. Provenance (issue #403): stamp git SHA / dirty flag / uv.lock hash on
+    # the registered version — same tags the Apps manifest gets — so `apx-agent
+    # doctor` can detect drift between what's deployed and the local tree.
+    # Best-effort: a provenance write failure never turns a green deploy red.
+    provenance_tags = _provenance_version_tags(Path.cwd())
+    if provenance_tags:
+        try:
+            from mlflow.tracking import MlflowClient
+            _prov_client = MlflowClient()
+            for _prov_key, _prov_value in provenance_tags.items():
+                _prov_client.set_model_version_tag(
+                    registered_model_name, str(registered_version),
+                    _prov_key, _prov_value,
+                )
+            _say(
+                f"  provenance: {len(provenance_tags)} tags written on "
+                f"version {registered_version}"
+            )
+        except Exception as e:
+            click.echo(f"# provenance tags failed (non-fatal): {e}", err=True)
+
     # 3. Deploy to Model Serving
     if not no_deploy:
         try:
@@ -4391,6 +4412,33 @@ def _git_is_dirty(cwd: Path) -> bool:
     if result.returncode != 0:
         return True
     return bool(result.stdout.strip())
+
+
+def _provenance_version_tags(cwd: Path) -> dict[str, str]:
+    """Best-effort deploy-provenance tags for the tree at ``cwd`` (issue #403).
+
+    Returns ``apx.apps.git_sha`` + ``apx.git_dirty`` ("true"/"false") when
+    ``cwd`` is a git repo, and ``apx.lock_sha256`` (sha256 of ``uv.lock``)
+    when a lock file exists. Never raises: outside a git repo the git tags
+    are simply omitted, an unreadable lock omits the lock tag — provenance
+    capture must never fail a deploy.
+    """
+    import hashlib
+
+    from ._apps_registry import GIT_DIRTY_TAG, GIT_SHA_TAG, LOCK_SHA256_TAG
+
+    tags: dict[str, str] = {}
+    sha = _git_head_sha(cwd)
+    if sha:
+        tags[GIT_SHA_TAG] = sha
+        tags[GIT_DIRTY_TAG] = "true" if _git_is_dirty(cwd) else "false"
+    try:
+        lock_bytes = (cwd / "uv.lock").read_bytes()
+    except OSError:
+        lock_bytes = None  # missing/unreadable lock → tag omitted
+    if lock_bytes is not None:
+        tags[LOCK_SHA256_TAG] = hashlib.sha256(lock_bytes).hexdigest()
+    return tags
 
 
 def _read_databricks_yml(cwd: Path) -> dict[str, Any]:
@@ -5486,6 +5534,11 @@ def _deploy_apps(
     registers a UC version manifest (unless ``--no-register-uc``), and prints
     either the app URL (default) or a single JSON summary (``--json-output``) at
     the end.
+
+    Every deploy through here stamps provenance tags (git SHA, dirty flag,
+    uv.lock hash) on the registered manifest version (issue #403). The canary /
+    prod-at-commit paths call ``_deploy_apps_impl`` directly and pass their own
+    ``apx.apps.git_sha``, so there is no double-set.
     """
     cwd = Path.cwd()
 
@@ -5502,7 +5555,9 @@ def _deploy_apps(
             vars=vars,
             json_output=json_output, readyz_gate=readyz_gate,
             register_uc=register_uc, uc_name=uc_name,
-            app_name_override=app_name_override, log=log,
+            app_name_override=app_name_override,
+            extra_version_tags=_provenance_version_tags(cwd),
+            log=log,
         )
     except click.ClickException as e:
         if json_output:

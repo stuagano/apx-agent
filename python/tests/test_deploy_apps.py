@@ -1311,3 +1311,94 @@ def test_status_apps_shows_prod_and_canary(
     assert "@prod  → version 5" in result.output
     assert "canary → version 8" in result.output
     assert "promote ships canarysha678" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Deploy provenance stamping (issue #403)
+# ---------------------------------------------------------------------------
+
+
+def _git(args: list[str], cwd: Path) -> None:
+    subprocess.run(
+        ["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
+         "-c", "commit.gpgsign=false", *args],
+        cwd=cwd, check=True, capture_output=True, text=True,
+    )
+
+
+def test_provenance_tags_from_a_real_git_repo(tmp_path: Path) -> None:
+    """_provenance_version_tags reads the actual HEAD sha, dirty state, and
+    uv.lock hash back from a real repo — claim vs reality, not a mock."""
+    import hashlib
+
+    from apx_agent.cli import _provenance_version_tags
+
+    _git(["init"], tmp_path)
+    (tmp_path / "uv.lock").write_text("version = 1\n")
+    _git(["add", "."], tmp_path)
+    _git(["commit", "-m", "init"], tmp_path)
+
+    tags = _provenance_version_tags(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert tags["apx.apps.git_sha"] == head
+    assert tags["apx.git_dirty"] == "false"
+    assert tags["apx.lock_sha256"] == hashlib.sha256(
+        (tmp_path / "uv.lock").read_bytes()
+    ).hexdigest()
+
+    # An uncommitted file flips the dirty flag on the next capture.
+    (tmp_path / "extra.txt").write_text("uncommitted\n")
+    assert _provenance_version_tags(tmp_path)["apx.git_dirty"] == "true"
+
+
+def test_provenance_tags_omitted_outside_a_git_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No git repo and no uv.lock → empty tags, never an error."""
+    from apx_agent.cli import _provenance_version_tags
+
+    # Make sure git can't walk up into an enclosing repo.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    assert _provenance_version_tags(tmp_path) == {}
+
+
+def test_plain_deploy_threads_provenance_to_registrar(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain `deploy --target apps` stamps git sha + dirty flag + lock hash
+    on the registered manifest version (issue #403)."""
+    import hashlib
+
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "uv.lock").write_text("version = 1\n")
+    seen: dict[str, Any] = {}
+
+    def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
+                        agent_name=None, extra_version_tags=None):
+        seen["tags"] = extra_version_tags
+        from apx_agent._apps_registry import AppsManifestResult
+        return AppsManifestResult(uc_name=uc_name, version="9", app_name=app_name)
+
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.register_apps_manifest", _fake_registrar,
+    )
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: "a" * 40)
+    monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: True)
+    _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--uc-name", "main.agents.my_app",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen["tags"] == {
+        "apx.apps.git_sha": "a" * 40,
+        "apx.git_dirty": "true",
+        "apx.lock_sha256": hashlib.sha256(
+            (scaffold / "uv.lock").read_bytes()
+        ).hexdigest(),
+    }
