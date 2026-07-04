@@ -17,6 +17,39 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def governance_guards_present(
+    agent: "BaseAgent", config: "AgentConfig | None" = None
+) -> str | None:
+    """Return a human-readable reason if *agent* carries governance the Claude
+    SDK executor cannot enforce, else ``None``.
+
+    The ``before_tool`` / ``before_model`` / ``after_*`` hooks and the input /
+    output guardrail lists are exactly what ``PolicyGate`` (human approval),
+    ``WatchdogGuard``, tool allow/deny lists, rate limits, and the injection
+    heuristic all compose into. The :class:`ClaudeSDKExecutor` runs none of them
+    — it calls the tool function directly — so selecting it silently disables
+    every configured guard. ``config.guardrails`` is checked too, in case the
+    declarative guards have not yet been folded onto the agent instance.
+    """
+    for attr in ("_before_tool", "_after_tool", "_before_model", "_after_model"):
+        if getattr(agent, attr, None):
+            return f"agent has a {attr.lstrip('_')} hook"
+    if getattr(agent, "_input_guardrails", None):
+        return "agent has input guardrails"
+    if getattr(agent, "_output_guardrails", None):
+        return "agent has output guardrails"
+    if config is not None:
+        g = config.guardrails
+        if (
+            g.allowed_tools is not None
+            or g.blocked_tools
+            or g.rate_limit is not None
+            or g.injection_detection
+        ):
+            return "config declares [tool.apx.agent.guardrails]"
+    return None
+
+
 def create_executor(
     agent: "BaseAgent",
     config: "AgentConfig",
@@ -70,6 +103,15 @@ def create_executor(
                 "executor='claude-sdk' is only supported for LlmAgent; "
                 "falling back to LangGraphExecutor for %s",
                 type(agent).__name__,
+            )
+            return LangGraphExecutor(agent, ws=ws, model=config.model)
+
+        if reason := governance_guards_present(agent, config):
+            logger.warning(
+                "executor='claude-sdk' cannot enforce configured governance "
+                "(%s); using the governed LangGraph path instead so guards are "
+                "not silently bypassed.",
+                reason,
             )
             return LangGraphExecutor(agent, ws=ws, model=config.model)
 
