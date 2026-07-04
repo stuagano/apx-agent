@@ -329,13 +329,27 @@ class TestForget:
         out = _find_tool(tools, "forget")(id="mem_xyz")
         assert out == "No memory with id mem_xyz."
 
-    def test_forget_works_without_principal(self) -> None:
-        """Deletion is principal-agnostic — keyed by id only."""
+    def test_forget_without_principal_deletes_nothing(self) -> None:
+        """Fail-closed: with no resolvable principal, forget deletes nothing (#466)."""
         store = InMemoryMemoryStore()
         mem = store.add({"principal_id": "u1", "content": "x"})
         tools = make_memory_tools(store=store)  # no resolver, no default
         out = _find_tool(tools, "forget")(id=mem.id)
-        assert "Forgot" in out
+        assert out == f"No memory with id {mem.id}."
+        assert store.get(mem.id) is not None  # untouched
+
+    def test_forget_refuses_another_principals_memory(self) -> None:
+        """#466: a caller cannot delete another principal's memory by id.
+
+        The reply is identical to a genuine miss so the caller can't probe
+        which ids exist in another principal's scope.
+        """
+        store = InMemoryMemoryStore()
+        victim = store.add({"principal_id": "victim", "content": "secret"})
+        tools = make_memory_tools(store=store, default_principal_id="attacker")
+        out = _find_tool(tools, "forget")(id=victim.id)
+        assert out == f"No memory with id {victim.id}."
+        assert store.get(victim.id) is not None  # victim's memory survives
 
 
 # ---------------------------------------------------------------------------
@@ -514,14 +528,16 @@ class TestForgetPublishesPrincipal:
 
     def test_dep_forget_publishes_injected_principal(self) -> None:
         store = _ScopeRecordingStore()
+        mem = store.add({"principal_id": "alice", "content": "x"})
         tools = make_memory_tools(store=store, _use_dep_principal=True)
-        _find_tool(tools, "forget")(id="mem_x", principal="alice")
+        _find_tool(tools, "forget")(id=mem.id, principal="alice")
         assert store.delete_scope == "alice"
 
     def test_dep_forget_falls_back_to_default_principal(self) -> None:
         store = _ScopeRecordingStore()
+        mem = store.add({"principal_id": "bob", "content": "x"})
         tools = make_memory_tools(
             store=store, _use_dep_principal=True, default_principal_id="bob"
         )
-        _find_tool(tools, "forget")(id="x", principal=None)
+        _find_tool(tools, "forget")(id=mem.id, principal=None)
         assert store.delete_scope == "bob"
