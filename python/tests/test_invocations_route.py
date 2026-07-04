@@ -11,6 +11,9 @@ Verifies:
      assertion — user-scope auth survives the route layer.
   5. Existing legacy endpoints (``/health``, ``/.well-known/agent.json``) still
      work alongside the new route.
+  6. **Dual-shape acceptance (#438)**: a Responses-shape body (``input``)
+     executes the agent and gets a Responses-shape reply; a body with neither
+     ``messages`` nor ``input`` is a 422 naming both accepted shapes.
 
 Skips if optional extras are missing.
 """
@@ -228,6 +231,85 @@ class TestObOHeaderBridge:
         custom_inputs = call_args.kwargs["custom_inputs"]
         # custom_inputs may be None (no body custom_inputs, no header) — fine.
         assert custom_inputs is None or "user_token" not in custom_inputs
+
+
+class TestInputShapeOnInvocations:
+    """#438: the Responses shape a RemoteDatabricksAgent posts must actually
+    execute the agent — not be silently accepted as an empty conversation."""
+
+    def test_input_shape_executes_agent_and_returns_responses_reply(
+        self, app_and_chat_agent
+    ) -> None:
+        client, captured = app_and_chat_agent
+        from mlflow.types.agent import ChatAgentMessage, ChatAgentResponse
+
+        captured["chat_agent"].predict.return_value = ChatAgentResponse(
+            messages=[
+                ChatAgentMessage(role="assistant", content="the answer", id="m1")
+            ]
+        )
+
+        resp = client.post(
+            "/invocations",
+            json={"input": [{"role": "user", "content": "what is the answer?"}]},
+        )
+
+        assert resp.status_code == 200
+        # The agent REALLY saw the user turn — no more empty-conversation
+        # "I'm ready to help" non-answer.
+        sent = captured["chat_agent"].predict.call_args.args[0]
+        assert [m.content for m in sent] == ["what is the answer?"]
+        # And the reply is the shape the Responses-speaking poster parses.
+        body = resp.json()
+        assert body["output"][0]["content"][0]["text"] == "the answer"
+
+    def test_input_content_parts_are_flattened_to_text(
+        self, app_and_chat_agent
+    ) -> None:
+        client, captured = app_and_chat_agent
+        from mlflow.types.agent import ChatAgentResponse
+
+        captured["chat_agent"].predict.return_value = ChatAgentResponse(messages=[])
+
+        client.post(
+            "/invocations",
+            json={
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "part one"}],
+                    }
+                ]
+            },
+        )
+
+        sent = captured["chat_agent"].predict.call_args.args[0]
+        assert [m.content for m in sent] == ["part one"]
+
+    def test_bare_string_input_is_one_user_turn(self, app_and_chat_agent) -> None:
+        client, captured = app_and_chat_agent
+        from mlflow.types.agent import ChatAgentResponse
+
+        captured["chat_agent"].predict.return_value = ChatAgentResponse(messages=[])
+
+        client.post("/invocations", json={"input": "hello there"})
+
+        sent = captured["chat_agent"].predict.call_args.args[0]
+        assert [(m.role, m.content) for m in sent] == [("user", "hello there")]
+
+    def test_neither_messages_nor_input_is_422_naming_both_shapes(
+        self, app_and_chat_agent
+    ) -> None:
+        client, captured = app_and_chat_agent
+
+        resp = client.post("/invocations", json={"prompt": "hi"})
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "messages" in detail
+        assert "input" in detail
+        # And the agent was never run on a fabricated empty conversation.
+        assert not captured["chat_agent"].predict.called
 
 
 class TestErrorHandling:

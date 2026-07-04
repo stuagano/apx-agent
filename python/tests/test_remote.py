@@ -526,7 +526,9 @@ class TestRun:
                 await agent.run([Message(role="user", content="hi")], request)
 
     @pytest.mark.asyncio
-    async def test_http_path_json_fallback_on_unexpected_shape(self):
+    async def test_http_path_parses_chat_agent_reply(self):
+        """A locally served create_app peer answers in the ChatAgent shape —
+        the client must extract the assistant text, not dump JSON (#438)."""
         agent = self._make_agent_with_card()
         agent._app_name = None
         request = make_request()
@@ -534,7 +536,13 @@ class TestRun:
         async def mock_post(url, **kwargs):
             resp = MagicMock(spec=httpx.Response)
             resp.status_code = 200
-            resp.json.return_value = {"output": []}  # unexpected shape
+            resp.json.return_value = {
+                "messages": [
+                    {"role": "assistant", "content": "", "tool_calls": [{}]},
+                    {"role": "tool", "content": "raw tool output"},
+                    {"role": "assistant", "content": "chat reply", "id": "m3"},
+                ]
+            }
             resp.raise_for_status = MagicMock()
             return resp
 
@@ -546,8 +554,80 @@ class TestRun:
 
             result = await agent.run([Message(role="user", content="hi")], request)
 
-        # Falls back to JSON.dumps — should not raise
-        assert isinstance(result, str)
+        assert result == "chat reply"
+
+    @pytest.mark.asyncio
+    async def test_http_path_names_url_and_shape_on_unparseable_reply(self):
+        """Neither shape parseable → the error names the URL and the shape
+        received (with a truncated body), never a JSON-blob "answer" (#438)."""
+        agent = self._make_agent_with_card()
+        agent._app_name = None
+        request = make_request()
+
+        async def mock_post(url, **kwargs):
+            resp = MagicMock(spec=httpx.Response)
+            resp.status_code = 200
+            resp.json.return_value = {"weird": "x" * 1000}
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post = AsyncMock(side_effect=mock_post)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with pytest.raises(RuntimeError) as excinfo:
+                await agent.run([Message(role="user", content="hi")], request)
+
+        msg = str(excinfo.value)
+        assert f"{agent._base_url}/invocations" in msg
+        assert "'weird'" in msg  # the shape actually received
+        assert "output" in msg and "messages" in msg  # both accepted shapes named
+        assert "x" * 100 in msg  # a debugging excerpt of the body…
+        assert "x" * 600 not in msg  # …but truncated, not the whole blob
+
+    @pytest.mark.asyncio
+    async def test_stream_parses_chat_agent_chunk_deltas(self):
+        """SSE frames whose delta is a ChatAgentChunk message dict — what a
+        locally served create_app peer streams — must yield the text (#438)."""
+        agent = self._make_agent_with_card()
+        agent._app_name = None
+        request = make_request()
+
+        lines = [
+            'data: {"delta": {"role": "assistant", "content": "hel", "id": "m1"}}',
+            "",
+            'data: {"delta": {"role": "assistant", "content": "lo", "id": "m1"}}',
+            "",
+        ]
+
+        async def aiter_lines():
+            for line in lines:
+                yield line
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.aiter_lines = aiter_lines
+
+        stream_cm = MagicMock()
+        stream_cm.__aenter__ = AsyncMock(return_value=resp)
+        stream_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = MagicMock()
+            instance.stream = MagicMock(return_value=stream_cm)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            chunks = [
+                c
+                async for c in agent.stream(
+                    [Message(role="user", content="hi")], request
+                )
+            ]
+
+        assert chunks == ["hel", "lo"]
 
 
 # ---------------------------------------------------------------------------
