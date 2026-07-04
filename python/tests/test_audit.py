@@ -122,6 +122,24 @@ def test_set_audit_attrs_no_op_for_none_span() -> None:
     set_audit_attrs(None, agent_name="triage", tool_name="x")
 
 
+def test_user_hash_none_guard_and_reuse() -> None:
+    """user_hash returns None for absent ids (so set_audit_attrs skips it) and
+    otherwise reuses hash_for_audit — never hashing the literal 'None'."""
+    from apx_agent._audit import user_hash
+
+    assert user_hash(None) is None
+    assert user_hash("") is None
+    assert user_hash("u-123") == hash_for_audit("u-123")
+    assert user_hash("u-123") != hash_for_audit("None")
+
+
+def test_set_audit_attrs_records_user_hash() -> None:
+    span = MagicMock()
+    set_audit_attrs(span, user_hash=hash_for_audit("u-1"))
+    keys_set = [c.args[0] for c in span.set_attribute.call_args_list]
+    assert "apx.user.hash" in keys_set
+
+
 def test_set_audit_attrs_raises_on_unknown_kwarg() -> None:
     span = MagicMock()
     with pytest.raises(ValueError, match="unknown kwarg"):

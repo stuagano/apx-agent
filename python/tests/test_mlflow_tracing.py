@@ -181,6 +181,56 @@ class TestChatAgentSpans:
         assert "AGENT" in span_types
         assert "CHAIN" in span_types
 
+    def _predict_span_attrs(self, custom_inputs: dict[str, Any]) -> dict[str, Any]:
+        """Drive predict and return the attributes recorded on the AGENT span."""
+        import mlflow
+        from apx_agent import chat_agent_for
+        from langchain_core.messages import AIMessage
+        from mlflow.types.agent import ChatAgentMessage
+
+        wrapped = chat_agent_for(LlmAgent(tools=[]), model="databricks-claude-sonnet-4-6")
+        fake_graph = MagicMock()
+        fake_graph.invoke.side_effect = lambda state: {
+            "messages": [*state["messages"], AIMessage(content="ok")]
+        }
+
+        observed: list[dict[str, Any]] = []
+
+        def _spy_start_span(name, span_type="UNKNOWN", **kwargs):
+            span = MagicMock()
+            span.set_attribute.side_effect = (
+                lambda k, v: observed.append({"name": name, "key": k, "value": v})
+            )
+            cm = MagicMock()
+            cm.__enter__ = MagicMock(return_value=span)
+            cm.__exit__ = MagicMock(return_value=None)
+            return cm
+
+        with patch(
+            "apx_agent._chat_agent.compile_to_langgraph", return_value=fake_graph
+        ), patch(
+            "apx_agent._defaults._make_workspace_client", return_value=MagicMock()
+        ), patch.object(mlflow, "start_span", side_effect=_spy_start_span):
+            wrapped.predict(
+                messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
+                custom_inputs=custom_inputs,
+            )
+        return {
+            a["key"]: a["value"] for a in observed if a["name"] == "ApxChatAgent.predict"
+        }
+
+    def test_predict_sets_user_hash_from_user_id(self) -> None:
+        """#470: the AGENT span records SHA-256(user_id) so an action is
+        attributable to a user (not just 'a token was present')."""
+        from apx_agent._audit import hash_for_audit
+
+        attrs = self._predict_span_attrs({"user_id": "u-1", "user_token": "tok"})
+        assert attrs["apx.user.hash"] == hash_for_audit("u-1")
+
+    def test_predict_omits_user_hash_without_user_id(self) -> None:
+        attrs = self._predict_span_attrs({"user_token": "tok"})
+        assert "apx.user.hash" not in attrs
+
     def test_predict_stamps_version_correlation_from_env(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

@@ -306,6 +306,18 @@ def stamp_caller_correlation(span: Any, headers: Mapping[str, str]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def user_hash(user_id: str | None) -> str | None:
+    """Audit fingerprint of *user_id*, or ``None`` when absent.
+
+    A thin None-guarding wrapper over :func:`hash_for_audit` so callers can pass
+    the result straight to ``set_audit_attrs(user_hash=...)`` (which skips
+    ``None``) without hashing the literal string ``"None"``.
+    """
+    if not user_id:
+        return None
+    return hash_for_audit(user_id)
+
+
 def set_audit_attrs(span: Any, **fields: Any) -> None:
     """Set audit attributes on ``span`` using short kwarg names.
 
