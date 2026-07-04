@@ -534,6 +534,20 @@ def resolve_checkpointer(
     scfg = config_session if config_session is not None else getattr(agent, "session_config", None)
     if scfg is None or scfg.type != "lakebase":
         return None
+    # A checkpointer is only compilable for an LlmAgent (compile rejects it for
+    # composite topologies). Building one for a Sequential/Loop/Router/Handoff
+    # agent would reach the NotImplementedError in _compile and crash every
+    # served turn — degrade to stateless instead, matching the InMemory
+    # auto-inject guard in chat_agent_for.
+    from ._agents import LlmAgent  # noqa: PLC0415
+
+    if agent is not None and not isinstance(agent, LlmAgent):
+        logger.warning(
+            "[tool.apx.agent.session] type='lakebase' is only supported for an "
+            "LlmAgent; %s runs stateless (no durable checkpointer).",
+            type(agent).__name__,
+        )
+        return None
     from ._wiring import _resolve_env_var  # noqa: PLC0415
 
     host = _resolve_env_var(scfg.host) if scfg.host else None
