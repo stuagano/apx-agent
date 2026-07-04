@@ -76,6 +76,42 @@ async def test_guard_gates_writes_and_probe_not_reads(monkeypatch):
     await _dev_write_guard(_req(method="GET", path="/_apx/probe/checks"))
 
 
+@pytest.mark.asyncio
+async def test_guard_gates_per_principal_data_reads_on_deployed_app(monkeypatch):
+    """#468: on a deployed App the per-principal data reads must require the
+    operator token, so one viewer can't read another's data."""
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
+    monkeypatch.setenv("APX_DEV_UI_TOKEN", "s3cret")
+
+    for path in (
+        "/_apx/approvals",
+        "/_apx/conversations",
+        "/_apx/conversations/conv-1/items",
+        "/_apx/memories",
+        "/_apx/traces",
+        "/_apx/traces/tr-1",
+    ):
+        with pytest.raises(HTTPException):
+            await _dev_write_guard(_req(method="GET", path=path))
+        # …but allowed with the operator token.
+        await _dev_write_guard(
+            _req(method="GET", path=path, headers={"x-apx-dev-token": "s3cret"})
+        )
+
+    # Benign reads stay open (end-user chat + diagnostics keep working).
+    for path in ("/_apx/chat", "/_apx/topology", "/_apx/probe/checks"):
+        await _dev_write_guard(_req(method="GET", path=path))
+
+
+@pytest.mark.asyncio
+async def test_data_reads_open_locally(monkeypatch):
+    """Locally (not a deployed App) the data reads stay open — dev convenience."""
+    monkeypatch.delenv("DATABRICKS_APP_PORT", raising=False)
+    monkeypatch.delenv("APX_DEV_UI_TOKEN", raising=False)
+    for path in ("/_apx/approvals", "/_apx/conversations", "/_apx/memories", "/_apx/traces"):
+        await _dev_write_guard(_req(method="GET", path=path))
+
+
 # --- H18: SSRF probe URL validation ---------------------------------------
 
 
