@@ -44,7 +44,12 @@ pytest.importorskip("mlflow")
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from langchain_core.language_models import BaseChatModel  # noqa: E402
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage  # noqa: E402
+from langchain_core.messages import (  # noqa: E402
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGeneration, ChatResult  # noqa: E402
 
 from apx_agent import AgentConfig, LlmAgent, create_app  # noqa: E402
@@ -56,6 +61,9 @@ B_URL = "http://agent-b.internal"
 B_TOOL_CALLS: list[str] = []
 # What each fake model saw bound as tools — the compiled graph's real tool set.
 BOUND_TOOLS: dict[str, list[str]] = {}
+# The last user-message content each fake model saw — for B, this is exactly
+# what crossed the wire from A's delegate (#442).
+SEEN_USER_CONTENT: dict[str, Any] = {}
 
 
 def secret_word() -> str:
@@ -93,6 +101,11 @@ class _DelegatingModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
+        last_human = next(
+            (m for m in reversed(messages) if isinstance(m, HumanMessage)), None
+        )
+        if last_human is not None:
+            SEEN_USER_CONTENT[self.key] = last_human.content
         last_tool = next(
             (m for m in reversed(messages) if isinstance(m, ToolMessage)), None
         )
@@ -470,3 +483,96 @@ def test_degraded_sub_agent_repairs_on_first_use(
             # collect_tools (the /tools + MCP surface) reads __doc__ live.
             collected = {t.name: t.description for t in agent_a.collect_tools()}
             assert collected["agent"] == "Knows the secret word."
+
+
+# ---------------------------------------------------------------------------
+# #442: the peer's REAL input schema propagates — and structured args cross
+# the wire as a JSON object, not prose squeezed into one message string.
+# ---------------------------------------------------------------------------
+
+B_TOOL_ARGS: list[str] = []
+
+
+def secret_word_for(team: str) -> str:
+    """Return the secret word for a team."""
+    B_TOOL_ARGS.append(team)
+    return f"{SENTINEL}-{team}"
+
+
+def test_structured_schema_propagates_and_args_cross_the_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B's card advertises secret_word_for(team: str). Before #442, A's
+    delegate collapsed that to {message: string}; now A's compiled graph
+    exposes ``team`` and transmits {"team": ...} as JSON message content —
+    which B's LLM sees verbatim."""
+    import json
+
+    from apx_agent._inspection import _inspect_tool_fn
+
+    B_TOOL_CALLS.clear()
+    B_TOOL_ARGS.clear()
+    BOUND_TOOLS.clear()
+    SEEN_USER_CONTENT.clear()
+    _patch_workspace_clients(monkeypatch)
+    _install_models(
+        monkeypatch,
+        {
+            "model-a": _DelegatingModel(
+                key="A", tool_name="agent_b", tool_args={"team": "blue"}
+            ),
+            "model-b": _DelegatingModel(
+                key="B", tool_name="secret_word_for", tool_args={"team": "blue"}
+            ),
+        },
+    )
+
+    agent_b = LlmAgent(tools=[secret_word_for], name="agent-b")
+    app_b = create_app(
+        agent_b,
+        config=AgentConfig(
+            name="agent-b",
+            description="Knows the secret word per team.",
+            model="model-b",
+        ),
+    )
+    with TestClient(app_b):
+        _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
+
+        agent_a = LlmAgent(tools=[], name="agent-a")
+        app_a = create_app(
+            agent_a,
+            config=AgentConfig(name="agent-a", model="model-a", sub_agents=[B_URL]),
+        )
+        with TestClient(app_a) as client_a:
+            # The delegate the compiled graph binds exposes B's real parameter.
+            delegate = next(fn for fn in agent_a._tool_fns if fn.__name__ == "agent_b")
+            plain_params, dep_names = _inspect_tool_fn(delegate)
+            assert list(plain_params) == ["team"]
+            assert dep_names == ["headers"]
+
+            # The advertised descriptor carries the card schema, not {message}.
+            descriptor = next(
+                t for t in agent_a.collect_tools() if t.name == "agent_b"
+            )
+            assert descriptor.input_schema is not None
+            assert "team" in descriptor.input_schema["properties"]
+            assert "message" not in descriptor.input_schema["properties"]
+
+            resp = client_a.post(
+                "/invocations",
+                json={
+                    "messages": [
+                        {"role": "user", "content": "Secret word for team blue?"}
+                    ]
+                },
+            )
+
+            assert resp.status_code == 200, resp.text
+            # REALITY: B's tool body executed with the structured argument.
+            assert B_TOOL_ARGS == ["blue"], "agent B's tool never got the arg"
+            # WIRE: what B's LLM saw as the user message is the JSON args
+            # object A's delegate serialized — named fields, not prose.
+            assert json.loads(SEEN_USER_CONTENT["B"]) == {"team": "blue"}
+            # And the sentinel still travels back to A's final answer.
+            assert f"{SENTINEL}-blue" in _final_texts(resp.json())
