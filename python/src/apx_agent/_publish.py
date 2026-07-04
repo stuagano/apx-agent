@@ -619,3 +619,140 @@ def publish_standalone_tools_to_registry(
 
     logger.info("Published %d standalone tools to %s", count, tools_table)
     return count
+
+
+# ---------------------------------------------------------------------------
+# Registry deregistration + dependents scan (issue #446)
+# ---------------------------------------------------------------------------
+
+_REGISTRY_DELETE = "DELETE FROM {table} WHERE agent_id = {agent_id}"
+
+_DEPENDENT_REGISTRY_SELECT = """
+SELECT name, endpoint_url, supervisor_agent_id, updated_at FROM {table}
+WHERE agent_id NOT IN ({agent_ids}) AND ({refs})
+"""
+
+_DEPENDENT_TOOLS_SELECT = """
+SELECT agent_name, name, sub_agent_url, updated_at FROM {table}
+WHERE (agent_id IS NULL OR agent_id NOT IN ({agent_ids})) AND ({refs})
+"""
+
+
+def remove_from_registry(
+    *,
+    agent_id: str,
+    registry_table: str = "main.apx.agent_registry",
+    tools_table: str = "main.apx.agent_tools",
+    ws: "WorkspaceClient | None" = None,
+    warehouse_id: str | None = None,
+) -> None:
+    """Delete an agent's advertise rows from the registry + tools tables.
+
+    The inverse of ``publish_to_registry`` + ``publish_tools_to_registry``:
+    removes the agent's row from ``registry_table`` and all of its tool rows
+    from ``tools_table`` so discovery stops advertising a deleted agent.
+    Raises on failure — callers decide whether that is fatal.
+
+    Args:
+        agent_id: The stable agent key (same slug ``publish_to_registry``
+            derives from name + workspace host).
+        registry_table: Fully-qualified UC table, e.g. ``main.apx.agent_registry``.
+        tools_table: Fully-qualified UC table, e.g. ``main.apx.agent_tools``.
+        ws: Optional ``WorkspaceClient``.
+        warehouse_id: SQL warehouse to use; auto-discovered when omitted.
+    """
+    from ._sql import run_sql
+    from ._memory_delta import _validate_table_name
+
+    _validate_table_name(registry_table)
+    _validate_table_name(tools_table)
+    ws = _ensure_ws(ws)
+
+    run_sql(
+        ws,
+        _REGISTRY_DELETE.format(table=registry_table, agent_id=_q(agent_id)),
+        warehouse_id=warehouse_id,
+    )
+    run_sql(
+        ws,
+        _TOOLS_DELETE.format(table=tools_table, agent_id=_q(agent_id)),
+        warehouse_id=warehouse_id,
+    )
+    logger.info(
+        "Removed registry rows for agent_id %s from %s and %s",
+        agent_id, registry_table, tools_table,
+    )
+
+
+def find_registry_dependents(
+    *,
+    agent_ids: list[str],
+    references: list[str],
+    registry_table: str = "main.apx.agent_registry",
+    tools_table: str = "main.apx.agent_tools",
+    ws: "WorkspaceClient | None" = None,
+    warehouse_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Find registry rows that reference an agent about to be deleted.
+
+    Scans ``tools_table`` for sub-agent tool rows whose ``sub_agent_url``
+    mentions any of ``references`` (the victim's UC name, endpoint name, or
+    app name), and ``registry_table`` for other agents whose ``endpoint_url``
+    or ``supervisor_agent_id`` mentions them. Rows belonging to the victim
+    itself (``agent_ids``) are excluded.
+
+    Substring matching is intentionally loose — this feeds a pre-delete
+    warning, so a false positive is cheap and a miss is silent breakage.
+
+    Returns:
+        Row dicts with ``agent`` (the dependent's name), ``via`` (the
+        referencing URL/id), and ``updated_at`` (epoch seconds when that
+        row was last advertised; None when the column is empty).
+    """
+    from ._sql import run_sql
+    from ._memory_delta import _validate_table_name
+
+    _validate_table_name(registry_table)
+    _validate_table_name(tools_table)
+
+    refs = [r for r in references if r]
+    ids = [a for a in agent_ids if a]
+    if not refs or not ids:
+        return []
+
+    ws = _ensure_ws(ws)
+    ids_sql = ", ".join(_q(a) for a in ids)
+
+    def _likes(column: str) -> str:
+        return " OR ".join(f"{column} LIKE {_q('%' + r + '%')}" for r in refs)
+
+    dependents: list[dict[str, Any]] = []
+    for row in run_sql(
+        ws,
+        _DEPENDENT_REGISTRY_SELECT.format(
+            table=registry_table,
+            agent_ids=ids_sql,
+            refs=f"{_likes('endpoint_url')} OR {_likes('supervisor_agent_id')}",
+        ),
+        warehouse_id=warehouse_id,
+    ):
+        dependents.append({
+            "agent": row.get("name"),
+            "via": row.get("endpoint_url") or row.get("supervisor_agent_id"),
+            "updated_at": row.get("updated_at"),
+        })
+    for row in run_sql(
+        ws,
+        _DEPENDENT_TOOLS_SELECT.format(
+            table=tools_table,
+            agent_ids=ids_sql,
+            refs=_likes("sub_agent_url"),
+        ),
+        warehouse_id=warehouse_id,
+    ):
+        dependents.append({
+            "agent": row.get("agent_name") or row.get("name"),
+            "via": row.get("sub_agent_url"),
+            "updated_at": row.get("updated_at"),
+        })
+    return dependents

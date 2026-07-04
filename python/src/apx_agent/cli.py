@@ -9056,6 +9056,22 @@ def register_agent_cmd(
 # ---------------------------------------------------------------------------
 
 
+def _registry_row_age(updated_at: Any) -> str:
+    """Render a registry row's ``updated_at`` (epoch seconds) as an age.
+
+    Registry rows carry when they were last advertised; surfacing that age in
+    the dependents warning tells the operator whether a referencing row is
+    live routing or a stale leftover (#446).
+    """
+    try:
+        days = int((time.time() - float(updated_at)) // 86400)
+    except (TypeError, ValueError):
+        return "unknown age"
+    if days <= 0:
+        return "today"
+    return f"{days}d ago"
+
+
 @agents.command("delete")
 @click.option(
     "--uc-name", required=True,
@@ -9081,6 +9097,12 @@ def register_agent_cmd(
          "(~/.bundle/<app>/<target>). Lakebase session tables are NEVER "
          "dropped — data deletion stays manual; a notice names them.",
 )
+@click.option("--registry-table", default=None,
+              help="UC Delta agent registry table for the advertise-row cleanup. "
+                   "Defaults to [tool.apx.agent].registry_table or main.apx.agent_registry.")
+@click.option("--tools-table", default=None,
+              help="UC Delta tools registry table for the advertise-row cleanup. "
+                   "Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks CLI profile (~/.databrickscfg).")
 def delete_agent_cmd(
@@ -9089,6 +9111,8 @@ def delete_agent_cmd(
     app_name: str | None,
     assume_yes: bool,
     purge: bool,
+    registry_table: str | None,
+    tools_table: str | None,
     profile: str | None,
 ) -> None:
     """Delete a deployed agent — UC model registration, serving endpoint, and app.
@@ -9099,15 +9123,23 @@ def delete_agent_cmd(
       1. The Model Serving endpoint (--endpoint or auto-detected from UC tags)
       2. The registered model in Unity Catalog (--uc-name)
       3. The Databricks App (--app or auto-detected from UC tags)
+      4. The agent's advertise-registry rows (agent registry + tools registry
+         tables), when those tables exist — so discovery stops advertising
+         a deleted agent
+
+    Before the confirmation prompt, the advertise registry is also scanned
+    (best-effort) for OTHER agents whose rows reference this one — deleting
+    an agent that others route to is silent breakage, so any hits are listed
+    with how stale their registry row is.
 
     With --purge, also removes what is discoverable from tags and naming
     conventions (best-effort, aggregated errors):
 
     \b
-      4. The auto-created MLflow experiment — the apx.mlflow.experiment_id
+      5. The auto-created MLflow experiment — the apx.mlflow.experiment_id
          tag when recorded, else /Users/<you>/<app>-<target>
-      5. Any soaking canary App (<app>-canary-<version>)
-      6. The DAB deploy root in the workspace (~/.bundle/<app>/<target>)
+      6. Any soaking canary App (<app>-canary-<version>)
+      7. The DAB deploy root in the workspace (~/.bundle/<app>/<target>)
 
     Lakebase session-store tables are never dropped automatically — the
     command prints the tables to DROP instead. Anything --purge cannot
@@ -9115,7 +9147,7 @@ def delete_agent_cmd(
 
     Pass --yes to skip the interactive confirmation prompt.
     """
-    ws, _ = _connect_workspace(profile)
+    ws, ws_cfg = _connect_workspace(profile)
 
     # Resolve endpoint and app from UC tags when not explicitly given.
     # --purge always needs the tags (bundle_target, experiment id).
@@ -9132,6 +9164,63 @@ def delete_agent_cmd(
         resolved_endpoint = uc_tags.get("apx.agent.model")
     if not resolved_app:
         resolved_app = uc_tags.get("apx.apps.app_name")
+
+    # Advertise-registry cleanup + dependents scan (#446). Best-effort: only
+    # attempted when the registry tables affirmatively exist — an agent that
+    # was never advertised has nothing to deregister.
+    from apx_agent._publish import _slug, find_registry_dependents, remove_from_registry
+
+    cfg = _read_apx_agent_config()
+    registry_table = registry_table or cfg.get("registry_table") or "main.apx.agent_registry"
+    tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
+    assert registry_table is not None and tools_table is not None
+
+    # The registry keys rows on _slug(f"{name}_{host_short}") — mirror the
+    # advertise-side derivation for both names the victim may be listed under.
+    host = getattr(ws_cfg, "host", None)
+    host_short = host.replace("https://", "").split(".")[0] if isinstance(host, str) else ""
+    victim_agent_ids = list(dict.fromkeys(
+        _slug(f"{name}_{host_short}")
+        for name in (resolved_endpoint, resolved_app) if name
+    ))
+
+    registry_ready = False
+    if not victim_agent_ids:
+        click.echo(
+            "Notice: registry cleanup skipped (no endpoint or app name to "
+            "derive the agent's registry rows from).",
+        )
+    else:
+        try:
+            registry_ready = (
+                ws.tables.exists(registry_table).table_exists is True
+                and ws.tables.exists(tools_table).table_exists is True
+            )
+        except Exception as exc:
+            click.echo(
+                f"Notice: registry cleanup skipped (could not check "
+                f"{registry_table} / {tools_table}: {exc})",
+            )
+        else:
+            if not registry_ready:
+                click.echo(
+                    f"Notice: registry cleanup skipped ({registry_table} / "
+                    f"{tools_table} not found — nothing advertised).",
+                )
+
+    dependents: list[dict[str, Any]] = []
+    if registry_ready:
+        try:
+            dependents = find_registry_dependents(
+                agent_ids=victim_agent_ids,
+                references=[n for n in (uc_name, resolved_endpoint, resolved_app) if n],
+                registry_table=registry_table, tools_table=tools_table, ws=ws,
+            )
+        except Exception as exc:
+            click.echo(
+                f"Notice: could not scan the registry for dependents: {exc}",
+                err=True,
+            )
 
     # --purge: enumerate the discoverable leftovers BEFORE the confirmation
     # prompt so the summary lists everything that will (and won't) go.
@@ -9242,9 +9331,32 @@ def delete_agent_cmd(
         to_delete.append(f"  • Canary App: {capp}")
     if bundle_path:
         to_delete.append(f"  • Bundle workspace files: {bundle_path}")
+    if registry_ready:
+        to_delete.append(
+            f"  • Advertise-registry rows in {registry_table} + {tools_table} "
+            f"(agent_id: {', '.join(victim_agent_ids)})"
+        )
 
     for notice in purge_notices:
         click.echo(notice)
+
+    # Dependents warning — deleting an agent that others route to is silent
+    # breakage, so surface it (with row staleness) before asking to proceed.
+    if dependents:
+        seen: dict[tuple[str, str], float | None] = {}
+        for dep in dependents:
+            key = (str(dep["agent"] or "(unknown agent)"), str(dep["via"] or "(unknown reference)"))
+            seen.setdefault(key, dep["updated_at"])
+        n_agents = len({agent for agent, _ in seen})
+        click.echo(
+            f"Warning: {n_agents} other agent(s) reference this one — "
+            "deleting it will break their routing:"
+        )
+        for (agent, via), updated_at in sorted(seen.items()):
+            click.echo(
+                f"  • {agent} (via {via}, last advertised "
+                f"{_registry_row_age(updated_at)})"
+            )
 
     if not assume_yes:
         click.echo("This will permanently delete:")
@@ -9280,7 +9392,24 @@ def delete_agent_cmd(
             errors.append(f"app {resolved_app!r}: {exc}")
             click.echo(f"Warning: could not delete app {resolved_app!r}: {exc}", err=True)
 
-    # 4. --purge extras (lists/ids are only populated when --purge was passed).
+    # 4. Remove the advertise-registry rows (best-effort, aggregated) so
+    # discovery stops advertising the deleted agent (#446).
+    if registry_ready:
+        for victim_id in victim_agent_ids:
+            try:
+                remove_from_registry(
+                    agent_id=victim_id,
+                    registry_table=registry_table, tools_table=tools_table, ws=ws,
+                )
+                click.echo(f"Removed advertise-registry rows for agent_id: {victim_id}")
+            except Exception as exc:
+                errors.append(f"registry rows {victim_id!r}: {exc}")
+                click.echo(
+                    f"Warning: could not remove registry rows for {victim_id!r}: {exc}",
+                    err=True,
+                )
+
+    # 5. --purge extras (lists/ids are only populated when --purge was passed).
     for capp in canary_apps:
         try:
             ws.apps.delete(capp)
