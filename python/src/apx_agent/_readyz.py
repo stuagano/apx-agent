@@ -219,8 +219,17 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
 
         mount_mcp_endpoints(app, agent)
         mount_readyz(app, agent)
+
+    Idempotent: ``create_app`` mounts /readyz automatically (#449), so a
+    caller who also mounts it explicitly (e.g. the Apps template's
+    ``start_server.py``) doesn't register the route twice — the first mount
+    wins and subsequent calls are no-ops.
     """
     from fastapi import Response
+    from fastapi.routing import APIRoute
+
+    if any(isinstance(route, APIRoute) and route.path == "/readyz" for route in app.routes):
+        return
 
     @app.get("/readyz")
     def readyz() -> Response:

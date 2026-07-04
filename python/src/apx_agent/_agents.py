@@ -111,6 +111,8 @@ class LlmAgent(BaseAgent):
     Typed tool functions are registered at construction time. Parameters typed
     as ``Dependencies.*`` are injected by FastAPI and excluded from the schema;
     all other typed parameters become tool inputs derived from their type hints.
+    ``tools`` may be omitted — an orchestrator whose only capabilities are
+    remote ``sub_agents`` (constructor or config-declared) has no local tools.
 
     ``instructions`` sets a system prompt prepended to every conversation.
     When omitted, falls back to ``instructions`` in ``[tool.apx.agent]`` in
@@ -131,7 +133,7 @@ class LlmAgent(BaseAgent):
 
     def __init__(
         self,
-        tools: list[_ToolFn],
+        tools: list[_ToolFn] | None = None,
         sub_agents: list[str] | None = None,
         instructions: str = "",
         instruction: str = "",
@@ -158,6 +160,10 @@ class LlmAgent(BaseAgent):
         memory: str = "off",
         output_key: str | None = None,
     ) -> None:
+        # tools is optional (#449): an orchestrator whose only capabilities are
+        # config-declared sub_agents has no local tools. None → a fresh list
+        # per instance (never a shared mutable default).
+        tools = [] if tools is None else tools
         self._tool_fns = tools
         self._sub_agent_urls = sub_agents or []
         # Sub-agent URLs already materialized as callable tools (idempotency
