@@ -141,7 +141,12 @@ def remote_agent_tool(
         # (local dev / no user identity); forward OBO material only when real.
         if headers is not None:
             if headers.token is not None:
-                forwarded["X-Forwarded-Access-Token"] = headers.token.get_secret_value()
+                token = headers.token.get_secret_value()
+                forwarded["X-Forwarded-Access-Token"] = token
+                # The Apps OAuth ingress authenticates on Authorization; with
+                # only X-Forwarded-Access-Token it 302s to login (live-proven
+                # app-to-app on *.databricksapps.com).
+                forwarded["Authorization"] = f"Bearer {token}"
             if headers.host is not None:
                 forwarded["X-Forwarded-Host"] = headers.host
         # RemoteDatabricksAgent only reads ``request.headers`` (see
