@@ -349,3 +349,51 @@ def test_recall_skips_rows_without_embeddings() -> None:
     )
     results = store.recall(RecallOptions(principal_id="user-1", query="apple"))
     assert results == []
+
+
+def test_inmemory_store_concurrent_scan_and_mutate_no_crash() -> None:
+    """#483: a concurrent add (growing the dict) during a list()/recall() scan
+    must not raise 'dictionary changed size during iteration'.
+
+    A low switch interval forces the GIL to interleave the growing writers with
+    the scanners, so without the store lock this reliably raises within a few
+    rounds; with the lock (list() snapshots under it) it stays clean.
+    """
+    import sys
+    import threading
+
+    store = InMemoryMemoryStore()
+    for i in range(1000):
+        store.add({"principal_id": "u", "content": f"seed{i}"})
+
+    errors: list[Exception] = []
+    stop = threading.Event()
+
+    def grow() -> None:
+        # Bounded growth: each grower adds a fixed number of rows (strictly
+        # changing the dict size) while the scanners run, then stops.
+        for i in range(4000):
+            store.add({"principal_id": "u", "content": f"x{i}"})
+
+    def scan() -> None:
+        try:
+            while not stop.is_set():
+                store.list(MemoryFilter(principal_id="u", limit=10_000))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        growers = [threading.Thread(target=grow) for _ in range(2)]
+        scanners = [threading.Thread(target=scan) for _ in range(3)]
+        for t in scanners + growers:
+            t.start()
+        for t in growers:
+            t.join()
+        stop.set()
+        for t in scanners:
+            t.join()
+    finally:
+        sys.setswitchinterval(old_interval)
+    assert not errors, errors
