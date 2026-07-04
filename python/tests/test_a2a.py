@@ -469,3 +469,47 @@ class TestCardBackedByProtocol:
         _stub_reply(captured, "backed")
         task = _rpc(client, "message/send", _send_params("hi")).json()["result"]
         assert task["status"]["state"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Cross-agent trace correlation (#443) — inbound traceparent / x-apx-caller
+# ---------------------------------------------------------------------------
+
+
+class TestCrossAgentCorrelation:
+    """message/send stamps incoming traceparent / x-apx-caller on the served
+    trace as apx.traceparent / apx.caller / apx.outbound.trace_id tags — the
+    join key shared with the caller's trace. Absent headers → no-op (#443)."""
+
+    TP = f"00-{'ab' * 16}-{'cd' * 8}-01"
+
+    def test_message_send_stamps_caller_correlation_tags(self, a2a_client):
+        client, captured = a2a_client
+        _stub_reply(captured, "ok")
+        with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+            resp = client.post(
+                "/",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "message/send",
+                    "params": _send_params("hi"),
+                },
+                headers={"traceparent": self.TP, "x-apx-caller": "orchestrator"},
+            )
+        assert resp.json()["result"]["status"]["state"] == "completed"
+        tags_mock.assert_called_once_with(
+            {
+                "apx.traceparent": self.TP,
+                "apx.outbound.trace_id": "ab" * 16,
+                "apx.caller": "orchestrator",
+            }
+        )
+
+    def test_message_send_without_headers_stamps_nothing(self, a2a_client):
+        client, captured = a2a_client
+        _stub_reply(captured, "ok")
+        with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+            resp = _rpc(client, "message/send", _send_params("hi"))
+        assert resp.json()["result"]["status"]["state"] == "completed"
+        tags_mock.assert_not_called()

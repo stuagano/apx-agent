@@ -20,6 +20,11 @@ Where attributes get set:
   * Watchdog decisions (``_watchdog.py``) — when a guard rejects or
     redacts, the watchdog action / policy_id / reason / domain land
     on the active span so the trace records *why* the call was gated.
+  * Cross-agent boundary (``_remote.py`` / ``_invocations.py`` / ``_a2a.py``,
+    issue #443) — the caller sends ``traceparent`` + ``x-apx-caller`` and
+    stamps ``apx.outbound.trace_id``; the served routes stamp
+    ``apx.traceparent`` / ``apx.caller`` / ``apx.outbound.trace_id`` from
+    those headers, so A's and B's traces join on one tag equality.
 
 The schema is intentionally narrow: audit attributes describe *what
 happened* (operation, identity, scope, decision) without logging raw
@@ -36,10 +41,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ._mlflow_tracing import set_span_attribute, set_trace_tags
+from ._mlflow_tracing import current_active_span, set_span_attribute, set_trace_tags
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +117,15 @@ class AuditAttrs:
     MODEL_VERSION = "apx.model_version"
     GIT_SHA = "apx.git_sha"
 
+    # Cross-agent trace correlation (issue #443). When agent A calls agent B,
+    # A sends a W3C ``traceparent`` + ``x-apx-caller`` header. Both sides
+    # stamp OUTBOUND_TRACE_ID (the traceparent's trace-id) as a trace tag, so
+    # A's and B's traces — separate roots in separate experiments — join on
+    # one tag equality. TRACEPARENT/CALLER are receiver-side only.
+    TRACEPARENT = "apx.traceparent"  # raw incoming traceparent header value
+    CALLER = "apx.caller"  # calling agent's name (x-apx-caller)
+    OUTBOUND_TRACE_ID = "apx.outbound.trace_id"  # trace-id crossing the boundary
+
 
 # ---------------------------------------------------------------------------
 # Short kwarg → standard key mapping
@@ -170,8 +187,6 @@ def version_correlation_attrs() -> dict[str, str]:
     callers stamping these attrs are a zero-behavior-change no-op outside a
     deployed App.
     """
-    import os
-
     attrs: dict[str, str] = {}
     for env_name, key in (
         (ENV_MODEL_VERSION, AuditAttrs.MODEL_VERSION),
@@ -192,6 +207,93 @@ def stamp_version_correlation(span: Any) -> None:
     a metadata-only ``search_traces``. No env → no-op.
     """
     attrs = version_correlation_attrs()
+    if not attrs:
+        return
+    for key, value in attrs.items():
+        set_span_attribute(span, key, value)
+    set_trace_tags(attrs)
+
+
+# ---------------------------------------------------------------------------
+# Cross-agent trace correlation (issue #443)
+# ---------------------------------------------------------------------------
+
+
+# Headers that cross the agent-to-agent boundary. They carry correlation
+# identity only — NOT credentials — so senders attach them regardless of
+# trusted-origin credential gating.
+TRACEPARENT_HEADER = "traceparent"
+CALLER_HEADER = "x-apx-caller"
+
+# W3C trace-context form: version-traceid-spanid-flags, all lowercase hex.
+_TRACEPARENT_RE = re.compile(r"^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$")
+_TRACE_ID_HEX_RE = re.compile(r"^[0-9a-f]{32}$")
+_SPAN_ID_HEX_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def build_traceparent() -> str:
+    """Build a W3C ``traceparent`` value for an outbound agent-to-agent hop.
+
+    When an MLflow span is active, the header carries the caller's live
+    trace-id/span-id (``LiveSpan.trace_id`` is ``tr-<32hex>``, ``.span_id``
+    is 16 hex — MLflow runs its OTel provider isolated from the global OTel
+    context, so the span itself is the source of truth). Otherwise fresh
+    random ids are generated (16-byte trace-id / 8-byte span-id, sampled
+    flag). Stdlib only; never raises.
+    """
+    span = current_active_span()
+    if span is not None:
+        try:
+            trace_hex = str(span.trace_id).removeprefix("tr-").lower()
+            span_hex = str(span.span_id).lower()
+            if _TRACE_ID_HEX_RE.match(trace_hex) and _SPAN_ID_HEX_RE.match(span_hex):
+                return f"00-{trace_hex}-{span_hex}-01"
+        except Exception:  # pragma: no cover — unexpected span shape
+            logger.debug("build_traceparent: could not read active span ids", exc_info=True)
+    return f"00-{os.urandom(16).hex()}-{os.urandom(8).hex()}-01"
+
+
+def traceparent_trace_id(traceparent: str) -> str | None:
+    """Extract the 32-hex trace-id from a W3C ``traceparent``; None if malformed."""
+    match = _TRACEPARENT_RE.match(traceparent.strip().lower())
+    return match.group(1) if match else None
+
+
+def stamp_outbound_trace_id(traceparent: str) -> None:
+    """Caller side (issue #443): record the trace-id sent across the boundary.
+
+    Stamps ``apx.outbound.trace_id`` on the caller's active span AND as a
+    trace tag — the tag is what a metadata-only ``search_traces`` joins on.
+    Malformed traceparent → no-op; never raises (same posture as
+    ``stamp_version_correlation``).
+    """
+    trace_id = traceparent_trace_id(traceparent)
+    if trace_id is None:
+        return
+    set_span_attribute(current_active_span(), AuditAttrs.OUTBOUND_TRACE_ID, trace_id)
+    set_trace_tags({AuditAttrs.OUTBOUND_TRACE_ID: trace_id})
+
+
+def stamp_caller_correlation(span: Any, headers: Mapping[str, str]) -> None:
+    """Receiver side (issue #443): stamp incoming cross-agent identity.
+
+    Reads ``traceparent`` / ``x-apx-caller`` from ``headers`` and stamps
+    ``apx.traceparent`` (raw value), ``apx.caller``, and
+    ``apx.outbound.trace_id`` (the parsed trace-id — the SAME tag the caller
+    stamps, so A's and B's traces join on one tag equality) as span
+    attributes on ``span`` and as trace tags. Absent headers → strict no-op:
+    zero behavior change for non-agent callers. Never raises.
+    """
+    attrs: dict[str, str] = {}
+    traceparent = headers.get(TRACEPARENT_HEADER)
+    if traceparent:
+        attrs[AuditAttrs.TRACEPARENT] = traceparent
+        trace_id = traceparent_trace_id(traceparent)
+        if trace_id is not None:
+            attrs[AuditAttrs.OUTBOUND_TRACE_ID] = trace_id
+    caller = headers.get(CALLER_HEADER)
+    if caller:
+        attrs[AuditAttrs.CALLER] = caller
     if not attrs:
         return
     for key, value in attrs.items():
