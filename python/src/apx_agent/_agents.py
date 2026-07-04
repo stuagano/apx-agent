@@ -39,8 +39,6 @@ from ._inspection import (
 
 logger = logging.getLogger(__name__)
 
-_UNSET_ENV = ""  # env var expansion: unset sub-agent URL vars resolve to empty
-
 
 class BaseAgent:
     """Abstract base for all agent types.
@@ -129,6 +127,9 @@ class LlmAgent(BaseAgent):
     ) -> None:
         self._tool_fns = tools
         self._sub_agent_urls = sub_agents or []
+        # Sub-agent URLs already materialized as callable tools (idempotency
+        # guard for repeated fetch_remote_tools calls). See #436.
+        self._materialized_sub_agent_urls: set[str] = set()
         self._instructions = instructions or instruction
         # G3: when set, the agent's final text is written to the shared state
         # channel under this key (readable by later steps via {key} templating).
@@ -268,11 +269,17 @@ class LlmAgent(BaseAgent):
 
         Uses the workspace client's auth headers to authenticate with
         Databricks Apps (which require OAuth/bearer tokens).
-        """
-        import os
 
+        Besides returning the card descriptors (the A2A/MCP advertisement
+        surface), each sub-agent is also **materialized as a callable tool**
+        in ``_tool_fns`` via ``_ensure_sub_agent_tool`` — the compiled graph
+        builds its tool set from ``_tool_fns`` only, so without this step the
+        card advertised delegation the LLM could never perform (#436).
+        """
         from databricks.sdk import WorkspaceClient
         from httpx import AsyncClient
+
+        from ._env import resolve_env_var
 
         # Get auth headers from the workspace client for app-to-app calls
         try:
@@ -284,14 +291,10 @@ class LlmAgent(BaseAgent):
         tools: list[AgentTool] = []
         async with AsyncClient(timeout=10.0) as client:
             for raw_url in self._sub_agent_urls:
-                if raw_url.startswith("$"):
-                    var_name = raw_url.lstrip("$").strip("{}")
-                    url = os.environ.get(var_name, _UNSET_ENV)
-                    if not url:
-                        logger.warning(f"sub_agent env var {var_name} not set — skipping")
-                        continue
-                else:
-                    url = raw_url
+                url = resolve_env_var(raw_url)
+                if not url:
+                    logger.warning(f"sub_agent env var {raw_url} not set — skipping")
+                    continue
                 card_url = f"{url.rstrip('/')}/.well-known/agent.json"
                 try:
                     response = await client.get(card_url, headers=auth_headers)
@@ -325,9 +328,43 @@ class LlmAgent(BaseAgent):
                     output_schema={"type": "string"},
                     sub_agent_url=url.rstrip("/"),
                 ))
+                # Advertised AND callable must come from the same loop: register
+                # the matching delegate tool so the compiled graph can invoke it.
+                self._ensure_sub_agent_tool(tool_name, description, url.rstrip("/"))
                 logger.info(f"Registered sub-agent '{tool_name}' from {url}")
 
         return tools
+
+    def _ensure_sub_agent_tool(self, name: str, description: str, base_url: str) -> None:
+        """Register the callable delegate tool for a sub-agent URL (idempotent).
+
+        The A2A card advertises sub-agents from ``fetch_remote_tools``; the
+        compiled LangGraph builds its tools from ``_tool_fns``. Before #436
+        those never met — the card promised delegation the graph could not
+        perform, and the orchestrator LLM hallucinated the sub-agent's answer.
+        Registering here (from the same loop that builds the card descriptor)
+        keeps the two surfaces derived from one source of truth.
+
+        Card-fetch failures never reach this method as errors: the caller
+        passes the degraded name/description, and the delegate itself returns
+        a clear ``"sub-agent at <url> unreachable: ..."`` string if invoked
+        while the peer is down — startup never hard-fails on a dead peer.
+        """
+        if base_url in self._materialized_sub_agent_urls:
+            return
+        if any(fn.__name__ == name for fn in self._tool_fns):
+            logger.warning(
+                "sub-agent tool %r collides with an existing tool name — the "
+                "sub-agent at %s is advertised but keeps the existing tool's "
+                "implementation. Rename one of them.",
+                name,
+                base_url,
+            )
+            return
+        from ._agent_tool import remote_agent_tool  # noqa: PLC0415 — avoid import cycle
+
+        self._register_tool(remote_agent_tool(base_url, name=name, description=description))
+        self._materialized_sub_agent_urls.add(base_url)
 
 
 class _FinishLoopBody(BaseModel):
