@@ -23,11 +23,11 @@ such tool — the LLM could only hallucinate the delegation. These tests pin
 both realities: the tool IS in the compiled tool set, and calling it REALLY
 executes B.
 
-Note: B's ``/invocations`` speaks the MLflow ChatAgent shape (``messages``)
-while ``RemoteDatabricksAgent._call_via_http`` posts the Responses shape
-(``input``) — the format schism tracked by #438 (not fixed here). B still
-compiles and runs its tool on such a request, and the sentinel still travels
-back inside the serialized response, so the delegation proof holds either way.
+Since #438, the round-trip travels the natural path: B's served
+``/invocations`` accepts the Responses shape (``input``) that
+``RemoteDatabricksAgent._call_via_http`` posts, and answers in the Responses
+shape the client parses — so A's tool result is B's clean final answer, not a
+serialized ChatAgent blob. The relay assertion below pins that.
 """
 
 from __future__ import annotations
@@ -217,7 +217,11 @@ def test_config_declared_sub_agent_really_executes(two_agents) -> None:
     assert B_TOOL_CALLS == ["ran"], "agent B's tool never executed"
     # And the sentinel B produced traveled all the way into A's final answer.
     # (A's fake LLM only relays tool output — it cannot invent the sentinel.)
-    assert SENTINEL in _final_texts(resp.json())
+    text = _final_texts(resp.json())
+    assert SENTINEL in text
+    # #438: the reply crossed the wire on the natural path — A's tool result
+    # is B's clean final answer, not a serialized ChatAgent JSON blob.
+    assert f"[A] relayed: [B] relayed: {SENTINEL}" in text
 
 
 # ---------------------------------------------------------------------------

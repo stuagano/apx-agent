@@ -112,6 +112,39 @@ def _url_to_app_name(url: str) -> str | None:
     return None
 
 
+def _reply_text(data: Any, *, url: str, agent_name: str) -> str:
+    """Extract the assistant text from either /invocations reply shape (#438).
+
+    A deployed AgentServer runtime answers in the Responses shape
+    (``{"output": [{"content": [{"text": ...}]}]}``); a locally served
+    ``create_app`` peer answers in the MLflow ChatAgent shape
+    (``{"messages": [..., {"role": "assistant", "content": ...}]}``). Accept
+    both. Anything else is a contract violation — raise naming the URL and
+    the shape received (with a truncated body for debugging) instead of
+    silently returning a JSON blob the parent LLM would relay as an "answer".
+    """
+    try:
+        return data["output"][0]["content"][0]["text"]
+    except (KeyError, IndexError, TypeError):
+        pass
+    msgs = data.get("messages") if isinstance(data, dict) else None
+    if isinstance(msgs, list):
+        for m in reversed(msgs):
+            if (
+                isinstance(m, dict)
+                and m.get("role") == "assistant"
+                and isinstance(m.get("content"), str)
+                and m["content"]
+            ):
+                return m["content"]
+    shape = sorted(data) if isinstance(data, dict) else type(data).__name__
+    raise RuntimeError(
+        f"Remote agent {agent_name} at {url} replied with an unrecognized "
+        f"shape (top-level: {shape}); expected Responses ('output') or "
+        f"ChatAgent ('messages'). Body (truncated): {_json.dumps(data)[:500]}"
+    )
+
+
 class RemoteDatabricksAgent(BaseAgent):
     """A remote agent discovered via its A2A agent card.
 
@@ -415,10 +448,11 @@ class RemoteDatabricksAgent(BaseAgent):
         payload = {
             "input": [{"role": m.role, "content": m.content} for m in messages],
         }
+        url = f"{self._base_url}/invocations"
 
         async with AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
-                f"{self._base_url}/invocations",
+                url,
                 json=payload,
                 headers={"Content-Type": "application/json", **headers},
             )
@@ -428,11 +462,7 @@ class RemoteDatabricksAgent(BaseAgent):
                 f"Remote agent {self.name} returned {resp.status_code}: {resp.text}"
             )
 
-        data = resp.json()
-        try:
-            return data["output"][0]["content"][0]["text"]
-        except (KeyError, IndexError):
-            return _json.dumps(data)
+        return _reply_text(resp.json(), url=url, agent_name=self.name)
 
     async def _stream_via_http(
         self,
@@ -476,6 +506,14 @@ class RemoteDatabricksAgent(BaseAgent):
                         delta = event.get("delta")
                         if isinstance(delta, str) and delta:
                             yield delta
+                        elif (
+                            isinstance(delta, dict)
+                            and isinstance(delta.get("content"), str)
+                            and delta["content"]
+                        ):
+                            # MLflow ChatAgentChunk: delta is a message dict —
+                            # what a locally served create_app peer streams (#438).
+                            yield delta["content"]
                         elif isinstance(event.get("text"), str):
                             yield event["text"]
                     except _json.JSONDecodeError:
