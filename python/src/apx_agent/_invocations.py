@@ -16,6 +16,14 @@ Wire shape (the contract):
     "stream": false
   }
 
+  The route ALSO accepts the MLflow ResponsesAgent request shape
+  (``{"input": [...]}``) — the deployed Apps runtime's contract, and what
+  ``RemoteDatabricksAgent._call_via_http`` posts. Such a request is mapped
+  onto ``messages``, executed identically, and answered in the Responses
+  reply shape (``{"output": [{"content": [{"text": ...}]}]}``) so the poster's
+  parser works unchanged (#438). A body with NEITHER key is a 422 — never a
+  silently-empty conversation.
+
   Response (200, application/json, non-streaming):
   {
     "messages": [{"role": "assistant", "content": "...", "id": "..."}],
@@ -97,6 +105,68 @@ def _last_user_text(input_items: Any, max_len: int = 120) -> str:
     return text
 
 
+def _input_items_to_chat_messages(input_items: Any) -> list[dict[str, Any]]:
+    """Map a Responses-shape ``input`` payload to ChatAgent ``messages`` dicts.
+
+    Handles the two forms clients send: a bare string (one user turn) and a
+    list of role/content items where content is a string or a list of
+    ``{"type": ..., "text": ...}`` parts. Items without extractable text
+    (function_call / reasoning items) are skipped — the ChatAgent conversation
+    is the text turns.
+    """
+    if isinstance(input_items, str):
+        return [{"role": "user", "content": input_items}]
+    if not isinstance(input_items, list):
+        return []
+    messages: list[dict[str, Any]] = []
+    for item in input_items:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if isinstance(content, list):
+            parts = [
+                p["text"]
+                for p in content
+                if isinstance(p, dict) and isinstance(p.get("text"), str)
+            ]
+            content = "\n".join(parts)
+        if not isinstance(content, str) or not content:
+            continue
+        role = item.get("role")
+        if role not in ("system", "user", "assistant"):
+            role = "user"
+        messages.append({"role": role, "content": content})
+    return messages
+
+
+def _responses_shaped_reply(response: Any) -> dict[str, Any]:
+    """Re-shape a ``ChatAgentResponse`` as a ResponsesAgent-style reply.
+
+    Callers that POSTed the Responses shape (``{"input": [...]}``) — e.g.
+    ``RemoteDatabricksAgent._call_via_http`` — parse
+    ``data["output"][0]["content"][0]["text"]``. Hand them the final assistant
+    text in exactly that shape (#438).
+    """
+    text = ""
+    msg_id = "msg-0"
+    for m in response.messages:
+        if m.role == "assistant" and isinstance(m.content, str) and m.content:
+            text = m.content
+            if m.id:
+                msg_id = m.id
+    return {
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "id": msg_id,
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }
+        ]
+    }
+
+
 def mount_invocations_route(
     app: FastAPI,
     agent: BaseAgent,
@@ -152,7 +222,26 @@ def mount_invocations_route(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
 
-        messages_raw = body.get("messages", []) or []
+        # Dual-shape acceptance (#438): "messages" is the native ChatAgent
+        # contract; "input" is the ResponsesAgent contract the deployed Apps
+        # runtime (and RemoteDatabricksAgent) speaks. Neither present is a
+        # malformed request — reject it loudly rather than silently running
+        # an empty conversation.
+        messages_present = body.get("messages") is not None
+        if not messages_present and body.get("input") is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Request body must carry either 'messages' (MLflow "
+                    "ChatAgent shape: {\"messages\": [{\"role\": ..., "
+                    "\"content\": ...}]}) or 'input' (MLflow ResponsesAgent "
+                    "shape: {\"input\": [...]}); got neither."
+                ),
+            )
+        if messages_present:
+            messages_raw = body["messages"]
+        else:
+            messages_raw = _input_items_to_chat_messages(body["input"])
         custom_inputs: dict[str, Any] = dict(body.get("custom_inputs") or {})
         stream = bool(body.get("stream", False))
 
@@ -204,7 +293,9 @@ def mount_invocations_route(
             if stream:
                 # Run the sync predict_stream on a dedicated worker thread (one
                 # thread for the whole generator, so OTel span attach/detach stay
-                # paired) instead of iterating it on the event loop.
+                # paired) instead of iterating it on the event loop. Streaming
+                # always emits ChatAgentChunk frames — RemoteDatabricksAgent's
+                # SSE parser understands the chunk-delta dict (#438).
                 return StreamingResponse(
                     make_async_stream(
                         lambda _req: _stream_chunks(chat_agent, messages, custom_inputs)
@@ -217,6 +308,9 @@ def mount_invocations_route(
             response = await asyncio.to_thread(
                 chat_agent.predict, messages, custom_inputs=custom_inputs or None
             )
+            if not messages_present:
+                # The caller spoke Responses — answer in the shape it parses.
+                return _responses_shaped_reply(response)
             return response.model_dump()
 
     logger.info(
