@@ -314,3 +314,32 @@ def test_resolve_ws_rejects_tokenless_request_in_app(monkeypatch):
     monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
     with pytest.raises(ApxIdentityError):
         _resolve_ws_and_headers(custom_inputs=None)
+
+
+def _resolve_headers(monkeypatch, custom_inputs):
+    from apx_agent._chat_agent import _resolve_ws_and_headers
+
+    monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+    monkeypatch.delenv("DATABRICKS_APP_URL", raising=False)
+    with patch("apx_agent._defaults._make_workspace_client", return_value=MagicMock()):
+        return _resolve_ws_and_headers(custom_inputs=custom_inputs).headers
+
+
+def test_token_without_user_id_still_builds_forwarding_headers(monkeypatch) -> None:
+    """#467: a user_token but no user_id must still yield headers carrying the
+    token, else the A2A sub-agent hop launders the caller's privilege away."""
+    headers = _resolve_headers(monkeypatch, {"user_token": "tok-xyz"})
+    assert headers is not None
+    assert headers.token is not None
+    assert headers.token.get_secret_value() == "tok-xyz"
+
+
+def test_user_id_without_token_still_builds_headers(monkeypatch) -> None:
+    headers = _resolve_headers(monkeypatch, {"user_id": "u-1"})
+    assert headers is not None
+    assert headers.token is None
+    assert headers.user_id == "u-1"
+
+
+def test_no_identity_yields_none_headers(monkeypatch) -> None:
+    assert _resolve_headers(monkeypatch, {}) is None
