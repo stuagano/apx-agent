@@ -114,6 +114,10 @@ def _build_pyproject(config: "AgentConfig") -> str:
     lines.append(f"model = {_toml_value(config.model)}")
     if config.instructions:
         lines.append(f"instructions = {_toml_value(config.instructions)}")
+    # sub_agents — without this the runtime envelope merge never sees the
+    # spec's sub-agent URLs and the deployed app silently has no A2A tools.
+    if config.sub_agents:
+        lines.append(f"sub_agents = {_toml_value(config.sub_agents)}")
 
     # knowledge — emit only when the caller explicitly set it in the AgentConfig.
     # The auto-default "./.apx/okf" was removed: generate_project writes no .apx/
@@ -420,6 +424,15 @@ def generate_project(
     # template selects the constructor; the runtime imports this module.
     if config.template is not None:
         (target_dir / "agent.py").write_text(render_agent_py(config))
+    else:
+        # Template-less spec (persona/orchestrator agents): a bare LlmAgent.
+        # The envelope — instructions, model, sub_agents, config tools — is
+        # layered on from [tool.apx.agent] / [[tool.apx.tools]] at startup, so
+        # the leaf needs no constructor args. Without this file the container
+        # dies on `from agent import agent` (start_server imports it).
+        (target_dir / "agent.py").write_text(
+            "from apx_agent import LlmAgent\n\nagent = LlmAgent(tools=[])\n"
+        )
 
     # agent_server/
     agent_server_dir = target_dir / "agent_server"
