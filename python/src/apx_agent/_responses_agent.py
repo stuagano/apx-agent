@@ -58,7 +58,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Generator, NamedTuple
 
 from ._agents import BaseAgent
-from ._audit import AuditAttrs, stamp_version_correlation
+from ._audit import AuditAttrs, set_audit_attrs, stamp_version_correlation, user_hash
 from ._chat_agent import _pending_interrupt, _resume_decision
 from ._compile import compile_to_langgraph
 from ._conversation import (
@@ -1092,6 +1092,10 @@ def compile_to_responses_agent(
         ) as span:
             stamp_version_correlation(span)
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
+            set_audit_attrs(
+                span,
+                user_hash=user_hash(auth.headers.user_id if auth.headers else None),
+            )
             ws, req_headers = auth.ws, auth.headers
 
             # Short-term memory: when a checkpointer is active + a thread key is
@@ -1279,6 +1283,10 @@ def compile_to_responses_agent(
         ) as span:
             stamp_version_correlation(span)
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
+            set_audit_attrs(
+                span,
+                user_hash=user_hash(auth.headers.user_id if auth.headers else None),
+            )
             ws, req_headers = auth.ws, auth.headers
 
             # Short-term memory (see non-streaming): checkpointer active + thread
