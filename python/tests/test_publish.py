@@ -484,6 +484,24 @@ def test_publish_to_registry_allows_first_registration() -> None:
     assert any("MERGE INTO" in s for s in calls), "first registration must proceed"
 
 
+def test_registry_owner_check_skips_on_select_error() -> None:
+    """A missing SELECT grant must not block the delete — UC grants govern, so the
+    ownership gate proceeds when it can't positively read a foreign owner."""
+    from apx_agent._publish import remove_from_registry
+
+    calls: list[str] = []
+
+    def _raise_on_select(_ws, sql, warehouse_id=None, **_kw):
+        calls.append(sql)
+        if "SELECT" in sql:
+            raise RuntimeError("no SELECT grant on registry")
+        return []
+
+    with patch("apx_agent._sql.run_sql", side_effect=_raise_on_select):
+        remove_from_registry(agent_id="x", ws=_ws_as("bob@corp"))
+    assert any("DELETE FROM" in s for s in calls), "delete proceeds despite SELECT failure"
+
+
 def test_find_registry_dependents_merges_registry_and_tools_hits() -> None:
     from apx_agent._publish import find_registry_dependents
 

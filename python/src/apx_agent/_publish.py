@@ -299,7 +299,7 @@ def _assert_registry_owner(
     caller: str,
     warehouse_id: str | None,
 ) -> None:
-    """Raise ``PermissionError`` when *agent_id* is already owned by someone else.
+    """Raise ``PermissionError`` when *agent_id* is provably owned by someone else.
 
     Registry rows are keyed on ``agent_id = slug(name + workspace-host)`` — both
     values are public, so without an ownership gate any workspace user who can
@@ -308,17 +308,30 @@ def _assert_registry_owner(
     ``published_by``; a row with an ``unknown``/NULL owner is unattributable and
     left claimable. Requires the table to already exist (publish creates it first).
 
+    This gate only DENIES when it can positively read a foreign owner. If the
+    ownership SELECT itself fails (no SELECT grant, infra error), it logs and
+    proceeds — the UC grant on the table is the real security boundary, and a
+    read failure must not turn a legitimately-granted publish/delete into a
+    crash (mirrors the dependents-scan "notice, not crash" contract).
+
     ponytail: check-then-write, not an atomic predicate — deploy-time
     registration is rare, so the tiny TOCTOU window between this SELECT and the
     MERGE/DELETE is accepted rather than reaching for a locking scheme.
     """
     from ._sql import run_sql
 
-    rows = run_sql(
-        ws,
-        _REGISTRY_OWNER_SELECT.format(table=table, agent_id=_q(agent_id)),
-        warehouse_id=warehouse_id,
-    )
+    try:
+        rows = run_sql(
+            ws,
+            _REGISTRY_OWNER_SELECT.format(table=table, agent_id=_q(agent_id)),
+            warehouse_id=warehouse_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "registry ownership check skipped for %s (%s); relying on UC grants.",
+            agent_id, e,
+        )
+        return
     if not rows:
         return
     owner = rows[0]["published_by"]
