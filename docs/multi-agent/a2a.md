@@ -60,3 +60,5 @@ databricks api patch /api/2.0/permissions/apps/<sub-agent-name> \
 | `invalid_client` on M2M | Wrong SP secret (app recreated, SP changed) | Mint a new secret for the current SP |
 
 For user-scoped multi-agent across boundaries, prefer Model Serving deployment — the platform handles identity passthrough automatically, no SP-to-SP dance.
+
+Apps-hosted agents can also be routed through a Mosaic AI Supervisor directly: `apx-agent supervisor add --app <app-name>` registers the App as an `app`-type supervisor tool (requires databricks-sdk >= 0.120).

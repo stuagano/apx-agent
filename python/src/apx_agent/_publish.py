@@ -18,9 +18,9 @@ Two entry points:
     Wraps ``WorkspaceClient.supervisor_agents.create_supervisor_agent``
     with positional-arg-style ergonomics.
 
-  * ``publish_to_supervisor(...)`` — add a serving-endpoint-backed
-    sub-agent (apx-agent or any other Mosaic AI agent endpoint) to an
-    existing Supervisor Agent.
+  * ``publish_to_supervisor(...)`` — add a sub-agent backed by either a
+    Model Serving endpoint or a Databricks App (apx-agent or any other
+    Mosaic AI agent) to an existing Supervisor Agent.
 
 The Supervisor SDK surface is preview; expect field names and tool-type
 literals to settle over the next few releases. This helper is structured
@@ -110,20 +110,24 @@ def create_supervisor_agent(
 def publish_to_supervisor(
     *,
     supervisor_agent_id: str,
-    serving_endpoint: str,
+    serving_endpoint: str | None = None,
+    app_name: str | None = None,
     description: str,
     display_name: str | None = None,
     tool_id: str | None = None,
     ws: "WorkspaceClient | None" = None,
     extra_tool_kwargs: dict[str, Any] | None = None,
 ) -> Any:
-    """Register a serving-endpoint-backed agent as a Supervisor sub-agent.
+    """Register a deployed agent as a Supervisor sub-agent.
 
     This is how a deployed apx-agent becomes routable from a Supervisor.
     The supervisor's LLM picks among its declared sub-agents at runtime;
-    when it picks the one you publish here, the call flows to the serving
-    endpoint with identity passthrough scoped to the endpoint's declared
-    resources.
+    when it picks the one you publish here, the call flows to the target
+    with identity passthrough scoped to its declared resources.
+
+    Exactly one of ``serving_endpoint`` (a Model Serving endpoint,
+    ``tool_type="serving_endpoint"``) or ``app_name`` (a Databricks App,
+    ``tool_type="app"``) must be given.
 
     Args:
         supervisor_agent_id: ID of the existing Supervisor Agent to attach
@@ -132,15 +136,20 @@ def publish_to_supervisor(
         serving_endpoint: Name of the Model Serving endpoint that hosts
             the sub-agent (e.g. ``"data-triage"`` if you deployed via
             ``databricks.agents.deploy("main.agents.data_triage", ...)``).
+        app_name: Name of the Databricks App that hosts the sub-agent
+            (e.g. ``"payroll-coworker"`` if you deployed via
+            ``apx-agent agents deploy --target apps``). Requires
+            databricks-sdk >= 0.120 (the first release whose
+            ``supervisoragents`` surface carries the ``App`` tool type).
         description: How the supervisor's LLM should think about when to
             route to this sub-agent. Treat this like a tool description —
             it's what drives routing accuracy.
         display_name: Human-readable name shown in the Databricks UI.
-            Defaults to ``serving_endpoint``.
+            Defaults to the endpoint / app name.
         tool_id: Stable identifier for this sub-agent within the
-            supervisor. Defaults to a slug derived from
-            ``serving_endpoint``. Use a stable value if you want
-            idempotent updates on re-publish.
+            supervisor. Defaults to a slug derived from the endpoint /
+            app name. Use a stable value if you want idempotent updates
+            on re-publish.
         ws: Optional ``WorkspaceClient``. Default-constructed when omitted.
         extra_tool_kwargs: Escape hatch for additional fields on the
             ``Tool`` dataclass that this helper doesn't expose explicitly.
@@ -150,28 +159,52 @@ def publish_to_supervisor(
     Returns:
         The created Tool record (SDK response object).
     """
+    if (serving_endpoint is None) == (app_name is None):
+        raise ValueError(
+            "publish_to_supervisor requires exactly one of serving_endpoint "
+            "(Model Serving) or app_name (Databricks App) — got "
+            f"serving_endpoint={serving_endpoint!r}, app_name={app_name!r}."
+        )
+
     sdk = _load_supervisor_sdk()
     Tool = sdk.Tool  # noqa: N806
 
     ws = _ensure_ws(ws)
 
-    name = display_name or serving_endpoint
-    final_tool_id = tool_id or _slug(serving_endpoint)
+    target = app_name or serving_endpoint
+    assert target is not None
+    name = display_name or target
+    final_tool_id = tool_id or _slug(target)
 
-    tool_kwargs: dict[str, Any] = {
-        "tool_type": "serving_endpoint",
-        "name": serving_endpoint,
-        "description": description,
-    }
+    if app_name is not None:
+        App = getattr(sdk, "App", None)  # noqa: N806
+        if App is None:
+            raise ImportError(
+                "The installed databricks-sdk's supervisoragents surface has "
+                "no App tool type, so app-hosted agents can't be supervisor "
+                "tools with it. Upgrade with:\n"
+                "    pip install --upgrade 'databricks-sdk>=0.120'"
+            )
+        tool_kwargs: dict[str, Any] = {
+            "tool_type": "app",
+            "app": App(name=app_name),
+            "description": description,
+        }
+    else:
+        tool_kwargs = {
+            "tool_type": "serving_endpoint",
+            "name": serving_endpoint,
+            "description": description,
+        }
     if extra_tool_kwargs:
         tool_kwargs.update(extra_tool_kwargs)
 
     tool = Tool(**tool_kwargs)
 
     logger.info(
-        "Publishing serving endpoint %s as Supervisor sub-agent %s "
-        "(tool_id=%s, display_name=%s)",
-        serving_endpoint, supervisor_agent_id, final_tool_id, name,
+        "Publishing %s %s as Supervisor sub-agent %s (tool_id=%s, display_name=%s)",
+        "app" if app_name is not None else "serving endpoint",
+        target, supervisor_agent_id, final_tool_id, name,
     )
     return ws.supervisor_agents.create_tool(  # pyright: ignore[reportAttributeAccessIssue]
         parent=f"supervisor-agents/{supervisor_agent_id}",
