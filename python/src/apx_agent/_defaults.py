@@ -146,20 +146,44 @@ def _get_workspace_client(request: Request) -> WorkspaceClient:
     return request.app.state.workspace_client
 
 
+def _obo_ws_from_headers(headers: DatabricksAppsHeaders) -> WorkspaceClient:
+    """Build a user-scoped WorkspaceClient from request headers.
+
+    Parity with the compiled ChatAgent/ResponsesAgent path:
+
+    * **Fail closed** when no OBO token is present in the Databricks Apps
+      runtime (via ``resolve_no_obo_or_raise``) instead of silently falling back
+      to the app service principal — a token-less ``/tools/<name>`` or MCP call
+      must not run with more privilege than the caller. Outside Apps (local dev,
+      Model Serving) this is a no-op, so CLI-credential dev is unchanged.
+    * **Ignore ``X-Forwarded-Host`` in the Apps runtime** — there that header is
+      the App's own public hostname (…databricksapps.com), NOT the workspace API
+      host, so using it loops back to the app and hangs. Fall back to
+      ``DATABRICKS_HOST`` (host=None → SDK resolves it). Outside Apps the header
+      may legitimately carry the workspace host (non-Apps proxy), so keep it.
+    """
+    from ._obo import _in_databricks_app, resolve_no_obo_or_raise
+
+    if not headers.token:
+        resolve_no_obo_or_raise()
+        logger.info("No OBO token — falling back to CLI credentials for local dev")
+        return _make_workspace_client()
+    host = (
+        None
+        if _in_databricks_app()
+        else (f"https://{headers.host}" if headers.host else None)
+    )
+    return _make_workspace_client(token=headers.token.get_secret_value(), host=host)
+
+
 def _get_user_client(headers: HeadersDependency) -> WorkspaceClient:
     """Return a WorkspaceClient authenticated on behalf of the current user.
 
     Uses the OBO token from X-Forwarded-Access-Token when running inside a
-    Databricks App.  Falls back to CLI-configured credentials for local
-    development (``apx-agent dev`` / ``uvicorn --reload``).
+    Databricks App.  Fails closed in the Apps runtime when no token is present;
+    falls back to CLI-configured credentials for local development.
     """
-    if not headers.token:
-        logger.info("No OBO token — falling back to CLI credentials for local dev")
-        return _make_workspace_client()
-    return _make_workspace_client(
-        token=headers.token.get_secret_value(),
-        host=f"https://{headers.host}" if headers.host else None,
-    )
+    return _obo_ws_from_headers(headers)
 
 
 ClientDependency: TypeAlias = Annotated[WorkspaceClient, Depends(_get_workspace_client)]
@@ -198,14 +222,7 @@ def _get_sql_runner(headers: HeadersDependency) -> SqlRunnerFn:
     """
     from ._sql import run_sql
 
-    if not headers.token:
-        logger.info("No OBO token — SQL runner using CLI credentials for local dev")
-        ws = _make_workspace_client()
-    else:
-        ws = _make_workspace_client(
-            token=headers.token.get_secret_value(),
-            host=f"https://{headers.host}" if headers.host else None,
-        )
+    ws = _obo_ws_from_headers(headers)
 
     def _runner(sql_statement: str) -> list[dict[str, Any]]:
         return run_sql(ws, sql_statement)

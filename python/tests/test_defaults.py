@@ -123,6 +123,42 @@ class TestGetUserClient:
             _get_user_client(headers)
             assert MockConfig.call_args.kwargs.get("auth_type") == "pat"
 
+    def test_fails_closed_without_token_in_apps_runtime(self, monkeypatch):
+        """#465: a token-less tool-route request in the Apps runtime must fail
+        closed, not silently run as the app service principal."""
+        from apx_agent._defaults import _get_user_client
+        from apx_agent._obo import ApxIdentityError
+
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+        monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
+        headers = DatabricksAppsHeaders(
+            host=None, user_name=None, user_id=None,
+            user_email=None, request_id=None, token=None,
+        )
+        with pytest.raises(ApxIdentityError):
+            _get_user_client(headers)
+
+    def test_ignores_forwarded_host_in_apps_runtime(self, monkeypatch):
+        """#465: inside Apps, X-Forwarded-Host is the app's own hostname, not the
+        workspace API host — it must be dropped so the SDK uses DATABRICKS_HOST."""
+        from unittest.mock import patch
+        from pydantic import SecretStr
+        from apx_agent._defaults import _get_user_client
+
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+        headers = DatabricksAppsHeaders(
+            host="my-app.databricksapps.com",  # the app's OWN hostname
+            user_name=None, user_id=None, user_email=None,
+            request_id=None, token=SecretStr("obo-token"),
+        )
+        with patch("apx_agent._defaults.WorkspaceClient") as MockWS, \
+             patch("apx_agent._defaults.Config") as MockConfig:
+            MockWS.return_value = MagicMock()
+            _get_user_client(headers)
+            # Token still bound (pat), but host dropped → SDK resolves DATABRICKS_HOST.
+            assert MockConfig.call_args.kwargs.get("token") == "obo-token"
+            assert MockConfig.call_args.kwargs.get("host") is None
+
 
 class TestMakeWorkspaceClient:
     """_make_workspace_client resolves the Databricks Apps auth conflict via auth_type."""
