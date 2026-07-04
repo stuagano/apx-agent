@@ -279,6 +279,56 @@ def _q(s: str | None) -> str:
     return sql_str_literal(str(s))
 
 
+def _current_principal(ws: "WorkspaceClient") -> str:
+    """The calling principal's name, or ``"unknown"`` when it can't be resolved."""
+    try:
+        me = ws.current_user.me()
+        return getattr(me, "user_name", None) or getattr(me, "display_name", None) or "unknown"
+    except Exception:
+        return "unknown"
+
+
+_REGISTRY_OWNER_SELECT = "SELECT published_by FROM {table} WHERE agent_id = {agent_id}"
+
+
+def _assert_registry_owner(
+    ws: "WorkspaceClient",
+    *,
+    table: str,
+    agent_id: str,
+    caller: str,
+    warehouse_id: str | None,
+) -> None:
+    """Raise ``PermissionError`` when *agent_id* is already owned by someone else.
+
+    Registry rows are keyed on ``agent_id = slug(name + workspace-host)`` — both
+    values are public, so without an ownership gate any workspace user who can
+    write the registry table could overwrite another user's ``endpoint_url`` or
+    unregister their agent (sub-agent spoofing). Ownership is the row's
+    ``published_by``; a row with an ``unknown``/NULL owner is unattributable and
+    left claimable. Requires the table to already exist (publish creates it first).
+
+    ponytail: check-then-write, not an atomic predicate — deploy-time
+    registration is rare, so the tiny TOCTOU window between this SELECT and the
+    MERGE/DELETE is accepted rather than reaching for a locking scheme.
+    """
+    from ._sql import run_sql
+
+    rows = run_sql(
+        ws,
+        _REGISTRY_OWNER_SELECT.format(table=table, agent_id=_q(agent_id)),
+        warehouse_id=warehouse_id,
+    )
+    if not rows:
+        return
+    owner = rows[0]["published_by"]
+    if owner and owner != "unknown" and owner != caller:
+        raise PermissionError(
+            f"agent_id {agent_id!r} is registered by {owner!r}; "
+            f"{caller!r} may not overwrite or remove it."
+        )
+
+
 def publish_to_registry(
     *,
     name: str,
@@ -334,11 +384,15 @@ def publish_to_registry(
         raise
 
     now = time.time()
-    try:
-        me = ws.current_user.me()
-        published_by = getattr(me, "user_name", None) or getattr(me, "display_name", None) or "unknown"
-    except Exception:
-        published_by = "unknown"
+    published_by = _current_principal(ws)
+
+    # Ownership gate: an existing row keyed on this (public) agent_id may only be
+    # rewritten by the principal that published it — otherwise anyone could
+    # repoint or unregister another user's agent (sub-agent spoofing).
+    _assert_registry_owner(
+        ws, table=registry_table, agent_id=agent_id,
+        caller=published_by, warehouse_id=warehouse_id,
+    )
 
     run_sql(
         ws,
@@ -700,6 +754,13 @@ def remove_from_registry(
     _validate_table_name(registry_table)
     _validate_table_name(tools_table)
     ws = _ensure_ws(ws)
+
+    # Same ownership gate as publish: only the principal that registered an
+    # agent_id may unregister it (else any writer could delete another's rows).
+    _assert_registry_owner(
+        ws, table=registry_table, agent_id=agent_id,
+        caller=_current_principal(ws), warehouse_id=warehouse_id,
+    )
 
     run_sql(
         ws,
