@@ -1153,6 +1153,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     # ── Approvals (human-in-the-loop ASK policy) ──────────────────────────
 
+    def _decider(request: Request) -> str | None:
+        """Identity of the principal making an approval decision, for the audit
+        record. Reads the Apps proxy's forwarded identity headers; ``None`` in
+        local dev (no forwarded user) — recorded honestly rather than faked."""
+        return (
+            request.headers.get("x-forwarded-email")
+            or request.headers.get("x-forwarded-user")
+            or None
+        )
+
     def _find_approval_store(request: Request) -> Any:
         """Locate the ApprovalStore serving this app, if any.
 
@@ -1217,11 +1227,14 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"error": "no approval store configured"},
                                 status_code=404)
         try:
-            approval = store.approve(approval_id)
+            approval = store.approve(approval_id, decided_by=_decider(request))
         except KeyError:
             return JSONResponse({"error": f"unknown approval {approval_id}"},
                                 status_code=404)
-        return {"id": approval.id, "status": approval.status}
+        return {
+            "id": approval.id, "status": approval.status,
+            "decided_by": approval.decided_by, "decided_at": approval.decided_at,
+        }
 
     @router.post("/_apx/approvals/{approval_id}/deny", response_model=ApprovalActionResponse)
     async def deny_approval_api(approval_id: str, request: Request) -> Any:
@@ -1232,11 +1245,14 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"error": "no approval store configured"},
                                 status_code=404)
         try:
-            approval = store.deny(approval_id)
+            approval = store.deny(approval_id, decided_by=_decider(request))
         except KeyError:
             return JSONResponse({"error": f"unknown approval {approval_id}"},
                                 status_code=404)
-        return {"id": approval.id, "status": approval.status}
+        return {
+            "id": approval.id, "status": approval.status,
+            "decided_by": approval.decided_by, "decided_at": approval.decided_at,
+        }
 
     @router.get("/_apx/traces", response_model=list[TraceRow])
     async def traces_list_ui(request: Request) -> Any:
