@@ -1227,6 +1227,171 @@ def test_deploy_name_missing_and_unconfigured_errors(
 
 
 # ---------------------------------------------------------------------------
+# model-serving deploy: --dry-run plan, --timeout, --version redeploy (#414)
+# ---------------------------------------------------------------------------
+
+
+def test_deploy_serving_dry_run_prints_plan_without_logging_or_lock_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#414: --dry-run on model-serving prints the plan (with --env-suffix
+    applied to the UC name) and exits 0 — no log_agent call, no
+    databricks.agents import, and uv.lock is byte-identical (no sanitize)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "uv.lock").write_text(_POISONED_LOCK)
+    lock_before = (tmp_path / "uv.lock").read_bytes()
+
+    fake_log_agent = MagicMock(
+        side_effect=AssertionError("log_agent must not run under --dry-run"),
+    )
+    with patch("apx_agent.log_agent", fake_log_agent):
+        result = CliRunner().invoke(main, [
+            "agents", "deploy",
+            "--target", "model-serving",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--env-suffix", "staging",
+            "--dry-run",
+        ])
+
+    assert result.exit_code == 0, result.output
+    assert "DRY RUN" in result.stdout
+    assert "main.agents.x-staging" in result.stdout  # suffix applied in plan
+    assert "publish_tools: run" in result.stdout
+    assert "log: run" in result.stdout
+    fake_log_agent.assert_not_called()
+    assert (tmp_path / "uv.lock").read_bytes() == lock_before  # untouched
+    # databricks.agents is not installed in the test venv — a real import
+    # attempt would have failed the command, and it must not be loaded.
+    assert "databricks.agents" not in sys.modules
+
+
+def test_deploy_serving_dry_run_json_plan_with_config_fallback_and_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#414: --dry-run --json-output emits {plan: true, ...} with the UC name
+    resolved from [tool.apx.agent].registered_model and the --version
+    redeploy step list (publish_tools + log skipped)."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.apx.agent]\nregistered_model = "main.agents.from_cfg"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy",
+        "--target", "model-serving",
+        "--model", "databricks-claude-sonnet-4-6",
+        "--version", "3",
+        "--no-set-uc-tags",
+        "--dry-run", "--json-output",
+    ])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["plan"] is True
+    assert payload["target"] == "model-serving"
+    assert payload["uc_name"] == "main.agents.from_cfg"
+    assert payload["version"] == 3
+    assert payload["steps"]["publish_tools"] == "skipped (--version redeploy)"
+    assert payload["steps"]["log"] == "skipped (--version redeploy)"
+    assert payload["steps"]["deploy"] == "run"
+    assert payload["steps"]["set_uc_tags"] == "skipped (--no-set-uc-tags)"
+
+
+def test_timeout_flag_reaches_serving_health_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#414: --timeout drives the serving gate's READY poll budget — the same
+    flag that bounds the apps ACTIVE/RUNNING poll."""
+    gate = MagicMock(return_value=None)
+    monkeypatch.setattr("apx_agent.cli._serving_health_gate", gate)
+
+    result = _invoke_serving_deploy_with_gate(
+        tmp_path, monkeypatch, ["--timeout", "77"], ws=MagicMock(),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert gate.call_args.kwargs["timeout_seconds"] == 77
+
+
+def test_deploy_version_redeploys_logged_version_skipping_publish_and_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#414: --version N never calls publish_tools_to_uc or log_agent
+    (ledger: skipped) and goes straight to databricks.agents.deploy(name, N)
+    + gate + tags."""
+    import types as _types
+
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "uv.lock").write_text(_POISONED_LOCK)
+
+    deploy_mock = MagicMock(
+        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
+    )
+    fake_agents = _types.ModuleType("databricks.agents")
+    fake_agents.deploy = deploy_mock  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "databricks.agents", fake_agents)
+    fake_log_agent = MagicMock(
+        side_effect=AssertionError("log_agent must not run with --version"),
+    )
+    fake_publish = MagicMock(
+        side_effect=AssertionError("publish_tools must not run with --version"),
+    )
+
+    runner = CliRunner()
+    with patch("apx_agent.log_agent", fake_log_agent), \
+         patch("apx_agent.publish_tools_to_uc", fake_publish), \
+         patch("apx_agent.set_uc_tags_for_agent",
+               MagicMock(return_value={"apx.agent.name": "x"})), \
+         patch("databricks.sdk.WorkspaceClient", return_value=_ready_ws()):
+        result = runner.invoke(main, [
+            "agents", "deploy",
+            "--target", "model-serving",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--version", "7",
+            "--json-output",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    fake_log_agent.assert_not_called()
+    fake_publish.assert_not_called()
+    assert deploy_mock.call_args.args[0] == "main.agents.x"
+    assert deploy_mock.call_args.kwargs["model_version"] == "7"
+    payload = json.loads(result.stdout)
+    assert payload["version"] == "7"
+    assert payload["steps"]["publish_tools"] == "skipped"
+    assert payload["steps"]["log"] == "skipped"
+    assert payload["steps"]["deploy"] == "ok"
+    assert payload["steps"]["gate"] == "ok"
+    # A redeploy logs nothing, so the lock sanitize never runs (#414).
+    assert (tmp_path / "uv.lock").read_text() == _POISONED_LOCK
+
+
+def test_deploy_version_with_no_deploy_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#414: --version + --no-deploy is a no-op combination — refuse it."""
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy",
+        "--target", "model-serving",
+        "--model", "databricks-claude-sonnet-4-6",
+        "--name", "main.agents.x",
+        "--version", "7",
+        "--no-deploy",
+    ])
+
+    assert result.exit_code != 0
+    assert "--version" in result.output
+    assert "--no-deploy" in result.output
+
+
+# ---------------------------------------------------------------------------
 # `apx watchdog violations` / `apx watchdog status`
 # ---------------------------------------------------------------------------
 

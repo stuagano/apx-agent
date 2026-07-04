@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 import yaml
 from click.testing import CliRunner
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from apx_agent.cli import main
 
@@ -2090,3 +2090,110 @@ def test_malformed_env_flags_fail_fast(
     # Nothing was deployed and the yml was not rewritten with a bad entry.
     assert ["bundle", "deploy"] not in [c[:2] for c in calls]
     assert raw.split("=", 1)[0] not in (scaffold / "databricks.yml").read_text()
+
+
+# ---------------------------------------------------------------------------
+# issue #414: --dry-run plan + --timeout / --readyz-retries flags
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_prints_plan_without_subprocess_or_yml_write(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#414: --dry-run prints the plan on stdout and exits 0 — zero
+    databricks CLI calls, and --env/--secret-env are NOT merged into
+    databricks.yml (key names appear in the plan only)."""
+    calls = _install_subprocess_mock(monkeypatch)
+    yml_before = (scaffold / "databricks.yml").read_text()
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--dry-run",
+        "--env", "FEATURE_FLAG=super-sensitive",
+        "--secret-env", "OPENAI_API_KEY=llm-secrets/openai",
+        "--var", "x=y",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert calls == []  # no bundle validate/deploy/run, no apps get
+    assert (scaffold / "databricks.yml").read_text() == yml_before
+    assert "DRY RUN" in result.stdout
+    assert "app_name: my-app" in result.stdout
+    assert "FEATURE_FLAG" in result.stdout
+    assert "OPENAI_API_KEY" in result.stdout
+    assert "super-sensitive" not in result.output  # names only, never values
+    assert "validate: run" in result.stdout
+    assert "x=y" in result.stdout
+
+
+def test_dry_run_json_output_emits_plan_object(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#414: --dry-run --json-output emits one JSON object with plan:true and
+    a step list honoring --no-run / --no-readyz-gate / --no-register-uc."""
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--dry-run", "--json-output",
+        "--no-run", "--no-register-uc",
+    ])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["plan"] is True
+    assert payload["target"] == "apps"
+    assert payload["target_reason"] == "explicit --target"
+    assert payload["app_name"] == "my-app"
+    assert payload["bundle_target"] == "dev"
+    assert payload["steps"]["run"] == "skipped (--no-run)"
+    assert payload["steps"]["poll"] == "skipped (--no-run)"
+    assert payload["steps"]["readyz"] == "skipped (--no-run)"
+    assert payload["steps"]["register_uc"] == "skipped (--no-register-uc)"
+    assert calls == []
+
+
+def test_timeout_flag_reaches_apps_poll(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#414: --timeout drives the apps ACTIVE/RUNNING poll budget."""
+    _install_subprocess_mock(monkeypatch)
+    poll = MagicMock(return_value={
+        "url": "https://my-app.example.databricksapps.com",
+    })
+    monkeypatch.setattr("apx_agent.cli._poll_app_ready", poll)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--timeout", "42",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert poll.call_args.kwargs["timeout_seconds"] == 42
+
+
+def test_readyz_retries_flag_reaches_check_readyz(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#414: --readyz-retries drives the /readyz gate attempt count."""
+    _install_subprocess_mock(monkeypatch)
+    gate = MagicMock(return_value=(True, {}))
+    monkeypatch.setattr("apx_agent.cli._check_readyz", gate)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--readyz-retries", "9",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert gate.call_args.kwargs["attempts"] == 9
+
+
+def test_readyz_retries_warns_under_model_serving(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#414: --readyz-retries is apps-only — --target model-serving warns
+    (same hygiene table as --env / --secret-env)."""
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "model-serving",
+        "--readyz-retries", "9",
+    ])
+    # The warning fires before the --model requirement aborts the command.
+    assert "ignored with --target model-serving" in result.output
+    assert "--readyz-retries" in result.output
