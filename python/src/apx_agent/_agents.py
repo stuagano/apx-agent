@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
+import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -37,7 +39,18 @@ from ._inspection import (
     _schema_for_return,
 )
 
+if TYPE_CHECKING:
+    from httpx import AsyncClient
+
 logger = logging.getLogger(__name__)
+
+# Sub-agent card fetch (#440): bounded retry at startup, lazy repair on first
+# use. Boot order in a fleet is not controllable, so a peer that is still
+# starting refuses connections for a few seconds — retry cheap failures with
+# short backoff, but never hold serving startup past the budget.
+_CARD_FETCH_ATTEMPTS = 3
+_CARD_FETCH_BACKOFF_S = 0.5
+_CARD_FETCH_BUDGET_S = 5.0
 
 
 class BaseAgent:
@@ -130,6 +143,9 @@ class LlmAgent(BaseAgent):
         # Sub-agent URLs already materialized as callable tools (idempotency
         # guard for repeated fetch_remote_tools calls). See #436.
         self._materialized_sub_agent_urls: set[str] = set()
+        # URL → the degraded AgentTool descriptor registered when the card
+        # fetch failed at startup; repaired lazily on first use (#440).
+        self._degraded_sub_agents: dict[str, AgentTool] = {}
         self._instructions = instructions or instruction
         # G3: when set, the agent's final text is written to the shared state
         # channel under this key (readable by later steps via {key} templating).
@@ -275,6 +291,11 @@ class LlmAgent(BaseAgent):
         in ``_tool_fns`` via ``_ensure_sub_agent_tool`` — the compiled graph
         builds its tool set from ``_tool_fns`` only, so without this step the
         card advertised delegation the LLM could never perform (#436).
+
+        A failed card fetch is retried a few times within a small budget
+        (fleet boot races — #440); if it still fails, a degraded fallback
+        descriptor is registered and repaired lazily on the tool's first
+        invocation (see ``_upgrade_sub_agent``).
         """
         from databricks.sdk import WorkspaceClient
         from httpx import AsyncClient
@@ -295,29 +316,32 @@ class LlmAgent(BaseAgent):
                 if not url:
                     logger.warning(f"sub_agent env var {raw_url} not set — skipping")
                     continue
-                card_url = f"{url.rstrip('/')}/.well-known/agent.json"
-                try:
-                    response = await client.get(card_url, headers=auth_headers)
-                    response.raise_for_status()
-                    card = response.json()
-                except Exception as e:
-                    logger.warning(f"Failed to fetch agent card from {card_url}: {e}")
-                    # Register anyway with a generic description — the sub-agent
-                    # is still callable at runtime via the user's OBO token even
-                    # if the card fetch fails (e.g. Databricks Apps OAuth proxy)
-                    card = None
+                base_url = url.rstrip("/")
+                card = await self._fetch_sub_agent_card(client, base_url, auth_headers)
 
-                if card:
-                    raw_name = card.get("name", url.split("/")[-1])
+                degraded = self._degraded_sub_agents.get(base_url)
+                if card is not None:
                     description = card.get("description", f"Agent at {url}")
+                    if degraded is not None:
+                        # A repeated fetch found the previously-degraded peer
+                        # alive. The callable delegate keeps its startup name
+                        # (the compiled graph binds by function name) — repair
+                        # the description in place and reuse that name here.
+                        self._upgrade_sub_agent(base_url, description)
+                        tool_name = degraded.name
+                    else:
+                        raw_name = card.get("name", url.split("/")[-1])
+                        tool_name = raw_name.replace("-", "_").replace(" ", "_")
                 else:
-                    # Derive name from URL
-                    raw_name = url.rstrip("/").split("/")[-1].split(".")[0].split("-")[0:-1]
-                    raw_name = "-".join(raw_name) if raw_name else url.split("/")[-1]
+                    # Derive name from URL — the sub-agent is still callable at
+                    # runtime via the user's OBO token even if the card fetch
+                    # fails (e.g. Databricks Apps OAuth proxy).
+                    parts = url.rstrip("/").split("/")[-1].split(".")[0].split("-")[0:-1]
+                    raw_name = "-".join(parts) if parts else url.split("/")[-1]
                     description = f"Remote agent at {url} (card fetch failed — tool is still callable)"
+                    tool_name = raw_name.replace("-", "_").replace(" ", "_")
 
-                tool_name = raw_name.replace("-", "_").replace(" ", "_")
-                tools.append(AgentTool(
+                descriptor = AgentTool(
                     name=tool_name,
                     description=description,
                     input_schema={
@@ -326,14 +350,84 @@ class LlmAgent(BaseAgent):
                         "required": ["message"],
                     },
                     output_schema={"type": "string"},
-                    sub_agent_url=url.rstrip("/"),
-                ))
+                    sub_agent_url=base_url,
+                )
+                tools.append(descriptor)
                 # Advertised AND callable must come from the same loop: register
                 # the matching delegate tool so the compiled graph can invoke it.
-                self._ensure_sub_agent_tool(tool_name, description, url.rstrip("/"))
-                logger.info(f"Registered sub-agent '{tool_name}' from {url}")
+                self._ensure_sub_agent_tool(tool_name, description, base_url)
+                if card is None and base_url in self._materialized_sub_agent_urls:
+                    self._degraded_sub_agents.setdefault(base_url, descriptor)
+                    logger.warning(
+                        "sub-agent %s: card fetch failed after %d attempts — "
+                        "registered degraded stub %r; will repair on first use",
+                        base_url,
+                        _CARD_FETCH_ATTEMPTS,
+                        tool_name,
+                    )
+                else:
+                    logger.info(f"Registered sub-agent '{tool_name}' from {url}")
 
         return tools
+
+    async def _fetch_sub_agent_card(
+        self, client: AsyncClient, base_url: str, auth_headers: dict[str, str]
+    ) -> dict[str, Any] | None:
+        """GET a sub-agent's A2A card, retrying fast failures within a budget.
+
+        Boot order in a fleet is not controllable: a peer that is still
+        starting refuses connections for a few seconds (#440). Cheap failures
+        (connection refused) are retried with short backoff; a slow failure
+        (timeout) burns the budget and stops the loop, so one dead peer never
+        holds serving startup for more than roughly ``_CARD_FETCH_BUDGET_S``
+        plus a single request timeout.
+        """
+        card_url = f"{base_url}/.well-known/agent.json"
+        started = time.monotonic()
+        for attempt in range(1, _CARD_FETCH_ATTEMPTS + 1):
+            try:
+                response = await client.get(card_url, headers=auth_headers)
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                logger.warning(
+                    f"Failed to fetch agent card from {card_url} "
+                    f"(attempt {attempt}/{_CARD_FETCH_ATTEMPTS}): {e}"
+                )
+            if (
+                attempt == _CARD_FETCH_ATTEMPTS
+                or time.monotonic() - started >= _CARD_FETCH_BUDGET_S
+            ):
+                break
+            await asyncio.sleep(_CARD_FETCH_BACKOFF_S * attempt)
+        return None
+
+    def _upgrade_sub_agent(self, base_url: str, description: str) -> None:
+        """Repair a degraded sub-agent entry once its card became fetchable (#440).
+
+        Upgrades the advertised descriptor and the delegate's LLM-facing
+        ``__doc__`` in place (``collect_tools`` and the compiled graph both
+        read ``__doc__`` live). The tool NAME stays as registered at startup:
+        the compiled graph binds tools by function name and the A2A card
+        snapshot is frozen at startup, so renaming would desync advertised
+        from callable.
+        """
+        if not description:
+            return
+        descriptor = self._degraded_sub_agents.pop(base_url, None)
+        if descriptor is None:
+            return
+        descriptor.description = description
+        for fn in self._tool_fns:
+            if fn.__name__ == descriptor.name:
+                fn.__doc__ = description
+        logger.info(
+            "sub-agent %s: card fetch recovered — tool %r description repaired "
+            "(tool name is fixed at startup; the A2A card snapshot refreshes "
+            "on restart)",
+            base_url,
+            descriptor.name,
+        )
 
     def _ensure_sub_agent_tool(self, name: str, description: str, base_url: str) -> None:
         """Register the callable delegate tool for a sub-agent URL (idempotent).
@@ -349,6 +443,8 @@ class LlmAgent(BaseAgent):
         passes the degraded name/description, and the delegate itself returns
         a clear ``"sub-agent at <url> unreachable: ..."`` string if invoked
         while the peer is down — startup never hard-fails on a dead peer.
+        The ``on_card`` hook reports the peer's card back the moment any
+        invocation observes it, repairing a degraded registration (#440).
         """
         if base_url in self._materialized_sub_agent_urls:
             return
@@ -363,7 +459,14 @@ class LlmAgent(BaseAgent):
             return
         from ._agent_tool import remote_agent_tool  # noqa: PLC0415 — avoid import cycle
 
-        self._register_tool(remote_agent_tool(base_url, name=name, description=description))
+        self._register_tool(
+            remote_agent_tool(
+                base_url,
+                name=name,
+                description=description,
+                on_card=lambda card: self._upgrade_sub_agent(base_url, card.description),
+            )
+        )
         self._materialized_sub_agent_urls.add(base_url)
 
 

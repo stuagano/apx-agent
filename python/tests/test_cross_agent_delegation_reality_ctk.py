@@ -258,6 +258,7 @@ def test_unreachable_sub_agent_degrades_without_crashing(
     B_TOOL_CALLS.clear()
     BOUND_TOOLS.clear()
     _patch_workspace_clients(monkeypatch)
+    _fast_retries(monkeypatch)
 
     def _refuse(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
@@ -294,3 +295,178 @@ def test_unreachable_sub_agent_degrades_without_crashing(
         text = _final_texts(resp.json())
         # Invoking it surfaces a clear error string instead of killing the turn.
         assert f"sub-agent at {B_URL} unreachable:" in text
+
+
+# ---------------------------------------------------------------------------
+# #440: card fetch retries at startup and repairs lazily on first use.
+# ---------------------------------------------------------------------------
+
+
+def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shrink the startup retry backoff so tests stay fast (real: 0.5s * n)."""
+    monkeypatch.setattr("apx_agent._agents._CARD_FETCH_BACKOFF_S", 0.01)
+
+
+def test_startup_retry_recovers_from_boot_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card fetch fails twice (peer still booting) then succeeds → the LIVE
+    descriptor is registered, not the URL-derived stub the issue showed
+    ('127.0.0.1:8799')."""
+    B_TOOL_CALLS.clear()
+    BOUND_TOOLS.clear()
+    _patch_workspace_clients(monkeypatch)
+    _fast_retries(monkeypatch)
+
+    card_attempts = {"n": 0}
+
+    def _flaky(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/.well-known/agent.json":
+            card_attempts["n"] += 1
+            if card_attempts["n"] < 3:
+                raise httpx.ConnectError("connection refused", request=request)
+            return httpx.Response(
+                200, json={"name": "agent-b", "description": "Knows the secret word."}
+            )
+        raise httpx.ConnectError("connection refused", request=request)
+
+    _route_async_clients_to(monkeypatch, httpx.MockTransport(_flaky))
+    _install_models(
+        monkeypatch,
+        {"model-a": _DelegatingModel(key="A", tool_name="agent_b", tool_args={"message": "x"})},
+    )
+
+    agent_a = LlmAgent(tools=[], name="agent-a")
+    app_a = create_app(
+        agent_a,
+        config=AgentConfig(name="agent-a", model="model-a", sub_agents=[B_URL]),
+    )
+    with TestClient(app_a) as client_a:
+        assert card_attempts["n"] == 3, "startup should have retried the card fetch"
+        # The card-derived (not URL-derived) tool won, and nothing is degraded.
+        assert "agent_b" in [fn.__name__ for fn in agent_a._tool_fns]
+        assert agent_a._degraded_sub_agents == {}
+
+        card = client_a.get("/.well-known/agent.json").json()
+        skills = {s["name"]: s["description"] for s in card["skills"]}
+        assert skills["agent_b"] == "Knows the secret word."
+
+
+def test_dead_peer_costs_one_card_fetch_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Permanently-dead peer: bounded startup retry (3 attempts, then give up),
+    startup not blocked, and each later invocation performs exactly ONE card
+    fetch — the delegate's own ``init`` — with the lazy repair adding zero
+    extra requests (the no-added-latency guarantee for dead peers)."""
+    B_TOOL_CALLS.clear()
+    BOUND_TOOLS.clear()
+    _patch_workspace_clients(monkeypatch)
+    _fast_retries(monkeypatch)
+
+    card_attempts = {"n": 0}
+
+    def _refuse(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/.well-known/agent.json":
+            card_attempts["n"] += 1
+        raise httpx.ConnectError("connection refused", request=request)
+
+    _route_async_clients_to(monkeypatch, httpx.MockTransport(_refuse))
+    _install_models(
+        monkeypatch,
+        {"model-a": _DelegatingModel(key="A", tool_name="agent", tool_args={"message": "hi"})},
+    )
+
+    agent_a = LlmAgent(tools=[], name="agent-a")
+    app_a = create_app(
+        agent_a,
+        config=AgentConfig(name="agent-a", model="model-a", sub_agents=[B_URL]),
+    )
+    with TestClient(app_a) as client_a:
+        assert card_attempts["n"] == 3, "startup retry is bounded at 3 attempts"
+        # Degraded state is tracked, keyed by the sub-agent URL.
+        assert B_URL in agent_a._degraded_sub_agents
+
+        for expected in (4, 5):
+            resp = client_a.post(
+                "/invocations",
+                json={"messages": [{"role": "user", "content": "try it"}]},
+            )
+            assert resp.status_code == 200, resp.text
+            assert f"sub-agent at {B_URL} unreachable:" in _final_texts(resp.json())
+            # Exactly one card fetch per call (RemoteDatabricksAgent.init) —
+            # the repair path re-uses it instead of issuing its own.
+            assert card_attempts["n"] == expected
+
+        # Still degraded (peer never came up), still callable.
+        assert B_URL in agent_a._degraded_sub_agents
+
+
+def test_degraded_sub_agent_repairs_on_first_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Peer boots AFTER the parent's startup (the uncontrollable fleet boot
+    race): startup registers the degraded stub, then the FIRST invocation both
+    succeeds against the now-live peer AND repairs the stored descriptor."""
+    B_TOOL_CALLS.clear()
+    BOUND_TOOLS.clear()
+    _patch_workspace_clients(monkeypatch)
+    _fast_retries(monkeypatch)
+    _install_models(
+        monkeypatch,
+        {
+            "model-a": _DelegatingModel(
+                key="A",
+                # Card fetch failed → tool registered under the URL-derived name.
+                tool_name="agent",
+                tool_args={"message": "What is the secret word?"},
+            ),
+            "model-b": _DelegatingModel(key="B", tool_name="secret_word", tool_args={}),
+        },
+    )
+
+    def _refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    _route_async_clients_to(monkeypatch, httpx.MockTransport(_refuse))
+
+    agent_a = LlmAgent(tools=[], name="agent-a")
+    app_a = create_app(
+        agent_a,
+        config=AgentConfig(name="agent-a", model="model-a", sub_agents=[B_URL]),
+    )
+    with TestClient(app_a) as client_a:
+        stub = agent_a._degraded_sub_agents[B_URL]
+        assert "card fetch failed" in stub.description
+
+        # Now agent B comes up — too late for A's startup fetch.
+        agent_b = LlmAgent(tools=[secret_word], name="agent-b")
+        app_b = create_app(
+            agent_b,
+            config=AgentConfig(
+                name="agent-b",
+                description="Knows the secret word.",
+                model="model-b",
+            ),
+        )
+        with TestClient(app_b):
+            _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
+
+            resp = client_a.post(
+                "/invocations",
+                json={"messages": [{"role": "user", "content": "What is the secret word?"}]},
+            )
+
+            assert resp.status_code == 200, resp.text
+            # The call went through: B's tool body really executed.
+            assert B_TOOL_CALLS == ["ran"], "agent B's tool never executed"
+            assert SENTINEL in _final_texts(resp.json())
+
+            # And the first use repaired the degraded entry in place:
+            assert agent_a._degraded_sub_agents == {}
+            assert stub.description == "Knows the secret word."
+            delegate = next(fn for fn in agent_a._tool_fns if fn.__name__ == "agent")
+            assert delegate.__doc__ == "Knows the secret word."
+            # collect_tools (the /tools + MCP surface) reads __doc__ live.
+            collected = {t.name: t.description for t in agent_a.collect_tools()}
+            assert collected["agent"] == "Knows the secret word."
