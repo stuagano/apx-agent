@@ -783,6 +783,13 @@ def _parse_judge_output(text: str) -> _JudgeOutput:
 _DEV_TOKEN_HEADER = "x-apx-dev-token"
 _DEV_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+# Read GETs that expose per-principal data (approvals, conversations + their
+# items, memories, traces). Gated like writes on a deployed App so a multi-user
+# App doesn't leak one principal's data to another authorized viewer (#468).
+# Benign reads (chat HTML, topology, probe, setup discovery) stay open so
+# end-user chat and diagnostics still work without the operator token.
+_DEV_DATA_READ_SEGMENTS = ("/approvals", "/conversations", "/memories", "/traces")
+
 
 def _is_deployed_app() -> bool:
     """True when running inside a deployed Databricks App.
@@ -827,12 +834,14 @@ def _enforce_dev_write_auth(request: Request) -> None:
 
 
 async def _dev_write_guard(request: Request) -> None:
-    """Router-level dependency: gate state-changing methods + the SSRF probe.
+    """Router-level dependency: gate state-changing methods, the SSRF probe, and
+    per-principal data reads.
 
     Attached at router construction so it covers every current and future
     write route (edit, tools/new, tools/suggest, replay/*, setup writes,
-    DELETE tools) without per-route annotations that could miss one. Read GETs
-    (chat, traces, topology, probe/checks, setup/catalogs, …) fall through.
+    DELETE tools) without per-route annotations that could miss one. Benign read
+    GETs (chat HTML, topology, probe/checks, setup/catalogs, …) fall through so
+    end-user chat and diagnostics work without the operator token.
     """
     # Two side-effecting GETs need gating too: the SSRF probe and
     # /_apx/deploy/stream, which spawns ``apx-agent deploy`` as a subprocess
@@ -841,7 +850,13 @@ async def _dev_write_guard(request: Request) -> None:
     is_side_effecting_get = path.endswith("/setup/probe-json") or path.endswith(
         "/deploy/stream"
     )
-    if request.method in _DEV_WRITE_METHODS or is_side_effecting_get:
+    # Per-principal data reads (#468): on a deployed App these would otherwise
+    # let any authorized viewer read every principal's approvals / conversations
+    # / memories / traces. Gate them with the same operator token as writes.
+    is_data_read = request.method == "GET" and any(
+        seg in path for seg in _DEV_DATA_READ_SEGMENTS
+    )
+    if request.method in _DEV_WRITE_METHODS or is_side_effecting_get or is_data_read:
         _enforce_dev_write_auth(request)
 
 
