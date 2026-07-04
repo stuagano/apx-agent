@@ -98,8 +98,3 @@ include = ["src/apx_agent"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 reportMissingImports = "warning"
-
-[tool.apx.agent]
-name = "apx-agent"
-description = "Example agent"
-model = "databricks-meta-llama-3-3-70b-instruct"
