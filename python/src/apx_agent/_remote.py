@@ -13,9 +13,9 @@ Extends ``BaseAgent`` so it can be composed in ``SequentialAgent``,
 
 Example::
 
-    # From a full agent card URL
+    # From a base URL or a full agent card URL (both accepted, #441)
     remote = await RemoteDatabricksAgent.from_card_url(
-        "https://data-inspector.workspace.databricksapps.com/.well-known/agent.json"
+        "https://data-inspector.workspace.databricksapps.com"
     )
 
     # From a Databricks App name
@@ -47,6 +47,21 @@ logger = logging.getLogger(__name__)
 # ``from_app_name`` case where the card is fetched from the workspace host but
 # ``card.url`` points at the app's own ``*.databricksapps.com`` address.
 _TRUSTED_HOST_SUFFIXES = (".databricksapps.com",)
+
+_WELL_KNOWN_CARD_PATH = "/.well-known/agent.json"
+
+
+def _normalize_card_url(url: str) -> str:
+    """Accept a base URL or a full card URL; return the full card URL.
+
+    Mirrors the declarative ``sub_agents`` path, which appends the
+    well-known path to a declared base URL (#441), so both entry points
+    share one contract.
+    """
+    url = url.rstrip("/")
+    if url.endswith(_WELL_KNOWN_CARD_PATH):
+        return url
+    return f"{url}{_WELL_KNOWN_CARD_PATH}"
 
 
 def _default_port(scheme: str) -> int:
@@ -155,8 +170,10 @@ class RemoteDatabricksAgent(BaseAgent):
     Parameters
     ----------
     card_url:
-        Full URL to the agent card, e.g.
-        ``https://data-inspector.workspace.databricksapps.com/.well-known/agent.json``
+        URL of the remote agent — either its base URL
+        (``https://data-inspector.workspace.databricksapps.com``) or the
+        full agent card URL ending in ``/.well-known/agent.json``. The
+        well-known path is appended when missing (#441).
     app_name:
         Databricks App name (e.g. ``"data-inspector"``). If provided
         alongside ``card_url``, used for the ``model="apps/<name>"``
@@ -176,8 +193,8 @@ class RemoteDatabricksAgent(BaseAgent):
         headers: dict[str, str] | None = None,
         timeout: float = 120.0,
     ) -> None:
-        self._card_url = card_url
-        self._base_url = card_url.rsplit("/.well-known/agent.json", 1)[0].rstrip("/")
+        self._card_url = _normalize_card_url(card_url)
+        self._base_url = self._card_url[: -len(_WELL_KNOWN_CARD_PATH)]
         self._app_name = app_name or _url_to_app_name(self._base_url)
         self._extra_headers = headers or {}
         self._timeout = timeout
@@ -195,9 +212,11 @@ class RemoteDatabricksAgent(BaseAgent):
         headers: dict[str, str] | None = None,
         timeout: float = 120.0,
     ) -> RemoteDatabricksAgent:
-        """Create a RemoteDatabricksAgent from a full agent card URL.
+        """Create a RemoteDatabricksAgent from a base URL or full card URL.
 
-        The card is fetched eagerly so metadata is available immediately.
+        Accepts either form — ``/.well-known/agent.json`` is appended when
+        missing (#441). The card is fetched eagerly so metadata is
+        available immediately.
         """
         agent = cls(card_url, headers=headers, timeout=timeout)
         await agent.init()
@@ -263,7 +282,17 @@ class RemoteDatabricksAgent(BaseAgent):
         async with AsyncClient(timeout=10.0) as client:
             response = await client.get(self._card_url, headers=self._extra_headers)
             response.raise_for_status()
-            data = response.json()
+            try:
+                data = response.json()
+            except ValueError as e:
+                # A dev-UI landing page answers 200 text/html here; a naked
+                # JSONDecodeError gives no hint what was hit (#441).
+                content_type = response.headers.get("content-type", "unknown")
+                raise RuntimeError(
+                    f"Expected agent card JSON at {self._card_url}, got "
+                    f"{content_type} (HTTP {response.status_code}). "
+                    f"Body (truncated): {response.text[:200]!r}"
+                ) from e
 
         self._card = AgentCard(
             name=data.get("name", "remote-agent"),
@@ -354,13 +383,19 @@ class RemoteDatabricksAgent(BaseAgent):
         await self._init_quietly()
         obo_headers = self._obo_headers(request)
 
-        # Try DatabricksOpenAI first
+        # Try DatabricksOpenAI first — true streaming, deltas relayed as
+        # they arrive (#447). Fall back to HTTP only when nothing has been
+        # yielded yet; a mid-stream failure must not replay from the start.
         if self._app_name:
+            emitted = False
             try:
-                text = await self._call_via_sdk(messages, obo_headers)
-                yield text
+                async for chunk in self._stream_via_sdk(messages):
+                    emitted = True
+                    yield chunk
                 return
             except Exception as exc:
+                if emitted:
+                    raise
                 logger.warning(
                     "DatabricksOpenAI stream to apps/%s failed (%s), falling back to direct HTTP",
                     self._app_name,
@@ -452,6 +487,32 @@ class RemoteDatabricksAgent(BaseAgent):
             ),
         )
         return response.output_text
+
+    async def _stream_via_sdk(
+        self,
+        messages: list[Message],
+    ) -> AsyncGenerator[str, None]:
+        """Stream via ``responses.create(model="apps/<name>", stream=True)``.
+
+        Relays ``response.output_text.delta`` events as they arrive, so
+        first-token latency matches the remote agent's instead of the old
+        buffer-everything-then-yield-once behavior (#447).
+        """
+        from databricks_openai import AsyncDatabricksOpenAI
+
+        client = AsyncDatabricksOpenAI()
+        stream = await client.responses.create(
+            model=f"apps/{self._app_name}",
+            # Same EasyInputMessage dict form + cast as _call_via_sdk.
+            input=cast(
+                Any,
+                [{"role": m.role, "content": m.content} for m in messages],
+            ),
+            stream=True,
+        )
+        async for event in stream:
+            if event.type == "response.output_text.delta" and event.delta:
+                yield event.delta
 
     # ------------------------------------------------------------------
     # Internal: direct HTTP path
