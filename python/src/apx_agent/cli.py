@@ -7021,19 +7021,23 @@ def _do_advertise(
 
 
 def _do_supervisor_add(
-    *, ws: Any, supervisor_id: str, endpoint: str, description: str | None,
-    display_name: str | None, tool_id: str | None,
+    *, ws: Any, supervisor_id: str, endpoint: str | None, description: str | None,
+    display_name: str | None, tool_id: str | None, app: str | None = None,
 ) -> None:
-    """Register a deployed agent endpoint as a Supervisor sub-agent (routing).
+    """Register a deployed agent (serving endpoint or app) as a Supervisor sub-agent.
 
     Shared by `supervisor add` and the deprecated `agents publish` alias.
+    Exactly one of ``endpoint`` (Model Serving) or ``app`` (Databricks App)
+    must be set — ``publish_to_supervisor`` enforces this.
     """
     from apx_agent import publish_to_supervisor
 
+    target = app or endpoint
     try:
         result = publish_to_supervisor(
             supervisor_agent_id=supervisor_id, serving_endpoint=endpoint,
-            description=description or "", display_name=display_name or endpoint,
+            app_name=app,
+            description=description or "", display_name=display_name or target,
             tool_id=tool_id, ws=ws,
         )
         click.echo(click.style(f"  ✓ Registered with Supervisor Agent ({supervisor_id})", fg="green"))
@@ -7121,7 +7125,14 @@ def supervisor_create(
 
 
 @supervisor.command("add")
-@click.option("--endpoint", default=None, help="Serving endpoint / app name. Defaults to [tool.apx.agent].name.")
+@click.option("--endpoint", default=None,
+              help="Model Serving endpoint name. Defaults to [tool.apx.agent].name. "
+                   "Mutually exclusive with --app.")
+@click.option("--app", default=None,
+              help="Databricks App name hosting the agent (apps-deployed apx agents). "
+                   "Also accepts a UC model name (catalog.schema.model) — resolved via "
+                   "its apx.apps.app_name tag. Mutually exclusive with --endpoint. "
+                   "Requires databricks-sdk >= 0.120.")
 @click.option("--supervisor", "supervisor_id", default=None,
               help="Supervisor Agent ID. Reads [tool.apx.agent].supervisor_id if set.")
 @click.option("--description", default=None, help="Routing description. Defaults to [tool.apx.agent].description.")
@@ -7129,22 +7140,28 @@ def supervisor_create(
 @click.option("--tool-id", default=None, help="Stable tool_id for idempotent re-add.")
 @click.option("--profile", default=None, help="Databricks CLI profile.")
 def supervisor_add(
-    endpoint: str | None, supervisor_id: str | None, description: str | None,
-    display_name: str | None, tool_id: str | None, profile: str | None,
+    endpoint: str | None, app: str | None, supervisor_id: str | None,
+    description: str | None, display_name: str | None, tool_id: str | None,
+    profile: str | None,
 ) -> None:
-    """Register a deployed agent endpoint as a sub-agent on a Mosaic Supervisor.
+    """Register a deployed agent as a sub-agent on a Mosaic Supervisor.
 
     The supervisor then routes relevant user queries to this agent. Deploy and
-    (optionally) ``advertise`` the agent first.
+    (optionally) ``advertise`` the agent first. Serving-endpoint agents register
+    with --endpoint; apps-deployed agents with --app.
 
     \b
       apx-agent supervisor add --supervisor <id> --endpoint my-agent
+      apx-agent supervisor add --supervisor <id> --app my-agent-app
     """
+    if endpoint and app:
+        raise click.UsageError("--endpoint and --app are mutually exclusive — pass one.")
     cfg = _read_apx_agent_config()
     profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
     if profile:
         os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
-    endpoint = endpoint or cfg.get("name")
+    if not app:
+        endpoint = endpoint or cfg.get("name")
     display_name = display_name or cfg.get("name")
     description = description or cfg.get("description")
     supervisor_id = supervisor_id or cfg.get("supervisor_id")
@@ -7153,13 +7170,29 @@ def supervisor_add(
             "--supervisor is required (or set [tool.apx.agent].supervisor_id). "
             "Create one with `apx-agent supervisor create`."
         )
-    if not endpoint:
-        endpoint = click.prompt("Serving endpoint / app name")
-    assert endpoint is not None
+    if not endpoint and not app:
+        endpoint = click.prompt("Serving endpoint name")
     ws, _ = _connect_workspace(profile)
-    click.echo(f"\nAdding '{display_name or endpoint}' to Supervisor {supervisor_id}:")
+    if app and "." in app:
+        # A UC model name — resolve the App it deployed to via the same tag
+        # `agents delete`/`status` use (apx.apps.app_name).
+        uc_name = app
+        try:
+            model = ws.registered_models.get(uc_name)
+        except Exception as exc:
+            raise click.ClickException(
+                f"Could not read UC model {uc_name!r} to resolve its app name: {exc}"
+            ) from exc
+        uc_tags = {t.key: t.value for t in (getattr(model, "tags", None) or [])}
+        app = uc_tags.get("apx.apps.app_name")
+        if not app:
+            raise click.ClickException(
+                f"UC model {uc_name!r} has no apx.apps.app_name tag — pass the "
+                "Databricks App name directly with --app."
+            )
+    click.echo(f"\nAdding '{display_name or app or endpoint}' to Supervisor {supervisor_id}:")
     _do_supervisor_add(
-        ws=ws, supervisor_id=supervisor_id, endpoint=endpoint,
+        ws=ws, supervisor_id=supervisor_id, endpoint=endpoint, app=app,
         description=description, display_name=display_name, tool_id=tool_id,
     )
 
@@ -7259,8 +7292,13 @@ def publish(
         no_registry=no_registry, no_tools=no_tools, module=module, profile=profile,
     )
     if supervisor_id:
+        # Apps-deployed agents register as an "app" supervisor tool; a
+        # serving-endpoint tool pointing at an app name would be broken.
+        is_apps = endpoint_type == "apps"
         _do_supervisor_add(
-            ws=ws, supervisor_id=supervisor_id, endpoint=resolved_endpoint,
+            ws=ws, supervisor_id=supervisor_id,
+            endpoint=None if is_apps else resolved_endpoint,
+            app=resolved_endpoint if is_apps else None,
             description=resolved_description, display_name=display_name,
             tool_id=tool_id,
         )

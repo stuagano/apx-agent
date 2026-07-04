@@ -4430,6 +4430,100 @@ class TestPublishDisambiguation:
         mock_sup.assert_called_once()
         mock_reg.assert_not_called()  # add is routing-only, no registry write
 
+    def test_supervisor_add_app_registers_app_tool(self):
+        """`supervisor add --app` publishes the Databricks App target (#444)."""
+        mock_ws = MagicMock()
+        mock_ws.config.host = "https://my-workspace.databricks.com"
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             patch("databricks.sdk.config.Config"), \
+             patch("apx_agent.publish_to_supervisor", return_value={"tool_id": "t1"}) as mock_sup:
+            result = CliRunner().invoke(main, [
+                "supervisor", "add", "--app", "payroll-coworker",
+                "--supervisor", "sup-456", "--description", "x",
+            ])
+        assert result.exit_code == 0, result.output
+        call = mock_sup.call_args
+        assert call.kwargs["app_name"] == "payroll-coworker"
+        assert call.kwargs["serving_endpoint"] is None
+
+    def test_supervisor_add_endpoint_and_app_mutually_exclusive(self):
+        result = CliRunner().invoke(main, [
+            "supervisor", "add", "--endpoint", "my-endpoint",
+            "--app", "my-app", "--supervisor", "sup-456",
+        ])
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+    def test_supervisor_add_app_resolves_uc_name_via_tag(self):
+        """--app with a UC model name resolves apx.apps.app_name like delete/status."""
+        mock_ws = MagicMock()
+        mock_ws.config.host = "https://my-workspace.databricks.com"
+        mock_ws.registered_models.get.return_value = SimpleNamespace(
+            tags=[SimpleNamespace(key="apx.apps.app_name", value="payroll-coworker")]
+        )
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             patch("databricks.sdk.config.Config"), \
+             patch("apx_agent.publish_to_supervisor", return_value={}) as mock_sup:
+            result = CliRunner().invoke(main, [
+                "supervisor", "add", "--app", "main.agents.payroll",
+                "--supervisor", "sup-456", "--description", "x",
+            ])
+        assert result.exit_code == 0, result.output
+        mock_ws.registered_models.get.assert_called_once_with("main.agents.payroll")
+        assert mock_sup.call_args.kwargs["app_name"] == "payroll-coworker"
+
+    def test_supervisor_add_app_uc_name_without_tag_fails_loud(self):
+        mock_ws = MagicMock()
+        mock_ws.config.host = "https://my-workspace.databricks.com"
+        mock_ws.registered_models.get.return_value = SimpleNamespace(tags=[])
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             patch("databricks.sdk.config.Config"), \
+             patch("apx_agent.publish_to_supervisor") as mock_sup:
+            result = CliRunner().invoke(main, [
+                "supervisor", "add", "--app", "main.agents.payroll",
+                "--supervisor", "sup-456", "--description", "x",
+            ])
+        assert result.exit_code != 0
+        assert "apx.apps.app_name" in result.output
+        mock_sup.assert_not_called()
+
+    def test_deprecated_publish_apps_type_registers_app_tool(self):
+        """`agents publish` (default --endpoint-type apps) chains the app path,
+        not a serving-endpoint tool pointing at an app name (#444)."""
+        mock_ws = MagicMock()
+        mock_ws.config.host = "https://my-workspace.databricks.com"
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             patch("databricks.sdk.config.Config"), \
+             patch("apx_agent.publish_to_supervisor", return_value={}) as mock_sup, \
+             patch("apx_agent.publish_to_registry"), \
+             patch("apx_agent._publish.publish_tools_to_registry", return_value=0):
+            result = CliRunner().invoke(main, [
+                "agents", "publish", "--endpoint", "my-agent-app",
+                "--description", "x", "--supervisor", "sup-1",
+            ])
+        assert result.exit_code == 0, result.output
+        call = mock_sup.call_args
+        assert call.kwargs["app_name"] == "my-agent-app"
+        assert call.kwargs["serving_endpoint"] is None
+
+    def test_deprecated_publish_model_serving_type_keeps_endpoint_tool(self):
+        mock_ws = MagicMock()
+        mock_ws.config.host = "https://my-workspace.databricks.com"
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             patch("databricks.sdk.config.Config"), \
+             patch("apx_agent.publish_to_supervisor", return_value={}) as mock_sup, \
+             patch("apx_agent.publish_to_registry"), \
+             patch("apx_agent._publish.publish_tools_to_registry", return_value=0):
+            result = CliRunner().invoke(main, [
+                "agents", "publish", "--endpoint", "my-endpoint",
+                "--endpoint-type", "model-serving",
+                "--description", "x", "--supervisor", "sup-1",
+            ])
+        assert result.exit_code == 0, result.output
+        call = mock_sup.call_args
+        assert call.kwargs["serving_endpoint"] == "my-endpoint"
+        assert call.kwargs["app_name"] is None
+
     def test_supervisor_create_calls_create_supervisor_agent(self):
         with patch("apx_agent.create_supervisor_agent",
                    return_value={"supervisor_agent_id": "sup-new"}) as mock_create, \
