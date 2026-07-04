@@ -27,7 +27,7 @@ from starlette.responses import Response
 from ._agents import BaseAgent
 from ._env import resolve_env_var
 from ._prompt_assembly import compose_instructions
-from ._defaults import Dependencies, _make_workspace_client
+from ._defaults import _make_workspace_client
 from ._inspection import _load_agent_config
 from ._mcp import _build_mcp_components
 from ._models import (
@@ -400,57 +400,6 @@ async def setup_agent(
             if resolved not in existing:
                 sub_agent_urls.append(resolved)
                 existing.add(resolved)
-
-    # Make sub-agents CALLABLE, not just advertised. fetch_remote_tools()
-    # only produces card metadata (AgentTool descriptors) — the compile loop
-    # dispatches from _tool_fns, so without a registered callable the LLM
-    # never sees a sub-agent tool and hallucinates the delegation.
-    if getattr(agent, "_sub_agent_urls", None) and hasattr(agent, "_register_tool"):
-        from ._defaults import Dependencies
-        from ._models import Message
-        from ._remote import RemoteDatabricksAgent, _url_to_app_name
-        from ._tool_factory import build_tool
-
-        def _make_delegate(remote: "RemoteDatabricksAgent"):
-            # Dependencies.Headers (not Request): the compiled-graph dep
-            # resolver has no FastAPI Request, but ctx.headers carries the
-            # user's forwarded access token, which is all the outbound
-            # app-to-app call needs.
-            async def _delegate(message: str, headers: Dependencies.Headers) -> str:
-                out: dict[str, str] = {}
-                token = (
-                    headers.token.get_secret_value()
-                    if headers is not None and headers.token is not None
-                    else None
-                )
-                if token:
-                    out["Authorization"] = f"Bearer {token}"
-                    out["X-Forwarded-Access-Token"] = token
-                return await remote.run_with_headers(
-                    [Message(role="user", content=message)], out
-                )
-
-            return _delegate
-
-        registered = {fn.__name__ for fn in getattr(agent, "_tool_fns", [])}
-        for url in agent._sub_agent_urls:
-            base = url.rstrip("/")
-            app_name = _url_to_app_name(base) or base.split("//")[-1].split(".")[0]
-            tool_name = app_name.replace("-", "_")
-            if tool_name in registered:
-                continue
-            remote = RemoteDatabricksAgent(f"{base}/.well-known/agent.json")
-            agent._register_tool(
-                build_tool(
-                    _make_delegate(remote),
-                    name=tool_name,
-                    description=(
-                        f"Delegate to the deployed '{app_name}' agent app. "
-                        "Pass the full question or instruction as `message`."
-                    ),
-                )
-            )
-            registered.add(tool_name)
 
     # Apply knobs + persona overlay + config-tool merge + memory attach BEFORE
     # the card snapshot (collect_tools below) so all declared tools are both

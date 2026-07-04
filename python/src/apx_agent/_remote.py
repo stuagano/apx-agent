@@ -350,19 +350,6 @@ class RemoteDatabricksAgent(BaseAgent):
         # Fallback: direct POST /invocations
         return await self._call_via_http(messages, obo_headers)
 
-    async def run_with_headers(
-        self, messages: list[Message], headers: dict[str, str]
-    ) -> str:
-        """``run()`` for compiled-graph tools.
-
-        Inside a compiled LangGraph there is no FastAPI ``Request`` to lift
-        OBO headers from (see ``_make_dep_resolvers``), so the caller builds
-        the outbound auth headers itself — typically from
-        ``Dependencies.Headers``' forwarded access token.
-        """
-        await self._init_quietly()
-        return await self._call_via_http(messages, headers)
-
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
         await self._init_quietly()
         obo_headers = self._obo_headers(request)
