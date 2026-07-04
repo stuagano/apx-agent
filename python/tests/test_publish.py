@@ -427,6 +427,81 @@ def test_remove_from_registry_rejects_malformed_table_name() -> None:
     run_sql.assert_not_called()
 
 
+# ===========================================================================
+# registry ownership gate (#464 — sub-agent spoofing)
+# ===========================================================================
+
+
+def _ws_as(principal: str) -> MagicMock:
+    """A WorkspaceClient mock whose current user resolves to *principal*."""
+    ws = MagicMock()
+    ws.current_user.me.return_value = SimpleNamespace(
+        user_name=principal, display_name=principal
+    )
+    ws.config.host = "https://ws.cloud.databricks.com"
+    return ws
+
+
+def test_publish_to_registry_blocks_foreign_owner() -> None:
+    from apx_agent._publish import publish_to_registry
+
+    calls: list[str] = []
+    fake = _capture_run_sql(calls, rows_for={"SELECT published_by": [{"published_by": "alice@corp"}]})
+    with patch("apx_agent._sql.run_sql", side_effect=fake):
+        with pytest.raises(PermissionError, match="registered by 'alice@corp'"):
+            publish_to_registry(name="shared", description="x", ws=_ws_as("bob@corp"))
+    assert not any("MERGE INTO" in s for s in calls), "must not write after ownership denial"
+
+
+def test_remove_from_registry_blocks_foreign_owner() -> None:
+    from apx_agent._publish import remove_from_registry
+
+    calls: list[str] = []
+    fake = _capture_run_sql(calls, rows_for={"SELECT published_by": [{"published_by": "alice@corp"}]})
+    with patch("apx_agent._sql.run_sql", side_effect=fake):
+        with pytest.raises(PermissionError, match="may not overwrite or remove"):
+            remove_from_registry(agent_id="shared_ws", ws=_ws_as("bob@corp"))
+    assert not any("DELETE FROM" in s for s in calls), "must not delete after ownership denial"
+
+
+def test_publish_to_registry_allows_same_owner() -> None:
+    from apx_agent._publish import publish_to_registry
+
+    calls: list[str] = []
+    fake = _capture_run_sql(calls, rows_for={"SELECT published_by": [{"published_by": "alice@corp"}]})
+    with patch("apx_agent._sql.run_sql", side_effect=fake):
+        publish_to_registry(name="shared", description="x", ws=_ws_as("alice@corp"))
+    assert any("MERGE INTO" in s for s in calls), "owner re-publish must proceed"
+
+
+def test_publish_to_registry_allows_first_registration() -> None:
+    from apx_agent._publish import publish_to_registry
+
+    calls: list[str] = []
+    # Empty owner SELECT → no existing row → first registration proceeds.
+    with patch("apx_agent._sql.run_sql", side_effect=_capture_run_sql(calls)):
+        publish_to_registry(name="fresh", description="x", ws=_ws_as("bob@corp"))
+    assert any("MERGE INTO" in s for s in calls), "first registration must proceed"
+
+
+def test_registry_owner_check_skips_on_select_error() -> None:
+    """A missing SELECT grant must not block the delete — UC grants govern, so the
+    ownership gate proceeds when it can't positively read a foreign owner."""
+    from apx_agent._publish import remove_from_registry
+
+    calls: list[str] = []
+
+    def _raise_on_select(_ws, sql, warehouse_id=None, **_kw):
+        calls.append(sql)
+        if "SELECT" in sql:
+            raise RuntimeError("no SELECT grant on registry")
+        return []
+
+    with patch("apx_agent._sql.run_sql", side_effect=_raise_on_select):
+        remove_from_registry(agent_id="x", ws=_ws_as("bob@corp"))
+    assert any("DELETE FROM" in s for s in calls), "delete proceeds despite SELECT failure"
+
+
 def test_find_registry_dependents_merges_registry_and_tools_hits() -> None:
     from apx_agent._publish import find_registry_dependents
 
