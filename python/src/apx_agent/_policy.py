@@ -55,6 +55,14 @@ from typing import Any, Callable, Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 
+
+def _utc_now_iso() -> str:
+    """Current UTC time as an ISO-8601 string, for audit timestamps."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 # Phases a policy can intercept. MVP wires "tool_call" (via PolicyGate);
 # the other phases are declared now so policy authors can target them and
 # future gates (request/response interception) pick them up unchanged.
@@ -357,6 +365,12 @@ class Approval:
     fingerprint: str
     status: str
     reason: str | None
+    decided_by: str | None = None
+    """Identity of the principal who approved/denied (``None`` while pending or
+    when the decision surface carries no user identity, e.g. a local dev-token
+    approval with no forwarded user header)."""
+    decided_at: str | None = None
+    """ISO-8601 UTC timestamp of the approve/deny decision (``None`` while pending)."""
 
 
 class ApprovalStore:
@@ -410,29 +424,37 @@ class ApprovalStore:
             self._approvals[approval.id] = approval
             return approval
 
-    def approve(self, approval_id: str) -> Approval:
-        """Mark a pending approval as granted.
+    def approve(self, approval_id: str, *, decided_by: str | None = None) -> Approval:
+        """Mark a pending approval as granted, recording who decided and when.
 
         :param approval_id: The ID from :meth:`request`,
             e.g. ``"appr-1a2b3c4d"``.
+        :param decided_by: Identity of the approving principal, for the audit
+            record. ``None`` when the decision surface carries no user identity.
         :returns: The updated :class:`Approval`.
         :raises KeyError: If no approval with that ID exists.
         """
         with self._lock:
             approval = self._approvals[approval_id]
             approval.status = "approved"
+            approval.decided_by = decided_by
+            approval.decided_at = _utc_now_iso()
             return approval
 
-    def deny(self, approval_id: str) -> Approval:
-        """Mark a pending approval as refused.
+    def deny(self, approval_id: str, *, decided_by: str | None = None) -> Approval:
+        """Mark a pending approval as refused, recording who decided and when.
 
         :param approval_id: The ID from :meth:`request`.
+        :param decided_by: Identity of the denying principal, for the audit
+            record. ``None`` when the decision surface carries no user identity.
         :returns: The updated :class:`Approval`.
         :raises KeyError: If no approval with that ID exists.
         """
         with self._lock:
             approval = self._approvals[approval_id]
             approval.status = "denied"
+            approval.decided_by = decided_by
+            approval.decided_at = _utc_now_iso()
             return approval
 
     def list_pending(self) -> list[Approval]:

@@ -298,7 +298,9 @@ class ApprovalInfo(BaseModel):
 
 class ApprovalActionResponse(BaseModel):
     """Success shape shared by ``POST /_apx/approvals/{id}/approve`` and
-    ``…/deny``: ``{id, status}`` (status is ``"approved"`` | ``"denied"``).
+    ``…/deny``: ``{id, status, decided_by, decided_at}`` (status is
+    ``"approved"`` | ``"denied"``). ``decided_by`` is the forwarded identity of
+    the decider (``None`` in local dev with no forwarded user).
 
     Both are no-body POSTs keyed by the path id, so there is no request model.
     The no-store and unknown-id paths (404) return a ``JSONResponse``.
@@ -306,6 +308,8 @@ class ApprovalActionResponse(BaseModel):
 
     id: str
     status: str
+    decided_by: str | None = None
+    decided_at: str | None = None
 
 
 class TraceRow(BaseModel):
