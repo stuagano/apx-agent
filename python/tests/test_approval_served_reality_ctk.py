@@ -183,6 +183,46 @@ def test_predict_stream_surfaces_approval_then_resume_approve_runs_tool(
     assert "sent to x@y.com" in _stream_text(c2)  # gated tool ran on resume
 
 
+def test_predict_stream_resume_with_resent_input_does_not_double_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #484 (#375 regression on the chat streaming path): the pause turn persists
+    # the user's input; a resume that RESENDS it must NOT persist it again.
+    from apx_agent import InMemoryConversationStore
+
+    _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="done")])
+
+    store = InMemoryConversationStore()
+    chat = chat_agent_for(
+        _agent(), model="m", conversation_store=store, checkpointer=InMemorySaver()
+    )
+
+    persisted_inputs: list[list[Any]] = []
+    orig = chat._persist_conv_turn
+
+    def _spy(conv_id: Any, *, input_messages: Any, **kw: Any) -> Any:
+        persisted_inputs.append(list(input_messages))
+        return orig(conv_id, input_messages=input_messages, **kw)
+
+    monkeypatch.setattr(chat, "_persist_conv_turn", _spy)
+
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        list(chat.predict_stream(
+            [ChatAgentMessage(role="user", content="email x@y.com", id="u1")],
+            custom_inputs={"session_id": "T"},
+        ))  # pause → persists input
+        list(chat.predict_stream(
+            [ChatAgentMessage(role="user", content="email x@y.com", id="u2")],
+            custom_inputs={"session_id": "T", "resume": "approve"},
+        ))  # resume RESENDS input
+
+    assert len(persisted_inputs) == 2, f"expected pause + resume persist: {persisted_inputs}"
+    assert persisted_inputs[0], "pause turn must persist the user input"
+    assert persisted_inputs[1] == [], (
+        f"resume turn re-persisted the input (double-write): {persisted_inputs[1]}"
+    )
+
+
 def test_predict_stream_resume_deny_blocks_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="cancelled")])
     chat = chat_agent_for(
