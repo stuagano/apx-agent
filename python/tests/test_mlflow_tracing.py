@@ -295,7 +295,10 @@ class TestInvocationsRouteSpans:
             if a["name"] == "POST /invocations"
         }
         assert route_attrs["apx.user_scoped"] is True
-        assert route_attrs["apx.agent_name"] == "test-agent"
+        # Canonical dotted key (AuditAttrs.AGENT_NAME) — fleet/topology/CLI queries
+        # filter on this; an underscore variant would make the span invisible.
+        assert route_attrs["apx.agent.name"] == "test-agent"
+        assert "apx.agent_name" not in route_attrs
         assert route_attrs["http.route"] == "/invocations"
 
 
