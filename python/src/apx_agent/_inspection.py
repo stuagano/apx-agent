@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any, NamedTuple, get_args, get_origin, get_type_hints
 
 from fastapi import params
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, ConfigDict, create_model
 
 from ._models import AgentConfig, _ToolFn
 from ._state_marker import _STATE_DEP
@@ -71,6 +71,28 @@ def _inspect_tool_fn(fn: _ToolFn) -> ToolSignature:
             plain_params[name] = (annotation, default)
 
     return ToolSignature(plain_params=plain_params, dep_param_names=dep_param_names)
+
+
+class _EmptyToolInput(BaseModel):
+    """Input model for a zero-argument tool.
+
+    Binding a zero-arg tool with ``args_schema=None`` makes langchain infer a
+    schema from the ``**kwargs`` wrapper — ``{"kwargs": {"additionalProperties":
+    true, ...}}`` — which FMAPI rejects with 400 'the "additionalProperties"
+    keyword must be False or not specified', 500-ing every conversation at the
+    first LLM call (#439). ``extra="forbid"`` keeps the emitted schema a plain
+    empty object.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+#: The empty-object input schema FMAPI accepts for zero-argument tools (#439).
+_EMPTY_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": False,
+}
 
 
 def _make_input_model(fn: _ToolFn, plain_params: dict[str, tuple[Any, Any]]) -> type[BaseModel] | None:
@@ -244,9 +266,15 @@ def _load_agent_config(
 # ---------------------------------------------------------------------------
 
 
-def _schema_for_model(model: type[BaseModel] | None) -> dict[str, Any] | None:
+def _schema_for_model(model: type[BaseModel] | None) -> dict[str, Any]:
+    """JSON schema for a tool input model.
+
+    A zero-argument tool (``model is None``) advertises the empty-object
+    schema — never ``null`` — so the A2A card's ``inputSchema`` matches what
+    the LLM bind sends to FMAPI (#439).
+    """
     if model is None:
-        return None
+        return dict(_EMPTY_INPUT_SCHEMA)
     return model.model_json_schema()
 
 

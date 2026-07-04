@@ -163,8 +163,14 @@ class TestSchemaHelpers:
         assert "properties" in schema
         assert "city" in schema["properties"]
 
-    def test_schema_for_model_none(self):
-        assert _schema_for_model(None) is None
+    def test_schema_for_model_none_is_empty_object_schema(self):
+        """Zero-arg tools advertise an empty-object schema, never null (#439).
+
+        FMAPI rejects tool schemas whose additionalProperties is anything but
+        False or absent; the A2A card must carry the same shape, not null.
+        """
+        schema = _schema_for_model(None)
+        assert schema == {"type": "object", "properties": {}, "additionalProperties": False}
 
     def test_schema_for_return_string(self):
         schema = _schema_for_return(get_weather)

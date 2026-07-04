@@ -291,3 +291,95 @@ class TestGovernanceExceptionMiddleware:
 
     def test_successful_result_passes_through(self) -> None:
         assert self._invoke("tool output") == "tool output"
+
+
+class TestZeroArgToolFmapiSchema:
+    """Reality: the schema FMAPI actually receives for a zero-argument tool (#439).
+
+    A no-parameter @tool served fine but 500'd every conversation: with
+    args_schema=None langchain inferred a schema from the **kwargs wrapper —
+    {"kwargs": {"additionalProperties": true, ...}} — and FMAPI rejected it
+    with 400 'the "additionalProperties" keyword must be False or not
+    specified'. These tests assert that exact invariant on the OpenAI-format
+    payload the bind sends.
+    """
+
+    @staticmethod
+    def _assert_fmapi_accepts(schema: Any) -> None:
+        """Walk the schema: every additionalProperties must be absent or False."""
+        if isinstance(schema, dict):
+            if "additionalProperties" in schema:
+                assert schema["additionalProperties"] is False, (
+                    f"FMAPI rejects additionalProperties={schema['additionalProperties']!r}"
+                )
+            for value in schema.values():
+                TestZeroArgToolFmapiSchema._assert_fmapi_accepts(value)
+        elif isinstance(schema, list):
+            for item in schema:
+                TestZeroArgToolFmapiSchema._assert_fmapi_accepts(item)
+
+    def test_zero_arg_tool_emits_valid_empty_object_schema(self, fake_ws: MagicMock) -> None:
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        from apx_agent._compile import CompileContext, _make_langchain_tool
+
+        def secret_word() -> str:
+            """Return the secret word."""
+            return "swordfish"
+
+        lc_tool = _make_langchain_tool(secret_word, CompileContext(ws=fake_ws, model="any"))
+        payload = convert_to_openai_tool(lc_tool)
+
+        parameters = payload["function"]["parameters"]
+        assert parameters["type"] == "object"
+        assert parameters["properties"] == {}
+        self._assert_fmapi_accepts(payload)
+        # The tool must still be callable with empty args.
+        assert lc_tool.invoke({}) == "swordfish"
+
+    def test_dep_only_tool_emits_valid_empty_object_schema(self, fake_ws: MagicMock) -> None:
+        """Dependency-only tools (ws injected, no LLM args) hit the same path."""
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        from apx_agent._compile import CompileContext, _make_langchain_tool
+
+        def list_things(ws: Dependencies.Workspace) -> str:
+            """List things."""
+            return f"listed via {ws.config.host}"
+
+        lc_tool = _make_langchain_tool(list_things, CompileContext(ws=fake_ws, model="any"))
+        payload = convert_to_openai_tool(lc_tool)
+
+        parameters = payload["function"]["parameters"]
+        assert parameters["type"] == "object"
+        assert parameters["properties"] == {}
+        self._assert_fmapi_accepts(payload)
+        assert "fake.cloud.databricks.com" in lc_tool.invoke({})
+
+    def test_zero_arg_async_tool_emits_valid_schema_and_invokes(self, fake_ws: MagicMock) -> None:
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        from apx_agent._compile import CompileContext, _make_langchain_tool
+
+        async def ping() -> str:
+            """Ping."""
+            return "pong"
+
+        lc_tool = _make_langchain_tool(ping, CompileContext(ws=fake_ws, model="any"))
+        self._assert_fmapi_accepts(convert_to_openai_tool(lc_tool))
+        assert lc_tool.invoke({}) == "pong"
+
+    def test_card_advertises_empty_object_input_schema(self) -> None:
+        """The A2A card side: inputSchema is the same empty object, not null."""
+
+        def secret_word() -> str:
+            """Return the secret word."""
+            return "swordfish"
+
+        agent = LlmAgent(tools=[secret_word])
+        (tool,) = agent.collect_tools()
+        assert tool.input_schema == {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
