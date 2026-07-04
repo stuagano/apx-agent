@@ -148,6 +148,26 @@ def make_memory_tools(
                 return from_resolver
         return default_principal_id
 
+    def _scoped_forget(id: str, principal: str | None) -> str:
+        """Delete a memory by id, but only within *principal*'s own scope.
+
+        ``store.delete()`` is keyed on id alone for the Delta / Lakebase /
+        in-memory backends, so enforce ownership here: fetch the row and require
+        its ``principal_id`` to match the caller. A missing id and a
+        foreign-owned id return the SAME text so a caller can't probe which ids
+        exist in another principal's scope. A falsy principal deletes nothing
+        (fail-closed). The managed backend already scopes get/delete server-side;
+        the same check is a harmless second gate there.
+        """
+        if not principal:
+            return f"No memory with id {id}."
+        mem = store.get(id)
+        if mem is None or mem.principal_id != principal:
+            return f"No memory with id {id}."
+        if store.delete(id):
+            return f"Forgot memory {id}."
+        return f"No memory with id {id}."
+
     tools: list[Any] = []
 
     # The dep / resolver branches below use distinct inner function names
@@ -303,20 +323,18 @@ def make_memory_tools(
 
                 @tool(name=f"{tool_prefix}forget")
                 def _forget_dep(id: str, *, principal: PrincipalDependency) -> str:
-                    """Delete a memory by id.
+                    """Delete a memory by id, within the caller's own scope.
 
                     Returns ``"Forgot memory {id}."`` on hit or
-                    ``"No memory with id {id}."`` on miss.
+                    ``"No memory with id {id}."`` on miss / not-owned.
                     """
                     # Publish the trusted per-request principal so scoped
                     # backends (Managed Agent Memory) resolve the caller's own
                     # scope for this id-only delete — never a model-supplied
-                    # scope. Set in the same sync frame store.delete runs in.
-                    _PRINCIPAL_CTX.set((principal or default_principal_id) or "")
-                    deleted = store.delete(id)
-                    if deleted:
-                        return f"Forgot memory {id}."
-                    return f"No memory with id {id}."
+                    # scope. Set in the same sync frame store.get/delete run in.
+                    scope = (principal or default_principal_id) or None
+                    _PRINCIPAL_CTX.set(scope or "")
+                    return _scoped_forget(id, scope)
 
                 tools.append(_forget_dep)
 
@@ -324,16 +342,12 @@ def make_memory_tools(
 
                 @tool(name=f"{tool_prefix}forget")
                 def forget(id: str) -> str:
-                    """Delete a memory by id.
+                    """Delete a memory by id, within the caller's own scope.
 
                     Returns ``"Forgot memory {id}."`` on hit or
-                    ``"No memory with id {id}."`` on miss. Principal-agnostic
-                    — operates by id only.
+                    ``"No memory with id {id}."`` on miss / not-owned.
                     """
-                    deleted = store.delete(id)
-                    if deleted:
-                        return f"Forgot memory {id}."
-                    return f"No memory with id {id}."
+                    return _scoped_forget(id, _resolve_principal())
 
                 tools.append(forget)
 
