@@ -29,7 +29,9 @@ from ._models import (
     OutputGuardrailFn,
     SessionBackendConfig,
     _ToolFn,
+    message_input_schema,
     normalize_memory_knob,
+    structured_input_schema,
 )
 from ._inspection import (
     _inspect_tool_fn,
@@ -51,6 +53,24 @@ logger = logging.getLogger(__name__)
 _CARD_FETCH_ATTEMPTS = 3
 _CARD_FETCH_BACKOFF_S = 0.5
 _CARD_FETCH_BUDGET_S = 5.0
+
+
+def _card_structured_input_schema(card: dict[str, Any]) -> dict[str, Any] | None:
+    """The peer card's ``inputSchema`` when it defines the whole-agent interface.
+
+    A config-declared sub-agent becomes ONE delegate tool addressing the peer
+    as a whole. Only when the card advertises exactly one skill with a usable
+    structured ``inputSchema`` is that schema the agent's interface (#442);
+    multi-skill peers keep the free-text ``{message}`` wrapper — their own
+    LLM routes across skills internally.
+    """
+    skills = card.get("skills")
+    if not isinstance(skills, list) or len(skills) != 1:
+        return None
+    skill = skills[0]
+    if not isinstance(skill, dict):
+        return None
+    return structured_input_schema(skill.get("inputSchema"))
 
 
 class BaseAgent:
@@ -320,6 +340,7 @@ class LlmAgent(BaseAgent):
                 card = await self._fetch_sub_agent_card(client, base_url, auth_headers)
 
                 degraded = self._degraded_sub_agents.get(base_url)
+                structured: dict[str, Any] | None = None
                 if card is not None:
                     description = card.get("description", f"Agent at {url}")
                     if degraded is not None:
@@ -327,11 +348,17 @@ class LlmAgent(BaseAgent):
                         # alive. The callable delegate keeps its startup name
                         # (the compiled graph binds by function name) — repair
                         # the description in place and reuse that name here.
+                        # The delegate was also registered with the {message}
+                        # wrapper, so the descriptor must keep advertising it:
+                        # advertised and callable stay in lockstep.
                         self._upgrade_sub_agent(base_url, description)
                         tool_name = degraded.name
                     else:
                         raw_name = card.get("name", url.split("/")[-1])
                         tool_name = raw_name.replace("-", "_").replace(" ", "_")
+                        # Carry the card's real input schema instead of
+                        # collapsing every peer to {message: string} (#442).
+                        structured = _card_structured_input_schema(card)
                 else:
                     # Derive name from URL — the sub-agent is still callable at
                     # runtime via the user's OBO token even if the card fetch
@@ -344,18 +371,16 @@ class LlmAgent(BaseAgent):
                 descriptor = AgentTool(
                     name=tool_name,
                     description=description,
-                    input_schema={
-                        "type": "object",
-                        "properties": {"message": {"type": "string", "description": "Message to send"}},
-                        "required": ["message"],
-                    },
+                    input_schema=structured if structured is not None else message_input_schema(),
                     output_schema={"type": "string"},
                     sub_agent_url=base_url,
                 )
                 tools.append(descriptor)
                 # Advertised AND callable must come from the same loop: register
                 # the matching delegate tool so the compiled graph can invoke it.
-                self._ensure_sub_agent_tool(tool_name, description, base_url)
+                self._ensure_sub_agent_tool(
+                    tool_name, description, base_url, input_schema=structured
+                )
                 if card is None and base_url in self._materialized_sub_agent_urls:
                     self._degraded_sub_agents.setdefault(base_url, descriptor)
                     logger.warning(
@@ -429,7 +454,13 @@ class LlmAgent(BaseAgent):
             descriptor.name,
         )
 
-    def _ensure_sub_agent_tool(self, name: str, description: str, base_url: str) -> None:
+    def _ensure_sub_agent_tool(
+        self,
+        name: str,
+        description: str,
+        base_url: str,
+        input_schema: dict[str, Any] | None = None,
+    ) -> None:
         """Register the callable delegate tool for a sub-agent URL (idempotent).
 
         The A2A card advertises sub-agents from ``fetch_remote_tools``; the
@@ -438,6 +469,10 @@ class LlmAgent(BaseAgent):
         perform, and the orchestrator LLM hallucinated the sub-agent's answer.
         Registering here (from the same loop that builds the card descriptor)
         keeps the two surfaces derived from one source of truth.
+
+        ``input_schema`` (the peer card's structured ``inputSchema``, already
+        vetted by ``structured_input_schema``) makes the delegate expose the
+        peer's real typed parameters instead of one ``message`` string (#442).
 
         Card-fetch failures never reach this method as errors: the caller
         passes the degraded name/description, and the delegate itself returns
@@ -464,6 +499,7 @@ class LlmAgent(BaseAgent):
                 base_url,
                 name=name,
                 description=description,
+                input_schema=input_schema,
                 on_card=lambda card: self._upgrade_sub_agent(base_url, card.description),
             )
         )

@@ -202,6 +202,44 @@ class TestFromCardUrl:
         assert agent.card.skills[0].name == "skill-one"
 
     @pytest.mark.asyncio
+    async def test_card_parse_carries_skill_schemas(self):
+        """#442: _fetch_card must not drop the card's inputSchema/outputSchema
+        — dropping them here is what collapsed every remote tool to {message}."""
+        input_schema = {
+            "type": "object",
+            "properties": {"team": {"type": "string"}},
+            "required": ["team"],
+        }
+        card_data = make_card_data(
+            skills=[
+                {
+                    "id": "s1",
+                    "name": "skill-one",
+                    "description": "First skill",
+                    "inputSchema": input_schema,
+                    "outputSchema": {"type": "string"},
+                }
+            ]
+        )
+
+        async def mock_get(url, **kwargs):
+            return make_httpx_response(card_data)
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.get = AsyncMock(side_effect=mock_get)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            agent = await RemoteDatabricksAgent.from_card_url(
+                "https://host/.well-known/agent.json"
+            )
+
+        (skill,) = agent.card.skills
+        assert skill.inputSchema == input_schema
+        assert skill.outputSchema == {"type": "string"}
+
+    @pytest.mark.asyncio
     async def test_updates_base_url_from_card(self):
         card_data = make_card_data(url="https://canonical.workspace.databricksapps.com")
 
@@ -980,8 +1018,43 @@ class TestOboHeaders:
 # ---------------------------------------------------------------------------
 
 
+def _assert_fmapi_accepts(schema) -> None:
+    """Walk the schema: every additionalProperties must be absent or False.
+
+    FMAPI rejects tool schemas whose additionalProperties is anything but
+    False or absent — 400 at the first LLM call, 500-ing the conversation
+    (#439). A remote card must not be able to smuggle one in (#442).
+    """
+    if isinstance(schema, dict):
+        if "additionalProperties" in schema:
+            assert schema["additionalProperties"] is False, (
+                f"FMAPI rejects additionalProperties={schema['additionalProperties']!r}"
+            )
+        for value in schema.values():
+            _assert_fmapi_accepts(value)
+    elif isinstance(schema, list):
+        for item in schema:
+            _assert_fmapi_accepts(item)
+
+
+STRUCTURED_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "table": {"type": "string", "description": "Fully qualified UC table"},
+        "limit": {"type": "integer"},
+    },
+    "required": ["table"],
+}
+
+MESSAGE_WRAPPER = {
+    "type": "object",
+    "properties": {"message": {"type": "string", "description": "Message to send"}},
+    "required": ["message"],
+}
+
+
 class TestFetchRemoteTools:
-    def _make_agent_with_skills(self) -> RemoteDatabricksAgent:
+    def _make_agent_with_skills(self, skills: list | None = None) -> RemoteDatabricksAgent:
         from apx_agent._models import AgentCard, A2ASkill
 
         agent = RemoteDatabricksAgent.__new__(RemoteDatabricksAgent)
@@ -994,7 +1067,9 @@ class TestFetchRemoteTools:
             name="host",
             description="desc",
             url="https://host",
-            skills=[
+            skills=skills
+            if skills is not None
+            else [
                 A2ASkill(id="skill-one", name="skill-one", description="Skill one"),
                 A2ASkill(id="skill-two", name="skill-two", description="Skill two"),
             ],
@@ -1021,6 +1096,93 @@ class TestFetchRemoteTools:
         tools = await agent.fetch_remote_tools()
         for tool in tools:
             assert tool.sub_agent_url == "https://host"
+
+    @pytest.mark.asyncio
+    async def test_structured_input_schema_is_carried_verbatim(self):
+        """#442: a card skill's real inputSchema reaches the descriptor —
+        not the {message: string} flattening."""
+        from apx_agent._models import A2ASkill
+
+        agent = self._make_agent_with_skills(
+            [
+                A2ASkill(
+                    id="lookup",
+                    name="lookup",
+                    description="Look up a table",
+                    inputSchema=dict(STRUCTURED_SCHEMA),
+                    outputSchema={"type": "object", "properties": {"rows": {"type": "array"}}},
+                )
+            ]
+        )
+        (tool,) = await agent.fetch_remote_tools()
+        assert tool.input_schema == STRUCTURED_SCHEMA
+        assert tool.output_schema == {
+            "type": "object",
+            "properties": {"rows": {"type": "array"}},
+        }
+
+    @pytest.mark.asyncio
+    async def test_null_input_schema_falls_back_to_message_wrapper(self):
+        """Regression: a card that omits inputSchema keeps the free-text wrapper."""
+        agent = self._make_agent_with_skills()
+        tools = await agent.fetch_remote_tools()
+        for tool in tools:
+            assert tool.input_schema == MESSAGE_WRAPPER
+            assert tool.output_schema == {"type": "string"}
+
+    @pytest.mark.asyncio
+    async def test_empty_object_schema_falls_back_to_message_wrapper(self):
+        """Regression (#439 x #442): a zero-argument skill advertises the
+        empty-object schema — that must still yield the message wrapper, not
+        a tool the LLM can't pass anything to."""
+        from apx_agent._models import A2ASkill
+
+        agent = self._make_agent_with_skills(
+            [
+                A2ASkill(
+                    id="secret-word",
+                    name="secret-word",
+                    description="Zero-arg skill",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                )
+            ]
+        )
+        (tool,) = await agent.fetch_remote_tools()
+        assert tool.input_schema == MESSAGE_WRAPPER
+
+    @pytest.mark.asyncio
+    async def test_hostile_additional_properties_is_sanitized(self):
+        """A card schema carrying additionalProperties: true (top-level AND
+        nested) must not be able to 500 the orchestrator's LLM calls (#439)."""
+        from apx_agent._models import A2ASkill
+
+        hostile = {
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "object",
+                    "properties": {"region": {"type": "string"}},
+                    "additionalProperties": True,
+                },
+                "query": {"type": "string"},
+            },
+            "required": ["query"],
+            "additionalProperties": True,
+        }
+        agent = self._make_agent_with_skills(
+            [A2ASkill(id="search", name="search", description="Search", inputSchema=hostile)]
+        )
+        (tool,) = await agent.fetch_remote_tools()
+        _assert_fmapi_accepts(tool.input_schema)
+        # Sanitization strips the poison, not the substance.
+        assert set(tool.input_schema["properties"]) == {"filters", "query"}
+        assert tool.input_schema["properties"]["filters"]["properties"] == {
+            "region": {"type": "string"}
+        }
 
     @pytest.mark.asyncio
     async def test_returns_empty_list_when_no_card(self):

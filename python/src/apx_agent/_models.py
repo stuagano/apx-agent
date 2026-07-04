@@ -370,6 +370,81 @@ class AgentTool(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Remote tool schema helpers (#442)
+# ---------------------------------------------------------------------------
+
+
+def message_input_schema() -> dict[str, Any]:
+    """The free-text fallback input schema for delegating to a remote agent.
+
+    Used when a remote card advertises no usable structured ``inputSchema``
+    (absent, null, or the #439 zero-argument empty-object schema) — the
+    delegate then takes a single ``message`` string.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "message": {"type": "string", "description": "Message to send"},
+        },
+        "required": ["message"],
+    }
+
+
+def sanitize_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Deep-copy *schema*, dropping any ``additionalProperties`` that is not ``False``.
+
+    FMAPI rejects tool schemas whose ``additionalProperties`` is anything but
+    ``False`` or absent, 500-ing every conversation at the first LLM call
+    (#439). A remote agent card is untrusted input — it must not be able to
+    smuggle a schema through the descriptor that breaks the orchestrator's
+    own LLM calls (#442).
+    """
+
+    def _walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {
+                k: _walk(v)
+                for k, v in node.items()
+                if not (k == "additionalProperties" and v is not False)
+            }
+        if isinstance(node, list):
+            return [_walk(item) for item in node]
+        return node
+
+    return _walk(schema)
+
+
+def structured_input_schema(schema: Any) -> dict[str, Any] | None:
+    """Sanitized copy of a card skill's ``inputSchema`` when it can drive a
+    typed delegate; ``None`` means "fall back to the ``message`` wrapper".
+
+    Usable means: a non-empty object schema whose property names are safe
+    Python identifiers — they become real function parameters on the delegate,
+    so keywords, non-identifiers, ``model_``-prefixed names (pydantic
+    ``create_model`` collisions), and ``headers`` (the delegate's dependency
+    parameter) all disqualify the schema. The #439 zero-argument empty-object
+    schema has no properties and therefore also falls back (#442).
+    """
+    import keyword
+
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return None
+    properties = schema.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return None
+    for prop in properties:
+        if (
+            not isinstance(prop, str)
+            or not prop.isidentifier()
+            or keyword.iskeyword(prop)
+            or prop.startswith("model_")
+            or prop == "headers"
+        ):
+            return None
+    return sanitize_tool_schema(schema)
+
+
+# ---------------------------------------------------------------------------
 # ResponsesAgent protocol models (MLflow/Databricks)
 # ---------------------------------------------------------------------------
 
