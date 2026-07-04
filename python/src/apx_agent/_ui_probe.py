@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
 
+from ._env import resolve_env_var
 from ._models import AgentContext
 from ._ui_nav import _apx_nav_links, _deploy_overlay_html
 from ._ui_setup import _find_env_path, _read_env_file
@@ -223,7 +224,7 @@ async def _gather_sub_agent_checks(ctx: AgentContext | None) -> list[dict[str, A
     for raw in sub_agents:
         url = raw
         if isinstance(url, str) and url.startswith("$"):
-            url = os.environ.get(url.lstrip("$").strip("{}"), _UNSET_ENV)
+            url = resolve_env_var(url)
         if url:
             resolved.append((raw, url))
     if not resolved:

@@ -29,16 +29,15 @@ Custom tools can opt in by setting ``my_tool._apx_resources`` to a list of
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable
+
+from ._env import resolve_env_var
 
 if TYPE_CHECKING:
     from ._agents import BaseAgent
 
 logger = logging.getLogger(__name__)
-
-_UNSET_ENV = ""  # env var expansion: unset $VAR references resolve to empty
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +134,9 @@ def _sub_agent_to_endpoint(raw: str) -> ResourceSpec | None:
     """
     # Expand $VAR / ${VAR}
     if raw.startswith("$"):
-        var_name = raw.lstrip("$").strip("{}")
-        expanded = os.environ.get(var_name, _UNSET_ENV)
+        expanded = resolve_env_var(raw)
         if not expanded:
-            logger.warning("sub_agent env var %s not set — skipping", var_name)
+            logger.warning("sub_agent env var %s not set — skipping", raw)
             return None
         raw = expanded
 
