@@ -66,6 +66,7 @@ from fastapi.responses import StreamingResponse
 
 from ._agents import BaseAgent
 from ._async_bridge import make_async_stream
+from ._audit import stamp_caller_correlation
 from ._mlflow_tracing import safe_span
 
 if TYPE_CHECKING:
@@ -289,7 +290,11 @@ def mount_invocations_route(
                 "apx.user_scoped": bool(custom_inputs.get("user_token")),
                 "apx.message_count": len(messages),
             },
-        ):
+        ) as span:
+            # Cross-agent correlation (#443): when the caller sent a
+            # traceparent / x-apx-caller, tag this trace so it joins the
+            # caller's trace on apx.outbound.trace_id. Absent headers → no-op.
+            stamp_caller_correlation(span, request.headers)
             if stream:
                 # Run the sync predict_stream on a dedicated worker thread (one
                 # thread for the whole generator, so OTel span attach/detach stay
@@ -438,7 +443,9 @@ def mount_responses_route(
                 "apx.user_scoped": bool(custom_inputs.get("user_token")),
                 "apx.input_items": len(input_items) if isinstance(input_items, list) else 1,
             },
-        ):
+        ) as span:
+            # Cross-agent correlation (#443) — same stamp as /invocations.
+            stamp_caller_correlation(span, request.headers)
             if stream:
                 return StreamingResponse(
                     make_async_stream(lambda _req: _stream_response_events(_stream_fn, req))(None),

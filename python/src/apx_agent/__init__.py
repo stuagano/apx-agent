@@ -365,11 +365,15 @@ from ._mlflow_tracing import (
 # Audit log schema — apx.* span attributes
 from ._audit import (
     AuditAttrs,
+    build_traceparent,
     hash_for_audit,
     input_keys_summary,
     output_summary,
     set_audit_attrs,
+    stamp_caller_correlation,
+    stamp_outbound_trace_id,
     stamp_version_correlation,
+    traceparent_trace_id,
     version_correlation_attrs,
 )
 
@@ -674,6 +678,11 @@ __all__ = [
     "output_summary",
     "stamp_version_correlation",
     "version_correlation_attrs",
+    # Cross-agent trace correlation (#443)
+    "build_traceparent",
+    "traceparent_trace_id",
+    "stamp_outbound_trace_id",
+    "stamp_caller_correlation",
     # Bootstrap
     "init_apps_experiment",
 ]

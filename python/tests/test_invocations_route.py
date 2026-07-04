@@ -428,3 +428,87 @@ class TestResponsesRoute:
         # passed to invoke — this is the enterprise-critical contract.
         req_arg = captured["invoke"].call_args[0][0]
         assert req_arg.custom_inputs["user_token"] == "obo-tok"
+
+# ---------------------------------------------------------------------------
+# Cross-agent trace correlation (#443) — inbound traceparent / x-apx-caller
+# ---------------------------------------------------------------------------
+
+
+TP = f"00-{'ab' * 16}-{'cd' * 8}-01"
+
+
+class TestCrossAgentCorrelation:
+    """Inbound traceparent / x-apx-caller headers are stamped on the served
+    trace (span attrs + trace tags), so B's trace joins A's on
+    apx.outbound.trace_id. Absent headers → zero behavior change (#443)."""
+
+    def _stub_predict(self, captured) -> None:
+        from mlflow.types.agent import ChatAgentMessage, ChatAgentResponse
+
+        captured["chat_agent"].predict.return_value = ChatAgentResponse(
+            messages=[ChatAgentMessage(role="assistant", content="ok", id="m1")]
+        )
+
+    def test_invocations_stamps_caller_correlation_tags(
+        self, app_and_chat_agent
+    ) -> None:
+        client, captured = app_and_chat_agent
+        self._stub_predict(captured)
+        with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+            resp = client.post(
+                "/invocations",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+                headers={"traceparent": TP, "x-apx-caller": "orchestrator"},
+            )
+        assert resp.status_code == 200
+        tags_mock.assert_called_once_with(
+            {
+                "apx.traceparent": TP,
+                "apx.outbound.trace_id": "ab" * 16,
+                "apx.caller": "orchestrator",
+            }
+        )
+
+    def test_invocations_without_headers_stamps_nothing(
+        self, app_and_chat_agent
+    ) -> None:
+        client, captured = app_and_chat_agent
+        self._stub_predict(captured)
+        with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+            resp = client.post(
+                "/invocations",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+            )
+        assert resp.status_code == 200
+        tags_mock.assert_not_called()
+
+    def test_responses_stamps_caller_correlation_tags(
+        self, app_with_responses
+    ) -> None:
+        client, _ = app_with_responses
+        with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+            resp = client.post(
+                "/responses",
+                json={"input": [{"role": "user", "content": "hi"}]},
+                headers={"traceparent": TP, "x-apx-caller": "orchestrator"},
+            )
+        assert resp.status_code == 200
+        tags_mock.assert_called_once_with(
+            {
+                "apx.traceparent": TP,
+                "apx.outbound.trace_id": "ab" * 16,
+                "apx.caller": "orchestrator",
+            }
+        )
+
+    def test_responses_without_headers_stamps_nothing(
+        self, app_with_responses
+    ) -> None:
+        client, _ = app_with_responses
+        with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+            resp = client.post(
+                "/responses",
+                json={"input": [{"role": "user", "content": "hi"}]},
+            )
+        assert resp.status_code == 200
+        tags_mock.assert_not_called()

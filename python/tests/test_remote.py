@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -1203,3 +1204,144 @@ class TestFetchRemoteTools:
 
         tools = await agent.fetch_remote_tools()
         assert tools == []
+
+
+# ---------------------------------------------------------------------------
+# Cross-agent trace correlation headers (#443)
+# ---------------------------------------------------------------------------
+
+W3C_TRACEPARENT = re.compile(r"^00-[0-9a-f]{32}-[0-9a-f]{16}-01$")
+
+
+def make_plain_agent(
+    app_name: str | None = None,
+    base_url: str = "https://data-inspector.workspace.databricksapps.com",
+) -> RemoteDatabricksAgent:
+    from apx_agent._models import AgentCard
+
+    agent = RemoteDatabricksAgent.__new__(RemoteDatabricksAgent)
+    agent._card_url = f"{base_url}/.well-known/agent.json"
+    agent._base_url = base_url
+    agent._app_name = app_name
+    agent._extra_headers = {}
+    agent._timeout = 120.0
+    agent._card = AgentCard(name="data-inspector", description="", url=base_url, skills=[])
+    return agent
+
+
+class TestCorrelationHeaders:
+    """Outbound traceparent + x-apx-caller cross the agent boundary (#443).
+
+    These headers carry correlation identity, not credentials — they must be
+    present on every outbound path (HTTP call, HTTP stream, SDK) and be
+    W3C-valid, and the caller's own trace must be tagged with the trace-id it
+    sent so the two traces join on one tag equality.
+    """
+
+    def _patch_post(self, received_headers: dict):
+        async def mock_post(url, **kwargs):
+            received_headers.update(kwargs.get("headers") or {})
+            return make_httpx_response(make_responses_payload("ok"))
+
+        return mock_post
+
+    async def _run_http(self, agent: RemoteDatabricksAgent) -> dict:
+        received: dict = {}
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post = AsyncMock(side_effect=self._patch_post(received))
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            await agent.run([Message(role="user", content="hi")], make_request())
+        return received
+
+    @pytest.mark.asyncio
+    async def test_http_call_path_sends_w3c_valid_traceparent(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+        received = await self._run_http(make_plain_agent())
+        assert W3C_TRACEPARENT.match(received["traceparent"]), received
+        # No Apps runtime identity → no caller header (never an empty value).
+        assert "x-apx-caller" not in received
+
+    @pytest.mark.asyncio
+    async def test_http_call_path_sends_caller_name_from_apps_env(self, monkeypatch):
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "orchestrator")
+        received = await self._run_http(make_plain_agent())
+        assert received["x-apx-caller"] == "orchestrator"
+
+    @pytest.mark.asyncio
+    async def test_correlation_headers_sent_even_to_untrusted_origin(self, monkeypatch):
+        """Correlation identity is NOT a credential: it flows even when the
+        trusted-origin gate withholds the OBO token."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "orchestrator")
+        agent = make_plain_agent(base_url="https://evil.example.com")
+        agent._card_url = (
+            "https://data-inspector.workspace.databricksapps.com/.well-known/agent.json"
+        )
+        received = await self._run_http(agent)
+        assert W3C_TRACEPARENT.match(received["traceparent"])
+        assert received["x-apx-caller"] == "orchestrator"
+        assert "Authorization" not in received
+
+    @pytest.mark.asyncio
+    async def test_http_stream_path_sends_w3c_valid_traceparent(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+        agent = make_plain_agent()
+
+        async def aiter_lines():
+            yield "data: [DONE]"
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.aiter_lines = aiter_lines
+        stream_cm = MagicMock()
+        stream_cm.__aenter__ = AsyncMock(return_value=resp)
+        stream_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = MagicMock()
+            instance.stream = MagicMock(return_value=stream_cm)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            _ = [
+                c
+                async for c in agent.stream(
+                    [Message(role="user", content="hi")], make_request()
+                )
+            ]
+            headers = instance.stream.call_args.kwargs["headers"]
+        assert W3C_TRACEPARENT.match(headers["traceparent"]), headers
+
+    @pytest.mark.asyncio
+    async def test_sdk_path_sends_traceparent_via_extra_headers(self, monkeypatch):
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "orchestrator")
+        agent = make_plain_agent(app_name="data-inspector")
+        mock_response = MagicMock()
+        mock_response.output_text = "ok"
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
+            sdk_instance = AsyncMock()
+            sdk_instance.responses.create = AsyncMock(return_value=mock_response)
+            MockSDK.return_value = sdk_instance
+            await agent.run([Message(role="user", content="hi")], make_request())
+            extra = sdk_instance.responses.create.call_args.kwargs["extra_headers"]
+        assert W3C_TRACEPARENT.match(extra["traceparent"]), extra
+        assert extra["x-apx-caller"] == "orchestrator"
+
+    @pytest.mark.asyncio
+    async def test_traceparent_derives_from_active_span_and_stamps_caller_side(
+        self, monkeypatch
+    ):
+        """With an active MLflow span, the outbound traceparent carries the
+        CALLER's live trace id, and the caller's trace is tagged with the
+        SAME id (apx.outbound.trace_id) — the join key on both sides."""
+        monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+        span = MagicMock()
+        span.trace_id = "tr-" + "ab" * 16
+        span.span_id = "cd" * 8
+        with patch("apx_agent._audit.current_active_span", return_value=span), patch(
+            "apx_agent._audit.set_trace_tags"
+        ) as tags_mock:
+            received = await self._run_http(make_plain_agent())
+        assert received["traceparent"] == f"00-{'ab' * 16}-{'cd' * 8}-01"
+        span.set_attribute.assert_called_once_with("apx.outbound.trace_id", "ab" * 16)
+        tags_mock.assert_called_once_with({"apx.outbound.trace_id": "ab" * 16})
