@@ -347,3 +347,134 @@ def test_friendly_error_when_supervisor_sdk_missing(
             description="...",
             ws=MagicMock(),
         )
+
+
+# ===========================================================================
+# remove_from_registry / find_registry_dependents (#446)
+# ===========================================================================
+
+
+def _capture_run_sql(calls: list, rows_for: dict | None = None):
+    """A run_sql stand-in that records SQL and serves canned SELECT rows.
+
+    ``rows_for`` maps a substring of the SQL text to the row list to return.
+    """
+
+    def _fake(_ws, sql, warehouse_id=None, **_kw):
+        calls.append(sql)
+        for marker, rows in (rows_for or {}).items():
+            if marker in sql:
+                return rows
+        return []
+
+    return _fake
+
+
+def test_remove_from_registry_deletes_both_tables() -> None:
+    from apx_agent._publish import remove_from_registry
+
+    calls: list[str] = []
+    with patch("apx_agent._sql.run_sql", side_effect=_capture_run_sql(calls)):
+        remove_from_registry(agent_id="victim_host", ws=MagicMock(), warehouse_id="wh1")
+
+    deletes = [s for s in calls if "DELETE FROM" in s]
+    assert len(deletes) == 2, f"expected registry + tools DELETE, got: {calls}"
+    assert any(
+        "main.apx.agent_registry" in s and "'victim_host'" in s for s in deletes
+    ), deletes
+    assert any(
+        "main.apx.agent_tools" in s and "'victim_host'" in s for s in deletes
+    ), deletes
+
+
+def test_remove_from_registry_honours_table_overrides() -> None:
+    from apx_agent._publish import remove_from_registry
+
+    calls: list[str] = []
+    with patch("apx_agent._sql.run_sql", side_effect=_capture_run_sql(calls)):
+        remove_from_registry(
+            agent_id="victim",
+            registry_table="cat.sch.agents",
+            tools_table="cat.sch.tools",
+            ws=MagicMock(),
+        )
+
+    assert any("cat.sch.agents" in s for s in calls), calls
+    assert any("cat.sch.tools" in s for s in calls), calls
+    assert not any("main.apx" in s for s in calls), calls
+
+
+def test_remove_from_registry_propagates_sql_failure() -> None:
+    from apx_agent._publish import remove_from_registry
+
+    with patch(
+        "apx_agent._sql.run_sql", side_effect=RuntimeError("PERMISSION_DENIED")
+    ):
+        with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
+            remove_from_registry(agent_id="victim", ws=MagicMock())
+
+
+def test_remove_from_registry_rejects_malformed_table_name() -> None:
+    from apx_agent._publish import remove_from_registry
+
+    with patch("apx_agent._sql.run_sql") as run_sql:
+        with pytest.raises(ValueError):
+            remove_from_registry(
+                agent_id="victim",
+                registry_table="bad table; DROP",
+                ws=MagicMock(),
+            )
+    run_sql.assert_not_called()
+
+
+def test_find_registry_dependents_merges_registry_and_tools_hits() -> None:
+    from apx_agent._publish import find_registry_dependents
+
+    calls: list[str] = []
+    fake = _capture_run_sql(
+        calls,
+        rows_for={
+            "agent_registry": [{
+                "name": "shadow-advertise",
+                "endpoint_url": "https://h/apps/my-app",
+                "supervisor_agent_id": None,
+                "updated_at": "100.0",
+            }],
+            "agent_tools": [{
+                "agent_name": "billing-bot",
+                "name": "ask_victim",
+                "sub_agent_url": "https://h/apps/my-app",
+                "updated_at": "200.0",
+            }],
+        },
+    )
+    with patch("apx_agent._sql.run_sql", side_effect=fake):
+        dependents = find_registry_dependents(
+            agent_ids=["victim_host"],
+            references=["main.sch.victim", "my-ep", "my-app"],
+            ws=MagicMock(),
+        )
+
+    assert [d["agent"] for d in dependents] == ["shadow-advertise", "billing-bot"]
+    assert all(d["via"] == "https://h/apps/my-app" for d in dependents)
+    assert [d["updated_at"] for d in dependents] == ["100.0", "200.0"]
+    # The scan must scope out the victim's own rows and LIKE-match every
+    # reference form (UC name, endpoint, app).
+    selects = [s for s in calls if "SELECT" in s]
+    assert len(selects) == 2
+    for s in selects:
+        assert "'victim_host'" in s and "NOT IN" in s, s
+        assert "'%my-app%'" in s and "'%my-ep%'" in s and "'%main.sch.victim%'" in s, s
+
+
+def test_find_registry_dependents_without_references_runs_no_sql() -> None:
+    from apx_agent._publish import find_registry_dependents
+
+    with patch("apx_agent._sql.run_sql") as run_sql:
+        assert find_registry_dependents(
+            agent_ids=["victim"], references=[], ws=MagicMock(),
+        ) == []
+        assert find_registry_dependents(
+            agent_ids=[], references=["my-app"], ws=MagicMock(),
+        ) == []
+    run_sql.assert_not_called()
