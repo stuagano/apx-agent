@@ -124,7 +124,11 @@ def _reply_text(data: Any, *, url: str, agent_name: str) -> str:
     silently returning a JSON blob the parent LLM would relay as an "answer".
     """
     try:
-        return data["output"][0]["content"][0]["text"]
+        # The final answer is the LAST message item — earlier output items
+        # are often function_call/function_call_output entries.
+        for item in reversed(data["output"]):
+            if item.get("type") == "message" or "content" in item:
+                return item["content"][0]["text"]
     except (KeyError, IndexError, TypeError):
         pass
     msgs = data.get("messages") if isinstance(data, dict) else None
@@ -237,6 +241,22 @@ class RemoteDatabricksAgent(BaseAgent):
             return
         await self._fetch_card()
 
+    async def _init_quietly(self) -> None:
+        """init(), but card-fetch failure is non-fatal.
+
+        A private Databricks App 302s the unauthenticated card request, yet
+        run()/stream() still work — they forward the caller's OBO token and
+        the base URL is already known from the constructor.
+        """
+        try:
+            await self.init()
+        except Exception as e:
+            logger.warning(
+                "Agent card fetch failed for %s: %s — proceeding without card",
+                self._card_url,
+                e,
+            )
+
     async def _fetch_card(self) -> None:
         from httpx import AsyncClient
 
@@ -313,7 +333,7 @@ class RemoteDatabricksAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def run(self, messages: list[Message], request: Request) -> str:
-        await self.init()
+        await self._init_quietly()
         obo_headers = self._obo_headers(request)
 
         # Try DatabricksOpenAI first (automatic OBO via Supervisor)
@@ -331,7 +351,7 @@ class RemoteDatabricksAgent(BaseAgent):
         return await self._call_via_http(messages, obo_headers)
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
-        await self.init()
+        await self._init_quietly()
         obo_headers = self._obo_headers(request)
 
         # Try DatabricksOpenAI first
@@ -442,13 +462,22 @@ class RemoteDatabricksAgent(BaseAgent):
         messages: list[Message],
         headers: dict[str, str],
     ) -> str:
-        """Direct POST /invocations fallback."""
+        """Direct POST /responses fallback (with /invocations fallback).
+
+        The payload here is Responses-protocol shaped (``input`` list in), so
+        ``/responses`` is the natural target — a deployed AgentServer's
+        ``/invocations`` speaks the ChatAgent protocol (``messages`` key) and
+        would see zero messages and 400 (live-proven app-to-app). Peers that
+        don't serve ``/responses`` (older or apx ``create_app`` servers, which
+        accept the input shape on ``/invocations`` since #438) get the
+        fallback POST. Reply parsing accepts both shapes either way.
+        """
         from httpx import AsyncClient
 
         payload = {
             "input": [{"role": m.role, "content": m.content} for m in messages],
         }
-        url = f"{self._base_url}/invocations"
+        url = f"{self._base_url}/responses"
 
         async with AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
@@ -456,6 +485,13 @@ class RemoteDatabricksAgent(BaseAgent):
                 json=payload,
                 headers={"Content-Type": "application/json", **headers},
             )
+            if resp.status_code in (404, 405):
+                url = f"{self._base_url}/invocations"
+                resp = await client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json", **headers},
+                )
 
         if resp.status_code >= 400:
             raise RuntimeError(
