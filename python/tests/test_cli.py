@@ -5264,6 +5264,143 @@ class TestAgentsDelete:
         assert "not removed: bundle workspace files" in result.output
         fake_ws.workspace.delete.assert_not_called()
 
+    # --- advertise-registry cleanup + dependents warning (#446) ----------
+
+    @staticmethod
+    def _registry_ws():
+        """A workspace where the advertise-registry tables exist."""
+        fake_ws = MagicMock()
+        fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[
+            SimpleNamespace(key="apx.agent.model", value="my-ep"),
+            SimpleNamespace(key="apx.apps.app_name", value="my-app"),
+        ])
+        fake_ws.tables.exists.return_value = SimpleNamespace(table_exists=True)
+        return fake_ws
+
+    def test_delete_removes_registry_rows(self):
+        fake_ws = self._registry_ws()
+        calls: list[str] = []
+
+        def _fake_run_sql(_ws, sql, warehouse_id=None, **_kw):
+            calls.append(sql)
+            return []
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
+                patch("apx_agent._sql.run_sql", side_effect=_fake_run_sql):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        deletes = [s for s in calls if "DELETE FROM" in s]
+        # Both advertise names (endpoint + app) are deregistered from both tables.
+        for agent_id in ("my_ep", "my_app"):
+            assert any(
+                "main.apx.agent_registry" in s and f"'{agent_id}'" in s for s in deletes
+            ), (agent_id, deletes)
+            assert any(
+                "main.apx.agent_tools" in s and f"'{agent_id}'" in s for s in deletes
+            ), (agent_id, deletes)
+        assert "Removed advertise-registry rows" in result.output
+        # No dependents → the warning stays quiet.
+        assert "reference this one" not in result.output
+
+    def test_delete_skips_registry_with_notice_when_tables_missing(self):
+        fake_ws = self._registry_ws()
+        fake_ws.tables.exists.return_value = SimpleNamespace(table_exists=False)
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
+                patch("apx_agent._sql.run_sql") as run_sql:
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--yes",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "Notice: registry cleanup skipped" in result.output
+        run_sql.assert_not_called()
+
+    def test_dependents_warning_lists_agents_and_row_age(self):
+        import time as _time
+
+        fake_ws = self._registry_ws()
+        calls: list[str] = []
+
+        def _fake_run_sql(_ws, sql, warehouse_id=None, **_kw):
+            calls.append(sql)
+            if "SELECT" in sql and "agent_tools" in sql:
+                return [{
+                    "agent_name": "billing-bot",
+                    "name": "ask_victim",
+                    "sub_agent_url": "https://h/apps/my-app",
+                    "updated_at": str(_time.time() - 42 * 86400),
+                }]
+            return []
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
+                patch("apx_agent._sql.run_sql", side_effect=_fake_run_sql):
+            # Abort at the prompt — the warning must render BEFORE deletion.
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+            ], input="n\n")
+
+        assert "1 other agent(s) reference this one" in result.output
+        assert "billing-bot" in result.output
+        assert "https://h/apps/my-app" in result.output
+        assert "last advertised 42d ago" in result.output
+        # Aborted → nothing deleted, in the workspace or the registry.
+        assert not any("DELETE FROM" in s for s in calls)
+        fake_ws.serving_endpoints.delete.assert_not_called()
+
+    def test_dependents_scan_failure_is_notice_not_crash(self):
+        fake_ws = self._registry_ws()
+
+        def _fake_run_sql(_ws, sql, warehouse_id=None, **_kw):
+            if "SELECT" in sql:
+                raise RuntimeError("no SELECT grant on registry")
+            return []
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
+                patch("apx_agent._sql.run_sql", side_effect=_fake_run_sql):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--yes",
+            ])
+
+        # Scan failure never blocks the delete; the cleanup still ran fine.
+        assert result.exit_code == 0, result.output
+        assert "could not scan the registry for dependents" in result.output
+        assert "Removed advertise-registry rows" in result.output
+
+    def test_registry_cleanup_failure_aggregates_to_nonzero(self):
+        fake_ws = self._registry_ws()
+
+        def _fake_run_sql(_ws, sql, warehouse_id=None, **_kw):
+            if "DELETE FROM" in sql:
+                raise RuntimeError("PERMISSION_DENIED")
+            return []
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
+                patch("apx_agent._sql.run_sql", side_effect=_fake_run_sql):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--yes",
+            ])
+
+        assert result.exit_code != 0
+        assert "could not remove registry rows" in result.output
+
+    def test_delete_help_mentions_registry_cleanup(self):
+        result = CliRunner().invoke(main, ["agents", "delete", "--help"])
+        assert result.exit_code == 0
+        assert "advertise-registry rows" in result.output
+
     def test_without_purge_no_extra_deletions(self):
         fake_ws = self._purgeable_ws()
 
