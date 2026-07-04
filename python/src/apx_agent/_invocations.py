@@ -66,7 +66,7 @@ from fastapi.responses import StreamingResponse
 
 from ._agents import BaseAgent
 from ._async_bridge import make_async_stream
-from ._audit import stamp_caller_correlation
+from ._audit import AuditAttrs, stamp_caller_correlation
 from ._mlflow_tracing import safe_span
 
 if TYPE_CHECKING:
@@ -285,7 +285,7 @@ def mount_invocations_route(
             span_type="CHAIN",
             attributes={
                 "http.route": "/invocations",
-                "apx.agent_name": config.name,
+                AuditAttrs.AGENT_NAME: config.name,
                 "apx.streaming": stream,
                 "apx.user_scoped": bool(custom_inputs.get("user_token")),
                 "apx.message_count": len(messages),
@@ -438,7 +438,7 @@ def mount_responses_route(
             span_type="CHAIN",
             attributes={
                 "http.route": "/responses",
-                "apx.agent_name": config.name,
+                AuditAttrs.AGENT_NAME: config.name,
                 "apx.streaming": stream,
                 "apx.user_scoped": bool(custom_inputs.get("user_token")),
                 "apx.input_items": len(input_items) if isinstance(input_items, list) else 1,

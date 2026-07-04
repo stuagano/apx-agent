@@ -38,7 +38,7 @@ from ._a2a_models import (
     TextPart,
 )
 from ._agents import BaseAgent
-from ._audit import stamp_caller_correlation
+from ._audit import AuditAttrs, stamp_caller_correlation
 from ._models import AgentConfig
 from ._mlflow_tracing import safe_span
 
@@ -295,7 +295,7 @@ def mount_a2a_route(
         with safe_span(
             "POST / (A2A)",
             span_type="CHAIN",
-            attributes={"apx.a2a_method": method, "apx.agent_name": config.name},
+            attributes={"apx.a2a_method": method, AuditAttrs.AGENT_NAME: config.name},
         ) as span:
             # Cross-agent correlation (#443): tag this trace with the caller's
             # traceparent / name so it joins the caller's trace on
