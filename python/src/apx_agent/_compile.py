@@ -62,7 +62,12 @@ from ._defaults import (
     get_databricks_headers,
 )
 from ._mlflow_tracing import emit_progress
-from ._inspection import _inspect_tool_fn, _make_input_model, _state_param_name
+from ._inspection import (
+    _EmptyToolInput,
+    _inspect_tool_fn,
+    _make_input_model,
+    _state_param_name,
+)
 from ._state_tool import _make_stateful_langchain_tool
 
 if TYPE_CHECKING:
@@ -168,6 +173,11 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
 
     plain_params, _ = _inspect_tool_fn(fn)
     input_model = _make_input_model(fn, plain_params)
+    if input_model is None:
+        # Zero-argument tool: without an explicit args_schema, langchain infers
+        # one from the **kwargs wrapper and emits "additionalProperties": true,
+        # which FMAPI rejects with 400 at the first LLM call (#439).
+        input_model = _EmptyToolInput
     resolved_deps = _resolve_deps_for_fn(fn, ctx)
     is_async = inspect.iscoroutinefunction(fn)
 
