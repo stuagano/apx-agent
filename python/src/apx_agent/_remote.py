@@ -37,7 +37,15 @@ from urllib.parse import urlparse
 from fastapi import Request
 
 from ._agents import BaseAgent
-from ._models import AgentCard, AgentTool, A2ASkill, Message
+from ._models import (
+    A2ASkill,
+    AgentCard,
+    AgentTool,
+    Message,
+    message_input_schema,
+    sanitize_tool_schema,
+    structured_input_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +311,10 @@ class RemoteDatabricksAgent(BaseAgent):
                     id=s.get("id", s.get("name", "")),
                     name=s.get("name", ""),
                     description=s.get("description", ""),
+                    # Carry the card's real schemas — dropping them here is
+                    # what collapsed every remote tool to {message} (#442).
+                    inputSchema=s.get("inputSchema"),
+                    outputSchema=s.get("outputSchema"),
                 )
                 for s in data.get("skills", [])
             ],
@@ -411,27 +423,35 @@ class RemoteDatabricksAgent(BaseAgent):
         return []
 
     async def fetch_remote_tools(self) -> list[AgentTool]:
-        """Return the remote agent's skills as AgentTool descriptors."""
+        """Return the remote agent's skills as AgentTool descriptors.
+
+        Each skill's ``inputSchema``/``outputSchema`` is carried through
+        (sanitized — an untrusted card must not 500 the orchestrator's LLM
+        calls via ``additionalProperties: true``, #439). The ``{message}``
+        wrapper is the *fallback* for skills that advertise no usable
+        structured schema, not the blanket interface (#442).
+        """
         await self.init()
         if not self._card:
             return []
 
-        return [
-            AgentTool(
-                name=skill.name.replace("-", "_").replace(" ", "_"),
-                description=skill.description,
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "message": {"type": "string", "description": "Message to send"},
-                    },
-                    "required": ["message"],
-                },
-                output_schema={"type": "string"},
-                sub_agent_url=self._base_url,
+        tools: list[AgentTool] = []
+        for skill in self._card.skills:
+            structured = structured_input_schema(skill.inputSchema)
+            if isinstance(skill.outputSchema, dict) and skill.outputSchema:
+                output_schema = sanitize_tool_schema(skill.outputSchema)
+            else:
+                output_schema = {"type": "string"}
+            tools.append(
+                AgentTool(
+                    name=skill.name.replace("-", "_").replace(" ", "_"),
+                    description=skill.description,
+                    input_schema=structured if structured is not None else message_input_schema(),
+                    output_schema=output_schema,
+                    sub_agent_url=self._base_url,
+                )
             )
-            for skill in self._card.skills
-        ]
+        return tools
 
     # ------------------------------------------------------------------
     # Internal: OBO header extraction

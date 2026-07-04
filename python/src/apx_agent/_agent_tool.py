@@ -26,10 +26,12 @@ The same wrapper handles both — ``BaseAgent.run`` is the only contract.
 
 from __future__ import annotations
 
+import inspect
+import json as _json
 import logging
 import re
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from ._defaults import Dependencies
 from ._models import Message
@@ -41,9 +43,101 @@ if TYPE_CHECKING:
     from fastapi import Request
 
     from ._agents import BaseAgent
+    from ._defaults import DatabricksAppsHeaders
     from ._models import AgentCard
 
 logger = logging.getLogger(__name__)
+
+# JSON-schema primitive type → Python annotation for delegate parameters.
+# Unknown/missing types degrade to ``str`` — the LLM still sees the named
+# field; only the type hint loses precision.
+_JSON_TYPE_TO_PY: dict[str, type] = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
+
+
+def _strip_additional_properties(schema: dict[str, Any]) -> None:
+    """In-place: drop every ``additionalProperties`` that is not ``False``.
+
+    Applied to each stamped field's emitted JSON schema via
+    ``json_schema_extra`` — pydantic renders a bare ``dict`` annotation as
+    ``{"type": "object", "additionalProperties": true}``, which FMAPI rejects
+    with 400 at the first LLM call (#439). Without this, an object-typed
+    remote card property would reintroduce through the compile pipeline the
+    exact failure the descriptor sanitization prevents (#442).
+    """
+    if "additionalProperties" in schema and schema["additionalProperties"] is not False:
+        del schema["additionalProperties"]
+    for value in schema.values():
+        if isinstance(value, dict):
+            _strip_additional_properties(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _strip_additional_properties(item)
+
+
+def _stamp_structured_signature(fn: Any, input_schema: dict[str, Any]) -> None:
+    """Stamp *fn* with a signature derived from a JSON object schema (#442).
+
+    The framework's whole pipeline — ``_inspect_tool_fn`` →
+    ``_make_input_model`` → langchain ``StructuredTool`` / FastAPI route /
+    OpenAI tool schema — reads ``inspect.signature`` and ``__annotations__``.
+    Rewriting those on a ``**kwargs`` delegate makes the remote card's
+    properties real, typed, LLM-visible parameters without touching any of
+    those consumers. Parameters are keyword-only, so required/optional
+    ordering never produces an invalid signature.
+
+    Callers must pass a schema vetted by ``structured_input_schema`` (safe
+    identifier property names, sanitized).
+    """
+    from pydantic import Field
+
+    properties = input_schema["properties"]
+    required_value = input_schema.get("required")
+    required = set(required_value) if isinstance(required_value, list) else set()
+
+    parameters: list[inspect.Parameter] = []
+    annotations: dict[str, Any] = {}
+    for prop, spec in properties.items():
+        json_type = spec.get("type") if isinstance(spec, dict) else None
+        py_type: Any = _JSON_TYPE_TO_PY.get(json_type, str) if isinstance(json_type, str) else str
+        description = spec.get("description") if isinstance(spec, dict) else None
+        field_kwargs: dict[str, Any] = {
+            # See _strip_additional_properties: FMAPI-invariant guard (#439).
+            "json_schema_extra": _strip_additional_properties,
+        }
+        if isinstance(description, str) and description:
+            field_kwargs["description"] = description
+        if prop not in required:
+            py_type = py_type | None
+            field_kwargs["default"] = None
+        annotations[prop] = py_type
+        parameters.append(
+            inspect.Parameter(
+                prop,
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=py_type,
+                # A FieldInfo default flows through _inspect_tool_fn into
+                # create_model, which reads required-ness and metadata off it.
+                default=Field(**field_kwargs),
+            )
+        )
+    parameters.append(
+        inspect.Parameter(
+            "headers", inspect.Parameter.KEYWORD_ONLY, annotation=Dependencies.Headers
+        )
+    )
+    annotations["headers"] = Dependencies.Headers
+    annotations["return"] = str
+
+    fn.__signature__ = inspect.Signature(parameters)
+    fn.__annotations__ = annotations
 
 
 def _snake_case(name: str) -> str:
@@ -106,6 +200,7 @@ def remote_agent_tool(
     *,
     name: str,
     description: str,
+    input_schema: dict[str, Any] | None = None,
     on_card: "Callable[[AgentCard], None] | None" = None,
 ):
     """Wrap a remote sub-agent URL as a callable tool (compile-safe).
@@ -117,6 +212,15 @@ def remote_agent_tool(
     makes a config-declared ``sub_agents`` URL actually callable from inside a
     compiled LangGraph (#436). The current user's OBO token/host, when
     present, are forwarded to the sub-agent.
+
+    ``input_schema`` — a structured object schema (as vetted by
+    ``structured_input_schema``, i.e. the peer card's real ``inputSchema``) —
+    makes the delegate expose those properties as typed parameters instead of
+    one free-text ``message`` (#442). The LLM's structured arguments are
+    transmitted as a JSON object in the user message content: the wire
+    payloads (Responses/ChatAgent) are unchanged, the remote agent's LLM sees
+    named fields instead of prose. ``None`` keeps the ``message: str``
+    wrapper.
 
     A failure to reach or invoke the sub-agent returns a clear error string
     (``"sub-agent at <url> unreachable: <err>"``) instead of raising, so one
@@ -135,7 +239,7 @@ def remote_agent_tool(
 
     remote = RemoteDatabricksAgent(f"{base_url}/.well-known/agent.json")
 
-    async def _delegate(message: str, headers: Dependencies.Headers) -> str:
+    async def _send(content: str, headers: "DatabricksAppsHeaders | None") -> str:
         forwarded: dict[str, str] = {}
         # The compile path resolves Headers to None outside Databricks Apps
         # (local dev / no user identity); forward OBO material only when real.
@@ -154,7 +258,7 @@ def remote_agent_tool(
         # without a served FastAPI Request in scope.
         shim = cast("Request", SimpleNamespace(headers=forwarded))
         try:
-            return await remote.run([Message(role="user", content=message)], shim)
+            return await remote.run([Message(role="user", content=content)], shim)
         except Exception as exc:
             logger.warning("sub-agent call to %s failed: %s", base_url, exc)
             return f"sub-agent at {base_url} unreachable: {exc}"
@@ -164,4 +268,17 @@ def remote_agent_tool(
             if on_card is not None and remote.card is not None:
                 on_card(remote.card)
 
-    return build_tool(_delegate, name=name, description=description)
+    if input_schema is None:
+        async def _delegate(message: str, headers: Dependencies.Headers) -> str:
+            return await _send(message, headers)
+
+        return build_tool(_delegate, name=name, description=description)
+
+    async def _structured_delegate(headers: Dependencies.Headers, **kwargs: Any) -> str:
+        # Optional parameters the LLM left unset arrive as None defaults —
+        # drop them so the peer sees only the fields that were provided.
+        args = {k: v for k, v in kwargs.items() if v is not None}
+        return await _send(_json.dumps(args, ensure_ascii=False), headers)
+
+    _stamp_structured_signature(_structured_delegate, input_schema)
+    return build_tool(_structured_delegate, name=name, description=description)
