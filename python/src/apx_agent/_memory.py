@@ -29,6 +29,7 @@ camelCase there), same semantics.
 from __future__ import annotations
 
 import math
+import threading
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -370,6 +371,12 @@ class InMemoryMemoryStore:
         """
         self._embedding_fn = embedding_fn
         self._rows: dict[str, Memory] = {}
+        # The store is a process singleton shared across concurrent to_thread
+        # request workers; every dict mutation/iteration is guarded so a write
+        # can't race an in-flight list()/recall() scan (dict-changed-size crash),
+        # matching InMemoryConversationStore. recall() holds no lock — it goes
+        # through list(), which does, then works on that snapshot.
+        self._lock = threading.Lock()
 
     def add(self, memory: Mapping[str, Any]) -> Memory:
         """Insert one memory; returns the materialized row."""
@@ -377,7 +384,8 @@ class InMemoryMemoryStore:
         if self._embedding_fn is not None:
             embedding = self._embedding_fn([str(memory["content"])])[0]
         materialized = materialize_memory(memory, embedding=embedding)
-        self._rows[materialized.id] = materialized
+        with self._lock:
+            self._rows[materialized.id] = materialized
         return materialized
 
     def add_batch(self, memories: Sequence[Mapping[str, Any]]) -> list[Memory]:
@@ -392,47 +400,56 @@ class InMemoryMemoryStore:
         else:
             embeddings = [None] * len(memories)
         out: list[Memory] = []
-        for raw, emb in zip(memories, embeddings):
-            materialized = materialize_memory(raw, embedding=emb)
-            self._rows[materialized.id] = materialized
-            out.append(materialized)
+        materialized_rows = [
+            materialize_memory(raw, embedding=emb)
+            for raw, emb in zip(memories, embeddings)
+        ]
+        with self._lock:
+            for materialized in materialized_rows:
+                self._rows[materialized.id] = materialized
+                out.append(materialized)
         return out
 
     def get(self, memory_id: str) -> Memory | None:
         """Return the memory with ``memory_id``, or ``None`` if missing."""
-        return self._rows.get(memory_id)
+        with self._lock:
+            return self._rows.get(memory_id)
 
     def update(self, memory_id: str, patch: Mapping[str, Any]) -> Memory | None:
         """Apply ``patch`` and return the updated row, or ``None`` if missing."""
-        existing = self._rows.get(memory_id)
-        if existing is None:
-            return None
-        updated = apply_patch(existing, patch)
-        if "content" in patch and self._embedding_fn is not None:
-            emb = self._embedding_fn([str(patch["content"])])[0]
-            updated = Memory(
-                id=updated.id,
-                principal_id=updated.principal_id,
-                namespace=updated.namespace,
-                content=updated.content,
-                tags=updated.tags,
-                importance=updated.importance,
-                embedding=tuple(float(v) for v in emb),
-                metadata=updated.metadata,
-                created_at=updated.created_at,
-                updated_at=updated.updated_at,
-            )
-        self._rows[memory_id] = updated
-        return updated
+        with self._lock:
+            existing = self._rows.get(memory_id)
+            if existing is None:
+                return None
+            updated = apply_patch(existing, patch)
+            if "content" in patch and self._embedding_fn is not None:
+                emb = self._embedding_fn([str(patch["content"])])[0]
+                updated = Memory(
+                    id=updated.id,
+                    principal_id=updated.principal_id,
+                    namespace=updated.namespace,
+                    content=updated.content,
+                    tags=updated.tags,
+                    importance=updated.importance,
+                    embedding=tuple(float(v) for v in emb),
+                    metadata=updated.metadata,
+                    created_at=updated.created_at,
+                    updated_at=updated.updated_at,
+                )
+            self._rows[memory_id] = updated
+            return updated
 
     def delete(self, memory_id: str) -> bool:
         """Delete the row; returns ``True`` on hit, ``False`` on miss."""
-        return self._rows.pop(memory_id, None) is not None
+        with self._lock:
+            return self._rows.pop(memory_id, None) is not None
 
     def list(self, filter: MemoryFilter) -> list[Memory]:
         """Return rows matching ``filter``, newest first, capped at ``limit``."""
         out: list[Memory] = []
-        for m in self._rows.values():
+        with self._lock:
+            rows = list(self._rows.values())
+        for m in rows:
             if m.principal_id != filter.principal_id:
                 continue
             if filter.namespace is not None and m.namespace != filter.namespace:

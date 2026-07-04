@@ -21,6 +21,7 @@ camelCase there), same semantics.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -237,6 +238,11 @@ class InMemoryExampleStore:
         """
         self._embedding_fn = embedding_fn
         self._rows: dict[str, Example] = {}
+        # Guards every dict mutation/iteration so a write can't race an in-flight
+        # list()/find_similar() scan under concurrent request workers (dict-
+        # changed-size crash). find_similar() holds no lock — it goes through
+        # list(), which does, then works on that snapshot.
+        self._lock = threading.Lock()
 
     def add(self, example: Mapping[str, Any]) -> Example:
         """Insert one example; returns the materialized row."""
@@ -244,7 +250,8 @@ class InMemoryExampleStore:
         if self._embedding_fn is not None:
             embedding = self._embedding_fn([str(example["input"])])[0]
         materialized = materialize_example(example, embedding=embedding)
-        self._rows[materialized.id] = materialized
+        with self._lock:
+            self._rows[materialized.id] = materialized
         return materialized
 
     def add_batch(self, examples: Sequence[Mapping[str, Any]]) -> list[Example]:
@@ -259,48 +266,57 @@ class InMemoryExampleStore:
         else:
             embeddings = [None] * len(examples)
         out: list[Example] = []
-        for raw, emb in zip(examples, embeddings):
-            materialized = materialize_example(raw, embedding=emb)
-            self._rows[materialized.id] = materialized
-            out.append(materialized)
+        materialized_rows = [
+            materialize_example(raw, embedding=emb)
+            for raw, emb in zip(examples, embeddings)
+        ]
+        with self._lock:
+            for materialized in materialized_rows:
+                self._rows[materialized.id] = materialized
+                out.append(materialized)
         return out
 
     def get(self, example_id: str) -> Example | None:
         """Return the example with ``example_id``, or ``None`` if missing."""
-        return self._rows.get(example_id)
+        with self._lock:
+            return self._rows.get(example_id)
 
     def update(self, example_id: str, patch: Mapping[str, Any]) -> Example | None:
         """Apply ``patch`` and return the updated row, or ``None`` if missing."""
-        existing = self._rows.get(example_id)
-        if existing is None:
-            return None
-        updated = apply_example_patch(existing, patch)
-        if "input" in patch and self._embedding_fn is not None:
-            emb = self._embedding_fn([str(patch["input"])])[0]
-            updated = Example(
-                id=updated.id,
-                agent_id=updated.agent_id,
-                intent=updated.intent,
-                input=updated.input,
-                output=updated.output,
-                score=updated.score,
-                tags=updated.tags,
-                embedding=tuple(float(v) for v in emb),
-                metadata=updated.metadata,
-                created_at=updated.created_at,
-                updated_at=updated.updated_at,
-            )
-        self._rows[example_id] = updated
-        return updated
+        with self._lock:
+            existing = self._rows.get(example_id)
+            if existing is None:
+                return None
+            updated = apply_example_patch(existing, patch)
+            if "input" in patch and self._embedding_fn is not None:
+                emb = self._embedding_fn([str(patch["input"])])[0]
+                updated = Example(
+                    id=updated.id,
+                    agent_id=updated.agent_id,
+                    intent=updated.intent,
+                    input=updated.input,
+                    output=updated.output,
+                    score=updated.score,
+                    tags=updated.tags,
+                    embedding=tuple(float(v) for v in emb),
+                    metadata=updated.metadata,
+                    created_at=updated.created_at,
+                    updated_at=updated.updated_at,
+                )
+            self._rows[example_id] = updated
+            return updated
 
     def delete(self, example_id: str) -> bool:
         """Delete the row; returns ``True`` on hit, ``False`` on miss."""
-        return self._rows.pop(example_id, None) is not None
+        with self._lock:
+            return self._rows.pop(example_id, None) is not None
 
     def list(self, filter: ExampleFilter) -> list[Example]:
         """Return rows matching ``filter``, newest first, capped at ``limit``."""
         out: list[Example] = []
-        for ex in self._rows.values():
+        with self._lock:
+            rows = list(self._rows.values())
+        for ex in rows:
             if ex.agent_id != filter.agent_id:
                 continue
             if filter.intent is not None and ex.intent != filter.intent:
