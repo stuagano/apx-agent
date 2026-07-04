@@ -3913,6 +3913,7 @@ _MODEL_SERVING_ONLY_DEPLOY_FLAGS = (
     ("scale_to_zero", "--scale-to-zero/--no-scale-to-zero"),
     ("workload_size", "--workload-size"),
     ("env_suffix", "--env-suffix"),
+    ("version", "--version"),
 )
 
 # deploy options only the apps branch consumes (issue #415): the mirror of
@@ -3921,6 +3922,7 @@ _MODEL_SERVING_ONLY_DEPLOY_FLAGS = (
 _APPS_ONLY_DEPLOY_FLAGS = (
     ("env_pairs", "--env"),
     ("secret_env_pairs", "--secret-env"),
+    ("readyz_retries", "--readyz-retries"),
 )
 
 
@@ -4114,6 +4116,36 @@ _APPS_ONLY_DEPLOY_FLAGS = (
          "management. Only used by --target model-serving.",
 )
 @click.option(
+    "--dry-run", is_flag=True, default=False,
+    help="Print the deploy plan and exit 0 WITHOUT changing anything: no "
+         "bundle calls, no databricks.yml writes (--env is reported, not "
+         "merged), no MLflow logging, no uv.lock rewrite, no network. Works "
+         "with both targets; combine with --json-output for a machine-"
+         "readable plan object ({\"plan\": true, ...}).",
+)
+@click.option(
+    "--timeout", "timeout_seconds", default=300, show_default=True, type=int,
+    metavar="SECONDS",
+    help="Post-deploy readiness budget in seconds. Drives the `databricks "
+         "apps get` ACTIVE/RUNNING poll (--target apps) and the serving-"
+         "endpoint READY poll inside the health gate (--target "
+         "model-serving).",
+)
+@click.option(
+    "--readyz-retries", "readyz_retries", default=5, show_default=True,
+    type=int, metavar="N",
+    help="Attempts for the /readyz gate GET against the deployed app before "
+         "it is declared unreachable. Only used by --target apps.",
+)
+@click.option(
+    "--version", "version", default=None, type=int, metavar="N",
+    help="Deploy an ALREADY-LOGGED model version N instead of logging a new "
+         "one: skips publish_tools + log_agent (ledger: skipped) and goes "
+         "straight to databricks.agents.deploy(name, N) + health gate + UC "
+         "tags. Incompatible with --no-deploy. Only used by "
+         "--target model-serving.",
+)
+@click.option(
     "--yes", "-y", "assume_yes", is_flag=True,
     help="Skip the secret-scan confirmation prompt. Use in CI / scripts.",
 )
@@ -4146,9 +4178,16 @@ def deploy(
     scale_to_zero: bool | None,
     workload_size: str | None,
     env_suffix: str | None,
+    dry_run: bool,
+    timeout_seconds: int,
+    readyz_retries: int,
+    version: int | None,
     assume_yes: bool,
 ) -> None:
     """Log the agent to MLflow + deploy + UC-tag in one command.
+
+    Pass ``--dry-run`` to print the resolved plan (target, names, experiment,
+    step list) and exit without changing anything.
 
     With ``--target model-serving`` (default) runs the canonical flow:
 
@@ -4180,6 +4219,12 @@ def deploy(
     ``docs/engine-scope/apps-uc-registry-shim-design.md``).
     """
     if spec and (spec.endswith(".yaml") or spec.endswith(".yml")):
+        if dry_run:
+            raise click.UsageError(
+                "--dry-run is not supported with a SPEC.yaml deploy — "
+                "scaffold the project first, then run "
+                "`apx-agent agents deploy --dry-run` from it."
+            )
         _deploy_from_yaml(
             yaml_path=Path(spec),
             profile=profile,
@@ -4194,11 +4239,14 @@ def deploy(
     if target is None:
         detected = _detect_target()
         target = detected.target
+        target_reason = f"auto-detected: {detected.reason}"
         click.echo(
             f"target: {detected.target} (auto-detected: {detected.reason}; "
             "override with --target)",
             err=True,
         )
+    else:
+        target_reason = "explicit --target"
 
     if target == "apps":
         # Flag hygiene (issue #413): the apps branch never reads the
@@ -4224,6 +4272,25 @@ def deploy(
                 f"--target model-serving): {', '.join(ignored)}",
                 err=True,
             )
+        if dry_run:
+            _emit_apps_deploy_plan(
+                module=module or "agent:agent",
+                target_reason=target_reason,
+                bundle_target=bundle_target,
+                no_run=no_run,
+                auto_build_wheel=auto_build_wheel,
+                auto_experiment=auto_experiment,
+                readyz_gate=readyz_gate,
+                register_uc=register_uc,
+                uc_name=uc_name,
+                vars=vars,
+                env_pairs=env_pairs,
+                secret_env_pairs=secret_env_pairs,
+                json_output=json_output,
+                timeout_seconds=timeout_seconds,
+                readyz_retries=readyz_retries,
+            )
+            return
         _deploy_apps(
             module=module or "agent:agent",
             profile=profile,
@@ -4239,6 +4306,8 @@ def deploy(
             readyz_gate=readyz_gate,
             register_uc=register_uc,
             uc_name=uc_name,
+            poll_timeout_seconds=timeout_seconds,
+            readyz_attempts=readyz_retries,
         )
         return
 
@@ -4258,6 +4327,14 @@ def deploy(
             "# WARNING: ignored with --target model-serving (only used by "
             f"--target apps): {', '.join(ignored_apps_flags)}",
             err=True,
+        )
+    # --version redeploys an existing logged version; --no-deploy skips the
+    # deploy step. Combining them would be a no-op, so it's an error (#414).
+    if version is not None and no_deploy:
+        raise click.UsageError(
+            "--version deploys an ALREADY-LOGGED version, but --no-deploy "
+            "skips the deploy step — combined, nothing would happen. Drop "
+            "one of the two."
         )
     config = _read_apx_agent_config()
     if model is None:
@@ -4281,6 +4358,25 @@ def deploy(
         # endpoint/agent naming derived from it.
         registered_model_name = f"{registered_model_name}-{env_suffix}"
     effective_module = module or "agent:agent"
+
+    if dry_run:
+        _emit_serving_deploy_plan(
+            uc_name=registered_model_name,
+            model=model,
+            module=effective_module,
+            target_reason=target_reason,
+            experiment=experiment or config.get("experiment"),
+            publish_tools=publish_tools,
+            no_deploy=no_deploy,
+            readyz_gate=readyz_gate,
+            set_uc_tags=set_uc_tags,
+            version=version,
+            scale_to_zero=scale_to_zero,
+            workload_size=workload_size,
+            json_output=json_output,
+            timeout_seconds=timeout_seconds,
+        )
+        return
 
     import mlflow
 
@@ -4314,14 +4410,14 @@ def deploy(
         """Progress log: stdout normally, stderr under --json-output."""
         click.echo(msg, err=json_output)
 
-    # Pre-flight: tell the user what mode we're running in.
-    _say(
-        f"Logging with: env-var-capture="
-        f"{'on' if effective_capture else 'off'}, secrets-scan=on",
-    )
-
-    # Pre-flight: secret scan.
-    suspicious = _run_secret_scan(Path.cwd())
+    # Pre-flight: mode banner + secret scan. Both are logging concerns, so a
+    # --version redeploy (nothing gets logged) skips them (#414).
+    if version is None:
+        _say(
+            f"Logging with: env-var-capture="
+            f"{'on' if effective_capture else 'off'}, secrets-scan=on",
+        )
+    suspicious = _run_secret_scan(Path.cwd()) if version is None else []
     if suspicious and effective_capture:
         click.echo(
             "# WARNING: env-var capture is ON and the following names "
@@ -4427,8 +4523,10 @@ def deploy(
         _emit_failure(msg + _orphans())
 
     # 1. Publish @tool(uc=...) tools first so they exist in UC by the
-    # time log_agent's resource collector picks them up.
-    if publish_tools:
+    # time log_agent's resource collector picks them up. A --version
+    # redeploy skips this: the version being promoted was logged (and its
+    # tools published) by an earlier deploy (#414).
+    if publish_tools and version is None:
         try:
             from apx_agent import publish_tools_to_uc
             results = publish_tools_to_uc(agent)
@@ -4458,58 +4556,68 @@ def deploy(
     # endpoint can install deps (it can't reach the dev proxy). This rewrites
     # the project's OWN uv.lock in place: kept on success (public-PyPI locks
     # are repo policy), restored by _emit_failure if the deploy fails (#416).
-    pre_sanitize_lock = lock_path.read_bytes() if lock_path.exists() else None
-    if _sanitize_uv_lock(lock_path):
-        original_lock = pre_sanitize_lock
-        click.echo(
-            "# rewrote uv.lock in place → public PyPI for the logged model "
-            "(kept on success; restored if the deploy fails)",
-            err=True,
-        )
-    _warn_unknown_lock_mirrors(lock_path)
+    if version is None:
+        pre_sanitize_lock = lock_path.read_bytes() if lock_path.exists() else None
+        if _sanitize_uv_lock(lock_path):
+            original_lock = pre_sanitize_lock
+            click.echo(
+                "# rewrote uv.lock in place → public PyPI for the logged model "
+                "(kept on success; restored if the deploy fails)",
+                err=True,
+            )
+        _warn_unknown_lock_mirrors(lock_path)
 
     # 2. Log + register
     #
     # (Config knobs + persona overlay + declared tools are applied inside
     # log_agent via finalize_agent — no separate call needed here.)
 
-    try:
-        if effective_experiment:
-            _exp = mlflow.set_experiment(effective_experiment)
-            resolved_experiment_id = _exp.experiment_id
-        with _EnvVarGuard(capture=effective_capture), mlflow.start_run():
-            info = log_agent(
-                agent,
-                model=model,
-                registered_model_name=registered_model_name,
-                experiment=effective_experiment,
-            )
-    except Exception as e:
-        _fail("log", f"log_agent failed: {e}.")
-    step_outcomes["log"] = "ok"
-    registered_version = info.registered_model_version
-    _say(f"Logged {registered_model_name} version {registered_version}")
-
-    # 2b. Provenance (issue #403): stamp git SHA / dirty flag / uv.lock hash on
-    # the registered version — same tags the Apps manifest gets — so `apx-agent
-    # doctor` can detect drift between what's deployed and the local tree.
-    # Best-effort: a provenance write failure never turns a green deploy red.
-    provenance_tags = _provenance_version_tags(Path.cwd())
-    if provenance_tags:
+    if version is not None:
+        # --version redeploy (#414): the version already exists in UC with
+        # its own provenance tags — go straight to the deploy step below.
+        registered_version = str(version)
+        _say(
+            f"Redeploying already-logged {registered_model_name} version "
+            f"{registered_version} (--version: publish_tools + log skipped)"
+        )
+    else:
         try:
-            from mlflow.tracking import MlflowClient
-            _prov_client = MlflowClient()
-            for _prov_key, _prov_value in provenance_tags.items():
-                _prov_client.set_model_version_tag(
-                    registered_model_name, str(registered_version),
-                    _prov_key, _prov_value,
+            if effective_experiment:
+                _exp = mlflow.set_experiment(effective_experiment)
+                resolved_experiment_id = _exp.experiment_id
+            with _EnvVarGuard(capture=effective_capture), mlflow.start_run():
+                info = log_agent(
+                    agent,
+                    model=model,
+                    registered_model_name=registered_model_name,
+                    experiment=effective_experiment,
                 )
-            _say(
-                f"  provenance: {len(provenance_tags)} tags written on "
-                f"version {registered_version}"
-            )
         except Exception as e:
-            click.echo(f"# provenance tags failed (non-fatal): {e}", err=True)
+            _fail("log", f"log_agent failed: {e}.")
+        step_outcomes["log"] = "ok"
+        registered_version = info.registered_model_version
+        _say(f"Logged {registered_model_name} version {registered_version}")
+
+        # 2b. Provenance (issue #403): stamp git SHA / dirty flag / uv.lock hash on
+        # the registered version — same tags the Apps manifest gets — so `apx-agent
+        # doctor` can detect drift between what's deployed and the local tree.
+        # Best-effort: a provenance write failure never turns a green deploy red.
+        provenance_tags = _provenance_version_tags(Path.cwd())
+        if provenance_tags:
+            try:
+                from mlflow.tracking import MlflowClient
+                _prov_client = MlflowClient()
+                for _prov_key, _prov_value in provenance_tags.items():
+                    _prov_client.set_model_version_tag(
+                        registered_model_name, str(registered_version),
+                        _prov_key, _prov_value,
+                    )
+                _say(
+                    f"  provenance: {len(provenance_tags)} tags written on "
+                    f"version {registered_version}"
+                )
+            except Exception as e:
+                click.echo(f"# provenance tags failed (non-fatal): {e}", err=True)
 
     # 3. Deploy to Model Serving
     if not no_deploy:
@@ -4550,7 +4658,9 @@ def deploy(
         # of the apps /readyz gate, behind the same flag.
         if readyz_gate:
             assert endpoint_name is not None  # set just above from the deploy
-            gate_error = _serving_health_gate(endpoint_name, log=_say)
+            gate_error = _serving_health_gate(
+                endpoint_name, log=_say, timeout_seconds=timeout_seconds,
+            )
             if gate_error is None:
                 step_outcomes["gate"] = "ok"
                 _say("  health gate: endpoint READY + smoke invocation answered")
@@ -4622,6 +4732,205 @@ def deploy(
         if workload_size is not None:
             summary["workload_size"] = workload_size
         click.echo(json.dumps(summary))
+
+
+def _emit_apps_deploy_plan(
+    *,
+    module: str,
+    target_reason: str,
+    bundle_target: str,
+    no_run: bool,
+    auto_build_wheel: bool,
+    auto_experiment: bool,
+    readyz_gate: bool,
+    register_uc: bool,
+    uc_name: str | None,
+    vars: tuple[str, ...],
+    env_pairs: tuple[str, ...],
+    secret_env_pairs: tuple[str, ...],
+    json_output: bool,
+    timeout_seconds: int,
+    readyz_retries: int,
+) -> None:
+    """Print the ``--target apps`` deploy plan WITHOUT mutating anything (#414).
+
+    Reads only local files (databricks.yml / pyproject.toml / git metadata):
+    no ``databricks`` CLI calls, no databricks.yml writes (``--env`` /
+    ``--secret-env`` are reported as key names, never merged), no network.
+    """
+    cwd = Path.cwd()
+    doc = _read_databricks_yml(cwd)
+    bundle_key, app_name = _resolve_app_name(doc)
+    resolved_uc = _resolve_apps_uc_name(
+        _read_apx_agent_config(), app_name, override=uc_name,
+    )
+
+    # Key NAMES that would merge into databricks.yml — parsed for validation
+    # (a malformed pair should fail the dry run too), values never echoed.
+    env_keys = [_parse_env_flag(e).name for e in env_pairs]
+    secret_env_keys = [_parse_secret_env_flag(s).name for s in secret_env_pairs]
+
+    # Vars that would pass to bundle deploy + run, mirroring the real flow's
+    # gating: an auto-resolved experiment id (placeholder — resolving it for
+    # real needs the workspace) and the apx_git_sha correlation var when the
+    # bundle declares it (#404).
+    plan_vars = list(vars)
+    if any(v.startswith("mlflow_experiment_id=") for v in plan_vars):
+        experiment = "from --var mlflow_experiment_id="
+    elif auto_experiment:
+        experiment = (
+            f"auto-resolve /Users/<current-user>/{app_name}-{bundle_target} "
+            "at deploy time (created if missing)"
+        )
+        plan_vars.append("mlflow_experiment_id=<auto-resolved>")
+    else:
+        experiment = "none (--no-auto-experiment, no --var mlflow_experiment_id=)"
+    from ._apps_registry import GIT_SHA_TAG
+    correlation_sha = _provenance_version_tags(cwd).get(GIT_SHA_TAG)
+    declared_bundle_vars = doc.get("variables")
+    if (
+        correlation_sha
+        and isinstance(declared_bundle_vars, dict)
+        and "apx_git_sha" in declared_bundle_vars
+        and not any(v.startswith("apx_git_sha=") for v in vars)
+    ):
+        plan_vars.append(f"apx_git_sha={correlation_sha}")
+
+    steps: dict[str, str] = {
+        "validate": "run",
+        "deploy": "run",
+        "run": "skipped (--no-run)" if no_run else "run",
+        "poll": (
+            "skipped (--no-run)" if no_run
+            else f"run (timeout {timeout_seconds}s)"
+        ),
+        "readyz": (
+            "skipped (--no-run)" if no_run
+            else f"run ({readyz_retries} attempts)" if readyz_gate
+            else "skipped (--no-readyz-gate)"
+        ),
+        "register_uc": (
+            "skipped (--no-register-uc)" if not register_uc
+            else "run" if resolved_uc
+            else "skipped (no UC name resolves)"
+        ),
+    }
+
+    if json_output:
+        click.echo(json.dumps({
+            "plan": True,
+            "target": "apps",
+            "target_reason": target_reason,
+            "module": module,
+            "bundle_target": bundle_target,
+            "app_name": app_name,
+            "bundle_key": bundle_key,
+            "uc_name": resolved_uc,
+            "auto_build_wheel": auto_build_wheel,
+            "experiment": experiment,
+            "env_keys": env_keys,
+            "secret_env_keys": secret_env_keys,
+            "bundle_vars": plan_vars,
+            "steps": steps,
+        }))
+        return
+    click.echo("# DRY RUN — plan only; nothing validated, written, or deployed")
+    click.echo(f"target: apps ({target_reason})")
+    click.echo(f"module: {module}")
+    click.echo(f"bundle_target: {bundle_target}")
+    click.echo(f"app_name: {app_name} (bundle key: {bundle_key})")
+    click.echo(f"uc_name: {resolved_uc or '<none — UC registration would skip>'}")
+    click.echo(f"wheel auto-build: {'on' if auto_build_wheel else 'off'}")
+    click.echo(f"experiment: {experiment}")
+    click.echo(
+        "env keys to merge (names only): " + (", ".join(env_keys) or "(none)")
+    )
+    click.echo(
+        "secret env keys to merge (names only): "
+        + (", ".join(secret_env_keys) or "(none)")
+    )
+    click.echo("bundle vars: " + (", ".join(plan_vars) or "(none)"))
+    click.echo("steps:")
+    for step, disposition in steps.items():
+        click.echo(f"  {step}: {disposition}")
+
+
+def _emit_serving_deploy_plan(
+    *,
+    uc_name: str,
+    model: str,
+    module: str,
+    target_reason: str,
+    experiment: Any,
+    publish_tools: bool,
+    no_deploy: bool,
+    readyz_gate: bool,
+    set_uc_tags: bool,
+    version: int | None,
+    scale_to_zero: bool | None,
+    workload_size: str | None,
+    json_output: bool,
+    timeout_seconds: int,
+) -> None:
+    """Print the ``--target model-serving`` deploy plan WITHOUT mutating (#414).
+
+    No ``databricks.agents`` import, no MLflow calls, no uv.lock sanitize,
+    no network — the UC name shown is fully resolved (config fallback +
+    ``--env-suffix`` already applied by the caller).
+    """
+    scale_kwargs: dict[str, Any] = {}
+    if scale_to_zero is not None:
+        scale_kwargs["scale_to_zero"] = scale_to_zero
+    if workload_size is not None:
+        scale_kwargs["workload_size"] = workload_size
+    redeploy = version is not None
+    steps: dict[str, str] = {
+        "publish_tools": (
+            "skipped (--version redeploy)" if redeploy
+            else "run" if publish_tools
+            else "skipped (--no-publish-tools)"
+        ),
+        "log": "skipped (--version redeploy)" if redeploy else "run",
+        "deploy": "skipped (--no-deploy)" if no_deploy else "run",
+        "gate": (
+            "skipped (--no-deploy)" if no_deploy
+            else f"run (timeout {timeout_seconds}s)" if readyz_gate
+            else "skipped (--no-readyz-gate)"
+        ),
+        "set_uc_tags": "run" if set_uc_tags else "skipped (--no-set-uc-tags)",
+    }
+    if json_output:
+        click.echo(json.dumps({
+            "plan": True,
+            "target": "model-serving",
+            "target_reason": target_reason,
+            "module": module,
+            "uc_name": uc_name,
+            "model": model,
+            "experiment": experiment,
+            "version": version,
+            "scale_kwargs": scale_kwargs,
+            "steps": steps,
+        }))
+        return
+    click.echo("# DRY RUN — plan only; nothing logged, deployed, or written")
+    click.echo(f"target: model-serving ({target_reason})")
+    click.echo(f"module: {module}")
+    click.echo(f"uc_name: {uc_name}")
+    click.echo(f"model: {model}")
+    click.echo(f"experiment: {experiment or '(MLflow default)'}")
+    if redeploy:
+        click.echo(f"version: {version} (already logged — redeploy)")
+    click.echo(
+        "scale kwargs forwarded: "
+        + (
+            json.dumps(scale_kwargs) if scale_kwargs
+            else "(none — databricks.agents.deploy defaults apply)"
+        )
+    )
+    click.echo("steps:")
+    for step, disposition in steps.items():
+        click.echo(f"  {step}: {disposition}")
 
 
 def _serving_health_gate(
@@ -6094,6 +6403,8 @@ def _deploy_apps(
     register_uc: bool = True,
     uc_name: str | None = None,
     app_name_override: str | None = None,
+    poll_timeout_seconds: int = 300,
+    readyz_attempts: int = 5,
 ) -> None:
     """Implement ``apx-agent deploy --target apps``.
 
@@ -6127,6 +6438,8 @@ def _deploy_apps(
             register_uc=register_uc, uc_name=uc_name,
             app_name_override=app_name_override,
             extra_version_tags=_provenance_version_tags(cwd),
+            poll_timeout_seconds=poll_timeout_seconds,
+            readyz_attempts=readyz_attempts,
             log=log,
         )
     except click.ClickException as e:
@@ -6155,6 +6468,8 @@ def _deploy_apps_impl(
     uc_name: str | None = None,
     app_name_override: str | None = None,
     extra_version_tags: dict[str, str] | None = None,
+    poll_timeout_seconds: int = 300,
+    readyz_attempts: int = 5,
     log: Any,
 ) -> None:
     """Inner body of ``_deploy_apps`` — see docstring there."""
@@ -6344,7 +6659,9 @@ def _deploy_apps_impl(
         log("# --no-run: app not started — skipping readiness poll + readyz gate")
     else:
         log(f"# polling `databricks apps get {app_name}` for ACTIVE/RUNNING")
-        payload = _poll_app_ready(app_name, profile, timeout_seconds=300, log=log)
+        payload = _poll_app_ready(
+            app_name, profile, timeout_seconds=poll_timeout_seconds, log=log,
+        )
         app_url = payload.get("url") or ""
 
         # 6b. Grant the app's service principal access to the tracing
@@ -6363,7 +6680,7 @@ def _deploy_apps_impl(
     readyz_checks: dict[str, Any] | None = None
     if readyz_gate and app_url:
         log(f"# readyz gate: GET {app_url}/readyz")
-        ok, checks = _check_readyz(app_url, profile=profile)
+        ok, checks = _check_readyz(app_url, profile=profile, attempts=readyz_attempts)
         readyz_checks = checks
         if ok:
             log(f"  readyz: ready ({checks})")
