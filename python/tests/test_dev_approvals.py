@@ -72,9 +72,9 @@ async def _get_json(app: FastAPI, path: str):
     return r
 
 
-async def _post(app: FastAPI, path: str):
+async def _post(app: FastAPI, path: str, headers: dict[str, str] | None = None):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        r = await ac.post(path)
+        r = await ac.post(path, headers=headers)
     return r
 
 
@@ -165,9 +165,17 @@ async def test_approve_then_gate_allows_retry():
     approval_id = exc_info.value.approval.id
 
     app = _make_app(agent=_AgentStub(before_tool=gate))
-    r = await _post(app, f"/_apx/approvals/{approval_id}/approve")
+    r = await _post(
+        app, f"/_apx/approvals/{approval_id}/approve",
+        headers={"X-Forwarded-Email": "alice@corp"},
+    )
     assert r.status_code == 200
-    assert r.json() == {"id": approval_id, "status": "approved"}
+    body = r.json()
+    assert body["id"] == approval_id
+    assert body["status"] == "approved"
+    # #469: the forwarded decider identity is captured in the audit record.
+    assert body["decided_by"] == "alice@corp"
+    assert body["decided_at"] is not None
 
     # The gate must now allow the identical retry — this is the claim
     # the whole approval surface exists for.
@@ -189,7 +197,11 @@ async def test_deny_then_gate_blocks_retry():
     app = _make_app(agent=_AgentStub(before_tool=gate))
     r = await _post(app, f"/_apx/approvals/{approval_id}/deny")
     assert r.status_code == 200
-    assert r.json() == {"id": approval_id, "status": "denied"}
+    body = r.json()
+    assert body["id"] == approval_id
+    assert body["status"] == "denied"
+    # No forwarded identity in this request → recorded as None, not faked.
+    assert body["decided_by"] is None
 
     # Retry must be a hard PermissionError (refused), not a re-ask.
     with pytest.raises(PermissionError, match="refused") as exc2:

@@ -297,6 +297,31 @@ def test_approval_unknown_id_raises():
         store.deny("appr-nope")
 
 
+def test_approval_records_decider_and_timestamp():
+    """#469: approve/deny stamp who decided and when (was: no attribution)."""
+    store = ApprovalStore()
+    a = store.request("send_email", {"to": "bob@x.com"})
+    assert a.decided_by is None and a.decided_at is None  # pending: unset
+
+    approved = store.approve(a.id, decided_by="alice@corp")
+    assert approved.decided_by == "alice@corp"
+    assert approved.decided_at is not None  # ISO timestamp stamped
+
+    b = store.request("rm_table", {"name": "main.gold.facts"})
+    denied = store.deny(b.id, decided_by="carol@corp")
+    assert denied.decided_by == "carol@corp"
+    assert denied.decided_at is not None
+
+
+def test_approval_decider_absent_is_recorded_as_none():
+    """A decision surface with no user identity records None, not a fake value."""
+    store = ApprovalStore()
+    a = store.request("send_email", {"to": "bob@x.com"})
+    approved = store.approve(a.id)  # no decided_by
+    assert approved.decided_by is None
+    assert approved.decided_at is not None  # timestamp still recorded
+
+
 def test_list_pending():
     store = ApprovalStore()
     a1 = store.request("t1", {"x": 1})
