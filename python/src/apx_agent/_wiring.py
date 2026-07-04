@@ -25,6 +25,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from starlette.responses import Response
 
 from ._agents import BaseAgent
+from ._env import resolve_env_var
 from ._prompt_assembly import compose_instructions
 from ._defaults import _make_workspace_client
 from ._inspection import _load_agent_config
@@ -37,10 +38,6 @@ from ._models import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Env var references that fail to resolve (var not set) expand to empty string.
-# Callers are expected to check `if not resolved:` and skip/warn accordingly.
-_UNSET_ENV_EXPANSION = ""
 
 
 def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
@@ -338,16 +335,9 @@ def resolve_agent(
     return getattr(mod, var_name)
 
 
-def _resolve_env_var(value: str) -> str:
-    """Resolve a ``$VAR`` or ``${VAR}`` reference to its environment value.
-
-    Returns the original string unchanged if it doesn't start with ``$``
-    or the variable is not set.
-    """
-    if not value.startswith("$"):
-        return value
-    var_name = value.lstrip("$").strip("{}")
-    return os.environ.get(var_name, _UNSET_ENV_EXPANSION)
+# Re-exported under the old name: _tool_config lazily imports _resolve_env_var
+# from this module. The implementation moved to ._env (shared helper, #436).
+_resolve_env_var = resolve_env_var
 
 
 async def setup_agent(
@@ -422,7 +412,15 @@ async def setup_agent(
     )
 
     tools = agent.collect_tools()
-    tools += await agent.fetch_remote_tools()
+    # fetch_remote_tools ALSO materializes each reachable sub-agent as a
+    # callable tool in the agent's _tool_fns (#436) — the card below and the
+    # compiled graph's tool set therefore derive from the same source of
+    # truth. Dedupe by name so a repeated setup on the same agent instance
+    # (whose collect_tools now already includes the delegates) doesn't
+    # advertise a skill twice.
+    remote_tools = await agent.fetch_remote_tools()
+    known_names = {t.name for t in tools}
+    tools += [t for t in remote_tools if t.name not in known_names]
     card = AgentCard(
         name=config.name,
         description=config.description,
