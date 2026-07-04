@@ -238,6 +238,95 @@ class TestFromCardUrl:
                 )
 
     @pytest.mark.asyncio
+    async def test_base_url_gets_well_known_path_appended(self):
+        """from_card_url accepts a bare base URL — same contract as the
+        declarative sub_agents path (#441)."""
+        fetched_urls: list[str] = []
+
+        async def mock_get(url, **kwargs):
+            fetched_urls.append(str(url))
+            return make_httpx_response(make_card_data())
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.get = AsyncMock(side_effect=mock_get)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            agent = await RemoteDatabricksAgent.from_card_url(
+                "https://data-inspector.workspace.databricksapps.com"
+            )
+
+        assert fetched_urls == [
+            "https://data-inspector.workspace.databricksapps.com/.well-known/agent.json"
+        ]
+        assert fetched_urls[0].count("/.well-known/agent.json") == 1
+        assert agent._base_url == "https://data-inspector.workspace.databricksapps.com"
+        assert agent.app_name == "data-inspector"
+
+    @pytest.mark.asyncio
+    async def test_full_card_url_is_not_double_suffixed(self):
+        """A full card URL is fetched verbatim — the well-known path appears
+        exactly once (#441)."""
+        fetched_urls: list[str] = []
+
+        async def mock_get(url, **kwargs):
+            fetched_urls.append(str(url))
+            return make_httpx_response(make_card_data())
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.get = AsyncMock(side_effect=mock_get)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            agent = await RemoteDatabricksAgent.from_card_url(
+                "https://data-inspector.workspace.databricksapps.com/.well-known/agent.json"
+            )
+
+        assert fetched_urls == [
+            "https://data-inspector.workspace.databricksapps.com/.well-known/agent.json"
+        ]
+        assert fetched_urls[0].count("/.well-known/agent.json") == 1
+        assert agent._base_url == "https://data-inspector.workspace.databricksapps.com"
+
+    def test_base_url_with_trailing_slash_normalizes(self):
+        agent = RemoteDatabricksAgent("https://host/")
+        assert agent._card_url == "https://host/.well-known/agent.json"
+        assert agent._base_url == "https://host"
+
+    @pytest.mark.asyncio
+    async def test_html_card_response_raises_with_context(self):
+        """The dev-UI landing page answers 200 text/html at a mistaken base
+        URL — the error must name the URL, content-type, and a body snippet,
+        not be a naked JSONDecodeError (#441)."""
+
+        async def mock_get(url, **kwargs):
+            resp = MagicMock(spec=httpx.Response)
+            resp.status_code = 200
+            resp.headers = {"content-type": "text/html; charset=utf-8"}
+            resp.text = "<!DOCTYPE html><html><head><title>apx</title>" + "x" * 500
+            resp.json.side_effect = json.JSONDecodeError("Expecting value", "<", 0)
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.get = AsyncMock(side_effect=mock_get)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with pytest.raises(RuntimeError) as excinfo:
+                await RemoteDatabricksAgent.from_card_url("https://host:8000")
+
+        msg = str(excinfo.value)
+        assert "https://host:8000/.well-known/agent.json" in msg
+        assert "text/html" in msg
+        assert "200" in msg
+        assert "<!DOCTYPE html>" in msg  # a debugging excerpt of the body…
+        assert "x" * 300 not in msg  # …but truncated, not the whole page
+
+    @pytest.mark.asyncio
     async def test_init_is_idempotent(self):
         card_data = make_card_data()
         call_count = 0
@@ -665,6 +754,165 @@ class TestRun:
             ]
 
         assert chunks == ["hel", "lo"]
+
+
+# ---------------------------------------------------------------------------
+# stream() — SDK streaming path (#447)
+# ---------------------------------------------------------------------------
+
+
+def make_delta_event(delta: str) -> MagicMock:
+    event = MagicMock()
+    event.type = "response.output_text.delta"
+    event.delta = delta
+    return event
+
+
+class TestStreamViaSdk:
+    """stream() on the SDK path must relay deltas as they arrive (#447)."""
+
+    def _make_agent(self, app_name: str = "data-inspector") -> RemoteDatabricksAgent:
+        from apx_agent._models import AgentCard
+
+        base_url = f"https://{app_name}.workspace.databricksapps.com"
+        agent = RemoteDatabricksAgent.__new__(RemoteDatabricksAgent)
+        agent._card_url = f"{base_url}/.well-known/agent.json"
+        agent._base_url = base_url
+        agent._app_name = app_name
+        agent._extra_headers = {}
+        agent._timeout = 120.0
+        agent._card = AgentCard(
+            name=app_name, description="", url=base_url, skills=[]
+        )
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_stream_yields_multiple_sdk_deltas(self):
+        agent = self._make_agent()
+        request = make_request()
+
+        other = MagicMock()
+        other.type = "response.created"
+
+        async def fake_stream():
+            for event in [other, make_delta_event("hel"), make_delta_event("lo")]:
+                yield event
+
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
+            sdk_instance = AsyncMock()
+            sdk_instance.responses.create = AsyncMock(return_value=fake_stream())
+            MockSDK.return_value = sdk_instance
+
+            chunks = [
+                c
+                async for c in agent.stream(
+                    [Message(role="user", content="hi")], request
+                )
+            ]
+
+        assert chunks == ["hel", "lo"]
+        call_kwargs = sdk_instance.responses.create.call_args.kwargs
+        assert call_kwargs["stream"] is True
+        assert call_kwargs["model"] == "apps/data-inspector"
+
+    @pytest.mark.asyncio
+    async def test_stream_does_not_buffer_before_yielding(self):
+        """The first chunk must surface before later events are even pulled
+        from the SDK stream — buffering-as-streaming is the bug (#447)."""
+        agent = self._make_agent()
+        request = make_request()
+        consumed = 0
+
+        async def fake_stream():
+            nonlocal consumed
+            for event in [make_delta_event("first"), make_delta_event("second")]:
+                consumed += 1
+                yield event
+
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
+            sdk_instance = AsyncMock()
+            sdk_instance.responses.create = AsyncMock(return_value=fake_stream())
+            MockSDK.return_value = sdk_instance
+
+            agen = agent.stream([Message(role="user", content="hi")], request)
+            first = await agen.__anext__()
+            assert first == "first"
+            # Only the first SDK event has been consumed — the reply was
+            # not buffered to completion before yielding.
+            assert consumed == 1
+            rest = [c async for c in agen]
+
+        assert rest == ["second"]
+
+    @pytest.mark.asyncio
+    async def test_stream_falls_back_to_http_when_sdk_stream_fails(self):
+        """SDK stream setup failure → HTTP SSE fallback still streams."""
+        agent = self._make_agent()
+        request = make_request()
+
+        lines = [
+            'data: {"delta": "hel"}',
+            'data: {"delta": "lo"}',
+        ]
+
+        async def aiter_lines():
+            for line in lines:
+                yield line
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.aiter_lines = aiter_lines
+
+        stream_cm = MagicMock()
+        stream_cm.__aenter__ = AsyncMock(return_value=resp)
+        stream_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
+            sdk_instance = AsyncMock()
+            sdk_instance.responses.create = AsyncMock(
+                side_effect=Exception("apps route rejects stream=True")
+            )
+            MockSDK.return_value = sdk_instance
+
+            with patch("httpx.AsyncClient") as MockClient:
+                instance = MagicMock()
+                instance.stream = MagicMock(return_value=stream_cm)
+                MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+                MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                chunks = [
+                    c
+                    async for c in agent.stream(
+                        [Message(role="user", content="hi")], request
+                    )
+                ]
+
+        assert chunks == ["hel", "lo"]
+
+    @pytest.mark.asyncio
+    async def test_stream_midstream_failure_raises_instead_of_replaying(self):
+        """Once a chunk has been yielded, a mid-stream failure must raise —
+        falling back would replay the reply from the start."""
+        agent = self._make_agent()
+        request = make_request()
+
+        async def fake_stream():
+            yield make_delta_event("partial")
+            raise RuntimeError("connection dropped")
+
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
+            sdk_instance = AsyncMock()
+            sdk_instance.responses.create = AsyncMock(return_value=fake_stream())
+            MockSDK.return_value = sdk_instance
+
+            received: list[str] = []
+            with pytest.raises(RuntimeError, match="connection dropped"):
+                async for chunk in agent.stream(
+                    [Message(role="user", content="hi")], request
+                ):
+                    received.append(chunk)
+
+        assert received == ["partial"]
 
 
 # ---------------------------------------------------------------------------
