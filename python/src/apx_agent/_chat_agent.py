@@ -981,10 +981,12 @@ def chat_agent_for(
 
                 # Persist the inbound turn + the new messages — mirrors
                 # ``predict`` so streaming multi-turn conversations remember
-                # prior turns instead of forgetting them.
+                # prior turns instead of forgetting them. On an approval resume
+                # the prompt was already persisted on the pause turn, so don't
+                # write it again (#375 — the guard predict already applies).
                 self._persist_conv_turn(
                     conv_id,
-                    input_messages=messages,
+                    input_messages=[] if resume is not None else messages,
                     new_messages=new_messages,
                     model=effective_model,
                     response_id=str(uuid.uuid4()),
