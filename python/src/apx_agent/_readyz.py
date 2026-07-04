@@ -46,6 +46,11 @@ Checks:
     ``"not-configured"`` (the optional ``mcp`` extra is absent / never set up).
     MCP is extra-gated, so it NEVER gates readiness — a non-MCP deploy still
     reads ready/200 even though ``mcp == "not-configured"``.
+  * ``sub_agents`` — declared-sub-agent reachability (issue #445). Present
+    only when the agent declares sub-agent URLs:
+    ``{"degraded": bool, "agents": [{url, reachable, name?|error?}]}``.
+    INFORMATIONAL ONLY — a down peer degrades delegation, it does not kill
+    the agent, so this NEVER flips overall readiness on its own.
 
 Contract:
 
@@ -139,6 +144,26 @@ def _last_trace_id() -> str | None:
         return None
 
 
+def _sub_agents_check(urls: list[str]) -> dict[str, Any]:
+    """Probe declared sub-agent cards — informational, never gates readiness.
+
+    Returns ``{"degraded": bool, "agents": [{url, reachable, name?|error?}]}``
+    (issue #445). Never raises: a probe failure reports ``degraded: True``
+    with a short ``error`` instead of breaking the readyz payload.
+    """
+    try:
+        from ._doctor import probe_sub_agents
+
+        probes = probe_sub_agents(urls)
+        return {
+            "degraded": any(not p.reachable for p in probes),
+            "agents": [p.as_dict() for p in probes],
+        }
+    except Exception as exc:
+        logger.warning("readyz: sub-agent probe errored: %s", exc)
+        return {"degraded": True, "agents": [], "error": str(exc)[:160]}
+
+
 def _mcp_check(app: "FastAPI") -> str:
     """Tri-state MCP mount status from ``app.state`` — informational only.
 
@@ -214,6 +239,14 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
             # Informational tri-state; never gates readiness (extra-gated surface).
             "mcp": _mcp_check(app),
         }
+        # Declared-sub-agent reachability (issue #445). Present only when
+        # sub-agents are declared; informational — a down peer degrades
+        # delegation, it does not kill the agent — so it NEVER flips overall
+        # readiness. Computed outside the try so the detail survives a
+        # canned-probe error too.
+        sub_agent_urls = list(getattr(agent, "_sub_agent_urls", []))
+        if sub_agent_urls:
+            checks["sub_agents"] = _sub_agents_check(sub_agent_urls)
         try:
             # Module-global lookup so monkeypatch.setattr resolves at call time.
             _probe = _run_canned_probe(agent, model)
