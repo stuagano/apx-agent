@@ -36,9 +36,12 @@ from ._models import Message
 from ._tool_factory import build_tool
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fastapi import Request
 
     from ._agents import BaseAgent
+    from ._models import AgentCard
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +101,13 @@ def agent_tool(
     return build_tool(_wrapped, name=tool_name, description=tool_desc)
 
 
-def remote_agent_tool(url: str, *, name: str, description: str):
+def remote_agent_tool(
+    url: str,
+    *,
+    name: str,
+    description: str,
+    on_card: "Callable[[AgentCard], None] | None" = None,
+):
     """Wrap a remote sub-agent URL as a callable tool (compile-safe).
 
     The compile-path twin of ``agent_tool(RemoteDatabricksAgent(...))``: the
@@ -112,6 +121,13 @@ def remote_agent_tool(url: str, *, name: str, description: str):
     A failure to reach or invoke the sub-agent returns a clear error string
     (``"sub-agent at <url> unreachable: <err>"``) instead of raising, so one
     dead sub-agent degrades that tool call rather than killing the whole turn.
+
+    ``on_card`` fires after any invocation once the peer's agent card is
+    known. ``RemoteDatabricksAgent.run`` fetches the card on every call until
+    one succeeds (``init`` is idempotent), so a peer that boots *after* the
+    parent's startup is observed on the first tool use — with zero extra
+    requests. ``LlmAgent`` uses this to repair a degraded registration whose
+    startup card fetch failed (#440).
     """
     base_url = url.rstrip("/")
 
@@ -137,5 +153,10 @@ def remote_agent_tool(url: str, *, name: str, description: str):
         except Exception as exc:
             logger.warning("sub-agent call to %s failed: %s", base_url, exc)
             return f"sub-agent at {base_url} unreachable: {exc}"
+        finally:
+            # run() fetched the card (init) even when the invocation itself
+            # failed — report it so a degraded registration repairs (#440).
+            if on_card is not None and remote.card is not None:
+                on_card(remote.card)
 
     return build_tool(_delegate, name=name, description=description)
