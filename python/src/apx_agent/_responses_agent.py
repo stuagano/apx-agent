@@ -1115,6 +1115,17 @@ def compile_to_responses_agent(
                         type(_agent).__name__,
                     )
                     _use_sdk = False
+            if _use_sdk:
+                from ._executor_factory import governance_guards_present
+                if _gov := governance_guards_present(_agent):
+                    logger.warning(
+                        "executor='claude-sdk' cannot enforce configured "
+                        "governance (%s); using the governed langgraph path so "
+                        "before_tool/before_model guards and input/output "
+                        "guardrails are not silently bypassed.",
+                        _gov,
+                    )
+                    _use_sdk = False
 
             if _use_sdk:
                 from ._agents import LlmAgent as _LlmAgent
@@ -1289,6 +1300,17 @@ def compile_to_responses_agent(
                         "executor='claude-sdk' is only supported for LlmAgent; "
                         "falling back to langgraph for %s",
                         type(_agent).__name__,
+                    )
+                    _use_sdk = False
+            if _use_sdk:
+                from ._executor_factory import governance_guards_present
+                if _gov := governance_guards_present(_agent):
+                    logger.warning(
+                        "executor='claude-sdk' cannot enforce configured "
+                        "governance (%s); using the governed langgraph path so "
+                        "before_tool/before_model guards and input/output "
+                        "guardrails are not silently bypassed.",
+                        _gov,
                     )
                     _use_sdk = False
 
