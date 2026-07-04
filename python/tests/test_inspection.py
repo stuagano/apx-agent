@@ -189,16 +189,89 @@ class TestSchemaHelpers:
 
 
 class TestLoadAgentConfig:
-    def test_loads_from_pyproject(self):
+    def test_loads_from_cwd_pyproject(self, tmp_path, monkeypatch):
+        """Default resolution finds the project pyproject in cwd."""
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "cwd-project"\nmodel = "some-model"\n'
+        )
+        monkeypatch.chdir(tmp_path)
         config = _load_agent_config()
-        # pyproject.toml in the repo root has [tool.apx.agent]
         assert config is not None
-        assert config.name == "apx-agent"
-        assert config.model == "databricks-meta-llama-3-3-70b-instruct"
+        assert config.name == "cwd-project"
+        assert config.model == "some-model"
 
-    def test_returns_none_for_missing_section(self):
+    def test_returns_none_for_missing_section(self, tmp_path, monkeypatch):
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        monkeypatch.chdir(tmp_path)
         config = _load_agent_config(section_path=("tool", "nonexistent", "section"))
         assert config is None
+
+    def test_cwd_project_wins_over_main_heuristic(self, tmp_path, monkeypatch):
+        """#437: serving from the project directory must load the project's
+        [tool.apx.agent], not one reachable from __main__ (the apx-agent
+        console script lives in the framework venv — its walk-up used to find
+        the framework repo's pyproject and silently shadow the project's)."""
+        import sys
+
+        framework = tmp_path / "framework"
+        framework.mkdir()
+        (framework / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "framework"\ndescription = "Example agent"\n'
+        )
+        (framework / "bin.py").write_text("")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "agent-b"\n'
+        )
+        monkeypatch.setattr(
+            sys.modules["__main__"], "__file__", str(framework / "bin.py"), raising=False
+        )
+        monkeypatch.chdir(project)
+        config = _load_agent_config()
+        assert config is not None
+        assert config.name == "agent-b"
+
+    def test_cwd_without_agent_config_falls_through_to_main(self, tmp_path, monkeypatch):
+        """A cwd pyproject with no [tool.apx.agent] (or deploy-only keys) does
+        not claim resolution — the __main__ walk-up still serves the
+        run-from-elsewhere cases it was built for."""
+        import sys
+
+        entry_dir = tmp_path / "entry"
+        entry_dir.mkdir()
+        (entry_dir / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "from-main"\n'
+        )
+        (entry_dir / "app.py").write_text("")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nregistered_model = "main.agents.x"\n'
+        )
+        monkeypatch.setattr(
+            sys.modules["__main__"], "__file__", str(entry_dir / "app.py"), raising=False
+        )
+        monkeypatch.chdir(elsewhere)
+        config = _load_agent_config()
+        assert config is not None
+        assert config.name == "from-main"
+
+    def test_resolution_logs_resolved_path_and_name(self, tmp_path, monkeypatch, caplog):
+        """#437 visibility: one INFO line states which pyproject was resolved
+        and the agent name, so shadowing is diagnosable."""
+        import logging
+
+        toml = tmp_path / "pyproject.toml"
+        toml.write_text('[tool.apx.agent]\nname = "agent-b"\n')
+        monkeypatch.chdir(tmp_path)
+        with caplog.at_level(logging.INFO, logger="apx_agent._inspection"):
+            config = _load_agent_config()
+        assert config is not None
+        assert any(
+            "tool.apx.agent" in r.message and str(toml) in r.message and "name=agent-b" in r.message
+            for r in caplog.records
+        )
 
     def test_explicit_pyproject_path(self, tmp_path):
         """Explicit pyproject_path overrides all heuristics."""
@@ -221,8 +294,13 @@ class TestLoadAgentConfig:
         This is what `apx-agent run <spec>.yaml` relies on so the generated
         temp project's config wins over a nearer pyproject.
         """
-        toml = tmp_path / "pyproject.toml"
+        toml = tmp_path / "env" / "pyproject.toml"
+        toml.parent.mkdir()
         toml.write_text('[tool.apx.agent]\nname = "from-env"\n')
+        cwd_project = tmp_path / "cwd"
+        cwd_project.mkdir()
+        (cwd_project / "pyproject.toml").write_text('[tool.apx.agent]\nname = "from-cwd"\n')
+        monkeypatch.chdir(cwd_project)
         monkeypatch.setenv("APX_PYPROJECT", str(toml))
         config = _load_agent_config()
         assert config is not None

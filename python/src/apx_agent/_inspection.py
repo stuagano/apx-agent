@@ -163,11 +163,19 @@ def _load_agent_config(
     ``pyproject_path`` can be an explicit path to the pyproject.toml file.
     When omitted, the search order is:
 
-    1. Walk up from ``__main__.__file__`` — the entry-point module (e.g. the
-       consumer's ``app.py``). This is the most reliable heuristic in both
-       local dev and deployed Databricks Apps.
-    2. Walk up from ``Path.cwd()`` — fallback for interactive / test use.
+    1. Walk up from ``Path.cwd()`` — but only if the found pyproject declares
+       agent config in ``section_path``. The operator ran the command from the
+       project, so that IS the project (#437: the ``apx-agent`` console script
+       lives in the framework venv's ``bin/``, so the ``__main__`` walk-up used
+       to find the framework repo's pyproject and shadow the project's).
+    2. Walk up from ``__main__.__file__`` — the entry-point module (e.g. the
+       consumer's ``app.py``). Covers serving a project from elsewhere, such
+       as deployed Databricks Apps launching ``app.py`` directly.
+    3. Walk up from ``Path.cwd()`` unconditionally — final fallback for
+       interactive / test use.
     """
+    import logging
+    import os
     import sys
     import tomllib
 
@@ -178,7 +186,19 @@ def _load_agent_config(
                 return candidate
         return None
 
-    import os
+    def _config_fields(path: Path) -> dict[str, Any] | None:
+        """AgentConfig fields declared at ``section_path`` in *path*, or None."""
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        section = data
+        for key in section_path:
+            section = section.get(key, {})
+            if not section:
+                return None
+        fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields}
+        # A section holding only deploy-envelope keys (registered_model,
+        # experiment, ...) declares no agent config — same as no section.
+        return fields if fields else None
 
     env_pyproject = os.environ.get("APX_PYPROJECT")
     if pyproject_path is not None:
@@ -186,38 +206,37 @@ def _load_agent_config(
     elif env_pyproject:
         # Explicit override — `apx-agent run <spec>.yaml` sets this to the
         # generated project's pyproject so config resolution can't fall through
-        # to a nearer pyproject (e.g. the framework repo's own [tool.apx.agent]
-        # or the consumer's top-level project) via the __main__/cwd heuristics.
+        # to a nearer pyproject (e.g. the consumer's top-level project) via
+        # the cwd/__main__ heuristics.
         resolved = Path(env_pyproject)
     else:
         resolved = None
-        # Try __main__'s location first — this is the consumer's entry point
-        main_mod = sys.modules.get("__main__")
-        main_file = getattr(main_mod, "__file__", None) if main_mod else None
-        if main_file:
-            resolved = _find_pyproject(Path(main_file).parent)
-        # Fallback to cwd
+        # 1. cwd, when its pyproject actually declares agent config (#437).
+        cwd_pyproject = _find_pyproject(Path.cwd())
+        if cwd_pyproject is not None and _config_fields(cwd_pyproject) is not None:
+            resolved = cwd_pyproject
+        # 2. __main__'s location — the consumer's entry point when serving
+        #    from outside the project directory.
         if resolved is None:
-            resolved = _find_pyproject(Path.cwd())
+            main_mod = sys.modules.get("__main__")
+            main_file = getattr(main_mod, "__file__", None) if main_mod else None
+            if main_file:
+                resolved = _find_pyproject(Path(main_file).parent)
+        # 3. Fallback to cwd even without agent config (returns None below).
+        if resolved is None:
+            resolved = cwd_pyproject
 
     if resolved is None or not resolved.exists():
         return None
 
-    with open(resolved, "rb") as f:
-        data = tomllib.load(f)
-
-    section = data
-    for key in section_path:
-        section = section.get(key, {})
-        if not section:
-            return None
-
-    fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields}
-    if not fields:
-        # The section holds only deploy-envelope keys (registered_model,
-        # experiment, ...) — no agent config is declared, same as no section.
+    fields = _config_fields(resolved)
+    if fields is None:
         return None
-    return AgentConfig(**fields)
+    config = AgentConfig(**fields)
+    logging.getLogger(__name__).info(
+        "[%s] loaded from %s (name=%s)", ".".join(section_path), resolved, config.name
+    )
+    return config
 
 
 # ---------------------------------------------------------------------------
