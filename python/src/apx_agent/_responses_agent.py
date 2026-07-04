@@ -216,11 +216,14 @@ def _resolve_ws_and_headers_for_request(
         resolve_no_obo_or_raise()
         ws = _make_workspace_client()
 
-    # Build headers only when we have a user_id so that requests without
-    # identity continue to see headers=None (principal=None → NO_PRINCIPAL).
+    # Build headers when we have a user_token OR a user_id. The token is the
+    # load-bearing field for A2A forwarding, so a request with a token but no
+    # user_id (a valid Model Serving shape) must still produce headers — else
+    # the sub-agent hop launders the caller's privilege away. Requests with
+    # neither still see headers=None (principal=None → NO_PRINCIPAL).
     req_headers: Any = None
-    if obo.get("user_id"):
-        token_raw = obo.get("user_token")
+    token_raw = obo.get("user_token")
+    if token_raw or obo.get("user_id"):
         req_headers = DatabricksAppsHeaders(
             host=obo.get("workspace_host"),
             user_name=None,

@@ -275,12 +275,16 @@ def _resolve_ws_and_headers(
         resolve_no_obo_or_raise()
         ws = _make_workspace_client()
 
-    # Build headers only when we have a user_id to avoid replacing None with an
-    # all-None DatabricksAppsHeaders (which would change the compile-context
-    # semantics for tools that check ``if ctx.headers``).
+    # Build headers when we have a user_token OR a user_id. The token is the
+    # load-bearing field — it's what A2A forwarding passes downstream — so a
+    # request that carries a token but no user_id (a valid Model Serving shape,
+    # where the token IS the identity) must still produce headers, else the
+    # sub-agent hop launders the caller's privilege away. We still skip building
+    # an all-None DatabricksAppsHeaders when neither is present, to preserve the
+    # null-principal semantics tools rely on via ``if ctx.headers``.
     headers: Any = None
-    if obo.get("user_id"):
-        token_raw = obo.get("user_token")
+    token_raw = obo.get("user_token")
+    if token_raw or obo.get("user_id"):
         headers = DatabricksAppsHeaders(
             host=obo.get("workspace_host"),
             user_name=None,
