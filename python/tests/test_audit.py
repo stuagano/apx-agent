@@ -12,9 +12,15 @@ Covers:
   - version_correlation_attrs / stamp_version_correlation read
     APX_MODEL_VERSION / APX_GIT_SHA from the env (issue #404) and are a
     strict no-op when the env vars are absent
+  - cross-agent trace correlation (issue #443): build_traceparent emits
+    W3C-valid values (derived from the active MLflow span when present),
+    stamp_outbound_trace_id tags the caller side, stamp_caller_correlation
+    tags the receiver side, and absent headers are a strict no-op
 """
 
 from __future__ import annotations
+
+import re
 
 from unittest.mock import MagicMock, patch
 
@@ -22,13 +28,19 @@ import pytest
 
 from apx_agent import (
     AuditAttrs,
+    build_traceparent,
     hash_for_audit,
     input_keys_summary,
     output_summary,
     set_audit_attrs,
+    stamp_caller_correlation,
+    stamp_outbound_trace_id,
     stamp_version_correlation,
+    traceparent_trace_id,
     version_correlation_attrs,
 )
+
+W3C_TRACEPARENT = re.compile(r"^00-[0-9a-f]{32}-[0-9a-f]{16}-01$")
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +73,9 @@ def test_audit_attrs_namespace() -> None:
         ("USER_TOKEN_PROVIDED", "apx.user.token_provided"),
         ("MODEL_VERSION", "apx.model_version"),
         ("GIT_SHA", "apx.git_sha"),
+        ("TRACEPARENT", "apx.traceparent"),
+        ("CALLER", "apx.caller"),
+        ("OUTBOUND_TRACE_ID", "apx.outbound.trace_id"),
     ],
 )
 def test_audit_attrs_specific_keys(name: str, expected: str) -> None:
@@ -191,6 +206,125 @@ def test_stamp_version_correlation_survives_none_span(
     with patch("apx_agent._audit.set_trace_tags") as tags_mock:
         stamp_version_correlation(None)
     tags_mock.assert_called_once_with({"apx.model_version": "3"})
+
+
+# ---------------------------------------------------------------------------
+# Cross-agent trace correlation (issue #443)
+# ---------------------------------------------------------------------------
+
+
+def test_build_traceparent_is_w3c_valid_without_active_span() -> None:
+    tp = build_traceparent()
+    assert W3C_TRACEPARENT.match(tp), tp
+
+
+def test_build_traceparent_generates_fresh_ids_per_call() -> None:
+    # Without an active span, two hops must not share a trace id.
+    assert build_traceparent() != build_traceparent()
+
+
+def test_build_traceparent_derives_from_active_mlflow_span() -> None:
+    """With an active MLflow span, the header carries the CALLER's live
+    trace-id/span-id — that is what makes the join real, not cosmetic."""
+    span = MagicMock()
+    span.trace_id = "tr-" + "ab" * 16
+    span.span_id = "cd" * 8
+    with patch("apx_agent._audit.current_active_span", return_value=span):
+        tp = build_traceparent()
+    assert tp == f"00-{'ab' * 16}-{'cd' * 8}-01"
+
+
+def test_build_traceparent_falls_back_on_non_hex_span_ids() -> None:
+    span = MagicMock()
+    span.trace_id = "tr-not-hex"
+    span.span_id = "also-not-hex"
+    with patch("apx_agent._audit.current_active_span", return_value=span):
+        tp = build_traceparent()
+    assert W3C_TRACEPARENT.match(tp), tp
+
+
+def test_traceparent_trace_id_extracts_trace_id() -> None:
+    assert traceparent_trace_id(f"00-{'ab' * 16}-{'cd' * 8}-01") == "ab" * 16
+
+
+def test_traceparent_trace_id_rejects_malformed() -> None:
+    assert traceparent_trace_id("garbage") is None
+    assert traceparent_trace_id("") is None
+    assert traceparent_trace_id("00-shorthex-cd-01") is None
+
+
+def test_stamp_outbound_trace_id_tags_caller_trace() -> None:
+    span = MagicMock()
+    tp = f"00-{'12' * 16}-{'34' * 8}-01"
+    with patch("apx_agent._audit.current_active_span", return_value=span), patch(
+        "apx_agent._audit.set_trace_tags"
+    ) as tags_mock:
+        stamp_outbound_trace_id(tp)
+    span.set_attribute.assert_called_once_with("apx.outbound.trace_id", "12" * 16)
+    tags_mock.assert_called_once_with({"apx.outbound.trace_id": "12" * 16})
+
+
+def test_stamp_outbound_trace_id_no_op_on_malformed_traceparent() -> None:
+    span = MagicMock()
+    with patch("apx_agent._audit.current_active_span", return_value=span), patch(
+        "apx_agent._audit.set_trace_tags"
+    ) as tags_mock:
+        stamp_outbound_trace_id("garbage")
+    span.set_attribute.assert_not_called()
+    tags_mock.assert_not_called()
+
+
+def test_stamp_caller_correlation_stamps_all_three_keys() -> None:
+    span = MagicMock()
+    tp = f"00-{'ef' * 16}-{'01' * 8}-01"
+    with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+        stamp_caller_correlation(
+            span, {"traceparent": tp, "x-apx-caller": "orchestrator"}
+        )
+    attrs = dict(c.args for c in span.set_attribute.call_args_list)
+    assert attrs == {
+        "apx.traceparent": tp,
+        "apx.outbound.trace_id": "ef" * 16,
+        "apx.caller": "orchestrator",
+    }
+    # The trace tag carries the SAME key/value the caller side stamps — the
+    # one-tag-equality join.
+    tags_mock.assert_called_once_with(attrs)
+
+
+def test_stamp_caller_correlation_caller_only() -> None:
+    span = MagicMock()
+    with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+        stamp_caller_correlation(span, {"x-apx-caller": "orchestrator"})
+    span.set_attribute.assert_called_once_with("apx.caller", "orchestrator")
+    tags_mock.assert_called_once_with({"apx.caller": "orchestrator"})
+
+
+def test_stamp_caller_correlation_keeps_raw_traceparent_when_malformed() -> None:
+    # A malformed traceparent is still recorded verbatim for debugging, but
+    # no bogus join key is derived from it.
+    span = MagicMock()
+    with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+        stamp_caller_correlation(span, {"traceparent": "garbage"})
+    span.set_attribute.assert_called_once_with("apx.traceparent", "garbage")
+    tags_mock.assert_called_once_with({"apx.traceparent": "garbage"})
+
+
+def test_stamp_caller_correlation_no_op_without_headers() -> None:
+    # Absent headers → no span writes, no trace-tag call: zero behavior
+    # change for non-agent callers.
+    span = MagicMock()
+    with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+        stamp_caller_correlation(span, {})
+    span.set_attribute.assert_not_called()
+    tags_mock.assert_not_called()
+
+
+def test_stamp_caller_correlation_survives_none_span() -> None:
+    # A None span (tracing off) still stamps the trace tags and never raises.
+    with patch("apx_agent._audit.set_trace_tags") as tags_mock:
+        stamp_caller_correlation(None, {"x-apx-caller": "a"})
+    tags_mock.assert_called_once_with({"apx.caller": "a"})
 
 
 # ---------------------------------------------------------------------------

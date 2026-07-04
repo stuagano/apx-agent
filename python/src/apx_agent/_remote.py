@@ -376,11 +376,12 @@ class RemoteDatabricksAgent(BaseAgent):
     async def run(self, messages: list[Message], request: Request) -> str:
         await self._init_quietly()
         obo_headers = self._obo_headers(request)
+        corr_headers = self._correlation_headers()
 
         # Try DatabricksOpenAI first (automatic OBO via Supervisor)
         if self._app_name:
             try:
-                return await self._call_via_sdk(messages, obo_headers)
+                return await self._call_via_sdk(messages, corr_headers)
             except Exception as exc:
                 logger.warning(
                     "DatabricksOpenAI call to apps/%s failed (%s), falling back to direct HTTP",
@@ -389,11 +390,12 @@ class RemoteDatabricksAgent(BaseAgent):
                 )
 
         # Fallback: direct POST /invocations
-        return await self._call_via_http(messages, obo_headers)
+        return await self._call_via_http(messages, {**obo_headers, **corr_headers})
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
         await self._init_quietly()
         obo_headers = self._obo_headers(request)
+        corr_headers = self._correlation_headers()
 
         # Try DatabricksOpenAI first — true streaming, deltas relayed as
         # they arrive (#447). Fall back to HTTP only when nothing has been
@@ -401,7 +403,7 @@ class RemoteDatabricksAgent(BaseAgent):
         if self._app_name:
             emitted = False
             try:
-                async for chunk in self._stream_via_sdk(messages):
+                async for chunk in self._stream_via_sdk(messages, corr_headers):
                     emitted = True
                     yield chunk
                 return
@@ -415,7 +417,7 @@ class RemoteDatabricksAgent(BaseAgent):
                 )
 
         # Fallback: direct HTTP with SSE parsing
-        async for chunk in self._stream_via_http(messages, obo_headers):
+        async for chunk in self._stream_via_http(messages, {**obo_headers, **corr_headers}):
             yield chunk
 
     def collect_tools(self) -> list[AgentTool]:
@@ -481,6 +483,34 @@ class RemoteDatabricksAgent(BaseAgent):
                 headers[key] = value
         return headers
 
+    def _correlation_headers(self) -> dict[str, str]:
+        """Cross-agent trace-correlation headers for this outbound call (#443).
+
+        ``traceparent`` (W3C — derived from the caller's active span when one
+        exists) plus ``x-apx-caller`` (this app's own name, when known from
+        the Databricks Apps runtime env). These carry correlation identity,
+        NOT credentials, so they are sent regardless of the trusted-origin
+        credential gating in ``_obo_headers``.
+
+        Also stamps ``apx.outbound.trace_id`` on the CALLER's active trace —
+        A's trace records the id it sent, B's trace records the id it
+        received, so the two are joinable by one tag equality.
+        """
+        from ._audit import (
+            CALLER_HEADER,
+            TRACEPARENT_HEADER,
+            build_traceparent,
+            stamp_outbound_trace_id,
+        )
+
+        traceparent = build_traceparent()
+        stamp_outbound_trace_id(traceparent)
+        headers = {TRACEPARENT_HEADER: traceparent}
+        caller = os.environ.get("DATABRICKS_APP_NAME")
+        if caller:
+            headers[CALLER_HEADER] = caller
+        return headers
+
     # ------------------------------------------------------------------
     # Internal: DatabricksOpenAI SDK path
     # ------------------------------------------------------------------
@@ -488,9 +518,13 @@ class RemoteDatabricksAgent(BaseAgent):
     async def _call_via_sdk(
         self,
         messages: list[Message],
-        obo_headers: dict[str, str],
+        extra_headers: dict[str, str],
     ) -> str:
-        """Call via ``DatabricksOpenAI.responses.create(model="apps/<name>")``."""
+        """Call via ``DatabricksOpenAI.responses.create(model="apps/<name>")``.
+
+        ``extra_headers`` carries the trace-correlation headers (#443) — the
+        SDK handles auth itself, so no credential headers travel this way.
+        """
         from databricks_openai import AsyncDatabricksOpenAI
 
         client = AsyncDatabricksOpenAI()
@@ -505,12 +539,14 @@ class RemoteDatabricksAgent(BaseAgent):
                 Any,
                 [{"role": m.role, "content": m.content} for m in messages],
             ),
+            extra_headers=extra_headers,
         )
         return response.output_text
 
     async def _stream_via_sdk(
         self,
         messages: list[Message],
+        extra_headers: dict[str, str],
     ) -> AsyncGenerator[str, None]:
         """Stream via ``responses.create(model="apps/<name>", stream=True)``.
 
@@ -529,6 +565,7 @@ class RemoteDatabricksAgent(BaseAgent):
                 [{"role": m.role, "content": m.content} for m in messages],
             ),
             stream=True,
+            extra_headers=extra_headers,
         )
         async for event in stream:
             if event.type == "response.output_text.delta" and event.delta:

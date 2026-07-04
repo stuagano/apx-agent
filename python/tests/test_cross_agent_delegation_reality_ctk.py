@@ -576,3 +576,58 @@ def test_structured_schema_propagates_and_args_cross_the_wire(
             assert json.loads(SEEN_USER_CONTENT["B"]) == {"team": "blue"}
             # And the sentinel still travels back to A's final answer.
             assert f"{SENTINEL}-blue" in _final_texts(resp.json())
+
+
+# ---------------------------------------------------------------------------
+# Cross-agent trace correlation (#443): both sides share ONE join tag.
+# ---------------------------------------------------------------------------
+
+
+def test_cross_agent_traces_join_on_one_tag(
+    two_agents, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REALITY (#443): during a real A→B delegation, A's trace is tagged with
+    the trace-id it SENT and B's trace with the trace-id it RECEIVED — and
+    they are the same value under the same tag (apx.outbound.trace_id), so
+    the two traces join on one tag equality. B also learns WHO called
+    (apx.caller) and keeps the raw traceparent for debugging."""
+    from apx_agent import _audit
+
+    _, client_a = two_agents
+    # A knows its own name from the Apps runtime env — that's what crosses
+    # the boundary as x-apx-caller. Marking the process as an Apps runtime
+    # arms the fail-closed OBO guard (G2), which this offline test satisfies
+    # via the documented service-principal escape hatch.
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "agent-a")
+    monkeypatch.setenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", "true")
+
+    tag_calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        _audit, "set_trace_tags", lambda tags: tag_calls.append(dict(tags))
+    )
+
+    resp = client_a.post(
+        "/invocations",
+        json={"messages": [{"role": "user", "content": "What is the secret word?"}]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert SENTINEL in _final_texts(resp.json())  # the delegation really ran
+
+    # Caller side (A): stamped when the delegate fired — trace-id only.
+    caller_stamps = [
+        t for t in tag_calls
+        if "apx.outbound.trace_id" in t and "apx.traceparent" not in t
+    ]
+    # Receiver side (B): stamped from the incoming headers on /invocations.
+    receiver_stamps = [t for t in tag_calls if "apx.traceparent" in t]
+    assert caller_stamps, "caller side never stamped apx.outbound.trace_id"
+    assert receiver_stamps, "receiver side never stamped apx.traceparent"
+
+    sent = caller_stamps[0]["apx.outbound.trace_id"]
+    received = receiver_stamps[0]
+    # ONE tag equality joins the two traces across experiments.
+    assert received["apx.outbound.trace_id"] == sent
+    # The raw traceparent B recorded carries the same trace-id A sent…
+    assert f"-{sent}-" in received["apx.traceparent"]
+    # …and B knows who called.
+    assert received["apx.caller"] == "agent-a"
