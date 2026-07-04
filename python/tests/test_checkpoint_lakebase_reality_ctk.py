@@ -74,6 +74,44 @@ def test_resolve_checkpointer_none_for_non_lakebase() -> None:
     assert resolve_checkpointer(AgentConfig(name="t", model="m"), ws=MagicMock()) is None
 
 
+def test_resolve_checkpointer_none_for_composite_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#482: a composite agent + lakebase session must degrade to stateless, not
+    build a PostgresSaver that _compile rejects (→ HTTP 500 every turn)."""
+    import apx_agent._checkpoint_lakebase as cp
+    from apx_agent import SequentialAgent
+    from apx_agent._memory_wiring import resolve_checkpointer
+
+    called = False
+
+    def fake_build(**_: Any) -> Any:
+        nonlocal called
+        called = True
+        return object()
+
+    monkeypatch.setattr(cp, "build_lakebase_checkpointer", fake_build)
+    composite = SequentialAgent([LlmAgent(tools=[]), LlmAgent(tools=[])])
+    result = resolve_checkpointer(_lakebase_config(), ws=MagicMock(), agent=composite)
+    assert result is None  # stateless, no crash
+    assert not called  # never even tries to build the saver
+
+
+def test_resolve_checkpointer_builds_for_llm_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An LlmAgent + lakebase session still gets the durable checkpointer."""
+    import apx_agent._checkpoint_lakebase as cp
+    from apx_agent._memory_wiring import resolve_checkpointer
+
+    sentinel = object()
+    monkeypatch.setattr(cp, "build_lakebase_checkpointer", lambda **_: sentinel)
+    result = resolve_checkpointer(
+        _lakebase_config(), ws=MagicMock(), agent=LlmAgent(tools=[])
+    )
+    assert result is sentinel
+
+
 def test_resolve_checkpointer_degrades_to_none_on_build_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
