@@ -345,9 +345,10 @@ class TestSameHeaders:
             "tok",
         )
 
-    def test_headers_none_in_both_when_no_user_id(self) -> None:
-        # No user_id → both adapters keep headers=None (preserves the
-        # NO_PRINCIPAL semantics for requests without a user context).
+    def test_headers_carry_token_in_both_when_only_token(self) -> None:
+        # A user_token with no user_id → both adapters still build headers that
+        # carry the token (#467: the token is the load-bearing OBO field, so it
+        # must reach the sub-agent hop). The two paths stay identical.
         ci = {
             "user_token": "tok",
             "workspace_host": "https://ws.databricks.com",
@@ -356,6 +357,20 @@ class TestSameHeaders:
             chat_messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
             responses_input=[{"role": "user", "content": "hi"}],
             custom_inputs=ci,
+        )
+        chat_h = _normalize_headers(chat_cap.headers)
+        resp_h = _normalize_headers(resp_cap.headers)
+        assert chat_h is not None
+        assert chat_h == resp_h
+        assert chat_h == ("https://ws.databricks.com", None, None, "tok")
+
+    def test_headers_none_in_both_when_no_identity(self) -> None:
+        # Neither token nor user_id → both adapters keep headers=None (preserves
+        # the NO_PRINCIPAL semantics for requests with no user context at all).
+        chat_cap, resp_cap = _run_both(
+            chat_messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
+            responses_input=[{"role": "user", "content": "hi"}],
+            custom_inputs={"workspace_host": "https://ws.databricks.com"},
         )
         assert chat_cap.headers is None
         assert resp_cap.headers is None
