@@ -671,3 +671,99 @@ class TestCheckDeployProvenance:
         c = self._run(tmp_path, monkeypatch, error=ConnectionError("offline"))
         assert c.status is Status.SKIP
         assert "could not verify deployed provenance" in c.detail
+
+
+# ---------------------------------------------------------------------------
+# check_sub_agents + probe_sub_agents (issue #445)
+# ---------------------------------------------------------------------------
+
+
+def _sub_probe(url: str, reachable: bool, name: str | None = None, error: str | None = None):
+    return doctor.SubAgentProbe(url=url, reachable=reachable, name=name, error=error)
+
+
+def test_sub_agent_probe_as_dict_optional_keys():
+    """JSON shape: name only when reachable, error only when not."""
+    ok = _sub_probe("https://a.example.com", True, name="orders-agent").as_dict()
+    assert ok == {"url": "https://a.example.com", "reachable": True, "name": "orders-agent"}
+    bad = _sub_probe("https://b.example.com", False, error="connection refused").as_dict()
+    assert bad == {"url": "https://b.example.com", "reachable": False, "error": "connection refused"}
+
+
+def test_probe_sub_agents_unset_env_ref_is_unreachable(monkeypatch):
+    """$VAR refs resolve like the runtime wiring; unset reports, never raises."""
+    monkeypatch.delenv("APX_445_MISSING", raising=False)
+    probes = doctor.probe_sub_agents(["$APX_445_MISSING"])
+    assert probes == [
+        doctor.SubAgentProbe(
+            url="$APX_445_MISSING",
+            reachable=False,
+            error="env ref resolved to empty — variable unset",
+        )
+    ]
+
+
+class TestCheckSubAgents:
+    """Declared sub-agent card reachability — WARN at worst, absent when undeclared."""
+
+    URLS = '["https://a.example.com", "https://b.example.com"]'
+
+    def _project(self, tmp_path: Path, sub_agents: str) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            f'[tool.apx.agent]\nname = "orchestrator"\nsub_agents = {sub_agents}\n'
+        )
+
+    def test_none_outside_apx_project(self, tmp_path: Path):
+        assert doctor.check_sub_agents(tmp_path) is None
+
+    def test_none_when_no_sub_agents_declared(self, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        assert doctor.check_sub_agents(tmp_path) is None
+
+    def test_ok_when_all_reachable(self, tmp_path: Path):
+        self._project(tmp_path, self.URLS)
+        probes = [
+            _sub_probe("https://a.example.com", True, name="orders-agent"),
+            _sub_probe("https://b.example.com", True, name="billing-agent"),
+        ]
+        with patch("apx_agent._doctor.probe_sub_agents", return_value=probes) as mock:
+            c = doctor.check_sub_agents(tmp_path)
+        assert c is not None and c.status is Status.OK
+        assert "all 2 reachable" in c.detail
+        assert "orders-agent" in c.detail and "billing-agent" in c.detail
+        mock.assert_called_once_with(
+            ["https://a.example.com", "https://b.example.com"]
+        )
+
+    def test_warn_never_fail_lists_unreachable(self, tmp_path: Path):
+        """Network flakiness must not redden doctor — a dead peer is a WARN."""
+        self._project(tmp_path, self.URLS)
+        probes = [
+            _sub_probe("https://a.example.com", True, name="orders-agent"),
+            _sub_probe(
+                "https://b.example.com", False,
+                error="HTTP 404 from https://b.example.com/.well-known/agent.json",
+            ),
+        ]
+        with patch("apx_agent._doctor.probe_sub_agents", return_value=probes):
+            c = doctor.check_sub_agents(tmp_path)
+        assert c is not None and c.status is Status.WARN
+        assert "1/2 unreachable" in c.detail
+        assert "https://b.example.com: HTTP 404" in c.detail
+        assert "https://a.example.com:" not in c.detail  # reachable peer not blamed
+        assert c.fix is not None and ".well-known/agent.json" in c.fix
+
+    def test_run_checks_includes_sub_agents_when_declared(self, tmp_path: Path):
+        self._project(tmp_path, '["https://a.example.com"]')
+        probes = [_sub_probe("https://a.example.com", True, name="orders-agent")]
+        with patch("apx_agent._doctor.probe_sub_agents", return_value=probes):
+            groups = run_checks(tmp_path, online=False)
+        project = dict(groups)["Project"]
+        sub = next((c for c in project if c.name == "Sub-agents"), None)
+        assert sub is not None and sub.status is Status.OK
+
+    def test_run_checks_skips_cleanly_when_undeclared(self, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        groups = run_checks(tmp_path, online=False)
+        project = dict(groups)["Project"]
+        assert all(c.name != "Sub-agents" for c in project)

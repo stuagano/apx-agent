@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner, Result
 
+from apx_agent._doctor import SubAgentProbe
 from apx_agent.cli import _load_agent, _parse_module_spec, _ReadyzResult, main
 
 
@@ -5865,6 +5866,7 @@ def _invoke_status(
     rm_tags: dict[str, str] | None = None,
     readyz: _ReadyzResult | None = None,
     head_sha: str | None = _STATUS_HEAD,
+    sub_probes: list[SubAgentProbe] | None = None,
 ) -> _StatusInvocation:
     """Run `agents status` with the workspace + UC surface fully mocked."""
     fake_ws = MagicMock()
@@ -5893,7 +5895,9 @@ def _invoke_status(
     with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, fake_cfg)), \
          patch("mlflow.tracking.MlflowClient", return_value=client), \
          patch("apx_agent.cli._check_readyz", readyz_mock), \
-         patch("apx_agent.cli._git_head_sha", return_value=head_sha):
+         patch("apx_agent.cli._git_head_sha", return_value=head_sha), \
+         patch("apx_agent.cli._probe_local_sub_agents",
+               return_value=list(sub_probes or [])):
         result = CliRunner().invoke(main, ["agents", "status", *args])
     return _StatusInvocation(result=result, readyz_mock=readyz_mock, ws=fake_ws)
 
@@ -6041,3 +6045,56 @@ def test_agents_status_uc_unreachable_is_clean_error() -> None:
     assert inv.result.exit_code != 0
     assert "could not reach Unity Catalog" in inv.result.output
     assert "Traceback" not in inv.result.output
+
+
+# `agents status` sub-agent reachability section (issue #445) ---------------
+
+_STATUS_SUB_PROBES = [
+    SubAgentProbe(
+        url="https://orders.example.com", reachable=True, name="orders-agent",
+    ),
+    SubAgentProbe(
+        url="$PEER_URL", reachable=False,
+        error="env ref resolved to empty — variable unset",
+    ),
+]
+
+
+def test_agents_status_sub_agents_section_reachable_and_unreachable() -> None:
+    """Declared sub-agents get a section: card name when up, reason when not.
+
+    Informational only — a down peer never flips healthy/exit code.
+    """
+    inv = _invoke_status(
+        [_STATUS_UC], versions=[_apps_version()], app=_running_app(),
+        sub_probes=_STATUS_SUB_PROBES,
+    )
+    assert inv.result.exit_code == 0, inv.result.output
+    assert "Sub-agents (2):" in inv.result.output
+    assert "https://orders.example.com  reachable (orders-agent)" in inv.result.output
+    assert "$PEER_URL  unreachable (env ref resolved to empty" in inv.result.output
+
+
+def test_agents_status_no_sub_agents_no_section() -> None:
+    """No declared sub-agents → no section (skip cleanly, no noise)."""
+    inv = _invoke_status(
+        [_STATUS_UC], versions=[_apps_version()], app=_running_app(),
+    )
+    assert inv.result.exit_code == 0, inv.result.output
+    assert "Sub-agents" not in inv.result.output
+
+
+def test_agents_status_json_sub_agents_shape() -> None:
+    """--json carries sub_agents as [{url, reachable, name?|error?}]."""
+    inv = _invoke_status(
+        [_STATUS_UC, "--json"], versions=[_apps_version()], app=_running_app(),
+        sub_probes=_STATUS_SUB_PROBES,
+    )
+    assert inv.result.exit_code == 0, inv.result.output
+    payload = json.loads(inv.result.output)
+    assert payload["sub_agents"] == [
+        {"url": "https://orders.example.com", "reachable": True, "name": "orders-agent"},
+        {"url": "$PEER_URL", "reachable": False,
+         "error": "env ref resolved to empty — variable unset"},
+    ]
+    assert payload["healthy"] is True

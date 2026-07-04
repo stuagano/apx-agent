@@ -275,3 +275,78 @@ class TestReadyzData:
         assert "no schema grounding" in body["checks"]["data"]
         assert resp.status_code == 200
         assert body["status"] == "ready"
+
+
+class TestReadyzSubAgents:
+    """checks['sub_agents'] — declared-peer reachability (issue #445).
+
+    Informational: present only when sub-agents are declared, and a down peer
+    marks degraded:true in the detail WITHOUT flipping overall readiness — a
+    down peer degrades delegation, it does not kill the agent.
+    """
+
+    def _client(self, agent, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(
+            readyz_mod, "_run_canned_probe",
+            lambda a, m: ProbeResult(assistant_text="READY", trace_id="tr-1"),
+        )
+        return TestClient(_make_app(agent))
+
+    def test_absent_when_no_sub_agents_declared(self, monkeypatch):
+        agent = Agent(tools=[_trivial_tool])
+        body = self._client(agent, monkeypatch).get("/readyz").json()
+        assert "sub_agents" not in body["checks"]
+
+    def test_down_peer_degrades_detail_but_stays_ready(self, monkeypatch):
+        from apx_agent._doctor import SubAgentProbe
+
+        agent = Agent(tools=[_trivial_tool], sub_agents=["https://peer.example.com"])
+        monkeypatch.setattr(
+            "apx_agent._doctor.probe_sub_agents",
+            lambda urls: [
+                SubAgentProbe(url=u, reachable=False, error="connection refused")
+                for u in urls
+            ],
+        )
+        resp = self._client(agent, monkeypatch).get("/readyz")
+        body = resp.json()
+        assert resp.status_code == 200  # a down peer NEVER flips ready on its own
+        assert body["status"] == "ready"
+        assert body["checks"]["sub_agents"]["degraded"] is True
+        assert body["checks"]["sub_agents"]["agents"] == [
+            {"url": "https://peer.example.com", "reachable": False,
+             "error": "connection refused"},
+        ]
+
+    def test_reachable_peer_reports_card_name(self, monkeypatch):
+        from apx_agent._doctor import SubAgentProbe
+
+        agent = Agent(tools=[_trivial_tool], sub_agents=["https://peer.example.com"])
+        monkeypatch.setattr(
+            "apx_agent._doctor.probe_sub_agents",
+            lambda urls: [
+                SubAgentProbe(url=u, reachable=True, name="orders-agent")
+                for u in urls
+            ],
+        )
+        body = self._client(agent, monkeypatch).get("/readyz").json()
+        assert body["checks"]["sub_agents"] == {
+            "degraded": False,
+            "agents": [{"url": "https://peer.example.com", "reachable": True,
+                        "name": "orders-agent"}],
+        }
+
+    def test_probe_error_reports_degraded_never_breaks_payload(self, monkeypatch):
+        def _boom(urls):
+            raise RuntimeError("event loop exploded")
+
+        agent = Agent(tools=[_trivial_tool], sub_agents=["https://peer.example.com"])
+        monkeypatch.setattr("apx_agent._doctor.probe_sub_agents", _boom)
+        resp = self._client(agent, monkeypatch).get("/readyz")
+        body = resp.json()
+        assert resp.status_code == 200
+        assert body["status"] == "ready"
+        assert body["checks"]["sub_agents"]["degraded"] is True
+        assert "event loop exploded" in body["checks"]["sub_agents"]["error"]
