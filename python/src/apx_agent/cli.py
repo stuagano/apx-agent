@@ -8784,6 +8784,24 @@ def list_agents_cmd(
 # ---------------------------------------------------------------------------
 
 
+def _probe_local_sub_agents(cwd: Path) -> list[_doctor_mod.SubAgentProbe]:
+    """Reachability of the local project's declared sub-agents (issue #445).
+
+    Empty when ``cwd`` isn't an apx project or declares no ``sub_agents``.
+    Never raises — ``agents status`` must not crash because a local
+    pyproject is unreadable.
+    """
+    try:
+        from ._inspection import _load_agent_config
+
+        cfg = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    except Exception:
+        return []
+    if cfg is None or not cfg.sub_agents:
+        return []
+    return _doctor_mod.probe_sub_agents(cfg.sub_agents)
+
+
 @agents.command("status")
 @click.argument("uc_name", metavar="[NAME]", required=False)
 @click.option(
@@ -8805,6 +8823,10 @@ def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> Non
     NAME is a three-part UC name (``catalog.schema.model``); when omitted, the
     current project's UC name resolves the same way ``apx-agent doctor``'s
     deploy-provenance check does.
+
+    When the local project declares ``sub_agents``, a sub-agents section
+    reports each declared peer's agent-card reachability (issue #445) —
+    informational only, it never changes the exit code.
 
     Exit code: 0 when healthy; 1 when the deployed target exists but is not
     healthy (app not RUNNING, /readyz failed, endpoint not ready) or the
@@ -8920,6 +8942,11 @@ def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> Non
                 "— re-deploy to ship HEAD"
             )
 
+    # 4. Local project sub-agents (issue #445): probe each declared peer's
+    #    agent card. Informational — never changes `healthy` or the exit
+    #    code (a down peer degrades the orchestrator, it doesn't kill it).
+    sub_probes = _probe_local_sub_agents(Path.cwd())
+
     if fmt == "json":
         click.echo(json.dumps({
             "uc_name": resolved,
@@ -8933,6 +8960,7 @@ def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> Non
             "local_sha": local_sha,
             "drift": drift,
             "readyz": readyz,
+            "sub_agents": [p.as_dict() for p in sub_probes],
             "healthy": healthy,
         }, indent=2))
     else:
@@ -8962,6 +8990,14 @@ def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> Non
         width = max(len(key) for key, _ in rows)
         for key, value in rows:
             click.echo(f"{key:<{width}}  {value}")
+        if sub_probes:
+            click.echo(f"\nSub-agents ({len(sub_probes)}):")
+            for p in sub_probes:
+                if p.reachable:
+                    detail = f"reachable ({p.name})" if p.name else "reachable"
+                else:
+                    detail = f"unreachable ({p.error})"
+                click.echo(f"  {p.url}  {detail}")
 
     if not healthy:
         raise click.exceptions.Exit(1)

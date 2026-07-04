@@ -68,6 +68,91 @@ class Check:
     fix: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Sub-agent reachability probe (issue #445)
+#
+# Lives here — not in _ui_probe — so the operate path (doctor, `agents
+# status`, /readyz) shares one probe without importing the dev-UI modules.
+# Mirrors _ui_probe._check_sub_agent: GET each declared sub-agent's
+# /.well-known/agent.json, concurrently, with a short per-request timeout.
+# ---------------------------------------------------------------------------
+
+_SUB_AGENT_PROBE_TIMEOUT_S = 3.0
+
+
+@dataclass(frozen=True)
+class SubAgentProbe:
+    """Reachability of one declared sub-agent URL."""
+
+    url: str  # as declared in config (may be a $VAR / ${VAR} env ref)
+    reachable: bool
+    name: str | None = None  # agent-card name when reachable
+    error: str | None = None  # short reason when unreachable
+
+    def as_dict(self) -> dict[str, str | bool]:
+        """JSON shape shared by `agents status --json` and /readyz."""
+        payload: dict[str, str | bool] = {"url": self.url, "reachable": self.reachable}
+        if self.name is not None:
+            payload["name"] = self.name
+        if self.error is not None:
+            payload["error"] = self.error
+        return payload
+
+
+def probe_sub_agents(
+    sub_agents: list[str], *, timeout_s: float = _SUB_AGENT_PROBE_TIMEOUT_S
+) -> list[SubAgentProbe]:
+    """Fetch each declared sub-agent's ``/.well-known/agent.json`` card.
+
+    ``$VAR`` / ``${VAR}`` refs resolve the same way the runtime wiring does;
+    an unset ref reports as unreachable rather than raising. URLs are probed
+    concurrently with a short per-request timeout, so total wall time is
+    roughly one ``timeout_s`` — callers (doctor, ``agents status``,
+    ``/readyz``) stay snappy.
+    """
+    import asyncio
+
+    import httpx
+
+    from ._env import resolve_env_var
+
+    async def _probe_one(client: httpx.AsyncClient, raw: str) -> SubAgentProbe:
+        url = resolve_env_var(raw)
+        if not url:
+            return SubAgentProbe(
+                url=raw,
+                reachable=False,
+                error="env ref resolved to empty — variable unset",
+            )
+        card_url = f"{url.rstrip('/')}/.well-known/agent.json"
+        try:
+            resp = await client.get(card_url)
+        except Exception as exc:
+            return SubAgentProbe(url=raw, reachable=False, error=str(exc)[:160])
+        if resp.status_code != 200:
+            return SubAgentProbe(
+                url=raw, reachable=False, error=f"HTTP {resp.status_code} from {card_url}"
+            )
+        try:
+            card = resp.json()
+        except Exception:
+            card = None
+        card_name = card.get("name") if isinstance(card, dict) else None
+        return SubAgentProbe(
+            url=raw,
+            reachable=True,
+            name=card_name if isinstance(card_name, str) else "",
+        )
+
+    async def _gather() -> list[SubAgentProbe]:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            return list(
+                await asyncio.gather(*[_probe_one(client, raw) for raw in sub_agents])
+            )
+
+    return asyncio.run(_gather())
+
+
 def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
     """Run all checks, grouped and ordered for presentation.
 
@@ -112,6 +197,9 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
     if provenance_check is not None:
         project.append(provenance_check)
     project.extend(check_declared_tools(cwd, auth_ok=auth.status is Status.OK))
+    sub_agents_check = check_sub_agents(cwd)
+    if sub_agents_check is not None:
+        project.append(sub_agents_check)
     return [
         ("Environment", environment),
         ("Authentication", authentication),
@@ -496,6 +584,47 @@ def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
             f"could not verify schema ({msg})",
             "Schema lookup failed — check auth and Unity Catalog grants.",
         )
+
+
+def check_sub_agents(cwd: Path) -> Check | None:
+    """Probe each declared sub-agent's agent card (issue #445).
+
+    Nothing on the operate path used to verify a declared sub-agent is
+    reachable — a typo'd/dead URL stayed green through deploy and status while
+    the orchestrator degraded at runtime. Returns None when cwd isn't an apx
+    project or declares no ``sub_agents`` (nothing to check). Never FAILs —
+    a down peer degrades the agent rather than killing it, and network
+    flakiness must not redden doctor — so unreachable peers WARN with
+    per-URL reasons.
+    """
+    if not _is_apx_project(cwd):
+        return None
+    try:
+        from ._inspection import _load_agent_config  # noqa: PLC0415
+
+        cfg = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    except Exception:
+        return None
+    if cfg is None or not cfg.sub_agents:
+        return None
+    probes = probe_sub_agents(cfg.sub_agents)
+    unreachable = [p for p in probes if not p.reachable]
+    if not unreachable:
+        described = ", ".join(
+            f"{p.url} ({p.name})" if p.name else p.url for p in probes
+        )
+        return Check(
+            "Sub-agents", Status.OK, f"all {len(probes)} reachable: {described}", None
+        )
+    reasons = "; ".join(f"{p.url}: {p.error}" for p in unreachable)
+    return Check(
+        "Sub-agents",
+        Status.WARN,
+        f"{len(unreachable)}/{len(probes)} unreachable — {reasons}",
+        "Verify each URL serves /.well-known/agent.json (peer deployed and "
+        "running, no typo in pyproject.toml [tool.apx.agent].sub_agents); "
+        "for $VAR refs, export the variable.",
+    )
 
 
 def check_apps_enabled(*, auth_ok: bool) -> Check | None:
