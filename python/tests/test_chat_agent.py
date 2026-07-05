@@ -238,6 +238,45 @@ def test_from_langchain_message_tool_message_name_fallback() -> None:
     assert out.tool_call_id == "c2"
 
 
+def test_chat_msg_to_new_items_keeps_assistant_text_with_tool_calls() -> None:
+    """#493: an assistant turn with both prose and tool calls persists the prose
+    as a message item too — not just the function_call items."""
+    from apx_agent._chat_agent import _chat_msg_to_new_items
+
+    msg = ChatAgentMessage(
+        role="assistant",
+        content="Let me check the database.",
+        tool_calls=[{
+            "id": "call_1", "type": "function",
+            "function": {"name": "run_sql", "arguments": "{}"},
+        }],
+        id="a1",
+    )
+    items = _chat_msg_to_new_items(msg, model="m", response_id="r1")
+    types = [it.type for it in items]
+    # Prose preserved (message) alongside the call, prose first.
+    assert types == ["message", "function_call"]
+    msg_item = next(it for it in items if it.type == "message")
+    assert msg_item.data.content[0]["text"] == "Let me check the database."
+
+
+def test_chat_msg_to_new_items_no_empty_message_without_text() -> None:
+    """A tool-call turn with no prose stores only the function_call (no empty msg)."""
+    from apx_agent._chat_agent import _chat_msg_to_new_items
+
+    msg = ChatAgentMessage(
+        role="assistant",
+        content="",
+        tool_calls=[{
+            "id": "c1", "type": "function",
+            "function": {"name": "f", "arguments": "{}"},
+        }],
+        id="a2",
+    )
+    items = _chat_msg_to_new_items(msg, model="m", response_id="r1")
+    assert [it.type for it in items] == ["function_call"]
+
+
 # --- T6: finalize_agent wired into log_agent (GOVERNANCE) ---
 
 
