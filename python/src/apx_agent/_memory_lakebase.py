@@ -354,7 +354,13 @@ class LakebaseMemoryStore:
         }
 
     def get(self, memory_id: str) -> Memory | None:
-        """Return the memory with ``memory_id``, or ``None`` if missing."""
+        """Return the memory with ``memory_id``, or ``None`` if genuinely missing.
+
+        Infra errors propagate — a transient failure must not masquerade as
+        "not found" (which callers like update/delete/forget read as a genuine
+        miss). ``None`` is reserved for a real empty result. (H21: same posture
+        as ``list``/``recall``.)
+        """
         self._ensure_schema()
         sa = _require_sqlalchemy()
         sql = sa.text(
@@ -362,15 +368,8 @@ class LakebaseMemoryStore:
             f" embedding, metadata, created_at, updated_at "
             f"FROM {self.table_name} WHERE id = :id LIMIT 1"
         )
-        try:
-            with self.engine.connect() as conn:
-                row = conn.execute(sql, {"id": memory_id}).mappings().first()
-        except Exception as e:
-            logger.warning(
-                "LakebaseMemoryStore.get(%s) failed: %s — returning None.",
-                memory_id, e,
-            )
-            return None
+        with self.engine.connect() as conn:
+            row = conn.execute(sql, {"id": memory_id}).mappings().first()
         if row is None:
             return None
         return _row_to_memory(dict(row))
@@ -395,22 +394,47 @@ class LakebaseMemoryStore:
                 created_at=updated.created_at,
                 updated_at=updated.updated_at,
             )
-        self._insert_rows([updated])
+        if not self._update_row(updated):
+            # The row was deleted between the get() above and this UPDATE — a
+            # conditional UPDATE affects 0 rows rather than re-inserting it, so
+            # a concurrent forget() is not silently undone (#485).
+            return None
         return updated
 
+    def _update_row(self, m: Memory) -> bool:
+        """UPDATE an EXISTING row by id; ``True`` when a row was updated.
+
+        Unlike :meth:`_insert_rows` (an upsert used by ``add``), this never
+        re-creates a row, so an update racing a concurrent delete touches 0 rows
+        and reports ``False`` instead of resurrecting the deleted memory.
+        """
+        sa = _require_sqlalchemy()
+        sql = sa.text(
+            f"UPDATE {self.table_name} SET "
+            f"  principal_id = :principal_id, namespace = :namespace, "
+            f"  content = :content, tags = :tags, importance = :importance, "
+            f"  embedding = CAST(:embedding AS vector), "
+            f"  metadata = CAST(:metadata AS jsonb), updated_at = :updated_at "
+            f"WHERE id = :id"
+        )
+        with self.engine.begin() as conn:
+            result = conn.execute(sql, self._row_params(m))
+        rowcount = getattr(result, "rowcount", -1)
+        return rowcount is None or rowcount > 0
+
     def delete(self, memory_id: str) -> bool:
-        """Delete the row; returns ``True`` on hit, ``False`` on miss."""
+        """Delete the row; returns ``True`` on hit, ``False`` on miss.
+
+        Infra errors propagate — ``False`` means the row wasn't there, never
+        "the delete failed" (which a caller would misread as "already gone").
+        """
         self._ensure_schema()
         sa = _require_sqlalchemy()
         sql = sa.text(
             f"DELETE FROM {self.table_name} WHERE id = :id"
         )
-        try:
-            with self.engine.begin() as conn:
-                result = conn.execute(sql, {"id": memory_id})
-        except Exception as e:
-            logger.warning("LakebaseMemoryStore.delete(%s) failed: %s", memory_id, e)
-            return False
+        with self.engine.begin() as conn:
+            result = conn.execute(sql, {"id": memory_id})
         rowcount = getattr(result, "rowcount", -1)
         return rowcount is None or rowcount > 0
 
