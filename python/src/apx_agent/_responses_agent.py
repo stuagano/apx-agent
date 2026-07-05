@@ -537,8 +537,14 @@ def _load_or_create_conversation(
         is_new = existing is None
         if is_new:
             store.create_conversation(id=conv_id, agent_id=agent_id)
-        page = store.list_items(conv_id, order="asc", limit=10_000)
-        return _ConvLoad(conversation_id=conv_id, items=page.data, is_new=is_new)
+        # Replay the MOST RECENT items, not the oldest: order="desc" returns
+        # newest-first, so a long conversation sees its recent turns instead of
+        # freezing on ancient history. Reverse back to chronological order; a
+        # function_call_output orphaned at the older edge is dropped downstream.
+        page = store.list_items(conv_id, order="desc", limit=10_000)
+        return _ConvLoad(
+            conversation_id=conv_id, items=list(reversed(page.data)), is_new=is_new
+        )
     except Exception as exc:
         logger.warning(
             "_load_or_create_conversation(%s) degraded to sessionless: %s", conv_id, exc

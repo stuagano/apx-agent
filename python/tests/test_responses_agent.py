@@ -832,3 +832,45 @@ def test_token_without_user_id_still_builds_forwarding_headers(monkeypatch):
     assert headers is not None
     assert headers.token is not None
     assert headers.token.get_secret_value() == "tok-xyz"
+
+
+def test_load_replays_most_recent_items_in_chronological_order() -> None:
+    """#489: load must request the NEWEST items (order='desc'), not the oldest
+    10k, and hand them back chronologically for replay."""
+    from apx_agent._conversation import ConversationItem, MessageData, PagedList
+    from apx_agent._responses_agent import _load_or_create_conversation
+
+    def _msg(item_id: str, text: str) -> ConversationItem:
+        return ConversationItem(
+            id=item_id, type="message", status="completed", response_id="r",
+            created_at=1000,
+            data=MessageData(role="user", content=[{"type": "input_text", "text": text}]),
+        )
+
+    recorded: dict[str, Any] = {}
+
+    class _Store:
+        def get_conversation(self, cid: str) -> Any:
+            return object()  # existing conversation
+
+        def create_conversation(self, **kw: Any) -> None:
+            ...
+
+        def list_items(
+            self, conversation_id: str, limit: int = 100, after: Any = None,
+            before: Any = None, order: str = "asc", type: Any = None,
+        ) -> Any:
+            recorded["order"] = order
+            recorded["limit"] = limit
+            # Store returns newest-first for order="desc": [t3, t2, t1].
+            return PagedList(
+                data=[_msg("i3", "t3"), _msg("i2", "t2"), _msg("i1", "t1")],
+                has_more=True,
+            )
+
+    load = _load_or_create_conversation(_Store(), {"thread_id": "T"})
+    assert load is not None
+    assert recorded["order"] == "desc"  # newest-first, not the oldest window
+    assert recorded["limit"] == 10_000
+    # Reversed back to chronological order for replay.
+    assert [it.id for it in load.items] == ["i1", "i2", "i3"]
