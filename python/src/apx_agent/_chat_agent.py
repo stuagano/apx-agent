@@ -108,6 +108,19 @@ def _chat_msg_to_new_items(
 
     if msg.role == "assistant" and msg.tool_calls:
         items: list[NewConversationItem] = []
+        # An assistant turn can carry prose alongside its tool calls; persist the
+        # text as its own message item too (the Responses path already does),
+        # else it's dropped from the stored transcript and from replay (#493).
+        if msg.content:
+            items.append(NewConversationItem(
+                type="message",
+                response_id=response_id,
+                data=MessageData(
+                    role="assistant",
+                    content=[{"type": "output_text", "text": msg.content}],
+                    agent=model,
+                ),
+            ))
         for tc in msg.tool_calls:
             tc_d = tc.model_dump() if hasattr(tc, "model_dump") else tc
             if not isinstance(tc_d, dict):
