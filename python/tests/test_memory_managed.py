@@ -277,12 +277,26 @@ class TestScopeSafety:
         assert _store(api, scope="alice").get("/memories/prefs/1") is None
 
     def test_get_returns_none_when_api_raises_not_found(self) -> None:
-        # Verified live: a missing entry surfaces as a not-found ERROR, not an
-        # empty body — get must still honor the None-for-missing contract.
+        # Verified live: a missing entry surfaces as a not-found ERROR (the SDK's
+        # NotFound class), not an empty body — get must still honor the
+        # None-for-missing contract for a GENUINE miss.
+        from databricks.sdk.errors import NotFound
+
         def boom(m: str, p: str, q: Any, b: Any) -> Any:
-            raise RuntimeError("memory entry not found at path")
+            raise NotFound("memory entry not found at path")
 
         assert _store(FakeApi(boom), scope="alice").get("/memories/prefs/1") is None
+
+    def test_get_propagates_non_not_found_errors(self) -> None:
+        # #486: a transient infra failure must NOT masquerade as "not found" —
+        # only the REST not-found signal maps to None; anything else propagates
+        # (update/delete/forget all call get() first, so a swallowed error here
+        # would surface everywhere as a false "no such memory").
+        def boom(m: str, p: str, q: Any, b: Any) -> Any:
+            raise RuntimeError("warehouse unreachable")
+
+        with pytest.raises(RuntimeError, match="warehouse unreachable"):
+            _store(FakeApi(boom), scope="alice").get("/memories/prefs/1")
 
     def test_delete_uses_trusted_scope(self) -> None:
         api = FakeApi()
@@ -387,3 +401,28 @@ class TestProvision:
     def test_rejects_non_three_part_name(self) -> None:
         with pytest.raises(ValueError, match="3-part"):
             provision_managed_memory(FakeApi(), "main.mem")
+
+
+class TestIsNotFound:
+    def test_real_sdk_notfound_is_detected(self) -> None:
+        from databricks.sdk.errors import NotFound
+        from apx_agent._memory_managed import _is_not_found
+
+        assert _is_not_found(NotFound("missing")) is True
+
+    def test_duck_typed_notfound_is_detected(self) -> None:
+        """A caller-supplied transport (test fake, alt SDK) that raises its own
+        NotFound-shaped exception is still recognized without an isinstance
+        dependency on the real SDK class."""
+        from apx_agent._memory_managed import _is_not_found
+
+        class NotFound(Exception):
+            pass
+
+        assert _is_not_found(NotFound("missing")) is True
+
+    def test_generic_exception_is_not_classified_as_not_found(self) -> None:
+        from apx_agent._memory_managed import _is_not_found
+
+        assert _is_not_found(RuntimeError("boom")) is False
+        assert _is_not_found(TimeoutError("boom")) is False
