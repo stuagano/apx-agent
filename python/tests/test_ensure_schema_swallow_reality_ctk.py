@@ -43,3 +43,19 @@ def test_ensure_schema_propagates_ddl_errors() -> None:
 
     with pytest.raises(RuntimeError, match="permission denied"):
         store.ensure_schema()
+
+
+@pytest.mark.unit
+def test_get_active_constraints_propagates_infra_errors() -> None:
+    """#492: a swallowed failure here would read as 'no active constraints' and
+    silently drop them from the evolutionary loop — it must propagate (H21)."""
+    store = PopulationStore.__new__(PopulationStore)
+    store.config = SimpleNamespace(table_namespace="cat.sch")  # type: ignore[attr-defined]
+
+    def _exec(_sql: str) -> list:
+        raise RuntimeError("warehouse unreachable")
+
+    store._sql_exec = _exec  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="warehouse unreachable"):
+        store.get_active_constraints()

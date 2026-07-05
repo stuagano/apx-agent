@@ -432,13 +432,14 @@ class PopulationStore:
         ns = self.config.table_namespace
         if not ns:
             return []
-        try:
-            rows = self._sql_exec(
-                f"SELECT * FROM {ns}.constraints WHERE active = true ORDER BY created_at DESC"
-            )
-            return [dict(r) for r in rows]
-        except Exception:
-            return []
+        # Let infra errors propagate — a swallowed failure here would read as "no
+        # active constraints" and silently drop them from the loop (H21). Reserve
+        # [] for a genuinely-empty constraint set, matching the sibling reads
+        # (load_generation / load_pareto_survivors / get_best_fitness_history).
+        rows = self._sql_exec(
+            f"SELECT * FROM {ns}.constraints WHERE active = true ORDER BY created_at DESC"
+        )
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
     # SQL execution helper
