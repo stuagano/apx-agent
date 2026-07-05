@@ -21,7 +21,7 @@ that delivers ``ctx.ws`` (proven in Phase 0, Task 0.2).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from ._models import AgentConfig
@@ -528,6 +528,44 @@ def resolve_checkpointer(
     Degrades to ``None`` (in-process memory) on any failure — a missing
     ``lakebase`` extra or an unreachable Lakebase must not crash startup.
     """
+    target = _lakebase_checkpointer_target(config, ws, agent, store_override)
+    if target is None:
+        return None
+    host, database = target
+    try:
+        from ._checkpoint_lakebase import build_lakebase_checkpointer  # noqa: PLC0415
+
+        return build_lakebase_checkpointer(ws=ws, database=database, host=host)
+    except Exception as exc:
+        # Broad by design: build eagerly opens a pool and runs .setup(), so this
+        # can fail with connection/credential errors, not just import/config ones.
+        logger.warning(
+            "[tool.apx.agent.session] durable checkpointer unavailable — served "
+            "agent falls back to in-process memory (approvals won't survive a "
+            "restart): %s", exc,
+        )
+        return None
+
+
+class _CheckpointerTarget(NamedTuple):
+    host: str
+    database: str
+
+
+def _lakebase_checkpointer_target(
+    config: "AgentConfig | None",
+    ws: Any | None,
+    agent: Any | None,
+    store_override: Any | None,
+) -> "_CheckpointerTarget | None":
+    """``(host, database)`` when a durable Lakebase checkpointer SHOULD be built
+    for this config/agent, else ``None`` (the in-process default is correct).
+
+    Shared by :func:`resolve_checkpointer` (to build) and the create_app wiring
+    (to tell "no durable checkpointer wanted" apart from "wanted one but it
+    failed to build" → ``/readyz`` degraded, #490). Returning ``None`` here is
+    always a legitimate stateless outcome; a build failure happens *after* this.
+    """
     if store_override is not None:
         return None
     config_session = config.session if config is not None else None
@@ -553,21 +591,7 @@ def resolve_checkpointer(
     host = _resolve_env_var(scfg.host) if scfg.host else None
     if ws is None or not host or not scfg.database:
         return None
-    try:
-        from ._checkpoint_lakebase import build_lakebase_checkpointer  # noqa: PLC0415
-
-        return build_lakebase_checkpointer(
-            ws=ws, database=scfg.database, host=host
-        )
-    except Exception as exc:
-        # Broad by design: build eagerly opens a pool and runs .setup(), so this
-        # can fail with connection/credential errors, not just import/config ones.
-        logger.warning(
-            "[tool.apx.agent.session] durable checkpointer unavailable — served "
-            "agent falls back to in-process memory (approvals won't survive a "
-            "restart): %s", exc,
-        )
-        return None
+    return _CheckpointerTarget(host=host, database=scfg.database)
 
 
 def close_checkpointer(checkpointer: Any | None) -> None:

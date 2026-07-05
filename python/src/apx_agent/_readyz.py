@@ -236,6 +236,13 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
             # working-but-generic state, so this NEVER gates readiness (unlike
             # memory). Surfaces the schema/warehouse/UC-function state for ops.
             "data": getattr(agent, "_apx_data_degraded", None) or "ok",
+            # Durable session checkpointer (#490). "degraded" only when a
+            # type='lakebase' session was requested but the PostgresSaver failed
+            # to build — the served agent silently fell back to in-process memory,
+            # so mid-turn approvals stop surviving restarts. Gates readiness like
+            # memory. "ok" when durable, or when no durable checkpointer was
+            # wanted (in-process default is the correct, healthy state).
+            "session": "degraded" if getattr(app.state, "checkpointer_degraded", False) else "ok",
             # Informational tri-state; never gates readiness (extra-gated surface).
             "mcp": _mcp_check(app),
         }
@@ -254,7 +261,13 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
             checks["tracing"] = "ok" if _probe.trace_id else "unavailable"
 
             mem_ok = checks["memory"] in ("ok", None)
-            ready = checks["llm"] == "ok" and checks["tracing"] in ("ok", "unavailable") and mem_ok
+            session_ok = checks["session"] == "ok"
+            ready = (
+                checks["llm"] == "ok"
+                and checks["tracing"] in ("ok", "unavailable")
+                and mem_ok
+                and session_ok
+            )
             status = "ready" if ready else "degraded"
             return Response(
                 content=json.dumps({"status": status, "checks": checks}),

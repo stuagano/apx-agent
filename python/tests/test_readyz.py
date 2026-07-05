@@ -194,6 +194,50 @@ class TestReadyzMemory:
         assert resp.json()["status"] == "ready"
 
 
+class TestReadyzSession:
+    def _client(self, agent, *, degraded):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from apx_agent._readyz import mount_readyz
+        import apx_agent._readyz as rz
+        rz._run_canned_probe = lambda a, m: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
+        app = FastAPI()
+        app.state.checkpointer_degraded = degraded
+        mount_readyz(app, agent)
+        return TestClient(app)
+
+    def test_session_degraded_surfaced_and_503(self):
+        """#490: a lakebase checkpointer that failed to build must surface as
+        session=degraded and gate readiness (not silently green)."""
+        from apx_agent import Agent
+        agent = Agent(instructions="x", tools=[])
+        resp = self._client(agent, degraded=True).get("/readyz")
+        assert resp.json()["checks"]["session"] == "degraded"
+        assert resp.status_code == 503
+        assert resp.json()["status"] == "degraded"
+
+    def test_session_ok_when_not_degraded(self):
+        from apx_agent import Agent
+        agent = Agent(instructions="x", tools=[])
+        resp = self._client(agent, degraded=False).get("/readyz")
+        assert resp.json()["checks"]["session"] == "ok"
+        assert resp.status_code == 200
+
+    def test_session_ok_when_flag_absent(self):
+        """No checkpointer wanted (in-process default) → healthy, not degraded."""
+        from apx_agent import Agent
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from apx_agent._readyz import mount_readyz
+        import apx_agent._readyz as rz
+        rz._run_canned_probe = lambda a, m: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
+        app = FastAPI()  # no checkpointer_degraded on app.state
+        mount_readyz(app, Agent(instructions="x", tools=[]))
+        resp = TestClient(app).get("/readyz")
+        assert resp.json()["checks"]["session"] == "ok"
+        assert resp.status_code == 200
+
+
 class TestReadyzMcp:
     """checks['mcp'] is a tri-state, informational signal — it never gates
     readiness (MCP is an optional, extra-gated surface)."""
