@@ -794,6 +794,7 @@ def create_app(
             try:
                 from ._invocations import mount_invocations_route, mount_responses_route
                 from ._memory_wiring import (  # noqa: PLC0415
+                    _lakebase_checkpointer_target,
                     resolve_checkpointer,
                     resolve_conversation_store,
                 )
@@ -823,6 +824,15 @@ def create_app(
                 # Held for shutdown: a durable checkpointer owns a Lakebase pool
                 # that must be closed on teardown (#346).
                 app.state.checkpointer = _checkpointer
+                # #490: a durable checkpointer was expected (a lakebase session on
+                # an LlmAgent) but the build failed → mark degraded so /readyz
+                # reports it instead of silently running in-process memory (where
+                # approvals stop surviving restarts). No lakebase / composite
+                # agent / store-override → target is None → not degraded.
+                _cp_expected = _lakebase_checkpointer_target(
+                    ctx.config, app.state.workspace_client, ctx.agent, conversation_store
+                ) is not None
+                app.state.checkpointer_degraded = _cp_expected and _checkpointer is None
                 mount_invocations_route(
                     app, ctx.agent, ctx.config,
                     conversation_store=_store, checkpointer=_checkpointer,
