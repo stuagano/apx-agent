@@ -174,6 +174,24 @@ class TestRecall:
         )
         assert out == []
 
+    def test_paginates_through_next_page_token(self) -> None:
+        # #487: a namespace match ranked onto page 2 must still be returned —
+        # the single-page read could under-return after the post-filter.
+        pages = {
+            None: {
+                "results": [{"memory_entry": {"path": "/memories/e/1"}, "score": 0.9}],
+                "next_page_token": "t2",
+            },
+            "t2": {
+                "results": [{"memory_entry": {"path": "/memories/e/2"}, "score": 0.8}]
+            },
+        }
+        api = FakeApi(lambda m, p, q, b: pages[(q or {}).get("page_token")])
+        out = _store(api).recall(
+            RecallOptions(principal_id="u", query="q", namespace="e", k=10)
+        )
+        assert [r.memory.id for r in out] == ["/memories/e/1", "/memories/e/2"]
+
 
 # ---------------------------------------------------------------------------
 # list
@@ -208,6 +226,31 @@ class TestList:
             lambda m, p, q, b: {"entries": [{"path": f"/default/{i}"} for i in range(5)]}
         )
         assert len(_store(api).list(MemoryFilter(principal_id="u", limit=3))) == 3
+
+    def test_paginates_through_next_page_token(self) -> None:
+        # #487: a namespace match that lives on page 2 must still be returned —
+        # the single-page read dropped it before.
+        pages = {
+            None: {"entries": [{"path": "/memories/prefs/1"}], "next_page_token": "t2"},
+            "t2": {"entries": [{"path": "/memories/prefs/2"}]},  # last page, no token
+        }
+        api = FakeApi(lambda m, p, q, b: pages[(q or {}).get("page_token")])
+        out = _store(api).list(
+            MemoryFilter(principal_id="u", namespace="prefs", limit=10)
+        )
+        assert [m.id for m in out] == ["/memories/prefs/1", "/memories/prefs/2"]
+
+    def test_ignored_page_token_degrades_to_single_page(self) -> None:
+        # If the API ignores page_token (same page + same token forever), the
+        # dedup + unchanged-token guard terminate with no dupes.
+        api = FakeApi(
+            lambda m, p, q, b: {
+                "entries": [{"path": "/default/1"}, {"path": "/default/2"}],
+                "next_page_token": "same",
+            }
+        )
+        out = _store(api).list(MemoryFilter(principal_id="u", limit=100))
+        assert [m.id for m in out] == ["/default/1", "/default/2"]
 
 
 # ---------------------------------------------------------------------------
