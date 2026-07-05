@@ -64,6 +64,30 @@ logger = logging.getLogger(__name__)
 _MANAGED_MAX_PAGES = 1000
 
 
+def _is_not_found(exc: Exception) -> bool:
+    """True when *exc* is the REST API's not-found signal, not a real failure.
+
+    The managed memory REST API surfaces a missing entry as an EXCEPTION (no
+    distinct return value), so ``get()`` must tell that apart from a genuine
+    infra error (auth, timeout, 5xx) — conflating them turns a transient
+    failure into a false "not found" (#486).
+
+    ``ApiCaller`` is deliberately SDK-free (a duck-typed ``ws.api_client``), so
+    this only imports ``databricks.sdk.errors.NotFound`` lazily, on the error
+    path, and falls back to a duck-typed class-name check for any other
+    caller-supplied transport (e.g. a test fake) that raises its own
+    NotFound-shaped exception.
+    """
+    try:
+        from databricks.sdk.errors import NotFound  # noqa: PLC0415
+
+        if isinstance(exc, NotFound):
+            return True
+    except ImportError:
+        pass
+    return type(exc).__name__ == "NotFound"
+
+
 @runtime_checkable
 class ApiCaller(Protocol):
     """Duck-typed Databricks REST caller — the shape of ``ws.api_client``.
@@ -207,7 +231,10 @@ class ManagedMemoryStore:
         """Fetch the entry at ``path == memory_id`` within the resolved scope.
 
         Fails closed (returns ``None``) when no trusted scope is available —
-        scope is never taken from ``memory_id``.
+        scope is never taken from ``memory_id``. A not-found REST error also
+        returns ``None`` (the protocol contract is None-for-missing, mirroring
+        DeltaMemoryStore) — but any OTHER exception (infra error) propagates,
+        so a transient failure is never misreported as "not found" (#486).
         """
         scope = self._trusted_scope()
         if not scope:
@@ -219,9 +246,9 @@ class ManagedMemoryStore:
                 query={"scope": scope, "path": memory_id},
             )
         except Exception as exc:
-            # A missing entry surfaces as a not-found error from the REST API;
-            # the protocol contract is None-for-missing. Mirrors DeltaMemoryStore.
-            logger.warning("ManagedMemoryStore.get(%s): %s — returning None.", memory_id, exc)
+            if not _is_not_found(exc):
+                raise
+            logger.debug("ManagedMemoryStore.get(%s): not found.", memory_id)
             return None
         if not entry:
             return None
