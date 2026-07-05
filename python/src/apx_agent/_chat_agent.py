@@ -666,10 +666,16 @@ def chat_agent_for(
                     self._conversation_store.create_conversation(
                         id=conv_id, agent_id=self._agent_id
                     )
+                # Replay the MOST RECENT items, not the oldest: order="desc"
+                # returns newest-first (highest positions), so a long conversation
+                # sees its recent turns instead of freezing on ancient history.
+                # Reverse back to chronological order for replay; a
+                # function_call_output orphaned at the window's older edge is
+                # dropped by _conv_items_to_chat_msgs.
                 page = self._conversation_store.list_items(
-                    conv_id, order="asc", limit=10_000
+                    conv_id, order="desc", limit=10_000
                 )
-                history = _conv_items_to_chat_msgs(page.data)
+                history = _conv_items_to_chat_msgs(list(reversed(page.data)))
                 return _ChatConvLoad(
                     conversation_id=conv_id, messages=history, is_new=is_new
                 )
