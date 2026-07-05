@@ -666,6 +666,20 @@ def chat_agent_for(
                     self._conversation_store.create_conversation(
                         id=conv_id, agent_id=self._agent_id
                     )
+            except Exception as exc:
+                # Can't resolve the conversation key → degrade to a sessionless
+                # turn (nothing to key it to).
+                logger.warning(
+                    "_load_or_create_conversation(%s) degraded to sessionless: %s",
+                    conv_id, exc,
+                )
+                return None
+            # History load is separate: a transient list_items failure must NOT
+            # lose the turn (#488). Keep the resolved conv_id so this turn still
+            # persists — it just runs without prior context for this one turn —
+            # instead of returning None (which no-ops the persist and drops the
+            # whole exchange permanently).
+            try:
                 # Replay the MOST RECENT items, not the oldest: order="desc"
                 # returns newest-first (highest positions), so a long conversation
                 # sees its recent turns instead of freezing on ancient history.
@@ -676,15 +690,16 @@ def chat_agent_for(
                     conv_id, order="desc", limit=10_000
                 )
                 history = _conv_items_to_chat_msgs(list(reversed(page.data)))
-                return _ChatConvLoad(
-                    conversation_id=conv_id, messages=history, is_new=is_new
-                )
             except Exception as exc:
                 logger.warning(
-                    "_load_or_create_conversation(%s) degraded to sessionless: %s",
+                    "_load_or_create_conversation(%s): history unavailable this "
+                    "turn (turn still persisted, runs without prior context): %s",
                     conv_id, exc,
                 )
-                return None
+                history = []
+            return _ChatConvLoad(
+                conversation_id=conv_id, messages=history, is_new=is_new
+            )
 
         def _persist_conv_turn(
             self,
