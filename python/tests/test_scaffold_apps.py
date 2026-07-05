@@ -545,3 +545,77 @@ def test_start_server_loads_agent_config_for_session(tmp_path: Path) -> None:
     # The config must be loaded from pyproject.toml and passed to resolve_conversation_store.
     assert "_load_agent_config" in start_server
     assert "resolve_conversation_store(_agent_config" in start_server
+
+
+# ---------------------------------------------------------------------------
+# #449: explicit --target in a non-TTY produces the documented layout
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_explicit_target_non_tty_writes_apps_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-interactive ``scaffold NAME --target apps`` (no --no-yaml) must
+    produce the documented agent_server/ bundle with exit 0 — not a YAML spec
+    + exit 1 — even when the workspace probe is unavailable (#449).
+
+    CliRunner is non-TTY by nature; the probes are stubbed as unreachable.
+    """
+    import apx_agent.cli as cli
+
+    monkeypatch.setattr(cli, "_discover_default_data", lambda profile: None)
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["agents", "scaffold", "np_agent", "--target", "apps", "--dir", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+
+    base = tmp_path / "np_agent"
+    for rel in APPS_EXPECTED_FILES:
+        assert (base / rel).exists(), f"missing {rel}"
+    # The YAML-spec detour must NOT have happened.
+    assert not (tmp_path / "np_agent.yaml").exists()
+    assert "fill in" not in result.output
+    # The unreachable-workspace fallback is announced, not fatal.
+    assert "fallback" in result.output
+
+
+def test_scaffold_explicit_target_non_tty_writes_model_serving_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same routing fix for --target model-serving: the flat layout, exit 0."""
+    import apx_agent.cli as cli
+
+    monkeypatch.setattr(cli, "_discover_default_data", lambda profile: None)
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
+
+    result = CliRunner().invoke(
+        main,
+        ["agents", "scaffold", "flat_agent", "--target", "model-serving", "--dir", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    base = tmp_path / "flat_agent"
+    assert (base / "agent.py").exists()
+    assert (base / "app.py").exists()
+    assert not (tmp_path / "flat_agent.yaml").exists()
+
+
+def test_scaffold_explicit_yaml_with_target_keeps_spec_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicitly passed --yaml wins over --target: the spec flow stays."""
+    import apx_agent.cli as cli
+
+    monkeypatch.setattr(cli, "_discover_default_data", lambda profile: None)
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
+
+    result = CliRunner().invoke(
+        main,
+        ["agents", "scaffold", "spec_agent", "--target", "apps", "--yaml", "--dir", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "spec_agent.yaml").exists()
+    assert not (tmp_path / "spec_agent" / "agent_server").exists()

@@ -785,6 +785,19 @@ def create_app(
             app, agent, config, pyproject_path=pyproject_path
         )
 
+        # /readyz — the capability self-test the deploy gate and `agents
+        # status` probe (#449). The Apps template mounts it in start_server.py;
+        # plain create_app (all local runs) must serve it too, or every local
+        # probe 404s. mount_readyz is idempotent, so a caller who already
+        # mounted it isn't double-registered.
+        if ctx is not None:
+            try:
+                from ._readyz import mount_readyz
+
+                mount_readyz(app, ctx.agent, model=ctx.config.model)
+            except Exception as exc:
+                logger.warning("Skipping /readyz mount: %s", exc)
+
         # Mount the supported /invocations + /responses routes.
         # Both use the same resolved conversation_store. Best-effort — missing
         # optional deps log a warning and skip the affected route only.
