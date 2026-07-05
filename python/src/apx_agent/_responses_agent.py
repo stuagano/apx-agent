@@ -167,6 +167,27 @@ def _maybe_import_request_headers() -> Callable[[], dict[str, str]] | None:
     return get_request_headers
 
 
+def _scope_session_by_principal(custom_inputs: dict[str, Any]) -> dict[str, Any]:
+    """Namespace the client thread_id/session_id by the OBO principal (#491) so
+    the checkpoint thread + conversation key can't collide across users. Resolves
+    the principal from custom_inputs + the Apps proxy's X-Forwarded-User header,
+    the same sources ``_resolve_ws_and_headers_for_request`` uses."""
+    from ._obo import extract_obo_headers, scope_session_key
+
+    http_headers: dict[str, str] = {}
+    getter = _maybe_import_request_headers()
+    if getter is not None:
+        try:
+            http_headers = getter() or {}
+        except Exception:
+            http_headers = {}
+    principal = extract_obo_headers(
+        custom_inputs=custom_inputs, headers=http_headers
+    ).get("user_id")
+    scoped = scope_session_key(custom_inputs, principal)
+    return scoped if scoped is not None else custom_inputs
+
+
 # ---------------------------------------------------------------------------
 # Auth resolution
 # ---------------------------------------------------------------------------
@@ -1088,6 +1109,9 @@ def compile_to_responses_agent(
         ensure_capture_processor()
 
         custom_inputs: dict[str, Any] = dict(request.custom_inputs or {})
+        # #491: scope the session/thread key by the OBO principal before it keys
+        # the conversation and checkpoint thread (covers both derivations below).
+        custom_inputs = _scope_session_by_principal(custom_inputs)
         conv = _load_or_create_conversation(_conversation_store, custom_inputs, agent_id=_agent_id)
         conv_id = conv.conversation_id if conv is not None else None
         conv_items = conv.items if conv is not None else []
@@ -1282,6 +1306,9 @@ def compile_to_responses_agent(
         ensure_capture_processor()
 
         custom_inputs: dict[str, Any] = dict(request.custom_inputs or {})
+        # #491: scope the session/thread key by the OBO principal before it keys
+        # the conversation and checkpoint thread (covers both derivations below).
+        custom_inputs = _scope_session_by_principal(custom_inputs)
         conv = _load_or_create_conversation(_conversation_store, custom_inputs, agent_id=_agent_id)
         conv_id = conv.conversation_id if conv is not None else None
         conv_items = conv.items if conv is not None else []

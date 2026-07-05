@@ -645,7 +645,17 @@ def chat_agent_for(
             """
             if self._checkpointer is None or not session_id:
                 return None
-            lg_config = {"configurable": {"thread_id": session_id}}
+            # Namespace the thread key by the OBO principal so it matches the
+            # scoped key predict() stores under (#491) — else an A2A pause-check
+            # with the raw contextId wouldn't find predict's namespaced interrupt.
+            from ._obo import extract_obo_headers, scope_session_key
+            _principal = (
+                extract_obo_headers(custom_inputs=custom_inputs).get("user_id")
+                if custom_inputs else None
+            )
+            scoped_id = scope_session_key({"session_id": session_id}, _principal)
+            thread_key = (scoped_id or {}).get("session_id", session_id)
+            lg_config = {"configurable": {"thread_id": thread_key}}
             auth = _resolve_ws_and_headers(custom_inputs)
             graph = compile_to_langgraph(
                 self._agent, ws=auth.ws, model=self._resolve_model(),
@@ -778,6 +788,14 @@ def chat_agent_for(
             # this run from memory (FEVM blob egress is blocked).
             from ._trace_store import ensure_capture_processor
             ensure_capture_processor()
+
+            # #491: namespace the client session_id by the OBO principal so the
+            # checkpoint thread + conversation key can't collide across users.
+            # Both _load_or_create_conversation and _short_term_thread read the
+            # (now scoped) session_id, so this one rewrite covers both.
+            from ._obo import extract_obo_headers, scope_session_key
+            _principal = extract_obo_headers(custom_inputs=custom_inputs).get("user_id")
+            custom_inputs = scope_session_key(custom_inputs, _principal)
 
             conv = self._load_or_create_conversation(custom_inputs)
             conv_id = conv.conversation_id if conv is not None else None
@@ -913,6 +931,14 @@ def chat_agent_for(
             # See predict — idempotent capture-processor install (never raises).
             from ._trace_store import ensure_capture_processor
             ensure_capture_processor()
+
+            # #491: namespace the client session_id by the OBO principal so the
+            # checkpoint thread + conversation key can't collide across users.
+            # Both _load_or_create_conversation and _short_term_thread read the
+            # (now scoped) session_id, so this one rewrite covers both.
+            from ._obo import extract_obo_headers, scope_session_key
+            _principal = extract_obo_headers(custom_inputs=custom_inputs).get("user_id")
+            custom_inputs = scope_session_key(custom_inputs, _principal)
 
             conv = self._load_or_create_conversation(custom_inputs)
             conv_id = conv.conversation_id if conv is not None else None

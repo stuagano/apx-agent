@@ -341,3 +341,26 @@ def test_sp_fallback_env_truthy_values(monkeypatch):
     for val in ("0", "false", "no", ""):
         monkeypatch.setenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", val)
         assert _obo._sp_fallback_allowed() is False
+
+
+def test_scope_session_key_namespaces_by_principal() -> None:
+    """#491: same raw session_id + different principals → isolated keys; same
+    principal → stable; no principal → unchanged (local dev)."""
+    from apx_agent._obo import scope_session_key
+
+    a = scope_session_key({"session_id": "S", "user_id": "alice"}, "alice")
+    b = scope_session_key({"session_id": "S", "user_id": "bob"}, "bob")
+    assert a["session_id"] != b["session_id"]  # collision avoided across users
+    assert a["session_id"].endswith(":S")
+
+    # Same principal re-derives the same key (resumes their own thread).
+    assert scope_session_key({"session_id": "S"}, "alice")["session_id"] == a["session_id"]
+
+    # No / empty principal → unchanged (nothing to isolate by).
+    assert scope_session_key({"session_id": "S"}, None)["session_id"] == "S"
+    assert scope_session_key({"session_id": "S"}, "")["session_id"] == "S"
+
+    # thread_id is namespaced too; a dict with neither key is untouched.
+    assert scope_session_key({"thread_id": "T"}, "alice")["thread_id"].endswith(":T")
+    assert scope_session_key({"user_id": "x"}, "x") == {"user_id": "x"}
+    assert scope_session_key(None, "alice") is None
