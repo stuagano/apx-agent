@@ -874,3 +874,42 @@ def test_load_replays_most_recent_items_in_chronological_order() -> None:
     assert recorded["limit"] == 10_000
     # Reversed back to chronological order for replay.
     assert [it.id for it in load.items] == ["i1", "i2", "i3"]
+
+
+def test_load_preserves_turn_when_history_load_fails() -> None:
+    """#488: a transient list_items failure must NOT drop the turn — return the
+    resolved conv_id with empty history so the turn still persists."""
+    from apx_agent._responses_agent import _load_or_create_conversation
+
+    class _Store:
+        def get_conversation(self, cid: str) -> Any:
+            return object()  # existing conversation
+
+        def create_conversation(self, **kw: Any) -> None:
+            ...
+
+        def list_items(self, *a: Any, **k: Any) -> Any:
+            raise RuntimeError("warehouse throttled")
+
+    load = _load_or_create_conversation(_Store(), {"thread_id": "T"})
+    assert load is not None  # NOT degraded to sessionless
+    assert load.conversation_id == "T"  # turn can still be persisted
+    assert load.items == []  # history unavailable, not fabricated
+    assert load.is_new is False
+
+
+def test_load_degrades_to_none_when_conversation_resolve_fails() -> None:
+    """A get/create failure can't key the turn → sessionless (return None)."""
+    from apx_agent._responses_agent import _load_or_create_conversation
+
+    class _Store:
+        def get_conversation(self, cid: str) -> Any:
+            raise RuntimeError("store down")
+
+        def create_conversation(self, **kw: Any) -> None:
+            ...
+
+        def list_items(self, *a: Any, **k: Any) -> Any:
+            return None
+
+    assert _load_or_create_conversation(_Store(), {"thread_id": "T"}) is None

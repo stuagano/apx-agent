@@ -537,19 +537,30 @@ def _load_or_create_conversation(
         is_new = existing is None
         if is_new:
             store.create_conversation(id=conv_id, agent_id=agent_id)
+    except Exception as exc:
+        # Can't resolve the conversation key → degrade to a sessionless turn.
+        logger.warning(
+            "_load_or_create_conversation(%s) degraded to sessionless: %s", conv_id, exc
+        )
+        return None
+    # History load is separate: a transient list_items failure must NOT lose the
+    # turn (#488). Keep the resolved conv_id so this turn still persists — it just
+    # runs without prior context for this one turn — instead of returning None
+    # (which no-ops the persist and drops the whole exchange permanently).
+    try:
         # Replay the MOST RECENT items, not the oldest: order="desc" returns
         # newest-first, so a long conversation sees its recent turns instead of
         # freezing on ancient history. Reverse back to chronological order; a
         # function_call_output orphaned at the older edge is dropped downstream.
         page = store.list_items(conv_id, order="desc", limit=10_000)
-        return _ConvLoad(
-            conversation_id=conv_id, items=list(reversed(page.data)), is_new=is_new
-        )
+        items = list(reversed(page.data))
     except Exception as exc:
         logger.warning(
-            "_load_or_create_conversation(%s) degraded to sessionless: %s", conv_id, exc
+            "_load_or_create_conversation(%s): history unavailable this turn "
+            "(turn still persisted, runs without prior context): %s", conv_id, exc
         )
-        return None
+        items = []
+    return _ConvLoad(conversation_id=conv_id, items=items, is_new=is_new)
 
 
 def _conv_items_to_lc_messages(items: list[ConversationItem]) -> list[Any]:
