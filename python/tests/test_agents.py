@@ -69,6 +69,21 @@ class TestLlmAgent:
     def test_alias(self):
         assert LlmAgent is LlmAgent
 
+    def test_tools_optional(self):
+        """#449: an orchestrator whose only capabilities are config-declared
+        sub_agents needs no local tools — Agent(instructions=...) constructs."""
+        from apx_agent import Agent
+
+        agent = Agent(instructions="Route every request to a sub-agent.")
+        assert agent._tool_fns == []
+        assert agent.collect_tools() == []
+
+    def test_omitted_tools_lists_are_not_shared(self):
+        """None → a fresh list per instance, never a shared mutable default."""
+        first, second = LlmAgent(), LlmAgent()
+        first._tool_fns.append(get_weather)
+        assert second._tool_fns == []
+
     def test_collect_tools(self, basic_agent):
         tools = basic_agent.collect_tools()
         assert len(tools) == 2

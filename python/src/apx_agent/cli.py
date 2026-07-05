@@ -2685,7 +2685,10 @@ def _scaffold_to_yaml(
 )
 @click.option(
     "--yaml/--no-yaml", "emit_yaml", default=True,
-    help="Output a YAML spec file instead of a full project directory (default: on).",
+    help="Output a YAML spec file instead of a full project directory "
+         "(default: on — unless --target is passed explicitly, which "
+         "scaffolds that runtime's project layout; pass --yaml to keep "
+         "the spec output).",
 )
 def scaffold(
     name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
@@ -2733,6 +2736,15 @@ def scaffold(
         scaffold_template = "coworker"
     elif use_data:
         scaffold_template = "data"
+
+    # An explicit --target is a request for that runtime's documented project
+    # layout (#449): the Apps agent_server/ bundle or the flat model-serving
+    # project. Don't let the default-on --yaml spec flow silently reroute it
+    # to a YAML spec — only an explicitly passed --yaml keeps the spec output.
+    if scaffold_target is not None and emit_yaml:
+        _yaml_source = click.get_current_context().get_parameter_source("emit_yaml")
+        if _yaml_source is not click.core.ParameterSource.COMMANDLINE:
+            emit_yaml = False
 
     if not emit_yaml:
         if target.exists() and not force:

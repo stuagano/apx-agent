@@ -120,6 +120,14 @@ class TestCompileShape:
         assert callable(non_streaming)
         assert callable(streaming)
 
+    def test_compiles_with_zero_tools(self) -> None:
+        """#449: ``Agent(instructions=...)`` — no local tools, e.g. an
+        orchestrator delegating to config sub_agents — must compile."""
+        agent = LlmAgent(instructions="Delegate every request to a sub-agent.")
+        non_streaming, streaming = compile_to_responses_agent(agent, model="any-endpoint")
+        assert callable(non_streaming)
+        assert callable(streaming)
+
     def test_callables_are_undecorated(self) -> None:
         """The functions returned MUST NOT have the agent_server decorators
         applied — the scaffold's agent.py is responsible for that.

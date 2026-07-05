@@ -394,3 +394,64 @@ class TestReadyzSubAgents:
         assert body["status"] == "ready"
         assert body["checks"]["sub_agents"]["degraded"] is True
         assert "event loop exploded" in body["checks"]["sub_agents"]["error"]
+
+
+# ---------------------------------------------------------------------------
+# create_app integration (#449) — every served agent gets /readyz
+# ---------------------------------------------------------------------------
+
+
+def test_create_app_serves_readyz(monkeypatch) -> None:
+    """Plain ``create_app`` (the local-run path) must serve /readyz — it is
+    the exact endpoint the deploy gate and ``agents status`` probe (#449)."""
+    from fastapi.testclient import TestClient
+
+    from apx_agent import AgentConfig, create_app
+
+    def _fake_probe(_agent, _model):
+        return ProbeResult(assistant_text="READY", trace_id="tr-449")
+
+    monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
+
+    app = create_app(Agent(tools=[_trivial_tool]), AgentConfig(name="t"))
+    with TestClient(app) as client:
+        resp = client.get("/readyz")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ready"
+
+
+def test_create_app_readyz_single_route_after_explicit_mount(monkeypatch) -> None:
+    """A caller following the mount_readyz docstring on a create_app app (the
+    Apps-template habit) must not end up with two /readyz routes — the
+    explicit mount wins and create_app's lifespan mount no-ops (#449)."""
+    from fastapi.routing import APIRoute
+    from fastapi.testclient import TestClient
+
+    from apx_agent import AgentConfig, create_app
+
+    def _fake_probe(_agent, _model):
+        return ProbeResult(assistant_text="READY", trace_id="tr-449b")
+
+    monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
+
+    agent = Agent(tools=[_trivial_tool])
+    app = create_app(agent, AgentConfig(name="t"))
+    mount_readyz(app, agent)  # explicit pre-serve mount, per the docstring
+    with TestClient(app) as client:
+        resp = client.get("/readyz")
+
+    assert resp.status_code == 200
+    readyz_routes = [r for r in app.routes if isinstance(r, APIRoute) and r.path == "/readyz"]
+    assert len(readyz_routes) == 1
+
+
+def test_mount_readyz_is_idempotent() -> None:
+    """Repeated mount_readyz calls register the route exactly once (#449)."""
+    from fastapi.routing import APIRoute
+
+    agent = Agent(tools=[_trivial_tool])
+    app = _make_app(agent)
+    mount_readyz(app, agent)  # second mount — must be a no-op
+    readyz_routes = [r for r in app.routes if isinstance(r, APIRoute) and r.path == "/readyz"]
+    assert len(readyz_routes) == 1
