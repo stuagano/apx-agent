@@ -132,6 +132,35 @@ def test_resolve_checkpointer_none_without_ws() -> None:
     assert resolve_checkpointer(_lakebase_config(), ws=None) is None
 
 
+def test_checkpointer_target_detects_expected_durable_checkpointer() -> None:
+    """#490: the shared applicability predicate the create_app wiring uses to
+    tell 'no checkpointer wanted' apart from 'wanted one but it failed to build'."""
+    from apx_agent import SequentialAgent
+    from apx_agent._memory_wiring import _lakebase_checkpointer_target
+
+    # lakebase session + LlmAgent → a durable checkpointer IS expected.
+    t = _lakebase_checkpointer_target(
+        _lakebase_config(), MagicMock(), LlmAgent(tools=[]), None
+    )
+    assert t is not None
+    assert t.host == "h.example"
+    assert t.database == "db"
+
+    # composite agent → stateless by design, not expected (not a degradation).
+    composite = SequentialAgent([LlmAgent(tools=[]), LlmAgent(tools=[])])
+    assert _lakebase_checkpointer_target(_lakebase_config(), MagicMock(), composite, None) is None
+
+    # no lakebase session → in-process default, not expected.
+    assert _lakebase_checkpointer_target(
+        AgentConfig(name="t", model="m"), MagicMock(), LlmAgent(tools=[]), None
+    ) is None
+
+    # explicit conversation_store override → caller owns state, not expected.
+    assert _lakebase_checkpointer_target(
+        _lakebase_config(), MagicMock(), LlmAgent(tools=[]), object()
+    ) is None
+
+
 def test_resolve_checkpointer_none_when_store_override_given() -> None:
     # An explicit conversation_store override means the caller owns session
     # state — don't spin up an unrequested PostgresSaver from config.session.
