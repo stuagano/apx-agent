@@ -42,7 +42,7 @@ boundary by trusting an id the model handed back.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from ._memory import (
@@ -57,6 +57,11 @@ from ._memory import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Hard backstop on REST pagination: bounds the pathological case (a very
+# selective namespace filter over a huge store) and any API that hands back a
+# fresh token forever. Realistic stores fit in a handful of pages.
+_MANAGED_MAX_PAGES = 1000
 
 
 @runtime_checkable
@@ -279,23 +284,30 @@ class ManagedMemoryStore:
     # -- list / recall (scope from the trusted caller arg) ------------------
 
     def list(self, filter: MemoryFilter) -> list[Memory]:
-        """List entries for ``filter.principal_id``, newest first, capped at limit.
+        """List entries for ``filter.principal_id`` in the store's REST order.
 
-        Namespace is honored as a ``/{namespace}/`` path-prefix filter.
-        ``tags`` / ``min_importance`` are not supported by the managed model
-        and are ignored. Infra errors propagate (an empty result means a
-        genuinely empty store, never a swallowed failure).
+        The list endpoint does not expose per-entry timestamps, so results are
+        returned in whatever order the API yields — this backend cannot promise
+        "newest first" the way the SQL backends do. ``namespace`` is honored as
+        a ``/{namespace}/`` path-prefix filter; ``tags`` / ``min_importance``
+        are not supported by the managed model and are ignored. Infra errors
+        propagate (an empty result means a genuinely empty store).
+
+        Pages through ``next_page_token`` so a namespace filter can't miss
+        matches that live beyond the first page. (Pagination follows the
+        Databricks ``page_token``/``next_page_token`` convention; re-verify
+        against the live managed API when it stabilises. The dedup + unchanged-
+        token guard make an unsupported/ignored token degrade to a single page,
+        i.e. the pre-pagination behaviour — never an infinite loop or dupes.)
         """
         scope = filter.principal_id
-        resp = self._api.do("GET", self._entries(), query={"scope": scope})
-        entries = (resp or {}).get("entries") or []
         prefix = f"/memories/{filter.namespace}/" if filter.namespace is not None else None
         out: list[Memory] = []
-        for e in entries:
-            path = str(e.get("path") or "")
+        for entry in self._iter_entries("GET", self._entries(), {"scope": scope}, "entries"):
+            path = str(entry.get("path") or "")
             if prefix is not None and not path.startswith(prefix):
                 continue
-            out.append(self._entry_to_memory(e, scope=scope, path=path))
+            out.append(self._entry_to_memory(entry, scope=scope, path=path))
             if len(out) >= int(filter.limit):
                 break
         return out
@@ -307,20 +319,20 @@ class ManagedMemoryStore:
         ``min_importance`` are **ignored** (the managed model has no such
         fields) — never used to post-filter, which would wrongly empty the
         result. Infra errors propagate.
+
+        Pages through ``next_page_token`` (same convention/guards as
+        :meth:`list`) so a namespace post-filter can't under-return by dropping
+        matches that ranked onto a later page.
         """
         scope = opts.principal_id
         # Verified live: scope AND query are query params (a body `query` is
         # ignored → empty). Results come back as {results: [{memory_entry: {…},
         # score: <float>}]}.
-        resp = self._api.do(
-            "POST",
-            self._entries() + ":search",
-            query={"scope": scope, "query": opts.query},
-        )
-        rows = (resp or {}).get("results") or []
         prefix = f"/memories/{opts.namespace}/" if opts.namespace is not None else None
         out: list[RecallResult] = []
-        for row in rows:
+        for row in self._iter_entries(
+            "POST", self._entries() + ":search", {"scope": scope, "query": opts.query}, "results"
+        ):
             entry = row.get("memory_entry") or {}
             path = str(entry.get("path") or "")
             if prefix is not None and not path.startswith(prefix):
@@ -335,6 +347,36 @@ class ManagedMemoryStore:
             if len(out) >= int(opts.k):
                 break
         return out
+
+    def _iter_entries(
+        self, method: str, path: str, query: Mapping[str, Any], key: str
+    ) -> "Iterator[Mapping[str, Any]]":
+        """Yield items across all REST pages, following ``next_page_token``.
+
+        Deduplicates by the item's ``path`` and stops when the token repeats or
+        is absent, so an API that ignores ``page_token`` degrades to a single
+        page (no dupes, no infinite loop). A hard page cap backstops both.
+        """
+        seen: set[str] = set()
+        page_token: str | None = None
+        for _ in range(_MANAGED_MAX_PAGES):
+            q = dict(query)
+            if page_token:
+                q["page_token"] = page_token
+            resp = self._api.do(method, path, query=q) or {}
+            items = resp.get(key) or []
+            for item in items:
+                entry = item.get("memory_entry") if key == "results" else item
+                item_path = str((entry or {}).get("path") or "")
+                if item_path and item_path in seen:
+                    continue
+                if item_path:
+                    seen.add(item_path)
+                yield item
+            next_token = resp.get("next_page_token")
+            if not next_token or next_token == page_token or not items:
+                return
+            page_token = next_token
 
     # -- mapping ------------------------------------------------------------
 
