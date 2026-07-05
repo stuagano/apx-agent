@@ -4,6 +4,116 @@ All notable changes to apx-agent. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are git tags
 (`v*`) and the wheel version is derived from the tag via hatch-vcs.
 
+## [0.4.3] — 2026-07-05
+
+A large release. The headline themes: durable mid-turn human approvals and
+short-term memory, a fully-managed memory backend, the OKF grounding
+substrate maturing (golden queries, glossary), a much deeper CLI (shell,
+self-discovery, deploy hardening), cross-agent (A2A) reliability, and two
+focused audits — governance/security and memory/conversation-store
+correctness — that closed 22 confirmed issues.
+
+**BREAKING:** conversation and checkpoint keys are now namespaced by the
+caller's OBO principal, closing a cross-user session-collision hole on
+shared-table Apps. Existing in-flight conversations/checkpoints keyed by a
+raw `session_id` are unreachable after upgrading — a one-time reset of
+in-progress multi-turn sessions.
+
+### Added
+
+- **Durable mid-turn human approval + short-term memory (#329).** A
+  LangGraph checkpointer (Lakebase-backed for durability) is wired into the
+  served path — ChatAgent, ResponsesAgent, and A2A all surface an
+  `approval_required` pause and resume it, and a pending approval survives a
+  process restart or lands on another replica. Short-term memory is on by
+  default for served `LlmAgent`s.
+- **Managed Agent Memory backend (#322).** `memory="managed"` wires
+  Databricks' fully-managed memory store end-to-end (add/get/update/delete/
+  list/recall), verified against a live store.
+- **OKF grounding matures.** Golden queries parse from the Examples section
+  and render as labelled Q→SQL few-shot pairs; a `verified_query` tool runs
+  them by question match; a glossary/synonyms layer parses from the dataset
+  doc and reaches the prompt.
+- **CLI: shell + self-discovery.** `apx-agent shell` is an interactive REPL
+  (bare `apx-agent` drops into it in a terminal); `describe`/`status` gain
+  `--json` and interactive picklists for deployed apps; `agents register`
+  backfills a single-agent UC manifest; `agents delete --purge` cascades
+  experiments, canary apps, and bundle files.
+- **Deploy hardening.** Git/lock provenance is stamped on every deploy and
+  checked for drift by `doctor`; `--dry-run`, `--env`/`--secret-env`,
+  `--timeout`/`--readyz-retries`; model-serving deploy gates on endpoint
+  READY + a smoke invocation; `agents status` reports post-deploy health and
+  provenance in one command.
+- **Dev-UI un-hidden.** Setup-discovery, trace/approval, and codegen routes
+  are typed and validated instead of hidden JSON blobs; field-description
+  curation gets an LLM-suggestion panel.
+- **A2A / multi-agent.** Trace correlation (traceparent + caller identity)
+  crosses the agent boundary; Apps-hosted agents register as app-type
+  supervisor tools; sub-agent reachability surfaces in `doctor`, `agents
+  status`, and `/readyz`; remote tool schemas propagate from the discovery
+  card instead of collapsing to `{message}`.
+
+### Fixed — governance & security audit (#463–481)
+
+- The raw `/tools/<name>` + MCP path no longer silently falls back to the app
+  service principal on a missing OBO token (confused deputy) — it now fails
+  closed like the compiled serving path, and drops the App's own hostname
+  from the OBO client instead of hanging.
+- Agent/tool registry writes now require ownership — closes a spoofing hole
+  where any writer could repoint or unregister another user's published
+  agent.
+- `executor="claude-sdk"` no longer bypasses configured approval, watchdog,
+  and rate-limit guards; it now falls back to the governed LangGraph path
+  when any are configured.
+- A2A no longer launders privilege when a request carries a `user_token` but
+  no `user_id` (a normal Model Serving shape) — the sub-agent hop now
+  forwards the token it should.
+- `forget` no longer deletes another principal's memory by id.
+- Dev-UI per-principal reads (approvals, conversations, memories, traces)
+  now require the operator token on a deployed App, same as writes.
+- Approval decisions record who decided and when; traces record a
+  `user_hash` so an action is attributable to a user, not just "a token was
+  present."
+
+### Fixed — memory & conversation-store audit (#482–493)
+
+- A composite agent (`SequentialAgent`/`LoopAgent`/...) with a Lakebase
+  session no longer crashes every turn with a 500.
+- `InMemoryMemoryStore`/`InMemoryExampleStore` are now thread-safe — a
+  concurrent write no longer crashes an in-flight `list`/`recall` scan.
+- Chat streaming no longer double-writes the user prompt on an approval
+  resume (a gap in the earlier #375 fix).
+- Lakebase `update()` no longer resurrects a concurrently-deleted memory;
+  `get`/`delete` now propagate real infra errors instead of reporting a
+  false "not found."
+- The managed memory store's `list`/`recall` now page through the full
+  result set instead of silently truncating at one REST page.
+- Conversation history replay now reads the most recent turns, not the
+  oldest 10k — a long conversation no longer freezes on ancient history or
+  bricks on a boundary-split tool call/result pair.
+- A transient history-load failure no longer drops the whole turn from the
+  conversation.
+- `/readyz` now reports a degraded durable checkpointer instead of silently
+  running in-process memory.
+- An assistant turn's prose is preserved alongside its tool calls on the
+  chat path (it used to be dropped from the stored transcript).
+
+### Fixed — everything else (selected)
+
+- SQL string-literal escaping consolidated onto one canonical, correctly
+  backslash-escaping implementation (closed an injection path).
+- Watchdog governance fails **closed** by default when the gate is
+  unreachable.
+- Lakebase conversation appends are serialized (no more duplicate
+  positions); sibling Lakebase engines and the checkpointer pool are
+  disposed on shutdown; ILIKE search escapes wildcard metacharacters.
+- A2A resume errors stay inside the JSON-RPC contract instead of surfacing
+  as a raw HTTP 500.
+- `uv.lock` proxy-URL sanitization restores state on a failed deploy instead
+  of leaving it mutated.
+- `/invocations` accepts both ChatAgent message shapes; the remote client
+  parses both reply shapes.
+
 ## [0.4.2] — 2026-06-23
 
 `agents list` sees Databricks Apps; root chat matches the dev UI.
@@ -112,6 +222,7 @@ labeling loop.
 - Shared SQL/memory helpers deduplicated (`_sql.sql_str_literal`,
   `_sql.sql_escape`); voynich examples removed.
 
+[0.4.3]: https://github.com/stuagano/apx-agent/releases/tag/v0.4.3
 [0.4.2]: https://github.com/stuagano/apx-agent/releases/tag/v0.4.2
 [0.4.1]: https://github.com/stuagano/apx-agent/releases/tag/v0.4.1
 [0.4.0]: https://github.com/stuagano/apx-agent/releases/tag/v0.4.0
