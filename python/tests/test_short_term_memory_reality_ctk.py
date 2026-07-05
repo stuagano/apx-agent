@@ -169,3 +169,48 @@ def test_checkpointer_on_non_llm_agent_is_rejected() -> None:
     composite = SequentialAgent(agents=[_agent()])
     with pytest.raises(NotImplementedError, match="LlmAgent"):
         compile_to_langgraph(composite, ws=_ws(), model="m", checkpointer=InMemorySaver())
+
+
+def _msg_texts(items: Any) -> list[str]:
+    out: list[str] = []
+    for it in items:
+        if it.type == "message":
+            for b in it.data.content:
+                if isinstance(b, dict) and "text" in b:
+                    out.append(b["text"])
+    return out
+
+
+def test_predict_isolates_conversations_by_principal() -> None:
+    """#491: two principals using the SAME client session_id must not share a
+    conversation — the key is namespaced by the OBO principal. (_fake_chat is
+    autouse, so the model is already stubbed.)"""
+    from unittest.mock import patch
+
+    from mlflow.types.agent import ChatAgentMessage
+
+    from apx_agent import InMemoryConversationStore, chat_agent_for
+    from apx_agent._obo import scope_session_key
+
+    store = InMemoryConversationStore()
+    chat = chat_agent_for(_agent(), model="m", conversation_store=store)
+
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        chat.predict(
+            [ChatAgentMessage(role="user", content="alice secret", id="1")],
+            custom_inputs={"session_id": "S", "user_id": "alice"},
+        )
+        chat.predict(
+            [ChatAgentMessage(role="user", content="bob message", id="2")],
+            custom_inputs={"session_id": "S", "user_id": "bob"},
+        )
+
+    alice_id = scope_session_key({"session_id": "S"}, "alice")["session_id"]
+    bob_id = scope_session_key({"session_id": "S"}, "bob")["session_id"]
+    assert alice_id != bob_id
+
+    alice_texts = _msg_texts(store.list_items(alice_id, order="asc").data)
+    bob_texts = _msg_texts(store.list_items(bob_id, order="asc").data)
+    assert any("alice secret" in t for t in alice_texts)
+    # The isolation property: bob's conversation never contains alice's turn.
+    assert not any("alice secret" in t for t in bob_texts)

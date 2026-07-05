@@ -49,7 +49,37 @@ __all__ = [
     "extract_obo_headers",
     "make_obo_workspace_client",
     "resolve_no_obo_or_raise",
+    "scope_session_key",
 ]
+
+
+def scope_session_key(
+    custom_inputs: "dict[str, Any] | None", principal: str | None
+) -> "dict[str, Any] | None":
+    """Namespace the client ``session_id`` / ``thread_id`` by *principal* (#491).
+
+    The checkpoint thread and conversation are keyed by the client-supplied
+    session id. Without a principal component, two users who pick the same
+    session id string collide on one thread/conversation — so on a shared-table
+    App one user's history/pending interrupt can leak to another. Prefixing the
+    key with a hash of the OBO principal isolates them.
+
+    Transparent to clients: they always send the RAW session id, and the server
+    re-derives the same namespaced key from their principal — so the same user
+    resumes their own thread, while a different user with the same raw id gets a
+    different key. Returns *custom_inputs* unchanged when there is no principal
+    (local dev / single-user Model Serving) — nothing to isolate by.
+    """
+    if not custom_inputs or not principal:
+        return custom_inputs
+    from ._audit import hash_for_audit  # noqa: PLC0415
+
+    ns = hash_for_audit(principal)
+    scoped = dict(custom_inputs)
+    for key in ("session_id", "thread_id"):
+        if scoped.get(key):
+            scoped[key] = f"{ns}:{scoped[key]}"
+    return scoped
 
 # Operators that genuinely run an agent as a service principal opt in here.
 _SP_FALLBACK_ENV = "APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK"
