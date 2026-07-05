@@ -357,26 +357,37 @@ def test_update_returns_none_when_existing_missing() -> None:
 
 
 def test_update_re_embeds_when_content_changes() -> None:
-    # First execute is the SELECT in get(); second is the INSERT (upsert).
-    engine = RecordingEngine(rows_to_return=[[_canned_row(content="old")]])
+    # First execute is the SELECT in get(); second is the UPDATE (rowcount 1 = hit).
+    engine = RecordingEngine(rows_to_return=[[_canned_row(content="old")], ([], 1)])
     calls, fn = make_recording_embedder()
     store = _store(engine, embedding_fn=fn, auto_create=False)
     updated = store.update("mem_1", {"content": "new"})
     assert updated is not None
     assert updated.content == "new"
     assert calls == [["new"]]
-    inserts = [c for c in engine.calls if "INSERT INTO" in c[0]]
-    assert len(inserts) == 1
-    assert inserts[0][1]["content"] == "new"
+    # A conditional UPDATE, not an upsert INSERT — so it can't resurrect (#485).
+    updates = [c for c in engine.calls if c[0].strip().startswith("UPDATE")]
+    assert len(updates) == 1
+    assert updates[0][1]["content"] == "new"
+    assert not any("INSERT INTO" in c[0] for c in engine.calls)
 
 
 def test_update_no_reembed_when_content_unchanged() -> None:
-    engine = RecordingEngine(rows_to_return=[[_canned_row()]])
+    engine = RecordingEngine(rows_to_return=[[_canned_row()], ([], 1)])
     calls, fn = make_recording_embedder()
     store = _store(engine, embedding_fn=fn, auto_create=False)
     store.update("mem_1", {"importance": 0.9})
     # Embedder never called for an unchanged-content patch
     assert calls == []
+
+
+def test_update_returns_none_when_row_deleted_concurrently() -> None:
+    # #485: get() sees the row, but the UPDATE affects 0 rows (a concurrent
+    # forget deleted it) → return None instead of resurrecting via upsert.
+    engine = RecordingEngine(rows_to_return=[[_canned_row()], ([], 0)])
+    store = _store(engine, auto_create=False)
+    assert store.update("mem_1", {"importance": 0.9}) is None
+    assert not any("INSERT INTO" in c[0] for c in engine.calls)
 
 
 def test_delete_returns_true_on_rowcount_positive() -> None:
@@ -389,6 +400,41 @@ def test_delete_returns_false_on_rowcount_zero() -> None:
     engine = RecordingEngine(rows_to_return=[([], 0)])
     store = _store(engine, auto_create=False)
     assert store.delete("nope") is False
+
+
+class _RaisingEngine:
+    """Engine whose every execute raises — simulates an infra failure."""
+
+    class _Conn:
+        def execute(self, *_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("warehouse unreachable")
+
+        def __enter__(self) -> "_RaisingEngine._Conn":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    def connect(self) -> "_RaisingEngine._Conn":
+        return self._Conn()
+
+    def begin(self) -> "_RaisingEngine._Conn":
+        return self._Conn()
+
+
+def test_get_propagates_infra_error_not_none() -> None:
+    # #486: a transient failure must NOT masquerade as "not found" (None) —
+    # callers like update/delete/forget would misread it as a genuine miss.
+    store = _store(_RaisingEngine(), auto_create=False)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="warehouse unreachable"):
+        store.get("mem_1")
+
+
+def test_delete_propagates_infra_error_not_false() -> None:
+    # #486: False must mean "wasn't there", never "the delete failed".
+    store = _store(_RaisingEngine(), auto_create=False)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="warehouse unreachable"):
+        store.delete("mem_1")
 
 
 # ===========================================================================
