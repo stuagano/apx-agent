@@ -2,6 +2,27 @@
 
 apx-agent project targeting Databricks Apps.
 
+Summarizes customer complaints from a HubSpot Tickets object already synced
+into Unity Catalog — chat with it interactively, or let the scheduled job
+write a monthly summary row automatically.
+
+## Expected data
+
+A Unity Catalog table (`${APX_CATALOG}.${APX_SCHEMA}.${APX_TICKETS_TABLE}`,
+default table name `tickets`) synced from HubSpot's Tickets object, with at
+least these columns:
+
+| column | meaning |
+|---|---|
+| `hs_object_id` | ticket ID |
+| `subject` | ticket subject line |
+| `content` | ticket body text |
+| `hs_createdate` | when the ticket was created — defines which month a complaint belongs to |
+| `hs_pipeline_stage` | ticket status/stage |
+
+Set `APX_CATALOG` / `APX_SCHEMA` (and `APX_TICKETS_TABLE` if your table isn't
+named `tickets`) before running locally or deploying — see `agent.py`.
+
 ## Setup
 ```bash
 uv sync
@@ -21,6 +42,28 @@ curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","con
 ```bash
 uv run apx-agent deploy --target apps  # validates, deploys, runs the bundle
 ```
+
+## Monthly scheduled summary
+
+`databricks.yml` also deploys a Databricks Job, `hubspot-complaint-summary`,
+scheduled for 6am UTC on the 1st of each month. It runs
+`scripts/monthly_summary.py`, which:
+
+1. Gets the exact ticket count for the previous full calendar month via
+   direct SQL (deterministic — not LLM-derived).
+2. Gets a qualitative theme summary from the agent via `run_once`.
+3. Writes one row to `${APX_CATALOG}.${APX_SCHEMA}.complaint_summaries`
+   (`month DATE, ticket_count INT, summary STRING, generated_at TIMESTAMP`),
+   creating the table on first run.
+
+Run it manually (e.g. to backfill a specific month) with:
+
+```bash
+uv run monthly-summary --month 2026-06
+```
+
+Omit `--month` to summarize the previous full calendar month (the default
+used by the scheduled job).
 
 ## Promoting to another environment
 `databricks.yml` ships `dev` (default), `staging`, and `prod` targets. All
