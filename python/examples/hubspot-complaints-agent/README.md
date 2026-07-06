@@ -56,6 +56,12 @@ scheduled for 6am UTC on the 1st of each month. It runs
    (`month DATE, ticket_count INT, summary STRING, generated_at TIMESTAMP`),
    creating the table on first run.
 
+The job receives `catalog`/`schema` the same way the App does — via the
+`${var.catalog}`/`${var.schema}` bundle variables (see "Promoting to another
+environment" above) — passed as `--catalog`/`--schema` command-line
+arguments, since Databricks Jobs on serverless compute don't support the
+per-task environment-variable injection Apps do.
+
 Run it manually (e.g. to backfill a specific month) with:
 
 ```bash

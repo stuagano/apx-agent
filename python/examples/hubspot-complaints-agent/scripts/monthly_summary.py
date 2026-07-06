@@ -1,16 +1,27 @@
 """monthly_summary — scheduled batch job: summarize last month's HubSpot complaints.
 
-Run manually (``uv run monthly-summary [--month YYYY-MM]``) or via the
-``hubspot-complaint-summary`` Databricks Job (see ``databricks.yml``), which
+Run manually (``uv run monthly-summary [--month YYYY-MM] [--catalog C] [--schema S]``)
+or via the ``hubspot-complaint-summary`` Databricks Job (see ``databricks.yml``), which
 schedules this monthly. Writes one row per month to
 ``<catalog>.<schema>.complaint_summaries``: an exact ticket count from SQL
 (never LLM-derived) plus a qualitative theme summary from the agent (via
 ``run_once``).
+
+``--catalog``/``--schema`` exist because ``agent.py`` resolves
+``APX_CATALOG``/``APX_SCHEMA`` from the environment at import time, and
+Databricks Jobs on serverless compute (unlike Apps) have no per-task env-var
+injection — ``databricks.yml``'s job task passes them as CLI parameters
+instead, reusing the same ``${var.catalog}``/``${var.schema}`` bundle
+variables the App already uses. The pre-parse below primes ``os.environ``
+before ``agent`` is imported; it uses ``parse_known_args`` (not
+``parse_args``) so importing this module under pytest — where ``sys.argv``
+is pytest's own CLI args, not this script's — never errors or hangs.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -19,6 +30,15 @@ from typing import NamedTuple
 # cwd/sys.path (Databricks Job compute doesn't guarantee the script's own
 # directory is on sys.path the way local `uv run` invocations do).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+_env_parser = argparse.ArgumentParser(add_help=False)
+_env_parser.add_argument("--catalog", default=None)
+_env_parser.add_argument("--schema", default=None)
+_env_args, _ = _env_parser.parse_known_args()
+if _env_args.catalog:
+    os.environ["APX_CATALOG"] = _env_args.catalog
+if _env_args.schema:
+    os.environ["APX_SCHEMA"] = _env_args.schema
 
 from databricks.sdk import WorkspaceClient
 
@@ -84,7 +104,7 @@ def write_summary(ws: WorkspaceClient, month: str, ticket_count: int, summary: s
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, parents=[_env_parser])
     parser.add_argument(
         "--month", type=parse_month, default=None,
         help="Month to summarize as YYYY-MM (default: previous full calendar month)",

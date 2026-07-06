@@ -145,6 +145,11 @@ resources:
           environment_key: default
           spark_python_task:
             python_file: ${workspace.file_path}/scripts/monthly_summary.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${var.schema}"
       environments:
         - environment_key: default
           spec:
