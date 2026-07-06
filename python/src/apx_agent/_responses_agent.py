@@ -1213,6 +1213,8 @@ def compile_to_responses_agent(
                 # {"resume": <decision>} to continue from the paused tool call
                 # instead of new input (mirrors the ChatAgent predict path).
                 resume = _resume_decision(custom_inputs) if lg_config else None
+                if resume is not None:
+                    set_audit_attrs(span, approval_decision=str(resume))
                 with safe_span("graph.invoke", span_type="CHAIN"):
                     if resume is not None:
                         from langgraph.types import Command  # noqa: PLC0415
@@ -1402,6 +1404,7 @@ def compile_to_responses_agent(
                 # {"resume": <decision>} to continue from the paused tool call.
                 resume = _resume_decision(custom_inputs) if lg_config else None
                 if resume is not None:
+                    set_audit_attrs(span, approval_decision=str(resume))
                     from langgraph.types import Command  # noqa: PLC0415
                     stream_input: Any = Command(resume=resume)
                 else:
