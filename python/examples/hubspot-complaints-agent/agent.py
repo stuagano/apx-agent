@@ -11,9 +11,16 @@ import os
 
 from apx_agent import DataAgent
 
-CATALOG = os.environ.get("APX_CATALOG", "placeholder_catalog")
-SCHEMA = os.environ.get("APX_SCHEMA", "placeholder_schema")
-TICKETS_TABLE = os.environ.get("APX_TICKETS_TABLE", "tickets")
+# Defaults match the scaffold's baked placeholders (see the original
+# `apx-agent scaffold ... --catalog placeholder_catalog --schema
+# placeholder_schema` invocation) and this example's default table name.
+_DEFAULT_CATALOG = "placeholder_catalog"
+_DEFAULT_SCHEMA = "placeholder_schema"
+_DEFAULT_TICKETS_TABLE = "tickets"
+
+CATALOG = os.environ.get("APX_CATALOG", _DEFAULT_CATALOG)
+SCHEMA = os.environ.get("APX_SCHEMA", _DEFAULT_SCHEMA)
+TICKETS_TABLE = os.environ.get("APX_TICKETS_TABLE", _DEFAULT_TICKETS_TABLE)
 TABLE = f"{CATALOG}.{SCHEMA}.{TICKETS_TABLE}"
 
 agent = DataAgent(

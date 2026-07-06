@@ -54,3 +54,11 @@ examples = [
 # [tool.apx.agent.memory]
 # type = "delta"
 # table_name = "placeholder_catalog.placeholder_schema.apx_hubspot_complaints_agent_memory"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
