@@ -3421,6 +3421,18 @@ def test_scaffold_apps_pins_mlflow_with_genai_agent_server(tmp_path: Path) -> No
     assert '"mlflow[databricks]>=3.0"' not in _SCAFFOLD_APPS_PYPROJECT
 
 
+def test_scaffold_apps_readme_documents_promotion() -> None:
+    """The Apps README documents the dev->staging->prod promotion recipe:
+    override variables per target in databricks.yml, then deploy with
+    --dab-target/--profile (#323) — no new command, existing flags."""
+    from apx_agent.cli import _SCAFFOLD_APPS_README
+
+    assert "Promoting to another environment" in _SCAFFOLD_APPS_README
+    assert "--dab-target staging" in _SCAFFOLD_APPS_README
+    assert "--profile" in _SCAFFOLD_APPS_README
+    assert "targets:" in _SCAFFOLD_APPS_README
+
+
 def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
     """--catalog/--schema bake the default DataAgent's data source (no probe),
     as an env-var-overridable default (#323) — not a literal call, so a

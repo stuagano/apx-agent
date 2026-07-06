@@ -1680,6 +1680,40 @@ curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","con
 uv run apx-agent deploy --target apps  # validates, deploys, runs the bundle
 ```
 
+## Promoting to another environment
+`databricks.yml` ships `dev` (default), `staging`, and `prod` targets. All
+three default to the same workspace/catalog/schema until you customize one —
+promoting is an explicit edit, not a hidden step.
+
+To point `staging` at its own UC catalog/schema, add a `variables:` override
+under its target in `databricks.yml`:
+
+```yaml
+targets:
+  staging:
+    mode: production
+    variables:
+      catalog: <your-staging-catalog>
+      schema: <your-staging-schema>
+    resources:
+      apps:
+        <APP_NAME>:
+          name: <APP_NAME>
+```
+
+Then deploy to the staging workspace by pointing `--profile` at its
+Databricks CLI profile:
+
+```bash
+uv run apx-agent deploy --target apps --dab-target staging --profile <staging-profile>
+```
+
+Repeat the same recipe for `prod` (its own `variables:` override + its own
+`--profile`). `--dab-target` selects which `databricks.yml` target to
+deploy; `--profile` selects which workspace credentials to use — they're
+independent, so forgetting to change `--profile` when you add a `staging`
+override just redeploys to the same workspace under a different catalog.
+
 ## Edit
 Define your agent + tools in `agent.py` (top-level). The
 `agent_server/start_server.py` file is framework boilerplate that
