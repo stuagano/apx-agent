@@ -82,6 +82,45 @@ class _BundleUpdateResult(NamedTuple):
     skipped: list[str]
 
 
+class _SplitOnboardingResponse(NamedTuple):
+    """The two fenced blocks extracted from an onboarding LLM response."""
+    plan_markdown: str | None
+    spec_toml: str | None
+
+
+def _split_onboarding_response(text: str) -> _SplitOnboardingResponse:
+    """Extract the ```markdown and ```toml fenced blocks from an LLM response.
+
+    Non-greedy regex stops at the first closing fence, so the prompt
+    instructs the LLM not to nest triple-backtick fences inside the markdown
+    plan content itself.
+    """
+    plan_match = re.search(r"```markdown\s*\n(.*?)```", text, re.DOTALL)
+    toml_match = re.search(r"```toml\s*\n(.*?)```", text, re.DOTALL)
+    return _SplitOnboardingResponse(
+        plan_markdown=plan_match.group(1).strip() if plan_match else None,
+        spec_toml=toml_match.group(1).strip() if toml_match else None,
+    )
+
+
+def _validate_spec_toml(toml_text: str) -> str | None:
+    """Return None if toml_text parses and matches CoworkerTemplate.Spec,
+    else a human-readable error string."""
+    import tomllib
+
+    from apx_agent.coworker import CoworkerTemplate
+
+    try:
+        parsed = tomllib.loads(toml_text)
+    except tomllib.TOMLDecodeError as exc:
+        return f"TOML parse error: {exc}"
+    try:
+        CoworkerTemplate.Spec(**parsed)
+    except Exception as exc:
+        return f"Spec validation error: {exc}"
+    return None
+
+
 class _EnvMergeResult(NamedTuple):
     """Outcome of merging --env / --secret-env into databricks.yml."""
     env_added: list[str]

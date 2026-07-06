@@ -5763,6 +5763,62 @@ class TestExamplesImport:
 
 
 # ---------------------------------------------------------------------------
+# apx-agent onboard — response parsing + spec validation (#318)
+# ---------------------------------------------------------------------------
+
+
+class TestSplitOnboardingResponse:
+    def test_extracts_both_blocks(self) -> None:
+        from apx_agent.cli import _split_onboarding_response
+
+        text = (
+            "```markdown\n# Plan\n\nDo the thing.\n```\n\n"
+            "```toml\n"
+            'catalog = "TBD-catalog"\n'
+            "```\n"
+        )
+        result = _split_onboarding_response(text)
+        assert result.plan_markdown == "# Plan\n\nDo the thing."
+        assert result.spec_toml == 'catalog = "TBD-catalog"'
+
+    def test_missing_blocks_return_none(self) -> None:
+        from apx_agent.cli import _split_onboarding_response
+
+        result = _split_onboarding_response("no fenced blocks here")
+        assert result.plan_markdown is None
+        assert result.spec_toml is None
+
+
+class TestValidateSpecToml:
+    def test_valid_toml_returns_none(self) -> None:
+        from apx_agent.cli import _validate_spec_toml
+
+        toml_text = (
+            'catalog = "TBD-catalog"\n'
+            'schema = "TBD-schema"\n'
+            'persona = "a program director"\n'
+            'objective = "surface at-risk loans"\n'
+            'memory = "persistent"\n'
+        )
+        assert _validate_spec_toml(toml_text) is None
+
+    def test_malformed_toml_returns_error(self) -> None:
+        from apx_agent.cli import _validate_spec_toml
+
+        error = _validate_spec_toml("catalog = not valid toml @@@")
+        assert error is not None
+        assert "TOML parse error" in error
+
+    def test_missing_required_field_returns_error(self) -> None:
+        from apx_agent.cli import _validate_spec_toml
+
+        # catalog and schema are required (no default) on CoworkerTemplate.Spec.
+        error = _validate_spec_toml('persona = "someone"\n')
+        assert error is not None
+        assert "Spec validation error" in error
+
+
+# ---------------------------------------------------------------------------
 # Regression: coworker-gen must pass ChatMessage objects to serving_endpoints.query,
 # not raw dicts. The SDK calls .as_dict() on each message, so dicts AttributeError
 # at runtime — the bug this guards (path was previously untested).
