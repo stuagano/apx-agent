@@ -1479,6 +1479,33 @@ host = "${LAKEBASE_HOST}"
 database = "<APP_NAME_SLUG>"
 '''
 
+# Spliced into databricks.yml's `variables:`/`config.env:` blocks only when
+# the scaffold actually has a catalog/schema (#323) — a base LlmAgent
+# scaffold gets no dead config. <CATALOG>/<SCHEMA> inside these blocks are
+# resolved by _scaffold_apps's `_sub()`, same as everywhere else in the
+# template — see the CATALOG_SCHEMA_*_BLOCK replace calls added there.
+_SCAFFOLD_CATALOG_SCHEMA_VARS_BLOCK = '''\
+  catalog:
+    description: |
+      Unity Catalog catalog this agent is grounded in. Override per
+      environment via `targets.<name>.variables.catalog` in this file —
+      see README "Promoting to another environment".
+    default: <CATALOG>
+  schema:
+    description: |
+      Unity Catalog schema this agent is grounded in. Override per
+      environment via `targets.<name>.variables.schema` in this file —
+      see README "Promoting to another environment".
+    default: <SCHEMA>
+'''
+
+_SCAFFOLD_CATALOG_SCHEMA_ENV_BLOCK = '''\
+          - name: APX_CATALOG
+            value: ${var.catalog}
+          - name: APX_SCHEMA
+            value: ${var.schema}
+'''
+
 _SCAFFOLD_APPS_DATABRICKS_YML = '''\
 bundle:
   name: <APP_NAME>
@@ -1520,6 +1547,7 @@ variables:
       first deploy of a version registers UC AFTER the app is live, so this
       is usually empty and apx.git_sha is the correlation key.
     default: ""
+<CATALOG_SCHEMA_VARS_BLOCK>
 
 # ``artifacts.default.build`` packages the deploy bundle into ``./.build``.
 # ``apx-agent deploy --target apps`` runs this script BEFORE ``bundle validate`` so
@@ -1599,11 +1627,18 @@ resources:
             value: ${var.apx_git_sha}
           - name: APX_MODEL_VERSION
             value: ${var.apx_model_version}
+<CATALOG_SCHEMA_ENV_BLOCK>
 
 targets:
   dev:
     mode: development
     default: true
+  staging:
+    mode: production
+    resources:
+      apps:
+        <APP_NAME>:
+          name: <APP_NAME>
   prod:
     mode: production
     resources:
@@ -2717,9 +2752,21 @@ def _scaffold_apps(
     # This keeps pyproject.toml coherent: the knob resolves iff the bundle exists on disk.
     knowledge_line = 'knowledge = "./.apx/okf"\n' if manifest is not None else ""
 
+    # Splice UC catalog/schema as DAB variables only when this template
+    # actually has a data source (#323) — a base LlmAgent scaffold has no
+    # catalog/schema and would otherwise get dead config in databricks.yml.
+    catalog_schema_vars_block = (
+        _SCAFFOLD_CATALOG_SCHEMA_VARS_BLOCK if (catalog and schema) else ""
+    )
+    catalog_schema_env_block = (
+        _SCAFFOLD_CATALOG_SCHEMA_ENV_BLOCK if (catalog and schema) else ""
+    )
+
     def _sub(template: str) -> str:
         return (
-            template.replace("<APP_NAME>", name)
+            template.replace("<CATALOG_SCHEMA_VARS_BLOCK>\n", catalog_schema_vars_block)
+            .replace("<CATALOG_SCHEMA_ENV_BLOCK>\n", catalog_schema_env_block)
+            .replace("<APP_NAME>", name)
             .replace("<APP_NAME_SLUG>", name_slug)
             .replace("<CATALOG>", catalog)
             .replace("<SCHEMA>", schema)

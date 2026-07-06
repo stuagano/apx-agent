@@ -3660,6 +3660,52 @@ def test_scaffold_apps_databricks_yml_enables_autolog_env() -> None:
     assert "APX_AGENT_MLFLOW_AUTOLOG" in _SCAFFOLD_APPS_DATABRICKS_YML
 
 
+def test_apps_databricks_yml_has_staging_target_for_all_templates(tmp_path):
+    """The staging target is unconditional — every --target apps template
+    gets dev/staging/prod, regardless of whether it has a catalog/schema."""
+    from apx_agent import cli
+    cli._scaffold_apps(tmp_path, "demo", force=True, catalog="", schema="", template="base")
+    yml = (tmp_path / "databricks.yml").read_text()
+    assert "  staging:" in yml
+    assert "    mode: production" in yml
+    # staging appears between dev and prod, shaped like prod.
+    dev_idx = yml.index("  dev:")
+    staging_idx = yml.index("  staging:")
+    prod_idx = yml.index("  prod:")
+    assert dev_idx < staging_idx < prod_idx
+
+
+def test_apps_databricks_yml_catalog_schema_vars_for_data_template(tmp_path):
+    """A data/coworker template's databricks.yml declares catalog/schema DAB
+    variables (defaulting to the scaffolded values) and wires them into the
+    app's env as APX_CATALOG/APX_SCHEMA (#323)."""
+    from apx_agent import cli
+    cli._scaffold_apps(tmp_path, "demo", force=True,
+                       catalog="samples", schema="tpch", table="customer",
+                       template="data")
+    yml = (tmp_path / "databricks.yml").read_text()
+    assert "  catalog:" in yml
+    assert "    default: samples" in yml
+    assert "  schema:" in yml
+    assert "    default: tpch" in yml
+    assert "- name: APX_CATALOG" in yml
+    assert "value: ${var.catalog}" in yml
+    assert "- name: APX_SCHEMA" in yml
+    assert "value: ${var.schema}" in yml
+
+
+def test_apps_databricks_yml_no_catalog_vars_for_base_template(tmp_path):
+    """A base (LlmAgent, no data source) template's databricks.yml gets the
+    staging target but NOT dead catalog/schema config (#323)."""
+    from apx_agent import cli
+    cli._scaffold_apps(tmp_path, "demo", force=True, catalog="", schema="", template="base")
+    yml = (tmp_path / "databricks.yml").read_text()
+    assert "  catalog:" not in yml
+    assert "  schema:" not in yml
+    assert "APX_CATALOG" not in yml
+    assert "APX_SCHEMA" not in yml
+
+
 def test_scaffold_apps_start_server_mounts_readyz() -> None:
     from apx_agent.cli import _SCAFFOLD_APPS_START_SERVER
     s = _SCAFFOLD_APPS_START_SERVER
