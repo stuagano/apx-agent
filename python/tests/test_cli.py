@@ -3424,11 +3424,11 @@ def test_scaffold_apps_pins_mlflow_with_genai_agent_server(tmp_path: Path) -> No
 def test_scaffold_apps_readme_documents_promotion() -> None:
     """The Apps README documents the dev->staging->prod promotion recipe:
     override variables per target in databricks.yml, then deploy with
-    --dab-target/--profile (#323) — no new command, existing flags."""
+    --bundle-target/--profile (#323) — no new command, existing flags."""
     from apx_agent.cli import _SCAFFOLD_APPS_README
 
     assert "Promoting to another environment" in _SCAFFOLD_APPS_README
-    assert "--dab-target staging" in _SCAFFOLD_APPS_README
+    assert "--bundle-target staging" in _SCAFFOLD_APPS_README
     assert "--profile" in _SCAFFOLD_APPS_README
     assert "targets:" in _SCAFFOLD_APPS_README
 
