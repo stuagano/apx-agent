@@ -2032,6 +2032,20 @@ def _query_onboarding_llm(ws: "Any", prompt_text: str) -> str:
         ) from exc
 
 
+def _onboarding_response_error(split: "_SplitOnboardingResponse", *, retry: bool) -> "str | None":
+    """Human-readable validation error for a parsed onboarding response, or
+    None if both artifacts are usable. The plan markdown must be non-blank
+    (it has no syntax to fail, but the LLM can still omit it) and the TOML
+    spec must parse and validate — a missing/invalid EITHER artifact triggers
+    the same one-retry recovery path in _generate_onboarding_plan."""
+    source = "retry response" if retry else "response"
+    if not (split.plan_markdown or "").strip():
+        return f"no ```markdown block found in the {source}"
+    if split.spec_toml is None:
+        return f"no ```toml block found in the {source}"
+    return _validate_spec_toml(split.spec_toml)
+
+
 class _OnboardingPlan(NamedTuple):
     """The full result of one apx-agent onboard interview + generation pass."""
     org_name: str
@@ -2088,11 +2102,7 @@ def _generate_onboarding_plan(profile: "str | None") -> _OnboardingPlan:
     prompt_text = _ONBOARDING_GEN_PROMPT.format(spec=spec_context)
     response_text = _query_onboarding_llm(ws, prompt_text)
     split = _split_onboarding_response(response_text)
-    error = (
-        _validate_spec_toml(split.spec_toml)
-        if split.spec_toml is not None
-        else "no ```toml block found in the response"
-    )
+    error = _onboarding_response_error(split, retry=False)
 
     if error is not None:
         retry_prompt = (
@@ -2105,11 +2115,7 @@ def _generate_onboarding_plan(profile: "str | None") -> _OnboardingPlan:
         )
         response_text = _query_onboarding_llm(ws, retry_prompt)
         split = _split_onboarding_response(response_text)
-        error = (
-            _validate_spec_toml(split.spec_toml)
-            if split.spec_toml is not None
-            else "no ```toml block found in the retry response"
-        )
+        error = _onboarding_response_error(split, retry=True)
 
     return _OnboardingPlan(
         org_name=org_name,
@@ -2279,6 +2285,10 @@ def onboard(profile: "str | None", directory: str, force: bool) -> None:
     from apx_agent._publish import _slug
 
     result = _generate_onboarding_plan(profile)
+    if not result.plan_markdown.strip():
+        raise click.ClickException(
+            "LLM returned no usable onboarding plan (even after retry). Re-run."
+        )
     slug = _slug(result.org_name)
     out_dir = Path(directory)
     out_dir.mkdir(parents=True, exist_ok=True)

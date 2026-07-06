@@ -5952,6 +5952,32 @@ class TestGenerateOnboardingPlan:
         assert "no ```toml block" in result.validation_error
         assert fake_ws.serving_endpoints.query.call_count == 2  # one retry attempted
 
+    def test_missing_markdown_block_is_treated_as_invalid(self) -> None:
+        from apx_agent.cli import _generate_onboarding_plan
+
+        no_markdown_response = (
+            "```toml\n"
+            'catalog = "TBD-catalog"\n'
+            'schema = "TBD-schema"\n'
+            'persona = "a program director"\n'
+            'objective = "surface at-risk loans"\n'
+            'memory = "persistent"\n'
+            "```\n"
+        )
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=no_markdown_response))]
+        )
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _generate_onboarding_plan(None)
+
+        assert result.validation_error is not None
+        assert "no ```markdown block" in result.validation_error
+        assert fake_ws.serving_endpoints.query.call_count == 2  # one retry attempted
+
 
 class TestOnboardCommand:
     def _mock_generate(self, monkeypatch: "pytest.MonkeyPatch", result: "Any") -> None:
@@ -6032,6 +6058,23 @@ class TestOnboardCommand:
 
         assert cli_result.exit_code == 0, cli_result.output
         assert (tmp_path / "example_org-onboarding-plan.md").read_text() == "# New plan"
+
+    def test_raises_on_empty_plan_markdown(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from apx_agent.cli import _OnboardingPlan, main
+
+        result = _OnboardingPlan(
+            org_name="Example Org",
+            plan_markdown="   ",
+            spec_toml='catalog = "TBD-catalog"\n',
+            validation_error=None,
+        )
+        self._mock_generate(monkeypatch, result)
+
+        runner = CliRunner()
+        cli_result = runner.invoke(main, ["onboard", "--dir", str(tmp_path)])
+
+        assert cli_result.exit_code != 0
+        assert not (tmp_path / "example_org-onboarding-plan.md").exists()
 
 
 # ---------------------------------------------------------------------------
