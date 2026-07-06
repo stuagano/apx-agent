@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 quickstart = "scripts.quickstart:main"
+monthly-summary = "scripts.monthly_summary:main"
 
 # [tool.uv.sources] intentionally omitted — the git+https URL in
 # [project].dependencies above is the install source. Bump the @ref
@@ -25,7 +26,7 @@ quickstart = "scripts.quickstart:main"
 
 [tool.apx.agent]
 name = "hubspot-complaints-agent"
-description = "An apx-agent on Databricks Apps."
+description = "Summarizes HubSpot support-ticket complaints by month."
 model = "databricks-claude-sonnet-4-6"
 instructions = "You are a helpful assistant."
 # ADK-style layout: the user's agent definition lives at top-level
@@ -36,8 +37,9 @@ module = "agent:agent"
 # Starter prompts shown on the agent's landing page (clickable; fill the chat
 # box so you can edit before sending). Tailor these to your agent's data/tools.
 examples = [
-    "Show me a few sample rows from the data you can access",
-    "What questions can you answer?",
+    "Summarize complaints for June 2026",
+    "How does last month's complaint count compare to the month before?",
+    "What are the top complaint themes this quarter?",
 ]
 
 # Optional: declare resource tools as data (no code needed). `type` selects a
