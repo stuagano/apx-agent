@@ -2,11 +2,11 @@
 
 The escapers render Python strings as inline Spark/Databricks SQL literals
 (``sql_str_literal`` and its callers in ``catalog._to_sql_literal``,
-``_publish._q``, ``_conversation_delta._sql_str``). Spark treats backslash as a
-live escape character *inside* a single-quoted literal, so an escaper that only
-doubles the quote (``'`` -> ``''``) but leaves ``\\`` untouched lets a value
-ending in a backslash escape the closing quote and break out of the literal —
-SQL injection under the caller's UC grants (issues #351, #352).
+``_publish._q``). Spark treats backslash as a live escape character *inside*
+a single-quoted literal, so an escaper that only doubles the quote (``'`` ->
+``''``) but leaves ``\\`` untouched lets a value ending in a backslash escape
+the closing quote and break out of the literal — SQL injection under the
+caller's UC grants (issues #351, #352).
 
 A string-only "did it return a quoted value" assertion passes on the buggy
 escaper. This reconciles the *claim* (this is a safe literal) against *reality*:
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import pytest
 
-from apx_agent._conversation_delta import _sql_str
 from apx_agent._publish import _q
 from apx_agent._sql import sql_str_literal
 from apx_agent.catalog import _to_sql_literal
@@ -81,7 +80,6 @@ def _spark_decode(literal: str) -> str:
         pytest.param(sql_str_literal, id="sql_str_literal"),
         pytest.param(lambda v: _to_sql_literal(v, "STRING"), id="catalog._to_sql_literal"),
         pytest.param(_q, id="_publish._q"),
-        pytest.param(_sql_str, id="_conversation_delta._sql_str"),
     ],
 )
 def test_escaped_literal_round_trips_without_breakout(escaper, value: str) -> None:

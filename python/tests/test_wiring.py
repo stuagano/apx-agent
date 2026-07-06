@@ -839,9 +839,9 @@ class TestPersonaOverTemplate:
         )
         agent = resolve_agent(None, config, ws=None)
         assert isinstance(agent, DataAgent)
-        grounding_before = getattr(agent, "_instructions", "")
+        grounding_before = agent._instructions
         finalize_agent(agent, config)
-        composed = getattr(agent, "_instructions", "")
+        composed = agent._instructions
         assert "Be concise and professional." in composed
         assert len(composed) >= len(grounding_before)
 
@@ -849,29 +849,33 @@ class TestPersonaOverTemplate:
         """Second finalize_agent call must not double-compose the persona."""
         from apx_agent import AgentConfig
         from apx_agent._wiring import finalize_agent, resolve_agent
+        from apx_agent.data_agent import DataAgent
         config = AgentConfig(
             name="t",
             instructions="Be concise.",
             template={"name": "data", "catalog": "main", "schema": "sales"},
         )
         agent = resolve_agent(None, config, ws=None)
+        assert isinstance(agent, DataAgent)
         finalize_agent(agent, config)
-        instructions_after_first = getattr(agent, "_instructions", "")
+        instructions_after_first = agent._instructions
         finalize_agent(agent, config)  # idempotent
-        assert getattr(agent, "_instructions", "") == instructions_after_first
+        assert agent._instructions == instructions_after_first
 
     def test_template_only_no_persona_uses_grounding_verbatim(self):
         """No envelope instructions → template grounding used unchanged."""
         from apx_agent import AgentConfig
         from apx_agent._wiring import finalize_agent, resolve_agent
+        from apx_agent.data_agent import DataAgent
         config = AgentConfig(
             name="t",
             template={"name": "data", "catalog": "main", "schema": "sales"},
         )
         agent = resolve_agent(None, config, ws=None)
-        grounding = getattr(agent, "_instructions", "")
+        assert isinstance(agent, DataAgent)
+        grounding = agent._instructions
         finalize_agent(agent, config)
-        assert getattr(agent, "_instructions", "") == grounding
+        assert agent._instructions == grounding
 
 
 # ---------------------------------------------------------------------------
@@ -1016,7 +1020,9 @@ class TestMemoryBackendConfig:
             name = "ex-agent"
 
             [tool.apx.agent.example]
-            type = "delta"
+            type = "lakebase"
+            host = "${LAKEBASE_HOST}"
+            database = "coworker"
             table_name = "main.coworker.apx_examples"
             embedding_model = "databricks-bge-large-en"
             embedding_dim = 1024
@@ -1024,7 +1030,7 @@ class TestMemoryBackendConfig:
         config = _load_agent_config(pyproject_path=str(pp))
         assert config is not None
         assert config.example is not None
-        assert config.example.type == "delta"
+        assert config.example.type == "lakebase"
         assert config.example.agent_id is None
 
     def test_absent_memory_gives_none(self, tmp_path):

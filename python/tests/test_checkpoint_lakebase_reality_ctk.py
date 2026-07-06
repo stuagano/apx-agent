@@ -66,11 +66,11 @@ def test_resolve_checkpointer_builds_postgres_saver_for_lakebase(
 def test_resolve_checkpointer_none_for_non_lakebase() -> None:
     from apx_agent._memory_wiring import resolve_checkpointer
 
-    delta = AgentConfig(
+    inmemory = AgentConfig(
         name="t", model="m",
-        session=SessionBackendConfig(type="delta", table_name="c.s.p"),
+        session=SessionBackendConfig(type="inmemory", table_name="c.s.p"),
     )
-    assert resolve_checkpointer(delta, ws=MagicMock()) is None
+    assert resolve_checkpointer(inmemory, ws=MagicMock()) is None
     assert resolve_checkpointer(AgentConfig(name="t", model="m"), ws=MagicMock()) is None
 
 

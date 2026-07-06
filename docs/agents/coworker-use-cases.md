@@ -19,12 +19,14 @@ memory knob on top of `DataAgent`:
 3. **`objective`** — what this agent is designed to do. Combined with
    `join_key` when both are given.
 4. **`memory`** — a one-word tier knob: `"off"` (default) / `"inmemory"` /
-   `"persistent"` (UC Delta) / `"delta"`. It normalizes into
+   `"persistent"` (Lakebase, with generated host/database/embedding-model
+   defaults) / `"managed"` (UC managed memory). It normalizes into
    `MemoryBackendConfig` + `SessionBackendConfig` carried as declared config;
    the framework's finalize/serve path does the wiring, so construction needs
-   no `ws`. `memory="lakebase"` deliberately raises — production pgvector
-   needs explicit `[tool.apx.agent.memory]` / `[tool.apx.agent.session]`
-   blocks, because the one-word knob can't carry connection details.
+   no `ws`. Typing `memory="lakebase"` literally deliberately raises — that's
+   for fully custom pgvector connection details via explicit
+   `[tool.apx.agent.memory]` / `[tool.apx.agent.session]` blocks, distinct
+   from `"persistent"`'s generated defaults.
 
 ```python
 agent = CoworkerAgent(

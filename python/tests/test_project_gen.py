@@ -45,12 +45,18 @@ def coworker_config() -> AgentConfig:
             "memory": "persistent",
         },
         memory=MemoryBackendConfig(
-            type="delta",
+            type="lakebase",
+            host="${LAKEBASE_HOST}",
+            database="payroll_coworker",
             table_name="main.payroll.apx_memory",
+            embedding_model="databricks-bge-large-en",
+            embedding_dim=1024,
             auto_create=True,
         ),
         session=SessionBackendConfig(
-            type="delta",
+            type="lakebase",
+            host="${LAKEBASE_HOST}",
+            database="payroll_coworker",
             table_name="main.payroll.apx_sessions",
             auto_create=True,
         ),
@@ -163,7 +169,7 @@ def test_memory_section_present(tmp_path: Path, coworker_config: AgentConfig) ->
 
     memory_section = data.get("tool", {}).get("apx", {}).get("agent", {}).get("memory")
     assert memory_section is not None, "[tool.apx.agent.memory] section missing"
-    assert memory_section.get("type") == "delta"
+    assert memory_section.get("type") == "lakebase"
     assert memory_section.get("table_name") == "main.payroll.apx_memory"
 
 

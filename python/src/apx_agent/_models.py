@@ -105,7 +105,13 @@ class GuardrailsConfig(BaseModel):
     ingestion time."""
 
 
-StoreType = Literal["inmemory", "delta", "lakebase", "managed"]
+StoreType = Literal["inmemory", "lakebase", "managed"]
+
+# Default embedding endpoint for the "persistent" knob's Lakebase memory —
+# a Databricks Foundation Model API pay-per-token endpoint present in every
+# workspace (no provisioning needed). Dim confirmed against docs/agents/coworker.md.
+_DEFAULT_EMBEDDING_MODEL = "databricks-bge-large-en"
+_DEFAULT_EMBEDDING_DIM = 1024
 
 
 class _BackendConfig(BaseModel):
@@ -184,8 +190,7 @@ _KNOB_TO_TYPE: dict[str, StoreType | None] = {
     "off": None,
     "inmemory": "inmemory",
     "local": "inmemory",
-    "persistent": "delta",
-    "delta": "delta",
+    "persistent": "lakebase",
     "managed": "managed",
 }
 
@@ -199,13 +204,21 @@ def normalize_memory_knob(
 ) -> "tuple[MemoryBackendConfig | None, SessionBackendConfig | None]":
     """Map a one-word memory tier to ``(MemoryBackendConfig, SessionBackendConfig)``.
 
-    Returns ``(None, None)`` for ``"off"``.  Raises for ``"lakebase"`` (needs
-    explicit TOML blocks) and for unknown values.
+    Returns ``(None, None)`` for ``"off"``.  Raises for ``"lakebase"`` typed
+    literally (needs explicit TOML blocks) and for unknown values.
 
     When *catalog* and *schema* are provided (DataAgent / CoworkerAgent), the
-    delta table names are derived from them so memory lands in the same UC
+    table/database names are derived from them so memory lands in the same UC
     location as the agent's data.  Falls back to ``main.default`` for bare
     ``LlmAgent(memory="persistent")`` callers that have no catalog/schema.
+
+    ``"persistent"`` resolves to a Lakebase-backed config pointed at the
+    ``LAKEBASE_HOST`` env var. Lakebase requires an embedding endpoint for
+    semantic recall (unlike the retired delta store, where it was optional),
+    so this defaults to the always-available FMAPI endpoint
+    ``databricks-bge-large-en``. If ``LAKEBASE_HOST`` is unset at build time,
+    the store fails open (memory disabled, agent still boots) rather than
+    crashing — see ``_memory_wiring.py``.
     """
     v = (value or "").strip().lower()
     if v == "lakebase":
@@ -218,15 +231,15 @@ def normalize_memory_knob(
     if v not in _KNOB_TO_TYPE:
         raise ValueError(
             f"memory={value!r} is not a valid tier; use one of: off, inmemory "
-            "(alias local), persistent (alias delta), or an explicit "
+            "(alias local), persistent, managed, or an explicit "
             "[tool.apx.agent.memory] block for lakebase."
         )
     tier = _KNOB_TO_TYPE[v]
     if tier is None:
         return (None, None)
     if tier == "managed":
-        # Managed Agent Memory is a UC memory store named like the delta memory
-        # table. It configures LONG-TERM memory only; short-term/session is
+        # Managed Agent Memory is a UC memory store named like the persistent
+        # memory table. It configures LONG-TERM memory only; short-term/session is
         # deferred to the LangGraph checkpointer (or an explicit
         # [tool.apx.agent.session] block) — so no session backend here.
         if catalog and schema:
@@ -236,21 +249,31 @@ def normalize_memory_knob(
         else:
             store_name = "main.default.apx_memories"
         return (MemoryBackendConfig(type="managed", store_name=store_name), None)
-    if tier == "delta":
-        if catalog and schema:
-            raw = (name or schema).lower()
-            slug = re.sub(r"[^a-z0-9_]", "_", raw).strip("_") or "agent"
-            table_name: str | None = f"{catalog}.{schema}.apx_{slug}_memory"
-            session_table: str | None = f"{catalog}.{schema}.apx_{slug}_sessions"
-        else:
-            table_name = "main.default.apx_memories"
-            session_table = "main.default.apx_sessions"
+    if catalog and schema:
+        raw = (name or schema).lower()
+        slug = re.sub(r"[^a-z0-9_]", "_", raw).strip("_") or "agent"
+        table_name: str | None = f"{catalog}.{schema}.apx_{slug}_memory"
+        session_table: str | None = f"{catalog}.{schema}.apx_{slug}_sessions"
+        database = f"apx_{slug}"
     else:
-        table_name = None
-        session_table = None
+        table_name = "main.default.apx_memories"
+        session_table = "main.default.apx_sessions"
+        database = "apx_agent"
     return (
-        MemoryBackendConfig(type=tier, table_name=table_name),
-        SessionBackendConfig(type=tier, table_name=session_table),
+        MemoryBackendConfig(
+            type=tier,
+            table_name=table_name,
+            host="${LAKEBASE_HOST}",
+            database=database,
+            embedding_model=_DEFAULT_EMBEDDING_MODEL,
+            embedding_dim=_DEFAULT_EMBEDDING_DIM,
+        ),
+        SessionBackendConfig(
+            type=tier,
+            table_name=session_table,
+            host="${LAKEBASE_HOST}",
+            database=database,
+        ),
     )
 
 

@@ -58,8 +58,12 @@ model = "databricks/claude-3-7-sonnet"
 instructions = "You are a payroll analyst..."
 
 [tool.apx.agent.memory]
-type = "delta"
+type = "lakebase"
+host = "${LAKEBASE_HOST}"
+database = "payroll"
 table_name = "main.payroll.agent_memory"
+embedding_model = "databricks-bge-large-en"
+embedding_dim = 1024
 
 [tool.apx.agent.data]
 catalog = "main"
@@ -74,7 +78,7 @@ That declaration becomes: an agent grounded in its schema before the first quest
 |---|---|
 | **LLM API format** | Responses API and chat-completions traces both surface identically in the dev UI |
 | **Conversation history** | One canonical message format across all agent types and frameworks |
-| **Memory backends** | Delta Lake, Lakebase, or in-memory — same interface, declared not implemented |
+| **Memory backends** | Lakebase, UC managed memory, or in-memory — same interface, declared not implemented |
 | **Observation** | Tool calls, spans, and conversation deltas normalized before they reach any renderer |
 | **Governance** | Identity passthrough, UC grants, and audit logging wired from the declaration |
 

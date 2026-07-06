@@ -1392,7 +1392,7 @@ _ws = _make_workspace_client()
 # not just when served via create_app().
 _agent_config = _load_agent_config()
 finalize_agent(agent, _agent_config, ws=_ws)
-# Conversation store: config-driven (Delta/Lakebase via [tool.apx.agent].session)
+# Conversation store: config-driven (Lakebase via [tool.apx.agent].session)
 # when declared; otherwise an in-process store so multi-turn threading and the
 # dev UI History panel work out of the box. In-memory state resets on restart —
 # declare a session block for durable history.
@@ -1439,7 +1439,7 @@ _SCAFFOLD_APPS_QUICKSTART = '''\
 """quickstart — one-shot setup for the <APP_NAME> Apps deploy.
 
 Creates the MLflow experiment for tracing and writes its ID to .env.
-Provisions memory backends (Delta tables or Lakebase instance) if configured.
+Reports Lakebase memory/session backend status if configured.
 Safe to re-run; idempotent.
 """
 from apx_agent.bootstrap import init_apps_experiment, provision_memory_backends
@@ -1459,11 +1459,15 @@ if __name__ == "__main__":
 
 
 _SCAFFOLD_MEMORY_BLOCK = '''
-# Uncomment to enable persistent memory (Delta tables auto-created by `uv run quickstart`).
-# Re-run quickstart after changing these table names.
+# Uncomment to enable persistent memory on Lakebase. Set the LAKEBASE_HOST env
+# var to point at an existing Lakebase database (tables auto-create on first use).
 # [tool.apx.agent.memory]
-# type = "delta"
+# type = "lakebase"
+# host = "${LAKEBASE_HOST}"
+# database = "<APP_NAME_SLUG>"
 # table_name = "<CATALOG>.<SCHEMA>.apx_<APP_NAME_SLUG>_memory"
+# embedding_model = "databricks-bge-large-en"
+# embedding_dim = 1024
 '''
 
 # Default session backend: durable history + keyed state on Databricks Lakebase.
@@ -2256,13 +2260,19 @@ template:
   include_functions: true
 
 memory:
-  type: delta
+  type: lakebase
+  host: $LAKEBASE_HOST
+  database: <name_underscored>
   table_name: $CATALOG.$SCHEMA.apx_<name_underscored>_memory
+  embedding_model: databricks-bge-large-en
+  embedding_dim: 1024
   auto_create: true
   validate_at_boot: true
 
 session:
-  type: delta
+  type: lakebase
+  host: $LAKEBASE_HOST
+  database: <name_underscored>
   table_name: $CATALOG.$SCHEMA.apx_<name_underscored>_sessions
   auto_create: true
   validate_at_boot: true
@@ -2962,12 +2972,18 @@ def _scaffold_to_yaml(
             cat = catalog or "$CATALOG"
             sch = schema or "$SCHEMA"
             spec["memory"] = {
-                "type": "delta",
+                "type": "lakebase",
+                "host": "${LAKEBASE_HOST}",
+                "database": safe_name,
                 "table_name": f"{cat}.{sch}.apx_{safe_name}_memory",
+                "embedding_model": "databricks-bge-large-en",
+                "embedding_dim": 1024,
                 "auto_create": True,
             }
             spec["session"] = {
-                "type": "delta",
+                "type": "lakebase",
+                "host": "${LAKEBASE_HOST}",
+                "database": safe_name,
                 "table_name": f"{cat}.{sch}.apx_{safe_name}_sessions",
                 "auto_create": True,
             }
