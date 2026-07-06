@@ -3422,7 +3422,10 @@ def test_scaffold_apps_pins_mlflow_with_genai_agent_server(tmp_path: Path) -> No
 
 
 def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
-    """--catalog/--schema bake the default DataAgent's data source (no probe)."""
+    """--catalog/--schema bake the default DataAgent's data source (no probe),
+    as an env-var-overridable default (#323) — not a literal call, so a
+    deployed app's APX_CATALOG/APX_SCHEMA env vars can override it per
+    environment."""
     runner = CliRunner()
     result = runner.invoke(
         main, ["agents", "scaffold", "ag", "--catalog", "main", "--schema", "sales",
@@ -3430,7 +3433,11 @@ def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     agent_py = (tmp_path / "ag" / "agent.py").read_text()
-    assert 'DataAgent("main", "sales"' in agent_py
+    assert '_CATALOG = "main"' in agent_py
+    assert '_SCHEMA = "sales"' in agent_py
+    assert 'os.environ.get("APX_CATALOG", _CATALOG)' in agent_py
+    assert 'os.environ.get("APX_SCHEMA", _SCHEMA)' in agent_py
+    assert 'DataAgent("main", "sales"' not in agent_py
 
 
 def test_splice_tool_wires_into_dataagent_extra_tools() -> None:
@@ -4294,6 +4301,34 @@ class TestScaffoldCoworker:
                            catalog="samples", schema="tpch", table="customer",
                            template="data")
         assert "DataAgent(" in (tmp_path / "agent.py").read_text()
+
+    def test_apps_data_agent_reads_catalog_schema_from_env(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold",
+                            lambda c, s, profile=None: None)
+        cli._scaffold_apps(tmp_path, "demo", force=True,
+                           catalog="samples", schema="tpch", table="customer",
+                           template="data")
+        agent_py = (tmp_path / "agent.py").read_text()
+        assert "import os" in agent_py
+        assert '_CATALOG = "samples"' in agent_py
+        assert '_SCHEMA = "tpch"' in agent_py
+        assert 'os.environ.get("APX_CATALOG", _CATALOG)' in agent_py
+        assert 'os.environ.get("APX_SCHEMA", _SCHEMA)' in agent_py
+
+    def test_apps_coworker_reads_catalog_schema_from_env(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold",
+                            lambda c, s, profile=None: None)
+        cli._scaffold_apps(tmp_path, "demo", force=True,
+                           catalog="samples", schema="tpch", table="customer",
+                           template="coworker")
+        agent_py = (tmp_path / "agent.py").read_text()
+        assert "import os" in agent_py
+        assert '_CATALOG = "samples"' in agent_py
+        assert '_SCHEMA = "tpch"' in agent_py
+        assert 'os.environ.get("APX_CATALOG", _CATALOG)' in agent_py
+        assert 'os.environ.get("APX_SCHEMA", _SCHEMA)' in agent_py
 
 
 # ---------------------------------------------------------------------------

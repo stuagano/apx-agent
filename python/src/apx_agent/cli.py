@@ -1262,6 +1262,8 @@ agent's behavior.
 """
 from __future__ import annotations
 
+import os
+
 from apx_agent import DataAgent
 
 <EXAMPLE_TOOL>
@@ -1270,11 +1272,22 @@ from apx_agent import DataAgent
 # schema and queries via a SQL tool that runs as the calling user.
 #
 # Make it your own:
-#   * point it at your own data:  DataAgent("main", "sales", name="<APP_NAME>")
+#   * point it at your own data:  re-scaffold with --catalog/--schema
 #   * re-scaffold to refresh the baked schema:  apx-agent scaffold <name> --catalog <c>
 #   * add ``genie_space=...`` / ``vector_index=...`` for Genie or Vector Search
 #   * or drop back to a plain ``Agent(tools=[...])`` with your own ``@tool``s
-agent = DataAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS>, name="<APP_NAME>")
+#
+# APX_CATALOG/APX_SCHEMA (set per DAB target — see README "Promoting to
+# another environment") override the scaffolded default below, so the same
+# agent.py can run against a different catalog/schema per environment.
+_CATALOG = "<CATALOG>"
+_SCHEMA = "<SCHEMA>"
+
+agent = DataAgent(
+    os.environ.get("APX_CATALOG", _CATALOG),
+    os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS>,
+    name="<APP_NAME>",
+)
 '''
 
 
@@ -1312,11 +1325,23 @@ agent = LlmAgent(
 _SCAFFOLD_APPS_AGENT_COWORKER = '''\
 from __future__ import annotations
 
+import os
+
 from apx_agent import CoworkerAgent
 
 <EXAMPLE_TOOL>
+# APX_CATALOG/APX_SCHEMA (set per DAB target — see README "Promoting to
+# another environment") override the scaffolded default below, so the same
+# agent.py can run against a different catalog/schema per environment.
+_CATALOG = "<CATALOG>"
+_SCHEMA = "<SCHEMA>"
+
 # Add memory="persistent" to remember facts and context across sessions.
-agent = CoworkerAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS><PERSONA_ARG><JOIN_KEY_ARG><OBJECTIVE_ARG>, name="<APP_NAME>")
+agent = CoworkerAgent(
+    os.environ.get("APX_CATALOG", _CATALOG),
+    os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS><PERSONA_ARG><JOIN_KEY_ARG><OBJECTIVE_ARG>,
+    name="<APP_NAME>",
+)
 '''
 
 
