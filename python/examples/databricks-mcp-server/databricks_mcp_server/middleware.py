@@ -32,8 +32,9 @@ class TimeoutHandlingMiddleware(Middleware):
        structured JSON responses instead of crashing the MCP server. This ensures
        the server stays up and the agent gets actionable error information.
 
-    Note: For timeouts to work on sync tools, the server must wrap sync functions
-    in asyncio.to_thread() (see server.py _patch_tool_decorator_for_async).
+    Note: For timeouts to work on sync tools, the tool must run in a worker
+    thread, not inline on the event loop. FastMCP dispatches sync tools to a
+    thread by default (FunctionTool's run_in_thread=True) — see server.py.
     """
 
     async def on_call_tool(
