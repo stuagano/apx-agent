@@ -436,3 +436,91 @@ def test_predict_approval_survives_a_restart(monkeypatch: pytest.MonkeyPatch) ->
         )
         r2 = chat2.predict([], custom_inputs={"session_id": "T", "resume": "approve"})
     assert "sent to x@y.com" in _contents(r2)  # gated tool ran after the restart
+
+
+# ── #469: resume calls stamp an explicit approval-decision audit marker ───────
+#
+# USER_HASH is already stamped on every predict/invoke span (including resume
+# calls), but nothing flagged a given span as *being* an approve/deny decision
+# — an auditor could not tell a resume span from an ordinary turn without
+# externally correlating two spans. approval_decision closes that gap.
+
+
+def _spy_audit_calls(monkeypatch: pytest.MonkeyPatch, module: Any) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    orig = module.set_audit_attrs
+
+    def _spy(span: Any, **fields: Any) -> None:
+        calls.append(fields)
+        orig(span, **fields)
+
+    monkeypatch.setattr(module, "set_audit_attrs", _spy)
+    return calls
+
+
+def test_predict_resume_stamps_approval_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apx_agent._chat_agent as _ca
+
+    calls = _spy_audit_calls(monkeypatch, _ca)
+    _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="done")])
+    chat = chat_agent_for(
+        _agent(), model="m", conversation_store=None, checkpointer=InMemorySaver()
+    )
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        chat.predict(
+            [ChatAgentMessage(role="user", content="email x@y.com", id="u1")],
+            custom_inputs={"session_id": "T"},
+        )
+        chat.predict([], custom_inputs={"session_id": "T", "resume": "approve"})
+    decisions = [c["approval_decision"] for c in calls if "approval_decision" in c]
+    assert decisions == ["approve"]
+
+
+def test_predict_stream_resume_stamps_approval_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apx_agent._chat_agent as _ca
+
+    calls = _spy_audit_calls(monkeypatch, _ca)
+    _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="done")])
+    chat = chat_agent_for(
+        _agent(), model="m", conversation_store=None, checkpointer=InMemorySaver()
+    )
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        list(
+            chat.predict_stream(
+                [ChatAgentMessage(role="user", content="email x@y.com", id="u1")],
+                custom_inputs={"session_id": "S"},
+            )
+        )
+        list(chat.predict_stream([], custom_inputs={"session_id": "S", "resume": "approve"}))
+    decisions = [c["approval_decision"] for c in calls if "approval_decision" in c]
+    assert decisions == ["approve"]
+
+
+def test_responses_invoke_resume_stamps_approval_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apx_agent._responses_agent as _ra
+
+    calls = _spy_audit_calls(monkeypatch, _ra)
+    _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="done")])
+    non_stream, _ = compile_to_responses_agent(
+        _agent(), model="m", checkpointer=InMemorySaver()
+    )
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        non_stream(_req("email x@y.com", thread_id="T2"))
+        non_stream(_req("", thread_id="T2", resume="approve"))
+    decisions = [c["approval_decision"] for c in calls if "approval_decision" in c]
+    assert decisions == ["approve"]
+
+
+def test_responses_stream_resume_stamps_approval_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apx_agent._responses_agent as _ra
+
+    calls = _spy_audit_calls(monkeypatch, _ra)
+    _install_model(monkeypatch, [_tool_call("x@y.com"), AIMessage(content="done")])
+    _, streaming = compile_to_responses_agent(
+        _agent(), model="m", checkpointer=InMemorySaver()
+    )
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        list(streaming(_req("email x@y.com", thread_id="S2")))
+        list(streaming(_req("", thread_id="S2", resume="approve")))
+    decisions = [c["approval_decision"] for c in calls if "approval_decision" in c]
+    assert decisions == ["approve"]

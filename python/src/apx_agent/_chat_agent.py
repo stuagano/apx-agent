@@ -863,6 +863,8 @@ def chat_agent_for(
                 # for a checkpointed thread, feed a Command(resume=…) instead of
                 # new messages — the graph continues from the paused tool call.
                 resume = _resume_decision(custom_inputs) if lg_config else None
+                if resume is not None:
+                    set_audit_attrs(span, approval_decision=str(resume))
                 with safe_span("graph.invoke", span_type="CHAIN") as inv_span:
                     if resume is not None:
                         from langgraph.types import Command  # noqa: PLC0415
@@ -992,6 +994,7 @@ def chat_agent_for(
                 # instead of sending new messages (mirrors predict).
                 resume = _resume_decision(custom_inputs) if lg_config else None
                 if resume is not None:
+                    set_audit_attrs(span, approval_decision=str(resume))
                     from langgraph.types import Command  # noqa: PLC0415
                     stream_input: Any = Command(resume=resume)
                 else:
