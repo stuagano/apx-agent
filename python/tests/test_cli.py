@@ -5763,6 +5763,321 @@ class TestExamplesImport:
 
 
 # ---------------------------------------------------------------------------
+# apx-agent onboard — response parsing + spec validation (#318)
+# ---------------------------------------------------------------------------
+
+
+class TestSplitOnboardingResponse:
+    def test_extracts_both_blocks(self) -> None:
+        from apx_agent.cli import _split_onboarding_response
+
+        text = (
+            "```markdown\n# Plan\n\nDo the thing.\n```\n\n"
+            "```toml\n"
+            'catalog = "TBD-catalog"\n'
+            "```\n"
+        )
+        result = _split_onboarding_response(text)
+        assert result.plan_markdown == "# Plan\n\nDo the thing."
+        assert result.spec_toml == 'catalog = "TBD-catalog"'
+
+    def test_missing_blocks_return_none(self) -> None:
+        from apx_agent.cli import _split_onboarding_response
+
+        result = _split_onboarding_response("no fenced blocks here")
+        assert result.plan_markdown is None
+        assert result.spec_toml is None
+
+
+class TestValidateSpecToml:
+    def test_valid_toml_returns_none(self) -> None:
+        from apx_agent.cli import _validate_spec_toml
+
+        toml_text = (
+            'catalog = "TBD-catalog"\n'
+            'schema = "TBD-schema"\n'
+            'persona = "a program director"\n'
+            'objective = "surface at-risk loans"\n'
+            'memory = "persistent"\n'
+        )
+        assert _validate_spec_toml(toml_text) is None
+
+    def test_malformed_toml_returns_error(self) -> None:
+        from apx_agent.cli import _validate_spec_toml
+
+        error = _validate_spec_toml("catalog = not valid toml @@@")
+        assert error is not None
+        assert "TOML parse error" in error
+
+    def test_missing_required_field_returns_error(self) -> None:
+        from apx_agent.cli import _validate_spec_toml
+
+        # catalog and schema are required (no default) on CoworkerTemplate.Spec.
+        error = _validate_spec_toml('persona = "someone"\n')
+        assert error is not None
+        assert "Spec validation error" in error
+
+
+def _canned_onboarding_answers() -> "Any":
+    return iter([
+        "Example Org",
+        "We provide microloans to small farmers.",
+        "Kiva, spreadsheets",
+        "Manually reconciling loan repayments every week",
+        "Which loans are at risk of default",
+        "about 2,000 active loans",
+        "Program Director",
+    ])
+
+
+_VALID_ONBOARDING_RESPONSE = (
+    "```markdown\n"
+    "# Onboarding Plan\n\n"
+    "## Phase 1: Land the data\n"
+    "Bring Kiva exports into Unity Catalog. 1-2 weeks.\n\n"
+    "## Phase 2: Stand up the coworker\n"
+    "Ground a CoworkerAgent in the landed schema. 1 week.\n"
+    "```\n\n"
+    "```toml\n"
+    'catalog = "TBD-catalog"\n'
+    'schema = "TBD-schema"\n'
+    'persona = "a microfinance program director"\n'
+    'join_key = "loan_id"\n'
+    'objective = "surface loans at risk of default before they lapse"\n'
+    'memory = "persistent"\n'
+    "```\n"
+)
+
+
+class TestGenerateOnboardingPlan:
+    def test_valid_on_first_response(self) -> None:
+        from apx_agent.cli import _generate_onboarding_plan
+
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=_VALID_ONBOARDING_RESPONSE))]
+        )
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _generate_onboarding_plan(None)
+
+        assert result.org_name == "Example Org"
+        assert "Phase 1: Land the data" in result.plan_markdown
+        assert result.validation_error is None
+        assert 'catalog = "TBD-catalog"' in result.spec_toml
+        assert fake_ws.serving_endpoints.query.call_count == 1
+
+    def test_passes_chatmessage_not_dicts(self) -> None:
+        """Same regression class as test_generate_coworker_yaml_passes_chatmessage_not_dicts:
+        the SDK calls .as_dict() on each message, so dicts AttributeError at runtime."""
+        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+
+        from apx_agent.cli import _generate_onboarding_plan
+
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=_VALID_ONBOARDING_RESPONSE))]
+        )
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            _generate_onboarding_plan(None)
+
+        msgs = fake_ws.serving_endpoints.query.call_args.kwargs["messages"]
+        assert msgs and all(isinstance(m, ChatMessage) for m in msgs)
+        assert msgs[0].role == ChatMessageRole.USER
+
+    def test_retries_on_invalid_toml(self) -> None:
+        from apx_agent.cli import _generate_onboarding_plan
+
+        bad_response = (
+            "```markdown\n# Plan\nPhase 1: land data.\n```\n\n"
+            "```toml\ncatalog = not valid @@@\n```\n"
+        )
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.side_effect = [
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=bad_response))]),
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=_VALID_ONBOARDING_RESPONSE))]
+            ),
+        ]
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _generate_onboarding_plan(None)
+
+        assert result.validation_error is None
+        assert fake_ws.serving_endpoints.query.call_count == 2
+
+    def test_falls_back_when_retry_also_invalid(self) -> None:
+        from apx_agent.cli import _generate_onboarding_plan
+
+        bad_response = (
+            "```markdown\n# Plan\nPhase 1: land data.\n```\n\n"
+            "```toml\ncatalog = still not valid @@@\n```\n"
+        )
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=bad_response))]
+        )
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _generate_onboarding_plan(None)
+
+        assert result.validation_error is not None
+        assert "Plan" in result.plan_markdown  # plan still captured though spec failed
+        assert fake_ws.serving_endpoints.query.call_count == 2
+
+    def test_missing_toml_block_is_treated_as_invalid(self) -> None:
+        from apx_agent.cli import _generate_onboarding_plan
+
+        no_toml_response = "```markdown\n# Plan\nPhase 1: land data.\n```\n"
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=no_toml_response))]
+        )
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _generate_onboarding_plan(None)
+
+        assert result.validation_error is not None
+        assert "no ```toml block" in result.validation_error
+        assert fake_ws.serving_endpoints.query.call_count == 2  # one retry attempted
+
+    def test_missing_markdown_block_is_treated_as_invalid(self) -> None:
+        from apx_agent.cli import _generate_onboarding_plan
+
+        no_markdown_response = (
+            "```toml\n"
+            'catalog = "TBD-catalog"\n'
+            'schema = "TBD-schema"\n'
+            'persona = "a program director"\n'
+            'objective = "surface at-risk loans"\n'
+            'memory = "persistent"\n'
+            "```\n"
+        )
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=no_markdown_response))]
+        )
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _generate_onboarding_plan(None)
+
+        assert result.validation_error is not None
+        assert "no ```markdown block" in result.validation_error
+        assert fake_ws.serving_endpoints.query.call_count == 2  # one retry attempted
+
+
+class TestOnboardCommand:
+    def _mock_generate(self, monkeypatch: "pytest.MonkeyPatch", result: "Any") -> None:
+        import apx_agent.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "_generate_onboarding_plan", lambda profile: result)
+
+    def test_writes_plan_and_valid_spec(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from apx_agent.cli import _OnboardingPlan, main
+
+        result = _OnboardingPlan(
+            org_name="Example Org",
+            plan_markdown="# Plan\nDo the thing.",
+            spec_toml='catalog = "TBD-catalog"\n',
+            validation_error=None,
+        )
+        self._mock_generate(monkeypatch, result)
+
+        runner = CliRunner()
+        cli_result = runner.invoke(main, ["onboard", "--dir", str(tmp_path)])
+
+        assert cli_result.exit_code == 0, cli_result.output
+        plan_path = tmp_path / "example_org-onboarding-plan.md"
+        spec_path = tmp_path / "example_org-coworker.toml"
+        assert plan_path.read_text() == "# Plan\nDo the thing."
+        assert spec_path.read_text() == 'catalog = "TBD-catalog"\n'
+        assert "Next step: apx-agent agents scaffold" in cli_result.output
+
+    def test_writes_draft_toml_when_invalid(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from apx_agent.cli import _OnboardingPlan, main
+
+        result = _OnboardingPlan(
+            org_name="Example Org",
+            plan_markdown="# Plan",
+            spec_toml="catalog = not valid",
+            validation_error="TOML parse error: bad syntax",
+        )
+        self._mock_generate(monkeypatch, result)
+
+        runner = CliRunner()
+        cli_result = runner.invoke(main, ["onboard", "--dir", str(tmp_path)])
+
+        assert cli_result.exit_code == 0, cli_result.output
+        draft_path = tmp_path / "example_org-coworker.DRAFT.toml"
+        assert draft_path.exists()
+        assert "UNVALIDATED" in draft_path.read_text()
+        assert not (tmp_path / "example_org-coworker.toml").exists()
+        assert "UNVALIDATED" in cli_result.output
+
+    def test_refuses_to_overwrite_without_force(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from apx_agent.cli import _OnboardingPlan, main
+
+        result = _OnboardingPlan(
+            org_name="Example Org", plan_markdown="# Plan",
+            spec_toml='catalog = "TBD-catalog"\n', validation_error=None,
+        )
+        self._mock_generate(monkeypatch, result)
+        (tmp_path / "example_org-onboarding-plan.md").write_text("existing")
+
+        runner = CliRunner()
+        cli_result = runner.invoke(main, ["onboard", "--dir", str(tmp_path)])
+
+        assert cli_result.exit_code != 0
+        assert "already exists" in cli_result.output
+
+    def test_force_overwrites_existing(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from apx_agent.cli import _OnboardingPlan, main
+
+        result = _OnboardingPlan(
+            org_name="Example Org", plan_markdown="# New plan",
+            spec_toml='catalog = "TBD-catalog"\n', validation_error=None,
+        )
+        self._mock_generate(monkeypatch, result)
+        (tmp_path / "example_org-onboarding-plan.md").write_text("stale")
+
+        runner = CliRunner()
+        cli_result = runner.invoke(main, ["onboard", "--dir", str(tmp_path), "--force"])
+
+        assert cli_result.exit_code == 0, cli_result.output
+        assert (tmp_path / "example_org-onboarding-plan.md").read_text() == "# New plan"
+
+    def test_raises_on_empty_plan_markdown(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from apx_agent.cli import _OnboardingPlan, main
+
+        result = _OnboardingPlan(
+            org_name="Example Org",
+            plan_markdown="   ",
+            spec_toml='catalog = "TBD-catalog"\n',
+            validation_error=None,
+        )
+        self._mock_generate(monkeypatch, result)
+
+        runner = CliRunner()
+        cli_result = runner.invoke(main, ["onboard", "--dir", str(tmp_path)])
+
+        assert cli_result.exit_code != 0
+        assert not (tmp_path / "example_org-onboarding-plan.md").exists()
+
+
+# ---------------------------------------------------------------------------
 # Regression: coworker-gen must pass ChatMessage objects to serving_endpoints.query,
 # not raw dicts. The SDK calls .as_dict() on each message, so dicts AttributeError
 # at runtime — the bug this guards (path was previously untested).
