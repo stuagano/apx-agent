@@ -81,6 +81,11 @@ class AuditAttrs:
     USER_TOKEN_PROVIDED = "apx.user.token_provided"
     USER_HASH = "apx.user.hash"  # SHA-256(user_id) when known — for correlation without leaking ids
 
+    # Mid-turn approval decisions (#469): marks a predict/invoke span as a
+    # resume carrying an approve/deny decision, so USER_HASH on that same
+    # span reads as "decided by", not just "called by".
+    APPROVAL_DECISION = "apx.approval.decision"
+
     # Tool calls
     TOOL_NAME = "apx.tool.name"
     TOOL_UC_FUNCTION = "apx.tool.uc_function"
@@ -141,6 +146,7 @@ _KWARG_TO_KEY: dict[str, str] = {
     "operation": AuditAttrs.OPERATION,
     "user_token_provided": AuditAttrs.USER_TOKEN_PROVIDED,
     "user_hash": AuditAttrs.USER_HASH,
+    "approval_decision": AuditAttrs.APPROVAL_DECISION,
     "tool_name": AuditAttrs.TOOL_NAME,
     "tool_uc_function": AuditAttrs.TOOL_UC_FUNCTION,
     "tool_input_keys": AuditAttrs.TOOL_INPUT_KEYS,

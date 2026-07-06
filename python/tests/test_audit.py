@@ -71,6 +71,7 @@ def test_audit_attrs_namespace() -> None:
         ("WATCHDOG_ACTION", "apx.watchdog.action"),
         ("WATCHDOG_POLICY_ID", "apx.watchdog.policy_id"),
         ("USER_TOKEN_PROVIDED", "apx.user.token_provided"),
+        ("APPROVAL_DECISION", "apx.approval.decision"),
         ("MODEL_VERSION", "apx.model_version"),
         ("GIT_SHA", "apx.git_sha"),
         ("TRACEPARENT", "apx.traceparent"),
@@ -99,6 +100,13 @@ def test_set_audit_attrs_maps_kwargs_to_canonical_keys() -> None:
     assert "apx.agent.name" in keys_set
     assert "apx.tool.name" in keys_set
     assert "apx.watchdog.action" in keys_set
+
+
+def test_set_audit_attrs_maps_approval_decision() -> None:
+    span = MagicMock()
+    set_audit_attrs(span, approval_decision="approve")
+    keys_set = [c.args[0] for c in span.set_attribute.call_args_list]
+    assert "apx.approval.decision" in keys_set
 
 
 def test_set_audit_attrs_skips_none_and_empty() -> None:
