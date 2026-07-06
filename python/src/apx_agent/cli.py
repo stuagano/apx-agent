@@ -1970,6 +1970,148 @@ def _pick_from_list(items: list[str], prompt: str) -> str:
     return items[idx]
 
 
+_ONBOARDING_GEN_PROMPT = """\
+You are helping a Databricks Field Engineer onboard a brand-new non-profit \
+organization that has no existing Databricks presence. You will be given \
+answers from a short interview with the organization. Produce TWO outputs, \
+each in its own fenced code block, in this exact order:
+
+1. A ```markdown``` block containing a PHASED EXECUTION PLAN for onboarding \
+   this organization onto apx-agent. Propose the specific phases based on \
+   their answers, but include AT LEAST:
+   - A phase for landing their existing data into Unity Catalog (referencing \
+     whatever current tools they named — Kiva, Blackbaud, spreadsheets, etc.).
+   - A phase for standing up a CoworkerAgent grounded in that landed data.
+   Each phase should have a short name, a one-paragraph objective, and a \
+   rough effort estimate (e.g. "1-2 weeks"). Do NOT use triple-backtick code \
+   fences inside this markdown content itself.
+
+2. A ```toml``` block containing a DRAFT CoworkerTemplate.Spec config with \
+   EXACTLY these keys (flat TOML key = value pairs, no nesting, no tables):
+
+   catalog = "TBD-catalog"
+   schema = "TBD-schema"
+   persona = "<a one-line analyst persona based on their primary stakeholder>"
+   join_key = "<a plausible join key field name>"
+   objective = "<2-3 sentences on what this coworker should surface, from their pain point>"
+   memory = "persistent"
+
+   catalog and schema MUST be exactly the literal placeholder strings above \
+   — no UC data has been landed yet, and phase 1 of the plan is deciding \
+   where it will go. Do not invent real-looking catalog/schema names.
+
+Here is what the organization said:
+{spec}
+
+Output ONLY the two fenced blocks (```markdown ... ``` then ```toml ... ```). \
+No other text before, between, or after them.
+"""
+
+
+def _query_onboarding_llm(ws: "Any", prompt_text: str) -> str:
+    """One LLM call for onboarding generation; raises ClickException on failure."""
+    from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+
+    try:
+        response = ws.serving_endpoints.query(
+            name="databricks-claude-sonnet-4-6",
+            messages=[ChatMessage(role=ChatMessageRole.USER, content=prompt_text)],
+            max_tokens=2000,
+        )
+        choices = response.choices
+        if not choices or choices[0].message is None or choices[0].message.content is None:
+            raise click.ClickException("LLM returned an empty response.")
+        return choices[0].message.content.strip()
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(
+            f"LLM generation failed: {exc}\n"
+            "Ensure you have a valid Databricks profile with access to "
+            "databricks-claude-sonnet-4-6."
+        ) from exc
+
+
+class _OnboardingPlan(NamedTuple):
+    """The full result of one apx-agent onboard interview + generation pass."""
+    org_name: str
+    plan_markdown: str
+    spec_toml: str
+    validation_error: "str | None"
+
+
+def _generate_onboarding_plan(profile: "str | None") -> _OnboardingPlan:
+    """Interview the user about a new non-profit, then generate a phased plan
+    + a draft CoworkerTemplate.Spec block, validating the latter with one retry."""
+    click.echo("\nLet's learn about your organization. Answer a few questions:\n")
+    org_name = click.prompt("Organization name")
+    mission = click.prompt("What does your organization do? (one or two sentences)")
+    current_tools = click.prompt(
+        "What tools do you currently use to run day-to-day operations? "
+        "(e.g. Kiva, Blackbaud, spreadsheets, QuickBooks, something else)"
+    )
+    pain_point = click.prompt("What's the most painful, manual part of your day-to-day work?")
+    unanswerable_question = click.prompt(
+        "What's a question you wish you could answer instantly but can't today?"
+    )
+    record_scale = click.prompt(
+        "Roughly how many records do you track — donors, loans, beneficiaries, "
+        "whatever's core to your work?"
+    )
+    stakeholder = click.prompt(
+        "Who's the primary stakeholder who'd use this system day-to-day? "
+        "(executive director, ops lead, program manager, etc.)"
+    )
+
+    spec_context = (
+        f"Organization name: {org_name}\n"
+        f"What they do: {mission}\n"
+        f"Current tools: {current_tools}\n"
+        f"Biggest pain point: {pain_point}\n"
+        f"Question they wish they could answer: {unanswerable_question}\n"
+        f"Rough record scale: {record_scale}\n"
+        f"Primary stakeholder: {stakeholder}"
+    )
+
+    click.echo("\nGenerating onboarding plan...\n")
+    from databricks.sdk import WorkspaceClient
+
+    ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+
+    prompt_text = _ONBOARDING_GEN_PROMPT.format(spec=spec_context)
+    response_text = _query_onboarding_llm(ws, prompt_text)
+    split = _split_onboarding_response(response_text)
+    error = (
+        _validate_spec_toml(split.spec_toml)
+        if split.spec_toml is not None
+        else "no ```toml block found in the response"
+    )
+
+    if error is not None:
+        retry_prompt = (
+            f"{prompt_text}\n\n"
+            f"Your previous response's TOML block failed validation with this "
+            f"error: {error}\n\n"
+            "Return the full response again (both fenced blocks, in the same "
+            "order), fixing the TOML block so it parses and matches the "
+            "required fields exactly."
+        )
+        response_text = _query_onboarding_llm(ws, retry_prompt)
+        split = _split_onboarding_response(response_text)
+        error = (
+            _validate_spec_toml(split.spec_toml)
+            if split.spec_toml is not None
+            else "no ```toml block found in the retry response"
+        )
+
+    return _OnboardingPlan(
+        org_name=org_name,
+        plan_markdown=split.plan_markdown or "",
+        spec_toml=split.spec_toml or "",
+        validation_error=error,
+    )
+
+
 _COWORKER_GEN_PROMPT = """\
 You are an expert at designing Databricks coworker agents. Generate a YAML spec for a coworker
 agent that joins two enterprise data systems and surfaces actionable insights.

@@ -5818,6 +5818,141 @@ class TestValidateSpecToml:
         assert "Spec validation error" in error
 
 
+def _canned_onboarding_answers() -> "Any":
+    return iter([
+        "Example Org",
+        "We provide microloans to small farmers.",
+        "Kiva, spreadsheets",
+        "Manually reconciling loan repayments every week",
+        "Which loans are at risk of default",
+        "about 2,000 active loans",
+        "Program Director",
+    ])
+
+
+_VALID_ONBOARDING_RESPONSE = (
+    "```markdown\n"
+    "# Onboarding Plan\n\n"
+    "## Phase 1: Land the data\n"
+    "Bring Kiva exports into Unity Catalog. 1-2 weeks.\n\n"
+    "## Phase 2: Stand up the coworker\n"
+    "Ground a CoworkerAgent in the landed schema. 1 week.\n"
+    "```\n\n"
+    "```toml\n"
+    'catalog = "TBD-catalog"\n'
+    'schema = "TBD-schema"\n'
+    'persona = "a microfinance program director"\n'
+    'join_key = "loan_id"\n'
+    'objective = "surface loans at risk of default before they lapse"\n'
+    'memory = "persistent"\n'
+    "```\n"
+)
+
+
+class TestGenerateOnboardingPlan:
+    def test_valid_on_first_response(self) -> None:
+        from apx_agent.cli import _generate_onboarding_plan
+
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=_VALID_ONBOARDING_RESPONSE))]
+        )
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _generate_onboarding_plan(None)
+
+        assert result.org_name == "Example Org"
+        assert "Phase 1: Land the data" in result.plan_markdown
+        assert result.validation_error is None
+        assert 'catalog = "TBD-catalog"' in result.spec_toml
+        assert fake_ws.serving_endpoints.query.call_count == 1
+
+    def test_passes_chatmessage_not_dicts(self) -> None:
+        """Same regression class as test_generate_coworker_yaml_passes_chatmessage_not_dicts:
+        the SDK calls .as_dict() on each message, so dicts AttributeError at runtime."""
+        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+
+        from apx_agent.cli import _generate_onboarding_plan
+
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=_VALID_ONBOARDING_RESPONSE))]
+        )
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            _generate_onboarding_plan(None)
+
+        msgs = fake_ws.serving_endpoints.query.call_args.kwargs["messages"]
+        assert msgs and all(isinstance(m, ChatMessage) for m in msgs)
+        assert msgs[0].role == ChatMessageRole.USER
+
+    def test_retries_on_invalid_toml(self) -> None:
+        from apx_agent.cli import _generate_onboarding_plan
+
+        bad_response = (
+            "```markdown\n# Plan\nPhase 1: land data.\n```\n\n"
+            "```toml\ncatalog = not valid @@@\n```\n"
+        )
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.side_effect = [
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=bad_response))]),
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=_VALID_ONBOARDING_RESPONSE))]
+            ),
+        ]
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _generate_onboarding_plan(None)
+
+        assert result.validation_error is None
+        assert fake_ws.serving_endpoints.query.call_count == 2
+
+    def test_falls_back_when_retry_also_invalid(self) -> None:
+        from apx_agent.cli import _generate_onboarding_plan
+
+        bad_response = (
+            "```markdown\n# Plan\nPhase 1: land data.\n```\n\n"
+            "```toml\ncatalog = still not valid @@@\n```\n"
+        )
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=bad_response))]
+        )
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _generate_onboarding_plan(None)
+
+        assert result.validation_error is not None
+        assert "Plan" in result.plan_markdown  # plan still captured though spec failed
+        assert fake_ws.serving_endpoints.query.call_count == 2
+
+    def test_missing_toml_block_is_treated_as_invalid(self) -> None:
+        from apx_agent.cli import _generate_onboarding_plan
+
+        no_toml_response = "```markdown\n# Plan\nPhase 1: land data.\n```\n"
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=no_toml_response))]
+        )
+        answers = _canned_onboarding_answers()
+        with patch(
+            "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
+        ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _generate_onboarding_plan(None)
+
+        assert result.validation_error is not None
+        assert "no ```toml block" in result.validation_error
+        assert fake_ws.serving_endpoints.query.call_count == 2  # one retry attempted
+
+
 # ---------------------------------------------------------------------------
 # Regression: coworker-gen must pass ChatMessage objects to serving_endpoints.query,
 # not raw dicts. The SDK calls .as_dict() on each message, so dicts AttributeError
