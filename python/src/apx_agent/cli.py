@@ -2252,6 +2252,68 @@ def _pick_coworker_gallery() -> "tuple[str, Path]":
     return cname, path
 
 
+@main.command()
+@click.option(
+    "--profile", default=None,
+    help="Databricks CLI profile for the LLM call. Falls back to $DATABRICKS_CONFIG_PROFILE.",
+)
+@click.option(
+    "--dir", "directory",
+    default=".",
+    type=click.Path(file_okay=False),
+    help="Directory to write the plan + spec files into. Default: current directory.",
+)
+@click.option("--force", is_flag=True, help="Overwrite existing output files.")
+def onboard(profile: "str | None", directory: str, force: bool) -> None:
+    """Interview a new non-profit org and generate a phased onboarding plan.
+
+    Asks a few plain-language business questions, then writes:
+
+    \b
+    - <org-slug>-onboarding-plan.md — a human-readable phased execution plan.
+    - <org-slug>-coworker.toml — a draft CoworkerTemplate.Spec block (written
+      as <org-slug>-coworker.DRAFT.toml instead if it fails validation).
+
+    Next step after review: apx-agent agents scaffold --coworker <path-to-toml>.
+    """
+    from apx_agent._publish import _slug
+
+    result = _generate_onboarding_plan(profile)
+    slug = _slug(result.org_name)
+    out_dir = Path(directory)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    plan_path = out_dir / f"{slug}-onboarding-plan.md"
+    if plan_path.exists() and not force:
+        raise click.ClickException(f"{plan_path} already exists. Pass --force to overwrite.")
+    plan_path.write_text(result.plan_markdown)
+    click.echo(f"\nWrote {plan_path}")
+
+    if result.validation_error is None:
+        spec_path = out_dir / f"{slug}-coworker.toml"
+    else:
+        spec_path = out_dir / f"{slug}-coworker.DRAFT.toml"
+    if spec_path.exists() and not force:
+        raise click.ClickException(f"{spec_path} already exists. Pass --force to overwrite.")
+
+    spec_content = result.spec_toml
+    if result.validation_error is not None:
+        spec_content = (
+            f"# UNVALIDATED — generated spec failed validation: {result.validation_error}\n"
+            "# Review and fix before use.\n\n" + spec_content
+        )
+    spec_path.write_text(spec_content)
+
+    if result.validation_error is None:
+        click.echo(f"Wrote {spec_path}")
+        click.echo(f"\nNext step: apx-agent agents scaffold --coworker {spec_path}")
+    else:
+        click.echo(
+            f"Wrote {spec_path} (UNVALIDATED — {result.validation_error})\n"
+            "Review and fix the spec block before using it."
+        )
+
+
 def _pick_template() -> str:
     """List registered templates and return the user's selection."""
     from ._template import template_registry

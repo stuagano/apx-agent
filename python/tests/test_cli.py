@@ -5953,6 +5953,87 @@ class TestGenerateOnboardingPlan:
         assert fake_ws.serving_endpoints.query.call_count == 2  # one retry attempted
 
 
+class TestOnboardCommand:
+    def _mock_generate(self, monkeypatch: "pytest.MonkeyPatch", result: "Any") -> None:
+        import apx_agent.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "_generate_onboarding_plan", lambda profile: result)
+
+    def test_writes_plan_and_valid_spec(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from apx_agent.cli import _OnboardingPlan, main
+
+        result = _OnboardingPlan(
+            org_name="Example Org",
+            plan_markdown="# Plan\nDo the thing.",
+            spec_toml='catalog = "TBD-catalog"\n',
+            validation_error=None,
+        )
+        self._mock_generate(monkeypatch, result)
+
+        runner = CliRunner()
+        cli_result = runner.invoke(main, ["onboard", "--dir", str(tmp_path)])
+
+        assert cli_result.exit_code == 0, cli_result.output
+        plan_path = tmp_path / "example_org-onboarding-plan.md"
+        spec_path = tmp_path / "example_org-coworker.toml"
+        assert plan_path.read_text() == "# Plan\nDo the thing."
+        assert spec_path.read_text() == 'catalog = "TBD-catalog"\n'
+        assert "Next step: apx-agent agents scaffold" in cli_result.output
+
+    def test_writes_draft_toml_when_invalid(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from apx_agent.cli import _OnboardingPlan, main
+
+        result = _OnboardingPlan(
+            org_name="Example Org",
+            plan_markdown="# Plan",
+            spec_toml="catalog = not valid",
+            validation_error="TOML parse error: bad syntax",
+        )
+        self._mock_generate(monkeypatch, result)
+
+        runner = CliRunner()
+        cli_result = runner.invoke(main, ["onboard", "--dir", str(tmp_path)])
+
+        assert cli_result.exit_code == 0, cli_result.output
+        draft_path = tmp_path / "example_org-coworker.DRAFT.toml"
+        assert draft_path.exists()
+        assert "UNVALIDATED" in draft_path.read_text()
+        assert not (tmp_path / "example_org-coworker.toml").exists()
+        assert "UNVALIDATED" in cli_result.output
+
+    def test_refuses_to_overwrite_without_force(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from apx_agent.cli import _OnboardingPlan, main
+
+        result = _OnboardingPlan(
+            org_name="Example Org", plan_markdown="# Plan",
+            spec_toml='catalog = "TBD-catalog"\n', validation_error=None,
+        )
+        self._mock_generate(monkeypatch, result)
+        (tmp_path / "example_org-onboarding-plan.md").write_text("existing")
+
+        runner = CliRunner()
+        cli_result = runner.invoke(main, ["onboard", "--dir", str(tmp_path)])
+
+        assert cli_result.exit_code != 0
+        assert "already exists" in cli_result.output
+
+    def test_force_overwrites_existing(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from apx_agent.cli import _OnboardingPlan, main
+
+        result = _OnboardingPlan(
+            org_name="Example Org", plan_markdown="# New plan",
+            spec_toml='catalog = "TBD-catalog"\n', validation_error=None,
+        )
+        self._mock_generate(monkeypatch, result)
+        (tmp_path / "example_org-onboarding-plan.md").write_text("stale")
+
+        runner = CliRunner()
+        cli_result = runner.invoke(main, ["onboard", "--dir", str(tmp_path), "--force"])
+
+        assert cli_result.exit_code == 0, cli_result.output
+        assert (tmp_path / "example_org-onboarding-plan.md").read_text() == "# New plan"
+
+
 # ---------------------------------------------------------------------------
 # Regression: coworker-gen must pass ChatMessage objects to serving_endpoints.query,
 # not raw dicts. The SDK calls .as_dict() on each message, so dicts AttributeError
