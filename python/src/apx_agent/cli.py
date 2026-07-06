@@ -2076,7 +2076,14 @@ def _generate_onboarding_plan(profile: "str | None") -> _OnboardingPlan:
     click.echo("\nGenerating onboarding plan...\n")
     from databricks.sdk import WorkspaceClient
 
-    ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    try:
+        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    except Exception as exc:
+        raise click.ClickException(
+            f"Could not connect to the workspace: {exc}\n"
+            "Ensure you have a valid Databricks profile with access to "
+            "databricks-claude-sonnet-4-6."
+        ) from exc
 
     prompt_text = _ONBOARDING_GEN_PROMPT.format(spec=spec_context)
     response_text = _query_onboarding_llm(ws, prompt_text)
