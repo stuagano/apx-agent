@@ -1262,6 +1262,8 @@ agent's behavior.
 """
 from __future__ import annotations
 
+import os
+
 from apx_agent import DataAgent
 
 <EXAMPLE_TOOL>
@@ -1270,11 +1272,22 @@ from apx_agent import DataAgent
 # schema and queries via a SQL tool that runs as the calling user.
 #
 # Make it your own:
-#   * point it at your own data:  DataAgent("main", "sales", name="<APP_NAME>")
+#   * point it at your own data:  re-scaffold with --catalog/--schema
 #   * re-scaffold to refresh the baked schema:  apx-agent scaffold <name> --catalog <c>
 #   * add ``genie_space=...`` / ``vector_index=...`` for Genie or Vector Search
 #   * or drop back to a plain ``Agent(tools=[...])`` with your own ``@tool``s
-agent = DataAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS>, name="<APP_NAME>")
+#
+# APX_CATALOG/APX_SCHEMA (set per DAB target — see README "Promoting to
+# another environment") override the scaffolded default below, so the same
+# agent.py can run against a different catalog/schema per environment.
+_CATALOG = "<CATALOG>"
+_SCHEMA = "<SCHEMA>"
+
+agent = DataAgent(
+    os.environ.get("APX_CATALOG", _CATALOG),
+    os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS>,
+    name="<APP_NAME>",
+)
 '''
 
 
@@ -1312,11 +1325,23 @@ agent = LlmAgent(
 _SCAFFOLD_APPS_AGENT_COWORKER = '''\
 from __future__ import annotations
 
+import os
+
 from apx_agent import CoworkerAgent
 
 <EXAMPLE_TOOL>
+# APX_CATALOG/APX_SCHEMA (set per DAB target — see README "Promoting to
+# another environment") override the scaffolded default below, so the same
+# agent.py can run against a different catalog/schema per environment.
+_CATALOG = "<CATALOG>"
+_SCHEMA = "<SCHEMA>"
+
 # Add memory="persistent" to remember facts and context across sessions.
-agent = CoworkerAgent("<CATALOG>", "<SCHEMA>"<EXTRA_TOOLS><PERSONA_ARG><JOIN_KEY_ARG><OBJECTIVE_ARG>, name="<APP_NAME>")
+agent = CoworkerAgent(
+    os.environ.get("APX_CATALOG", _CATALOG),
+    os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS><PERSONA_ARG><JOIN_KEY_ARG><OBJECTIVE_ARG>,
+    name="<APP_NAME>",
+)
 '''
 
 
@@ -1454,6 +1479,33 @@ host = "${LAKEBASE_HOST}"
 database = "<APP_NAME_SLUG>"
 '''
 
+# Spliced into databricks.yml's `variables:`/`config.env:` blocks only when
+# the scaffold actually has a catalog/schema (#323) — a base LlmAgent
+# scaffold gets no dead config. <CATALOG>/<SCHEMA> inside these blocks are
+# resolved by _scaffold_apps's `_sub()`, same as everywhere else in the
+# template — see the CATALOG_SCHEMA_*_BLOCK replace calls added there.
+_SCAFFOLD_CATALOG_SCHEMA_VARS_BLOCK = '''\
+  catalog:
+    description: |
+      Unity Catalog catalog this agent is grounded in. Override per
+      environment via `targets.<name>.variables.catalog` in this file —
+      see README "Promoting to another environment".
+    default: <CATALOG>
+  schema:
+    description: |
+      Unity Catalog schema this agent is grounded in. Override per
+      environment via `targets.<name>.variables.schema` in this file —
+      see README "Promoting to another environment".
+    default: <SCHEMA>
+'''
+
+_SCAFFOLD_CATALOG_SCHEMA_ENV_BLOCK = '''\
+          - name: APX_CATALOG
+            value: ${var.catalog}
+          - name: APX_SCHEMA
+            value: ${var.schema}
+'''
+
 _SCAFFOLD_APPS_DATABRICKS_YML = '''\
 bundle:
   name: <APP_NAME>
@@ -1495,6 +1547,7 @@ variables:
       first deploy of a version registers UC AFTER the app is live, so this
       is usually empty and apx.git_sha is the correlation key.
     default: ""
+<CATALOG_SCHEMA_VARS_BLOCK>
 
 # ``artifacts.default.build`` packages the deploy bundle into ``./.build``.
 # ``apx-agent deploy --target apps`` runs this script BEFORE ``bundle validate`` so
@@ -1574,11 +1627,18 @@ resources:
             value: ${var.apx_git_sha}
           - name: APX_MODEL_VERSION
             value: ${var.apx_model_version}
+<CATALOG_SCHEMA_ENV_BLOCK>
 
 targets:
   dev:
     mode: development
     default: true
+  staging:
+    mode: production
+    resources:
+      apps:
+        <APP_NAME>:
+          name: <APP_NAME>
   prod:
     mode: production
     resources:
@@ -1619,6 +1679,45 @@ curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","con
 ```bash
 uv run apx-agent deploy --target apps  # validates, deploys, runs the bundle
 ```
+
+## Promoting to another environment
+`databricks.yml` ships `dev` (default), `staging`, and `prod` targets. All
+three default to the same workspace/catalog/schema until you customize one —
+promoting is an explicit edit, not a hidden step.
+
+The `catalog`/`schema` override below only applies to scaffolds with a data
+source (`--template data`/`coworker`) — a base `LlmAgent` scaffold has no
+`catalog`/`schema` variables to override, so it promotes via
+`--bundle-target`/`--profile` alone.
+
+To point `staging` at its own UC catalog/schema, add a `variables:` override
+under its target in `databricks.yml`:
+
+```yaml
+targets:
+  staging:
+    mode: production
+    variables:
+      catalog: <your-staging-catalog>
+      schema: <your-staging-schema>
+    resources:
+      apps:
+        <APP_NAME>:
+          name: <APP_NAME>
+```
+
+Then deploy to the staging workspace by pointing `--profile` at its
+Databricks CLI profile:
+
+```bash
+uv run apx-agent deploy --target apps --bundle-target staging --profile <staging-profile>
+```
+
+Repeat the same recipe for `prod` (its own `variables:` override + its own
+`--profile`). `--bundle-target` selects which `databricks.yml` target to
+deploy; `--profile` selects which workspace credentials to use — they're
+independent, so forgetting to change `--profile` when you add a `staging`
+override just redeploys to the same workspace under a different catalog.
 
 ## Edit
 Define your agent + tools in `agent.py` (top-level). The
@@ -2692,9 +2791,21 @@ def _scaffold_apps(
     # This keeps pyproject.toml coherent: the knob resolves iff the bundle exists on disk.
     knowledge_line = 'knowledge = "./.apx/okf"\n' if manifest is not None else ""
 
+    # Splice UC catalog/schema as DAB variables only when this template
+    # actually has a data source (#323) — a base LlmAgent scaffold has no
+    # catalog/schema and would otherwise get dead config in databricks.yml.
+    catalog_schema_vars_block = (
+        _SCAFFOLD_CATALOG_SCHEMA_VARS_BLOCK if (catalog and schema) else ""
+    )
+    catalog_schema_env_block = (
+        _SCAFFOLD_CATALOG_SCHEMA_ENV_BLOCK if (catalog and schema) else ""
+    )
+
     def _sub(template: str) -> str:
         return (
-            template.replace("<APP_NAME>", name)
+            template.replace("<CATALOG_SCHEMA_VARS_BLOCK>\n", catalog_schema_vars_block)
+            .replace("<CATALOG_SCHEMA_ENV_BLOCK>\n", catalog_schema_env_block)
+            .replace("<APP_NAME>", name)
             .replace("<APP_NAME_SLUG>", name_slug)
             .replace("<CATALOG>", catalog)
             .replace("<SCHEMA>", schema)

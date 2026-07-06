@@ -3421,8 +3421,23 @@ def test_scaffold_apps_pins_mlflow_with_genai_agent_server(tmp_path: Path) -> No
     assert '"mlflow[databricks]>=3.0"' not in _SCAFFOLD_APPS_PYPROJECT
 
 
+def test_scaffold_apps_readme_documents_promotion() -> None:
+    """The Apps README documents the dev->staging->prod promotion recipe:
+    override variables per target in databricks.yml, then deploy with
+    --bundle-target/--profile (#323) — no new command, existing flags."""
+    from apx_agent.cli import _SCAFFOLD_APPS_README
+
+    assert "Promoting to another environment" in _SCAFFOLD_APPS_README
+    assert "--bundle-target staging" in _SCAFFOLD_APPS_README
+    assert "--profile" in _SCAFFOLD_APPS_README
+    assert "targets:" in _SCAFFOLD_APPS_README
+
+
 def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
-    """--catalog/--schema bake the default DataAgent's data source (no probe)."""
+    """--catalog/--schema bake the default DataAgent's data source (no probe),
+    as an env-var-overridable default (#323) — not a literal call, so a
+    deployed app's APX_CATALOG/APX_SCHEMA env vars can override it per
+    environment."""
     runner = CliRunner()
     result = runner.invoke(
         main, ["agents", "scaffold", "ag", "--catalog", "main", "--schema", "sales",
@@ -3430,7 +3445,11 @@ def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     agent_py = (tmp_path / "ag" / "agent.py").read_text()
-    assert 'DataAgent("main", "sales"' in agent_py
+    assert '_CATALOG = "main"' in agent_py
+    assert '_SCHEMA = "sales"' in agent_py
+    assert 'os.environ.get("APX_CATALOG", _CATALOG)' in agent_py
+    assert 'os.environ.get("APX_SCHEMA", _SCHEMA)' in agent_py
+    assert 'DataAgent("main", "sales"' not in agent_py
 
 
 def test_splice_tool_wires_into_dataagent_extra_tools() -> None:
@@ -3651,6 +3670,52 @@ def test_scaffold_apps_start_server_enables_autolog() -> None:
 def test_scaffold_apps_databricks_yml_enables_autolog_env() -> None:
     from apx_agent.cli import _SCAFFOLD_APPS_DATABRICKS_YML
     assert "APX_AGENT_MLFLOW_AUTOLOG" in _SCAFFOLD_APPS_DATABRICKS_YML
+
+
+def test_apps_databricks_yml_has_staging_target_for_all_templates(tmp_path):
+    """The staging target is unconditional — every --target apps template
+    gets dev/staging/prod, regardless of whether it has a catalog/schema."""
+    from apx_agent import cli
+    cli._scaffold_apps(tmp_path, "demo", force=True, catalog="", schema="", template="base")
+    yml = (tmp_path / "databricks.yml").read_text()
+    assert "  staging:" in yml
+    assert "    mode: production" in yml
+    # staging appears between dev and prod, shaped like prod.
+    dev_idx = yml.index("  dev:")
+    staging_idx = yml.index("  staging:")
+    prod_idx = yml.index("  prod:")
+    assert dev_idx < staging_idx < prod_idx
+
+
+def test_apps_databricks_yml_catalog_schema_vars_for_data_template(tmp_path):
+    """A data/coworker template's databricks.yml declares catalog/schema DAB
+    variables (defaulting to the scaffolded values) and wires them into the
+    app's env as APX_CATALOG/APX_SCHEMA (#323)."""
+    from apx_agent import cli
+    cli._scaffold_apps(tmp_path, "demo", force=True,
+                       catalog="samples", schema="tpch", table="customer",
+                       template="data")
+    yml = (tmp_path / "databricks.yml").read_text()
+    assert "  catalog:" in yml
+    assert "    default: samples" in yml
+    assert "  schema:" in yml
+    assert "    default: tpch" in yml
+    assert "- name: APX_CATALOG" in yml
+    assert "value: ${var.catalog}" in yml
+    assert "- name: APX_SCHEMA" in yml
+    assert "value: ${var.schema}" in yml
+
+
+def test_apps_databricks_yml_no_catalog_vars_for_base_template(tmp_path):
+    """A base (LlmAgent, no data source) template's databricks.yml gets the
+    staging target but NOT dead catalog/schema config (#323)."""
+    from apx_agent import cli
+    cli._scaffold_apps(tmp_path, "demo", force=True, catalog="", schema="", template="base")
+    yml = (tmp_path / "databricks.yml").read_text()
+    assert "  catalog:" not in yml
+    assert "  schema:" not in yml
+    assert "APX_CATALOG" not in yml
+    assert "APX_SCHEMA" not in yml
 
 
 def test_scaffold_apps_start_server_mounts_readyz() -> None:
@@ -4294,6 +4359,34 @@ class TestScaffoldCoworker:
                            catalog="samples", schema="tpch", table="customer",
                            template="data")
         assert "DataAgent(" in (tmp_path / "agent.py").read_text()
+
+    def test_apps_data_agent_reads_catalog_schema_from_env(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold",
+                            lambda c, s, profile=None: None)
+        cli._scaffold_apps(tmp_path, "demo", force=True,
+                           catalog="samples", schema="tpch", table="customer",
+                           template="data")
+        agent_py = (tmp_path / "agent.py").read_text()
+        assert "import os" in agent_py
+        assert '_CATALOG = "samples"' in agent_py
+        assert '_SCHEMA = "tpch"' in agent_py
+        assert 'os.environ.get("APX_CATALOG", _CATALOG)' in agent_py
+        assert 'os.environ.get("APX_SCHEMA", _SCHEMA)' in agent_py
+
+    def test_apps_coworker_reads_catalog_schema_from_env(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold",
+                            lambda c, s, profile=None: None)
+        cli._scaffold_apps(tmp_path, "demo", force=True,
+                           catalog="samples", schema="tpch", table="customer",
+                           template="coworker")
+        agent_py = (tmp_path / "agent.py").read_text()
+        assert "import os" in agent_py
+        assert '_CATALOG = "samples"' in agent_py
+        assert '_SCHEMA = "tpch"' in agent_py
+        assert 'os.environ.get("APX_CATALOG", _CATALOG)' in agent_py
+        assert 'os.environ.get("APX_SCHEMA", _SCHEMA)' in agent_py
 
 
 # ---------------------------------------------------------------------------
