@@ -77,11 +77,11 @@ def _check_unresolved_vars(data: dict[str, Any]) -> None:
         f"YAML contains unresolved placeholder(s) — set the variable before deploying:\n\n"
         f"{detail}\n\n"
         f"Tip: re-scaffold with the missing flags, e.g.:\n"
-        f"  apx scaffold --catalog <catalog> --schema <schema>"
+        f"  apx-agent agents scaffold --catalog <catalog> --schema <schema>"
     )
 
 
-def load_spec(path: Path) -> "AgentConfig":
+def load_spec(path: Path, *, strict: bool = True) -> "AgentConfig":
     """Load a YAML spec file and return a validated AgentConfig.
 
     Resolves ``$VAR`` / ``${VAR}`` env var references in string values before
@@ -90,6 +90,10 @@ def load_spec(path: Path) -> "AgentConfig":
     in ``skills:`` are validated to exist relative to the spec file.
 
     :param path: Path to the ``.yaml`` spec file.
+    :param strict: When ``True`` (default, used by ``run``/``deploy``), raise
+        if any ``$VAR`` placeholder is unresolved. Pass ``False`` for
+        read-only introspection (``agents describe``) so a freshly-scaffolded
+        spec with un-filled-in placeholders can still be described.
     :returns: A validated ``AgentConfig`` with ``tools`` and ``skills`` populated.
     :raises FileNotFoundError: If the spec file does not exist.
     :raises SpecValidationError: If required fields are missing, types are wrong,
@@ -107,7 +111,8 @@ def load_spec(path: Path) -> "AgentConfig":
         raise SpecValidationError(f"Expected a YAML mapping at the top level, got {type(raw).__name__}")
 
     data = _resolve_env_vars(raw)
-    _check_unresolved_vars(data)
+    if strict:
+        _check_unresolved_vars(data)
 
     if "name" not in data:
         raise SpecValidationError("Spec is missing required field: 'name'")
