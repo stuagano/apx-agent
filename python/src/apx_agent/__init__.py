@@ -165,7 +165,6 @@ from ._conversation import (
     parse_item_data,
     synthesize_conversation_title,
 )
-from ._conversation_delta import DeltaConversationStore
 from ._conversation_lakebase import LakebaseConversationStore
 
 # Durable memory + few-shot examples
@@ -189,9 +188,7 @@ from ._example import (
 )
 from ._memory_lakebase import LakebaseMemoryStore
 from ._example_lakebase import LakebaseExampleStore
-from ._memory_delta import DeltaMemoryStore, VectorSearchLike
 from ._memory_managed import ApiCaller, ManagedMemoryStore, provision_managed_memory
-from ._example_delta import DeltaExampleStore
 
 # Agent-facing memory / example tools (LLM-callable wrappers around the stores)
 from ._memory_tools import make_memory_tools
@@ -502,7 +499,6 @@ __all__ = [
     "ConversationNotFoundError",
     "ConversationStore",
     "InMemoryConversationStore",
-    "DeltaConversationStore",
     "LakebaseConversationStore",
     "NewConversationItem",
     "PagedList",
@@ -533,9 +529,6 @@ __all__ = [
     "InMemoryExampleStore",
     "LakebaseMemoryStore",
     "LakebaseExampleStore",
-    "DeltaMemoryStore",
-    "DeltaExampleStore",
-    "VectorSearchLike",
     "ManagedMemoryStore",
     "ApiCaller",
     "provision_managed_memory",

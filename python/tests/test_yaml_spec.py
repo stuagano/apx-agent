@@ -84,12 +84,12 @@ def test_load_spec_memory_and_session(tmp_path: Path) -> None:
         """\
         name: payroll-coworker
         memory:
-          type: delta
+          type: lakebase
           table_name: main.default.apx_payroll_memory
           auto_create: true
           validate_at_boot: true
         session:
-          type: delta
+          type: lakebase
           table_name: main.default.apx_payroll_sessions
           auto_create: true
           validate_at_boot: true
@@ -97,13 +97,13 @@ def test_load_spec_memory_and_session(tmp_path: Path) -> None:
     )
     config = load_spec(p)
     assert config.memory is not None
-    assert config.memory.type == "delta"
+    assert config.memory.type == "lakebase"
     assert config.memory.table_name == "main.default.apx_payroll_memory"
     assert config.memory.auto_create is True
     assert config.memory.validate_at_boot is True
 
     assert config.session is not None
-    assert config.session.type == "delta"
+    assert config.session.type == "lakebase"
     assert config.session.table_name == "main.default.apx_payroll_sessions"
     assert config.session.auto_create is True
     assert config.session.validate_at_boot is True
@@ -129,7 +129,7 @@ def test_load_spec_env_var_substitution(tmp_path: Path, monkeypatch: pytest.Monk
           schema: $SCHEMA
           warehouse_id: ${WAREHOUSE_ID}
         memory:
-          type: delta
+          type: lakebase
           table_name: $CATALOG.$SCHEMA.apx_payroll_memory
         """,
     )
@@ -191,7 +191,7 @@ def test_load_spec_unresolved_catalog_raises(
           catalog: $CATALOG
           schema: $SCHEMA
         memory:
-          type: delta
+          type: lakebase
           table_name: $CATALOG.$SCHEMA.apx_payroll_memory
         """,
     )
@@ -240,7 +240,7 @@ def test_load_spec_resolved_vars_do_not_raise(
           catalog: $CATALOG
           schema: $SCHEMA
         memory:
-          type: delta
+          type: lakebase
           table_name: $CATALOG.$SCHEMA.apx_payroll_memory
         """,
     )

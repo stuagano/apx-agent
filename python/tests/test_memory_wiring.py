@@ -112,7 +112,7 @@ from apx_agent._memory_tools import make_memory_tools, NO_PRINCIPAL
 class TestCrossPrincipalIsolation:
     def _find_tool(self, tools: list, name: str):
         for t in tools:
-            if getattr(t, "__name__", None) == name or getattr(t, "name", None) == name:
+            if getattr(t, "__name__", None) == name or (hasattr(t, "name") and t.name == name):
                 return t
         raise KeyError(f"Tool {name!r} not found")
 
@@ -313,7 +313,7 @@ class TestAttachDeclaredMemory:
         # Reality: no memory tools were attached...
         assert "recall" not in {fn.__name__ for fn in agent._tool_fns}
         # ...so the claim must be "degraded", never silently "ok".
-        assert getattr(agent, "_apx_memory_degraded", None)
+        assert hasattr(agent, "_apx_memory_degraded") and agent._apx_memory_degraded
 
     def test_lakebase_type_requires_ws_or_warns(self, caplog):
         """lakebase with ws=None logs a warning and skips (no crash)."""
@@ -595,18 +595,18 @@ class TestAgentCarriedConfig:
         agent.memory_config = MemoryBackendConfig(type="inmemory")  # carried
         cfg = AgentConfig(name="c", description="d")                # no memory block
         attach_declared_memory(agent, cfg, ws=None)
-        names = {getattr(fn, "__name__", "") for fn in getattr(agent, "_tool_fns", [])}
+        names = {getattr(fn, "__name__", "") for fn in agent._tool_fns}
         assert any("recall" in n or "remember" in n for n in names)
 
     def test_explicit_block_overrides_agent_config(self):
         from apx_agent._memory_wiring import attach_declared_memory
         from apx_agent._models import AgentConfig, MemoryBackendConfig
         agent = self._agent()
-        agent.memory_config = MemoryBackendConfig(type="delta")     # carried (would need ws)
+        agent.memory_config = MemoryBackendConfig(type="lakebase")  # carried (would need ws)
         cfg = AgentConfig(name="c", description="d",
                           memory=MemoryBackendConfig(type="inmemory"))  # explicit wins
         attach_declared_memory(agent, cfg, ws=None)
-        names = {getattr(fn, "__name__", "") for fn in getattr(agent, "_tool_fns", [])}
+        names = {getattr(fn, "__name__", "") for fn in agent._tool_fns}
         assert any("recall" in n or "remember" in n for n in names)  # inmemory built (no ws needed)
 
 

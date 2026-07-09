@@ -42,7 +42,9 @@ def test_generated_project_files_are_real_not_just_present(tmp_path: Path) -> No
             "objective": "Surface mismatches.",
         },
         memory=MemoryBackendConfig(
-            type="delta",
+            type="lakebase",
+            host="${LAKEBASE_HOST}",
+            database="payroll_coworker",
             table_name="main.payroll.apx_memory",
             auto_create=True,
         ),

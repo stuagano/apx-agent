@@ -204,10 +204,11 @@ type = "inmemory"
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `type` | `"inmemory" \| "delta" \| "lakebase"` | `"inmemory"` | Backend type |
+| `type` | `"inmemory" \| "lakebase" \| "managed"` | `"inmemory"` | Backend type |
 | `embedding_model` | `str` | absent | Databricks serving-endpoint name for embeddings |
 | `embedding_dim` | `int` | absent | Embedding dimensionality (required for lakebase) |
-| `table_name` | `str` | absent | UC table (delta) or plain name (lakebase) |
+| `table_name` | `str` | absent | Plain table name (lakebase) |
+| `store_name` | `str` | absent | UC memory store `catalog.schema.name` (managed) |
 | `database` | `str` | absent | Postgres database name |
 | `host` | `str` | absent | Lakebase endpoint DNS; supports `$ENV_VAR` |
 | `auto_create` | `bool` | `true` | Create table on first use |
@@ -233,8 +234,7 @@ An `[tool.apx.agent.example]` table (same fields, plus `agent_id`) declares a co
 ```toml
 [tool.apx.agent.session]
 type = "inmemory"
-# or delta: type="delta", table_name="main.coworker.apx_sessions"
 # or lakebase: type="lakebase", host="...", database="..."
 ```
 
-**Precedence:** An explicit `create_app(conversation_store=X)` arg wins over config session (code is more specific intent). Config session is the fallback (e.g. template-only projects). `DeltaConversationStore` takes a three-part UC `table_prefix` (used as the base for the `_conversations` and `_items` tables); the wiring maps config `table_name` → `table_prefix` automatically.
+**Precedence:** An explicit `create_app(conversation_store=X)` arg wins over config session (code is more specific intent). Config session is the fallback (e.g. template-only projects). `LakebaseConversationStore` takes a `table_name` prefix (used as the base for the `_conversations` and `_conversation_items` tables); the wiring maps it through automatically.

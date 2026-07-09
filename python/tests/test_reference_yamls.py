@@ -16,6 +16,7 @@ def test_reference_yaml_loads(yaml_file, monkeypatch):
     monkeypatch.setenv("SCHEMA", "test_schema")
     monkeypatch.setenv("WAREHOUSE_ID", "test_warehouse")
     monkeypatch.setenv("GENIE_SPACE_ID", "test_genie_space")
+    monkeypatch.setenv("LAKEBASE_HOST", "test-lakebase.example.com")
 
     config = load_spec(yaml_file)
     assert config.name, f"Expected non-empty name from {yaml_file.name}"

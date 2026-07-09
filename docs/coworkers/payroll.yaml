@@ -35,13 +35,19 @@ template:
   include_functions: true
 
 memory:
-  type: delta
+  type: lakebase
+  host: $LAKEBASE_HOST
+  database: payroll_coworker
   table_name: $CATALOG.$SCHEMA.apx_payroll_coworker_memory
+  embedding_model: databricks-bge-large-en
+  embedding_dim: 1024
   auto_create: true
   validate_at_boot: true
 
 session:
-  type: delta
+  type: lakebase
+  host: $LAKEBASE_HOST
+  database: payroll_coworker
   table_name: $CATALOG.$SCHEMA.apx_payroll_coworker_sessions
   auto_create: true
   validate_at_boot: true
