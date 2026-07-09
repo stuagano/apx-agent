@@ -4479,6 +4479,39 @@ class TestScaffoldCoworker:
         assert 'os.environ.get("APX_SCHEMA", _SCHEMA)' in agent_py
 
 
+def test_coworker_gallery_pick_materializes_full_project(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "my-payroll",
+            "--coworker", "payroll",
+            "--catalog", "main", "--schema", "payroll_demo",
+            "--dir", str(tmp_path),
+            "--no-interactive",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    base = tmp_path / "my-payroll"
+    assert (base / "agent.py").exists()
+    assert (base / "pyproject.toml").exists()
+    assert not (tmp_path / "my-payroll.yaml").exists(), (
+        "gallery pick must no longer write a standalone .yaml"
+    )
+    pyproject = (base / "pyproject.toml").read_text()
+    assert "[tool.apx.agent]" in pyproject
+
+    # Prove agent.py actually imports cleanly, not just that it exists —
+    # same standard Task 9's generate test holds itself to.
+    prev = os.getcwd()
+    os.chdir(base)
+    try:
+        describe_result = CliRunner().invoke(main, ["agents", "describe"])
+    finally:
+        os.chdir(prev)
+    assert describe_result.exit_code == 0, describe_result.output
+
+
 # ---------------------------------------------------------------------------
 # `apx-agent refresh-schema`
 # ---------------------------------------------------------------------------

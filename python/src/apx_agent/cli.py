@@ -2950,12 +2950,14 @@ def _echo_scaffold_yaml_done(out: Path, *, catalog: str | None, schema: str | No
 def _scaffold_from_gallery(
     gallery_yaml_path: Path,
     name: str,
-    directory: Path,
     catalog: "str | None",
     schema: "str | None",
-) -> None:
-    """Copy a gallery YAML to <directory>/<name>.yaml, patching name/catalog/schema."""
+) -> "AgentConfig":
+    """Patch a gallery YAML's name/catalog/schema/memory-table fields and
+    return the validated AgentConfig — ready for _materialize_agent."""
     import yaml as _yaml
+    from ._models import AgentConfig
+
     data = _yaml.safe_load(gallery_yaml_path.read_text())
     data["name"] = name
     if catalog and "template" in data:
@@ -2973,9 +2975,7 @@ def _scaffold_from_gallery(
         if section in data and "table_name" in data[section]:
             suffix = "memory" if section == "memory" else "sessions"
             data[section]["table_name"] = f"{cat}.{sch}.apx_{safe_name}_{suffix}"
-    out = directory / f"{name}.yaml"
-    out.write_text(_yaml.dump(data, sort_keys=False, allow_unicode=True))
-    _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
+    return AgentConfig.model_validate(data)
 
 
 def _prompt_for_instructions() -> str | None:
@@ -3197,28 +3197,6 @@ def scaffold(
     # Step 0: template/catalog/schema pickers and sanity check.
     # Triggered by passing "list" as the value for any of these options.
     # -----------------------------------------------------------------------
-    gallery_yaml_path: "Path | None" = None
-    generated_yaml_str: "str | None" = None
-    if coworker_spec is not None and coworker_spec not in ("",):
-        if coworker_spec == "list":
-            # --coworker list → interactive gallery picker
-            _, gallery_yaml_path = _pick_coworker_gallery()
-        elif coworker_spec == "generate":
-            # --coworker generate → LLM-author from user's description
-            generated_yaml_str = _generate_coworker_yaml(profile)
-        else:
-            # --coworker <name> → find by name in the gallery
-            import importlib.resources as _ir
-            import yaml as _yaml
-            gallery_dir = Path(_ir.files("apx_agent").joinpath("coworker_gallery"))  # type: ignore[arg-type]
-            matched = [p for p in sorted(gallery_dir.glob("*.yaml")) if p.stem == coworker_spec or _yaml.safe_load(p.read_text()).get("name") == coworker_spec]
-            if not matched:
-                raise click.ClickException(
-                    f"No coworker named {coworker_spec!r} in the gallery. "
-                    "Use --coworker list to browse, or --coworker generate to author one."
-                )
-            gallery_yaml_path = matched[0]
-
     if scaffold_template == "list" or catalog == "list" or schema == "list":
         ws = _make_ws_for_scaffold(profile)
         if scaffold_template == "list":
@@ -3262,34 +3240,6 @@ def scaffold(
 
     instructions: str | None = _prompt_for_instructions() if (interactive_mode and not emit_yaml) else None
 
-    if emit_yaml:
-        Path(directory).mkdir(parents=True, exist_ok=True)
-        if generated_yaml_str is not None:
-            out = Path(directory) / f"{project_name}.yaml"
-            out.write_text(generated_yaml_str)
-            _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
-        elif gallery_yaml_path is not None:
-            _scaffold_from_gallery(
-                gallery_yaml_path=gallery_yaml_path,
-                name=project_name,
-                directory=Path(directory),
-                catalog=catalog,
-                schema=schema,
-            )
-        else:
-            _scaffold_to_yaml(
-                name=project_name,
-                directory=Path(directory),
-                scaffold_template=scaffold_template or "base",
-                catalog=catalog,
-                schema=schema,
-                persona=persona,
-                join_key=join_key,
-                objective=objective,
-                instructions=_prompt_for_instructions() if interactive_mode else None,
-            )
-        return
-
     # -----------------------------------------------------------------------
     # Step 2: validate the combination before touching the filesystem.
     # -----------------------------------------------------------------------
@@ -3301,7 +3251,9 @@ def scaffold(
 
     # -----------------------------------------------------------------------
     # Step 3: resolve the data source — explicit > auto-detect > demo fallback.
-    # Base template has no data source; skip entirely.
+    # Base template has no data source; skip entirely. Runs before the
+    # gallery pick below so a materialized agent.py always gets a concrete
+    # catalog/schema — unlike a YAML spec, it can't defer to $CATALOG/$SCHEMA.
     # -----------------------------------------------------------------------
     table: str | None = None
     if scaffold_template == "base":
@@ -3327,6 +3279,45 @@ def scaffold(
                 "workspace; run `databricks auth login` if you haven't authenticated, "
                 "or pass --catalog/--schema to ground the agent in your own data)"
             )
+
+    # -----------------------------------------------------------------------
+    # Step 4: gallery pick — materialize a full project directly (bypassing
+    # --yaml: a gallery-picked coworker is always a durable, editable project).
+    # -----------------------------------------------------------------------
+    if coworker_spec is not None and coworker_spec not in ("",):
+        if coworker_spec == "list":
+            # --coworker list → interactive gallery picker
+            _, gallery_yaml_path = _pick_coworker_gallery()
+        else:
+            # --coworker <name> → find by name in the gallery
+            import importlib.resources as _ir
+            import yaml as _yaml
+            gallery_dir = Path(_ir.files("apx_agent").joinpath("coworker_gallery"))  # type: ignore[arg-type]
+            matched = [p for p in sorted(gallery_dir.glob("*.yaml")) if p.stem == coworker_spec or _yaml.safe_load(p.read_text()).get("name") == coworker_spec]
+            if not matched:
+                raise click.ClickException(
+                    f"No coworker named {coworker_spec!r} in the gallery. "
+                    "Use --coworker list to browse."
+                )
+            gallery_yaml_path = matched[0]
+        config = _scaffold_from_gallery(gallery_yaml_path, project_name, catalog, schema)
+        _materialize_agent(config, target, force=force)
+        return
+
+    if emit_yaml:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        _scaffold_to_yaml(
+            name=project_name,
+            directory=Path(directory),
+            scaffold_template=scaffold_template or "base",
+            catalog=catalog,
+            schema=schema,
+            persona=persona,
+            join_key=join_key,
+            objective=objective,
+            instructions=_prompt_for_instructions() if interactive_mode else None,
+        )
+        return
 
     if scaffold_target == "apps":
         _scaffold_apps(
