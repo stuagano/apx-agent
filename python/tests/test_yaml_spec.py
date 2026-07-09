@@ -205,6 +205,32 @@ def test_load_spec_unresolved_catalog_raises(
     assert "--schema" in msg
 
 
+def test_load_spec_strict_false_tolerates_unresolved_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """strict=False (used by `agents describe`) loads a freshly-scaffolded
+    spec even with un-filled-in $CATALOG/$SCHEMA — describe is read-only
+    introspection, not a run/deploy that needs real UC coordinates."""
+    monkeypatch.delenv("CATALOG", raising=False)
+    monkeypatch.delenv("SCHEMA", raising=False)
+
+    p = _write_yaml(
+        tmp_path,
+        """\
+        name: payroll-coworker
+        template:
+          name: coworker
+          catalog: $CATALOG
+          schema: $SCHEMA
+        """,
+    )
+    config = load_spec(p, strict=False)
+    assert config.name == "payroll-coworker"
+    assert config.template is not None
+    assert config.template["catalog"] == "$CATALOG"
+    assert config.template["schema"] == "$SCHEMA"
+
+
 def test_load_spec_unresolved_custom_var_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An arbitrary unresolved $VAR surfaces the variable name and export hint."""
     monkeypatch.delenv("MY_SECRET", raising=False)
