@@ -3213,7 +3213,7 @@ def scaffold(
         scaffold_target = scaffold_target or "apps"
         scaffold_template = scaffold_template or "data"
 
-    instructions: str | None = _prompt_for_instructions() if interactive_mode else None
+    instructions: str | None = _prompt_for_instructions() if (interactive_mode and not emit_yaml) else None
 
     if emit_yaml:
         Path(directory).mkdir(parents=True, exist_ok=True)

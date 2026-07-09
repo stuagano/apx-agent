@@ -340,6 +340,42 @@ def test_scaffold_wizard_instructions_reach_agent_py(
     assert "instructions='Answer HR pay questions.'" in agent_py
 
 
+def test_scaffold_interactive_yaml_prompts_instructions_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test: interactive yaml scaffold should prompt for instructions
+    exactly once, not twice (once at the conditional, once in _scaffold_to_yaml).
+    """
+    import apx_agent.cli as cli
+    from unittest.mock import MagicMock
+
+    mock_prompt = MagicMock(return_value="Custom instructions")
+    monkeypatch.setattr(cli, "_prompt_for_instructions", mock_prompt)
+    monkeypatch.setattr(
+        cli, "_scaffold_wizard",
+        lambda ws, target, template, catalog, schema: ("apps", "base", None, None, None, None, None),
+    )
+    monkeypatch.setattr(cli, "_scaffold_sanity_check", lambda ws, template, catalog, schema: None)
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "yaml_agent",
+            "--dir", str(tmp_path),
+            "--interactive",
+            # Note: NO --target and NO --no-yaml, so default behavior is yaml=true
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Verify the prompt was called exactly once (not twice)
+    assert mock_prompt.call_count == 1
+    # Verify the YAML has the instructions
+    yaml_file = (tmp_path / "yaml_agent.yaml").read_text()
+    assert "Custom instructions" in yaml_file
+
+
 # ---------------------------------------------------------------------------
 # `apx mcp-config`
 # ---------------------------------------------------------------------------
