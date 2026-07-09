@@ -423,8 +423,8 @@ def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None
                 "--interactive",
                 "--no-yaml",
             ],
-            # catalog → "main", schema → "sales", persona → role text, join_key → blank, objective → blank
-            input="main\nsales\na sales analyst who knows revenue data deeply\n\n\n",
+            # catalog → "main", schema → "sales", persona → role text, join_key → blank, objective → blank, instructions → blank
+            input="main\nsales\na sales analyst who knows revenue data deeply\n\n\n\n",
             catch_exceptions=False,
         )
     assert result.exit_code == 0, result.output
@@ -447,8 +447,8 @@ def test_scaffold_coworker_with_persona_and_objective(tmp_path: Path) -> None:
                 "--interactive",
                 "--no-yaml",
             ],
-            # catalog, schema, persona, join_key, objective
-            input="main\nfraud\na fraud detection analyst\ntransaction ID\ndetect fraudulent transactions and flag anomalies\n",
+            # catalog, schema, persona, join_key, objective, instructions
+            input="main\nfraud\na fraud detection analyst\ntransaction ID\ndetect fraudulent transactions and flag anomalies\n\n",
             catch_exceptions=False,
         )
     assert result.exit_code == 0, result.output
@@ -503,8 +503,8 @@ def test_scaffold_interactive_prompts_for_catalog_schema_persona(tmp_path: Path)
                 "--interactive",
                 "--no-yaml",
             ],
-            # catalog, schema, persona, join_key (blank), objective (blank)
-            input="main\nsales\npayroll analyst\n\n\n",
+            # catalog, schema, persona, join_key (blank), objective (blank), instructions (blank)
+            input="main\nsales\npayroll analyst\n\n\n\n",
             catch_exceptions=False,
         )
     assert result.exit_code == 0, result.output
