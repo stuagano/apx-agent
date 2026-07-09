@@ -1,0 +1,17 @@
+# Capabilities THIS project promises — managed with `caps`.
+# Prove with:   python -m caps verify
+# Check state:  python -m caps status
+# Add one with: python -m caps add --id <id> --tier <cheap|live> \
+#                 --description "..." --given "..." --when "..." --then "..." \
+#                 --deps <glob> --check checks/test_<id>.py::test_<id>
+#
+# Example entry (run `caps add ...` to append one — don't hand-edit):
+#   - id: writes-to-db
+#     description: rows written by the ingest job read back with matching ids
+#     given: a reachable database
+#     when: the ingest job runs
+#     then: the written rows are readable back
+#     tier: live
+#     deps: [ingest.py]
+#     check: checks/test_db_write.py::test_write_readback
+capabilities:

@@ -41,6 +41,9 @@ repos:
           (?x)^(
             # All current src has violations — graduate file by file.
             python/src/apx_agent/
+            # Vendored third-party code (claude-test-kit) — not house style.
+            |ctk/
+            |caps/
           )
 
       # Ban `x or ""` — 152 existing violations, broad backlog.
@@ -77,6 +80,8 @@ repos:
             |python/tests/test_memory_lakebase\.py$
             |python/tests/test_publish\.py$
             |python/tests/test_topology\.py$
+            |ctk/
+            |caps/
           )
 
       # Ban `str = ""` defaults — 22 violations, narrow backlog.
@@ -97,6 +102,8 @@ repos:
             |python/tests/test_hot_swap_apps\.py$
             |python/tests/test_instructions\.py$
             |python/tests/test_sql\.py$
+            |ctk/
+            |caps/
           )
 
       # Ban `os.environ.get("VAR", "literal")` — 0 remaining violations, no backlog.
@@ -112,6 +119,11 @@ repos:
         language: system
         entry: python3 scripts/lint/lint_no_tuple_return.py
         types: [python]
+        exclude: |-
+          (?x)^(
+            ctk/
+            |caps/
+          )
 
       # Ban unconditional @pytest.mark.skip — 0 existing violations, no backlog.
       - id: no-skipped-tests

@@ -98,3 +98,6 @@ demos/
 
 # Superpowers planning artifacts (specs/plans) — local, not tracked
 docs/superpowers/
+
+# caps / python artifacts (added by caps init)
+.pytest_cache/
