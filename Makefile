@@ -5,6 +5,7 @@
 # works — a green exit code here is the read-back, not just "it ran".
 check:
 	cd python && uv run pytest
+	./scripts/check-uv-lock-registry.sh --fix
 
 # Lint suite from .pre-commit-config.yaml (enforces the Ponytail smells). Uses
 # uvx so it works without pre-commit installed in the project env; needs network
