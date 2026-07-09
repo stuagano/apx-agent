@@ -6859,6 +6859,7 @@ def test_materialize_agent_writes_full_project(tmp_path: Path) -> None:
     assert (target / "README.md").exists()
     assert (target / ".env.example").exists()
     assert (target / ".gitignore").exists()
+    assert (target / "scripts" / "__init__.py").exists()
     assert (target / "scripts" / "quickstart.py").exists()
 
 

@@ -40,9 +40,12 @@ import time
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
 
 import click
+
+if TYPE_CHECKING:
+    from ._models import AgentConfig
 
 # Suppress noisy third-party deprecation warnings that users can't act on.
 warnings.filterwarnings(
@@ -2902,6 +2905,7 @@ def _materialize_agent(
         ".env.example": _SCAFFOLD_APPS_ENV_EXAMPLE,
         ".gitignore": _SCAFFOLD_GITIGNORE,
         "README.md": _SCAFFOLD_APPS_README.replace("<APP_NAME>", config.name),
+        "scripts/__init__.py": "",
         "scripts/quickstart.py": _SCAFFOLD_APPS_QUICKSTART.replace("<APP_NAME>", config.name),
     }
     for rel_path, content in aux_files.items():
