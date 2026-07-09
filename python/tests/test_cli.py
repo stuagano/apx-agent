@@ -286,6 +286,60 @@ def test_scaffold_overwrites_with_force(tmp_path: Path) -> None:
     assert "from apx_agent import" in (target / "agent.py").read_text()
 
 
+def test_scaffold_apps_threads_custom_instructions(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "my_agent",
+            "--template", "base",
+            "--target", "apps",
+            "--dir", str(tmp_path),
+            "--no-interactive",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # base template with no explicit instructions still gets the default —
+    # this test only proves the plumbing exists; the wizard-driven case
+    # (interactive prompt -> instructions) is covered by
+    # test_scaffold_wizard_instructions_reach_agent_py below.
+    agent_py = (tmp_path / "my_agent" / "agent.py").read_text()
+    assert "instructions='You are a helpful assistant.'" in agent_py
+
+
+def test_scaffold_wizard_instructions_reach_agent_py(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Mock _scaffold_wizard and _scaffold_sanity_check directly rather than
+    # feeding a None/fake WorkspaceClient through the real wizard — those
+    # functions' internals (catalog/schema probing) aren't something this
+    # test should depend on; it only needs to prove instructions plumbing.
+    import apx_agent.cli as cli
+
+    monkeypatch.setattr(cli, "_prompt_for_instructions", lambda: "Answer HR pay questions.")
+    monkeypatch.setattr(
+        cli, "_scaffold_wizard",
+        lambda ws, target, template, catalog, schema: ("apps", "base", None, None, None, None, None),
+    )
+    monkeypatch.setattr(cli, "_scaffold_sanity_check", lambda ws, template, catalog, schema: None)
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "hr_agent",
+            "--dir", str(tmp_path),
+            "--interactive",
+            "--target", "apps",
+            "--no-yaml",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    agent_py = (tmp_path / "hr_agent" / "agent.py").read_text()
+    assert "instructions='Answer HR pay questions.'" in agent_py
+
+
 # ---------------------------------------------------------------------------
 # `apx mcp-config`
 # ---------------------------------------------------------------------------

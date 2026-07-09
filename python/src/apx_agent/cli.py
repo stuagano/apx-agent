@@ -1286,7 +1286,7 @@ _SCHEMA = "<SCHEMA>"
 agent = DataAgent(
     os.environ.get("APX_CATALOG", _CATALOG),
     os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS>,
-    name="<APP_NAME>",
+    name="<APP_NAME>"<INSTRUCTIONS_ARG>,
 )
 '''
 
@@ -1316,7 +1316,7 @@ from apx_agent import LlmAgent
 
 agent = LlmAgent(
     tools=[],
-    instructions="You are a helpful assistant.",
+    instructions=<INSTRUCTIONS_VALUE>,
     name="<APP_NAME>",
 )
 '''
@@ -1340,7 +1340,7 @@ _SCHEMA = "<SCHEMA>"
 agent = CoworkerAgent(
     os.environ.get("APX_CATALOG", _CATALOG),
     os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS><PERSONA_ARG><JOIN_KEY_ARG><OBJECTIVE_ARG>,
-    name="<APP_NAME>",
+    name="<APP_NAME>"<INSTRUCTIONS_ARG>,
 )
 '''
 
@@ -2752,6 +2752,7 @@ def _scaffold_apps(
     table: str | None = None, template: str = "data",
     persona: str | None = None, objective: str | None = None,
     join_key: str | None = None, lakebase: bool = True,
+    instructions: str | None = None,
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
@@ -2793,6 +2794,8 @@ def _scaffold_apps(
     persona_arg = f", persona={repr(persona)}" if persona else ""
     objective_arg = f", objective={repr(objective)}" if objective else ""
     join_key_arg = f", join_key={repr(join_key)}" if join_key else ""
+    instructions_arg = f", instructions={repr(instructions)}" if instructions else ""
+    instructions_value = repr(instructions) if instructions else repr("You are a helpful assistant.")
 
     import re as _re
     name_slug = _re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
@@ -2824,6 +2827,8 @@ def _scaffold_apps(
             .replace("<PERSONA_ARG>", persona_arg)
             .replace("<OBJECTIVE_ARG>", objective_arg)
             .replace("<JOIN_KEY_ARG>", join_key_arg)
+            .replace("<INSTRUCTIONS_ARG>", instructions_arg)
+            .replace("<INSTRUCTIONS_VALUE>", instructions_value)
             .replace("<APX_AGENT_DEP>", apx_dep)
             .replace("<APX_AGENT_SOURCE>", apx_source)
             .replace("<KNOWLEDGE_LINE>", knowledge_line)
@@ -2846,7 +2851,7 @@ def _scaffold_apps(
         # ADK-style layout: the user's agent definition lives at top-level
         # ``agent.py``. ``agent_server/`` is framework boilerplate only.
         "agent.py": (
-            _SCAFFOLD_APPS_AGENT_BASE.replace("<APP_NAME>", name) if template == "base"
+            _sub(_SCAFFOLD_APPS_AGENT_BASE) if template == "base"
             else _sub(_SCAFFOLD_APPS_AGENT_COWORKER if template == "coworker" else _SCAFFOLD_APPS_AGENT)
         ),
         "agent_server/__init__.py": "",
@@ -3208,6 +3213,8 @@ def scaffold(
         scaffold_target = scaffold_target or "apps"
         scaffold_template = scaffold_template or "data"
 
+    instructions: str | None = _prompt_for_instructions() if interactive_mode else None
+
     if emit_yaml:
         Path(directory).mkdir(parents=True, exist_ok=True)
         if generated_yaml_str is not None:
@@ -3278,7 +3285,7 @@ def scaffold(
         _scaffold_apps(
             target, project_name, force, catalog, schema, table,
             template=scaffold_template, persona=persona, objective=objective,
-            join_key=join_key, lakebase=lakebase,
+            join_key=join_key, lakebase=lakebase, instructions=instructions,
         )
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)
