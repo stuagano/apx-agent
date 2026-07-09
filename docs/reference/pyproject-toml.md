@@ -66,10 +66,6 @@ across conversations.
 [tool.apx.agent.memory]
 type = "inmemory"
 
-# Production: UC Delta tables, no extra infra
-[tool.apx.agent.memory]
-type = "delta"
-
 # Production: pgvector on Lakebase (semantic similarity)
 [tool.apx.agent.memory]
 type           = "lakebase"
@@ -77,6 +73,11 @@ host           = "my-lakebase.db.databricks.com"
 database       = "agentdb"
 embedding_model = "databricks-bge-large-en"
 embedding_dim  = 1024
+
+# Production: UC managed memory store, no extra infra
+[tool.apx.agent.memory]
+type       = "managed"
+store_name = "main.agents.apx_memory"
 ```
 
 Memory is scoped per calling user (OBO principal). User A's memories are
@@ -85,12 +86,13 @@ without writing.
 
 | Key | Required | Description |
 |---|---|---|
-| `type` | yes | `"inmemory"` / `"delta"` / `"lakebase"` |
+| `type` | yes | `"inmemory"` / `"lakebase"` / `"managed"` |
 | `embedding_model` | lakebase | Databricks serving endpoint for embeddings |
 | `embedding_dim` | lakebase | Embedding dimensionality |
 | `database` | lakebase | Postgres database name |
 | `host` | lakebase | Lakebase endpoint DNS; supports `$ENV_VAR` |
-| `table_name` | delta | UC table path (`catalog.schema.table`) |
+| `table_name` | lakebase | UC table path (`catalog.schema.table`) |
+| `store_name` | managed | UC memory store (`catalog.schema.name`) |
 | `auto_create` | no | Create table on first use (default `true`) |
 | `namespace_default` | no | Default namespace (default `"default"`) |
 | `tool_prefix` | no | Prefix for tool names (e.g. `"mem_"`) |
@@ -106,12 +108,7 @@ start of each turn.
 [tool.apx.agent.session]
 type = "inmemory"
 
-# Durable (survives restart)
-[tool.apx.agent.session]
-type       = "delta"
-table_name = "main.agents.sessions"
-
-# Lakebase (low-latency, chat-style)
+# Durable (survives restart), low-latency chat-style history
 [tool.apx.agent.session]
 type          = "lakebase"
 host          = "my-lakebase.db.databricks.com"
@@ -172,10 +169,16 @@ examples = [
 ]
 
 [tool.apx.agent.memory]
-type = "delta"                        # UC Delta — no extra infra
+type            = "lakebase"           # persists across sessions
+host            = "${LAKEBASE_HOST}"
+database        = "payroll_coworker"
+embedding_model = "databricks-bge-large-en"
+embedding_dim   = 1024
 
 [tool.apx.agent.session]
-type = "delta"
+type       = "lakebase"
+host       = "${LAKEBASE_HOST}"
+database   = "payroll_coworker"
 table_name = "main.payroll.apx_sessions"
 
 [tool.apx.agent.guardrails]

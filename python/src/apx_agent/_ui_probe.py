@@ -600,7 +600,7 @@ async def _check_conversation_store(conversation_store: Any | None) -> dict[str,
             "name": "conversation_store",
             "status": "ok",
             "message": f"{store_kind} (in-process, no backend)",
-            "hint": "InMemory history is lost on restart — use Lakebase/Delta for durability.",
+            "hint": "InMemory history is lost on restart — use Lakebase for durability.",
         }
 
     def _ping() -> None:

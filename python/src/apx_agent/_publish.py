@@ -373,7 +373,7 @@ def publish_to_registry(
     import time
 
     from ._sql import run_sql
-    from ._memory_delta import _validate_table_name
+    from ._memory import validate_table_name as _validate_table_name
 
     _validate_table_name(registry_table)
     ws = _ensure_ws(ws)
@@ -516,7 +516,7 @@ def publish_tools_to_registry(
     import time
 
     from ._sql import run_sql
-    from ._memory_delta import _validate_table_name
+    from ._memory import validate_table_name as _validate_table_name
 
     _validate_table_name(tools_table)
     ws = _ensure_ws(ws)
@@ -668,7 +668,7 @@ def publish_standalone_tools_to_registry(
     import time
 
     from ._sql import run_sql
-    from ._memory_delta import _validate_table_name
+    from ._memory import validate_table_name as _validate_table_name
 
     _validate_table_name(tools_table)
     ws = _ensure_ws(ws)
@@ -762,7 +762,7 @@ def remove_from_registry(
         warehouse_id: SQL warehouse to use; auto-discovered when omitted.
     """
     from ._sql import run_sql
-    from ._memory_delta import _validate_table_name
+    from ._memory import validate_table_name as _validate_table_name
 
     _validate_table_name(registry_table)
     _validate_table_name(tools_table)
@@ -817,7 +817,7 @@ def find_registry_dependents(
         row was last advertised; None when the column is empty).
     """
     from ._sql import run_sql
-    from ._memory_delta import _validate_table_name
+    from ._memory import validate_table_name as _validate_table_name
 
     _validate_table_name(registry_table)
     _validate_table_name(tools_table)

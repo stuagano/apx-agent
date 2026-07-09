@@ -85,17 +85,22 @@ A one-word tier controlling both facts memory and session continuity:
 |---|---|---|
 | `"off"` | **Default.** Stateless — no memory tools wired | None |
 | `"inmemory"` | Remembers within a single process run | None |
-| `"persistent"` | Survives restarts via UC Delta tables | UC catalog |
-| `"delta"` | Alias for `"persistent"` | UC catalog |
-| `"lakebase"` | Raises — see below | — |
+| `"persistent"` | Survives restarts via Lakebase (pgvector) | Lakebase instance |
+| `"managed"` | Survives restarts via UC managed memory (long-term memory only) | UC catalog |
+| `"lakebase"` (typed literally) | Raises — see below | — |
 
 `"off"` is the default. Uncomment `memory="persistent"` to opt in — it
-survives restarts using UC Delta tables, no extra infra beyond Unity Catalog.
+survives restarts on Lakebase. The knob defaults `host` to the `LAKEBASE_HOST`
+env var and `embedding_model` to the always-available
+`databricks-bge-large-en` FMAPI endpoint; if `LAKEBASE_HOST` is unset at boot,
+memory/session degrade to no-op rather than crashing.
 
-**`memory="lakebase"` raises intentionally.** Lakebase (pgvector) needs a
-host, database, embedding model, and embedding dimensions — the one-word knob
-can't carry those. To use Lakebase, pass `memory="off"` (or omit it) and
-declare the backend explicitly in `pyproject.toml`:
+**Typing `memory="lakebase"` literally raises.** That's distinct from
+`memory="persistent"` (which resolves to Lakebase with generated defaults) —
+the bare `"lakebase"` value exists to catch a typo where you meant to declare
+an explicit backend block yourself. To fully control the Lakebase connection
+(non-default host/database/embedding model), pass `memory="off"` (or omit it)
+and declare the backend explicitly in `pyproject.toml`:
 
 ```toml
 [tool.apx.agent.memory]
@@ -106,9 +111,11 @@ embedding_model = "databricks-bge-large-en"
 embedding_dim  = 1024
 ```
 
-The upgrade path is: `off → inmemory → persistent → lakebase`. Start with
-`off` (the default) and add `memory="persistent"` when you want facts to
-survive restarts.
+The upgrade path is: `off → inmemory → persistent`. Start with `off` (the
+default) and add `memory="persistent"` when you want facts to survive
+restarts; declare an explicit `[tool.apx.agent.memory]` block only when the
+generated Lakebase defaults don't fit (custom host/database/embedding model),
+or to use `"managed"` instead.
 
 ---
 

@@ -182,7 +182,7 @@ chat.predict(
 )
 ```
 
-Store options: `InMemoryConversationStore` (dev), `DeltaConversationStore` (UC-governed Delta), `LakebaseConversationStore` (low-latency Postgres). See [sessions-and-memory.md](../running/sessions-and-memory.md).
+Store options: `InMemoryConversationStore` (dev), `LakebaseConversationStore` (UC-governed, low-latency Postgres). See [sessions-and-memory.md](../running/sessions-and-memory.md).
 
 ---
 

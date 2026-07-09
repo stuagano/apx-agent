@@ -2,6 +2,11 @@
 
 **Status:** approved · **Date:** 2026-06-21 · **Builds on:** [keyed-shared-state.md](keyed-shared-state.md) (phase 2), [keyed-state-tool-access.md](keyed-state-tool-access.md) (increment 2)
 
+> **Historical note (#332):** this design documents three backends — in-memory,
+> Delta (`_conversation_delta.py`), and Lakebase. The Delta backend was
+> deleted and `_conversation_delta.py` removed; Lakebase is now the sole
+> durable `ConversationStore`. Left as-written below for historical accuracy.
+
 Phases 1 + increment 2 gave us an in-graph keyed `state` channel (`output_key`,
 `{key}` templating, tool read/write) — but it lives only for one invocation. This
 phase makes session-scoped state **survive across turns** of a conversation, so a

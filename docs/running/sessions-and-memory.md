@@ -30,8 +30,7 @@ Three stores cover the main workloads:
 | Store | Best for | Latency |
 |-------|----------|---------|
 | `InMemoryConversationStore` | Tests, dev, single-process Apps | in-process |
-| `DeltaConversationStore` | UC-governed Delta table; durable across long-idle sessions | ~100–500 ms/turn |
-| `LakebaseConversationStore` | Chat UIs and high-frequency turns (Lakebase managed Postgres) | ~1–10 ms/turn |
+| `LakebaseConversationStore` | Durable, UC-governed history for chat UIs and high-frequency turns (Lakebase managed Postgres) | ~1–10 ms/turn |
 
 Custom stores satisfy the `ConversationStore` protocol (the abstract `create_conversation` / `get_conversation` / `append` / `list_items` / `update_conversation` / `delete_conversation` / `list_conversations` / `search` methods) — bring your own Redis, Memcached, etc.
 
@@ -40,17 +39,17 @@ Custom stores satisfy the `ConversationStore` protocol (the abstract `create_con
 Pass the store to `compile_to_chat_agent` and include `session_id` in `custom_inputs`:
 
 ```python
-from apx_agent import (
-    Agent, compile_to_chat_agent, DeltaConversationStore,
-)
+from apx_agent import Agent, compile_to_chat_agent, LakebaseConversationStore
+from apx_agent._lakebase_engine import build_lakebase_engine
 from databricks.sdk import WorkspaceClient
 
 ws = WorkspaceClient()
+engine = build_lakebase_engine(ws=ws, database="agentdb", host="my-lakebase.db.databricks.com")
 
-conversation_store = DeltaConversationStore(
-    table_prefix="main.agents.apx_conv",
-    ws=ws,
-    warehouse_id="wh-prod",   # explicit warehouse for predictable cost
+conversation_store = LakebaseConversationStore(
+    engine=engine,
+    conversations_table="apx_conversations",
+    items_table="apx_conversation_items",
 )
 
 agent = Agent(instructions="You help debug data pipelines.", tools=[...])
@@ -123,7 +122,7 @@ Memory access patterns
 └─────────────────────────────────────────────┘
 ```
 
-Same backing stores as sessions (Lakebase pgvector, Delta + Vector Search), different access pattern: `principal_id` + `namespace` scoping, vector retrieval by query.
+Same backing stores as sessions (Lakebase pgvector, or UC managed memory), different access pattern: `principal_id` + `namespace` scoping, vector retrieval by query.
 
 ```python
 from apx_agent import LakebaseMemoryStore, make_memory_tools, assemble_memory_context
@@ -197,7 +196,7 @@ def build_instructions(user_id: str, query: str) -> str:
 |-------|----------|
 | `InMemoryMemoryStore` | Tests, dev |
 | `LakebaseMemoryStore` | pgvector, low-latency chat-style recall |
-| `DeltaMemoryStore` | Delta with optional `VectorSearchClient` delegation, client-side cosine fallback, or recency-only fallback |
+| `ManagedMemoryStore` | UC managed memory store (GA) — no extra infra, UC-governed |
 
 ### Memory consolidation
 
@@ -254,5 +253,5 @@ A worked example lives in [`python/examples/memory_demo/`](../python/examples/me
 | Cross-session facts (user preferences, past decisions) | MemoryStore — `make_memory_tools` or `assemble_memory_context` |
 | Few-shot examples for a specific agent | `ExampleStore` — seed with `store.add`/`add_batch` (or `examples save`), recall via `make_example_tools` |
 | Fast dev/test, single process | `InMemoryConversationStore` / `InMemoryMemoryStore` |
-| Durable, Unity Catalog governed | `DeltaConversationStore` / `DeltaMemoryStore` |
-| Low-latency chat (high turns/sec) | `LakebaseConversationStore` / `LakebaseMemoryStore` |
+| Durable, Unity Catalog governed, no extra infra | `ManagedMemoryStore` (memory only — no managed session store) |
+| Low-latency chat (high turns/sec), full session+memory parity | `LakebaseConversationStore` / `LakebaseMemoryStore` |

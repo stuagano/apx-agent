@@ -18,14 +18,12 @@ from apx_agent._sql_escape import sql_escape, sql_str_literal
 @pytest.mark.unit
 @pytest.mark.parametrize("value", ["x\\", "a'b", "a'b\\", "\\'", "plain", "', DROP--"])
 def test_all_site_helpers_match_the_canonical(value: str) -> None:
-    from apx_agent._memory_delta import _quote_string
     from apx_agent._trace_export import _escape_sql
     from apx_agent.uc_comment import _esc_literal
     from apx_agent.workflow.engine_delta import _esc
     from apx_agent.workflow.population_store import _esc_sql_str
 
     # Wrapped (single-quoted literal) helpers.
-    assert _quote_string(value) == sql_str_literal(value)
     assert _escape_sql(value) == sql_str_literal(value)
     # Unwrapped (escape-only) helpers.
     assert _esc_literal(value) == sql_escape(value)

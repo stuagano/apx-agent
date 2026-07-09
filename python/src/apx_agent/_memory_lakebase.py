@@ -1,12 +1,10 @@
 """LakebaseMemoryStore — Postgres-backed durable memory over Databricks Lakebase.
 
-Lakebase is Databricks' managed Postgres. Compared to a Delta-backed memory
-table, it offers:
+Lakebase is Databricks' managed Postgres, offering:
 
-  * Lower per-operation latency (Postgres point lookups vs. SQL warehouse
-    round-trips).
+  * Low per-operation latency (Postgres point lookups).
   * pgvector semantic recall in SQL (no client-side ranking).
-  * Better for high-frequency interactive recall.
+  * Good fit for high-frequency interactive recall.
 
 Mirrors the design of :mod:`apx_agent._session_lakebase` — same SQLAlchemy
 ``Engine``-in-constructor pattern, same lazy DDL via ``_ensure_schema``, same
@@ -245,8 +243,7 @@ class LakebaseMemoryStore:
         Latch ``_created`` only after the DDL succeeds, so a transient or
         permission failure self-heals on the next op instead of permanently
         no-opping schema creation (get/delete would silently return None/False
-        and add/list/recall would raise undefined-table). Mirrors
-        DeltaMemoryStore, which deliberately does not latch on failure.
+        and add/list/recall would raise undefined-table).
         """
         if self._created or not self._auto_create:
             return

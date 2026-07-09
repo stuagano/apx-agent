@@ -155,49 +155,23 @@ def init_apps_experiment(
     return ExperimentInfo(experiment_path=experiment_path, experiment_id=experiment_id)
 
 
-_DELTA_MEMORY_DDL = """\
-CREATE TABLE IF NOT EXISTS {table} (
-  id STRING,
-  principal_id STRING,
-  namespace STRING,
-  content STRING,
-  tags ARRAY<STRING>,
-  importance FLOAT,
-  embedding ARRAY<FLOAT>,
-  metadata STRING,
-  created_at DOUBLE,
-  updated_at DOUBLE
-) USING DELTA"""
-
-_DELTA_SESSION_DDL = """\
-CREATE TABLE IF NOT EXISTS {table} (
-  session_id STRING NOT NULL,
-  history STRING,
-  state STRING,
-  created_at DOUBLE,
-  updated_at DOUBLE
-) USING DELTA"""
-
-
 def provision_memory_backends(
     *,
     pyproject_path: str | None = None,
 ) -> list[str]:
     """Provision memory and session backends declared in ``pyproject.toml``.
 
-    - **delta**: runs ``CREATE TABLE IF NOT EXISTS`` for the memory and session
-      tables.  Idempotent — safe to re-run.
-    - **lakebase**: nothing to provision here — the instance is reached by
-      ``host`` (a Lakebase project endpoint or instance DNS) with an OAuth token,
-      and the per-agent tables auto-create on first use. Create the Lakebase
-      database in the workspace and point ``host`` at it.
+    **lakebase** is the only backend needing a status line here — nothing to
+    provision: the instance is reached by ``host`` (a Lakebase project
+    endpoint or instance DNS) with an OAuth token, and the per-agent tables
+    auto-create on first use. Create the Lakebase database in the workspace
+    and point ``host`` at it.
 
     Reads both ``[tool.apx.agent.memory]`` and ``[tool.apx.agent.session]`` —
-    either block alone is enough to trigger provisioning. Returns a list of
+    either block alone is enough to trigger the status line. Returns a list of
     status lines for printing.  No-ops silently when neither block is present.
     """
     from ._inspection import _load_agent_config  # noqa: PLC0415
-    from ._defaults import _make_workspace_client  # noqa: PLC0415
 
     cfg = _load_agent_config(pyproject_path=pyproject_path)
     if cfg is None:
@@ -208,24 +182,7 @@ def provision_memory_backends(
     if mem is None and sess is None:
         return []
 
-    ws = _make_workspace_client()
     lines: list[str] = []
-
-    # Delta tables (CREATE TABLE IF NOT EXISTS) for whichever blocks use delta.
-    delta_tables = []
-    if mem and mem.type == "delta" and mem.table_name:
-        delta_tables.append((mem.table_name, _DELTA_MEMORY_DDL))
-    if sess and sess.type == "delta" and sess.table_name:
-        delta_tables.append((sess.table_name, _DELTA_SESSION_DDL))
-    if delta_tables:
-        from ._sql import run_sql  # noqa: PLC0415
-
-        for table, ddl in delta_tables:
-            try:
-                run_sql(ws, ddl.format(table=table))
-                lines.append(f"  create table  {table}")
-            except Exception as exc:
-                lines.append(f"  WARN  table {table}: {exc}")
 
     # Lakebase needs no provisioning step — connection is host + OAuth token and
     # tables auto-create on first use. Point host at an existing Lakebase database.

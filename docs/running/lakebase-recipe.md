@@ -12,15 +12,13 @@ apx-agent has three durable stores, each with a Lakebase variant:
 | `LakebaseMemoryStore` | Per-principal long-lived facts | Vector recall + tag/namespace filter |
 | `LakebaseExampleStore` | Per-agent few-shot examples | Vector retrieval over `(input, output)` pairs |
 
-Why Postgres over Delta for these:
+Why Postgres for these:
 
-- **Point-lookup latency.** A `SELECT ... WHERE session_id = ?` against Postgres returns in single-digit milliseconds. A SQL warehouse round-trip is hundreds of ms minimum. For an interactive chat surface that hits the store on every turn, the difference is felt.
+- **Point-lookup latency.** A `SELECT ... WHERE session_id = ?` against Postgres returns in single-digit milliseconds — well suited to an interactive chat surface that hits the store on every turn.
 - **pgvector in SQL.** Cosine ranking via `embedding <=> :q::vector` runs server-side. No client-side scoring loop and no extra Vector Search index to keep in sync with the source-of-truth table.
 - **Per-user OAuth.** Lakebase mints short-lived database credentials per request via `databricks database generate-database-credential`, so the calling user's identity threads through to Postgres-level row-level security if you wire it.
 
-Cost model differs: Delta scales storage independently and is cheap when conversations idle for days. Lakebase charges for the running instance — pick by workload.
-
-Delta variants (`DeltaConversationStore`, `DeltaMemoryStore`, `DeltaExampleStore`) satisfy the same protocols and drop in cleanly when the latency budget doesn't justify the always-on cost.
+For memory specifically, `ManagedMemoryStore` (UC managed memory, GA) is a no-extra-infra alternative when the semantic-recall workload doesn't justify an always-on Lakebase instance — see [sessions-and-memory.md](sessions-and-memory.md). It covers long-term memory only; there's no managed equivalent for session/conversation history or few-shot examples.
 
 ## 2. One-time provisioning
 

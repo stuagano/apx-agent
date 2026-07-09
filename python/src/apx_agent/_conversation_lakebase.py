@@ -1,15 +1,9 @@
 """LakebaseConversationStore — Postgres-backed conversation persistence over Databricks Lakebase.
 
-Lakebase is Databricks' managed Postgres. Compared to ``DeltaConversationStore``:
-
-  * Lower per-operation latency (Postgres point lookups vs. SQL warehouse round-trips).
-  * Better for high-frequency turns (chat UIs, interactive agents).
-  * Worse for cheap durability across long-idle sessions (Delta scales storage
-    independently; Lakebase charges for the running instance).
-
-Both stores satisfy the same :class:`~apx_agent._conversation.ConversationStore` interface.
-Pick by workload: chat-style interactive agents → Lakebase; analytics-style
-multi-step pipelines → Delta.
+Lakebase is Databricks' managed Postgres, offering low per-operation latency
+(Postgres point lookups) well suited to high-frequency turns (chat UIs,
+interactive agents). Satisfies the :class:`~apx_agent._conversation.ConversationStore`
+interface.
 
 This store takes a SQLAlchemy ``Engine`` rather than embedding token-rotation logic.
 The caller wires up the engine with whatever auth pattern they prefer — typically a
@@ -87,7 +81,6 @@ def _ilike_escape(value: str) -> str:
 
     Postgres ILIKE uses ``%``/``_`` as wildcards and ``\\`` as the default escape
     character, so a bare ``%`` in a user query would otherwise match anything.
-    Mirrors the Delta store's ``_like_escape`` (:mod:`apx_agent._conversation_delta`).
     """
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 

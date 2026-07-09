@@ -38,57 +38,32 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
     """Build the memory store for the given config.
 
     Raises ``ValueError`` for missing required fields.
-    Returns ``None`` when lakebase/delta is requested with ``ws=None``
-    (caller logs and skips).
+    Returns ``None`` when lakebase is requested with ``ws=None``, or when its
+    ``host`` is an unset ``$ENV_VAR`` reference (infra not configured — the
+    implicit "persistent" knob's default shape; caller logs and skips).
     """
     from ._memory import InMemoryMemoryStore  # noqa: PLC0415
 
     if cfg.type == "inmemory":
         return InMemoryMemoryStore()
 
-    if cfg.type == "delta":
-        if ws is None:
-            return None
-        if not cfg.table_name:
-            raise ValueError(
-                "[tool.apx.agent.memory] type='delta' requires table_name "
-                "(e.g. 'catalog.schema.apx_memories')."
-            )
-        from ._memory_delta import DeltaMemoryStore  # noqa: PLC0415
-        from ._embeddings import make_embedding_fn  # noqa: PLC0415
-        from ._sql import run_sql  # noqa: PLC0415
-
-        embed_fn = None
-        if cfg.embedding_model:
-            if cfg.embedding_dim is None:
-                raise ValueError(
-                    "[tool.apx.agent.memory] type='delta' with embedding_model "
-                    "requires embedding_dim."
-                )
-            embed_fn = make_embedding_fn(ws, cfg.embedding_model)
-
-        return DeltaMemoryStore(
-            run_sql=lambda q: run_sql(ws, q),
-            embedding_fn=embed_fn,
-            embedding_dim=cfg.embedding_dim,
-            table_name=cfg.table_name,
-            auto_create=cfg.auto_create,
-            index_name=cfg.index_name,
-        )
-
     if cfg.type == "lakebase":
         if ws is None:
             return None
-        # Resolve $ENV_VAR in host — imported locally to avoid top-level
-        # _memory_wiring → _wiring cycle (Task 1.5 makes _wiring import us).
-        from ._wiring import _resolve_env_var  # noqa: PLC0415
-
-        host = _resolve_env_var(cfg.host) if cfg.host else None
-        if not host:
+        if not cfg.host:
             raise ValueError(
                 "[tool.apx.agent.memory] type='lakebase' requires host (the "
                 "Lakebase project endpoint or instance DNS)."
             )
+        # Resolve $ENV_VAR in host — imported locally to avoid top-level
+        # _memory_wiring → _wiring cycle (Task 1.5 makes _wiring import us).
+        from ._wiring import _resolve_env_var  # noqa: PLC0415
+
+        host = _resolve_env_var(cfg.host)
+        if not host:
+            # cfg.host names an env var (e.g. "${LAKEBASE_HOST}") that isn't set —
+            # infra not configured, not a config mistake. Fail open.
+            return None
         if not cfg.database:
             raise ValueError(
                 "[tool.apx.agent.memory] type='lakebase' requires database."
@@ -140,7 +115,7 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
 
     raise ValueError(
         f"[tool.apx.agent.memory] unknown type {cfg.type!r}. "
-        "Known: inmemory, delta, lakebase, managed."
+        "Known: inmemory, lakebase, managed."
     )
 
 
@@ -148,44 +123,14 @@ def _build_example_store(cfg: Any, ws: Any | None) -> Any | None:
     """Build an ExampleStore from ExampleBackendConfig.
 
     Example stores isolate by ``agent_id`` (not ``principal_id``) — examples
-    are coworker-scoped, not per-user.  Uses ``InMemoryExampleStore``,
-    ``DeltaExampleStore``, or ``LakebaseExampleStore`` — distinct classes from
-    the MemoryStore hierarchy (different schema, different tool names).
+    are coworker-scoped, not per-user.  Uses ``InMemoryExampleStore`` or
+    ``LakebaseExampleStore`` — distinct classes from the MemoryStore
+    hierarchy (different schema, different tool names).
     """
     if cfg.type == "inmemory":
         from ._example import InMemoryExampleStore  # noqa: PLC0415
 
         return InMemoryExampleStore()
-
-    if cfg.type == "delta":
-        if ws is None:
-            return None
-        if not cfg.table_name:
-            raise ValueError(
-                "[tool.apx.agent.example] type='delta' requires table_name."
-            )
-        from ._example_delta import DeltaExampleStore  # noqa: PLC0415
-        from ._embeddings import make_embedding_fn  # noqa: PLC0415
-        from ._sql import run_sql  # noqa: PLC0415
-
-        embed_fn = None
-        if cfg.embedding_model:
-            if cfg.embedding_dim is None:
-                raise ValueError(
-                    "[tool.apx.agent.example] type='delta' with embedding_model "
-                    "requires embedding_dim."
-                )
-            embed_fn = make_embedding_fn(ws, cfg.embedding_model)
-
-        # DeltaExampleStore.__init__(run_sql, embedding_fn, embedding_dim, table_name,
-        # auto_create) — verified against _example_delta.py:103-142.
-        return DeltaExampleStore(
-            run_sql=lambda q: run_sql(ws, q),
-            embedding_fn=embed_fn,
-            embedding_dim=cfg.embedding_dim,
-            table_name=cfg.table_name,
-            auto_create=cfg.auto_create,
-        )
 
     if cfg.type == "lakebase":
         if ws is None:
@@ -221,7 +166,7 @@ def _build_example_store(cfg: Any, ws: Any | None) -> Any | None:
 
     raise ValueError(
         f"[tool.apx.agent.example] unknown type {cfg.type!r}. "
-        "Known: inmemory, delta, lakebase."
+        "Known: inmemory, lakebase."
     )
 
 
@@ -308,7 +253,7 @@ def attach_declared_memory(
         if store is None:
             # A declared memory that produced no store marks the agent degraded
             # so /readyz reports it honestly — for ANY backend type. Previously
-            # this only fired for delta/lakebase, so a different type that failed
+            # this only fired for lakebase, so a different type that failed
             # to build would leave /readyz reporting memory="ok" with no store.
             if mcfg.type == "managed":
                 logger.warning(
@@ -321,7 +266,7 @@ def attach_declared_memory(
                     f"managed memory store {mcfg.store_name!r} not reachable — "
                     f"run `apx-agent memory provision --store {mcfg.store_name}`"
                 )
-            elif mcfg.type in ("lakebase", "delta") and ws is None:
+            elif mcfg.type == "lakebase" and ws is None:
                 logger.warning(
                     "[tool.apx.agent.memory] type=%r requires ws; ws=None at this point "
                     "(deploy with valid Databricks credentials). Memory tools will be absent.",
@@ -404,8 +349,8 @@ def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
 
     :param cfg: A ``SessionBackendConfig`` object with ``type``, ``table_name``,
         ``database``, ``host``, ``warehouse_id``, and ``auto_create`` fields.
-    :param ws: ``WorkspaceClient`` required for Delta and Lakebase backends.
-        ``None`` causes Delta/Lakebase to return ``None`` with a warning.
+    :param ws: ``WorkspaceClient`` required for the Lakebase backend.
+        ``None`` causes it to return ``None`` with a warning.
     :returns: A :class:`ConversationStore` instance, or ``None`` when the
         backend is unavailable.
     :raises ValueError: If required config fields are missing or the type is unknown.
@@ -415,27 +360,6 @@ def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
 
         return InMemoryConversationStore()
 
-    if cfg.type == "delta":
-        if ws is None:
-            logger.warning(
-                "[tool.apx.agent.session] type='delta' requires ws; "
-                "skipping conversation store (deploy with valid Databricks credentials)."
-            )
-            return None
-        if not cfg.table_name:
-            raise ValueError(
-                "[tool.apx.agent.session] type='delta' requires table_name "
-                "(three-part UC name: catalog.schema.base_prefix)."
-            )
-        from ._conversation_delta import DeltaConversationStore  # noqa: PLC0415
-
-        return DeltaConversationStore(
-            table_prefix=cfg.table_name,
-            ws=ws,
-            warehouse_id=getattr(cfg, "warehouse_id", None),
-            auto_create=cfg.auto_create,
-        )
-
     if cfg.type == "lakebase":
         if ws is None:
             logger.warning(
@@ -443,16 +367,20 @@ def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
                 "skipping conversation store (deploy with valid Databricks credentials)."
             )
             return None
-        from ._lakebase_engine import build_lakebase_engine  # noqa: PLC0415
-        from ._conversation_lakebase import LakebaseConversationStore  # noqa: PLC0415
-        from ._wiring import _resolve_env_var  # noqa: PLC0415
-
-        host = _resolve_env_var(cfg.host) if cfg.host else None
-        if not host or not cfg.database:
+        if not cfg.host or not cfg.database:
             raise ValueError(
                 "[tool.apx.agent.session] type='lakebase' requires host (the "
                 "Lakebase project endpoint or instance DNS) and database."
             )
+        from ._lakebase_engine import build_lakebase_engine  # noqa: PLC0415
+        from ._conversation_lakebase import LakebaseConversationStore  # noqa: PLC0415
+        from ._wiring import _resolve_env_var  # noqa: PLC0415
+
+        host = _resolve_env_var(cfg.host)
+        if not host:
+            # cfg.host names an env var that isn't set — infra not configured,
+            # not a config mistake. Fail open (mirrors _build_memory_store).
+            return None
         engine = build_lakebase_engine(ws=ws, database=cfg.database, host=host)
         base = cfg.table_name or "apx"
         return LakebaseConversationStore(
@@ -464,7 +392,7 @@ def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
 
     raise ValueError(
         f"[tool.apx.agent.session] unknown type {cfg.type!r}. "
-        "Known: inmemory, delta, lakebase."
+        "Known: inmemory, lakebase."
     )
 
 
@@ -480,7 +408,7 @@ def resolve_conversation_store(
     agent-carried ``session_config`` (e.g. CoworkerAgent) > None.
 
     :param config: The agent config; its ``session`` block drives backend selection.
-    :param ws: ``WorkspaceClient`` for Delta/Lakebase backends. ``None`` downgrades
+    :param ws: ``WorkspaceClient`` for the Lakebase backend. ``None`` downgrades
         those backends to ``None`` with a warning.
     :param override: An explicit :class:`ConversationStore` to use as-is.
         Bypasses all config resolution when not ``None``.
@@ -513,7 +441,7 @@ def resolve_checkpointer(
     """Return a durable LangGraph checkpointer for this agent, or ``None``.
 
     Only a **Lakebase** session backend yields a durable checkpointer (a
-    ``PostgresSaver``); for every other backend (delta / inmemory / none) return
+    ``PostgresSaver``); for every other backend (inmemory / none) return
     ``None`` so the served agent keeps its in-process ``InMemorySaver`` default.
 
     A durable checkpointer is what lets a mid-turn approval — checkpoint state,
@@ -621,7 +549,7 @@ def dispose_store_engine(store: Any | None) -> None:
     ``build_lakebase_engine`` pool (with a do_connect OAuth-token listener). #346
     closed the checkpointer pool but left these sibling engines open, so any path
     that rebuilds the app in one process leaks a live pool per cycle. Non-Lakebase
-    stores (Delta/in-memory) have no ``.engine`` and are a no-op.
+    stores (in-memory) have no ``.engine`` and are a no-op.
 
     Idempotent and best-effort: shutdown must never raise.
     """

@@ -723,7 +723,7 @@ def create_app(
     omitted, the config is discovered from the entry-point module's location
     or the current working directory.
 
-    ``conversation_store`` is an optional ``ConversationStore`` (e.g. ``DeltaConversationStore``)
+    ``conversation_store`` is an optional ``ConversationStore`` (e.g. ``LakebaseConversationStore``)
     for multi-turn memory. When provided, conversation history is persisted
     across requests keyed by ``conversation_id``.
 

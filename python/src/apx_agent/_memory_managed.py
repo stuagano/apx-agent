@@ -232,9 +232,9 @@ class ManagedMemoryStore:
 
         Fails closed (returns ``None``) when no trusted scope is available —
         scope is never taken from ``memory_id``. A not-found REST error also
-        returns ``None`` (the protocol contract is None-for-missing, mirroring
-        DeltaMemoryStore) — but any OTHER exception (infra error) propagates,
-        so a transient failure is never misreported as "not found" (#486).
+        returns ``None`` (the protocol contract is None-for-missing) — but any
+        OTHER exception (infra error) propagates, so a transient failure is
+        never misreported as "not found" (#486).
         """
         scope = self._trusted_scope()
         if not scope:

@@ -851,27 +851,6 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
     if mem.type == "inmemory":
         return Check(label, Status.OK, "inmemory (no external backend)", None)
 
-    if mem.type == "delta":
-        if not mem.table_name:
-            return Check(
-                label, Status.WARN,
-                "type=delta but no table_name — memory will degrade at runtime",
-                "Add table_name to [tool.apx.agent.memory] and re-run `uv run quickstart`.",
-            )
-        try:
-            from ._defaults import _make_workspace_client  # noqa: PLC0415
-            from ._sql import run_sql  # noqa: PLC0415
-            ws = _make_workspace_client()
-            run_sql(ws, f"SELECT 1 FROM {mem.table_name} LIMIT 0")
-            return Check(label, Status.OK, f"delta table reachable: {mem.table_name}", None)
-        except Exception as exc:
-            short = str(exc)[:120]
-            return Check(
-                label, Status.WARN,
-                f"delta table not yet reachable ({short})",
-                "Run `uv run quickstart` to create the memory tables.",
-            )
-
     if mem.type == "lakebase":
         # Resolve ${ENV_VAR} the same way the runtime does — a config that only
         # *mentions* a host isn't reachable if the env var is unset (the scaffold
@@ -888,8 +867,8 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
                 "Set host + database in [tool.apx.agent.memory]; if either is a "
                 "${ENV_VAR}, make sure the variable is exported.",
             )
-        # Live reachability probe (matches the delta branch's SELECT 1 rigor):
-        # build the same OAuth-token engine the runtime uses and round-trip a
+        # Live reachability probe: build the same OAuth-token engine the
+        # runtime uses and round-trip a
         # trivial query. Dispose the probe pool so the check doesn't leak it.
         engine = None
         try:

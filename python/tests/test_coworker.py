@@ -15,19 +15,24 @@ class TestNormalizeMemoryKnob:
             mem, sess = normalize_memory_knob(v)
             assert mem.type == "inmemory" and sess.type == "inmemory"
 
-    def test_persistent_and_alias_delta_default_tier(self):
-        for v in ("persistent", "delta"):
-            mem, sess = normalize_memory_knob(v)
-            assert mem.type == "delta" and sess.type == "delta"
-            # No catalog → falls back to main.default so bare LlmAgent still works
-            assert mem.table_name == "main.default.apx_memories"
-            assert sess.table_name == "main.default.apx_sessions"
+    def test_persistent_default_tier(self):
+        mem, sess = normalize_memory_knob("persistent")
+        assert mem.type == "lakebase" and sess.type == "lakebase"
+        # No catalog → falls back to main.default so bare LlmAgent still works
+        assert mem.table_name == "main.default.apx_memories"
+        assert sess.table_name == "main.default.apx_sessions"
+        # Lakebase needs infra the one-word knob can't carry directly — defaulted
+        # to the env-var convention and the always-available FMAPI embedder.
+        assert mem.host == "${LAKEBASE_HOST}" and sess.host == "${LAKEBASE_HOST}"
+        assert mem.embedding_model == "databricks-bge-large-en"
+        assert mem.embedding_dim == 1024
 
     def test_persistent_with_catalog_derives_uc_table_names(self):
         mem, sess = normalize_memory_knob("persistent", catalog="acme", schema="hr", name="hr_coworker")
-        assert mem.type == "delta"
+        assert mem.type == "lakebase"
         assert mem.table_name == "acme.hr.apx_hr_coworker_memory"
         assert sess.table_name == "acme.hr.apx_hr_coworker_sessions"
+        assert mem.database == "apx_hr_coworker" and sess.database == "apx_hr_coworker"
 
     def test_persistent_with_catalog_slugifies_name(self):
         # Non-alphanumeric chars → underscores; trailing stripped
@@ -78,8 +83,8 @@ class TestCoworkerAgent:
         assert cw._instructions.startswith("You are a revenue analyst.")
         assert "c_custkey(bigint)" in cw._instructions
         # memory declared (not yet built — needs ws at wiring time)
-        assert cw.memory_config is not None and cw.memory_config.type == "delta"
-        assert cw.session_config is not None and cw.session_config.type == "delta"
+        assert cw.memory_config is not None and cw.memory_config.type == "lakebase"
+        assert cw.session_config is not None and cw.session_config.type == "lakebase"
         # table names must be scoped to the coworker's own catalog.schema, not main.default
         assert cw.memory_config.table_name is not None
         assert cw.memory_config.table_name.startswith("samples.tpch.")
@@ -128,7 +133,7 @@ class TestCoworkerTemplate:
                          persona="a revenue analyst", memory="persistent")
         agent = tmpl.build(spec, ws=None)
         assert isinstance(agent, CoworkerAgent)
-        assert agent.memory_config.type == "delta"
+        assert agent.memory_config.type == "lakebase"
         assert agent._instructions.startswith("You are a revenue analyst.")
 
     def test_data_template_still_resolves(self):
