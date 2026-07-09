@@ -2874,6 +2874,49 @@ def _scaffold_apps(
         _write_okf_bundle_for_scaffold(target, manifest, force=force)
 
 
+def _materialize_agent(
+    config: "AgentConfig", target: Path, *, force: bool,
+    source_dir: Path | None = None,
+) -> None:
+    """Compile *config* into a durable, hand-editable project at *target*.
+
+    Shared by ``scaffold``'s gallery pick and ``generate`` — both start from
+    an arbitrary structured spec (a gallery YAML, an LLM-authored YAML) that
+    ``_scaffold_apps``'s scalar templating can't represent. Wraps
+    ``generate_project()`` (the compiler ``run``/``deploy`` already use for
+    standalone ``.yaml`` specs) and adds the auxiliary files it doesn't write
+    but ``_scaffold_apps`` does, so output quality doesn't depend on which
+    authoring path produced the config.
+    """
+    from ._project_gen import generate_project
+
+    if target.exists() and not force and any(target.iterdir()):
+        raise click.ClickException(
+            f"{target} already exists and is not empty. Pass --force to overwrite."
+        )
+    target.mkdir(parents=True, exist_ok=True)
+
+    generate_project(config, target, source_dir=source_dir)
+
+    aux_files = {
+        ".env.example": _SCAFFOLD_APPS_ENV_EXAMPLE,
+        ".gitignore": _SCAFFOLD_GITIGNORE,
+        "README.md": _SCAFFOLD_APPS_README.replace("<APP_NAME>", config.name),
+        "scripts/quickstart.py": _SCAFFOLD_APPS_QUICKSTART.replace("<APP_NAME>", config.name),
+    }
+    for rel_path, content in aux_files.items():
+        path = target / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists() or force:
+            path.write_text(content)
+
+    click.echo()
+    click.echo(f"Scaffolded {config.name} at {target} (target=apps).")
+    click.echo(f"Next: cd {target.name} && uv sync && uv run apx-agent run    # serve locally")
+    click.echo("Tip: run `uv run apx-agent doctor` to check your environment before deploying.")
+    click.echo("      uv run apx-agent deploy                  # → Databricks Apps")
+
+
 def _echo_scaffold_yaml_done(out: Path, *, catalog: str | None, schema: str | None) -> None:
     """Print a consistent, correct post-YAML message and offer to run locally."""
     import subprocess as _sp

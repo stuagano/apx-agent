@@ -6827,3 +6827,49 @@ def test_agents_status_json_sub_agents_shape() -> None:
          "error": "env ref resolved to empty — variable unset"},
     ]
     assert payload["healthy"] is True
+
+
+# ---------------------------------------------------------------------------
+# _materialize_agent
+# ---------------------------------------------------------------------------
+
+
+def test_materialize_agent_writes_full_project(tmp_path: Path) -> None:
+    from apx_agent._models import AgentConfig
+    from apx_agent.cli import _materialize_agent
+
+    config = AgentConfig(
+        name="mat-agent",
+        model="databricks-claude-sonnet-4-6",
+        instructions="Answer questions.",
+        template={"name": "base"},
+    )
+    target = tmp_path / "mat-agent"
+    _materialize_agent(config, target, force=False)
+
+    # generate_project()'s own output
+    assert (target / "agent.py").exists()
+    assert (target / "pyproject.toml").exists()
+    assert (target / "databricks.yml").exists()
+    assert (target / "app.yml").exists()
+    assert (target / "agent_server" / "start_server.py").exists()
+    # the auxiliary files generate_project() doesn't write but _scaffold_apps
+    # does — _materialize_agent must add these so gallery-pick/generate don't
+    # produce a thinner starter pack than plain scaffold.
+    assert (target / "README.md").exists()
+    assert (target / ".env.example").exists()
+    assert (target / ".gitignore").exists()
+    assert (target / "scripts" / "quickstart.py").exists()
+
+
+def test_materialize_agent_refuses_overwrite_without_force(tmp_path: Path) -> None:
+    import click
+    from apx_agent._models import AgentConfig
+    from apx_agent.cli import _materialize_agent
+
+    target = tmp_path / "existing"
+    target.mkdir()
+    (target / "junk.txt").write_text("hi")
+    config = AgentConfig(name="existing", model="databricks-claude-sonnet-4-6", instructions="")
+    with pytest.raises(click.ClickException, match="already exists"):
+        _materialize_agent(config, target, force=False)
