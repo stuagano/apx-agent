@@ -3177,7 +3177,7 @@ def scaffold(
         if schema == "list":
             click.echo(f"\nAvailable schemas in {catalog}:")
             schema = _pick_from_list(_ws_list_schemas(ws, catalog or ""), "Select schema")
-        click.echo(f"\n→ apx scaffold {name} --template {scaffold_template or 'coworker'} --catalog {catalog} --schema {schema}\n")
+        click.echo(f"\n→ apx-agent agents scaffold {name} --template {scaffold_template or 'coworker'} --catalog {catalog} --schema {schema}\n")
         _scaffold_sanity_check(ws, scaffold_template or "coworker", catalog, schema)
     elif scaffold_template and (catalog or schema):
         # Even without "list", run the sanity check when template+catalog are explicit.
@@ -7858,7 +7858,7 @@ def _find_apx_specs(cwd: Path) -> list[Path]:
     found = []
     for p in sorted([*cwd.glob("*.yaml"), *cwd.glob("*.yml")]):
         try:
-            load_spec(p)
+            load_spec(p, strict=False)
             found.append(p)
         except Exception:
             continue
@@ -7870,7 +7870,7 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
     from ._yaml_spec import SpecValidationError, load_spec
 
     try:
-        cfg = load_spec(yaml_path)
+        cfg = load_spec(yaml_path, strict=False)
     except SpecValidationError as e:
         raise click.ClickException(f"Invalid spec {yaml_path}: {e}") from e
 
