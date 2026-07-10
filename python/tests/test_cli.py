@@ -6068,8 +6068,7 @@ class TestGenerateOnboardingPlan:
         assert fake_ws.serving_endpoints.query.call_count == 1
 
     def test_passes_chatmessage_not_dicts(self) -> None:
-        """Same regression class as test_generate_coworker_yaml_passes_chatmessage_not_dicts:
-        the SDK calls .as_dict() on each message, so dicts AttributeError at runtime."""
+        """The SDK calls .as_dict() on each message, so dicts AttributeError at runtime."""
         from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 
         from apx_agent.cli import _generate_onboarding_plan
