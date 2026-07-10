@@ -6920,3 +6920,47 @@ def test_materialize_agent_refuses_overwrite_without_force(tmp_path: Path) -> No
     config = AgentConfig(name="existing", model="databricks-claude-sonnet-4-6", instructions="")
     with pytest.raises(click.ClickException, match="already exists"):
         _materialize_agent(config, target, force=False)
+
+
+# ---------------------------------------------------------------------------
+# `_resolve_generate_data_source`
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_generate_data_source_prefers_explicit_flags() -> None:
+    from apx_agent.cli import _classify_agent_description  # unused import check
+    from apx_agent.cli import _GenerateClassification, _resolve_generate_data_source
+
+    classification = _GenerateClassification(
+        template="data", name="x", persona=None, objective=None, join_key=None,
+        catalog_hint="hinted_cat", schema_hint="hinted_sch", missing=(),
+    )
+    result = _resolve_generate_data_source(classification, "explicit_cat", "explicit_sch", None)
+    assert result.catalog == "explicit_cat"
+    assert result.schema == "explicit_sch"
+
+
+def test_resolve_generate_data_source_base_template_has_no_source() -> None:
+    from apx_agent.cli import _GenerateClassification, _resolve_generate_data_source
+
+    classification = _GenerateClassification(
+        template="base", name="x", persona=None, objective=None, join_key=None,
+        catalog_hint=None, schema_hint=None, missing=(),
+    )
+    result = _resolve_generate_data_source(classification, None, None, None)
+    assert result.catalog is None
+    assert result.schema is None
+
+
+def test_resolve_generate_data_source_falls_back_to_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apx_agent.cli as cli
+    from apx_agent.cli import _GenerateClassification, _resolve_generate_data_source
+
+    monkeypatch.setattr(cli, "_discover_default_data", lambda profile=None: None)
+    classification = _GenerateClassification(
+        template="data", name="x", persona=None, objective=None, join_key=None,
+        catalog_hint=None, schema_hint=None, missing=(),
+    )
+    result = _resolve_generate_data_source(classification, None, None, None)
+    assert result.catalog == "samples"
+    assert result.schema == "nyctaxi"

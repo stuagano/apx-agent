@@ -2350,6 +2350,38 @@ def _classify_agent_description(profile: "str | None", description: str) -> _Gen
     )
 
 
+class _ResolvedDataSource(NamedTuple):
+    """Concrete catalog/schema for a materialized agent — never a $VAR placeholder."""
+    catalog: "str | None"
+    schema: "str | None"
+
+
+def _resolve_generate_data_source(
+    classification: _GenerateClassification,
+    catalog: "str | None", schema: "str | None", profile: "str | None",
+) -> _ResolvedDataSource:
+    """Resolve catalog/schema for `generate`, always landing on something
+    concrete for template in {data, coworker} — never a bare $CATALOG, since
+    a materialized agent.py embeds it as a literal Python string."""
+    if classification.template == "base":
+        return _ResolvedDataSource(catalog=None, schema=None)
+
+    if catalog and schema:
+        return _ResolvedDataSource(catalog=catalog, schema=schema)
+
+    if classification.catalog_hint and classification.schema_hint:
+        return _ResolvedDataSource(
+            catalog=classification.catalog_hint, schema=classification.schema_hint,
+        )
+
+    found = _discover_default_data(profile)
+    if found:
+        found_catalog, found_schema, _table = found
+        return _ResolvedDataSource(catalog=found_catalog, schema=found_schema)
+
+    return _ResolvedDataSource(catalog="samples", schema="nyctaxi")
+
+
 def _pick_coworker_gallery() -> "tuple[str, Path]":
     """List bundled coworker gallery YAMLs and return (name, path) of the selection."""
     import importlib.resources as _ir
