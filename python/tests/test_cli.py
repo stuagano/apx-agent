@@ -7171,3 +7171,40 @@ def test_generate_llm_failure_points_at_scaffold_fallback() -> None:
         result = CliRunner().invoke(main, ["generate", "a helper agent"])
     assert result.exit_code != 0
     assert "apx-agent agents scaffold" in result.output
+
+
+def test_generate_prompts_only_for_classifier_flagged_missing_fields(tmp_path: Path) -> None:
+    # missing=["objective"] must drive exactly one click.prompt for the
+    # objective field — proves `filled` is actually threaded from the
+    # classifier's `missing` list through to the interactive fill step.
+    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({
+            "template": "data", "name": "sales-agent", "persona": None,
+            "objective": None, "join_key": None, "catalog_hint": None,
+            "schema_hint": None, "missing": ["objective"],
+        })
+    ))])
+    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=(
+            "name: sales-agent\nmodel: databricks-claude-sonnet-4-6\n"
+            "instructions: Answer sales questions.\n"
+            "template:\n  name: data\n  catalog: main\n  schema: sales\n"
+            "tools: []\n"
+        )
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = CliRunner().invoke(
+            main,
+            [
+                "generate", "a data agent for finance",
+                "--catalog", "main", "--schema", "sales",
+                "--dir", str(tmp_path),
+            ],
+            input="unbilled deals\n",
+        )
+    assert result.exit_code == 0, result.output
+    assert "What should the agent surface?" in result.output
+    assert (tmp_path / "sales-agent" / "agent.py").exists()
