@@ -2231,114 +2231,6 @@ def _generate_onboarding_plan(profile: "str | None") -> _OnboardingPlan:
     )
 
 
-_COWORKER_GEN_PROMPT = """\
-You are an expert at designing Databricks coworker agents. Generate a YAML spec for a coworker
-agent that joins two enterprise data systems and surfaces actionable insights.
-
-Use EXACTLY this structure (no extra keys, no markdown fences):
-
-name: <kebab-case-name>
-description: >
-  <1-2 sentence description ending with a period.>
-model: databricks-claude-sonnet-4-6
-instructions: >
-  You are <persona>. Always cite the <join_key> when surfacing discrepancies.
-  <2-3 sentences about how to distinguish error types and what to prioritise.>
-examples:
-  - "<example question 1>"
-  - "<example question 2>"
-  - "<example question 3>"
-  - "<example question 4>"
-
-template:
-  name: coworker
-  catalog: $CATALOG
-  schema: $SCHEMA
-  persona: <persona one-liner>
-  join_key: <join key field name>
-  objective: >
-    <2-3 sentences about the core reconciliation objective.>
-  memory: persistent
-  warehouse_id: $WAREHOUSE_ID
-  include_functions: true
-
-memory:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: <name_underscored>
-  table_name: $CATALOG.$SCHEMA.apx_<name_underscored>_memory
-  embedding_model: databricks-bge-large-en
-  embedding_dim: 1024
-  auto_create: true
-  validate_at_boot: true
-
-session:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: <name_underscored>
-  table_name: $CATALOG.$SCHEMA.apx_<name_underscored>_sessions
-  auto_create: true
-  validate_at_boot: true
-
-guardrails:
-  injection_detection: true
-  blocked_tools: []
-  rate_limit: null
-
-tools: []
-
-Here is the user's coworker definition:
-{spec}
-
-Output ONLY the YAML. No explanation, no markdown fences.
-"""
-
-
-def _generate_coworker_yaml(profile: "str | None") -> str:
-    """Ask the user a few questions then use an LLM to author the full coworker YAML."""
-    click.echo("\nLet's define your coworker. Answer a few questions:\n")
-    system_a = click.prompt("System A (e.g. Salesforce, SAP, Oracle ERP)")
-    system_a_data = click.prompt(f"What data lives in {system_a}? (e.g. closed deals, invoices)")
-    system_b = click.prompt("System B (e.g. NetSuite, Workday, ServiceNow)")
-    system_b_data = click.prompt(f"What data lives in {system_b}? (e.g. payments, HR records)")
-    join_key = click.prompt("Join key between the two systems (e.g. account_id, employee_id)")
-    persona = click.prompt("Analyst persona (e.g. a revenue operations analyst)")
-    objective = click.prompt("What should the coworker surface? (e.g. unbilled deals, pay discrepancies)")
-
-    spec = (
-        f"System A: {system_a} — {system_a_data}\n"
-        f"System B: {system_b} — {system_b_data}\n"
-        f"Join key: {join_key}\n"
-        f"Persona: {persona}\n"
-        f"Objective: {objective}"
-    )
-    click.echo("\nGenerating coworker YAML...\n")
-    try:
-        from databricks.sdk import WorkspaceClient
-        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
-        response = ws.serving_endpoints.query(
-            name="databricks-claude-sonnet-4-6",
-            messages=[
-                ChatMessage(
-                    role=ChatMessageRole.USER,
-                    content=_COWORKER_GEN_PROMPT.format(spec=spec),
-                )
-            ],
-            max_tokens=1200,
-        )
-        choices = response.choices
-        if not choices or choices[0].message is None or choices[0].message.content is None:
-            raise click.ClickException("LLM returned an empty response.")
-        return choices[0].message.content.strip()
-    except Exception as exc:
-        raise click.ClickException(
-            f"LLM generation failed: {exc}\n"
-            "Ensure you have a valid Databricks profile with access to "
-            "databricks-claude-sonnet-4-6, or pick from the gallery with --coworker list."
-        ) from exc
-
-
 def _pick_coworker_gallery() -> "tuple[str, Path]":
     """List bundled coworker gallery YAMLs and return (name, path) of the selection."""
     import importlib.resources as _ir
@@ -3021,10 +2913,10 @@ def _prompt_for_instructions() -> str | None:
     "--coworker", "coworker_spec", default=None, is_eager=False,
     metavar="[list|NAME]",
     help=(
-        "Pick or generate a coworker. Use 'list' to browse the gallery, "
-        "'generate' to LLM-author one from your description, "
+        "Pick a coworker. Use 'list' to browse the gallery, "
         "a coworker name to select directly, or omit the value to use "
-        "--template coworker."
+        "--template coworker. For natural-language authoring, use "
+        "`apx-agent generate` instead."
     ),
 )
 @click.option("--data", "use_data", is_flag=True, default=False,
