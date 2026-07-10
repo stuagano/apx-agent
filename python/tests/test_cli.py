@@ -7083,3 +7083,91 @@ def test_author_agent_yaml_data_template_round_trips(tmp_path: Path) -> None:
     spec_path.write_text(result)
     config = load_spec(spec_path, strict=False)
     assert config.template["schema"] == "sales"
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent generate`
+# ---------------------------------------------------------------------------
+
+
+def test_generate_command_materializes_describable_project(tmp_path: Path) -> None:
+    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({
+            "template": "base", "name": "helper-agent", "persona": None,
+            "objective": None, "join_key": None, "catalog_hint": None,
+            "schema_hint": None, "missing": [],
+        })
+    ))])
+    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=(
+            "name: helper-agent\nmodel: databricks-claude-sonnet-4-6\n"
+            "instructions: Help with general questions.\ntools: []\n"
+        )
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = runner.invoke(
+            main,
+            ["generate", "a simple helper agent that answers general questions",
+             "--dir", str(tmp_path)],
+        )
+    assert result.exit_code == 0, result.output
+
+    project = tmp_path / "helper-agent"
+    assert (project / "agent.py").exists()
+    assert (project / "pyproject.toml").exists()
+
+    # click.testing.CliRunner.invoke (click 8.3.1, this repo's pinned
+    # version) has no cwd kwarg — chdir manually instead. Also clear the
+    # bare "agent" module from sys.modules: other tests (e.g. the
+    # coworker-gallery test) import an agent.py under that same default
+    # module name from a different directory, and importlib.import_module
+    # would otherwise hand back their cached module instead of this one's.
+    prev = os.getcwd()
+    sys.modules.pop("agent", None)
+    os.chdir(project)
+    try:
+        describe_result = CliRunner().invoke(main, ["agents", "describe"])
+    finally:
+        os.chdir(prev)
+        sys.modules.pop("agent", None)
+    assert describe_result.exit_code == 0, describe_result.output
+    assert "helper-agent" in describe_result.output or "Help with general questions" in describe_result.output
+
+
+def test_generate_target_exists_needs_force(tmp_path: Path) -> None:
+    (tmp_path / "helper-agent").mkdir()
+    (tmp_path / "helper-agent" / "junk.txt").write_text("hi")
+
+    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({
+            "template": "base", "name": "helper-agent", "persona": None,
+            "objective": None, "join_key": None, "catalog_hint": None,
+            "schema_hint": None, "missing": [],
+        })
+    ))])
+    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content="name: helper-agent\nmodel: databricks-claude-sonnet-4-6\ninstructions: Help.\ntools: []\n"
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = CliRunner().invoke(
+            main, ["generate", "a helper agent", "--dir", str(tmp_path)],
+        )
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+
+
+def test_generate_llm_failure_points_at_scaffold_fallback() -> None:
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = RuntimeError("connection refused")
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = CliRunner().invoke(main, ["generate", "a helper agent"])
+    assert result.exit_code != 0
+    assert "apx-agent agents scaffold" in result.output

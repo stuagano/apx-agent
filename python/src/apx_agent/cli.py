@@ -2656,6 +2656,69 @@ def onboard(profile: "str | None", directory: str, force: bool) -> None:
         )
 
 
+@main.command()
+@click.argument("description", required=False, default=None)
+@click.option(
+    "--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+    help="Databricks CLI profile for the LLM calls and workspace probing.",
+)
+@click.option("--catalog", default=None, help="Catalog for the agent's data source. Skips auto-detection.")
+@click.option("--schema", default=None, help="Schema for the agent's data source. Skips auto-detection.")
+@click.option(
+    "--dir", "directory", default=".", type=click.Path(file_okay=False),
+    help="Directory to write the project into. Default: current directory.",
+)
+@click.option("--force", is_flag=True, help="Overwrite an existing project directory.")
+def generate(
+    description: "str | None", profile: "str | None",
+    catalog: "str | None", schema: "str | None",
+    directory: str, force: bool,
+) -> None:
+    """Describe an agent in plain English; an LLM authors it as a real project.
+
+    Classifies your description into a template (base/data/coworker), asks
+    only for whatever it couldn't confidently fill in, then authors and
+    materializes a durable, hand-editable project — the same output shape
+    `apx-agent agents scaffold` produces, just described in English instead
+    of flags.
+    """
+    from ._yaml_spec import load_spec
+
+    if not description:
+        description = cast(str, click.prompt("Describe the agent you want (plain English)"))
+
+    click.echo("\nClassifying your description...")
+    classification = _classify_agent_description(profile, description)
+
+    data_source = _resolve_generate_data_source(classification, catalog, schema, profile)
+
+    filled: "dict[str, str]" = {}
+    field_prompts = {
+        "persona": "Analyst persona (e.g. a revenue operations analyst)",
+        "objective": "What should the agent surface? (e.g. unbilled deals)",
+        "join_key": "Join key between the two systems (e.g. account_id)",
+    }
+    for field in classification.missing:
+        prompt_text = field_prompts.get(field)
+        if prompt_text:
+            filled[field] = click.prompt(prompt_text)
+
+    click.echo("Generating agent spec...")
+    yaml_text = _author_agent_yaml(profile, classification, data_source, filled)
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_text)
+        tmp_yaml_path = Path(f.name)
+    try:
+        config = load_spec(tmp_yaml_path, strict=False)
+    finally:
+        tmp_yaml_path.unlink(missing_ok=True)
+
+    target = Path(directory) / config.name
+    _materialize_agent(config, target, force=force)
+
+
 def _pick_template() -> str:
     """List registered templates and return the user's selection."""
     from ._template import template_registry
