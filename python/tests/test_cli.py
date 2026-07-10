@@ -6176,6 +6176,69 @@ class TestGenerateOnboardingPlan:
         assert fake_ws.serving_endpoints.query.call_count == 2  # one retry attempted
 
 
+class TestClassifyAgentDescription:
+    def test_classify_agent_description_parses_coworker_shape(self) -> None:
+        from apx_agent.cli import _classify_agent_description
+
+        fake_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({
+                "template": "coworker",
+                "name": "unbilled-revenue-agent",
+                "persona": "a revenue operations analyst",
+                "objective": "flag unbilled revenue",
+                "join_key": "account_id",
+                "catalog_hint": None,
+                "schema_hint": None,
+                "missing": [],
+            })
+        ))])
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = fake_response
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _classify_agent_description(
+                None, "an agent that joins Salesforce closed deals with NetSuite "
+                "payments by account_id and flags unbilled revenue"
+            )
+
+        assert result.template == "coworker"
+        assert result.name == "unbilled-revenue-agent"
+        assert result.join_key == "account_id"
+        assert result.missing == ()
+
+    def test_classify_agent_description_retries_on_invalid_json(self) -> None:
+        from apx_agent.cli import _classify_agent_description
+
+        bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))])
+        good = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({
+                "template": "base", "name": "helper-agent", "persona": None,
+                "objective": None, "join_key": None, "catalog_hint": None,
+                "schema_hint": None, "missing": [],
+            })
+        ))])
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.side_effect = [bad, good]
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _classify_agent_description(None, "a simple helper agent")
+
+        assert result.template == "base"
+        assert fake_ws.serving_endpoints.query.call_count == 2
+
+    def test_classify_agent_description_raises_after_second_failure(self) -> None:
+        import click
+        from apx_agent.cli import _classify_agent_description
+
+        bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="still not json"))])
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = bad
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            with pytest.raises(click.ClickException):
+                _classify_agent_description(None, "a simple helper agent")
+
+
 class TestOnboardCommand:
     def _mock_generate(self, monkeypatch: "pytest.MonkeyPatch", result: "Any") -> None:
         import apx_agent.cli as cli_mod

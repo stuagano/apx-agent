@@ -2231,6 +2231,125 @@ def _generate_onboarding_plan(profile: "str | None") -> _OnboardingPlan:
     )
 
 
+class _GenerateClassification(NamedTuple):
+    """Structured extraction from a natural-language agent description."""
+    template: str
+    name: str
+    persona: "str | None"
+    objective: "str | None"
+    join_key: "str | None"
+    catalog_hint: "str | None"
+    schema_hint: "str | None"
+    missing: "tuple[str, ...]"
+
+
+_CLASSIFY_PROMPT = """\
+You are classifying a natural-language agent request for apx-agent.
+Given the user's description, return ONLY this JSON (no markdown fences):
+
+{{
+  "template": "base" | "data" | "coworker",
+  "name": "<kebab-case-slug>",
+  "persona": "<one-line analyst persona, or null>",
+  "objective": "<2-3 sentences on what it should surface, or null>",
+  "join_key": "<field name joining two systems, or null - coworker only>",
+  "catalog_hint": "<a catalog name if the description names one, else null>",
+  "schema_hint": "<a schema name if named, else null>",
+  "missing": ["<field names you could not confidently fill: persona, objective, or join_key>"]
+}}
+
+Rules:
+- "coworker" requires joining two distinct systems on a key - if the
+  description doesn't clearly describe two systems, classify as "data"
+  (grounded in one UC schema) or "base" (no data source) instead.
+- Only list a field in "missing" if the template you chose actually needs it
+  (never list join_key for template=data or base).
+
+Description: {description}
+
+Output ONLY the JSON object. No explanation, no markdown fences.
+"""
+
+
+def _query_generate_llm(ws: "Any", prompt_text: str) -> str:
+    """One LLM call for `generate`; raises ClickException on failure."""
+    from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+
+    try:
+        response = ws.serving_endpoints.query(
+            name="databricks-claude-sonnet-4-6",
+            messages=[ChatMessage(role=ChatMessageRole.USER, content=prompt_text)],
+            max_tokens=1500,
+        )
+        choices = response.choices
+        if not choices or choices[0].message is None or choices[0].message.content is None:
+            raise click.ClickException("LLM returned an empty response.")
+        return choices[0].message.content.strip()
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(
+            f"LLM generation failed: {exc}\n"
+            "Ensure you have a valid Databricks profile with access to "
+            "databricks-claude-sonnet-4-6, or use `apx-agent agents scaffold` "
+            "for the deterministic wizard instead."
+        ) from exc
+
+
+def _parse_classification(text: str) -> "_GenerateClassification | None":
+    """Best-effort JSON parse into a _GenerateClassification, or None on failure."""
+    try:
+        data = json.loads(text)
+        return _GenerateClassification(
+            template=data["template"],
+            name=data["name"],
+            persona=data.get("persona"),
+            objective=data.get("objective"),
+            join_key=data.get("join_key"),
+            catalog_hint=data.get("catalog_hint"),
+            schema_hint=data.get("schema_hint"),
+            missing=tuple(data.get("missing") or ()),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def _classify_agent_description(profile: "str | None", description: str) -> _GenerateClassification:
+    """LLM call #1: classify a natural-language description into structured fields."""
+    from databricks.sdk import WorkspaceClient
+
+    try:
+        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    except Exception as exc:
+        raise click.ClickException(
+            f"Could not connect to the workspace: {exc}\n"
+            "Ensure you have a valid Databricks profile with access to "
+            "databricks-claude-sonnet-4-6."
+        ) from exc
+
+    prompt = _CLASSIFY_PROMPT.format(description=description)
+    text = _query_generate_llm(ws, prompt)
+    parsed = _parse_classification(text)
+    if parsed is not None:
+        return parsed
+
+    retry_prompt = (
+        f"{prompt}\n\nYour previous response failed to parse as the required "
+        f"JSON shape. Return ONLY the JSON object, no markdown fences, no "
+        f"explanation."
+    )
+    text = _query_generate_llm(ws, retry_prompt)
+    parsed = _parse_classification(text)
+    if parsed is not None:
+        return parsed
+
+    raise click.ClickException(
+        "The LLM's classification response could not be parsed as JSON after "
+        "one retry. Try rephrasing your description, or use "
+        "`apx-agent agents scaffold` for the deterministic wizard instead."
+    )
+
+
 def _pick_coworker_gallery() -> "tuple[str, Path]":
     """List bundled coworker gallery YAMLs and return (name, path) of the selection."""
     import importlib.resources as _ir
