@@ -2296,10 +2296,15 @@ def _query_generate_llm(ws: "Any", prompt_text: str) -> str:
         ) from exc
 
 
+_GENERATE_TEMPLATES = ("base", "data", "coworker")
+
+
 def _parse_classification(text: str) -> "_GenerateClassification | None":
     """Best-effort JSON parse into a _GenerateClassification, or None on failure."""
     try:
         data = json.loads(text)
+        if data["template"] not in _GENERATE_TEMPLATES:
+            return None
         return _GenerateClassification(
             template=data["template"],
             name=data["name"],
@@ -2715,7 +2720,9 @@ def generate(
     finally:
         tmp_yaml_path.unlink(missing_ok=True)
 
-    target = Path(directory) / config.name
+    # config.name comes from the LLM-authored YAML — sanitize before using it
+    # as a filesystem path component, matching scaffold's existing guard.
+    target = Path(directory) / Path(config.name).name
     _materialize_agent(config, target, force=force)
 
 

@@ -6238,6 +6238,36 @@ class TestClassifyAgentDescription:
             with pytest.raises(click.ClickException):
                 _classify_agent_description(None, "a simple helper agent")
 
+    def test_classify_agent_description_retries_on_out_of_enum_template(self) -> None:
+        # Valid JSON but an out-of-enum "template" value must not reach the
+        # _GEN_AUTHOR_PROMPTS[classification.template] lookup in
+        # _author_agent_yaml as an uncaught KeyError -- it should be treated
+        # like any other malformed classification and trigger the retry.
+        from apx_agent.cli import _classify_agent_description
+
+        bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({
+                "template": "analytics", "name": "x", "persona": None,
+                "objective": None, "join_key": None, "catalog_hint": None,
+                "schema_hint": None, "missing": [],
+            })
+        ))])
+        good = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({
+                "template": "base", "name": "helper-agent", "persona": None,
+                "objective": None, "join_key": None, "catalog_hint": None,
+                "schema_hint": None, "missing": [],
+            })
+        ))])
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.side_effect = [bad, good]
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _classify_agent_description(None, "a simple helper agent")
+
+        assert result.template == "base"
+        assert fake_ws.serving_endpoints.query.call_count == 2
+
 
 class TestOnboardCommand:
     def _mock_generate(self, monkeypatch: "pytest.MonkeyPatch", result: "Any") -> None:
@@ -7136,6 +7166,36 @@ def test_generate_command_materializes_describable_project(tmp_path: Path) -> No
         sys.modules.pop("agent", None)
     assert describe_result.exit_code == 0, describe_result.output
     assert "helper-agent" in describe_result.output or "Help with general questions" in describe_result.output
+
+
+def test_generate_sanitizes_llm_authored_name_before_building_path(tmp_path: Path) -> None:
+    # AgentConfig.name is an unconstrained str -- an LLM-authored YAML could
+    # contain a path-traversal-shaped name. generate() must not use it
+    # unsanitized to build the materialize target, matching the guard
+    # scaffold() already applies to its own `name` argument.
+    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({
+            "template": "base", "name": "escape-agent", "persona": None,
+            "objective": None, "join_key": None, "catalog_hint": None,
+            "schema_hint": None, "missing": [],
+        })
+    ))])
+    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=(
+            "name: ../../escaped-agent\nmodel: databricks-claude-sonnet-4-6\n"
+            "instructions: Help.\ntools: []\n"
+        )
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = CliRunner().invoke(
+            main, ["generate", "an agent", "--dir", str(tmp_path)],
+        )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "escaped-agent").exists()
+    assert not (tmp_path.parent / "escaped-agent").exists()
 
 
 def test_generate_target_exists_needs_force(tmp_path: Path) -> None:
