@@ -2921,32 +2921,6 @@ def _materialize_agent(
     click.echo("      uv run apx-agent deploy                  # → Databricks Apps")
 
 
-def _echo_scaffold_yaml_done(out: Path, *, catalog: str | None, schema: str | None) -> None:
-    """Print a consistent, correct post-YAML message and offer to run locally."""
-    import subprocess as _sp
-    import sys
-
-    click.echo(f"\nSpec written to {out.name}")
-    if not (catalog and schema):
-        missing = " and ".join(
-            v for v, flag in [("$CATALOG", catalog), ("$SCHEMA", schema)] if not flag
-        )
-        click.echo(f"  Open {out.name} and fill in {missing} before running.")
-        click.echo(f"\n  apx-agent run {out.name}     # run locally")
-        click.echo(f"  apx-agent deploy {out.name}  # deploy to Databricks Apps")
-        return
-
-    if sys.stdin.isatty():
-        click.echo()
-        launch = click.confirm("Start the local dev server now?", default=True)
-        if launch:
-            _sp.run(["apx-agent", "run", str(out)], check=False)
-            return
-
-    click.echo(f"\n  apx-agent run {out.name}     # run locally")
-    click.echo(f"  apx-agent deploy {out.name}  # deploy to Databricks Apps")
-
-
 def _scaffold_from_gallery(
     gallery_yaml_path: Path,
     name: str,
@@ -2988,62 +2962,6 @@ def _prompt_for_instructions() -> str | None:
         show_default=False,
     )
     return raw.strip() or None
-
-
-def _scaffold_to_yaml(
-    name: str,
-    directory: Path,
-    scaffold_template: str,
-    catalog: str | None,
-    schema: str | None,
-    persona: str | None,
-    join_key: str | None,
-    objective: str | None,
-    instructions: str | None = None,
-) -> None:
-    import yaml as _yaml
-    spec: dict = {
-        "name": name,
-        "description": "",
-        "model": "databricks-claude-sonnet-4-6",
-        "instructions": instructions or "",
-        "examples": [],
-    }
-    if scaffold_template in ("coworker", "data"):
-        spec["template"] = {
-            "name": scaffold_template,
-            "catalog": catalog or "$CATALOG",
-            "schema": schema or "$SCHEMA",
-        }
-        if scaffold_template == "coworker":
-            spec["template"]["persona"] = persona or "a data analyst"
-            spec["template"]["join_key"] = join_key or ""
-            spec["template"]["objective"] = objective or ""
-            spec["template"]["memory"] = "persistent"
-            safe_name = name.replace("-", "_")
-            cat = catalog or "$CATALOG"
-            sch = schema or "$SCHEMA"
-            spec["memory"] = {
-                "type": "lakebase",
-                "host": "${LAKEBASE_HOST}",
-                "database": safe_name,
-                "table_name": f"{cat}.{sch}.apx_{safe_name}_memory",
-                "embedding_model": "databricks-bge-large-en",
-                "embedding_dim": 1024,
-                "auto_create": True,
-            }
-            spec["session"] = {
-                "type": "lakebase",
-                "host": "${LAKEBASE_HOST}",
-                "database": safe_name,
-                "table_name": f"{cat}.{sch}.apx_{safe_name}_sessions",
-                "auto_create": True,
-            }
-    spec["guardrails"] = {"injection_detection": False}
-    spec["tools"] = []
-    out = directory / f"{name}.yaml"
-    out.write_text(_yaml.dump(spec, sort_keys=False, allow_unicode=True))
-    _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
 
 
 @agents.command()
@@ -3122,18 +3040,11 @@ def _scaffold_to_yaml(
     help="Run the setup wizard (target, template, catalog, schema, persona). "
          "Defaults to on when stdin is a TTY.",
 )
-@click.option(
-    "--yaml/--no-yaml", "emit_yaml", default=True,
-    help="Output a YAML spec file instead of a full project directory "
-         "(default: on — unless --target is passed explicitly, which "
-         "scaffolds that runtime's project layout; pass --yaml to keep "
-         "the spec output).",
-)
 def scaffold(
     name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
     scaffold_template: str | None, coworker_spec: str | None, use_data: bool,
-    lakebase: bool, interactive: bool | None, emit_yaml: bool,
+    lakebase: bool, interactive: bool | None,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -3176,22 +3087,12 @@ def scaffold(
     elif use_data:
         scaffold_template = "data"
 
-    # An explicit --target is a request for that runtime's documented project
-    # layout (#449): the Apps agent_server/ bundle or the flat model-serving
-    # project. Don't let the default-on --yaml spec flow silently reroute it
-    # to a YAML spec — only an explicitly passed --yaml keeps the spec output.
-    if scaffold_target is not None and emit_yaml:
-        _yaml_source = click.get_current_context().get_parameter_source("emit_yaml")
-        if _yaml_source is not click.core.ParameterSource.COMMANDLINE:
-            emit_yaml = False
-
-    if not emit_yaml:
-        if target.exists() and not force:
-            if any(target.iterdir()):
-                raise click.ClickException(
-                    f"{target} already exists and is not empty. Pass --force to overwrite."
-                )
-        target.mkdir(parents=True, exist_ok=True)
+    if target.exists() and not force:
+        if any(target.iterdir()):
+            raise click.ClickException(
+                f"{target} already exists and is not empty. Pass --force to overwrite."
+            )
+    target.mkdir(parents=True, exist_ok=True)
 
     # -----------------------------------------------------------------------
     # Step 0: template/catalog/schema pickers and sanity check.
@@ -3238,7 +3139,7 @@ def scaffold(
         scaffold_target = scaffold_target or "apps"
         scaffold_template = scaffold_template or "data"
 
-    instructions: str | None = _prompt_for_instructions() if (interactive_mode and not emit_yaml) else None
+    instructions: str | None = _prompt_for_instructions() if interactive_mode else None
 
     # -----------------------------------------------------------------------
     # Step 2: validate the combination before touching the filesystem.
@@ -3281,8 +3182,7 @@ def scaffold(
             )
 
     # -----------------------------------------------------------------------
-    # Step 4: gallery pick — materialize a full project directly (bypassing
-    # --yaml: a gallery-picked coworker is always a durable, editable project).
+    # Step 4: gallery pick — materialize a full project directly.
     # -----------------------------------------------------------------------
     if coworker_spec is not None and coworker_spec not in ("",):
         if coworker_spec == "list":
@@ -3302,21 +3202,6 @@ def scaffold(
             gallery_yaml_path = matched[0]
         config = _scaffold_from_gallery(gallery_yaml_path, project_name, catalog, schema)
         _materialize_agent(config, target, force=force)
-        return
-
-    if emit_yaml:
-        Path(directory).mkdir(parents=True, exist_ok=True)
-        _scaffold_to_yaml(
-            name=project_name,
-            directory=Path(directory),
-            scaffold_template=scaffold_template or "base",
-            catalog=catalog,
-            schema=schema,
-            persona=persona,
-            join_key=join_key,
-            objective=objective,
-            instructions=_prompt_for_instructions() if interactive_mode else None,
-        )
         return
 
     if scaffold_target == "apps":

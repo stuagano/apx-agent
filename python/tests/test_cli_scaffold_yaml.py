@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-def test_scaffold_coworker_outputs_yaml(tmp_path):
+def test_scaffold_coworker_creates_agent_py(tmp_path):
     runner = CliRunner()
     result = runner.invoke(main, [
         "agents", "scaffold", "payroll-coworker",
@@ -18,15 +18,12 @@ def test_scaffold_coworker_outputs_yaml(tmp_path):
         "--dir", str(tmp_path),
     ])
     assert result.exit_code == 0, result.output
-    yaml_file = tmp_path / "payroll-coworker.yaml"
-    assert yaml_file.exists(), f"Expected yaml, got: {list(tmp_path.iterdir())}"
-    spec = yaml.safe_load(yaml_file.read_text())
-    assert spec["name"] == "payroll-coworker"
-    assert spec["template"]["name"] == "coworker"
-    assert spec["template"]["catalog"] == "main"
+    agent_py = tmp_path / "payroll-coworker" / "agent.py"
+    assert agent_py.exists(), f"Expected a project directory, got: {list(tmp_path.iterdir())}"
+    assert "CoworkerAgent(" in agent_py.read_text()
 
 
-def test_scaffold_coworker_no_project_directory(tmp_path):
+def test_scaffold_coworker_creates_project_directory(tmp_path):
     runner = CliRunner()
     runner.invoke(main, [
         "agents", "scaffold", "my-coworker",
@@ -36,20 +33,7 @@ def test_scaffold_coworker_no_project_directory(tmp_path):
         "--no-interactive",
         "--dir", str(tmp_path),
     ])
-    assert not (tmp_path / "my-coworker").exists()
-
-
-def test_scaffold_no_yaml_flag_creates_directory(tmp_path):
-    runner = CliRunner()
-    result = runner.invoke(main, [
-        "agents", "scaffold", "my-agent",
-        "--template", "base",
-        "--no-interactive",
-        "--no-yaml",
-        "--dir", str(tmp_path),
-    ])
-    # --no-yaml uses old behavior: creates a project directory
-    assert (tmp_path / "my-agent").exists() or result.exit_code == 0
+    assert (tmp_path / "my-coworker").exists()
 
 
 def test_build_heredoc_copies_apx_dir():
@@ -77,7 +61,6 @@ class TestScaffoldEmitsOKF:
                     "--target", "model-serving",
                     "--catalog", "c", "--schema", "s",
                     "--no-interactive",
-                    "--no-yaml",
                     "--dir", str(tmp_path),
                 ],
                 catch_exceptions=False,
@@ -95,7 +78,6 @@ class TestScaffoldEmitsOKF:
                     "--target", "apps",
                     "--catalog", "c", "--schema", "s",
                     "--no-interactive",
-                    "--no-yaml",
                     "--dir", str(tmp_path),
                 ],
                 catch_exceptions=False,
@@ -176,7 +158,6 @@ class TestScaffoldEmitsOKF:
                     "--target", "apps",
                     "--catalog", "c", "--schema", "s",
                     "--no-interactive",
-                    "--no-yaml",
                     "--dir", str(tmp_path),
                 ],
                 catch_exceptions=False,
@@ -209,7 +190,6 @@ class TestScaffoldEmitsOKF:
                     "--target", "model-serving",
                     "--catalog", "c", "--schema", "s",
                     "--no-interactive",
-                    "--no-yaml",
                     "--dir", str(tmp_path),
                 ],
                 catch_exceptions=False,

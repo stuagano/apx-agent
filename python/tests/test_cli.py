@@ -152,26 +152,6 @@ def test_run_unknown_dir_does_not_falsely_match_cwd(
     assert "No runnable agent project" in result.output
 
 
-def test_scaffold_yaml_writes_instructions(tmp_path: Path) -> None:
-    import yaml as _yaml
-
-    from apx_agent.cli import _scaffold_to_yaml
-
-    _scaffold_to_yaml(
-        name="sf-agent",
-        directory=tmp_path,
-        scaffold_template="base",
-        catalog=None,
-        schema=None,
-        persona=None,
-        join_key=None,
-        objective=None,
-        instructions="Answer Salesforce pipeline questions.",
-    )
-    spec = _yaml.safe_load((tmp_path / "sf-agent.yaml").read_text())
-    assert spec["instructions"] == "Answer Salesforce pipeline questions."
-
-
 def test_bake_schema_writes_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -240,13 +220,36 @@ def test_status_prompt_in_project_with_profile(
 # ---------------------------------------------------------------------------
 
 
+def test_scaffold_no_longer_has_yaml_flag() -> None:
+    result = CliRunner().invoke(main, ["agents", "scaffold", "--help"])
+    assert result.exit_code == 0
+    assert "--yaml" not in result.output
+    assert "--no-yaml" not in result.output
+
+
+def test_plain_scaffold_always_materializes_full_project(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "plain-agent",
+            "--catalog", "samples", "--schema", "nyctaxi",
+            "--dir", str(tmp_path),
+            "--no-interactive",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "plain-agent" / "agent.py").exists()
+    assert not (tmp_path / "plain-agent.yaml").exists()
+
+
 def test_scaffold_creates_expected_files(tmp_path: Path) -> None:
     runner = CliRunner()
     # Pin model-serving (flat agent.py + app.py); apps is the default and is
     # covered by test_scaffold_apps.py.
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "model-serving", "--dir", str(tmp_path), "--no-yaml"],
+        ["agents", "scaffold", "my_agent", "--target", "model-serving", "--dir", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
     base = tmp_path / "my_agent"
@@ -265,7 +268,7 @@ def test_scaffold_refuses_overwrite_without_force(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "existing", "--dir", str(tmp_path), "--no-yaml"],
+        ["agents", "scaffold", "existing", "--dir", str(tmp_path)],
     )
     assert result.exit_code != 0
     assert "already exists" in result.output
@@ -279,7 +282,7 @@ def test_scaffold_overwrites_with_force(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "existing", "--dir", str(tmp_path), "--force", "--no-yaml"],
+        ["agents", "scaffold", "existing", "--dir", str(tmp_path), "--force"],
     )
     assert result.exit_code == 0
     assert "# old content" not in (target / "agent.py").read_text()
@@ -332,48 +335,11 @@ def test_scaffold_wizard_instructions_reach_agent_py(
             "--dir", str(tmp_path),
             "--interactive",
             "--target", "apps",
-            "--no-yaml",
         ],
     )
     assert result.exit_code == 0, result.output
     agent_py = (tmp_path / "hr_agent" / "agent.py").read_text()
     assert "instructions='Answer HR pay questions.'" in agent_py
-
-
-def test_scaffold_interactive_yaml_prompts_instructions_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Regression test: interactive yaml scaffold should prompt for instructions
-    exactly once, not twice (once at the conditional, once in _scaffold_to_yaml).
-    """
-    import apx_agent.cli as cli
-    from unittest.mock import MagicMock
-
-    mock_prompt = MagicMock(return_value="Custom instructions")
-    monkeypatch.setattr(cli, "_prompt_for_instructions", mock_prompt)
-    monkeypatch.setattr(
-        cli, "_scaffold_wizard",
-        lambda ws, target, template, catalog, schema: ("apps", "base", None, None, None, None, None),
-    )
-    monkeypatch.setattr(cli, "_scaffold_sanity_check", lambda ws, template, catalog, schema: None)
-    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        [
-            "agents", "scaffold", "yaml_agent",
-            "--dir", str(tmp_path),
-            "--interactive",
-            # Note: NO --target and NO --no-yaml, so default behavior is yaml=true
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    # Verify the prompt was called exactly once (not twice)
-    assert mock_prompt.call_count == 1
-    # Verify the YAML has the instructions
-    yaml_file = (tmp_path / "yaml_agent.yaml").read_text()
-    assert "Custom instructions" in yaml_file
 
 
 # ---------------------------------------------------------------------------
@@ -3531,7 +3497,7 @@ def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main, ["agents", "scaffold", "ag", "--catalog", "main", "--schema", "sales",
-               "--dir", str(tmp_path), "--no-yaml"],
+               "--dir", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
     agent_py = (tmp_path / "ag" / "agent.py").read_text()
@@ -3579,7 +3545,7 @@ def test_scaffold_explicit_target_bakes_example_tool(tmp_path: Path) -> None:
     with patch("apx_agent.cli._probe_first_table", return_value="trips"):
         result = runner.invoke(
             main, ["agents", "scaffold", "ag", "--catalog", "main", "--schema", "sales",
-                   "--dir", str(tmp_path), "--no-yaml"],
+                   "--dir", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
     agent_py = (tmp_path / "ag" / "agent.py").read_text()
@@ -3708,7 +3674,7 @@ def test_unknown_command_no_close_match():
 def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()
-    result = runner.invoke(main, ["agents", "scaffold", "my-agent", "--no-yaml"])
+    result = runner.invoke(main, ["agents", "scaffold", "my-agent"])
     assert result.exit_code == 0
     out = result.output
     assert "cd my-agent" in out
