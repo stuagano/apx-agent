@@ -96,8 +96,9 @@ def load_spec(path: Path, *, strict: bool = True) -> "AgentConfig":
         spec with un-filled-in placeholders can still be described.
     :returns: A validated ``AgentConfig`` with ``tools`` and ``skills`` populated.
     :raises FileNotFoundError: If the spec file does not exist.
-    :raises SpecValidationError: If required fields are missing, types are wrong,
-        or a skill path does not resolve to an existing file.
+    :raises SpecValidationError: If the file isn't valid YAML, required fields
+        are missing, types are wrong, or a skill path does not resolve to an
+        existing file.
     """
     import yaml
     from pydantic import ValidationError
@@ -106,7 +107,10 @@ def load_spec(path: Path, *, strict: bool = True) -> "AgentConfig":
     if not path.exists():
         raise FileNotFoundError(f"Spec file not found: {path}")
 
-    raw = yaml.safe_load(path.read_text())
+    try:
+        raw = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as e:
+        raise SpecValidationError(f"Invalid YAML in {path}: {e}") from e
     if not isinstance(raw, dict):
         raise SpecValidationError(f"Expected a YAML mapping at the top level, got {type(raw).__name__}")
 

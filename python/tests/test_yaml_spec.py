@@ -170,6 +170,16 @@ def test_load_spec_missing_file_raises(tmp_path: Path) -> None:
         load_spec(missing)
 
 
+def test_load_spec_malformed_yaml_raises_spec_validation_error(tmp_path: Path) -> None:
+    """A syntax-broken YAML file must raise SpecValidationError, not a raw
+    yaml.YAMLError — callers (e.g. generate's retry-on-failure loop) only
+    catch the former."""
+    p = tmp_path / "broken.yaml"
+    p.write_text("name: demo\n  bad indent: [unclosed\n")
+    with pytest.raises(SpecValidationError, match="Invalid YAML"):
+        load_spec(p)
+
+
 # ---------------------------------------------------------------------------
 # Unresolved placeholder validation
 # ---------------------------------------------------------------------------
