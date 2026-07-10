@@ -184,13 +184,13 @@ apx-agent agents deploy --module my_agent.app:agent \
            --name main.agents.mine
 
 # New — scaffold an editable Apps project alongside, then deploy:
-apx-agent agents scaffold my_agent_apps --target apps --no-yaml
+apx-agent agents scaffold my_agent_apps --target apps
 # Copy your existing agent.py contents into agent_server/agent.py
 # (the Agent definition is byte-identical; only request entry points change).
 apx-agent agents deploy --target apps
 ```
 
-The `apx-agent agents scaffold --target apps --no-yaml` command lays down the file tree shown in
+The `apx-agent agents scaffold --target apps` command lays down the file tree shown in
 [`memory_demo`](../python/examples/memory_demo/) — `agent_server/`,
 `scripts/`, `databricks.yml`, `pyproject.toml`. Drop your existing agent
 module into `agent_server/agent.py`, wrap the entry points with the
@@ -259,9 +259,9 @@ A few things that bite in practice:
 
 | You want… | Run |
 |---|---|
-| Deploy a new agent to Apps | `apx-agent agents scaffold X && apx-agent agents deploy X.yaml --target apps` |
-| Deploy a new agent to Model Serving | `apx-agent agents scaffold X --no-yaml && cd X && apx-agent agents deploy --target model-serving --name <uc-three-part>` |
-| Move an existing agent from Model Serving to Apps | `apx-agent agents scaffold X_apps --target apps --no-yaml`, then drop agent module in, then `cd X_apps && apx-agent agents deploy --target apps` |
+| Deploy a new agent to Apps | `apx-agent agents scaffold X && cd X && apx-agent agents deploy --target apps` |
+| Deploy a new agent to Model Serving | `apx-agent agents scaffold X --target model-serving && cd X && apx-agent agents deploy --target model-serving --name <uc-three-part>` |
+| Move an existing agent from Model Serving to Apps | `apx-agent agents scaffold X_apps --target apps`, then drop agent module in, then `cd X_apps && apx-agent agents deploy --target apps` |
 | Move an existing agent from Apps to Model Serving | `apx-agent agents deploy --target model-serving --module agent_server.agent:agent --name <uc-three-part>` |
 | Validate Apps bundle without deploying | `databricks bundle validate --target dev --profile <profile>` |
 | Tail Apps logs | `databricks apps logs <app-name> --profile <profile>` |

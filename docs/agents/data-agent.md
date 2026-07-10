@@ -48,9 +48,10 @@ order (first match wins):
    schema from another source
 2. **`ws=` live introspection** — discovers tables and columns from the
    workspace at construction time
-3. **`.apx/schema.json`** — the baked schema manifest written when a project is generated:
-   during `apx-agent agents deploy <spec>.yaml`, or immediately when scaffold runs with `--no-yaml`;
-   survives deploy without a `ws` arg
+3. **`.apx/schema.json`** — the baked schema manifest written when a project
+   is generated, either immediately by `apx-agent agents scaffold`/
+   `apx-agent generate`, or during `apx-agent agents deploy <spec>.yaml` for
+   a hand-authored spec; survives deploy without a `ws` arg
 4. **Ungrounded fallback** — generic data-assistant instructions; still
    functional, just not schema-aware
 
