@@ -6963,3 +6963,123 @@ def test_resolve_generate_data_source_falls_back_to_samples(monkeypatch: pytest.
     result = _resolve_generate_data_source(classification, None, None, None)
     assert result.catalog == "samples"
     assert result.schema == "nyctaxi"
+
+
+# ---------------------------------------------------------------------------
+# `_author_agent_yaml`
+# ---------------------------------------------------------------------------
+
+
+def test_author_agent_yaml_base_template_round_trips_through_load_spec(tmp_path: Path) -> None:
+    from apx_agent._yaml_spec import load_spec
+    from apx_agent.cli import (
+        _GenerateClassification, _ResolvedDataSource, _author_agent_yaml,
+    )
+
+    classification = _GenerateClassification(
+        template="base", name="helper-agent", persona=None, objective=None,
+        join_key=None, catalog_hint=None, schema_hint=None, missing=(),
+    )
+    data_source = _ResolvedDataSource(catalog=None, schema=None)
+    yaml_text = "name: helper-agent\nmodel: databricks-claude-sonnet-4-6\ninstructions: Help with things.\ntools: []\n"
+
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=yaml_text))]
+    )
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = _author_agent_yaml(None, classification, data_source, {})
+
+    spec_path = tmp_path / "helper-agent.yaml"
+    spec_path.write_text(result)
+    config = load_spec(spec_path, strict=False)
+    assert config.name == "helper-agent"
+
+
+def test_author_agent_yaml_retries_on_invalid_yaml(tmp_path: Path) -> None:
+    from apx_agent.cli import (
+        _GenerateClassification, _ResolvedDataSource, _author_agent_yaml,
+    )
+
+    classification = _GenerateClassification(
+        template="base", name="helper-agent", persona=None, objective=None,
+        join_key=None, catalog_hint=None, schema_hint=None, missing=(),
+    )
+    data_source = _ResolvedDataSource(catalog=None, schema=None)
+
+    bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="not: valid: : yaml: :"))])
+    good = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content="name: helper-agent\nmodel: databricks-claude-sonnet-4-6\ninstructions: Help.\ntools: []\n"
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [bad, good]
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = _author_agent_yaml(None, classification, data_source, {})
+
+    assert "helper-agent" in result
+    assert fake_ws.serving_endpoints.query.call_count == 2
+
+
+def test_author_agent_yaml_coworker_template_round_trips(tmp_path: Path) -> None:
+    from apx_agent._yaml_spec import load_spec
+    from apx_agent.cli import (
+        _GenerateClassification, _ResolvedDataSource, _author_agent_yaml,
+    )
+
+    classification = _GenerateClassification(
+        template="coworker", name="unbilled-revenue-agent",
+        persona="a revenue operations analyst", objective="flag unbilled revenue",
+        join_key="account_id", catalog_hint=None, schema_hint=None, missing=(),
+    )
+    data_source = _ResolvedDataSource(catalog="main", schema="revops")
+    yaml_text = (
+        "name: unbilled-revenue-agent\n"
+        "model: databricks-claude-sonnet-4-6\n"
+        "instructions: You are a revenue operations analyst.\n"
+        "template:\n  name: coworker\n  catalog: main\n  schema: revops\n"
+        "  persona: a revenue operations analyst\n  join_key: account_id\n"
+        "  objective: flag unbilled revenue\n  memory: persistent\n"
+        "tools: []\n"
+    )
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=yaml_text))]
+    )
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = _author_agent_yaml(None, classification, data_source, {})
+
+    spec_path = tmp_path / "unbilled-revenue-agent.yaml"
+    spec_path.write_text(result)
+    config = load_spec(spec_path, strict=False)
+    assert config.template["catalog"] == "main"
+
+
+def test_author_agent_yaml_data_template_round_trips(tmp_path: Path) -> None:
+    from apx_agent._yaml_spec import load_spec
+    from apx_agent.cli import (
+        _GenerateClassification, _ResolvedDataSource, _author_agent_yaml,
+    )
+
+    classification = _GenerateClassification(
+        template="data", name="sales-agent", persona=None, objective=None,
+        join_key=None, catalog_hint=None, schema_hint=None, missing=(),
+    )
+    data_source = _ResolvedDataSource(catalog="main", schema="sales")
+    yaml_text = (
+        "name: sales-agent\nmodel: databricks-claude-sonnet-4-6\n"
+        "instructions: Answer sales questions.\n"
+        "template:\n  name: data\n  catalog: main\n  schema: sales\n"
+        "tools: []\n"
+    )
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=yaml_text))]
+    )
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = _author_agent_yaml(None, classification, data_source, {})
+
+    spec_path = tmp_path / "sales-agent.yaml"
+    spec_path.write_text(result)
+    config = load_spec(spec_path, strict=False)
+    assert config.template["schema"] == "sales"

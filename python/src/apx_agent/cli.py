@@ -2382,6 +2382,183 @@ def _resolve_generate_data_source(
     return _ResolvedDataSource(catalog="samples", schema="nyctaxi")
 
 
+_COWORKER_GEN_AUTHOR_PROMPT = """\
+You are an expert at designing Databricks coworker agents. Generate a YAML
+spec for a coworker agent that joins two enterprise data systems.
+
+Use EXACTLY this structure (no extra keys, no markdown fences):
+
+name: <kebab-case-name>
+description: >
+  <1-2 sentence description ending with a period.>
+model: databricks-claude-sonnet-4-6
+instructions: >
+  You are <persona>. Always cite the join key when surfacing discrepancies.
+examples:
+  - "<example question 1>"
+  - "<example question 2>"
+
+template:
+  name: coworker
+  catalog: {catalog}
+  schema: {schema}
+  persona: <persona one-liner>
+  join_key: <join key field name>
+  objective: >
+    <2-3 sentences about the core reconciliation objective.>
+  memory: persistent
+  include_functions: true
+
+guardrails:
+  injection_detection: true
+
+tools: []
+
+Here is the user's coworker definition:
+{spec}
+
+Output ONLY the YAML. No explanation, no markdown fences.
+"""
+
+_DATA_GEN_PROMPT = """\
+You are an expert at designing Databricks data agents. Generate a YAML spec
+for a data agent grounded in one Unity Catalog schema.
+
+Use EXACTLY this structure (no extra keys, no markdown fences):
+
+name: <kebab-case-name>
+description: >
+  <1-2 sentence description ending with a period.>
+model: databricks-claude-sonnet-4-6
+instructions: >
+  <2-3 sentences on what this agent answers and how it should behave.>
+examples:
+  - "<example question 1>"
+  - "<example question 2>"
+
+template:
+  name: data
+  catalog: {catalog}
+  schema: {schema}
+
+guardrails:
+  injection_detection: true
+
+tools: []
+
+Here is the user's description:
+{spec}
+
+Output ONLY the YAML. No explanation, no markdown fences.
+"""
+
+_BASE_GEN_PROMPT = """\
+You are an expert at designing apx-agent agents. Generate a YAML spec for a
+plain agent with no Unity Catalog data source.
+
+Use EXACTLY this structure (no extra keys, no markdown fences):
+
+name: <kebab-case-name>
+description: >
+  <1-2 sentence description ending with a period.>
+model: databricks-claude-sonnet-4-6
+instructions: >
+  <2-3 sentences on what this agent does and how it should behave.>
+examples:
+  - "<example question 1>"
+  - "<example question 2>"
+
+guardrails:
+  injection_detection: true
+
+tools: []
+
+Here is the user's description:
+{spec}
+
+Output ONLY the YAML. No explanation, no markdown fences.
+"""
+
+_GEN_AUTHOR_PROMPTS: "dict[str, str]" = {
+    "coworker": _COWORKER_GEN_AUTHOR_PROMPT,
+    "data": _DATA_GEN_PROMPT,
+    "base": _BASE_GEN_PROMPT,
+}
+
+
+def _author_agent_yaml(
+    profile: "str | None",
+    classification: _GenerateClassification,
+    data_source: _ResolvedDataSource,
+    filled: "dict[str, str]",
+) -> str:
+    """LLM call #2: author the full YAML spec text for the classified template."""
+    import yaml
+    from ._yaml_spec import SpecValidationError, load_spec
+    from databricks.sdk import WorkspaceClient
+
+    try:
+        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    except Exception as exc:
+        raise click.ClickException(
+            f"Could not connect to the workspace: {exc}\n"
+            "Ensure you have a valid Databricks profile with access to "
+            "databricks-claude-sonnet-4-6."
+        ) from exc
+
+    persona = filled.get("persona", classification.persona)
+    objective = filled.get("objective", classification.objective)
+    join_key = filled.get("join_key", classification.join_key)
+
+    spec_context_lines = [f"Name: {classification.name}"]
+    if persona:
+        spec_context_lines.append(f"Persona: {persona}")
+    if objective:
+        spec_context_lines.append(f"Objective: {objective}")
+    if join_key:
+        spec_context_lines.append(f"Join key: {join_key}")
+    spec_context = "\n".join(spec_context_lines)
+
+    prompt_template = _GEN_AUTHOR_PROMPTS[classification.template]
+    # All three templates' .format() calls take the same three kwargs —
+    # _BASE_GEN_PROMPT simply doesn't reference {catalog}/{schema} in its
+    # text, and str.format() silently ignores unused kwargs, so passing all
+    # three unconditionally is simpler and correct for every template kind.
+    prompt = prompt_template.format(
+        spec=spec_context,
+        catalog=data_source.catalog or "$CATALOG",
+        schema=data_source.schema or "$SCHEMA",
+    )
+
+    yaml_text = _query_generate_llm(ws, prompt)
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_text)
+        tmp_path = Path(f.name)
+    try:
+        load_spec(tmp_path, strict=False)
+        return yaml_text
+    except (SpecValidationError, yaml.YAMLError) as e:
+        retry_prompt = (
+            f"{prompt}\n\nYour previous response failed validation with this "
+            f"error: {e}\n\nReturn the full YAML again, fixing the error. "
+            f"Output ONLY the YAML, no markdown fences."
+        )
+        yaml_text = _query_generate_llm(ws, retry_prompt)
+        tmp_path.write_text(yaml_text)
+        try:
+            load_spec(tmp_path, strict=False)
+            return yaml_text
+        except (SpecValidationError, yaml.YAMLError) as e2:
+            raise click.ClickException(
+                f"The LLM's authored spec failed validation twice: {e2}\n\n"
+                f"Raw output:\n{yaml_text}"
+            ) from e2
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 def _pick_coworker_gallery() -> "tuple[str, Path]":
     """List bundled coworker gallery YAMLs and return (name, path) of the selection."""
     import importlib.resources as _ir
