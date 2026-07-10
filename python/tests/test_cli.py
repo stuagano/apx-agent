@@ -6928,7 +6928,6 @@ def test_materialize_agent_refuses_overwrite_without_force(tmp_path: Path) -> No
 
 
 def test_resolve_generate_data_source_prefers_explicit_flags() -> None:
-    from apx_agent.cli import _classify_agent_description  # unused import check
     from apx_agent.cli import _GenerateClassification, _resolve_generate_data_source
 
     classification = _GenerateClassification(
