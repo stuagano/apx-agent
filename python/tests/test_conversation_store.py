@@ -540,6 +540,73 @@ def test_drop_orphaned_tool_outputs_removes_result_without_matching_call():
     assert kept_ids == ["i1", "i2"]  # the paired result survives; the orphan is gone
 
 
+def test_drop_orphaned_tool_outputs_removes_call_without_matching_result():
+    """The mirror case: a function_call whose call_id has no function_call_output
+    is dropped too. If a tool's output never got persisted (a crash or a race
+    during parallel tool execution, for instance), replaying the orphaned call
+    alone produces a tool_use block with no following tool_result — Databricks-
+    Claude 400s the whole request, permanently corrupting that conversation
+    thread on every subsequent turn. A well-formed pair is kept."""
+    from apx_agent._conversation import (
+        ConversationItem,
+        FunctionCallData,
+        FunctionCallOutputData,
+        drop_orphaned_tool_outputs,
+    )
+
+    def _item(item_id, type_, data):
+        return ConversationItem(
+            id=item_id, type=type_, status="completed", response_id="r1",
+            created_at=1000, data=data,
+        )
+
+    items = [
+        _item("i1", "function_call",
+              FunctionCallData(agent="bot", name="f", arguments="{}", call_id="c1")),
+        _item("i2", "function_call_output", FunctionCallOutputData(call_id="c1", output="ok")),
+        # orphan: a second tool call whose output never got persisted
+        _item("i3", "function_call",
+              FunctionCallData(agent="bot", name="g", arguments="{}", call_id="orphan")),
+    ]
+    kept = drop_orphaned_tool_outputs(items)
+    kept_ids = [it.id for it in kept]
+    assert kept_ids == ["i1", "i2"]  # the paired call/result survives; the orphaned call is gone
+
+
+def test_drop_orphaned_tool_outputs_drops_both_sides_of_a_parallel_call_turn():
+    """Reproduces the reported bug directly: an assistant turn calls two tools
+    in parallel (two function_call items sharing one response_id), but only
+    one tool's output was ever persisted. Before the fix, the surviving
+    orphaned function_call coalesces into the same AIMessage as its sibling
+    (_conv_items_to_lc_messages groups by response_id), producing a tool_calls
+    list with no matching ToolMessage for one call_id — which is exactly the
+    'tool_use ids were found without tool_result blocks' 400 from Anthropic."""
+    from apx_agent._conversation import (
+        ConversationItem,
+        FunctionCallData,
+        FunctionCallOutputData,
+        drop_orphaned_tool_outputs,
+    )
+
+    def _item(item_id, type_, data):
+        return ConversationItem(
+            id=item_id, type=type_, status="completed", response_id="r1",
+            created_at=1000, data=data,
+        )
+
+    items = [
+        _item("i1", "function_call",
+              FunctionCallData(agent="bot", name="ask_brickroad", arguments="{}", call_id="c1")),
+        _item("i2", "function_call",
+              FunctionCallData(agent="bot", name="run_sql", arguments="{}", call_id="c2")),
+        # only c1's output ever got persisted; c2's never did
+        _item("i3", "function_call_output", FunctionCallOutputData(call_id="c1", output="ok")),
+    ]
+    kept = drop_orphaned_tool_outputs(items)
+    kept_ids = [it.id for it in kept]
+    assert kept_ids == ["i1", "i3"]  # c1's call+result pair survives; c2's orphaned call is gone
+
+
 def test_conversation_item_to_api_dict():
     """to_api_dict() returns a flat, JSON-safe representation."""
     from apx_agent._conversation import ConversationItem
