@@ -3372,10 +3372,13 @@ def refresh_schema(profile: str | None, prune_missing_tables: bool) -> None:
     existing = load_baked_schema(Path.cwd())
     if not existing or not existing.get("catalog") or not existing.get("schema"):
         raise click.ClickException(
-            "No .apx/schema.json found. This command must be run inside a scaffolded project.\n"
+            "No .apx/schema.json found. This command only applies to a full "
+            "project scaffold, not the default YAML-spec scaffold.\n"
             "\n"
-            "  To create one:  apx-agent scaffold <project-name>\n"
-            "  Then cd into it and run:  apx-agent refresh-schema"
+            "  To create one:  apx-agent agents scaffold <name> --target apps "
+            "--catalog CAT --schema SCHEMA\n"
+            "  (or --target model-serving)\n"
+            "  Then cd into it and run:  apx-agent agents refresh-schema"
         )
     catalog, schema = existing["catalog"], existing["schema"]
     manifest = _schema_manifest_for_scaffold(catalog, schema, profile=profile)
@@ -3424,7 +3427,9 @@ def migrate_to_okf(force: bool) -> None:
     okf_root = apx / "okf"
     if not manifest_path.is_file():
         raise click.ClickException(
-            "No .apx/schema.json found. Run inside a scaffolded project."
+            "No .apx/schema.json found. This command only applies to a full "
+            "project scaffold (apx-agent agents scaffold <name> --target apps "
+            "--catalog CAT --schema SCHEMA), not the default YAML-spec scaffold."
         )
     if okf_root.exists() and not force:
         raise click.ClickException(".apx/okf already exists. Use --force to overwrite.")
@@ -3457,7 +3462,9 @@ def pull_comments(profile: str | None, overwrite: bool) -> None:
     existing = load_baked_schema(Path.cwd())
     if not existing or not existing.get("catalog") or not existing.get("schema"):
         raise click.ClickException(
-            "No .apx grounding found. Run inside a scaffolded project with an OKF bundle."
+            "No .apx grounding found. This command only applies to a full "
+            "project scaffold (apx-agent agents scaffold <name> --target apps "
+            "--catalog CAT --schema SCHEMA), not the default YAML-spec scaffold."
         )
     okf_root = Path.cwd() / APX_DIR / "okf"
     if not okf_root.is_dir():
