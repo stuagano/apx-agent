@@ -806,15 +806,8 @@ def eval_group() -> None:
 
 
 @main.group(cls=_ApxGroup)
-@click.option(
-    "--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
-    help="Databricks config profile (~/.databrickscfg).",
-)
-@click.pass_context
-def uc(ctx: click.Context, profile: str | None) -> None:
+def uc() -> None:
     """Browse and publish Unity Catalog resources."""
-    ctx.ensure_object(dict)
-    ctx.obj["profile"] = profile
 
 
 # ---------------------------------------------------------------------------
@@ -2987,7 +2980,7 @@ def _scaffold_to_yaml(
                 "table_name": f"{cat}.{sch}.apx_{safe_name}_sessions",
                 "auto_create": True,
             }
-    spec["guardrails"] = {"injection_detection": False}
+    spec["guardrails"] = {"injection_detection": True}
     spec["tools"] = []
     out = directory / f"{name}.yaml"
     out.write_text(_yaml.dump(spec, sort_keys=False, allow_unicode=True))
@@ -9925,10 +9918,11 @@ def delete_agent_cmd(
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-@click.pass_context
-def list_catalogs_cmd(ctx: click.Context, fmt: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def list_catalogs_cmd(fmt: str, profile: str | None) -> None:
     """List Unity Catalog catalogs accessible in this workspace."""
-    ws = _require_sdk((ctx.obj or {}).get("profile"))
+    ws = _require_sdk(profile)
     catalogs = _ws_list_catalogs(ws)
 
     if fmt == "json":
@@ -9950,10 +9944,11 @@ def list_catalogs_cmd(ctx: click.Context, fmt: str) -> None:
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-@click.pass_context
-def list_schemas_cmd(ctx: click.Context, catalog: str, fmt: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def list_schemas_cmd(catalog: str, fmt: str, profile: str | None) -> None:
     """List schemas in CATALOG."""
-    ws = _require_sdk((ctx.obj or {}).get("profile"))
+    ws = _require_sdk(profile)
     schemas = _ws_list_schemas(ws, catalog)
 
     if fmt == "json":
@@ -9975,10 +9970,11 @@ def list_schemas_cmd(ctx: click.Context, catalog: str, fmt: str) -> None:
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-@click.pass_context
-def list_tables_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def list_tables_cmd(catalog: str, schema: str, fmt: str, profile: str | None) -> None:
     """List tables in CATALOG.SCHEMA."""
-    ws = _require_sdk((ctx.obj or {}).get("profile"))
+    ws = _require_sdk(profile)
     tables = _ws_list_tables(ws, catalog, schema)
 
     if fmt == "json":
@@ -10013,14 +10009,15 @@ def list_tables_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> 
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-@click.pass_context
-def list_tools_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def list_tools_cmd(catalog: str, schema: str, fmt: str, profile: str | None) -> None:
     """List UC functions in CATALOG.SCHEMA (available as agent tools).
 
     These are the functions ``apx-agent publish-tools`` registers and that
     DataAgent / CoworkerAgent can call when ``include_functions=True``.
     """
-    ws = _require_sdk((ctx.obj or {}).get("profile"))
+    ws = _require_sdk(profile)
     fns = _ws_list_functions(ws, catalog, schema)
 
     if fmt == "json":
@@ -10058,8 +10055,9 @@ def list_tools_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> N
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-@click.pass_context
-def uc_validate_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def uc_validate_cmd(catalog: str, schema: str, fmt: str, profile: str | None) -> None:
     """Check Unity Catalog permissions required to deploy an agent.
 
     Verifies the current user has:
@@ -10072,7 +10070,7 @@ def uc_validate_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> 
 
     Exits non-zero if any required permission appears to be missing.
     """
-    ws = _require_sdk((ctx.obj or {}).get("profile"))
+    ws = _require_sdk(profile)
 
     checks: list[dict[str, Any]] = []
 

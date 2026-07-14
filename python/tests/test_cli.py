@@ -5555,6 +5555,48 @@ class TestAgentsDelete:
 # ---------------------------------------------------------------------------
 
 
+class TestUcProfileFlagPosition:
+    # Issue #529: --profile used to only work *before* the subcommand for
+    # catalogs/schemas/tables/tools/validate (group-level ctx.obj), while
+    # publish/topology required it *after* (their own leaf-level option) and
+    # silently ignored the group-level form. All uc subcommands now take a
+    # leaf-level --profile, matching the rest of the CLI.
+
+    def test_validate_leaf_level_profile_is_forwarded(self):
+        fake_ws = MagicMock()
+        with patch("apx_agent.cli._require_sdk", return_value=fake_ws) as require_sdk, \
+             patch("apx_agent.cli._ws_list_catalogs", return_value=["mycat"]), \
+             patch("apx_agent.cli._ws_list_schemas", return_value=["myschema"]), \
+             patch("apx_agent.cli._ws_list_tables", return_value=[SimpleNamespace(name="t1")]), \
+             patch.object(fake_ws.registered_models, "list", return_value=iter([])):
+            result = CliRunner().invoke(main, [
+                "uc", "validate", "--catalog", "mycat", "--schema", "myschema",
+                "--profile", "my-profile",
+            ])
+
+        assert result.exit_code == 0, result.output
+        require_sdk.assert_called_once_with("my-profile")
+
+    def test_catalogs_leaf_level_profile_is_forwarded(self):
+        with patch("apx_agent.cli._require_sdk", return_value=MagicMock()) as require_sdk, \
+             patch("apx_agent.cli._ws_list_catalogs", return_value=[]):
+            result = CliRunner().invoke(main, [
+                "uc", "catalogs", "--profile", "my-profile",
+            ])
+
+        assert result.exit_code == 0, result.output
+        require_sdk.assert_called_once_with("my-profile")
+
+    def test_uc_group_has_no_group_level_profile_option(self):
+        # A group-level --profile before the subcommand must no longer be
+        # accepted at all (it used to silently work for some subcommands
+        # and silently no-op for others -- now it's just an error).
+        result = CliRunner().invoke(main, [
+            "uc", "--profile", "my-profile", "catalogs",
+        ])
+        assert result.exit_code != 0
+
+
 class TestUcValidate:
     def test_happy_path_all_checks_pass(self):
         fake_ws = MagicMock()
