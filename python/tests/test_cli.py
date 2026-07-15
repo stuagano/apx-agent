@@ -1315,6 +1315,50 @@ def test_timeout_flag_reaches_serving_health_gate(
     assert gate.call_args.kwargs["timeout_seconds"] == 77
 
 
+def test_successful_model_serving_deploy_records_local_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_path = tmp_path / "deploy-history.json"
+    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
+
+    ws = MagicMock()
+    ws.serving_endpoints.get.return_value = _endpoint_state("READY", "NOT_UPDATING")
+    ws.serving_endpoints.query.return_value = SimpleNamespace(choices=[])
+
+    result = _invoke_serving_deploy_with_gate(tmp_path, monkeypatch, [], ws=ws)
+
+    assert result.exit_code == 0, result.output
+    entry = json.loads(history_path.read_text())["main.agents.x"]
+    assert entry["path"] == str(tmp_path)
+    assert entry["target"] == "model-serving"
+
+
+def test_no_deploy_flag_records_no_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--no-deploy logs/registers a version but never actually deploys —
+    no history entry, since nothing is actually running."""
+    history_path = tmp_path / "deploy-history.json"
+    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
+
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    with patch("apx_agent.log_agent", fake_log_agent), patch("mlflow.start_run"):
+        result = CliRunner().invoke(main, [
+            "agents", "deploy", "--target", "model-serving",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--no-deploy", "--no-publish-tools",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    assert not history_path.exists()
+
+
 def test_deploy_version_redeploys_logged_version_skipping_publish_and_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

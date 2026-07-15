@@ -5080,6 +5080,15 @@ def deploy(
                 "# --no-readyz-gate: skipping endpoint readiness poll + "
                 "smoke invocation"
             )
+
+        # 3c. Record local deploy history (redeploy convenience) —
+        # best-effort, like every other provenance step in this function.
+        # Only reached when an actual deploy happened (inside
+        # `if not no_deploy:`), never on a --no-deploy run.
+        _record_deploy_history(
+            Path.cwd(), registered_model_name, "model-serving",
+            _provenance_version_tags(Path.cwd()),
+        )
     else:
         _say("Skipping deploy (--no-deploy).")
 
