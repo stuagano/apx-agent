@@ -6330,6 +6330,58 @@ def _parse_secret_env_flag(raw: str) -> _SecretEnvRef:
     return _SecretEnvRef(name=key, scope=scope, key=secret_key)
 
 
+def _yaml_quoted(value: str) -> Any:
+    """Force explicit double-quoting for a user-supplied string value.
+
+    ruamel.yaml's round-trip dumper — unlike ``yaml.safe_dump`` — does not
+    auto-quote plain scalars that YAML's implicit resolver would otherwise
+    misread as a different type (``on``/``off``/``yes``/``no``/``true``/
+    ``false``/``null``/numeric-looking strings). Left unquoted, an
+    ``--env FLAG=on`` would round-trip back as the boolean ``True`` instead
+    of the string ``"on"`` on the next read. Used for every free-text value
+    (env names/values, secret scope/key) merged into databricks.yml.
+    """
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
+    return DoubleQuotedScalarString(value)
+
+
+def _load_databricks_yml_roundtrip(cwd: Path) -> "tuple[Any, Any]":
+    """Round-trip load ``databricks.yml`` for an in-place write-back.
+
+    Returns ``(yml, doc)`` where ``doc`` can be mutated and written back with
+    ``yml.dump(doc, path)`` without losing comments, quoting, or blank-line
+    structure elsewhere in the file — unlike ``_read_databricks_yml``'s
+    ``yaml.safe_load``/``yaml.safe_dump``, which silently reformats the
+    entire file on every write (#527). Only used by the two merge writers
+    below; every other ``databricks.yml`` reader in this file is read-only
+    and keeps using ``_read_databricks_yml``.
+    """
+    from ruamel.yaml import YAML
+
+    path = cwd / "databricks.yml"
+    if not path.exists():
+        raise click.ClickException(
+            f"No databricks.yml found at {path}. "
+            "--target apps expects a scaffolded Apps project — run "
+            "`apx-agent scaffold <name> --target apps` first."
+        )
+    yml = YAML()
+    yml.preserve_quotes = True
+    try:
+        doc = yml.load(path.read_text())
+    except Exception as e:
+        raise click.ClickException(f"Failed to parse databricks.yml: {e}") from e
+    if doc is None:
+        doc = {}
+    if not isinstance(doc, dict):
+        raise click.ClickException(
+            f"databricks.yml does not contain a mapping at the top level "
+            f"(got {type(doc).__name__})."
+        )
+    return yml, doc
+
+
 def _merge_env_into_databricks_yml(
     cwd: Path,
     *,
@@ -6349,10 +6401,8 @@ def _merge_env_into_databricks_yml(
     the scope/key reference is written, never a secret value. If a resource
     with the derived name already exists it is reused, not clobbered.
     """
-    import yaml
-
     path = cwd / "databricks.yml"
-    doc = _read_databricks_yml(cwd)
+    yml, doc = _load_databricks_yml_roundtrip(cwd)
     # resources.apps.<bundle_key> presence was already validated by
     # _resolve_app_name on this same document.
     app_block = doc["resources"]["apps"][bundle_key]
@@ -6371,7 +6421,7 @@ def _merge_env_into_databricks_yml(
         if name in existing_env:
             skipped.append(name)
             continue
-        env_list.append({"name": name, "value": value})
+        env_list.append({"name": _yaml_quoted(name), "value": _yaml_quoted(value)})
         existing_env.add(name)
         env_added.append(name)
 
@@ -6399,20 +6449,19 @@ def _merge_env_into_databricks_yml(
                     "(added by apx-agent deploy --secret-env)."
                 ),
                 "secret": {
-                    "scope": scope,
-                    "key": secret_key,
+                    "scope": _yaml_quoted(scope),
+                    "key": _yaml_quoted(secret_key),
                     "permission": "READ",
                 },
             })
             resource_names.add(res_name)
-        env_list.append({"name": name, "valueFrom": res_name})
+        env_list.append({"name": _yaml_quoted(name), "valueFrom": res_name})
         existing_env.add(name)
         secret_added.append(name)
 
     if env_added or secret_added:
-        path.write_text(
-            yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
-        )
+        with path.open("w") as f:
+            yml.dump(doc, f)
 
     if env_added:
         log(f"  env → config.env: {', '.join(env_added)} (values not echoed)")
@@ -6443,8 +6492,6 @@ def _auto_update_databricks_yml(
     already present in ``resources.apps.<bundle_key>.resources`` is appended.
     User-added entries with the same name are NEVER clobbered.
     """
-    import yaml
-
     from apx_agent._resources import (
         collect_resource_specs,
         resources_to_databricks_yml,
@@ -6452,7 +6499,7 @@ def _auto_update_databricks_yml(
     )
 
     path = cwd / "databricks.yml"
-    doc = _read_databricks_yml(cwd)
+    yml, doc = _load_databricks_yml_roundtrip(cwd)
 
     apps_block = doc.setdefault("resources", {}).setdefault("apps", {})
     if bundle_key not in apps_block or not isinstance(apps_block[bundle_key], dict):
@@ -6517,7 +6564,8 @@ def _auto_update_databricks_yml(
     if merged_scopes:
         app_block["user_api_scopes"] = merged_scopes
 
-    path.write_text(yaml.safe_dump(doc, default_flow_style=False, sort_keys=False))
+    with path.open("w") as f:
+        yml.dump(doc, f)
 
     if new_scopes:
         log(f"  added {len(new_scopes)} OBO scope(s): {', '.join(new_scopes)}")
