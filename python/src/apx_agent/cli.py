@@ -10863,6 +10863,8 @@ def fleet_list_cmd(
 @click.option("--remove", "remove_keys", multiple=True,
               help="Label key to remove (repeatable).")
 @click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]),
+              default="text", help="Output format.")
 def fleet_tag_cmd(
     catalog: str | None,
     schema: str | None,
@@ -10873,6 +10875,7 @@ def fleet_tag_cmd(
     set_pairs: tuple[str, ...],
     remove_keys: tuple[str, ...],
     apply: bool,
+    fmt: str,
 ) -> None:
     """Set or remove user labels (apx.label.*) across the selection."""
     from apx_agent import _fleet
@@ -10920,10 +10923,11 @@ def fleet_tag_cmd(
         except Exception as e:  # continue + report
             outcomes.append(_fleet.AgentOutcome(a.uc_name, "failed", str(e)))
 
-    text, code = _fleet.render_summary(outcomes, apply=apply)
-    click.echo(text)
-    if code:
-        raise SystemExit(code)
+    render = _fleet.render_summary_json if fmt == "json" else _fleet.render_summary
+    rendered = render(outcomes, apply=apply)
+    click.echo(rendered.text)
+    if rendered.exit_code:
+        raise SystemExit(rendered.exit_code)
 
 
 @fleet.command("backfill")
@@ -10936,12 +10940,15 @@ def fleet_tag_cmd(
 @click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks config profile.")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]),
+              default="text", help="Output format.")
 def fleet_backfill_cmd(
     uc_names: tuple[str, ...],
     agent_name: str | None,
     app_name: str | None,
     apply: bool,
     profile: str | None,
+    fmt: str,
 ) -> None:
     """Stamp missing identity/discovery tags onto agents that predate tagging.
 
@@ -10976,12 +10983,13 @@ def fleet_backfill_cmd(
         except Exception as e:
             outcomes.append(_fleet.AgentOutcome(uc, "failed", str(e)))
 
-    text, code = _fleet.render_summary(outcomes, apply=apply)
-    click.echo(text)
-    if not apply:
+    render = _fleet.render_summary_json if fmt == "json" else _fleet.render_summary
+    rendered = render(outcomes, apply=apply)
+    click.echo(rendered.text)
+    if not apply and fmt != "json":
         click.echo("Note: backfill cannot reconstruct tools/resources/metadata.")
-    if code:
-        raise SystemExit(code)
+    if rendered.exit_code:
+        raise SystemExit(rendered.exit_code)
 
 
 def _do_fleet_repoint(
@@ -10993,6 +11001,7 @@ def _do_fleet_repoint(
     profile: str | None,
     apply: bool,
     fail_fast: bool,
+    fmt: str = "text",
 ) -> None:
     """Shared by `fleet repoint` and the deprecated `fleet redeploy` alias."""
     from apx_agent import _apps_registry, _fleet
@@ -11031,16 +11040,19 @@ def _do_fleet_repoint(
             if fail_fast:
                 break
 
-    text, code = _fleet.render_summary(outcomes, apply=apply)
-    click.echo(text)
-    if code:
-        raise SystemExit(code)
+    render = _fleet.render_summary_json if fmt == "json" else _fleet.render_summary
+    rendered = render(outcomes, apply=apply)
+    click.echo(rendered.text)
+    if rendered.exit_code:
+        raise SystemExit(rendered.exit_code)
 
 
 @fleet.command("repoint")
 @_fleet_select_options
 @click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
 @click.option("--fail-fast", is_flag=True, help="Stop at the first failure.")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]),
+              default="text", help="Output format.")
 def fleet_repoint_cmd(
     catalog: str | None,
     schema: str | None,
@@ -11050,6 +11062,7 @@ def fleet_repoint_cmd(
     profile: str | None,
     apply: bool,
     fail_fast: bool,
+    fmt: str,
 ) -> None:
     """Move each selected agent's @prod UC alias to its latest prod version.
 
@@ -11067,7 +11080,7 @@ def fleet_repoint_cmd(
     _do_fleet_repoint(
         catalog=catalog, schema=schema, name_glob=name_glob,
         where_exprs=where_exprs, uc_names=uc_names, profile=profile,
-        apply=apply, fail_fast=fail_fast,
+        apply=apply, fail_fast=fail_fast, fmt=fmt,
     )
 
 
@@ -11075,6 +11088,8 @@ def fleet_repoint_cmd(
 @_fleet_select_options
 @click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
 @click.option("--fail-fast", is_flag=True, help="Stop at the first failure.")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]),
+              default="text", help="Output format.")
 def fleet_redeploy_cmd(
     catalog: str | None,
     schema: str | None,
@@ -11084,6 +11099,7 @@ def fleet_redeploy_cmd(
     profile: str | None,
     apply: bool,
     fail_fast: bool,
+    fmt: str,
 ) -> None:
     """DEPRECATED — renamed to ``fleet repoint``. This alias still works."""
     click.echo(
@@ -11094,7 +11110,7 @@ def fleet_redeploy_cmd(
     _do_fleet_repoint(
         catalog=catalog, schema=schema, name_glob=name_glob,
         where_exprs=where_exprs, uc_names=uc_names, profile=profile,
-        apply=apply, fail_fast=fail_fast,
+        apply=apply, fail_fast=fail_fast, fmt=fmt,
     )
 
 
