@@ -251,8 +251,8 @@ def _load_finalized_agent(module_spec: str) -> Any:
     """Resolve + finalize an agent for CLI commands.
 
     Loads [tool.apx.agent] config first, then resolve_agent so template-only
-    projects (no agent.py) work via apx-agent info / lint / eval / run. Falls back
-    to module-import for code-defined agents.
+    projects (no agent.py) work via apx-agent agents describe / eval lint /
+    eval run / agents run. Falls back to module-import for code-defined agents.
     """
     from ._wiring import finalize_agent, resolve_agent, _ws_for_template, TemplateConfigError
     from ._inspection import _load_agent_config
@@ -2037,7 +2037,7 @@ def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[
 
 
 # ---------------------------------------------------------------------------
-# Workspace listing helpers — used by _interactive_resolve and apx-agent list
+# Workspace listing helpers — used by _interactive_resolve and apx-agent agents list
 # ---------------------------------------------------------------------------
 
 _SKIP_CATALOGS: frozenset[str] = frozenset({"system", "__databricks_internal"})
@@ -4416,7 +4416,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
     "--register-uc/--no-register-uc", default=True,
     help="After the app is live, register a UC model-version *manifest* for it "
          "(log_agent + apx.* tags, tagged apx.serving=apps) so the Apps agent "
-         "gets a version ledger and shows up in apx-agent list / topology / "
+         "gets a version ledger and shows up in apx-agent agents list / uc topology / "
          "watchdog. NOT promoted to serving — the App serves traffic, the UC "
          "version is a record of what it's running. Skips with a notice if no "
          "UC name / model is configured. ON by default. Only used by "
@@ -4477,7 +4477,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 @click.option(
     "--set-uc-tags/--no-set-uc-tags", default=True,
     help="Write apx.agent.* UC tags on the registered model after deploy so "
-         "the agent shows up in apx-agent list / topology / watchdog crawls. "
+         "the agent shows up in apx-agent agents list / uc topology / watchdog crawls. "
          "On by default. Only used by --target model-serving.",
 )
 @click.option(
@@ -5105,7 +5105,7 @@ def deploy(
     else:
         _say("Skipping deploy (--no-deploy).")
 
-    # 4. Set UC tags so the agent shows up in apx-agent list / topology / watchdog
+    # 4. Set UC tags so the agent shows up in apx-agent agents list / uc topology / watchdog
     if set_uc_tags:
         try:
             from apx_agent import set_uc_tags_for_agent
@@ -5408,7 +5408,7 @@ def _serving_health_gate(
             if update in ("UPDATE_FAILED", "UPDATE_CANCELED"):
                 return (
                     f"endpoint {endpoint_name!r} config update ended in "
-                    f"{update}. Inspect the build with `apx-agent logs "
+                    f"{update}. Inspect the build with `apx-agent agents logs "
                     f"--endpoint {endpoint_name} --build`."
                 )
             if ready == "READY" and update in ("", "NOT_UPDATING"):
@@ -7964,9 +7964,9 @@ def logs(
     Two modes:
 
     \b
-      apx-agent logs --endpoint NAME              Runtime logs from a Model Serving endpoint
-      apx-agent logs --endpoint NAME --build      Build-time logs from the endpoint's build
-      apx-agent logs --app NAME [--profile P]     Logs from an apx-agent hosted as a Databricks App
+      apx-agent agents logs --endpoint NAME              Runtime logs from a Model Serving endpoint
+      apx-agent agents logs --endpoint NAME --build      Build-time logs from the endpoint's build
+      apx-agent agents logs --app NAME [--profile P]     Logs from an apx-agent hosted as a Databricks App
 
     For the --endpoint path, ``served_model`` is auto-discovered from the
     endpoint's current config when not supplied explicitly.
@@ -8264,7 +8264,7 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
             _describe_app_agent(_pick_app_agent(profile), profile, fmt)
             return
 
-    # Finalize so `apx-agent info` reports the same tools/resources the serve and
+    # Finalize so `apx-agent agents describe` reports the same tools/resources the serve and
     # deploy paths will — config-declared [[tool.apx.tools]] included.
     agent = _load_finalized_agent(module)
 
@@ -8379,7 +8379,7 @@ def trace(
         import mlflow
     except ImportError as e:
         raise click.ClickException(
-            "apx-agent trace requires mlflow. Install with: uv add 'apx-agent[eval]'"
+            "apx-agent traces list requires mlflow. Install with: uv add 'apx-agent[eval]'"
         ) from e
 
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
@@ -8731,8 +8731,8 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
     sub-agent URL env vars, model name shape.
 
     Exits non-zero if any ERROR findings are reported. WARNING findings
-    are reported but don't fail. Pair with ``apx-agent test`` (smoke) and
-    ``apx-agent eval`` (behavior) for a full pre-deploy check.
+    are reported but don't fail. Pair with ``apx-agent eval test`` (smoke) and
+    ``apx-agent eval run`` (behavior) for a full pre-deploy check.
     """
     from ._lint import Severity, lint_agent
 
@@ -8757,7 +8757,7 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
         ))
     else:
         if not findings:
-            click.echo("apx-agent lint: clean — no findings.")
+            click.echo("apx-agent eval lint: clean — no findings.")
         else:
             for f in findings:
                 marker = {
@@ -8890,7 +8890,7 @@ def _hot_swap_model_serving(
             "served_entities_updated": result.served_entities_updated,
         }))
         return
-    click.echo(f"apx-agent hot-swap: {result.endpoint_name}")
+    click.echo(f"apx-agent agents hot-swap: {result.endpoint_name}")
     click.echo(f"  new model:      {result.new_model}")
     if result.previous_model:
         click.echo(f"  previous override: {result.previous_model}")
@@ -8943,7 +8943,7 @@ def _hot_swap_apps_cli(
             "previous_value": result.previous_value,
         }))
         return
-    click.echo(f"apx-agent hot-swap --target apps: {result.app_name}")
+    click.echo(f"apx-agent agents hot-swap --target apps: {result.app_name}")
     click.echo(f"  bundle target:  {result.bundle_target}")
     click.echo(f"  var:            {result.var_name}")
     click.echo(f"  new value:      {result.new_value}")
@@ -9055,7 +9055,7 @@ def test_cmd(
         from mlflow.types.agent import ChatAgentMessage
     except ImportError as e:
         raise click.ClickException(
-            "apx-agent test requires the eval extra (mlflow). "
+            "apx-agent eval test requires the eval extra (mlflow). "
             "Install with: uv add 'apx-agent[eval]'"
         ) from e
 
