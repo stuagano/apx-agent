@@ -1806,7 +1806,8 @@ def _make_ws_for_scaffold(profile: str | None):
     try:
         from databricks.sdk import WorkspaceClient
         return WorkspaceClient(profile=profile) if profile else WorkspaceClient()
-    except Exception:
+    except Exception as exc:
+        click.echo(f"  (warning: could not connect to the workspace — {exc})", err=True)
         return None
 
 
@@ -2046,7 +2047,8 @@ _SKIP_SCHEMAS: frozenset[str] = frozenset({"information_schema"})
 def _ws_list_catalogs(ws: "Any", limit: int = 50) -> list[str]:
     try:
         return [c.name for c in ws.catalogs.list() if c.name and c.name not in _SKIP_CATALOGS][:limit]
-    except Exception:
+    except Exception as exc:
+        click.echo(f"  (warning: could not list catalogs — {exc})", err=True)
         return []
 
 
@@ -2495,21 +2497,24 @@ def _ws_list_schemas(ws: "Any", catalog: str, limit: int = 50) -> list[str]:
             s.name for s in ws.schemas.list(catalog_name=catalog)
             if s.name and s.name not in _SKIP_SCHEMAS
         ][:limit]
-    except Exception:
+    except Exception as exc:
+        click.echo(f"  (warning: could not list schemas in {catalog} — {exc})", err=True)
         return []
 
 
 def _ws_list_tables(ws: "Any", catalog: str, schema: str, limit: int = 100) -> list[Any]:
     try:
         return list(ws.tables.list(catalog_name=catalog, schema_name=schema))[:limit]
-    except Exception:
+    except Exception as exc:
+        click.echo(f"  (warning: could not list tables in {catalog}.{schema} — {exc})", err=True)
         return []
 
 
 def _ws_list_functions(ws: "Any", catalog: str, schema: str, limit: int = 100) -> list[Any]:
     try:
         return list(ws.functions.list(catalog_name=catalog, schema_name=schema))[:limit]
-    except Exception:
+    except Exception as exc:
+        click.echo(f"  (warning: could not list functions in {catalog}.{schema} — {exc})", err=True)
         return []
 
 
