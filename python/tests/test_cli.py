@@ -339,6 +339,93 @@ def test_publish_tools_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert "agent_consumers" in result.output  # the grant is printed
 
 
+def test_publish_tools_registry_failure_fails_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Issue #528: a registry-write failure used to only print a yellow
+    # warning and still exit 0 — inconsistent with deploy's step-outcome
+    # ledger, where a best-effort sub-step failure still fails the command.
+    from apx_agent._tool_publish import PublishResult
+
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_result = PublishResult(
+        uc_name="main.tools.classify_intent", function_name="classify_intent",
+        grants_applied=("agent_consumers",),
+    )
+    runner = CliRunner()
+    with patch("apx_agent.publish_tools_to_uc", return_value=[fake_result]), \
+         patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
+         patch("apx_agent._publish.publish_standalone_tools_to_registry",
+               side_effect=RuntimeError("permission denied")):
+        result = runner.invoke(
+            main, ["uc", "publish", "--module", "tmp_test_agent:agent"],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code != 0
+    assert "Tools registry write failed" in result.output
+    assert "permission denied" in result.output
+
+
+def test_publish_tools_json_output_reports_registry_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent._tool_publish import PublishResult
+
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_result = PublishResult(
+        uc_name="main.tools.classify_intent", function_name="classify_intent",
+        grants_applied=("agent_consumers",),
+    )
+    runner = CliRunner()
+    with patch("apx_agent.publish_tools_to_uc", return_value=[fake_result]), \
+         patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
+         patch("apx_agent._publish.publish_standalone_tools_to_registry",
+               side_effect=RuntimeError("permission denied")):
+        result = runner.invoke(
+            main, ["uc", "publish", "--module", "tmp_test_agent:agent", "--json-output"],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["registry_error"] == "permission denied"
+    assert payload["published"][0]["uc_name"] == "main.tools.classify_intent"
+
+
+def test_publish_tools_json_output_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent._tool_publish import PublishResult
+
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_result = PublishResult(
+        uc_name="main.tools.classify_intent", function_name="classify_intent",
+        grants_applied=("agent_consumers",),
+    )
+    runner = CliRunner()
+    with patch("apx_agent.publish_tools_to_uc", return_value=[fake_result]), \
+         patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
+         patch("apx_agent._publish.publish_standalone_tools_to_registry", return_value=1):
+        result = runner.invoke(
+            main, ["uc", "publish", "--module", "tmp_test_agent:agent", "--json-output"],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["registry"] == {"table": "main.apx.agent_tools", "count": 1}
+    assert payload["registry_error"] is None
+
+
 # ---------------------------------------------------------------------------
 # `apx info`
 # ---------------------------------------------------------------------------
