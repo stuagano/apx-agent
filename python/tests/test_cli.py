@@ -5736,6 +5736,76 @@ class TestAgentsDelete:
 # ---------------------------------------------------------------------------
 
 
+class TestWsListHelpersSurfaceErrors:
+    # Issue #523: these helpers used to swallow every exception with a bare
+    # `except Exception: return []`/`None`, so an expired token or a network
+    # error looked identical to "genuinely empty" — a user would debug the
+    # wrong problem. They now print a warning to stderr before falling back.
+
+    def test_ws_list_catalogs_warns_on_exception(self, capsys):
+        from apx_agent import cli
+
+        ws = MagicMock()
+        ws.catalogs.list.side_effect = RuntimeError("token expired")
+
+        result = cli._ws_list_catalogs(ws)
+
+        assert result == []
+        assert "token expired" in capsys.readouterr().err
+
+    def test_ws_list_schemas_warns_on_exception(self, capsys):
+        from apx_agent import cli
+
+        ws = MagicMock()
+        ws.schemas.list.side_effect = RuntimeError("permission denied")
+
+        result = cli._ws_list_schemas(ws, "mycat")
+
+        assert result == []
+        captured = capsys.readouterr().err
+        assert "permission denied" in captured
+        assert "mycat" in captured
+
+    def test_ws_list_tables_warns_on_exception(self, capsys):
+        from apx_agent import cli
+
+        ws = MagicMock()
+        ws.tables.list.side_effect = RuntimeError("network down")
+
+        result = cli._ws_list_tables(ws, "c", "s")
+
+        assert result == []
+        captured = capsys.readouterr().err
+        assert "network down" in captured
+        assert "c.s" in captured
+
+    def test_ws_list_functions_warns_on_exception(self, capsys):
+        from apx_agent import cli
+
+        ws = MagicMock()
+        ws.functions.list.side_effect = RuntimeError("network down")
+
+        result = cli._ws_list_functions(ws, "c", "s")
+
+        assert result == []
+        captured = capsys.readouterr().err
+        assert "network down" in captured
+        assert "c.s" in captured
+
+    def test_make_ws_for_scaffold_warns_on_exception(self, monkeypatch, capsys):
+        from apx_agent import cli
+
+        def boom(*a, **k):
+            raise RuntimeError("no default auth")
+
+        monkeypatch.setattr("databricks.sdk.WorkspaceClient", boom)
+
+        result = cli._make_ws_for_scaffold(None)
+
+        assert result is None
+        assert "no default auth" in capsys.readouterr().err
+
+
 class TestUcProfileFlagPosition:
     # Issue #529: --profile used to only work *before* the subcommand for
     # catalogs/schemas/tables/tools/validate (group-level ctx.obj), while
