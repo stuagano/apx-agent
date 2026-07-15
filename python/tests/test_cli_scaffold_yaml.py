@@ -26,6 +26,24 @@ def test_scaffold_coworker_outputs_yaml(tmp_path):
     assert spec["template"]["catalog"] == "main"
 
 
+def test_scaffold_default_guardrails_match_llm_generate_path(tmp_path):
+    # _scaffold_to_yaml's guardrail default must match _COWORKER_GEN_PROMPT's
+    # (both produce coworker YAML; a mismatch is a silent security posture
+    # divergence between the two scaffold paths — see issue #521).
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "agents", "scaffold", "payroll-coworker",
+        "--template", "coworker",
+        "--catalog", "main",
+        "--schema", "payroll",
+        "--no-interactive",
+        "--dir", str(tmp_path),
+    ])
+    assert result.exit_code == 0, result.output
+    spec = yaml.safe_load((tmp_path / "payroll-coworker.yaml").read_text())
+    assert spec["guardrails"]["injection_detection"] is True
+
+
 def test_scaffold_coworker_no_project_directory(tmp_path):
     runner = CliRunner()
     runner.invoke(main, [
