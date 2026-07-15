@@ -26,6 +26,42 @@ def test_scaffold_coworker_outputs_yaml(tmp_path):
     assert spec["template"]["catalog"] == "main"
 
 
+def test_find_gallery_yaml_by_name_matches_file_stem():
+    from apx_agent.cli import _find_gallery_yaml_by_name
+
+    found = _find_gallery_yaml_by_name("payroll")
+    assert found is not None
+    assert found.stem == "payroll"
+
+
+def test_find_gallery_yaml_by_name_matches_declared_name():
+    from apx_agent.cli import _find_gallery_yaml_by_name
+
+    found = _find_gallery_yaml_by_name("payroll-coworker")
+    assert found is not None
+    assert found.stem == "payroll"
+
+
+def test_find_gallery_yaml_by_name_returns_none_when_missing():
+    from apx_agent.cli import _find_gallery_yaml_by_name
+
+    assert _find_gallery_yaml_by_name("does-not-exist") is None
+
+
+def test_scaffold_coworker_by_declared_gallery_name(tmp_path):
+    # --coworker <name> resolves by the YAML's declared `name` key, not just
+    # its file stem (payroll.yaml declares name: payroll-coworker).
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "agents", "scaffold", "my-payroll-agent",
+        "--coworker", "payroll-coworker",
+        "--no-interactive",
+        "--dir", str(tmp_path),
+    ])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "my-payroll-agent.yaml").exists()
+
+
 def test_scaffold_default_guardrails_match_llm_generate_path(tmp_path):
     # _scaffold_to_yaml's guardrail default must match _COWORKER_GEN_PROMPT's
     # (both produce coworker YAML; a mismatch is a silent security posture

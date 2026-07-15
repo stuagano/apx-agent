@@ -2360,6 +2360,23 @@ def _pick_coworker_gallery() -> "tuple[str, Path]":
     return cname, path
 
 
+def _find_gallery_yaml_by_name(name: str) -> "Path | None":
+    """Find a coworker gallery YAML by file stem or declared ``name`` key."""
+    import importlib.resources as _ir
+    import yaml as _yaml
+
+    gallery_dir = Path(_ir.files("apx_agent").joinpath("coworker_gallery"))  # type: ignore[arg-type]
+    for p in sorted(gallery_dir.glob("*.yaml")):
+        if p.stem == name:
+            return p
+        try:
+            if _yaml.safe_load(p.read_text()).get("name") == name:
+                return p
+        except Exception:
+            continue
+    return None
+
+
 @main.command()
 @click.option(
     "--profile", default=None,
@@ -2592,7 +2609,7 @@ def _interactive_resolve(
         else:
             click.echo(f"  (no schemas found in {catalog} — enter a name manually)")
             while True:
-                schema = click.prompt(f"Schema").strip()
+                schema = click.prompt("Schema").strip()
                 if schema:
                     break
                 click.echo("  Schema cannot be empty.")
@@ -3149,16 +3166,13 @@ def scaffold(
             generated_yaml_str = _generate_coworker_yaml(profile)
         else:
             # --coworker <name> → find by name in the gallery
-            import importlib.resources as _ir
-            import yaml as _yaml
-            gallery_dir = Path(_ir.files("apx_agent").joinpath("coworker_gallery"))  # type: ignore[arg-type]
-            matched = [p for p in sorted(gallery_dir.glob("*.yaml")) if p.stem == coworker_spec or _yaml.safe_load(p.read_text()).get("name") == coworker_spec]
-            if not matched:
+            found = _find_gallery_yaml_by_name(coworker_spec)
+            if found is None:
                 raise click.ClickException(
                     f"No coworker named {coworker_spec!r} in the gallery. "
                     "Use --coworker list to browse, or --coworker generate to author one."
                 )
-            gallery_yaml_path = matched[0]
+            gallery_yaml_path = found
 
     if scaffold_template == "list" or catalog == "list" or schema == "list":
         ws = _make_ws_for_scaffold(profile)
