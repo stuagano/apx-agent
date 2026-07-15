@@ -4045,9 +4045,127 @@ def test_apx_info_lists_config_tools(
 
 
 # ---------------------------------------------------------------------------
-# apps-deploy path — config-declared tools governance (E2 declarative tools,
-# Task 10)
+# databricks.yml merge writers preserve comments/formatting (#527)
 # ---------------------------------------------------------------------------
+
+
+class TestDatabricksYmlMergePreservesComments:
+    _SEED = (
+        "# top-level comment: do not remove me\n"
+        "bundle:\n"
+        "  name: my-agent\n"
+        "\n"
+        "resources:\n"
+        "  apps:\n"
+        "    my-agent:\n"
+        "      name: my-agent  # inline comment\n"
+        "      # a note about this block\n"
+        "      config: {}\n"
+    )
+
+    def test_merge_env_preserves_comments(self, tmp_path):
+        from apx_agent.cli import _merge_env_into_databricks_yml, _EnvPair
+
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(self._SEED)
+
+        result = _merge_env_into_databricks_yml(
+            tmp_path,
+            bundle_key="my-agent",
+            env_pairs=[_EnvPair(name="FOO", value="bar")],
+            secret_env_pairs=[],
+            log=lambda msg: None,
+        )
+
+        out = yml_path.read_text()
+        assert "# top-level comment: do not remove me" in out
+        assert "# inline comment" in out
+        assert "# a note about this block" in out
+        assert "FOO" in out
+        assert result.env_added == ["FOO"]
+
+    def test_merge_env_quotes_yaml_ambiguous_values(self, tmp_path):
+        # ruamel's round-trip dumper does not auto-quote plain scalars that
+        # YAML's implicit resolver would misread as bool/null/number on
+        # reload (on/off/yes/no/true/false/null/123) — unlike yaml.safe_dump,
+        # which does. Left unquoted, --env FLAG=on would silently become the
+        # Python bool True (not the string "on") the next time this file is
+        # read. Covers both --env and --secret-env free-text fields.
+        import yaml as pyyaml
+        from apx_agent.cli import _merge_env_into_databricks_yml, _EnvPair, _SecretEnvRef
+
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(
+            "resources:\n"
+            "  apps:\n"
+            "    my-agent:\n"
+            "      name: my-agent\n"
+            "      config: {}\n"
+        )
+
+        _merge_env_into_databricks_yml(
+            tmp_path,
+            bundle_key="my-agent",
+            env_pairs=[_EnvPair(name="FEATURE_FLAG", value="on"), _EnvPair(name="123", value="123")],
+            secret_env_pairs=[_SecretEnvRef(name="NO", scope="yes", key="true")],
+            log=lambda msg: None,
+        )
+
+        reloaded = pyyaml.safe_load(yml_path.read_text())
+        app = reloaded["resources"]["apps"]["my-agent"]
+        env_by_name = {e["name"]: e.get("value") for e in app["config"]["env"]}
+        assert env_by_name == {"FEATURE_FLAG": "on", "123": "123", "NO": None}
+        secret_resource = next(r["secret"] for r in app["resources"] if "secret" in r)
+        assert secret_resource["scope"] == "yes"
+        assert secret_resource["key"] == "true"
+
+    def test_merge_env_never_clobbers_existing_entry(self, tmp_path):
+        from apx_agent.cli import _merge_env_into_databricks_yml, _EnvPair
+
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(
+            "resources:\n"
+            "  apps:\n"
+            "    my-agent:\n"
+            "      name: my-agent\n"
+            "      config:\n"
+            "        env:\n"
+            "        - name: FOO\n"
+            "          value: original\n"
+        )
+
+        result = _merge_env_into_databricks_yml(
+            tmp_path,
+            bundle_key="my-agent",
+            env_pairs=[_EnvPair(name="FOO", value="new")],
+            secret_env_pairs=[],
+            log=lambda msg: None,
+        )
+
+        assert result.skipped == ["FOO"]
+        assert "original" in yml_path.read_text()
+        assert "new" not in yml_path.read_text()
+
+    def test_auto_update_yml_preserves_comments(self, tmp_path, monkeypatch):
+        from apx_agent.cli import _auto_update_databricks_yml
+
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(self._SEED)
+        monkeypatch.setattr(
+            "apx_agent._resources.collect_resource_specs", lambda agent: [],
+        )
+        monkeypatch.setattr(
+            "apx_agent._resources.user_api_scopes_for", lambda specs: [],
+        )
+
+        _auto_update_databricks_yml(
+            tmp_path, agent=object(), bundle_key="my-agent", log=lambda msg: None,
+        )
+
+        out = yml_path.read_text()
+        assert "# top-level comment: do not remove me" in out
+        assert "# inline comment" in out
+        assert "# a note about this block" in out
 
 
 def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
