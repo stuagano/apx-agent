@@ -7354,64 +7354,95 @@ def _deploy_apps_impl(
               help="UC Delta tools registry table. Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
 @click.option("--no-registry", is_flag=True, help="Skip the tools registry write (UC publish only).")
 @click.option("--profile", default=None, help="Databricks CLI profile.")
+@click.option("--json-output", "json_output", is_flag=True,
+              help="Emit a single JSON summary on stdout instead of text.")
 def publish_tools_cmd(
     module: str,
     dry_run: bool,
     tools_table: str | None,
     no_registry: bool,
     profile: str | None,
+    json_output: bool,
 ) -> None:
     """Publish all @tool(uc=...) decorated tools to Unity Catalog.
 
     Also registers each tool as a standalone entry in the org tools registry
     (``main.apx.agent_tools`` by default) so they are discoverable by any
-    agent without being tied to a specific agent deployment.
+    agent without being tied to a specific agent deployment. A registry-write
+    failure is reported but still fails the command's exit code (like
+    ``agents deploy``'s step ledger) — it never fails silently while still
+    exiting 0.
     """
     from apx_agent import publish_tools_to_uc
     from apx_agent._publish import publish_standalone_tools_to_registry
     from apx_agent._resources import _iter_tool_fns
     from apx_agent._tool import get_tool_metadata
 
-    cfg = _read_apx_agent_config()
-    profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
-    if profile:
-        os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
-    tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
-    assert tools_table is not None
+    with _json_cli_errors(json_output):
+        cfg = _read_apx_agent_config()
+        profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+        if profile:
+            os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+        tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
+        assert tools_table is not None
 
-    agent = _load_finalized_agent(module)
-    results = publish_tools_to_uc(agent, dry_run=dry_run)
-    if not results:
-        click.echo("No @tool(uc=...) decorated tools found in this agent.")
-        click.echo("To publish a tool, decorate a function with @tool(uc='catalog.schema.fn_name'):")
-        click.echo("  from apx_agent import tool")
-        click.echo("  @tool(uc='main.tools.my_fn')")
-        click.echo("  def my_fn(x: str) -> str: ...")
-        return
-    for r in results:
-        prefix = "DRY-RUN" if r.skipped else "PUBLISHED"
-        grants = ", ".join(r.grants_applied) if r.grants_applied else "none"
-        click.echo(f"  {prefix}  {r.uc_name}  (grants: {grants})")
+        agent = _load_finalized_agent(module)
+        results = publish_tools_to_uc(agent, dry_run=dry_run)
+        if not results:
+            if json_output:
+                click.echo(json.dumps({"ok": True, "published": [], "registry": None}))
+            else:
+                click.echo("No @tool(uc=...) decorated tools found in this agent.")
+                click.echo("To publish a tool, decorate a function with @tool(uc='catalog.schema.fn_name'):")
+                click.echo("  from apx_agent import tool")
+                click.echo("  @tool(uc='main.tools.my_fn')")
+                click.echo("  def my_fn(x: str) -> str: ...")
+            return
+        if not json_output:
+            for r in results:
+                prefix = "DRY-RUN" if r.skipped else "PUBLISHED"
+                grants = ", ".join(r.grants_applied) if r.grants_applied else "none"
+                click.echo(f"  {prefix}  {r.uc_name}  (grants: {grants})")
 
-    # --- Write standalone rows to the tools registry ---
-    if not no_registry and not dry_run:
-        # Collect only the tool functions that were actually published to UC.
-        published_names = {r.function_name for r in results if not r.skipped}
-        tool_fns = [
-            fn for fn in _iter_tool_fns(agent)
-            if getattr(fn, "__name__", None) in published_names
-        ]
-        if tool_fns:
-            try:
-                ws, _ = _connect_workspace(profile)
-                n = publish_standalone_tools_to_registry(
-                    tool_fns=tool_fns,
-                    tools_table=tools_table,
-                    ws=ws,
-                )
-                click.echo(click.style(f"  ✓ Tools registry updated ({n} standalone tools → {tools_table})", fg="green"))
-            except Exception as exc:
-                click.echo(click.style(f"  ✗ Tools registry write failed: {exc}", fg="yellow"), err=True)
+        # --- Write standalone rows to the tools registry ---
+        registry_summary: dict[str, Any] | None = None
+        registry_error: str | None = None
+        if not no_registry and not dry_run:
+            # Collect only the tool functions that were actually published to UC.
+            published_names = {r.function_name for r in results if not r.skipped}
+            tool_fns = [
+                fn for fn in _iter_tool_fns(agent)
+                if getattr(fn, "__name__", None) in published_names
+            ]
+            if tool_fns:
+                try:
+                    ws, _ = _connect_workspace(profile)
+                    n = publish_standalone_tools_to_registry(
+                        tool_fns=tool_fns,
+                        tools_table=tools_table,
+                        ws=ws,
+                    )
+                    registry_summary = {"table": tools_table, "count": n}
+                    if not json_output:
+                        click.echo(click.style(f"  ✓ Tools registry updated ({n} standalone tools → {tools_table})", fg="green"))
+                except Exception as exc:
+                    registry_error = str(exc)
+                    if not json_output:
+                        click.echo(click.style(f"  ✗ Tools registry write failed: {exc}", fg="yellow"), err=True)
+
+        if json_output:
+            click.echo(json.dumps({
+                "ok": registry_error is None,
+                "published": [
+                    {"uc_name": r.uc_name, "skipped": r.skipped,
+                     "grants_applied": r.grants_applied}
+                    for r in results
+                ],
+                "registry": registry_summary,
+                "registry_error": registry_error,
+            }))
+        if registry_error is not None:
+            raise click.exceptions.Exit(1)
 
 
 # ---------------------------------------------------------------------------
