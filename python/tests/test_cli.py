@@ -5322,6 +5322,47 @@ class TestAgentsDelete:
         # Registered model delete must have been called
         fake_ws.registered_models.delete.assert_called_once_with("main.schema.my_model")
 
+    def test_json_output_reports_deleted_and_ok(self):
+        # Issue #531: --json emits a single structured result instead of
+        # progress text, so automation can tell exactly what succeeded.
+        fake_ws = MagicMock()
+        fake_model = SimpleNamespace(tags=[
+            SimpleNamespace(key="apx.agent.name", value="my-agent"),
+            SimpleNamespace(key="apx.agent.model", value="my-ep"),
+        ])
+        fake_ws.registered_models.get.return_value = fake_model
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--yes", "--json",
+            ])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        assert "endpoint:my-ep" in payload["deleted"]
+        assert "uc_model:main.schema.my_model" in payload["deleted"]
+        assert payload["errors"] == []
+
+    def test_json_output_reports_failure_and_nonzero_exit(self):
+        fake_ws = MagicMock()
+        fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[])
+        fake_ws.registered_models.delete.side_effect = RuntimeError("locked")
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--yes", "--json",
+            ])
+
+        assert result.exit_code != 0
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert any("locked" in e for e in payload["errors"])
+
     def test_with_explicit_endpoint_and_app(self):
         fake_ws = MagicMock()
         fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[])

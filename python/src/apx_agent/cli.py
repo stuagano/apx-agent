@@ -9762,6 +9762,9 @@ def _registry_row_age(updated_at: Any) -> str:
                    "Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks CLI profile (~/.databrickscfg).")
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit a single JSON result object on stdout "
+                   "(ok/deleted/errors) instead of progress text.")
 def delete_agent_cmd(
     uc_name: str,
     endpoint_name: str | None,
@@ -9771,6 +9774,7 @@ def delete_agent_cmd(
     registry_table: str | None,
     tools_table: str | None,
     profile: str | None,
+    as_json: bool,
 ) -> None:
     """Delete a deployed agent — UC model registration, serving endpoint, and app.
 
@@ -9804,6 +9808,11 @@ def delete_agent_cmd(
 
     Pass --yes to skip the interactive confirmation prompt.
     """
+    def _out(msg: str) -> None:
+        # Progress/notice text: routed to stderr under --json so stdout
+        # carries only the final JSON object.
+        click.echo(msg, err=as_json)
+
     ws, ws_cfg = _connect_workspace(profile)
 
     # Resolve endpoint and app from UC tags when not explicitly given.
@@ -9843,9 +9852,9 @@ def delete_agent_cmd(
 
     registry_ready = False
     if not victim_agent_ids:
-        click.echo(
+        _out(
             "Notice: registry cleanup skipped (no endpoint or app name to "
-            "derive the agent's registry rows from).",
+            "derive the agent's registry rows from)."
         )
     else:
         try:
@@ -9854,15 +9863,15 @@ def delete_agent_cmd(
                 and ws.tables.exists(tools_table).table_exists is True
             )
         except Exception as exc:
-            click.echo(
+            _out(
                 f"Notice: registry cleanup skipped (could not check "
-                f"{registry_table} / {tools_table}: {exc})",
+                f"{registry_table} / {tools_table}: {exc})"
             )
         else:
             if not registry_ready:
-                click.echo(
+                _out(
                     f"Notice: registry cleanup skipped ({registry_table} / "
-                    f"{tools_table} not found — nothing advertised).",
+                    f"{tools_table} not found — nothing advertised)."
                 )
 
     dependents: list[dict[str, Any]] = []
@@ -9995,7 +10004,7 @@ def delete_agent_cmd(
         )
 
     for notice in purge_notices:
-        click.echo(notice)
+        _out(notice)
 
     # Dependents warning — deleting an agent that others route to is silent
     # breakage, so surface it (with row staleness) before asking to proceed.
@@ -10005,29 +10014,31 @@ def delete_agent_cmd(
             key = (str(dep["agent"] or "(unknown agent)"), str(dep["via"] or "(unknown reference)"))
             seen.setdefault(key, dep["updated_at"])
         n_agents = len({agent for agent, _ in seen})
-        click.echo(
+        _out(
             f"Warning: {n_agents} other agent(s) reference this one — "
             "deleting it will break their routing:"
         )
         for (agent, via), updated_at in sorted(seen.items()):
-            click.echo(
+            _out(
                 f"  • {agent} (via {via}, last advertised "
                 f"{_registry_row_age(updated_at)})"
             )
 
     if not assume_yes:
-        click.echo("This will permanently delete:")
+        _out("This will permanently delete:")
         for line in to_delete:
-            click.echo(line)
+            _out(line)
         click.confirm("Proceed?", abort=True)
 
     errors: list[str] = []
+    deleted: list[str] = []
 
     # 1. Delete the serving endpoint first (it holds the model version lock).
     if resolved_endpoint:
         try:
             ws.serving_endpoints.delete(resolved_endpoint)
-            click.echo(f"Deleted endpoint: {resolved_endpoint}")
+            deleted.append(f"endpoint:{resolved_endpoint}")
+            _out(f"Deleted endpoint: {resolved_endpoint}")
         except Exception as exc:
             errors.append(f"endpoint {resolved_endpoint!r}: {exc}")
             click.echo(f"Warning: could not delete endpoint {resolved_endpoint!r}: {exc}", err=True)
@@ -10035,7 +10046,8 @@ def delete_agent_cmd(
     # 2. Delete the registered model (all versions).
     try:
         ws.registered_models.delete(uc_name)
-        click.echo(f"Deleted UC model: {uc_name}")
+        deleted.append(f"uc_model:{uc_name}")
+        _out(f"Deleted UC model: {uc_name}")
     except Exception as exc:
         errors.append(f"UC model {uc_name!r}: {exc}")
         click.echo(f"Warning: could not delete UC model {uc_name!r}: {exc}", err=True)
@@ -10044,7 +10056,8 @@ def delete_agent_cmd(
     if resolved_app:
         try:
             ws.apps.delete(resolved_app)
-            click.echo(f"Deleted app: {resolved_app}")
+            deleted.append(f"app:{resolved_app}")
+            _out(f"Deleted app: {resolved_app}")
         except Exception as exc:
             errors.append(f"app {resolved_app!r}: {exc}")
             click.echo(f"Warning: could not delete app {resolved_app!r}: {exc}", err=True)
@@ -10058,7 +10071,8 @@ def delete_agent_cmd(
                     agent_id=victim_id,
                     registry_table=registry_table, tools_table=tools_table, ws=ws,
                 )
-                click.echo(f"Removed advertise-registry rows for agent_id: {victim_id}")
+                deleted.append(f"registry_rows:{victim_id}")
+                _out(f"Removed advertise-registry rows for agent_id: {victim_id}")
             except Exception as exc:
                 errors.append(f"registry rows {victim_id!r}: {exc}")
                 click.echo(
@@ -10070,7 +10084,8 @@ def delete_agent_cmd(
     for capp in canary_apps:
         try:
             ws.apps.delete(capp)
-            click.echo(f"Deleted canary app: {capp}")
+            deleted.append(f"canary_app:{capp}")
+            _out(f"Deleted canary app: {capp}")
         except Exception as exc:
             errors.append(f"canary app {capp!r}: {exc}")
             click.echo(f"Warning: could not delete canary app {capp!r}: {exc}", err=True)
@@ -10078,7 +10093,8 @@ def delete_agent_cmd(
     if experiment_id:
         try:
             ws.experiments.delete_experiment(experiment_id)
-            click.echo(f"Deleted MLflow experiment: {experiment_id}")
+            deleted.append(f"experiment:{experiment_id}")
+            _out(f"Deleted MLflow experiment: {experiment_id}")
         except Exception as exc:
             errors.append(f"experiment {experiment_id!r}: {exc}")
             click.echo(
@@ -10089,13 +10105,20 @@ def delete_agent_cmd(
     if bundle_path:
         try:
             ws.workspace.delete(bundle_path, recursive=True)
-            click.echo(f"Deleted bundle workspace files: {bundle_path}")
+            deleted.append(f"bundle_files:{bundle_path}")
+            _out(f"Deleted bundle workspace files: {bundle_path}")
         except Exception as exc:
             errors.append(f"bundle files {bundle_path!r}: {exc}")
             click.echo(
                 f"Warning: could not delete bundle files {bundle_path!r}: {exc}",
                 err=True,
             )
+
+    if as_json:
+        click.echo(json.dumps({"ok": not errors, "deleted": deleted, "errors": errors}))
+        if errors:
+            raise click.exceptions.Exit(1)
+        return
 
     if errors:
         raise click.ClickException(
