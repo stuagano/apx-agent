@@ -4286,12 +4286,6 @@ def _deploy_from_yaml(
         if framework_python is not None:
             _inject_framework_source(project_dir, framework_python)
 
-        # When running inside the framework source repo, inject the editable
-        # source so _ensure_apx_wheel can build and bundle the wheel.
-        framework_python = _find_nearby_framework_python(Path.cwd())
-        if framework_python is not None:
-            _inject_framework_source(project_dir, framework_python)
-
         import os
         orig = os.getcwd()
         try:
