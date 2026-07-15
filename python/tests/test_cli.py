@@ -3754,7 +3754,7 @@ def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
     out = result.output
     assert "cd my-agent" in out
     assert "uv sync" in out
-    assert "apx-agent run" in out
+    assert "apx-agent agents run" in out
 
 
 # ---------------------------------------------------------------------------
