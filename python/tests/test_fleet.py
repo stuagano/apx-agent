@@ -116,9 +116,9 @@ def test_summary_exit_code_zero_when_all_ok():
         _fleet.AgentOutcome("a.b.c", "ok", "tagged"),
         _fleet.AgentOutcome("a.b.d", "skipped", "no change"),
     ]
-    text, code = _fleet.render_summary(outcomes, apply=True)
-    assert code == 0
-    assert "1 ok" in text and "1 skipped" in text
+    rendered = _fleet.render_summary(outcomes, apply=True)
+    assert rendered.exit_code == 0
+    assert "1 ok" in rendered.text and "1 skipped" in rendered.text
 
 
 @pytest.mark.unit
@@ -127,18 +127,18 @@ def test_summary_exit_code_nonzero_on_failure():
         _fleet.AgentOutcome("a.b.c", "ok", "tagged"),
         _fleet.AgentOutcome("a.b.d", "failed", "boom"),
     ]
-    text, code = _fleet.render_summary(outcomes, apply=True)
-    assert code == 1
-    assert "1 failed" in text
-    assert "boom" in text
+    rendered = _fleet.render_summary(outcomes, apply=True)
+    assert rendered.exit_code == 1
+    assert "1 failed" in rendered.text
+    assert "boom" in rendered.text
 
 
 @pytest.mark.unit
 def test_summary_marks_dry_run():
-    text, _ = _fleet.render_summary(
+    rendered = _fleet.render_summary(
         [_fleet.AgentOutcome("a.b.c", "ok", "would tag")], apply=False,
     )
-    assert "dry-run" in text.lower()
+    assert "dry-run" in rendered.text.lower()
 
 
 from unittest.mock import MagicMock, patch
@@ -223,6 +223,27 @@ def test_fleet_tag_apply_sets_label():
 
 
 @pytest.mark.unit
+def test_fleet_tag_json_format():
+    import json
+
+    ws = _fake_ws([_model("a", catalog="cat", schema="sch",
+                          **{_fleet.NAME_TAG: "payroll"})])
+    client = MagicMock()
+    with patch("apx_agent.cli._require_sdk", return_value=ws), \
+         patch("mlflow.tracking.MlflowClient", return_value=client):
+        result = CliRunner().invoke(
+            main, ["fleet", "tag", "--name", "payroll",
+                   "--set", "team=revops", "--apply", "--format", "json"],
+        )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["apply"] is True
+    assert payload["results"][0]["uc_name"] == "cat.sch.a"
+    assert payload["results"][0]["status"] == "ok"
+    assert payload["summary"] == {"ok": 1, "skipped": 0, "failed": 0}
+
+
+@pytest.mark.unit
 def test_fleet_tag_refuses_reserved_namespace():
     ws = _fake_ws([_model("a", **{_fleet.NAME_TAG: "payroll"})])
     with patch("apx_agent.cli._require_sdk", return_value=ws):
@@ -269,6 +290,26 @@ def test_fleet_backfill_dry_run_writes_nothing():
     assert result.exit_code == 0, result.output
     assert "dry-run" in result.output.lower()
     client.set_registered_model_tag.assert_not_called()
+
+
+@pytest.mark.unit
+def test_fleet_backfill_json_format_omits_text_note():
+    import json
+
+    client = MagicMock()
+    client.get_registered_model.return_value = _fake_mlflow_model({})
+    with patch("mlflow.tracking.MlflowClient", return_value=client):
+        result = CliRunner().invoke(
+            main, ["fleet", "backfill", "--uc-name", "cat.sch.payroll",
+                   "--name", "payroll", "--format", "json"],
+        )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["apply"] is False
+    assert payload["results"][0]["uc_name"] == "cat.sch.payroll"
+    # The human-only "cannot reconstruct tools/resources" note must not leak
+    # into the JSON stream.
+    assert "reconstruct" not in result.output
 
 
 @pytest.mark.unit
@@ -335,6 +376,26 @@ def test_fleet_repoint_dry_run_writes_nothing():
     assert result.exit_code == 0, result.output
     setp.assert_not_called()
     assert "dry-run" in result.output.lower()
+
+
+@pytest.mark.unit
+def test_fleet_repoint_json_format():
+    import json
+
+    ws = _fake_ws([_model("a", catalog="cat", schema="sch",
+                          **{_fleet.NAME_TAG: "payroll"})])
+    with patch("apx_agent.cli._require_sdk", return_value=ws), \
+         patch("apx_agent._apps_registry.get_latest_prod_version", return_value="5"), \
+         patch("apx_agent._apps_registry.get_prod_alias_version", return_value="3"), \
+         patch("apx_agent._apps_registry.set_prod_alias_version") as setp:
+        result = CliRunner().invoke(
+            main, ["fleet", "repoint", "--apply", "--format", "json"],
+        )
+    assert result.exit_code == 0, result.output
+    setp.assert_called_once_with("cat.sch.a", "5")
+    payload = json.loads(result.output)
+    assert payload["results"][0]["uc_name"] == "cat.sch.a"
+    assert payload["results"][0]["detail"] == "3 -> 5"
 
 
 @pytest.mark.unit

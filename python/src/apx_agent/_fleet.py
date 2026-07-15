@@ -137,14 +137,20 @@ class AgentOutcome:
     """Result of one per-agent action in a bulk command."""
     uc_name: str
     status: str  # "ok" | "skipped" | "failed"
-    detail: str = ""
+    detail: str | None = None
 
 
-def render_summary(outcomes: list[AgentOutcome], *, apply: bool) -> tuple[str, int]:
+@dataclass
+class RenderedSummary:
+    """Rendered fleet-command output, ready to print, plus its exit code."""
+    text: str
+    exit_code: int  # 1 if any outcome failed, else 0
+
+
+def render_summary(outcomes: list[AgentOutcome], *, apply: bool) -> RenderedSummary:
     """Render a per-agent result table + summary line.
 
-    Returns ``(text, exit_code)``. ``exit_code`` is 1 if any outcome failed,
-    else 0. When ``apply`` is False the header marks the run as a dry-run.
+    When ``apply`` is False the header marks the run as a dry-run.
     """
     lines: list[str] = []
     header = "Fleet plan (dry-run — nothing changed; pass --apply to execute):" if not apply \
@@ -156,4 +162,24 @@ def render_summary(outcomes: list[AgentOutcome], *, apply: bool) -> tuple[str, i
     n_skip = sum(1 for o in outcomes if o.status == "skipped")
     n_fail = sum(1 for o in outcomes if o.status == "failed")
     lines.append(f"Summary: {n_ok} ok, {n_skip} skipped, {n_fail} failed")
-    return "\n".join(lines), (1 if n_fail else 0)
+    return RenderedSummary("\n".join(lines), 1 if n_fail else 0)
+
+
+def render_summary_json(outcomes: list[AgentOutcome], *, apply: bool) -> RenderedSummary:
+    """JSON counterpart to :func:`render_summary` — same ``RenderedSummary`` contract."""
+    import json
+
+    n_fail = sum(1 for o in outcomes if o.status == "failed")
+    payload = {
+        "apply": apply,
+        "results": [
+            {"uc_name": o.uc_name, "status": o.status, "detail": o.detail}
+            for o in outcomes
+        ],
+        "summary": {
+            "ok": sum(1 for o in outcomes if o.status == "ok"),
+            "skipped": sum(1 for o in outcomes if o.status == "skipped"),
+            "failed": n_fail,
+        },
+    }
+    return RenderedSummary(json.dumps(payload, indent=2), 1 if n_fail else 0)
