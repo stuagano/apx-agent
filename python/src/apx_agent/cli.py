@@ -6887,19 +6887,24 @@ def _apps_readyz_recovery_hint(
 
 
 @contextlib.contextmanager
-def _json_cli_errors(as_json: bool) -> Iterator[None]:
+def _json_cli_errors(
+    as_json: bool, *, extra: dict[str, Any] | None = None,
+) -> Iterator[None]:
     """Mirror the deploy ``--json-output`` failure contract for other
     mutation commands (issue #417): under ``--json``, a ``ClickException``
     (incl. ``UsageError``) becomes a single ``{"ok": false, "error": ...}``
     object on stdout + exit 1, instead of click's stderr rendering. Without
     the flag, the exception propagates unchanged.
+
+    ``extra`` merges additional context fields (e.g. ``{"app_name": ...}``)
+    into the JSON payload alongside ``ok``/``error``.
     """
     try:
         yield
     except click.ClickException as e:
         if not as_json:
             raise
-        click.echo(json.dumps({"ok": False, "error": str(e)}))
+        click.echo(json.dumps({"ok": False, "error": str(e), **(extra or {})}))
         raise click.exceptions.Exit(1) from e
 
 
@@ -6941,7 +6946,7 @@ def _deploy_apps(
     def log(msg: str) -> None:
         click.echo(msg, err=True)
 
-    try:
+    with _json_cli_errors(json_output):
         _deploy_apps_impl(
             cwd=cwd, module=module, profile=profile,
             bundle_target=bundle_target, no_run=no_run,
@@ -6959,11 +6964,6 @@ def _deploy_apps(
             readyz_attempts=readyz_attempts,
             log=log,
         )
-    except click.ClickException as e:
-        if json_output:
-            click.echo(json.dumps({"ok": False, "error": str(e)}))
-            raise click.exceptions.Exit(1) from e
-        raise
 
 
 def _deploy_apps_impl(
@@ -7120,10 +7120,8 @@ def _deploy_apps_impl(
             f"`databricks bundle validate` failed (exit {validate_proc.returncode}). "
             f"Last lines:\n{_tail_lines(validate_proc.stderr or validate_proc.stdout)}"
         )
-        if json_output:
-            click.echo(json.dumps({"ok": False, "error": msg, "app_name": app_name}))
-            raise click.exceptions.Exit(1)
-        raise click.ClickException(msg)
+        with _json_cli_errors(json_output, extra={"app_name": app_name}):
+            raise click.ClickException(msg)
 
     # 4. databricks bundle deploy
     log("# databricks bundle deploy")
@@ -7138,10 +7136,8 @@ def _deploy_apps_impl(
             f"`databricks bundle deploy` failed (exit {deploy_proc.returncode}). "
             f"Last lines:\n{_tail_lines(deploy_proc.stderr or deploy_proc.stdout)}"
         )
-        if json_output:
-            click.echo(json.dumps({"ok": False, "error": msg, "app_name": app_name}))
-            raise click.exceptions.Exit(1)
-        raise click.ClickException(msg)
+        with _json_cli_errors(json_output, extra={"app_name": app_name}):
+            raise click.ClickException(msg)
     log(f"  bundle deploy finished in {deploy_seconds:.1f}s")
 
     # 5. databricks bundle run <bundle_key>

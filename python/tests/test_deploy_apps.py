@@ -700,6 +700,34 @@ def test_json_output_on_error_path(
     assert "error" in payload
 
 
+def test_json_output_on_validate_failure_includes_app_name(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Issue #526: reusing _json_cli_errors (extended with an `extra` param)
+    # must not drop the app_name context the hand-rolled version carried.
+    _install_subprocess_mock(monkeypatch, validate_rc=2)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--json-output",
+    ])
+    assert result.exit_code != 0
+    payload = json.loads(result.output.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["app_name"] == "my-app"
+
+
+def test_json_output_on_deploy_failure_includes_app_name(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_subprocess_mock(monkeypatch, deploy_rc=3)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--json-output",
+    ])
+    assert result.exit_code != 0
+    payload = json.loads(result.output.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["app_name"] == "my-app"
+
+
 def test_profile_is_passed_through(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
