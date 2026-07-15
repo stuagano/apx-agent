@@ -3923,10 +3923,10 @@ def stop(agent_name: str | None, port: int | None, host: str, stop_all: bool) ->
     Examples:
 
     \b
-      apx-agent stop                  # stop whatever is on port 8000
-      apx-agent stop hello-world      # find and stop hello-world
-      apx-agent stop --port 8001      # stop whatever is on 8001
-      apx-agent stop --all            # stop every apx-agent found
+      apx-agent agents stop                  # stop whatever is on port 8000
+      apx-agent agents stop hello-world      # find and stop hello-world
+      apx-agent agents stop --port 8001      # stop whatever is on 8001
+      apx-agent agents stop --all            # stop every apx-agent found
     """
     if port is not None:
         # Explicit port: just kill whatever is there.
@@ -3996,8 +3996,8 @@ def apps_list(profile: str | None, host: str | None) -> None:
     Examples:
 
     \b
-      apx-agent apps                       # list apps in default workspace
-      apx-agent apps --profile fe-stable   # list apps in fe-stable workspace
+      apx-agent agents apps                       # list apps in default workspace
+      apx-agent agents apps --profile fe-stable   # list apps in fe-stable workspace
     """
     profile = profile or _read_apx_agent_config().get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
 
@@ -4021,7 +4021,7 @@ def apps_list(profile: str | None, host: str | None) -> None:
 
     if not app_list:
         click.echo("No Databricks Apps found in this workspace.")
-        click.echo("Deploy one with:  apx-agent deploy")
+        click.echo("Deploy one with:  apx-agent agents deploy")
         return
 
     # Resolve workspace host for URL construction.
@@ -9342,7 +9342,7 @@ def list_agents_cmd(
 
     if not rows:
         click.echo("No apx agents found in this workspace.")
-        click.echo("Deploy one with:  apx-agent deploy")
+        click.echo("Deploy one with:  apx-agent agents deploy")
         click.echo("Then run this command again to see it here.")
         return
 
@@ -10515,7 +10515,7 @@ def topology(
             scope = f" in {catalog}" + (f".{schema}" if schema else "")
         click.echo(f"No apx-tagged agents found{scope}.")
         click.echo("Agents appear here after `apx-agent deploy` writes apx.agent.* UC tags.")
-        click.echo("Deploy one with:  apx-agent deploy")
+        click.echo("Deploy one with:  apx-agent agents deploy")
         return
 
     text = render_topology(topo, format=cast("Literal['mermaid', 'graphviz']", fmt))
