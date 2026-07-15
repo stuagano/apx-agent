@@ -187,3 +187,73 @@ class TestRunSql:
         rows = run_sql(ws, "SELECT id FROM small", warehouse_id="wh-1")
         assert rows == [{"id": "1"}]
         ws.statement_execution.get_statement_result_chunk_n.assert_not_called()
+
+    def test_polls_to_completion_when_still_running_after_wait_timeout(self):
+        """execute_statement's wait_timeout caps the synchronous wait at 30s -
+        a genuinely slow query (not a cold warehouse - _ensure_warehouse_running
+        already handles that) can come back RUNNING with no error. run_sql must
+        poll get_statement() to a real terminal state instead of treating
+        still-running as a failure."""
+        from databricks.sdk.service.sql import StatementState
+
+        pending = MagicMock()
+        pending.status.state = StatementState.RUNNING
+        pending.statement_id = "stmt-slow"
+        ws = self._make_ws(pending)
+
+        done = self._make_success_result(["id"], [["1"]])
+        done.statement_id = "stmt-slow"
+        ws.statement_execution.get_statement.return_value = done
+
+        rows = run_sql(
+            ws, "SELECT id FROM slow_join", warehouse_id="wh-1",
+            poll_interval_s=0.01, poll_timeout_s=1,
+        )
+        assert rows == [{"id": "1"}]
+        ws.statement_execution.get_statement.assert_called_with("stmt-slow")
+
+    def test_raises_clear_timeout_message_when_still_running_after_poll_budget(self):
+        """A query that's STILL running after the full poll budget must not
+        report the misleading 'unknown error' (status.error is None for a
+        running statement, not a failure) - the message must say it's still
+        running, not that it failed, so the LLM's retry logic doesn't loop on
+        a non-existent syntax error."""
+        from databricks.sdk.service.sql import StatementState
+
+        pending = MagicMock()
+        pending.status.state = StatementState.RUNNING
+        pending.status.error = None
+        pending.statement_id = "stmt-forever"
+        ws = self._make_ws(pending)
+        ws.statement_execution.get_statement.return_value = pending
+
+        with pytest.raises(RuntimeError) as exc:
+            run_sql(
+                ws, "SELECT * FROM huge_join", warehouse_id="wh-1",
+                poll_interval_s=0.01, poll_timeout_s=0.03,
+            )
+        msg = str(exc.value)
+        assert "still running" in msg.lower()
+        assert "unknown error" not in msg.lower()
+        assert "stmt-forever" in msg
+
+    def test_genuine_failure_after_polling_still_reports_real_error(self):
+        """A statement that transitions RUNNING -> FAILED during polling must
+        still surface the real error message, not the timeout message."""
+        from databricks.sdk.service.sql import StatementState
+
+        pending = MagicMock()
+        pending.status.state = StatementState.RUNNING
+        pending.statement_id = "stmt-2"
+        ws = self._make_ws(pending)
+
+        failed = MagicMock()
+        failed.status.state = StatementState.FAILED
+        failed.status.error = "table not found"
+        ws.statement_execution.get_statement.return_value = failed
+
+        with pytest.raises(RuntimeError, match="table not found"):
+            run_sql(
+                ws, "SELECT * FROM gone", warehouse_id="wh-1",
+                poll_interval_s=0.01, poll_timeout_s=1,
+            )

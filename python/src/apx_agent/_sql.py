@@ -173,12 +173,56 @@ def _ensure_warehouse_running(
         )
 
 
+# execute_statement's wait_timeout maxes out at 30s (the API's own cap) - a
+# genuinely slow query (a heavy join, not just a cold warehouse - that's
+# _ensure_warehouse_running's job) can easily exceed that and come back
+# PENDING/RUNNING with no error. These bound how long run_sql polls
+# get_statement() past that initial 30s before giving up.
+_STATEMENT_POLL_TIMEOUT_S = 120
+_STATEMENT_POLL_INTERVAL_S = 2
+
+
+def _await_statement_completion(
+    ws: WorkspaceClient,
+    result: StatementResponse,
+    *,
+    timeout_s: float = _STATEMENT_POLL_TIMEOUT_S,
+    poll_interval_s: float = _STATEMENT_POLL_INTERVAL_S,
+) -> StatementResponse:
+    """Poll a still-PENDING/RUNNING statement to a terminal state.
+
+    A no-op if ``result`` is already terminal (SUCCEEDED/FAILED/CANCELED/
+    CLOSED) or has no ``statement_id`` to poll. Returns the last-seen
+    ``StatementResponse`` regardless of whether it reached a terminal state
+    within ``timeout_s`` — the caller decides what a still-PENDING/RUNNING
+    result after the budget means.
+    """
+    from databricks.sdk.service.sql import StatementState
+
+    in_progress = (StatementState.PENDING, StatementState.RUNNING)
+    status = result.status
+    if status is None or status.state not in in_progress or not result.statement_id:
+        return result
+
+    statement_id = result.statement_id
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval_s)
+        result = ws.statement_execution.get_statement(statement_id)
+        status = result.status
+        if status is None or status.state not in in_progress:
+            return result
+    return result
+
+
 def run_sql(
     ws: WorkspaceClient,
     sql: str,
     *,
     warehouse_id: str | None = None,
     parameters: list[dict[str, str]] | None = None,
+    poll_timeout_s: float = _STATEMENT_POLL_TIMEOUT_S,
+    poll_interval_s: float = _STATEMENT_POLL_INTERVAL_S,
 ) -> list[dict[str, Any]]:
     """Execute a SQL statement and return rows as list of dicts.
 
@@ -195,8 +239,18 @@ def run_sql(
     Large INLINE result sets span multiple chunks; this follows
     ``next_chunk_index`` to return every row, not just the first chunk.
 
+    A query that doesn't finish within ``execute_statement``'s 30s
+    synchronous wait is polled via ``get_statement()`` for up to
+    ``poll_timeout_s`` more seconds (default 120s) before being treated as
+    unresolved — a slow-but-successful query returns its rows instead of a
+    misleading "unknown error" (the statement's own ``status.error`` is
+    ``None`` while it's merely still running, not failed).
+
     Returns an empty list for statements with no result set (DDL, etc.).
-    Raises ``RuntimeError`` on query failure.
+    Raises ``RuntimeError`` on query failure, or if the query is still
+    PENDING/RUNNING after the full poll budget (a distinct message from an
+    actual failure, since nothing failed - the query may still complete in
+    the background).
     """
     from databricks.sdk.service.sql import StatementState, StatementParameterListItem
 
@@ -214,8 +268,19 @@ def run_sql(
         parameters=params,
         wait_timeout="30s",
     )
+    result = _await_statement_completion(
+        ws, result, timeout_s=poll_timeout_s, poll_interval_s=poll_interval_s,
+    )
     status = result.status
-    if status is None or status.state != StatementState.SUCCEEDED:
-        error_msg = getattr(status, "error", None) if status else None
-        raise RuntimeError(f"Query failed: {error_msg or 'unknown error'}")
-    return decode_statement(result, ws=ws)
+    if status is not None and status.state == StatementState.SUCCEEDED:
+        return decode_statement(result, ws=ws)
+    if status is not None and status.state in (StatementState.PENDING, StatementState.RUNNING):
+        raise RuntimeError(
+            f"Query still running after the {poll_timeout_s}s poll budget "
+            f"(statement_id={result.statement_id}) - it has not failed, it "
+            f"may complete in the background. Check Query History in the "
+            f"workspace, or simplify the query (fewer joins, add filters) "
+            f"and retry."
+        )
+    error_msg = getattr(status, "error", None) if status else None
+    raise RuntimeError(f"Query failed: {error_msg or 'unknown error'}")
