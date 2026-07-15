@@ -7225,6 +7225,18 @@ def _deploy_apps_impl(
     else:
         log("# --no-register-uc: skipping the UC version-manifest registration")
 
+    # 6e. Record local deploy history (redeploy convenience) — best-effort,
+    # like every other provenance step above. Recorded whenever a UC identity
+    # resolves, independent of --no-register-uc: "where does this source
+    # live" is meaningful even when the UC write itself was skipped.
+    _resolved_history_uc_name = _resolve_apps_uc_name(
+        _read_apx_agent_config(), app_name, override=uc_name,
+    )
+    if _resolved_history_uc_name is not None:
+        _record_deploy_history(
+            cwd, _resolved_history_uc_name, "apps", extra_version_tags or {},
+        )
+
     # 7. Final report
     if json_output:
         # Enriched summary (issue #417): a CI job records what it shipped —

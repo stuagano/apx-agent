@@ -824,6 +824,71 @@ def test_register_uc_runs_once_when_configured(
     assert not any(c[:2] == ["serving-endpoints", "create"] for c in calls_log)
 
 
+def test_successful_apps_deploy_records_local_history(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful --target apps deploy records a deploy-history entry
+    keyed by the resolved UC name, pointing at the local scaffold dir."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+
+    from apx_agent._apps_registry import AppsManifestResult
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.register_apps_manifest",
+        lambda agent, *, uc_name, model, app_name, bundle_target,
+               agent_name=None, extra_version_tags=None:
+            AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name),
+    )
+
+    history_path = scaffold / "deploy-history.json"
+    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
+
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--uc-name", "main.agents.my_app",
+    ])
+    assert result.exit_code == 0, result.output
+
+    entry = json.loads(history_path.read_text())["main.agents.my_app"]
+    assert entry["path"] == str(scaffold)
+    assert entry["target"] == "apps"
+
+
+def test_apps_deploy_with_no_resolvable_uc_name_records_no_history(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No catalog/schema, no pyproject model, no --uc-name → nothing to key
+    a history entry by, so none is written (and nothing raises)."""
+    history_path = scaffold / "deploy-history.json"
+    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
+
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+    assert result.exit_code == 0, result.output
+    assert not history_path.exists()
+
+
+def test_apps_deploy_with_no_register_uc_still_records_history(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--no-register-uc skips the UC version-manifest WRITE, but an explicit
+    --uc-name still resolves an identity — history is about "where does
+    this source live", independent of whether the UC write itself ran."""
+    history_path = scaffold / "deploy-history.json"
+    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
+
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--uc-name", "main.agents.my_app", "--no-register-uc",
+    ])
+    assert result.exit_code == 0, result.output
+
+    entry = json.loads(history_path.read_text())["main.agents.my_app"]
+    assert entry["path"] == str(scaffold)
+
+
 def test_register_uc_failure_is_non_fatal(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
