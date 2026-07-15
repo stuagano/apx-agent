@@ -2262,3 +2262,98 @@ def test_readyz_retries_warns_under_model_serving(
     # The warning fires before the --model requirement aborts the command.
     assert "ignored with --target model-serving" in result.output
     assert "--readyz-retries" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent agents redeploy`
+# ---------------------------------------------------------------------------
+
+
+class TestAgentsRedeploy:
+    def test_unknown_name_errors_with_manual_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "apx_agent.cli._deploy_history_path", lambda: tmp_path / "deploy-history.json",
+        )
+        result = CliRunner().invoke(main, ["agents", "redeploy", "main.apx.unknown"])
+        assert result.exit_code != 0
+        assert "No local deploy history" in result.output
+        assert "apx-agent agents deploy" in result.output
+
+    def test_stale_path_errors_without_guessing(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        history_path = tmp_path / "deploy-history.json"
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: history_path)
+        cli._record_deploy_history(
+            tmp_path / "moved-away", "main.apx.my_agent", "apps", {},
+        )
+
+        result = CliRunner().invoke(main, ["agents", "redeploy", "main.apx.my_agent"])
+        assert result.exit_code != 0
+        assert "no longer exists" in result.output.lower()
+
+    def test_valid_entry_shells_out_to_deploy_with_correct_cwd(
+        self, scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from apx_agent import cli
+
+        history_path = scaffold / "deploy-history.json"
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: history_path)
+        cli._record_deploy_history(scaffold, "main.apx.my_agent", "apps", {})
+
+        captured: dict[str, Any] = {}
+
+        def fake_run(args, cwd=None, **kwargs):
+            captured["args"] = args
+            captured["cwd"] = cwd
+            return subprocess.CompletedProcess(args, 0, stdout="")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        result = CliRunner().invoke(main, ["agents", "redeploy", "main.apx.my_agent"])
+        assert result.exit_code == 0, result.output
+        assert captured["args"] == ["apx-agent", "agents", "deploy"]
+        assert captured["cwd"] == str(scaffold)
+
+    def test_extra_args_forwarded_to_inner_deploy(
+        self, scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from apx_agent import cli
+
+        history_path = scaffold / "deploy-history.json"
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: history_path)
+        cli._record_deploy_history(scaffold, "main.apx.my_agent", "apps", {})
+
+        captured: dict[str, Any] = {}
+
+        def fake_run(args, cwd=None, **kwargs):
+            captured["args"] = args
+            return subprocess.CompletedProcess(args, 0, stdout="")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        result = CliRunner().invoke(main, [
+            "agents", "redeploy", "main.apx.my_agent",
+            "--env", "FOO=bar",
+        ])
+        assert result.exit_code == 0, result.output
+        assert captured["args"] == [
+            "apx-agent", "agents", "deploy", "--env", "FOO=bar",
+        ]
+
+    def test_inner_deploy_failure_exit_code_propagates(
+        self, scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from apx_agent import cli
+
+        history_path = scaffold / "deploy-history.json"
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: history_path)
+        cli._record_deploy_history(scaffold, "main.apx.my_agent", "apps", {})
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda args, cwd=None, **kwargs: subprocess.CompletedProcess(args, 1),
+        )
+
+        result = CliRunner().invoke(main, ["agents", "redeploy", "main.apx.my_agent"])
+        assert result.exit_code == 1

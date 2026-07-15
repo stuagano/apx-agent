@@ -8867,6 +8867,60 @@ def _hot_swap_apps_cli(
     )
 
 
+@agents.command(
+    "redeploy",
+    context_settings={"ignore_unknown_options": True},
+)
+@click.argument("uc_name", metavar="NAME")
+@click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
+def redeploy_cmd(uc_name: str, extra_args: tuple[str, ...]) -> None:
+    """Redeploy an already-deployed agent from its remembered local checkout.
+
+    NAME is the same three-part UC name ``apx-agent agents status`` takes.
+    Looks up the local project directory this agent was last deployed from —
+    recorded automatically by a successful ``apx-agent agents deploy`` — then
+    reruns ``apx-agent agents deploy`` from there, relying on whatever's
+    already persisted in that project's own ``pyproject.toml``/
+    ``databricks.yml`` rather than replaying historical flags. Anything
+    passed after NAME is forwarded to that inner deploy call unchanged, e.g.
+    ``apx-agent agents redeploy main.apx.my-agent --env FOO=bar``.
+
+    Only works for agents deployed from THIS machine — there is no
+    cross-machine lookup. If nothing is recorded, cd into the agent's project
+    directory and run ``apx-agent agents deploy`` directly.
+    """
+    import subprocess
+
+    entry = _load_deploy_history_entry(uc_name)
+    if entry is None:
+        raise click.ClickException(
+            f"No local deploy history for {uc_name}. Redeploy manually: cd "
+            "into its project directory and run `apx-agent agents deploy`."
+        )
+    path = Path(entry["path"])
+    if not path.is_dir():
+        raise click.ClickException(
+            f"{uc_name} was last deployed from {path}, which no longer "
+            "exists locally. cd into its current project directory and run "
+            "`apx-agent agents deploy` directly."
+        )
+    local_sha = _git_head_sha(path)
+    stored_sha = entry.get("git_sha")
+    if local_sha and stored_sha and local_sha != stored_sha:
+        click.echo(
+            f"# local HEAD ({local_sha}) differs from the last deployed "
+            f"commit ({stored_sha}) at {path}",
+            err=True,
+        )
+    if _git_is_dirty(path):
+        click.echo(f"# working tree at {path} has uncommitted changes", err=True)
+    click.echo(f"# redeploying {uc_name} from {path}", err=True)
+    result = subprocess.run(
+        ["apx-agent", "agents", "deploy", *extra_args], cwd=str(path),
+    )
+    raise click.exceptions.Exit(result.returncode)
+
+
 # ---------------------------------------------------------------------------
 # eval test — local smoke test
 # ---------------------------------------------------------------------------
