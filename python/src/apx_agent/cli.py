@@ -5517,6 +5517,67 @@ def _provenance_version_tags(cwd: Path) -> dict[str, str]:
     return tags
 
 
+def _deploy_history_path() -> Path:
+    """Local index mapping a UC agent identity to where it was last deployed from.
+
+    Powers ``apx-agent agents redeploy`` — no existing ``~/.apx-agent/``
+    convention exists in this file today (only ``~/.databrickscfg`` is read
+    from the home directory); this establishes it.
+    """
+    return Path.home() / ".apx-agent" / "deploy-history.json"
+
+
+def _record_deploy_history(
+    cwd: Path, uc_name: str, target: str, provenance_tags: dict[str, str],
+) -> None:
+    """Best-effort: record/overwrite ``uc_name``'s local deploy-history entry.
+
+    Never raises — recording history must never fail a deploy, the same
+    contract every other provenance step in this file follows. Reuses
+    ``git_sha``/``git_dirty`` from ``provenance_tags`` already computed by the
+    caller (no duplicate git subprocess calls).
+    """
+    from datetime import datetime, timezone
+
+    from ._apps_registry import GIT_DIRTY_TAG, GIT_SHA_TAG
+
+    path = _deploy_history_path()
+    try:
+        existing: dict[str, Any] = (
+            json.loads(path.read_text()) if path.exists() else {}
+        )
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    dirty_tag = provenance_tags.get(GIT_DIRTY_TAG)
+    existing[uc_name] = {
+        "path": str(cwd),
+        "target": target,
+        "deployed_at": datetime.now(timezone.utc).isoformat(),
+        "git_sha": provenance_tags.get(GIT_SHA_TAG),
+        "git_dirty": None if dirty_tag is None else dirty_tag == "true",
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(existing, indent=2, sort_keys=True))
+    except OSError:
+        pass  # best-effort — recording history must never fail a deploy
+
+
+def _load_deploy_history_entry(uc_name: str) -> dict[str, Any] | None:
+    """Read ``uc_name``'s local deploy-history entry, or None if unavailable.
+
+    Never raises — a missing file, missing key, or corrupt JSON all degrade
+    to "no entry found," not a crash.
+    """
+    path = _deploy_history_path()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    entry = data.get(uc_name)
+    return entry if isinstance(entry, dict) else None
+
+
 def _read_databricks_yml(cwd: Path) -> dict[str, Any]:
     """Load ``databricks.yml`` from ``cwd`` and return the parsed dict.
 

@@ -6737,3 +6737,84 @@ def test_agents_status_json_sub_agents_shape() -> None:
          "error": "env ref resolved to empty — variable unset"},
     ]
     assert payload["healthy"] is True
+
+
+# ---------------------------------------------------------------------------
+# Local deploy-history index (`agents redeploy` support)
+# ---------------------------------------------------------------------------
+
+
+class TestDeployHistoryIndex:
+    def test_record_then_load_round_trips(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: tmp_path / "deploy-history.json")
+
+        cli._record_deploy_history(
+            Path("/some/project"), "main.apx.my_agent", "apps",
+            {"apx.apps.git_sha": "abc123", "apx.git_dirty": "false"},
+        )
+
+        entry = cli._load_deploy_history_entry("main.apx.my_agent")
+        assert entry is not None
+        assert entry["path"] == "/some/project"
+        assert entry["target"] == "apps"
+        assert entry["git_sha"] == "abc123"
+        assert entry["git_dirty"] is False
+        assert "deployed_at" in entry
+
+    def test_record_overwrites_prior_entry_for_same_name(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: tmp_path / "deploy-history.json")
+
+        cli._record_deploy_history(Path("/old/path"), "main.apx.my_agent", "apps", {})
+        cli._record_deploy_history(Path("/new/path"), "main.apx.my_agent", "apps", {})
+
+        entry = cli._load_deploy_history_entry("main.apx.my_agent")
+        assert entry["path"] == "/new/path"
+
+    def test_record_missing_provenance_tags_stores_none(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: tmp_path / "deploy-history.json")
+
+        cli._record_deploy_history(Path("/p"), "main.apx.my_agent", "model-serving", {})
+
+        entry = cli._load_deploy_history_entry("main.apx.my_agent")
+        assert entry["git_sha"] is None
+        assert entry["git_dirty"] is None
+
+    def test_record_never_raises_on_write_failure(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        # Point at a path whose parent can't be created (a file, not a dir).
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory")
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: blocker / "sub" / "deploy-history.json")
+
+        cli._record_deploy_history(Path("/p"), "main.apx.my_agent", "apps", {})  # must not raise
+
+    def test_load_returns_none_for_missing_file(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: tmp_path / "does-not-exist.json")
+
+        assert cli._load_deploy_history_entry("main.apx.my_agent") is None
+
+    def test_load_returns_none_for_missing_key(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: tmp_path / "deploy-history.json")
+        cli._record_deploy_history(Path("/p"), "main.apx.other_agent", "apps", {})
+
+        assert cli._load_deploy_history_entry("main.apx.my_agent") is None
+
+    def test_load_returns_none_for_corrupt_json(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        path = tmp_path / "deploy-history.json"
+        path.write_text("{not valid json")
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: path)
+
+        assert cli._load_deploy_history_entry("main.apx.my_agent") is None
