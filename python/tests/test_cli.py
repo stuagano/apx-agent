@@ -4312,33 +4312,6 @@ class TestScaffoldSchemaManifest:
         assert not (tmp_path / ".apx" / "schema.json").exists()
 
 
-class TestRefreshSchema:
-    def test_refresh_rewrites_manifest(self, tmp_path, monkeypatch):
-        import json
-        from click.testing import CliRunner
-        from apx_agent import cli
-        # existing manifest pins samples.tpch
-        d = tmp_path / ".apx"; d.mkdir()
-        (d / "schema.json").write_text(json.dumps(
-            {"catalog": "samples", "schema": "tpch", "tables": {"old": ["a(int)"]}}))
-        monkeypatch.setattr(
-            cli, "_schema_manifest_for_scaffold",
-            lambda c, s, profile=None: {"catalog": c, "schema": s, "tables": {"new": ["b(int)"]}},
-        )
-        monkeypatch.chdir(tmp_path)
-        res = CliRunner().invoke(cli.main, ["agents", "refresh-schema"])
-        assert res.exit_code == 0, res.output
-        assert json.loads((d / "schema.json").read_text())["tables"] == {"new": ["b(int)"]}
-
-    def test_refresh_errors_without_existing_manifest(self, tmp_path, monkeypatch):
-        from click.testing import CliRunner
-        from apx_agent import cli
-        monkeypatch.chdir(tmp_path)
-        res = CliRunner().invoke(cli.main, ["agents", "refresh-schema"])
-        assert res.exit_code != 0
-        assert "no .apx/schema.json" in res.output.lower()
-
-
 class TestScaffoldCoworker:
     def test_apps_coworker_agent_py(self, tmp_path, monkeypatch):
         from apx_agent import cli
@@ -4435,6 +4408,52 @@ class TestRefreshSchema:
         result = CliRunner().invoke(main, ["agents", "refresh-schema"])
         assert result.exit_code != 0
         assert "could not read tables" in result.output or "check your profile" in result.output
+
+    def test_default_yaml_scaffold_error_points_to_target_flag(self, tmp_path, monkeypatch):
+        # Issue #520: the default `agents scaffold NAME` (no --target) writes
+        # only a YAML spec, never .apx/schema.json. The error from
+        # refresh-schema after that default scaffold must point at the flag
+        # that actually produces a project scaffold (--target), not repeat
+        # the bare `apx-agent scaffold <name>` invocation that doesn't work.
+        runner = CliRunner()
+        scaffold_result = runner.invoke(main, [
+            "agents", "scaffold", "my-agent",
+            "--template", "base",
+            "--no-interactive",
+            "--dir", str(tmp_path),
+        ])
+        assert scaffold_result.exit_code == 0, scaffold_result.output
+        assert not (tmp_path / "my-agent" / ".apx" / "schema.json").exists()
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["agents", "refresh-schema"])
+        assert result.exit_code != 0
+        assert "--target" in result.output
+
+    def test_full_project_scaffold_then_refresh_schema_chain(self, tmp_path, monkeypatch):
+        # Issue #520: the real --target apps scaffold DOES chain into
+        # refresh-schema, unlike the default YAML scaffold above.
+        from apx_agent import cli
+
+        manifest = {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)"]}}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: manifest)
+        runner = CliRunner()
+        scaffold_result = runner.invoke(main, [
+            "agents", "scaffold", "proj",
+            "--target", "apps",
+            "--catalog", "c", "--schema", "s",
+            "--no-interactive",
+            "--dir", str(tmp_path),
+        ], catch_exceptions=False, env={"DATABRICKS_CONFIG_PROFILE": "__none__"})
+        assert scaffold_result.exit_code == 0, scaffold_result.output
+        target = tmp_path / "proj"
+        assert (target / ".apx" / "schema.json").is_file()
+
+        monkeypatch.chdir(target)
+        refreshed_manifest = {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)", "b(text)"]}}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: refreshed_manifest)
+        result = CliRunner().invoke(main, ["agents", "refresh-schema"])
+        assert result.exit_code == 0, result.output
 
 
 # ---------------------------------------------------------------------------
