@@ -5080,6 +5080,15 @@ def deploy(
                 "# --no-readyz-gate: skipping endpoint readiness poll + "
                 "smoke invocation"
             )
+
+        # 3c. Record local deploy history (redeploy convenience) —
+        # best-effort, like every other provenance step in this function.
+        # Only reached when an actual deploy happened (inside
+        # `if not no_deploy:`), never on a --no-deploy run.
+        _record_deploy_history(
+            Path.cwd(), registered_model_name, "model-serving",
+            _provenance_version_tags(Path.cwd()),
+        )
     else:
         _say("Skipping deploy (--no-deploy).")
 
@@ -5515,6 +5524,67 @@ def _provenance_version_tags(cwd: Path) -> dict[str, str]:
     if lock_bytes is not None:
         tags[LOCK_SHA256_TAG] = hashlib.sha256(lock_bytes).hexdigest()
     return tags
+
+
+def _deploy_history_path() -> Path:
+    """Local index mapping a UC agent identity to where it was last deployed from.
+
+    Powers ``apx-agent agents redeploy`` — no existing ``~/.apx-agent/``
+    convention exists in this file today (only ``~/.databrickscfg`` is read
+    from the home directory); this establishes it.
+    """
+    return Path.home() / ".apx-agent" / "deploy-history.json"
+
+
+def _record_deploy_history(
+    cwd: Path, uc_name: str, target: str, provenance_tags: dict[str, str],
+) -> None:
+    """Best-effort: record/overwrite ``uc_name``'s local deploy-history entry.
+
+    Never raises — recording history must never fail a deploy, the same
+    contract every other provenance step in this file follows. Reuses
+    ``git_sha``/``git_dirty`` from ``provenance_tags`` already computed by the
+    caller (no duplicate git subprocess calls).
+    """
+    from datetime import datetime, timezone
+
+    from ._apps_registry import GIT_DIRTY_TAG, GIT_SHA_TAG
+
+    path = _deploy_history_path()
+    try:
+        existing: dict[str, Any] = (
+            json.loads(path.read_text()) if path.exists() else {}
+        )
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    dirty_tag = provenance_tags.get(GIT_DIRTY_TAG)
+    existing[uc_name] = {
+        "path": str(cwd),
+        "target": target,
+        "deployed_at": datetime.now(timezone.utc).isoformat(),
+        "git_sha": provenance_tags.get(GIT_SHA_TAG),
+        "git_dirty": None if dirty_tag is None else dirty_tag == "true",
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(existing, indent=2, sort_keys=True))
+    except OSError:
+        pass  # best-effort — recording history must never fail a deploy
+
+
+def _load_deploy_history_entry(uc_name: str) -> dict[str, Any] | None:
+    """Read ``uc_name``'s local deploy-history entry, or None if unavailable.
+
+    Never raises — a missing file, missing key, or corrupt JSON all degrade
+    to "no entry found," not a crash.
+    """
+    path = _deploy_history_path()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    entry = data.get(uc_name)
+    return entry if isinstance(entry, dict) else None
 
 
 def _read_databricks_yml(cwd: Path) -> dict[str, Any]:
@@ -7212,6 +7282,18 @@ def _deploy_apps_impl(
     else:
         log("# --no-register-uc: skipping the UC version-manifest registration")
 
+    # 6e. Record local deploy history (redeploy convenience) — best-effort,
+    # like every other provenance step above. Recorded whenever a UC identity
+    # resolves, independent of --no-register-uc: "where does this source
+    # live" is meaningful even when the UC write itself was skipped.
+    _resolved_history_uc_name = _resolve_apps_uc_name(
+        _read_apx_agent_config(), app_name, override=uc_name,
+    )
+    if _resolved_history_uc_name is not None:
+        _record_deploy_history(
+            cwd, _resolved_history_uc_name, "apps", extra_version_tags or {},
+        )
+
     # 7. Final report
     if json_output:
         # Enriched summary (issue #417): a CI job records what it shipped —
@@ -8831,6 +8913,60 @@ def _hot_swap_apps_cli(
     click.echo(
         "  (the App is restarting; check `databricks apps get` to confirm RUNNING)"
     )
+
+
+@agents.command(
+    "redeploy",
+    context_settings={"ignore_unknown_options": True},
+)
+@click.argument("uc_name", metavar="NAME")
+@click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
+def redeploy_cmd(uc_name: str, extra_args: tuple[str, ...]) -> None:
+    """Redeploy an already-deployed agent from its remembered local checkout.
+
+    NAME is the same three-part UC name ``apx-agent agents status`` takes.
+    Looks up the local project directory this agent was last deployed from —
+    recorded automatically by a successful ``apx-agent agents deploy`` — then
+    reruns ``apx-agent agents deploy`` from there, relying on whatever's
+    already persisted in that project's own ``pyproject.toml``/
+    ``databricks.yml`` rather than replaying historical flags. Anything
+    passed after NAME is forwarded to that inner deploy call unchanged, e.g.
+    ``apx-agent agents redeploy main.apx.my-agent --env FOO=bar``.
+
+    Only works for agents deployed from THIS machine — there is no
+    cross-machine lookup. If nothing is recorded, cd into the agent's project
+    directory and run ``apx-agent agents deploy`` directly.
+    """
+    import subprocess
+
+    entry = _load_deploy_history_entry(uc_name)
+    if entry is None:
+        raise click.ClickException(
+            f"No local deploy history for {uc_name}. Redeploy manually: cd "
+            "into its project directory and run `apx-agent agents deploy`."
+        )
+    path = Path(entry["path"])
+    if not path.is_dir():
+        raise click.ClickException(
+            f"{uc_name} was last deployed from {path}, which no longer "
+            "exists locally. cd into its current project directory and run "
+            "`apx-agent agents deploy` directly."
+        )
+    local_sha = _git_head_sha(path)
+    stored_sha = entry.get("git_sha")
+    if local_sha and stored_sha and local_sha != stored_sha:
+        click.echo(
+            f"# local HEAD ({local_sha}) differs from the last deployed "
+            f"commit ({stored_sha}) at {path}",
+            err=True,
+        )
+    if _git_is_dirty(path):
+        click.echo(f"# working tree at {path} has uncommitted changes", err=True)
+    click.echo(f"# redeploying {uc_name} from {path}", err=True)
+    result = subprocess.run(
+        ["apx-agent", "agents", "deploy", *extra_args], cwd=str(path),
+    )
+    raise click.exceptions.Exit(result.returncode)
 
 
 # ---------------------------------------------------------------------------
