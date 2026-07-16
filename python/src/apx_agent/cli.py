@@ -3133,6 +3133,19 @@ def scaffold(
     # an invalid PEP 508 ``[project].name`` that breaks ``uv sync``.
     project_name = Path(name).name
 
+    # Build the scaffold-time WorkspaceClient at most once and reuse it across
+    # the list-picker, explicit-sanity-check, and wizard branches (#522). Some
+    # flag combinations (e.g. --template + --catalog + --interactive) reach two
+    # of these branches in one invocation; without caching each constructed its
+    # own client and re-ran the workspace handshake. None is a valid cached
+    # value (offline / unreachable) — cache it too so we don't retry per branch.
+    _ws_cache: "list[Any]" = []
+
+    def _scaffold_ws() -> "Any":
+        if not _ws_cache:
+            _ws_cache.append(_make_ws_for_scaffold(profile))
+        return _ws_cache[0]
+
     # Resolve shorthand template flags before any other logic.
     if coworker_spec is not None:
         scaffold_template = "coworker"
@@ -3180,7 +3193,7 @@ def scaffold(
             gallery_yaml_path = found
 
     if scaffold_template == "list" or catalog == "list" or schema == "list":
-        ws = _make_ws_for_scaffold(profile)
+        ws = _scaffold_ws()
         if scaffold_template == "list":
             scaffold_template = _pick_template()
         if catalog == "list":
@@ -3193,7 +3206,7 @@ def scaffold(
         _scaffold_sanity_check(ws, scaffold_template or "coworker", catalog, schema)
     elif scaffold_template and (catalog or schema):
         # Even without "list", run the sanity check when template+catalog are explicit.
-        _scaffold_sanity_check(_make_ws_for_scaffold(profile), scaffold_template, catalog, schema)
+        _scaffold_sanity_check(_scaffold_ws(), scaffold_template, catalog, schema)
 
     # -----------------------------------------------------------------------
     # Step 1: run the setup wizard or apply CLI defaults.
@@ -3206,7 +3219,7 @@ def scaffold(
 
     join_key: str | None = None
     if interactive_mode:
-        _ws = _make_ws_for_scaffold(profile)
+        _ws = _scaffold_ws()
         scaffold_target, scaffold_template, catalog, schema, persona, objective, join_key = _scaffold_wizard(
             ws=_ws,
             target=scaffold_target,
