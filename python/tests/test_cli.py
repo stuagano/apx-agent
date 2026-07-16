@@ -3583,6 +3583,43 @@ def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
     assert 'DataAgent("main", "sales"' not in agent_py
 
 
+def test_scaffold_builds_workspace_client_once_across_branches(tmp_path, monkeypatch) -> None:
+    """#522: a flag combo that reaches both the explicit-sanity-check branch
+    and the interactive-wizard branch must construct the scaffold-time
+    WorkspaceClient once, not once per branch."""
+    from apx_agent import cli
+
+    calls = {"n": 0}
+
+    def _counting_ws(profile):
+        calls["n"] += 1
+        return object()
+
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", _counting_ws)
+    # Keep the branches cheap and offline: the sanity check and wizard both
+    # receive the cached client; stub their side effects out.
+    monkeypatch.setattr(cli, "_scaffold_sanity_check", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli, "_scaffold_wizard",
+        lambda ws, target, template, catalog, schema: (
+            "apps", "data", catalog, schema, None, None, None,
+        ),
+    )
+    monkeypatch.setattr(cli, "_probe_first_table", lambda *a, **k: None)
+    # Stop at the project writer — the manifest step is a separate helper with
+    # its own client (out of #522's branch-dedup scope); isolate the branches.
+    monkeypatch.setattr(cli, "_scaffold_apps", lambda *a, **k: None)
+
+    result = CliRunner().invoke(main, [
+        "agents", "scaffold", "ag",
+        "--template", "data", "--catalog", "main", "--schema", "sales",
+        "--interactive", "--dir", str(tmp_path), "--no-yaml",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert calls["n"] == 1, f"expected one WorkspaceClient build, got {calls['n']}"
+
+
 def test_splice_tool_wires_into_dataagent_extra_tools() -> None:
     """A generated tool attaches to a DataAgent via extra_tools= (no tools=
     list exists), and the result is valid Python. Regression for the orphaned
