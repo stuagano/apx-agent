@@ -55,6 +55,93 @@ one. Use the raw framework when you want maximum control over a custom `Response
 apx-agent when you want a governed, UC-grounded data agent without wiring the grounding,
 data-plane tools, identity passthrough, and memory yourself.
 
+## By hand vs. declared: a worked comparison
+
+Here is the same agent — a support analyst grounded in a Vector Search index with two tools
+(KB search + account lookup) — written two ways. The hand-written version is a typical
+raw-SDK notebook: ~220 lines across config, tool functions, hand-authored tool schemas, an
+agentic loop, tracing wrappers, and a served model. The apx-agent version is a declaration.
+
+**By hand (abridged — the real notebook is ~220 lines):**
+
+```python
+# config: WorkspaceClient, token plumbing, OpenAI client, autolog ... (~15 lines)
+
+def search_knowledge_base(query, num_results=3):
+    res = w.vector_search_indexes.query_index(index_name=VS_INDEX,
+        columns=["doc_id", "category", "content"], query_text=query, num_results=num_results)
+    return "\n\n---\n\n".join(f"[{r[0]}]\n{r[2]}" for r in res.result.data_array)
+
+def lookup_account(identifier): ...  # spark.table(...).where(...) — runs as the notebook user
+
+TOOLS = [ {"type": "function", "function": {"name": "search_knowledge_base",
+    "parameters": {...hand-written JSON schema...}}}, {...second schema...} ]
+
+@mlflow.trace(name="support_agent")
+def run_agent(user_message, max_turns=6):
+    messages = [{"role": "system", ...}, {"role": "user", "content": user_message}]
+    for _ in range(max_turns):                 # hand-rolled tool-calling loop
+        rsp = client.chat.completions.create(model=LLM, messages=messages, tools=TOOLS)
+        msg = rsp.choices[0].message
+        messages.append(msg.model_dump(exclude_none=True))
+        if not msg.tool_calls: return msg.content
+        for tc in msg.tool_calls:              # tool_call_id bookkeeping
+            result = TOOL_FN_MAP[tc.function.name](**json.loads(tc.function.arguments))
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+# ...then ~90 more lines: both tools AND the loop re-implemented inside a PythonModel,
+#    written to a temp .py, infer_signature, log_model with pinned pip_requirements.
+```
+
+**Declared (apx-agent — the whole thing):**
+
+```python
+from apx_agent import LlmAgent, vector_search_tool, uc_function_tool
+
+agent = LlmAgent(
+    instructions="You are the Meridian Support Analyst...",
+    tools=[
+        vector_search_tool(
+            "catalog.schema.knowledge_corpus_index",
+            columns=["doc_id", "category", "content"], num_results=3,
+        ),
+        uc_function_tool("catalog.schema.lookup_account"),
+    ],
+    max_iterations=6,
+)
+```
+
+```bash
+apx-agent agents deploy meridian.yaml --target apps   # or --target model-serving
+```
+
+What each step costs, side by side:
+
+| Step | By hand (raw SDK notebook) | apx-agent |
+|---|---|---|
+| **Ground** | `query_index(...)` call + manual result-row unpacking | `vector_search_tool(index, columns=…, num_results=…)` |
+| **Tools** | Two functions **+ two hand-authored OpenAI JSON schemas** | `vector_search_tool(…)`, `uc_function_tool(…)` — schemas introspected from the tool |
+| **Loop** | Hand-rolled `run_agent`: `max_turns`, `tool_call_id` bookkeeping, `model_dump(exclude_none=True)` | runtime-owned; you set `max_iterations` |
+| **Trace** | `@mlflow.trace` + `with mlflow.start_run(...)` wrappers | automatic MLflow tracing on both targets |
+| **Evaluate** | `eval_data` golden set + an `agent_fn` adapter + `mlflow.evaluate(model_type="databricks-agent")` | golden set stays; the adapter and scaffold go — `apx-agent eval` |
+| **Ship** | **~90 lines**: tools + loop re-implemented inside a `PythonModel`, temp `.py`, `infer_signature`, pinned `pip_requirements` | `apx-agent agents deploy` |
+| **Govern** | `lookup_account` runs as the **notebook user** via `spark.table` | tools run under the **calling user's** UC grants (OBO), audited |
+
+**Net: ~220 lines → ~15 lines + a TOML block, roughly 90% less code.** The parts that disappear
+are the drift-prone ones: the raw notebook maintains the loop and both tools *twice* — once to
+demo interactively, once re-implemented inside the logged `PythonModel` — which is the single
+biggest source of prototype-vs-production skew. apx-agent serves the same object you ran locally.
+
+Two honest caveats:
+
+1. **`lookup_account` isn't a free swap.** The notebook filters a table with
+   `spark.table(...).where(...)`; to use `uc_function_tool` you first register a UC function
+   (a few lines of SQL), or use [`sql_tool`](tools/overview.md) instead. Either way the lookup
+   becomes governed and runs as the asking user — which the notebook version does not.
+2. **Evaluation isn't eliminated, just relocated.** You still author the eval golden set — that
+   is real domain work, not boilerplate. apx-agent removes the `agent_fn` adapter and the
+   serving/logging scaffold around it, not the dataset.
+
 ## Deploy anywhere, light up the right Databricks tools
 
 The promise is **one agent definition, deployed to whichever Databricks target the
