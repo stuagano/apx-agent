@@ -5975,6 +5975,36 @@ class TestUcProfileFlagPosition:
         ])
         assert result.exit_code != 0
 
+    def test_topology_leaf_level_profile_is_forwarded(self):
+        # `topology` was one of the two subcommands (#529) that declared its
+        # own leaf-level --profile shadowing the removed group option. Pin
+        # that the leaf --profile actually reaches _connect_workspace.
+        fake_topo = SimpleNamespace(nodes=["a"], edges=[])
+        with patch("apx_agent.cli._connect_workspace",
+                   return_value=(MagicMock(), MagicMock())) as connect, \
+             patch("apx_agent.discover_topology", return_value=fake_topo), \
+             patch("apx_agent.render_topology", return_value="graph LR"):
+            result = CliRunner().invoke(main, [
+                "uc", "topology", "--profile", "my-profile",
+            ])
+
+        assert result.exit_code == 0, result.output
+        connect.assert_called_once_with("my-profile")
+
+    def test_publish_leaf_level_profile_is_forwarded(self):
+        # `publish` was the other #529 subcommand. It resolves the profile
+        # into DATABRICKS_CONFIG_PROFILE before doing any UC work; pin that
+        # the leaf --profile wins over the ambient environment.
+        with patch("apx_agent.cli._read_apx_agent_config", return_value={}), \
+             patch("apx_agent.cli._load_finalized_agent", return_value=MagicMock()), \
+             patch("apx_agent.publish_tools_to_uc", return_value=[]), \
+             patch.dict(os.environ, {"DATABRICKS_CONFIG_PROFILE": "ambient"}, clear=False):
+            result = CliRunner().invoke(main, [
+                "uc", "publish", "--profile", "my-profile",
+            ])
+            assert result.exit_code == 0, result.output
+            assert os.environ["DATABRICKS_CONFIG_PROFILE"] == "my-profile"
+
 
 class TestUcValidate:
     def test_happy_path_all_checks_pass(self):
