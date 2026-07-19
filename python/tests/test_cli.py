@@ -3666,11 +3666,13 @@ def test_scaffold_builds_workspace_client_once_across_branches(tmp_path, monkeyp
     # its own client (out of #522's branch-dedup scope); isolate the branches.
     monkeypatch.setattr(cli, "_scaffold_apps", lambda *a, **k: None)
 
+    # --interactive also reaches _prompt_for_instructions(); feed a blank line
+    # so it takes the "fill in later" path rather than aborting on empty stdin.
     result = CliRunner().invoke(main, [
         "agents", "scaffold", "ag",
         "--template", "data", "--catalog", "main", "--schema", "sales",
         "--interactive", "--dir", str(tmp_path),
-    ])
+    ], input="\n")
 
     assert result.exit_code == 0, result.output
     assert calls["n"] == 1, f"expected one WorkspaceClient build, got {calls['n']}"
