@@ -7440,6 +7440,37 @@ def test_materialize_agent_refuses_overwrite_without_force(tmp_path: Path) -> No
         _materialize_agent(config, target, force=False)
 
 
+def test_materialize_agent_bakes_schema_for_data_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # generate/gallery materialization must ground the project the same way
+    # scaffold/run/deploy do: a data/coworker config with a resolved
+    # catalog/schema gets .apx/schema.json baked in (no runtime DESCRIBE).
+    import json
+
+    import apx_agent.cli as cli
+    from apx_agent._models import AgentConfig
+    from apx_agent.cli import _materialize_agent
+
+    manifest = {"catalog": "main", "schema": "sales", "tables": {"t": ["a(int)"]}}
+    monkeypatch.setattr(
+        cli, "_schema_manifest_for_scaffold", lambda c, s, profile=None: manifest
+    )
+
+    config = AgentConfig(
+        name="grounded-agent",
+        model="databricks-claude-sonnet-4-6",
+        instructions="Answer sales questions.",
+        template={"name": "data", "catalog": "main", "schema": "sales"},
+    )
+    target = tmp_path / "grounded-agent"
+    _materialize_agent(config, target, force=False)
+
+    schema_json = target / ".apx" / "schema.json"
+    assert schema_json.is_file(), "expected .apx/schema.json to be baked in"
+    assert json.loads(schema_json.read_text()) == manifest
+
+
 # ---------------------------------------------------------------------------
 # `_resolve_generate_data_source`
 # ---------------------------------------------------------------------------

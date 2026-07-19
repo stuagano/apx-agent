@@ -2735,7 +2735,7 @@ def generate(
     # config.name comes from the LLM-authored YAML — sanitize before using it
     # as a filesystem path component, matching scaffold's existing guard.
     target = Path(directory) / Path(config.name).name
-    _materialize_agent(config, target, force=force)
+    _materialize_agent(config, target, force=force, profile=profile)
 
 
 def _pick_template() -> str:
@@ -3184,7 +3184,7 @@ def _scaffold_apps(
 
 def _materialize_agent(
     config: "AgentConfig", target: Path, *, force: bool,
-    source_dir: Path | None = None,
+    source_dir: Path | None = None, profile: str | None = None,
 ) -> None:
     """Compile *config* into a durable, hand-editable project at *target*.
 
@@ -3218,6 +3218,15 @@ def _materialize_agent(
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists() or force:
             path.write_text(content)
+
+    # Ground the materialized agent the same way scaffold/run/deploy do: bake
+    # .apx/schema.json so the DataAgent declares its UC tables (no runtime
+    # DESCRIBE; the dev-UI DATA panel shows them). generate_project() writes no
+    # .apx/, so without this a gallery-picked or generated data/coworker project
+    # runs ungrounded. Best-effort — falls back to live introspection when the
+    # template has no resolved catalog/schema or the schema can't be read.
+    if _bake_schema_into_project(target, config, profile):
+        click.echo("  baked .apx/schema.json from the UC schema", err=True)
 
     click.echo()
     click.echo(f"Scaffolded {config.name} at {target} (target=apps).")
@@ -3516,7 +3525,7 @@ def scaffold(
                 )
             gallery_yaml_path = found
         config = _scaffold_from_gallery(gallery_yaml_path, project_name, catalog, schema)
-        _materialize_agent(config, target, force=force)
+        _materialize_agent(config, target, force=force, profile=profile)
         return
 
     if scaffold_target == "apps":
