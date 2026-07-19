@@ -112,17 +112,24 @@ whatever it couldn't confidently fill in.
 ### What scaffold gave you
 
 ```python
+import os
+
 from apx_agent import DataAgent
 
+_CATALOG = "samples"
+_SCHEMA = "nyctaxi"
+
 agent = DataAgent(
-    os.environ.get("APX_CATALOG", "main"),
-    os.environ.get("APX_SCHEMA", "sales"),
+    os.environ.get("APX_CATALOG", _CATALOG),
+    os.environ.get("APX_SCHEMA", _SCHEMA),
     name="my-agent",
 )
 ```
 
 That's `my-agent/agent.py` — a real, editable Python file, not a spec you have
-to fill in later.
+to fill in later. When the workspace can't be reached (or you don't pass
+`--catalog`/`--schema`), scaffold grounds the agent against `samples.nyctaxi`
+so a fresh `apx-agent agents run` can answer a real question immediately.
 
 ### Step 6 — Deploy to Databricks Apps
 

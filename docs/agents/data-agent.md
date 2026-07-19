@@ -55,9 +55,11 @@ order (first match wins):
 4. **Ungrounded fallback** — generic data-assistant instructions; still
    functional, just not schema-aware
 
-For most production deployments (Databricks Apps), use the YAML-first path:
-`apx-agent agents scaffold` writes `<name>.yaml`, `apx-agent agents deploy <name>.yaml`
-generates the project and baked manifest, and the framework loads it at startup with no `ws` needed at construction.
+For most production deployments (Databricks Apps): `apx-agent agents scaffold`
+generates a full project directory (`agent.py` + `pyproject.toml` +
+`databricks.yml` + the baked `.apx/schema.json`), and `apx-agent agents deploy`
+consumes that generated project directory. The framework loads the baked
+manifest at startup, so no `ws` is needed at construction.
 
 ### Identity passthrough
 

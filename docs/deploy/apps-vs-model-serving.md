@@ -187,7 +187,7 @@ apx-agent agents deploy --module my_agent.app:agent \
 apx-agent agents scaffold my_agent_apps --target apps
 # Copy your existing agent.py contents into agent_server/agent.py
 # (the Agent definition is byte-identical; only request entry points change).
-apx-agent agents deploy --target apps
+cd my_agent_apps && apx-agent agents deploy --target apps
 ```
 
 The `apx-agent agents scaffold --target apps` command lays down the file tree shown in
