@@ -2,13 +2,13 @@
 
 Subcommands:
 
-  apx-agent scaffold <name>           Generate a new agent project
-  apx-agent run                       Run the agent locally (uvicorn against create_app)
-  apx-agent eval <evalset>            Run Mosaic AI Agent Evaluation
-  apx-agent deploy                    Log to MLflow + deploy via databricks.agents.deploy
-  apx-agent publish-tools             Publish @tool(uc=...) decorated tools to UC
-  apx-agent publish                   Register the deployed endpoint as a Supervisor sub-agent
-  apx-agent mcp-config                Emit the Managed MCP client config snippet
+  apx-agent agents scaffold <name>    Generate a new agent project
+  apx-agent agents run                Run the agent locally (uvicorn against create_app)
+  apx-agent eval run <evalset>        Run Mosaic AI Agent Evaluation
+  apx-agent agents deploy             Log to MLflow + deploy via databricks.agents.deploy
+  apx-agent uc publish                Publish @tool(uc=...) decorated tools to UC
+  apx-agent agents publish            Register the deployed endpoint as a Supervisor sub-agent
+  apx-agent uc mcp-config             Emit the Managed MCP client config snippet
   apx-agent memory <cmd>              recall / remember / forget / list — MemoryStore CRUD
   apx-agent examples <cmd>            find / save / remove / list — ExampleStore CRUD
   apx-agent version                   Print the package version
@@ -254,8 +254,8 @@ def _load_finalized_agent(module_spec: str) -> Any:
     """Resolve + finalize an agent for CLI commands.
 
     Loads [tool.apx.agent] config first, then resolve_agent so template-only
-    projects (no agent.py) work via apx-agent info / lint / eval / run. Falls back
-    to module-import for code-defined agents.
+    projects (no agent.py) work via apx-agent agents describe / eval lint /
+    eval run / agents run. Falls back to module-import for code-defined agents.
     """
     from ._wiring import finalize_agent, resolve_agent, _ws_for_template, TemplateConfigError
     from ._inspection import _load_agent_config
@@ -278,7 +278,7 @@ def _load_finalized_agent(module_spec: str) -> Any:
     return agent
 
 
-# ASGI app module spec served by `apx-agent run`, per scaffold layout.
+# ASGI app module spec served by `apx-agent agents run`, per scaffold layout.
 _RUN_MODULE_BY_TARGET = {
     "model-serving": "app:app",
     "apps": "agent_server.start_server:app",
@@ -480,7 +480,7 @@ def _interactive_pick_profile() -> str | None:
 
 
 def _preflight_databricks_auth() -> None:
-    """Fail `apx-agent run`/`deploy` with dev-time guidance when auth is unresolved.
+    """Fail `apx-agent agents run`/`deploy` with dev-time guidance when auth is unresolved.
 
     Reads ``profile`` from ``[tool.apx.agent]`` in the local pyproject.toml
     and applies it before the auth check so saved preferences are honoured
@@ -809,15 +809,8 @@ def eval_group() -> None:
 
 
 @main.group(cls=_ApxGroup)
-@click.option(
-    "--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
-    help="Databricks config profile (~/.databrickscfg).",
-)
-@click.pass_context
-def uc(ctx: click.Context, profile: str | None) -> None:
+def uc() -> None:
     """Browse and publish Unity Catalog resources."""
-    ctx.ensure_object(dict)
-    ctx.obj["profile"] = profile
 
 
 # ---------------------------------------------------------------------------
@@ -1106,7 +1099,7 @@ dependencies = ["apx-agent"]
 
 [tool.uv.sources]
 # Editable local install — keeps `uv sync` working from this directory.
-# At deploy time apx-agent deploy builds a wheel and rewrites pyproject.toml to
+# At deploy time apx-agent agents deploy builds a wheel and rewrites pyproject.toml to
 # reference it (since the App container can't resolve ".."). Drop this block
 # and change dependencies to `"apx-agent==<version>"` once published to PyPI.
 apx-agent = {{ path = "..", editable = true }}
@@ -1136,13 +1129,13 @@ from apx_agent import DataAgent
 {example_tool}
 # A governed data agent over ``{catalog}.{schema}`` (schema baked at scaffold
 # time — no runtime discovery needed). To switch catalogs or refresh the
-# baked schema: ``apx-agent scaffold <name> --catalog <cat> --schema <sch>``.
+# baked schema: ``apx-agent agents scaffold <name> --catalog <cat> --schema <sch>``.
 agent = DataAgent("{catalog}", "{schema}"{extra_tools})
 '''
 
 
 _SCAFFOLD_APP = '''\
-"""FastAPI app entry point — for `apx-agent run` / Databricks Apps hosting."""
+"""FastAPI app entry point — for `apx-agent agents run` / Databricks Apps hosting."""
 
 from apx_agent import create_app
 
@@ -1173,15 +1166,15 @@ An apx-agent.
 
 ```bash
 uv sync
-apx-agent run             # uvicorn against app.py:app
+apx-agent agents run             # uvicorn against app.py:app
 ```
 
 ## Deploy to Model Serving
 
 ```bash
-apx-agent publish-tools                                          # any @tool(uc=...) tools
-apx-agent deploy --name main.agents.{name}                       # logs + deploys
-apx-agent publish --endpoint {name} --supervisor SUPERVISOR_ID   # optional
+apx-agent uc publish                                                    # any @tool(uc=...) tools
+apx-agent agents deploy --name main.agents.{name}                       # logs + deploys
+apx-agent agents publish --endpoint {name} --supervisor SUPERVISOR_ID   # optional
 ```
 '''
 
@@ -1250,12 +1243,12 @@ examples = [
 _SCAFFOLD_APPS_AGENT = '''\
 """<APP_NAME> — apx-agent root agent (ADK-style top-level definition).
 
-Generated by ``apx-agent scaffold <APP_NAME> --target apps``.
+Generated by ``apx-agent agents scaffold <APP_NAME> --target apps``.
 
 Edit this file to define your agent. ``agent`` is the canonical top-level
 symbol that ``agent_server/start_server.py`` imports + wraps for the
 Databricks Apps runtime. The same symbol is consumed by
-``apx-agent deploy --target model-serving`` if you also publish to a serving
+``apx-agent agents deploy --target model-serving`` if you also publish to a serving
 endpoint.
 
 The Apps runtime boilerplate — ``compile_to_responses_agent``,
@@ -1276,7 +1269,7 @@ from apx_agent import DataAgent
 #
 # Make it your own:
 #   * point it at your own data:  re-scaffold with --catalog/--schema
-#   * re-scaffold to refresh the baked schema:  apx-agent scaffold <name> --catalog <c>
+#   * re-scaffold to refresh the baked schema:  apx-agent agents scaffold <name> --catalog <c>
 #   * add ``genie_space=...`` / ``vector_index=...`` for Genie or Vector Search
 #   * or drop back to a plain ``Agent(tools=[...])`` with your own ``@tool``s
 #
@@ -1297,7 +1290,7 @@ agent = DataAgent(
 _SCAFFOLD_APPS_AGENT_BASE = '''\
 """<APP_NAME> — apx-agent root agent.
 
-Generated by ``apx-agent scaffold <APP_NAME> --template base``.
+Generated by ``apx-agent agents scaffold <APP_NAME> --template base``.
 
 Edit this file to define your agent. ``agent`` is the symbol
 ``agent_server/start_server.py`` imports and wires into the
@@ -1349,7 +1342,7 @@ agent = CoworkerAgent(
 
 
 _SCAFFOLD_APPS_START_SERVER = '''\
-"""FastAPI entry point for Databricks Apps — AUTO-GENERATED by apx-agent scaffold.
+"""FastAPI entry point for Databricks Apps — AUTO-GENERATED by apx-agent agents scaffold.
 
 Don't edit this file. Edit ``../agent.py`` instead — that's where your
 agent lives. This file wires it into the Databricks Apps runtime:
@@ -1360,7 +1353,7 @@ agent lives. This file wires it into the Databricks Apps runtime:
   * Mounts apx-agent's ``/mcp`` + ``/.well-known/agent.json`` + ``/health``
     so Genie / Genie Code can consume the same agent.
   * Mounts ``/readyz`` — a capability self-test that proves the agent answers
-    and traces (used by ``apx-agent deploy`` as a readiness gate).
+    and traces (used by ``apx-agent agents deploy`` as a readiness gate).
 
 Run via ``uvicorn agent_server.start_server:app --host 0.0.0.0 --port $DATABRICKS_APP_PORT``
 (driven by ``databricks.yml`` on deploy).
@@ -1543,7 +1536,7 @@ variables:
   apx_git_sha:
     description: |
       Git commit the deploy was cut from. Injected automatically by
-      `apx-agent deploy --target apps` so every trace the app emits carries
+      `apx-agent agents deploy --target apps` so every trace the app emits carries
       an apx.git_sha tag and `canary analyze` can attribute traffic per
       version (issue #404). Leave the default.
     default: ""
@@ -1557,10 +1550,10 @@ variables:
 <CATALOG_SCHEMA_VARS_BLOCK>
 
 # ``artifacts.default.build`` packages the deploy bundle into ``./.build``.
-# ``apx-agent deploy --target apps`` runs this script BEFORE ``bundle validate`` so
+# ``apx-agent agents deploy --target apps`` runs this script BEFORE ``bundle validate`` so
 # the DAB validator sees a populated source dir. Manually copying the
 # apx-agent wheel into the project keeps the App container's ``uv sync``
-# off the public index — apx-agent deploy handles the wheel build for you when
+# off the public index — apx-agent agents deploy handles the wheel build for you when
 # ``[tool.uv.sources].apx-agent`` references a local path.
 artifacts:
   default:
@@ -1575,7 +1568,7 @@ artifacts:
       cp -r .apx-agent .build/ 2>/dev/null || true
       cp -r .apx .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
-      # pyproject.toml and uv.lock are written by apx-agent deploy (wheel-pinned).
+      # pyproject.toml and uv.lock are written by apx-agent agents deploy (wheel-pinned).
       # Do NOT copy them here — bundle deploy re-runs this script and would
       # overwrite the rewritten versions.
 
@@ -1602,7 +1595,7 @@ resources:
           experiment:
             experiment_id: ${resources.experiments.<APP_NAME>_experiment.id}
             permission: CAN_MANAGE
-        # apx-agent deploy --target apps will auto-add resources from the agent's
+        # apx-agent agents deploy --target apps will auto-add resources from the agent's
         # ResourceSpec list. For now, list any extras here manually:
         - name: llm-endpoint
           description: Foundation model endpoint used by the agent.
@@ -1675,7 +1668,7 @@ uv run quickstart  # creates the MLflow experiment + writes .env
 
 ## Local dev
 ```bash
-uv run apx-agent run --reload
+uv run apx-agent agents run --reload
 # → FastAPI on http://localhost:8000 with the /_apx/* dev UI (chat, edit,
 #   topology, traces, eval, setup wizard). Edit agent.py in your IDE;
 #   --reload picks up changes. See docs/getting-started.md for the walkthrough.
@@ -1684,7 +1677,7 @@ curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","con
 
 ## Deploy
 ```bash
-uv run apx-agent deploy --target apps  # validates, deploys, runs the bundle
+uv run apx-agent agents deploy --target apps  # validates, deploys, runs the bundle
 ```
 
 ## Promoting to another environment
@@ -1717,7 +1710,7 @@ Then deploy to the staging workspace by pointing `--profile` at its
 Databricks CLI profile:
 
 ```bash
-uv run apx-agent deploy --target apps --bundle-target staging --profile <staging-profile>
+uv run apx-agent agents deploy --target apps --bundle-target staging --profile <staging-profile>
 ```
 
 Repeat the same recipe for `prod` (its own `variables:` override + its own
@@ -1742,7 +1735,7 @@ def _discover_default_data(
     profile: str | None = None,
 ) -> "tuple[str, str, str | None] | None":
     """Best-effort: pick a (catalog, schema, sample_table) the scaffold's default
-    DataAgent can actually read, so a fresh ``apx-agent run`` answers a real question
+    DataAgent can actually read, so a fresh ``apx-agent agents run`` answers a real question
     immediately — and a baked example tool queries a real table.
 
     Prefers ``samples.nyctaxi`` (Databricks' built-in demo data) when present;
@@ -1816,7 +1809,8 @@ def _make_ws_for_scaffold(profile: str | None):
     try:
         from databricks.sdk import WorkspaceClient
         return WorkspaceClient(profile=profile) if profile else WorkspaceClient()
-    except Exception:
+    except Exception as exc:
+        click.echo(f"  (warning: could not connect to the workspace — {exc})", err=True)
         return None
 
 
@@ -2046,7 +2040,7 @@ def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[
 
 
 # ---------------------------------------------------------------------------
-# Workspace listing helpers — used by _interactive_resolve and apx-agent list
+# Workspace listing helpers — used by _interactive_resolve and apx-agent agents list
 # ---------------------------------------------------------------------------
 
 _SKIP_CATALOGS: frozenset[str] = frozenset({"system", "__databricks_internal"})
@@ -2056,7 +2050,8 @@ _SKIP_SCHEMAS: frozenset[str] = frozenset({"information_schema"})
 def _ws_list_catalogs(ws: "Any", limit: int = 50) -> list[str]:
     try:
         return [c.name for c in ws.catalogs.list() if c.name and c.name not in _SKIP_CATALOGS][:limit]
-    except Exception:
+    except Exception as exc:
+        click.echo(f"  (warning: could not list catalogs — {exc})", err=True)
         return []
 
 
@@ -2595,6 +2590,23 @@ def _pick_coworker_gallery() -> "tuple[str, Path]":
     return cname, path
 
 
+def _find_gallery_yaml_by_name(name: str) -> "Path | None":
+    """Find a coworker gallery YAML by file stem or declared ``name`` key."""
+    import importlib.resources as _ir
+    import yaml as _yaml
+
+    gallery_dir = Path(_ir.files("apx_agent").joinpath("coworker_gallery"))  # type: ignore[arg-type]
+    for p in sorted(gallery_dir.glob("*.yaml")):
+        if p.stem == name:
+            return p
+        try:
+            if _yaml.safe_load(p.read_text()).get("name") == name:
+                return p
+        except Exception:
+            continue
+    return None
+
+
 @main.command()
 @click.option(
     "--profile", default=None,
@@ -2778,21 +2790,24 @@ def _ws_list_schemas(ws: "Any", catalog: str, limit: int = 50) -> list[str]:
             s.name for s in ws.schemas.list(catalog_name=catalog)
             if s.name and s.name not in _SKIP_SCHEMAS
         ][:limit]
-    except Exception:
+    except Exception as exc:
+        click.echo(f"  (warning: could not list schemas in {catalog} — {exc})", err=True)
         return []
 
 
 def _ws_list_tables(ws: "Any", catalog: str, schema: str, limit: int = 100) -> list[Any]:
     try:
         return list(ws.tables.list(catalog_name=catalog, schema_name=schema))[:limit]
-    except Exception:
+    except Exception as exc:
+        click.echo(f"  (warning: could not list tables in {catalog}.{schema} — {exc})", err=True)
         return []
 
 
 def _ws_list_functions(ws: "Any", catalog: str, schema: str, limit: int = 100) -> list[Any]:
     try:
         return list(ws.functions.list(catalog_name=catalog, schema_name=schema))[:limit]
-    except Exception:
+    except Exception as exc:
+        click.echo(f"  (warning: could not list functions in {catalog}.{schema} — {exc})", err=True)
         return []
 
 
@@ -2892,7 +2907,7 @@ def _interactive_resolve(
         else:
             click.echo(f"  (no schemas found in {catalog} — enter a name manually)")
             while True:
-                schema = click.prompt(f"Schema").strip()
+                schema = click.prompt("Schema").strip()
                 if schema:
                     break
                 click.echo("  Schema cannot be empty.")
@@ -3068,7 +3083,7 @@ def _scaffold_apps(
         apx_source = (
             "[tool.uv.sources]\n"
             "# Editable local install — keeps `uv sync` working from this directory.\n"
-            "# At deploy time apx-agent deploy builds a wheel and rewrites .build/pyproject.toml\n"
+            "# At deploy time apx-agent agents deploy builds a wheel and rewrites .build/pyproject.toml\n"
             "# to reference it (since the App container can't resolve \"..\").\n"
             'apx-agent = { path = "..", editable = true }\n'
         )
@@ -3270,7 +3285,7 @@ def _prompt_for_instructions() -> str | None:
         "Runtime to generate scaffolding for. "
         "'apps' (default) generates a Databricks Apps bundle: agent_server/ + "
         "databricks.yml, with the built-in dev UI (chat, edit, tool builder), "
-        "deployed via apx-agent deploy. 'model-serving' generates the flat "
+        "deployed via apx-agent agents deploy. 'model-serving' generates the flat "
         "agent.py + app.py layout for a Mosaic AI ChatAgent serving endpoint. "
         "Prompted interactively when omitted in a TTY."
     ),
@@ -3340,13 +3355,13 @@ def scaffold(
 
     With ``--target apps`` (the default) writes a Databricks Apps bundle:
     ``agent_server/`` package + ``databricks.yml`` + the dev UI, deployable
-    with ``apx-agent deploy``. With ``--target model-serving`` writes a flat
+    with ``apx-agent agents deploy``. With ``--target model-serving`` writes a flat
     ``agent.py``/``app.py`` project for a Mosaic AI ChatAgent serving endpoint.
 
     The default agent is a ``DataAgent`` grounded in real data: unless you pass
     ``--catalog``/``--schema``, the workspace is probed (best-effort) for a
     catalog/schema you can read — preferring ``samples.nyctaxi`` — so a fresh
-    ``apx-agent run`` can answer a real question immediately.
+    ``apx-agent agents run`` can answer a real question immediately.
     """
     target = Path(directory) / name
 
@@ -3371,6 +3386,19 @@ def scaffold(
     # an invalid PEP 508 ``[project].name`` that breaks ``uv sync``.
     project_name = Path(name).name
 
+    # Build the scaffold-time WorkspaceClient at most once and reuse it across
+    # the list-picker, explicit-sanity-check, and wizard branches (#522). Some
+    # flag combinations (e.g. --template + --catalog + --interactive) reach two
+    # of these branches in one invocation; without caching each constructed its
+    # own client and re-ran the workspace handshake. None is a valid cached
+    # value (offline / unreachable) — cache it too so we don't retry per branch.
+    _ws_cache: "list[Any]" = []
+
+    def _scaffold_ws() -> "Any":
+        if not _ws_cache:
+            _ws_cache.append(_make_ws_for_scaffold(profile))
+        return _ws_cache[0]
+
     # Resolve shorthand template flags before any other logic.
     if coworker_spec is not None:
         scaffold_template = "coworker"
@@ -3389,7 +3417,7 @@ def scaffold(
     # Triggered by passing "list" as the value for any of these options.
     # -----------------------------------------------------------------------
     if scaffold_template == "list" or catalog == "list" or schema == "list":
-        ws = _make_ws_for_scaffold(profile)
+        ws = _scaffold_ws()
         if scaffold_template == "list":
             scaffold_template = _pick_template()
         if catalog == "list":
@@ -3402,7 +3430,7 @@ def scaffold(
         _scaffold_sanity_check(ws, scaffold_template or "coworker", catalog, schema)
     elif scaffold_template and (catalog or schema):
         # Even without "list", run the sanity check when template+catalog are explicit.
-        _scaffold_sanity_check(_make_ws_for_scaffold(profile), scaffold_template, catalog, schema)
+        _scaffold_sanity_check(_scaffold_ws(), scaffold_template, catalog, schema)
 
     # -----------------------------------------------------------------------
     # Step 1: run the setup wizard or apply CLI defaults.
@@ -3415,7 +3443,7 @@ def scaffold(
 
     join_key: str | None = None
     if interactive_mode:
-        _ws = _make_ws_for_scaffold(profile)
+        _ws = _scaffold_ws()
         scaffold_target, scaffold_template, catalog, schema, persona, objective, join_key = _scaffold_wizard(
             ws=_ws,
             target=scaffold_target,
@@ -3480,16 +3508,13 @@ def scaffold(
             _, gallery_yaml_path = _pick_coworker_gallery()
         else:
             # --coworker <name> → find by name in the gallery
-            import importlib.resources as _ir
-            import yaml as _yaml
-            gallery_dir = Path(_ir.files("apx_agent").joinpath("coworker_gallery"))  # type: ignore[arg-type]
-            matched = [p for p in sorted(gallery_dir.glob("*.yaml")) if p.stem == coworker_spec or _yaml.safe_load(p.read_text()).get("name") == coworker_spec]
-            if not matched:
+            found = _find_gallery_yaml_by_name(coworker_spec)
+            if found is None:
                 raise click.ClickException(
                     f"No coworker named {coworker_spec!r} in the gallery. "
                     "Use --coworker list to browse."
                 )
-            gallery_yaml_path = matched[0]
+            gallery_yaml_path = found
         config = _scaffold_from_gallery(gallery_yaml_path, project_name, catalog, schema)
         _materialize_agent(config, target, force=force)
         return
@@ -3505,13 +3530,13 @@ def scaffold(
 
     click.echo()
     click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")
-    click.echo(f"Next: cd {name} && uv sync && uv run apx-agent run    # serve locally")
+    click.echo(f"Next: cd {name} && uv sync && uv run apx-agent agents run    # serve locally")
     click.echo("Tip: run `uv run apx-agent doctor` to check your environment before deploying.")
     if scaffold_target == "apps":
-        click.echo("      uv run apx-agent deploy                  # → Databricks Apps")
+        click.echo("      uv run apx-agent agents deploy                  # → Databricks Apps")
     else:
         click.echo(
-            "      uv run apx-agent deploy --model <endpoint> --name <catalog.schema.model>"
+            "      uv run apx-agent agents deploy --model <endpoint> --name <catalog.schema.model>"
         )
 
     if scaffold_target == "apps" and lakebase:
@@ -3559,7 +3584,7 @@ def _probe_import(module_spec: str) -> None:
                 f"Failed to import your agent module `{mod_name}`.",
                 detail,
                 "Fix the error in your agent code shown above, then re-run "
-                "`uv run apx-agent run`.",
+                "`uv run apx-agent agents run`.",
             )
         ) from e
     finally:
@@ -3592,10 +3617,13 @@ def refresh_schema(profile: str | None, prune_missing_tables: bool) -> None:
     existing = load_baked_schema(Path.cwd())
     if not existing or not existing.get("catalog") or not existing.get("schema"):
         raise click.ClickException(
-            "No .apx/schema.json found. This command must be run inside a scaffolded project.\n"
+            "No .apx/schema.json found. This command only applies to a full "
+            "project scaffold, not the default YAML-spec scaffold.\n"
             "\n"
-            "  To create one:  apx-agent scaffold <project-name>\n"
-            "  Then cd into it and run:  apx-agent refresh-schema"
+            "  To create one:  apx-agent agents scaffold <name> --target apps "
+            "--catalog CAT --schema SCHEMA\n"
+            "  (or --target model-serving)\n"
+            "  Then cd into it and run:  apx-agent agents refresh-schema"
         )
     catalog, schema = existing["catalog"], existing["schema"]
     manifest = _schema_manifest_for_scaffold(catalog, schema, profile=profile)
@@ -3644,7 +3672,9 @@ def migrate_to_okf(force: bool) -> None:
     okf_root = apx / "okf"
     if not manifest_path.is_file():
         raise click.ClickException(
-            "No .apx/schema.json found. Run inside a scaffolded project."
+            "No .apx/schema.json found. This command only applies to a full "
+            "project scaffold (apx-agent agents scaffold <name> --target apps "
+            "--catalog CAT --schema SCHEMA), not the default YAML-spec scaffold."
         )
     if okf_root.exists() and not force:
         raise click.ClickException(".apx/okf already exists. Use --force to overwrite.")
@@ -3677,7 +3707,9 @@ def pull_comments(profile: str | None, overwrite: bool) -> None:
     existing = load_baked_schema(Path.cwd())
     if not existing or not existing.get("catalog") or not existing.get("schema"):
         raise click.ClickException(
-            "No .apx grounding found. Run inside a scaffolded project with an OKF bundle."
+            "No .apx grounding found. This command only applies to a full "
+            "project scaffold (apx-agent agents scaffold <name> --target apps "
+            "--catalog CAT --schema SCHEMA), not the default YAML-spec scaffold."
         )
     okf_root = Path.cwd() / APX_DIR / "okf"
     if not okf_root.is_dir():
@@ -3929,7 +3961,7 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
         import uvicorn
     except ImportError as e:
         raise click.ClickException(
-            "uvicorn is required for `apx-agent run`. Install with: "
+            "uvicorn is required for `apx-agent agents run`. Install with: "
             "uv add 'apx-agent[apps]'  (or: uv add 'uvicorn[standard]')"
         ) from e
 
@@ -3944,7 +3976,7 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
         if not agents:
             raise click.ClickException(
                 "No runnable agent projects found in this directory.\n"
-                "Run 'apx-agent scaffold <name>' to create one."
+                "Run 'apx-agent agents scaffold <name>' to create one."
             )
         click.echo("Available agents:")
         for i, (name, path) in enumerate(agents, 1):
@@ -4012,8 +4044,8 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
                 else f"No runnable agent project found for {spec!r}."
             )
             raise click.ClickException(
-                f"{hint}\nTry 'apx-agent run list' to see what's available, or "
-                "'apx-agent run <spec>.yaml' to run from a spec."
+                f"{hint}\nTry 'apx-agent agents run list' to see what's available, or "
+                "'apx-agent agents run <spec>.yaml' to run from a spec."
             )
         if candidate_dir != cwd:
             os.chdir(candidate_dir)
@@ -4036,7 +4068,7 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
     # Default ON for the dev loop: the Trace panel is useless without per-tool
     # and per-LLM spans, and the runtime's manual ``safe_span`` wraps only emit
     # the outer wrapper. ``setdefault`` so anyone who really wants the bare
-    # boot can ``APX_AGENT_MLFLOW_AUTOLOG=0 apx-agent run``. Deploy paths are
+    # boot can ``APX_AGENT_MLFLOW_AUTOLOG=0 apx-agent agents run``. Deploy paths are
     # unaffected — they never go through this code.
     #
     # Important: the ``apps`` scaffold's ASGI module bypasses ``_wiring.create_app``
@@ -4124,10 +4156,10 @@ def stop(agent_name: str | None, port: int | None, host: str, stop_all: bool) ->
     Examples:
 
     \b
-      apx-agent stop                  # stop whatever is on port 8000
-      apx-agent stop hello-world      # find and stop hello-world
-      apx-agent stop --port 8001      # stop whatever is on 8001
-      apx-agent stop --all            # stop every apx-agent found
+      apx-agent agents stop                  # stop whatever is on port 8000
+      apx-agent agents stop hello-world      # find and stop hello-world
+      apx-agent agents stop --port 8001      # stop whatever is on 8001
+      apx-agent agents stop --all            # stop every apx-agent found
     """
     if port is not None:
         # Explicit port: just kill whatever is there.
@@ -4197,8 +4229,8 @@ def apps_list(profile: str | None, host: str | None) -> None:
     Examples:
 
     \b
-      apx-agent apps                       # list apps in default workspace
-      apx-agent apps --profile fe-stable   # list apps in fe-stable workspace
+      apx-agent agents apps                       # list apps in default workspace
+      apx-agent agents apps --profile fe-stable   # list apps in fe-stable workspace
     """
     profile = profile or _read_apx_agent_config().get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
 
@@ -4222,7 +4254,7 @@ def apps_list(profile: str | None, host: str | None) -> None:
 
     if not app_list:
         click.echo("No Databricks Apps found in this workspace.")
-        click.echo("Deploy one with:  apx-agent deploy")
+        click.echo("Deploy one with:  apx-agent agents deploy")
         return
 
     # Resolve workspace host for URL construction.
@@ -4492,12 +4524,6 @@ def _deploy_from_yaml(
         if framework_python is not None:
             _inject_framework_source(project_dir, framework_python)
 
-        # When running inside the framework source repo, inject the editable
-        # source so _ensure_apx_wheel can build and bundle the wheel.
-        framework_python = _find_nearby_framework_python(Path.cwd())
-        if framework_python is not None:
-            _inject_framework_source(project_dir, framework_python)
-
         import os
         orig = os.getcwd()
         try:
@@ -4623,7 +4649,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
     "--register-uc/--no-register-uc", default=True,
     help="After the app is live, register a UC model-version *manifest* for it "
          "(log_agent + apx.* tags, tagged apx.serving=apps) so the Apps agent "
-         "gets a version ledger and shows up in apx-agent list / topology / "
+         "gets a version ledger and shows up in apx-agent agents list / uc topology / "
          "watchdog. NOT promoted to serving — the App serves traffic, the UC "
          "version is a record of what it's running. Skips with a notice if no "
          "UC name / model is configured. ON by default. Only used by "
@@ -4684,7 +4710,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 @click.option(
     "--set-uc-tags/--no-set-uc-tags", default=True,
     help="Write apx.agent.* UC tags on the registered model after deploy so "
-         "the agent shows up in apx-agent list / topology / watchdog crawls. "
+         "the agent shows up in apx-agent agents list / uc topology / watchdog crawls. "
          "On by default. Only used by --target model-serving.",
 )
 @click.option(
@@ -5300,10 +5326,19 @@ def deploy(
                 "# --no-readyz-gate: skipping endpoint readiness poll + "
                 "smoke invocation"
             )
+
+        # 3c. Record local deploy history (redeploy convenience) —
+        # best-effort, like every other provenance step in this function.
+        # Only reached when an actual deploy happened (inside
+        # `if not no_deploy:`), never on a --no-deploy run.
+        _record_deploy_history(
+            Path.cwd(), registered_model_name, "model-serving",
+            _provenance_version_tags(Path.cwd()),
+        )
     else:
         _say("Skipping deploy (--no-deploy).")
 
-    # 4. Set UC tags so the agent shows up in apx-agent list / topology / watchdog
+    # 4. Set UC tags so the agent shows up in apx-agent agents list / uc topology / watchdog
     if set_uc_tags:
         try:
             from apx_agent import set_uc_tags_for_agent
@@ -5606,7 +5641,7 @@ def _serving_health_gate(
             if update in ("UPDATE_FAILED", "UPDATE_CANCELED"):
                 return (
                     f"endpoint {endpoint_name!r} config update ended in "
-                    f"{update}. Inspect the build with `apx-agent logs "
+                    f"{update}. Inspect the build with `apx-agent agents logs "
                     f"--endpoint {endpoint_name} --build`."
                 )
             if ready == "READY" and update in ("", "NOT_UPDATING"):
@@ -5737,6 +5772,67 @@ def _provenance_version_tags(cwd: Path) -> dict[str, str]:
     return tags
 
 
+def _deploy_history_path() -> Path:
+    """Local index mapping a UC agent identity to where it was last deployed from.
+
+    Powers ``apx-agent agents redeploy`` — no existing ``~/.apx-agent/``
+    convention exists in this file today (only ``~/.databrickscfg`` is read
+    from the home directory); this establishes it.
+    """
+    return Path.home() / ".apx-agent" / "deploy-history.json"
+
+
+def _record_deploy_history(
+    cwd: Path, uc_name: str, target: str, provenance_tags: dict[str, str],
+) -> None:
+    """Best-effort: record/overwrite ``uc_name``'s local deploy-history entry.
+
+    Never raises — recording history must never fail a deploy, the same
+    contract every other provenance step in this file follows. Reuses
+    ``git_sha``/``git_dirty`` from ``provenance_tags`` already computed by the
+    caller (no duplicate git subprocess calls).
+    """
+    from datetime import datetime, timezone
+
+    from ._apps_registry import GIT_DIRTY_TAG, GIT_SHA_TAG
+
+    path = _deploy_history_path()
+    try:
+        existing: dict[str, Any] = (
+            json.loads(path.read_text()) if path.exists() else {}
+        )
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    dirty_tag = provenance_tags.get(GIT_DIRTY_TAG)
+    existing[uc_name] = {
+        "path": str(cwd),
+        "target": target,
+        "deployed_at": datetime.now(timezone.utc).isoformat(),
+        "git_sha": provenance_tags.get(GIT_SHA_TAG),
+        "git_dirty": None if dirty_tag is None else dirty_tag == "true",
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(existing, indent=2, sort_keys=True))
+    except OSError:
+        pass  # best-effort — recording history must never fail a deploy
+
+
+def _load_deploy_history_entry(uc_name: str) -> dict[str, Any] | None:
+    """Read ``uc_name``'s local deploy-history entry, or None if unavailable.
+
+    Never raises — a missing file, missing key, or corrupt JSON all degrade
+    to "no entry found," not a crash.
+    """
+    path = _deploy_history_path()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    entry = data.get(uc_name)
+    return entry if isinstance(entry, dict) else None
+
+
 def _read_databricks_yml(cwd: Path) -> dict[str, Any]:
     """Load ``databricks.yml`` from ``cwd`` and return the parsed dict.
 
@@ -5750,7 +5846,7 @@ def _read_databricks_yml(cwd: Path) -> dict[str, Any]:
         raise click.ClickException(
             f"No databricks.yml found at {path}. "
             "--target apps expects a scaffolded Apps project — run "
-            "`apx-agent scaffold <name> --target apps` first."
+            "`apx-agent agents scaffold <name> --target apps` first."
         )
     try:
         data = yaml.safe_load(path.read_text()) or {}
@@ -6067,7 +6163,7 @@ def _stage_build_manifest(
     """Stage the dependency manifest (``pyproject.toml`` + ``uv.lock``) into ``.build/``.
 
     The bundle ``artifacts.build`` script deliberately does NOT copy
-    ``pyproject.toml`` / ``uv.lock`` — ``apx-agent deploy`` owns staging the
+    ``pyproject.toml`` / ``uv.lock`` — ``apx-agent agents deploy`` owns staging the
     deploy-correct versions here. Without them the Databricks Apps container
     has no dependency manifest and falls back to the base image's packages
     (notably an older ``mlflow`` lacking ``mlflow.genai.agent_server``), so the
@@ -6301,7 +6397,7 @@ def _grant_experiment_to_sp(
 ) -> bool:
     """Grant the app's service principal ``CAN_MANAGE`` on the tracing experiment.
 
-    ``apx-agent deploy`` creates the experiment under the deploying user, but the
+    ``apx-agent agents deploy`` creates the experiment under the deploying user, but the
     deployed app runs as its service principal — which can't access that
     experiment, so every span is dropped. Granting the SP ``CAN_MANAGE`` via
     the permissions API lets tracing land. Idempotent.
@@ -6455,7 +6551,7 @@ def _preflight_databricks_cli() -> None:
     if result.status is not _d.Status.OK:
         raise click.ClickException(
             _fix_msg(
-                "`apx-agent deploy` needs the Databricks CLI.",
+                "`apx-agent agents deploy` needs the Databricks CLI.",
                 result.detail,
                 result.fix,
             )
@@ -6492,7 +6588,7 @@ def _preflight_apps(cwd: Path) -> None:
             )
         else:
             msg += (
-                " Run `apx-agent scaffold <name> --target apps` to generate "
+                " Run `apx-agent agents scaffold <name> --target apps` to generate "
                 "the expected layout."
             )
         raise click.ClickException(msg)
@@ -6505,7 +6601,7 @@ def _validate_responses_agent_compiler() -> None:
     deployed image level; the module-level import of ``_responses_agent``
     always succeeds (mlflow is lazy-imported). Check the real runtime dep
     (mlflow.genai) directly so a missing ``eval`` extra is caught at
-    ``apx-agent deploy`` time rather than at first request.
+    ``apx-agent agents deploy`` time rather than at first request.
     """
     try:
         import mlflow.genai.agent_server  # noqa: F401
@@ -6550,6 +6646,58 @@ def _parse_secret_env_flag(raw: str) -> _SecretEnvRef:
     return _SecretEnvRef(name=key, scope=scope, key=secret_key)
 
 
+def _yaml_quoted(value: str) -> Any:
+    """Force explicit double-quoting for a user-supplied string value.
+
+    ruamel.yaml's round-trip dumper — unlike ``yaml.safe_dump`` — does not
+    auto-quote plain scalars that YAML's implicit resolver would otherwise
+    misread as a different type (``on``/``off``/``yes``/``no``/``true``/
+    ``false``/``null``/numeric-looking strings). Left unquoted, an
+    ``--env FLAG=on`` would round-trip back as the boolean ``True`` instead
+    of the string ``"on"`` on the next read. Used for every free-text value
+    (env names/values, secret scope/key) merged into databricks.yml.
+    """
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
+    return DoubleQuotedScalarString(value)
+
+
+def _load_databricks_yml_roundtrip(cwd: Path) -> "tuple[Any, Any]":
+    """Round-trip load ``databricks.yml`` for an in-place write-back.
+
+    Returns ``(yml, doc)`` where ``doc`` can be mutated and written back with
+    ``yml.dump(doc, path)`` without losing comments, quoting, or blank-line
+    structure elsewhere in the file — unlike ``_read_databricks_yml``'s
+    ``yaml.safe_load``/``yaml.safe_dump``, which silently reformats the
+    entire file on every write (#527). Only used by the two merge writers
+    below; every other ``databricks.yml`` reader in this file is read-only
+    and keeps using ``_read_databricks_yml``.
+    """
+    from ruamel.yaml import YAML
+
+    path = cwd / "databricks.yml"
+    if not path.exists():
+        raise click.ClickException(
+            f"No databricks.yml found at {path}. "
+            "--target apps expects a scaffolded Apps project — run "
+            "`apx-agent agents scaffold <name> --target apps` first."
+        )
+    yml = YAML()
+    yml.preserve_quotes = True
+    try:
+        doc = yml.load(path.read_text())
+    except Exception as e:
+        raise click.ClickException(f"Failed to parse databricks.yml: {e}") from e
+    if doc is None:
+        doc = {}
+    if not isinstance(doc, dict):
+        raise click.ClickException(
+            f"databricks.yml does not contain a mapping at the top level "
+            f"(got {type(doc).__name__})."
+        )
+    return yml, doc
+
+
 def _merge_env_into_databricks_yml(
     cwd: Path,
     *,
@@ -6569,10 +6717,8 @@ def _merge_env_into_databricks_yml(
     the scope/key reference is written, never a secret value. If a resource
     with the derived name already exists it is reused, not clobbered.
     """
-    import yaml
-
     path = cwd / "databricks.yml"
-    doc = _read_databricks_yml(cwd)
+    yml, doc = _load_databricks_yml_roundtrip(cwd)
     # resources.apps.<bundle_key> presence was already validated by
     # _resolve_app_name on this same document.
     app_block = doc["resources"]["apps"][bundle_key]
@@ -6591,7 +6737,7 @@ def _merge_env_into_databricks_yml(
         if name in existing_env:
             skipped.append(name)
             continue
-        env_list.append({"name": name, "value": value})
+        env_list.append({"name": _yaml_quoted(name), "value": _yaml_quoted(value)})
         existing_env.add(name)
         env_added.append(name)
 
@@ -6616,23 +6762,22 @@ def _merge_env_into_databricks_yml(
                 "name": res_name,
                 "description": (
                     f"Secret backing the {name} env var "
-                    "(added by apx-agent deploy --secret-env)."
+                    "(added by apx-agent agents deploy --secret-env)."
                 ),
                 "secret": {
-                    "scope": scope,
-                    "key": secret_key,
+                    "scope": _yaml_quoted(scope),
+                    "key": _yaml_quoted(secret_key),
                     "permission": "READ",
                 },
             })
             resource_names.add(res_name)
-        env_list.append({"name": name, "valueFrom": res_name})
+        env_list.append({"name": _yaml_quoted(name), "valueFrom": res_name})
         existing_env.add(name)
         secret_added.append(name)
 
     if env_added or secret_added:
-        path.write_text(
-            yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
-        )
+        with path.open("w") as f:
+            yml.dump(doc, f)
 
     if env_added:
         log(f"  env → config.env: {', '.join(env_added)} (values not echoed)")
@@ -6663,8 +6808,6 @@ def _auto_update_databricks_yml(
     already present in ``resources.apps.<bundle_key>.resources`` is appended.
     User-added entries with the same name are NEVER clobbered.
     """
-    import yaml
-
     from apx_agent._resources import (
         collect_resource_specs,
         resources_to_databricks_yml,
@@ -6672,7 +6815,7 @@ def _auto_update_databricks_yml(
     )
 
     path = cwd / "databricks.yml"
-    doc = _read_databricks_yml(cwd)
+    yml, doc = _load_databricks_yml_roundtrip(cwd)
 
     apps_block = doc.setdefault("resources", {}).setdefault("apps", {})
     if bundle_key not in apps_block or not isinstance(apps_block[bundle_key], dict):
@@ -6737,7 +6880,8 @@ def _auto_update_databricks_yml(
     if merged_scopes:
         app_block["user_api_scopes"] = merged_scopes
 
-    path.write_text(yaml.safe_dump(doc, default_flow_style=False, sort_keys=False))
+    with path.open("w") as f:
+        yml.dump(doc, f)
 
     if new_scopes:
         log(f"  added {len(new_scopes)} OBO scope(s): {', '.join(new_scopes)}")
@@ -6989,19 +7133,24 @@ def _apps_readyz_recovery_hint(
 
 
 @contextlib.contextmanager
-def _json_cli_errors(as_json: bool) -> Iterator[None]:
+def _json_cli_errors(
+    as_json: bool, *, extra: dict[str, Any] | None = None,
+) -> Iterator[None]:
     """Mirror the deploy ``--json-output`` failure contract for other
     mutation commands (issue #417): under ``--json``, a ``ClickException``
     (incl. ``UsageError``) becomes a single ``{"ok": false, "error": ...}``
     object on stdout + exit 1, instead of click's stderr rendering. Without
     the flag, the exception propagates unchanged.
+
+    ``extra`` merges additional context fields (e.g. ``{"app_name": ...}``)
+    into the JSON payload alongside ``ok``/``error``.
     """
     try:
         yield
     except click.ClickException as e:
         if not as_json:
             raise
-        click.echo(json.dumps({"ok": False, "error": str(e)}))
+        click.echo(json.dumps({"ok": False, "error": str(e), **(extra or {})}))
         raise click.exceptions.Exit(1) from e
 
 
@@ -7025,7 +7174,7 @@ def _deploy_apps(
     poll_timeout_seconds: int = 300,
     readyz_attempts: int = 5,
 ) -> None:
-    """Implement ``apx-agent deploy --target apps``.
+    """Implement ``apx-agent agents deploy --target apps``.
 
     Routes all progress logs to stderr (so ``--json-output`` can keep stdout
     clean), runs the bundle validate → deploy → run → poll-ready sequence,
@@ -7043,7 +7192,7 @@ def _deploy_apps(
     def log(msg: str) -> None:
         click.echo(msg, err=True)
 
-    try:
+    with _json_cli_errors(json_output):
         _deploy_apps_impl(
             cwd=cwd, module=module, profile=profile,
             bundle_target=bundle_target, no_run=no_run,
@@ -7061,11 +7210,6 @@ def _deploy_apps(
             readyz_attempts=readyz_attempts,
             log=log,
         )
-    except click.ClickException as e:
-        if json_output:
-            click.echo(json.dumps({"ok": False, "error": str(e)}))
-            raise click.exceptions.Exit(1) from e
-        raise
 
 
 def _deploy_apps_impl(
@@ -7092,7 +7236,7 @@ def _deploy_apps_impl(
     log: Any,
 ) -> None:
     """Inner body of ``_deploy_apps`` — see docstring there."""
-    log(f"# apx-agent deploy --target apps (bundle-target={bundle_target}, "
+    log(f"# apx-agent agents deploy --target apps (bundle-target={bundle_target}, "
         f"profile={profile or '<default>'})")
 
     # 1. Pre-flight
@@ -7222,10 +7366,8 @@ def _deploy_apps_impl(
             f"`databricks bundle validate` failed (exit {validate_proc.returncode}). "
             f"Last lines:\n{_tail_lines(validate_proc.stderr or validate_proc.stdout)}"
         )
-        if json_output:
-            click.echo(json.dumps({"ok": False, "error": msg, "app_name": app_name}))
-            raise click.exceptions.Exit(1)
-        raise click.ClickException(msg)
+        with _json_cli_errors(json_output, extra={"app_name": app_name}):
+            raise click.ClickException(msg)
 
     # 4. databricks bundle deploy
     log("# databricks bundle deploy")
@@ -7240,10 +7382,8 @@ def _deploy_apps_impl(
             f"`databricks bundle deploy` failed (exit {deploy_proc.returncode}). "
             f"Last lines:\n{_tail_lines(deploy_proc.stderr or deploy_proc.stdout)}"
         )
-        if json_output:
-            click.echo(json.dumps({"ok": False, "error": msg, "app_name": app_name}))
-            raise click.exceptions.Exit(1)
-        raise click.ClickException(msg)
+        with _json_cli_errors(json_output, extra={"app_name": app_name}):
+            raise click.ClickException(msg)
     log(f"  bundle deploy finished in {deploy_seconds:.1f}s")
 
     # 5. databricks bundle run <bundle_key>
@@ -7384,6 +7524,18 @@ def _deploy_apps_impl(
     else:
         log("# --no-register-uc: skipping the UC version-manifest registration")
 
+    # 6e. Record local deploy history (redeploy convenience) — best-effort,
+    # like every other provenance step above. Recorded whenever a UC identity
+    # resolves, independent of --no-register-uc: "where does this source
+    # live" is meaningful even when the UC write itself was skipped.
+    _resolved_history_uc_name = _resolve_apps_uc_name(
+        _read_apx_agent_config(), app_name, override=uc_name,
+    )
+    if _resolved_history_uc_name is not None:
+        _record_deploy_history(
+            cwd, _resolved_history_uc_name, "apps", extra_version_tags or {},
+        )
+
     # 7. Final report
     if json_output:
         # Enriched summary (issue #417): a CI job records what it shipped —
@@ -7431,64 +7583,95 @@ def _deploy_apps_impl(
               help="UC Delta tools registry table. Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
 @click.option("--no-registry", is_flag=True, help="Skip the tools registry write (UC publish only).")
 @click.option("--profile", default=None, help="Databricks CLI profile.")
+@click.option("--json-output", "json_output", is_flag=True,
+              help="Emit a single JSON summary on stdout instead of text.")
 def publish_tools_cmd(
     module: str,
     dry_run: bool,
     tools_table: str | None,
     no_registry: bool,
     profile: str | None,
+    json_output: bool,
 ) -> None:
     """Publish all @tool(uc=...) decorated tools to Unity Catalog.
 
     Also registers each tool as a standalone entry in the org tools registry
     (``main.apx.agent_tools`` by default) so they are discoverable by any
-    agent without being tied to a specific agent deployment.
+    agent without being tied to a specific agent deployment. A registry-write
+    failure is reported but still fails the command's exit code (like
+    ``agents deploy``'s step ledger) — it never fails silently while still
+    exiting 0.
     """
     from apx_agent import publish_tools_to_uc
     from apx_agent._publish import publish_standalone_tools_to_registry
     from apx_agent._resources import _iter_tool_fns
     from apx_agent._tool import get_tool_metadata
 
-    cfg = _read_apx_agent_config()
-    profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
-    if profile:
-        os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
-    tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
-    assert tools_table is not None
+    with _json_cli_errors(json_output):
+        cfg = _read_apx_agent_config()
+        profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+        if profile:
+            os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+        tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
+        assert tools_table is not None
 
-    agent = _load_finalized_agent(module)
-    results = publish_tools_to_uc(agent, dry_run=dry_run)
-    if not results:
-        click.echo("No @tool(uc=...) decorated tools found in this agent.")
-        click.echo("To publish a tool, decorate a function with @tool(uc='catalog.schema.fn_name'):")
-        click.echo("  from apx_agent import tool")
-        click.echo("  @tool(uc='main.tools.my_fn')")
-        click.echo("  def my_fn(x: str) -> str: ...")
-        return
-    for r in results:
-        prefix = "DRY-RUN" if r.skipped else "PUBLISHED"
-        grants = ", ".join(r.grants_applied) if r.grants_applied else "none"
-        click.echo(f"  {prefix}  {r.uc_name}  (grants: {grants})")
+        agent = _load_finalized_agent(module)
+        results = publish_tools_to_uc(agent, dry_run=dry_run)
+        if not results:
+            if json_output:
+                click.echo(json.dumps({"ok": True, "published": [], "registry": None}))
+            else:
+                click.echo("No @tool(uc=...) decorated tools found in this agent.")
+                click.echo("To publish a tool, decorate a function with @tool(uc='catalog.schema.fn_name'):")
+                click.echo("  from apx_agent import tool")
+                click.echo("  @tool(uc='main.tools.my_fn')")
+                click.echo("  def my_fn(x: str) -> str: ...")
+            return
+        if not json_output:
+            for r in results:
+                prefix = "DRY-RUN" if r.skipped else "PUBLISHED"
+                grants = ", ".join(r.grants_applied) if r.grants_applied else "none"
+                click.echo(f"  {prefix}  {r.uc_name}  (grants: {grants})")
 
-    # --- Write standalone rows to the tools registry ---
-    if not no_registry and not dry_run:
-        # Collect only the tool functions that were actually published to UC.
-        published_names = {r.function_name for r in results if not r.skipped}
-        tool_fns = [
-            fn for fn in _iter_tool_fns(agent)
-            if getattr(fn, "__name__", None) in published_names
-        ]
-        if tool_fns:
-            try:
-                ws, _ = _connect_workspace(profile)
-                n = publish_standalone_tools_to_registry(
-                    tool_fns=tool_fns,
-                    tools_table=tools_table,
-                    ws=ws,
-                )
-                click.echo(click.style(f"  ✓ Tools registry updated ({n} standalone tools → {tools_table})", fg="green"))
-            except Exception as exc:
-                click.echo(click.style(f"  ✗ Tools registry write failed: {exc}", fg="yellow"), err=True)
+        # --- Write standalone rows to the tools registry ---
+        registry_summary: dict[str, Any] | None = None
+        registry_error: str | None = None
+        if not no_registry and not dry_run:
+            # Collect only the tool functions that were actually published to UC.
+            published_names = {r.function_name for r in results if not r.skipped}
+            tool_fns = [
+                fn for fn in _iter_tool_fns(agent)
+                if getattr(fn, "__name__", None) in published_names
+            ]
+            if tool_fns:
+                try:
+                    ws, _ = _connect_workspace(profile)
+                    n = publish_standalone_tools_to_registry(
+                        tool_fns=tool_fns,
+                        tools_table=tools_table,
+                        ws=ws,
+                    )
+                    registry_summary = {"table": tools_table, "count": n}
+                    if not json_output:
+                        click.echo(click.style(f"  ✓ Tools registry updated ({n} standalone tools → {tools_table})", fg="green"))
+                except Exception as exc:
+                    registry_error = str(exc)
+                    if not json_output:
+                        click.echo(click.style(f"  ✗ Tools registry write failed: {exc}", fg="yellow"), err=True)
+
+        if json_output:
+            click.echo(json.dumps({
+                "ok": registry_error is None,
+                "published": [
+                    {"uc_name": r.uc_name, "skipped": r.skipped,
+                     "grants_applied": r.grants_applied}
+                    for r in results
+                ],
+                "registry": registry_summary,
+                "registry_error": registry_error,
+            }))
+        if registry_error is not None:
+            raise click.exceptions.Exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -7701,8 +7884,8 @@ def advertise(
     ``apx-agent supervisor add``.
 
     \b
-      apx-agent deploy       # deploy to your workspace
-      apx-agent advertise    # make it discoverable
+      apx-agent agents deploy       # deploy to your workspace
+      apx-agent agents advertise    # make it discoverable
     """
     _do_advertise(
         endpoint=endpoint, display_name=display_name, description=description,
@@ -7837,7 +8020,7 @@ def create_supervisor(
     """Create a Mosaic AI Supervisor Agent for your org's A2A registry.
 
     Run this once per workspace. The supervisor routes user queries across all
-    agents published with ``apx-agent publish``. After creation, pin the
+    agents published with ``apx-agent agents publish``. After creation, pin the
     printed supervisor_id in your org's shared pyproject.toml so every agent
     can publish with a single zero-argument command.
 
@@ -8014,9 +8197,9 @@ def logs(
     Two modes:
 
     \b
-      apx-agent logs --endpoint NAME              Runtime logs from a Model Serving endpoint
-      apx-agent logs --endpoint NAME --build      Build-time logs from the endpoint's build
-      apx-agent logs --app NAME [--profile P]     Logs from an apx-agent hosted as a Databricks App
+      apx-agent agents logs --endpoint NAME              Runtime logs from a Model Serving endpoint
+      apx-agent agents logs --endpoint NAME --build      Build-time logs from the endpoint's build
+      apx-agent agents logs --app NAME [--profile P]     Logs from an apx-agent hosted as a Databricks App
 
     For the --endpoint path, ``served_model`` is auto-discovered from the
     endpoint's current config when not supplied explicitly.
@@ -8314,7 +8497,7 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
             _describe_app_agent(_pick_app_agent(profile), profile, fmt)
             return
 
-    # Finalize so `apx-agent info` reports the same tools/resources the serve and
+    # Finalize so `apx-agent agents describe` reports the same tools/resources the serve and
     # deploy paths will — config-declared [[tool.apx.tools]] included.
     agent = _load_finalized_agent(module)
 
@@ -8429,7 +8612,7 @@ def trace(
         import mlflow
     except ImportError as e:
         raise click.ClickException(
-            "apx-agent trace requires mlflow. Install with: uv add 'apx-agent[eval]'"
+            "apx-agent traces list requires mlflow. Install with: uv add 'apx-agent[eval]'"
         ) from e
 
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
@@ -8781,8 +8964,8 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
     sub-agent URL env vars, model name shape.
 
     Exits non-zero if any ERROR findings are reported. WARNING findings
-    are reported but don't fail. Pair with ``apx-agent test`` (smoke) and
-    ``apx-agent eval`` (behavior) for a full pre-deploy check.
+    are reported but don't fail. Pair with ``apx-agent eval test`` (smoke) and
+    ``apx-agent eval run`` (behavior) for a full pre-deploy check.
     """
     from ._lint import Severity, lint_agent
 
@@ -8807,7 +8990,7 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
         ))
     else:
         if not findings:
-            click.echo("apx-agent lint: clean — no findings.")
+            click.echo("apx-agent eval lint: clean — no findings.")
         else:
             for f in findings:
                 marker = {
@@ -8940,7 +9123,7 @@ def _hot_swap_model_serving(
             "served_entities_updated": result.served_entities_updated,
         }))
         return
-    click.echo(f"apx-agent hot-swap: {result.endpoint_name}")
+    click.echo(f"apx-agent agents hot-swap: {result.endpoint_name}")
     click.echo(f"  new model:      {result.new_model}")
     if result.previous_model:
         click.echo(f"  previous override: {result.previous_model}")
@@ -8993,7 +9176,7 @@ def _hot_swap_apps_cli(
             "previous_value": result.previous_value,
         }))
         return
-    click.echo(f"apx-agent hot-swap --target apps: {result.app_name}")
+    click.echo(f"apx-agent agents hot-swap --target apps: {result.app_name}")
     click.echo(f"  bundle target:  {result.bundle_target}")
     click.echo(f"  var:            {result.var_name}")
     click.echo(f"  new value:      {result.new_value}")
@@ -9003,6 +9186,60 @@ def _hot_swap_apps_cli(
     click.echo(
         "  (the App is restarting; check `databricks apps get` to confirm RUNNING)"
     )
+
+
+@agents.command(
+    "redeploy",
+    context_settings={"ignore_unknown_options": True},
+)
+@click.argument("uc_name", metavar="NAME")
+@click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
+def redeploy_cmd(uc_name: str, extra_args: tuple[str, ...]) -> None:
+    """Redeploy an already-deployed agent from its remembered local checkout.
+
+    NAME is the same three-part UC name ``apx-agent agents status`` takes.
+    Looks up the local project directory this agent was last deployed from —
+    recorded automatically by a successful ``apx-agent agents deploy`` — then
+    reruns ``apx-agent agents deploy`` from there, relying on whatever's
+    already persisted in that project's own ``pyproject.toml``/
+    ``databricks.yml`` rather than replaying historical flags. Anything
+    passed after NAME is forwarded to that inner deploy call unchanged, e.g.
+    ``apx-agent agents redeploy main.apx.my-agent --env FOO=bar``.
+
+    Only works for agents deployed from THIS machine — there is no
+    cross-machine lookup. If nothing is recorded, cd into the agent's project
+    directory and run ``apx-agent agents deploy`` directly.
+    """
+    import subprocess
+
+    entry = _load_deploy_history_entry(uc_name)
+    if entry is None:
+        raise click.ClickException(
+            f"No local deploy history for {uc_name}. Redeploy manually: cd "
+            "into its project directory and run `apx-agent agents deploy`."
+        )
+    path = Path(entry["path"])
+    if not path.is_dir():
+        raise click.ClickException(
+            f"{uc_name} was last deployed from {path}, which no longer "
+            "exists locally. cd into its current project directory and run "
+            "`apx-agent agents deploy` directly."
+        )
+    local_sha = _git_head_sha(path)
+    stored_sha = entry.get("git_sha")
+    if local_sha and stored_sha and local_sha != stored_sha:
+        click.echo(
+            f"# local HEAD ({local_sha}) differs from the last deployed "
+            f"commit ({stored_sha}) at {path}",
+            err=True,
+        )
+    if _git_is_dirty(path):
+        click.echo(f"# working tree at {path} has uncommitted changes", err=True)
+    click.echo(f"# redeploying {uc_name} from {path}", err=True)
+    result = subprocess.run(
+        ["apx-agent", "agents", "deploy", *extra_args], cwd=str(path),
+    )
+    raise click.exceptions.Exit(result.returncode)
 
 
 # ---------------------------------------------------------------------------
@@ -9051,7 +9288,7 @@ def test_cmd(
         from mlflow.types.agent import ChatAgentMessage
     except ImportError as e:
         raise click.ClickException(
-            "apx-agent test requires the eval extra (mlflow). "
+            "apx-agent eval test requires the eval extra (mlflow). "
             "Install with: uv add 'apx-agent[eval]'"
         ) from e
 
@@ -9365,7 +9602,7 @@ def list_agents_cmd(
 
     if not rows:
         click.echo("No apx agents found in this workspace.")
-        click.echo("Deploy one with:  apx-agent deploy")
+        click.echo("Deploy one with:  apx-agent agents deploy")
         click.echo("Then run this command again to see it here.")
         return
 
@@ -9798,6 +10035,9 @@ def _registry_row_age(updated_at: Any) -> str:
                    "Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks CLI profile (~/.databrickscfg).")
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit a single JSON result object on stdout "
+                   "(ok/deleted/errors) instead of progress text.")
 def delete_agent_cmd(
     uc_name: str,
     endpoint_name: str | None,
@@ -9807,6 +10047,7 @@ def delete_agent_cmd(
     registry_table: str | None,
     tools_table: str | None,
     profile: str | None,
+    as_json: bool,
 ) -> None:
     """Delete a deployed agent — UC model registration, serving endpoint, and app.
 
@@ -9840,6 +10081,11 @@ def delete_agent_cmd(
 
     Pass --yes to skip the interactive confirmation prompt.
     """
+    def _out(msg: str) -> None:
+        # Progress/notice text: routed to stderr under --json so stdout
+        # carries only the final JSON object.
+        click.echo(msg, err=as_json)
+
     ws, ws_cfg = _connect_workspace(profile)
 
     # Resolve endpoint and app from UC tags when not explicitly given.
@@ -9879,9 +10125,9 @@ def delete_agent_cmd(
 
     registry_ready = False
     if not victim_agent_ids:
-        click.echo(
+        _out(
             "Notice: registry cleanup skipped (no endpoint or app name to "
-            "derive the agent's registry rows from).",
+            "derive the agent's registry rows from)."
         )
     else:
         try:
@@ -9890,15 +10136,15 @@ def delete_agent_cmd(
                 and ws.tables.exists(tools_table).table_exists is True
             )
         except Exception as exc:
-            click.echo(
+            _out(
                 f"Notice: registry cleanup skipped (could not check "
-                f"{registry_table} / {tools_table}: {exc})",
+                f"{registry_table} / {tools_table}: {exc})"
             )
         else:
             if not registry_ready:
-                click.echo(
+                _out(
                     f"Notice: registry cleanup skipped ({registry_table} / "
-                    f"{tools_table} not found — nothing advertised).",
+                    f"{tools_table} not found — nothing advertised)."
                 )
 
     dependents: list[dict[str, Any]] = []
@@ -10031,7 +10277,7 @@ def delete_agent_cmd(
         )
 
     for notice in purge_notices:
-        click.echo(notice)
+        _out(notice)
 
     # Dependents warning — deleting an agent that others route to is silent
     # breakage, so surface it (with row staleness) before asking to proceed.
@@ -10041,29 +10287,31 @@ def delete_agent_cmd(
             key = (str(dep["agent"] or "(unknown agent)"), str(dep["via"] or "(unknown reference)"))
             seen.setdefault(key, dep["updated_at"])
         n_agents = len({agent for agent, _ in seen})
-        click.echo(
+        _out(
             f"Warning: {n_agents} other agent(s) reference this one — "
             "deleting it will break their routing:"
         )
         for (agent, via), updated_at in sorted(seen.items()):
-            click.echo(
+            _out(
                 f"  • {agent} (via {via}, last advertised "
                 f"{_registry_row_age(updated_at)})"
             )
 
     if not assume_yes:
-        click.echo("This will permanently delete:")
+        _out("This will permanently delete:")
         for line in to_delete:
-            click.echo(line)
+            _out(line)
         click.confirm("Proceed?", abort=True)
 
     errors: list[str] = []
+    deleted: list[str] = []
 
     # 1. Delete the serving endpoint first (it holds the model version lock).
     if resolved_endpoint:
         try:
             ws.serving_endpoints.delete(resolved_endpoint)
-            click.echo(f"Deleted endpoint: {resolved_endpoint}")
+            deleted.append(f"endpoint:{resolved_endpoint}")
+            _out(f"Deleted endpoint: {resolved_endpoint}")
         except Exception as exc:
             errors.append(f"endpoint {resolved_endpoint!r}: {exc}")
             click.echo(f"Warning: could not delete endpoint {resolved_endpoint!r}: {exc}", err=True)
@@ -10071,7 +10319,8 @@ def delete_agent_cmd(
     # 2. Delete the registered model (all versions).
     try:
         ws.registered_models.delete(uc_name)
-        click.echo(f"Deleted UC model: {uc_name}")
+        deleted.append(f"uc_model:{uc_name}")
+        _out(f"Deleted UC model: {uc_name}")
     except Exception as exc:
         errors.append(f"UC model {uc_name!r}: {exc}")
         click.echo(f"Warning: could not delete UC model {uc_name!r}: {exc}", err=True)
@@ -10080,7 +10329,8 @@ def delete_agent_cmd(
     if resolved_app:
         try:
             ws.apps.delete(resolved_app)
-            click.echo(f"Deleted app: {resolved_app}")
+            deleted.append(f"app:{resolved_app}")
+            _out(f"Deleted app: {resolved_app}")
         except Exception as exc:
             errors.append(f"app {resolved_app!r}: {exc}")
             click.echo(f"Warning: could not delete app {resolved_app!r}: {exc}", err=True)
@@ -10094,7 +10344,8 @@ def delete_agent_cmd(
                     agent_id=victim_id,
                     registry_table=registry_table, tools_table=tools_table, ws=ws,
                 )
-                click.echo(f"Removed advertise-registry rows for agent_id: {victim_id}")
+                deleted.append(f"registry_rows:{victim_id}")
+                _out(f"Removed advertise-registry rows for agent_id: {victim_id}")
             except Exception as exc:
                 errors.append(f"registry rows {victim_id!r}: {exc}")
                 click.echo(
@@ -10106,7 +10357,8 @@ def delete_agent_cmd(
     for capp in canary_apps:
         try:
             ws.apps.delete(capp)
-            click.echo(f"Deleted canary app: {capp}")
+            deleted.append(f"canary_app:{capp}")
+            _out(f"Deleted canary app: {capp}")
         except Exception as exc:
             errors.append(f"canary app {capp!r}: {exc}")
             click.echo(f"Warning: could not delete canary app {capp!r}: {exc}", err=True)
@@ -10114,7 +10366,8 @@ def delete_agent_cmd(
     if experiment_id:
         try:
             ws.experiments.delete_experiment(experiment_id)
-            click.echo(f"Deleted MLflow experiment: {experiment_id}")
+            deleted.append(f"experiment:{experiment_id}")
+            _out(f"Deleted MLflow experiment: {experiment_id}")
         except Exception as exc:
             errors.append(f"experiment {experiment_id!r}: {exc}")
             click.echo(
@@ -10125,13 +10378,20 @@ def delete_agent_cmd(
     if bundle_path:
         try:
             ws.workspace.delete(bundle_path, recursive=True)
-            click.echo(f"Deleted bundle workspace files: {bundle_path}")
+            deleted.append(f"bundle_files:{bundle_path}")
+            _out(f"Deleted bundle workspace files: {bundle_path}")
         except Exception as exc:
             errors.append(f"bundle files {bundle_path!r}: {exc}")
             click.echo(
                 f"Warning: could not delete bundle files {bundle_path!r}: {exc}",
                 err=True,
             )
+
+    if as_json:
+        click.echo(json.dumps({"ok": not errors, "deleted": deleted, "errors": errors}))
+        if errors:
+            raise click.exceptions.Exit(1)
+        return
 
     if errors:
         raise click.ClickException(
@@ -10145,10 +10405,11 @@ def delete_agent_cmd(
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-@click.pass_context
-def list_catalogs_cmd(ctx: click.Context, fmt: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def list_catalogs_cmd(fmt: str, profile: str | None) -> None:
     """List Unity Catalog catalogs accessible in this workspace."""
-    ws = _require_sdk((ctx.obj or {}).get("profile"))
+    ws = _require_sdk(profile)
     catalogs = _ws_list_catalogs(ws)
 
     if fmt == "json":
@@ -10170,10 +10431,11 @@ def list_catalogs_cmd(ctx: click.Context, fmt: str) -> None:
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-@click.pass_context
-def list_schemas_cmd(ctx: click.Context, catalog: str, fmt: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def list_schemas_cmd(catalog: str, fmt: str, profile: str | None) -> None:
     """List schemas in CATALOG."""
-    ws = _require_sdk((ctx.obj or {}).get("profile"))
+    ws = _require_sdk(profile)
     schemas = _ws_list_schemas(ws, catalog)
 
     if fmt == "json":
@@ -10195,10 +10457,11 @@ def list_schemas_cmd(ctx: click.Context, catalog: str, fmt: str) -> None:
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-@click.pass_context
-def list_tables_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def list_tables_cmd(catalog: str, schema: str, fmt: str, profile: str | None) -> None:
     """List tables in CATALOG.SCHEMA."""
-    ws = _require_sdk((ctx.obj or {}).get("profile"))
+    ws = _require_sdk(profile)
     tables = _ws_list_tables(ws, catalog, schema)
 
     if fmt == "json":
@@ -10233,14 +10496,15 @@ def list_tables_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> 
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-@click.pass_context
-def list_tools_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def list_tools_cmd(catalog: str, schema: str, fmt: str, profile: str | None) -> None:
     """List UC functions in CATALOG.SCHEMA (available as agent tools).
 
-    These are the functions ``apx-agent publish-tools`` registers and that
+    These are the functions ``apx-agent uc publish`` registers and that
     DataAgent / CoworkerAgent can call when ``include_functions=True``.
     """
-    ws = _require_sdk((ctx.obj or {}).get("profile"))
+    ws = _require_sdk(profile)
     fns = _ws_list_functions(ws, catalog, schema)
 
     if fmt == "json":
@@ -10257,7 +10521,7 @@ def list_tools_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> N
 
     if not fns:
         click.echo(f"No UC functions found in {catalog}.{schema}.")
-        click.echo(f"Publish tools from your agent with:  apx-agent publish-tools")
+        click.echo("Publish tools from your agent with:  apx-agent uc publish")
         return
     click.echo(f"{'FUNCTION':<50}  COMMENT")
     for f in fns:
@@ -10278,8 +10542,9 @@ def list_tools_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> N
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-@click.pass_context
-def uc_validate_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> None:
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+def uc_validate_cmd(catalog: str, schema: str, fmt: str, profile: str | None) -> None:
     """Check Unity Catalog permissions required to deploy an agent.
 
     Verifies the current user has:
@@ -10292,7 +10557,7 @@ def uc_validate_cmd(ctx: click.Context, catalog: str, schema: str, fmt: str) -> 
 
     Exits non-zero if any required permission appears to be missing.
     """
-    ws = _require_sdk((ctx.obj or {}).get("profile"))
+    ws = _require_sdk(profile)
 
     checks: list[dict[str, Any]] = []
 
@@ -10532,8 +10797,8 @@ def topology(
         if catalog:
             scope = f" in {catalog}" + (f".{schema}" if schema else "")
         click.echo(f"No apx-tagged agents found{scope}.")
-        click.echo("Agents appear here after `apx-agent deploy` writes apx.agent.* UC tags.")
-        click.echo("Deploy one with:  apx-agent deploy")
+        click.echo("Agents appear here after `apx-agent agents deploy` writes apx.agent.* UC tags.")
+        click.echo("Deploy one with:  apx-agent agents deploy")
         return
 
     text = render_topology(topo, format=cast("Literal['mermaid', 'graphviz']", fmt))
@@ -10894,6 +11159,8 @@ def fleet_list_cmd(
 @click.option("--remove", "remove_keys", multiple=True,
               help="Label key to remove (repeatable).")
 @click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]),
+              default="text", help="Output format.")
 def fleet_tag_cmd(
     catalog: str | None,
     schema: str | None,
@@ -10904,6 +11171,7 @@ def fleet_tag_cmd(
     set_pairs: tuple[str, ...],
     remove_keys: tuple[str, ...],
     apply: bool,
+    fmt: str,
 ) -> None:
     """Set or remove user labels (apx.label.*) across the selection."""
     from apx_agent import _fleet
@@ -10951,10 +11219,11 @@ def fleet_tag_cmd(
         except Exception as e:  # continue + report
             outcomes.append(_fleet.AgentOutcome(a.uc_name, "failed", str(e)))
 
-    text, code = _fleet.render_summary(outcomes, apply=apply)
-    click.echo(text)
-    if code:
-        raise SystemExit(code)
+    render = _fleet.render_summary_json if fmt == "json" else _fleet.render_summary
+    rendered = render(outcomes, apply=apply)
+    click.echo(rendered.text)
+    if rendered.exit_code:
+        raise SystemExit(rendered.exit_code)
 
 
 @fleet.command("backfill")
@@ -10967,12 +11236,15 @@ def fleet_tag_cmd(
 @click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks config profile.")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]),
+              default="text", help="Output format.")
 def fleet_backfill_cmd(
     uc_names: tuple[str, ...],
     agent_name: str | None,
     app_name: str | None,
     apply: bool,
     profile: str | None,
+    fmt: str,
 ) -> None:
     """Stamp missing identity/discovery tags onto agents that predate tagging.
 
@@ -11007,12 +11279,13 @@ def fleet_backfill_cmd(
         except Exception as e:
             outcomes.append(_fleet.AgentOutcome(uc, "failed", str(e)))
 
-    text, code = _fleet.render_summary(outcomes, apply=apply)
-    click.echo(text)
-    if not apply:
+    render = _fleet.render_summary_json if fmt == "json" else _fleet.render_summary
+    rendered = render(outcomes, apply=apply)
+    click.echo(rendered.text)
+    if not apply and fmt != "json":
         click.echo("Note: backfill cannot reconstruct tools/resources/metadata.")
-    if code:
-        raise SystemExit(code)
+    if rendered.exit_code:
+        raise SystemExit(rendered.exit_code)
 
 
 def _do_fleet_repoint(
@@ -11024,6 +11297,7 @@ def _do_fleet_repoint(
     profile: str | None,
     apply: bool,
     fail_fast: bool,
+    fmt: str = "text",
 ) -> None:
     """Shared by `fleet repoint` and the deprecated `fleet redeploy` alias."""
     from apx_agent import _apps_registry, _fleet
@@ -11062,16 +11336,19 @@ def _do_fleet_repoint(
             if fail_fast:
                 break
 
-    text, code = _fleet.render_summary(outcomes, apply=apply)
-    click.echo(text)
-    if code:
-        raise SystemExit(code)
+    render = _fleet.render_summary_json if fmt == "json" else _fleet.render_summary
+    rendered = render(outcomes, apply=apply)
+    click.echo(rendered.text)
+    if rendered.exit_code:
+        raise SystemExit(rendered.exit_code)
 
 
 @fleet.command("repoint")
 @_fleet_select_options
 @click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
 @click.option("--fail-fast", is_flag=True, help="Stop at the first failure.")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]),
+              default="text", help="Output format.")
 def fleet_repoint_cmd(
     catalog: str | None,
     schema: str | None,
@@ -11081,6 +11358,7 @@ def fleet_repoint_cmd(
     profile: str | None,
     apply: bool,
     fail_fast: bool,
+    fmt: str,
 ) -> None:
     """Move each selected agent's @prod UC alias to its latest prod version.
 
@@ -11098,7 +11376,7 @@ def fleet_repoint_cmd(
     _do_fleet_repoint(
         catalog=catalog, schema=schema, name_glob=name_glob,
         where_exprs=where_exprs, uc_names=uc_names, profile=profile,
-        apply=apply, fail_fast=fail_fast,
+        apply=apply, fail_fast=fail_fast, fmt=fmt,
     )
 
 
@@ -11106,6 +11384,8 @@ def fleet_repoint_cmd(
 @_fleet_select_options
 @click.option("--apply", is_flag=True, help="Execute. Without it, dry-run.")
 @click.option("--fail-fast", is_flag=True, help="Stop at the first failure.")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]),
+              default="text", help="Output format.")
 def fleet_redeploy_cmd(
     catalog: str | None,
     schema: str | None,
@@ -11115,6 +11395,7 @@ def fleet_redeploy_cmd(
     profile: str | None,
     apply: bool,
     fail_fast: bool,
+    fmt: str,
 ) -> None:
     """DEPRECATED — renamed to ``fleet repoint``. This alias still works."""
     click.echo(
@@ -11125,7 +11406,7 @@ def fleet_redeploy_cmd(
     _do_fleet_repoint(
         catalog=catalog, schema=schema, name_glob=name_glob,
         where_exprs=where_exprs, uc_names=uc_names, profile=profile,
-        apply=apply, fail_fast=fail_fast,
+        apply=apply, fail_fast=fail_fast, fmt=fmt,
     )
 
 

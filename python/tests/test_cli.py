@@ -395,6 +395,93 @@ def test_publish_tools_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert "agent_consumers" in result.output  # the grant is printed
 
 
+def test_publish_tools_registry_failure_fails_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Issue #528: a registry-write failure used to only print a yellow
+    # warning and still exit 0 — inconsistent with deploy's step-outcome
+    # ledger, where a best-effort sub-step failure still fails the command.
+    from apx_agent._tool_publish import PublishResult
+
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_result = PublishResult(
+        uc_name="main.tools.classify_intent", function_name="classify_intent",
+        grants_applied=("agent_consumers",),
+    )
+    runner = CliRunner()
+    with patch("apx_agent.publish_tools_to_uc", return_value=[fake_result]), \
+         patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
+         patch("apx_agent._publish.publish_standalone_tools_to_registry",
+               side_effect=RuntimeError("permission denied")):
+        result = runner.invoke(
+            main, ["uc", "publish", "--module", "tmp_test_agent:agent"],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code != 0
+    assert "Tools registry write failed" in result.output
+    assert "permission denied" in result.output
+
+
+def test_publish_tools_json_output_reports_registry_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent._tool_publish import PublishResult
+
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_result = PublishResult(
+        uc_name="main.tools.classify_intent", function_name="classify_intent",
+        grants_applied=("agent_consumers",),
+    )
+    runner = CliRunner()
+    with patch("apx_agent.publish_tools_to_uc", return_value=[fake_result]), \
+         patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
+         patch("apx_agent._publish.publish_standalone_tools_to_registry",
+               side_effect=RuntimeError("permission denied")):
+        result = runner.invoke(
+            main, ["uc", "publish", "--module", "tmp_test_agent:agent", "--json-output"],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["registry_error"] == "permission denied"
+    assert payload["published"][0]["uc_name"] == "main.tools.classify_intent"
+
+
+def test_publish_tools_json_output_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent._tool_publish import PublishResult
+
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    fake_result = PublishResult(
+        uc_name="main.tools.classify_intent", function_name="classify_intent",
+        grants_applied=("agent_consumers",),
+    )
+    runner = CliRunner()
+    with patch("apx_agent.publish_tools_to_uc", return_value=[fake_result]), \
+         patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
+         patch("apx_agent._publish.publish_standalone_tools_to_registry", return_value=1):
+        result = runner.invoke(
+            main, ["uc", "publish", "--module", "tmp_test_agent:agent", "--json-output"],
+        )
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["registry"] == {"table": "main.apx.agent_tools", "count": 1}
+    assert payload["registry_error"] is None
+
+
 # ---------------------------------------------------------------------------
 # `apx info`
 # ---------------------------------------------------------------------------
@@ -1369,6 +1456,50 @@ def test_timeout_flag_reaches_serving_health_gate(
 
     assert result.exit_code == 0, result.output
     assert gate.call_args.kwargs["timeout_seconds"] == 77
+
+
+def test_successful_model_serving_deploy_records_local_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_path = tmp_path / "deploy-history.json"
+    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
+
+    ws = MagicMock()
+    ws.serving_endpoints.get.return_value = _endpoint_state("READY", "NOT_UPDATING")
+    ws.serving_endpoints.query.return_value = SimpleNamespace(choices=[])
+
+    result = _invoke_serving_deploy_with_gate(tmp_path, monkeypatch, [], ws=ws)
+
+    assert result.exit_code == 0, result.output
+    entry = json.loads(history_path.read_text())["main.agents.x"]
+    assert entry["path"] == str(tmp_path)
+    assert entry["target"] == "model-serving"
+
+
+def test_no_deploy_flag_records_no_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--no-deploy logs/registers a version but never actually deploys —
+    no history entry, since nothing is actually running."""
+    history_path = tmp_path / "deploy-history.json"
+    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
+
+    _write_agent_module(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
+
+    with patch("apx_agent.log_agent", fake_log_agent), patch("mlflow.start_run"):
+        result = CliRunner().invoke(main, [
+            "agents", "deploy", "--target", "model-serving",
+            "--module", "tmp_test_agent:agent",
+            "--model", "databricks-claude-sonnet-4-6",
+            "--name", "main.agents.x",
+            "--no-deploy", "--no-publish-tools",
+        ])
+    sys.modules.pop("tmp_test_agent", None)
+
+    assert result.exit_code == 0, result.output
+    assert not history_path.exists()
 
 
 def test_deploy_version_redeploys_logged_version_skipping_publish_and_log(
@@ -3508,6 +3639,43 @@ def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
     assert 'DataAgent("main", "sales"' not in agent_py
 
 
+def test_scaffold_builds_workspace_client_once_across_branches(tmp_path, monkeypatch) -> None:
+    """#522: a flag combo that reaches both the explicit-sanity-check branch
+    and the interactive-wizard branch must construct the scaffold-time
+    WorkspaceClient once, not once per branch."""
+    from apx_agent import cli
+
+    calls = {"n": 0}
+
+    def _counting_ws(profile):
+        calls["n"] += 1
+        return object()
+
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", _counting_ws)
+    # Keep the branches cheap and offline: the sanity check and wizard both
+    # receive the cached client; stub their side effects out.
+    monkeypatch.setattr(cli, "_scaffold_sanity_check", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli, "_scaffold_wizard",
+        lambda ws, target, template, catalog, schema: (
+            "apps", "data", catalog, schema, None, None, None,
+        ),
+    )
+    monkeypatch.setattr(cli, "_probe_first_table", lambda *a, **k: None)
+    # Stop at the project writer — the manifest step is a separate helper with
+    # its own client (out of #522's branch-dedup scope); isolate the branches.
+    monkeypatch.setattr(cli, "_scaffold_apps", lambda *a, **k: None)
+
+    result = CliRunner().invoke(main, [
+        "agents", "scaffold", "ag",
+        "--template", "data", "--catalog", "main", "--schema", "sales",
+        "--interactive", "--dir", str(tmp_path),
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert calls["n"] == 1, f"expected one WorkspaceClient build, got {calls['n']}"
+
+
 def test_splice_tool_wires_into_dataagent_extra_tools() -> None:
     """A generated tool attaches to a DataAgent via extra_tools= (no tools=
     list exists), and the result is valid Python. Regression for the orphaned
@@ -3679,7 +3847,7 @@ def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
     out = result.output
     assert "cd my-agent" in out
     assert "uv sync" in out
-    assert "apx-agent run" in out
+    assert "apx-agent agents run" in out
 
 
 # ---------------------------------------------------------------------------
@@ -4101,9 +4269,127 @@ def test_apx_info_lists_config_tools(
 
 
 # ---------------------------------------------------------------------------
-# apps-deploy path — config-declared tools governance (E2 declarative tools,
-# Task 10)
+# databricks.yml merge writers preserve comments/formatting (#527)
 # ---------------------------------------------------------------------------
+
+
+class TestDatabricksYmlMergePreservesComments:
+    _SEED = (
+        "# top-level comment: do not remove me\n"
+        "bundle:\n"
+        "  name: my-agent\n"
+        "\n"
+        "resources:\n"
+        "  apps:\n"
+        "    my-agent:\n"
+        "      name: my-agent  # inline comment\n"
+        "      # a note about this block\n"
+        "      config: {}\n"
+    )
+
+    def test_merge_env_preserves_comments(self, tmp_path):
+        from apx_agent.cli import _merge_env_into_databricks_yml, _EnvPair
+
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(self._SEED)
+
+        result = _merge_env_into_databricks_yml(
+            tmp_path,
+            bundle_key="my-agent",
+            env_pairs=[_EnvPair(name="FOO", value="bar")],
+            secret_env_pairs=[],
+            log=lambda msg: None,
+        )
+
+        out = yml_path.read_text()
+        assert "# top-level comment: do not remove me" in out
+        assert "# inline comment" in out
+        assert "# a note about this block" in out
+        assert "FOO" in out
+        assert result.env_added == ["FOO"]
+
+    def test_merge_env_quotes_yaml_ambiguous_values(self, tmp_path):
+        # ruamel's round-trip dumper does not auto-quote plain scalars that
+        # YAML's implicit resolver would misread as bool/null/number on
+        # reload (on/off/yes/no/true/false/null/123) — unlike yaml.safe_dump,
+        # which does. Left unquoted, --env FLAG=on would silently become the
+        # Python bool True (not the string "on") the next time this file is
+        # read. Covers both --env and --secret-env free-text fields.
+        import yaml as pyyaml
+        from apx_agent.cli import _merge_env_into_databricks_yml, _EnvPair, _SecretEnvRef
+
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(
+            "resources:\n"
+            "  apps:\n"
+            "    my-agent:\n"
+            "      name: my-agent\n"
+            "      config: {}\n"
+        )
+
+        _merge_env_into_databricks_yml(
+            tmp_path,
+            bundle_key="my-agent",
+            env_pairs=[_EnvPair(name="FEATURE_FLAG", value="on"), _EnvPair(name="123", value="123")],
+            secret_env_pairs=[_SecretEnvRef(name="NO", scope="yes", key="true")],
+            log=lambda msg: None,
+        )
+
+        reloaded = pyyaml.safe_load(yml_path.read_text())
+        app = reloaded["resources"]["apps"]["my-agent"]
+        env_by_name = {e["name"]: e.get("value") for e in app["config"]["env"]}
+        assert env_by_name == {"FEATURE_FLAG": "on", "123": "123", "NO": None}
+        secret_resource = next(r["secret"] for r in app["resources"] if "secret" in r)
+        assert secret_resource["scope"] == "yes"
+        assert secret_resource["key"] == "true"
+
+    def test_merge_env_never_clobbers_existing_entry(self, tmp_path):
+        from apx_agent.cli import _merge_env_into_databricks_yml, _EnvPair
+
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(
+            "resources:\n"
+            "  apps:\n"
+            "    my-agent:\n"
+            "      name: my-agent\n"
+            "      config:\n"
+            "        env:\n"
+            "        - name: FOO\n"
+            "          value: original\n"
+        )
+
+        result = _merge_env_into_databricks_yml(
+            tmp_path,
+            bundle_key="my-agent",
+            env_pairs=[_EnvPair(name="FOO", value="new")],
+            secret_env_pairs=[],
+            log=lambda msg: None,
+        )
+
+        assert result.skipped == ["FOO"]
+        assert "original" in yml_path.read_text()
+        assert "new" not in yml_path.read_text()
+
+    def test_auto_update_yml_preserves_comments(self, tmp_path, monkeypatch):
+        from apx_agent.cli import _auto_update_databricks_yml
+
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(self._SEED)
+        monkeypatch.setattr(
+            "apx_agent._resources.collect_resource_specs", lambda agent: [],
+        )
+        monkeypatch.setattr(
+            "apx_agent._resources.user_api_scopes_for", lambda specs: [],
+        )
+
+        _auto_update_databricks_yml(
+            tmp_path, agent=object(), bundle_key="my-agent", log=lambda msg: None,
+        )
+
+        out = yml_path.read_text()
+        assert "# top-level comment: do not remove me" in out
+        assert "# inline comment" in out
+        assert "# a note about this block" in out
 
 
 def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
@@ -4368,33 +4654,6 @@ class TestScaffoldSchemaManifest:
         assert not (tmp_path / ".apx" / "schema.json").exists()
 
 
-class TestRefreshSchema:
-    def test_refresh_rewrites_manifest(self, tmp_path, monkeypatch):
-        import json
-        from click.testing import CliRunner
-        from apx_agent import cli
-        # existing manifest pins samples.tpch
-        d = tmp_path / ".apx"; d.mkdir()
-        (d / "schema.json").write_text(json.dumps(
-            {"catalog": "samples", "schema": "tpch", "tables": {"old": ["a(int)"]}}))
-        monkeypatch.setattr(
-            cli, "_schema_manifest_for_scaffold",
-            lambda c, s, profile=None: {"catalog": c, "schema": s, "tables": {"new": ["b(int)"]}},
-        )
-        monkeypatch.chdir(tmp_path)
-        res = CliRunner().invoke(cli.main, ["agents", "refresh-schema"])
-        assert res.exit_code == 0, res.output
-        assert json.loads((d / "schema.json").read_text())["tables"] == {"new": ["b(int)"]}
-
-    def test_refresh_errors_without_existing_manifest(self, tmp_path, monkeypatch):
-        from click.testing import CliRunner
-        from apx_agent import cli
-        monkeypatch.chdir(tmp_path)
-        res = CliRunner().invoke(cli.main, ["agents", "refresh-schema"])
-        assert res.exit_code != 0
-        assert "no .apx/schema.json" in res.output.lower()
-
-
 class TestScaffoldCoworker:
     def test_apps_coworker_agent_py(self, tmp_path, monkeypatch):
         from apx_agent import cli
@@ -4540,6 +4799,52 @@ class TestRefreshSchema:
         result = CliRunner().invoke(main, ["agents", "refresh-schema"])
         assert result.exit_code != 0
         assert "could not read tables" in result.output or "check your profile" in result.output
+
+    def test_default_yaml_scaffold_error_points_to_target_flag(self, tmp_path, monkeypatch):
+        # Issue #520: the default `agents scaffold NAME` (no --target) writes
+        # only a YAML spec, never .apx/schema.json. The error from
+        # refresh-schema after that default scaffold must point at the flag
+        # that actually produces a project scaffold (--target), not repeat
+        # the bare `apx-agent scaffold <name>` invocation that doesn't work.
+        runner = CliRunner()
+        scaffold_result = runner.invoke(main, [
+            "agents", "scaffold", "my-agent",
+            "--template", "base",
+            "--no-interactive",
+            "--dir", str(tmp_path),
+        ])
+        assert scaffold_result.exit_code == 0, scaffold_result.output
+        assert not (tmp_path / "my-agent" / ".apx" / "schema.json").exists()
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["agents", "refresh-schema"])
+        assert result.exit_code != 0
+        assert "--target" in result.output
+
+    def test_full_project_scaffold_then_refresh_schema_chain(self, tmp_path, monkeypatch):
+        # Issue #520: the real --target apps scaffold DOES chain into
+        # refresh-schema, unlike the default YAML scaffold above.
+        from apx_agent import cli
+
+        manifest = {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)"]}}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: manifest)
+        runner = CliRunner()
+        scaffold_result = runner.invoke(main, [
+            "agents", "scaffold", "proj",
+            "--target", "apps",
+            "--catalog", "c", "--schema", "s",
+            "--no-interactive",
+            "--dir", str(tmp_path),
+        ], catch_exceptions=False, env={"DATABRICKS_CONFIG_PROFILE": "__none__"})
+        assert scaffold_result.exit_code == 0, scaffold_result.output
+        target = tmp_path / "proj"
+        assert (target / ".apx" / "schema.json").is_file()
+
+        monkeypatch.chdir(target)
+        refreshed_manifest = {"catalog": "c", "schema": "s", "tables": {"t": ["a(int)", "b(text)"]}}
+        monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: refreshed_manifest)
+        result = CliRunner().invoke(main, ["agents", "refresh-schema"])
+        assert result.exit_code == 0, result.output
 
 
 # ---------------------------------------------------------------------------
@@ -5246,6 +5551,47 @@ class TestAgentsDelete:
         # Registered model delete must have been called
         fake_ws.registered_models.delete.assert_called_once_with("main.schema.my_model")
 
+    def test_json_output_reports_deleted_and_ok(self):
+        # Issue #531: --json emits a single structured result instead of
+        # progress text, so automation can tell exactly what succeeded.
+        fake_ws = MagicMock()
+        fake_model = SimpleNamespace(tags=[
+            SimpleNamespace(key="apx.agent.name", value="my-agent"),
+            SimpleNamespace(key="apx.agent.model", value="my-ep"),
+        ])
+        fake_ws.registered_models.get.return_value = fake_model
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--yes", "--json",
+            ])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        assert "endpoint:my-ep" in payload["deleted"]
+        assert "uc_model:main.schema.my_model" in payload["deleted"]
+        assert payload["errors"] == []
+
+    def test_json_output_reports_failure_and_nonzero_exit(self):
+        fake_ws = MagicMock()
+        fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[])
+        fake_ws.registered_models.delete.side_effect = RuntimeError("locked")
+
+        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
+            result = CliRunner().invoke(main, [
+                "agents", "delete",
+                "--uc-name", "main.schema.my_model",
+                "--yes", "--json",
+            ])
+
+        assert result.exit_code != 0
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert any("locked" in e for e in payload["errors"])
+
     def test_with_explicit_endpoint_and_app(self):
         fake_ws = MagicMock()
         fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[])
@@ -5658,6 +6004,148 @@ class TestAgentsDelete:
 # ---------------------------------------------------------------------------
 # `apx-agent uc validate`
 # ---------------------------------------------------------------------------
+
+
+class TestWsListHelpersSurfaceErrors:
+    # Issue #523: these helpers used to swallow every exception with a bare
+    # `except Exception: return []`/`None`, so an expired token or a network
+    # error looked identical to "genuinely empty" — a user would debug the
+    # wrong problem. They now print a warning to stderr before falling back.
+
+    def test_ws_list_catalogs_warns_on_exception(self, capsys):
+        from apx_agent import cli
+
+        ws = MagicMock()
+        ws.catalogs.list.side_effect = RuntimeError("token expired")
+
+        result = cli._ws_list_catalogs(ws)
+
+        assert result == []
+        assert "token expired" in capsys.readouterr().err
+
+    def test_ws_list_schemas_warns_on_exception(self, capsys):
+        from apx_agent import cli
+
+        ws = MagicMock()
+        ws.schemas.list.side_effect = RuntimeError("permission denied")
+
+        result = cli._ws_list_schemas(ws, "mycat")
+
+        assert result == []
+        captured = capsys.readouterr().err
+        assert "permission denied" in captured
+        assert "mycat" in captured
+
+    def test_ws_list_tables_warns_on_exception(self, capsys):
+        from apx_agent import cli
+
+        ws = MagicMock()
+        ws.tables.list.side_effect = RuntimeError("network down")
+
+        result = cli._ws_list_tables(ws, "c", "s")
+
+        assert result == []
+        captured = capsys.readouterr().err
+        assert "network down" in captured
+        assert "c.s" in captured
+
+    def test_ws_list_functions_warns_on_exception(self, capsys):
+        from apx_agent import cli
+
+        ws = MagicMock()
+        ws.functions.list.side_effect = RuntimeError("network down")
+
+        result = cli._ws_list_functions(ws, "c", "s")
+
+        assert result == []
+        captured = capsys.readouterr().err
+        assert "network down" in captured
+        assert "c.s" in captured
+
+    def test_make_ws_for_scaffold_warns_on_exception(self, monkeypatch, capsys):
+        from apx_agent import cli
+
+        def boom(*a, **k):
+            raise RuntimeError("no default auth")
+
+        monkeypatch.setattr("databricks.sdk.WorkspaceClient", boom)
+
+        result = cli._make_ws_for_scaffold(None)
+
+        assert result is None
+        assert "no default auth" in capsys.readouterr().err
+
+
+class TestUcProfileFlagPosition:
+    # Issue #529: --profile used to only work *before* the subcommand for
+    # catalogs/schemas/tables/tools/validate (group-level ctx.obj), while
+    # publish/topology required it *after* (their own leaf-level option) and
+    # silently ignored the group-level form. All uc subcommands now take a
+    # leaf-level --profile, matching the rest of the CLI.
+
+    def test_validate_leaf_level_profile_is_forwarded(self):
+        fake_ws = MagicMock()
+        with patch("apx_agent.cli._require_sdk", return_value=fake_ws) as require_sdk, \
+             patch("apx_agent.cli._ws_list_catalogs", return_value=["mycat"]), \
+             patch("apx_agent.cli._ws_list_schemas", return_value=["myschema"]), \
+             patch("apx_agent.cli._ws_list_tables", return_value=[SimpleNamespace(name="t1")]), \
+             patch.object(fake_ws.registered_models, "list", return_value=iter([])):
+            result = CliRunner().invoke(main, [
+                "uc", "validate", "--catalog", "mycat", "--schema", "myschema",
+                "--profile", "my-profile",
+            ])
+
+        assert result.exit_code == 0, result.output
+        require_sdk.assert_called_once_with("my-profile")
+
+    def test_catalogs_leaf_level_profile_is_forwarded(self):
+        with patch("apx_agent.cli._require_sdk", return_value=MagicMock()) as require_sdk, \
+             patch("apx_agent.cli._ws_list_catalogs", return_value=[]):
+            result = CliRunner().invoke(main, [
+                "uc", "catalogs", "--profile", "my-profile",
+            ])
+
+        assert result.exit_code == 0, result.output
+        require_sdk.assert_called_once_with("my-profile")
+
+    def test_uc_group_has_no_group_level_profile_option(self):
+        # A group-level --profile before the subcommand must no longer be
+        # accepted at all (it used to silently work for some subcommands
+        # and silently no-op for others -- now it's just an error).
+        result = CliRunner().invoke(main, [
+            "uc", "--profile", "my-profile", "catalogs",
+        ])
+        assert result.exit_code != 0
+
+    def test_topology_leaf_level_profile_is_forwarded(self):
+        # `topology` was one of the two subcommands (#529) that declared its
+        # own leaf-level --profile shadowing the removed group option. Pin
+        # that the leaf --profile actually reaches _connect_workspace.
+        fake_topo = SimpleNamespace(nodes=["a"], edges=[])
+        with patch("apx_agent.cli._connect_workspace",
+                   return_value=(MagicMock(), MagicMock())) as connect, \
+             patch("apx_agent.discover_topology", return_value=fake_topo), \
+             patch("apx_agent.render_topology", return_value="graph LR"):
+            result = CliRunner().invoke(main, [
+                "uc", "topology", "--profile", "my-profile",
+            ])
+
+        assert result.exit_code == 0, result.output
+        connect.assert_called_once_with("my-profile")
+
+    def test_publish_leaf_level_profile_is_forwarded(self):
+        # `publish` was the other #529 subcommand. It resolves the profile
+        # into DATABRICKS_CONFIG_PROFILE before doing any UC work; pin that
+        # the leaf --profile wins over the ambient environment.
+        with patch("apx_agent.cli._read_apx_agent_config", return_value={}), \
+             patch("apx_agent.cli._load_finalized_agent", return_value=MagicMock()), \
+             patch("apx_agent.publish_tools_to_uc", return_value=[]), \
+             patch.dict(os.environ, {"DATABRICKS_CONFIG_PROFILE": "ambient"}, clear=False):
+            result = CliRunner().invoke(main, [
+                "uc", "publish", "--profile", "my-profile",
+            ])
+            assert result.exit_code == 0, result.output
+            assert os.environ["DATABRICKS_CONFIG_PROFILE"] == "my-profile"
 
 
 class TestUcValidate:
@@ -7268,3 +7756,84 @@ def test_generate_prompts_only_for_classifier_flagged_missing_fields(tmp_path: P
     assert result.exit_code == 0, result.output
     assert "What should the agent surface?" in result.output
     assert (tmp_path / "sales-agent" / "agent.py").exists()
+
+
+# ---------------------------------------------------------------------------
+# Local deploy-history index (`agents redeploy` support)
+# ---------------------------------------------------------------------------
+
+
+class TestDeployHistoryIndex:
+    def test_record_then_load_round_trips(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: tmp_path / "deploy-history.json")
+
+        cli._record_deploy_history(
+            Path("/some/project"), "main.apx.my_agent", "apps",
+            {"apx.apps.git_sha": "abc123", "apx.git_dirty": "false"},
+        )
+
+        entry = cli._load_deploy_history_entry("main.apx.my_agent")
+        assert entry is not None
+        assert entry["path"] == "/some/project"
+        assert entry["target"] == "apps"
+        assert entry["git_sha"] == "abc123"
+        assert entry["git_dirty"] is False
+        assert "deployed_at" in entry
+
+    def test_record_overwrites_prior_entry_for_same_name(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: tmp_path / "deploy-history.json")
+
+        cli._record_deploy_history(Path("/old/path"), "main.apx.my_agent", "apps", {})
+        cli._record_deploy_history(Path("/new/path"), "main.apx.my_agent", "apps", {})
+
+        entry = cli._load_deploy_history_entry("main.apx.my_agent")
+        assert entry["path"] == "/new/path"
+
+    def test_record_missing_provenance_tags_stores_none(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: tmp_path / "deploy-history.json")
+
+        cli._record_deploy_history(Path("/p"), "main.apx.my_agent", "model-serving", {})
+
+        entry = cli._load_deploy_history_entry("main.apx.my_agent")
+        assert entry["git_sha"] is None
+        assert entry["git_dirty"] is None
+
+    def test_record_never_raises_on_write_failure(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        # Point at a path whose parent can't be created (a file, not a dir).
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory")
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: blocker / "sub" / "deploy-history.json")
+
+        cli._record_deploy_history(Path("/p"), "main.apx.my_agent", "apps", {})  # must not raise
+
+    def test_load_returns_none_for_missing_file(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: tmp_path / "does-not-exist.json")
+
+        assert cli._load_deploy_history_entry("main.apx.my_agent") is None
+
+    def test_load_returns_none_for_missing_key(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: tmp_path / "deploy-history.json")
+        cli._record_deploy_history(Path("/p"), "main.apx.other_agent", "apps", {})
+
+        assert cli._load_deploy_history_entry("main.apx.my_agent") is None
+
+    def test_load_returns_none_for_corrupt_json(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        path = tmp_path / "deploy-history.json"
+        path.write_text("{not valid json")
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: path)
+
+        assert cli._load_deploy_history_entry("main.apx.my_agent") is None

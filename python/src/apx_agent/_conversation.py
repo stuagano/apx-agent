@@ -428,20 +428,33 @@ class ConversationItem(BaseModel):
 def drop_orphaned_tool_outputs(
     items: list[ConversationItem],
 ) -> list[ConversationItem]:
-    """Drop a ``function_call_output`` whose ``call_id`` has no matching
-    ``function_call`` in ``items``.
+    """Drop any ``function_call``/``function_call_output`` whose ``call_id``
+    has no matching item on the other side, in ``items``.
 
-    An orphaned tool result — e.g. an approval turn persisted the tool result
-    while its ``function_call`` lived only in a checkpointer that is since gone —
-    replays as a tool message with no preceding tool call, which the LLM rejects
-    (Databricks-Claude 400s the whole request). Well-formed history is unchanged:
-    every stored result has its call, so nothing is dropped. Called at the head of
-    the two history-replay conversions (ChatAgent + ResponsesAgent).
+    Two orphan directions, same failure mode: replaying either a tool result
+    with no preceding call, or a tool call with no following result, produces
+    a message the LLM rejects (Databricks-Claude 400s the whole request —
+    "tool_use ids were found without tool_result blocks"). The result-without-
+    call case is an approval turn whose ``function_call`` lived only in a
+    checkpointer that is since gone. The call-without-result case is a tool
+    call whose output was never persisted — e.g. a crash or a race during
+    parallel tool execution left one of two parallel calls' output unwritten;
+    replayed alone (or coalesced with a sibling call sharing the same
+    response_id — see ``_conv_items_to_lc_messages``), it permanently
+    corrupts every later turn in that conversation until the orphan is
+    dropped. Well-formed history is unchanged: every stored call has its
+    result and vice versa, so nothing is dropped. Called at the head of the
+    two history-replay conversions (ChatAgent + ResponsesAgent).
     """
     call_ids = {
         it.data.call_id
         for it in items
         if it.type == "function_call" and isinstance(it.data, FunctionCallData)
+    }
+    output_call_ids = {
+        it.data.call_id
+        for it in items
+        if it.type == "function_call_output" and isinstance(it.data, FunctionCallOutputData)
     }
     return [
         it
@@ -450,6 +463,11 @@ def drop_orphaned_tool_outputs(
             it.type == "function_call_output"
             and isinstance(it.data, FunctionCallOutputData)
             and it.data.call_id not in call_ids
+        )
+        and not (
+            it.type == "function_call"
+            and isinstance(it.data, FunctionCallData)
+            and it.data.call_id not in output_call_ids
         )
     ]
 

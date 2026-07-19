@@ -700,6 +700,34 @@ def test_json_output_on_error_path(
     assert "error" in payload
 
 
+def test_json_output_on_validate_failure_includes_app_name(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Issue #526: reusing _json_cli_errors (extended with an `extra` param)
+    # must not drop the app_name context the hand-rolled version carried.
+    _install_subprocess_mock(monkeypatch, validate_rc=2)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--json-output",
+    ])
+    assert result.exit_code != 0
+    payload = json.loads(result.output.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["app_name"] == "my-app"
+
+
+def test_json_output_on_deploy_failure_includes_app_name(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_subprocess_mock(monkeypatch, deploy_rc=3)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--json-output",
+    ])
+    assert result.exit_code != 0
+    payload = json.loads(result.output.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["app_name"] == "my-app"
+
+
 def test_profile_is_passed_through(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -822,6 +850,71 @@ def test_register_uc_runs_once_when_configured(
     assert "registered main.agents.my_app version 3" in result.output
     # The apps path must never promote to a serving endpoint.
     assert not any(c[:2] == ["serving-endpoints", "create"] for c in calls_log)
+
+
+def test_successful_apps_deploy_records_local_history(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful --target apps deploy records a deploy-history entry
+    keyed by the resolved UC name, pointing at the local scaffold dir."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+
+    from apx_agent._apps_registry import AppsManifestResult
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.register_apps_manifest",
+        lambda agent, *, uc_name, model, app_name, bundle_target,
+               agent_name=None, extra_version_tags=None:
+            AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name),
+    )
+
+    history_path = scaffold / "deploy-history.json"
+    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
+
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--uc-name", "main.agents.my_app",
+    ])
+    assert result.exit_code == 0, result.output
+
+    entry = json.loads(history_path.read_text())["main.agents.my_app"]
+    assert entry["path"] == str(scaffold)
+    assert entry["target"] == "apps"
+
+
+def test_apps_deploy_with_no_resolvable_uc_name_records_no_history(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No catalog/schema, no pyproject model, no --uc-name → nothing to key
+    a history entry by, so none is written (and nothing raises)."""
+    history_path = scaffold / "deploy-history.json"
+    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
+
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+    assert result.exit_code == 0, result.output
+    assert not history_path.exists()
+
+
+def test_apps_deploy_with_no_register_uc_still_records_history(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--no-register-uc skips the UC version-manifest WRITE, but an explicit
+    --uc-name still resolves an identity — history is about "where does
+    this source live", independent of whether the UC write itself ran."""
+    history_path = scaffold / "deploy-history.json"
+    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
+
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps",
+        "--uc-name", "main.agents.my_app", "--no-register-uc",
+    ])
+    assert result.exit_code == 0, result.output
+
+    entry = json.loads(history_path.read_text())["main.agents.my_app"]
+    assert entry["path"] == str(scaffold)
 
 
 def test_register_uc_failure_is_non_fatal(
@@ -2197,3 +2290,98 @@ def test_readyz_retries_warns_under_model_serving(
     # The warning fires before the --model requirement aborts the command.
     assert "ignored with --target model-serving" in result.output
     assert "--readyz-retries" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent agents redeploy`
+# ---------------------------------------------------------------------------
+
+
+class TestAgentsRedeploy:
+    def test_unknown_name_errors_with_manual_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "apx_agent.cli._deploy_history_path", lambda: tmp_path / "deploy-history.json",
+        )
+        result = CliRunner().invoke(main, ["agents", "redeploy", "main.apx.unknown"])
+        assert result.exit_code != 0
+        assert "No local deploy history" in result.output
+        assert "apx-agent agents deploy" in result.output
+
+    def test_stale_path_errors_without_guessing(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+
+        history_path = tmp_path / "deploy-history.json"
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: history_path)
+        cli._record_deploy_history(
+            tmp_path / "moved-away", "main.apx.my_agent", "apps", {},
+        )
+
+        result = CliRunner().invoke(main, ["agents", "redeploy", "main.apx.my_agent"])
+        assert result.exit_code != 0
+        assert "no longer exists" in result.output.lower()
+
+    def test_valid_entry_shells_out_to_deploy_with_correct_cwd(
+        self, scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from apx_agent import cli
+
+        history_path = scaffold / "deploy-history.json"
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: history_path)
+        cli._record_deploy_history(scaffold, "main.apx.my_agent", "apps", {})
+
+        captured: dict[str, Any] = {}
+
+        def fake_run(args, cwd=None, **kwargs):
+            captured["args"] = args
+            captured["cwd"] = cwd
+            return subprocess.CompletedProcess(args, 0, stdout="")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        result = CliRunner().invoke(main, ["agents", "redeploy", "main.apx.my_agent"])
+        assert result.exit_code == 0, result.output
+        assert captured["args"] == ["apx-agent", "agents", "deploy"]
+        assert captured["cwd"] == str(scaffold)
+
+    def test_extra_args_forwarded_to_inner_deploy(
+        self, scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from apx_agent import cli
+
+        history_path = scaffold / "deploy-history.json"
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: history_path)
+        cli._record_deploy_history(scaffold, "main.apx.my_agent", "apps", {})
+
+        captured: dict[str, Any] = {}
+
+        def fake_run(args, cwd=None, **kwargs):
+            captured["args"] = args
+            return subprocess.CompletedProcess(args, 0, stdout="")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        result = CliRunner().invoke(main, [
+            "agents", "redeploy", "main.apx.my_agent",
+            "--env", "FOO=bar",
+        ])
+        assert result.exit_code == 0, result.output
+        assert captured["args"] == [
+            "apx-agent", "agents", "deploy", "--env", "FOO=bar",
+        ]
+
+    def test_inner_deploy_failure_exit_code_propagates(
+        self, scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from apx_agent import cli
+
+        history_path = scaffold / "deploy-history.json"
+        monkeypatch.setattr(cli, "_deploy_history_path", lambda: history_path)
+        cli._record_deploy_history(scaffold, "main.apx.my_agent", "apps", {})
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda args, cwd=None, **kwargs: subprocess.CompletedProcess(args, 1),
+        )
+
+        result = CliRunner().invoke(main, ["agents", "redeploy", "main.apx.my_agent"])
+        assert result.exit_code == 1

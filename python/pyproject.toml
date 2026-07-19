@@ -23,6 +23,10 @@ dependencies = [
     "langchain>=1.0.0",
     "langchain-core>=1.0.0",
     "databricks-langchain>=0.3.0",
+    # Round-trip YAML (preserves comments/quoting/blank lines) for the
+    # databricks.yml merge writers in cli.py — plain PyYAML safe_load/dump
+    # silently strips comments on every write (#527).
+    "ruamel.yaml>=0.18.0",
 ]
 
 [project.optional-dependencies]

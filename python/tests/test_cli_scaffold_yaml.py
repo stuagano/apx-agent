@@ -23,6 +23,44 @@ def test_scaffold_coworker_creates_agent_py(tmp_path):
     assert "CoworkerAgent(" in agent_py.read_text()
 
 
+def test_find_gallery_yaml_by_name_matches_file_stem():
+    from apx_agent.cli import _find_gallery_yaml_by_name
+
+    found = _find_gallery_yaml_by_name("payroll")
+    assert found is not None
+    assert found.stem == "payroll"
+
+
+def test_find_gallery_yaml_by_name_matches_declared_name():
+    from apx_agent.cli import _find_gallery_yaml_by_name
+
+    found = _find_gallery_yaml_by_name("payroll-coworker")
+    assert found is not None
+    assert found.stem == "payroll"
+
+
+def test_find_gallery_yaml_by_name_returns_none_when_missing():
+    from apx_agent.cli import _find_gallery_yaml_by_name
+
+    assert _find_gallery_yaml_by_name("does-not-exist") is None
+
+
+def test_scaffold_coworker_by_declared_gallery_name(tmp_path):
+    # --coworker <name> resolves by the YAML's declared `name` key, not just
+    # its file stem (payroll.yaml declares name: payroll-coworker), and
+    # materializes a full project directory (scaffold no longer emits a bare
+    # <name>.yaml — the gallery pick routes through _materialize_agent).
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "agents", "scaffold", "my-payroll-agent",
+        "--coworker", "payroll-coworker",
+        "--no-interactive",
+        "--dir", str(tmp_path),
+    ])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "my-payroll-agent" / "agent.py").exists()
+
+
 def test_scaffold_coworker_creates_project_directory(tmp_path):
     runner = CliRunner()
     runner.invoke(main, [

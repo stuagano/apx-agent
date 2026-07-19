@@ -84,6 +84,21 @@ That declaration becomes: an agent grounded in its schema before the first quest
 
 You write a Python object or a TOML block. The normalization work is apx-agent's job.
 
+### The same agent, by hand vs. declared
+
+A typical "build a support agent on Databricks" notebook — ground it in Vector Search, wire two tools, run an agentic loop, trace it, log a served model — is about **220 lines** across the setup, the hand-authored tool schemas, the tool-calling loop, and a second copy of the tools-and-loop re-implemented inside a `PythonModel` for serving. apx-agent collapses that to a declaration plus the tool factories:
+
+| Step | By hand (raw SDK notebook) | apx-agent |
+|---|---|---|
+| **Ground** | `query_index(...)` call + manual row unpacking | `vector_search_tool(index, columns=..., num_results=...)` |
+| **Tools** | Two functions **+ hand-written OpenAI JSON schemas** | `vector_search_tool(...)`, `uc_function_tool(...)` — schemas introspected |
+| **Loop** | Hand-rolled `run_agent` — `max_turns`, `tool_call_id` bookkeeping, `model_dump(exclude_none=True)` | runtime-owned; you set `max_iterations` |
+| **Trace** | `@mlflow.trace` + `with mlflow.start_run(...)` wrappers | automatic |
+| **Ship** | ~90 lines: tools **and loop re-implemented** inside a `PythonModel`, temp `.py`, `infer_signature`, pinned `pip_requirements` | `apx-agent agents deploy --target apps` (or `serving`) |
+| **Govern** | tools run as the *notebook user* (`spark.table`) | tools run under the **calling user's** UC grants (OBO) |
+
+Net: **~220 lines → ~15 lines + a TOML block (~90% less code)** — and the deleted parts are the drift-prone ones. The raw notebook maintains the loop and both tools *twice* (once to demo, once inside the logged model); apx-agent serves the same object you ran locally. The one thing that doesn't shrink is the eval golden-set — that's real domain work, not boilerplate. See [docs/positioning.md](docs/positioning.md#by-hand-vs-declared-a-worked-comparison) for the full worked example.
+
 ---
 
 Three agent types cover most use cases:
