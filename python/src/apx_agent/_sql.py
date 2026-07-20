@@ -49,6 +49,33 @@ from ._sql_escape import sql_escape, sql_str_literal  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+def _reauthorize_hint(exc: Exception) -> RuntimeError | None:
+    """Translate an OBO scope-denial 403 into a re-authorize instruction.
+
+    Databricks Apps OBO tokens carry only the scopes the user consented to.
+    When a bundle *adds* a ``user_api_scopes`` entry (e.g. ``sql``) but the
+    caller's token predates that grant, the SQL APIs 403 with
+    ``Invalid scope, required scopes: sql`` — even though the bundle declares
+    it. The fix is operational, not code: the user must re-authorize the app
+    (revisit its consent screen) to mint a token carrying the new scope. A raw
+    ``PermissionDenied`` gives no hint of that, so we re-raise with guidance.
+
+    Returns the actionable error to raise, or ``None`` if ``exc`` isn't a
+    scope-denial (caller re-raises the original).
+    """
+    msg = str(exc)
+    if "required scopes" not in msg and "Invalid scope" not in msg:
+        return None
+    return RuntimeError(
+        f"{msg}\n\n"
+        "This is a stale OBO consent, not a missing bundle scope: the app's "
+        "forwarded-user token predates a newly-added user_api_scope. "
+        "Re-authorize the app (open its URL in a browser and approve the "
+        "permissions prompt) to mint a token that carries the new scope, "
+        "then retry."
+    )
+
+
 def decode_statement(
     response: StatementResponse | None,
     *,
@@ -254,20 +281,26 @@ def run_sql(
     """
     from databricks.sdk.service.sql import StatementState, StatementParameterListItem
 
-    wh_id = warehouse_id or get_warehouse_id(ws)
-    _ensure_warehouse_running(ws, wh_id)
-    params = None
-    if parameters:
-        params = [
-            StatementParameterListItem(name=p["name"], value=p["value"], type=p.get("type"))
-            for p in parameters
-        ]
-    result = ws.statement_execution.execute_statement(
-        warehouse_id=wh_id,
-        statement=sql,
-        parameters=params,
-        wait_timeout="30s",
-    )
+    try:
+        wh_id = warehouse_id or get_warehouse_id(ws)
+        _ensure_warehouse_running(ws, wh_id)
+        params = None
+        if parameters:
+            params = [
+                StatementParameterListItem(name=p["name"], value=p["value"], type=p.get("type"))
+                for p in parameters
+            ]
+        result = ws.statement_execution.execute_statement(
+            warehouse_id=wh_id,
+            statement=sql,
+            parameters=params,
+            wait_timeout="30s",
+        )
+    except Exception as e:
+        hint = _reauthorize_hint(e)
+        if hint is not None:
+            raise hint from e
+        raise
     result = _await_statement_completion(
         ws, result, timeout_s=poll_timeout_s, poll_interval_s=poll_interval_s,
     )
