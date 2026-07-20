@@ -4,6 +4,76 @@ All notable changes to apx-agent. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are git tags
 (`v*`) and the wheel version is derived from the tag via hatch-vcs.
 
+## [0.4.4] — 2026-07-19
+
+Headline: natural-language agent authoring (`apx-agent generate`), a
+multi-environment deploy story, and consolidation of the persistent stores
+onto Lakebase. Plus a broad CLI-correctness pass — `--format json` /
+`--json` across more commands, honest exit codes, corrected command hints,
+and swallowed-exception fixes — and the example-apps and scaffold fixes.
+
+**BREAKING:** the Delta-backed memory / conversation / example stores are
+removed (#332). `memory="persistent"` now maps to Lakebase; projects that
+relied on the Delta backend must move to Lakebase (or `managed`).
+
+### Added
+
+- **`apx-agent generate` (#516).** Natural-language agent authoring — describe
+  an agent and get a scaffolded project, with scaffold output standardized
+  across templates and the coworker gallery.
+- **Multi-environment deploy (#510).** Per-env UC catalog/schema with a
+  staging DAB target, so one project deploys cleanly across environments.
+- **`apx-agent onboard` (#318).** Guided non-profit onboarding interview.
+- **`apx-agent agents redeploy` (#538).** Redeploy from the remembered local
+  checkout.
+- **hubspot-complaints-agent example (#513).** Summarizes HubSpot complaints
+  by month.
+- **Wider machine-readable output.** `--format json` for `agents apps` (#547)
+  and `fleet tag/backfill/repoint/redeploy` (#544); `--json` for `agents
+  delete` (#546); `--json-output` for `uc publish` (#545).
+
+### Changed
+
+- **Persistent stores consolidated on Lakebase (#332, #512).** Delta memory /
+  conversation / example stores deleted; `persistent` remaps to Lakebase.
+- **Backlog moved back to GitHub issues (#518).** `docs/BACKLOG.md` removed.
+- `uc publish` now fails with a non-zero exit code on a registry-write
+  failure (#545).
+- `run_sql` polls to real completion instead of treating a still-running
+  statement as a failure (#537).
+
+### Fixed
+
+- **Scaffold / deploy correctness.** Scaffold builds one `WorkspaceClient`
+  across branches (#554/#522); honors an explicit non-TTY `--target`, mounts
+  `/readyz`, makes tools optional (#459); aligns the guardrail default and
+  standardizes `uc --profile` position (#534); clarifies
+  refresh-schema/migrate-to-okf/pull-comments scope (#535).
+- **`deploy` no longer destroys `databricks.yml` comments** with
+  `--env`/`--secret-env`/`--auto-update-yml` (#536); reuses its own
+  `_json_cli_errors` helper (#548); drops a duplicate
+  framework-source-injection block (#541).
+- **Example Apps deploys resolve cleanly** for memory_demo / customer_triage /
+  data-* (#555).
+- Swallowed exceptions surfaced in `_ws_list_*` / `_make_ws_for_scaffold`
+  (#542); `--coworker NAME` gallery lookup deduped and a stray f-string fixed
+  (#540).
+- Corrected stale pre-migration command hints and self-references —
+  run/deploy/scaffold (#550), agents stop/apps/deploy (#543), moved-command
+  references (#551).
+- `agents describe` no longer requires resolved `$CATALOG`/`$SCHEMA` (#515).
+- `drop_orphaned_tool_outputs` also drops orphaned tool calls (#519).
+- Managed memory `get()` distinguishes not-found from real infra errors
+  (#506); approval decisions stamped on the served resume path (#469/#509).
+- `uc publish`/`topology` leaf-level `--profile` forwarding pinned by tests
+  (#553/#529).
+
+### Docs / chore
+
+- README by-hand-vs-declared comparison and positioning (#552).
+- `make check` auto-sanitizes uv.lock pypi-proxy poisoning (#514); dropped a
+  redundant mcp-server sync-tool async patch (#507).
+
 ## [0.4.3] — 2026-07-05
 
 A large release. The headline themes: durable mid-turn human approvals and
