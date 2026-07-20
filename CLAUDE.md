@@ -3,7 +3,10 @@
 apx-agent is infrastructure for building governed data agents on Databricks: you
 declare an agent (a Python object or a `[tool.apx.agent]` block) and apx-agent
 compiles it to a Databricks runtime, grounds it in Unity Catalog, runs its tools
-under UC governance, and makes it observable. Thesis: **declared, not wired.**
+under UC governance, and makes it observable. The same declaration scales from
+one agent to a fleet: `sub_agents=[url]` and A2A let agents call each other
+across apps, with identity passed through per hop — declared, never hand-wired.
+Thesis: **declared, not wired** — for one agent and for many.
 
 The Python package lives in `python/` (`src/apx_agent`). The TypeScript surface
 is in `typescript/`; the deployable hub UI is in `hub/`.
