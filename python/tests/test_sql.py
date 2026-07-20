@@ -257,3 +257,34 @@ class TestRunSql:
                 ws, "SELECT * FROM gone", warehouse_id="wh-1",
                 poll_interval_s=0.01, poll_timeout_s=1,
             )
+
+    def test_scope_denial_on_execute_reraises_with_reauthorize_hint(self):
+        """#556: a 'required scopes: sql' 403 from execute_statement must be
+        re-raised with re-authorize guidance, not a bare PermissionDenied."""
+        ws = self._make_ws(MagicMock())
+        ws.statement_execution.execute_statement.side_effect = Exception(
+            "Invalid scope, required scopes: sql"
+        )
+        with pytest.raises(RuntimeError) as exc:
+            run_sql(ws, "SELECT 1", warehouse_id="wh-1")
+        msg = str(exc.value)
+        assert "re-authorize" in msg.lower()
+        assert "required scopes: sql" in msg  # original detail preserved
+
+    def test_scope_denial_during_warehouse_discovery_also_hinted(self):
+        """The 403 can originate in warehouses.list() (warehouse auto-discovery),
+        not just execute_statement — that path gets the same hint."""
+        ws = self._make_ws(MagicMock())
+        ws.warehouses.list.side_effect = Exception(
+            "Invalid scope, required scopes: sql"
+        )
+        with pytest.raises(RuntimeError, match="(?i)re-authorize"):
+            run_sql(ws, "SELECT 1")  # no warehouse_id → triggers discovery
+
+    def test_non_scope_error_is_not_rewritten(self):
+        """A normal failure (not a scope denial) passes through unchanged."""
+        ws = self._make_ws(MagicMock())
+        ws.statement_execution.execute_statement.side_effect = Exception("boom")
+        with pytest.raises(Exception, match="boom") as exc:
+            run_sql(ws, "SELECT 1", warehouse_id="wh-1")
+        assert "re-authorize" not in str(exc.value).lower()
