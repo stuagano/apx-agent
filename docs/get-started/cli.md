@@ -3,9 +3,8 @@
 `apx-agent` is the command-line wrapper. Every command maps to a single library primitive — the CLI is ergonomics, not logic.
 
 ```bash
-apx-agent agents scaffold my_agent          # write my_agent.yaml (default)
-apx-agent agents deploy my_agent.yaml --target apps  # generate project at deploy time
-apx-agent agents scaffold my_agent --no-yaml # generate an editable Apps project directory
+apx-agent generate "an agent that answers questions about X"  # natural language -> a real project
+apx-agent agents scaffold my_agent          # flags/wizard -> a real, editable Apps project directory
 cd my_agent && uv sync
 apx-agent agents run               # uvicorn against an existing project directory
 apx-agent uc publish --dry-run     # preview UC function registrations

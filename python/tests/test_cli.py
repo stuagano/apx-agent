@@ -152,26 +152,6 @@ def test_run_unknown_dir_does_not_falsely_match_cwd(
     assert "No runnable agent project" in result.output
 
 
-def test_scaffold_yaml_writes_instructions(tmp_path: Path) -> None:
-    import yaml as _yaml
-
-    from apx_agent.cli import _scaffold_to_yaml
-
-    _scaffold_to_yaml(
-        name="sf-agent",
-        directory=tmp_path,
-        scaffold_template="base",
-        catalog=None,
-        schema=None,
-        persona=None,
-        join_key=None,
-        objective=None,
-        instructions="Answer Salesforce pipeline questions.",
-    )
-    spec = _yaml.safe_load((tmp_path / "sf-agent.yaml").read_text())
-    assert spec["instructions"] == "Answer Salesforce pipeline questions."
-
-
 def test_bake_schema_writes_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -240,13 +220,36 @@ def test_status_prompt_in_project_with_profile(
 # ---------------------------------------------------------------------------
 
 
+def test_scaffold_no_longer_has_yaml_flag() -> None:
+    result = CliRunner().invoke(main, ["agents", "scaffold", "--help"])
+    assert result.exit_code == 0
+    assert "--yaml" not in result.output
+    assert "--no-yaml" not in result.output
+
+
+def test_plain_scaffold_always_materializes_full_project(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "plain-agent",
+            "--catalog", "samples", "--schema", "nyctaxi",
+            "--dir", str(tmp_path),
+            "--no-interactive",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "plain-agent" / "agent.py").exists()
+    assert not (tmp_path / "plain-agent.yaml").exists()
+
+
 def test_scaffold_creates_expected_files(tmp_path: Path) -> None:
     runner = CliRunner()
     # Pin model-serving (flat agent.py + app.py); apps is the default and is
     # covered by test_scaffold_apps.py.
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "model-serving", "--dir", str(tmp_path), "--no-yaml"],
+        ["agents", "scaffold", "my_agent", "--target", "model-serving", "--dir", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
     base = tmp_path / "my_agent"
@@ -265,7 +268,7 @@ def test_scaffold_refuses_overwrite_without_force(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "existing", "--dir", str(tmp_path), "--no-yaml"],
+        ["agents", "scaffold", "existing", "--dir", str(tmp_path)],
     )
     assert result.exit_code != 0
     assert "already exists" in result.output
@@ -279,11 +282,64 @@ def test_scaffold_overwrites_with_force(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "existing", "--dir", str(tmp_path), "--force", "--no-yaml"],
+        ["agents", "scaffold", "existing", "--dir", str(tmp_path), "--force"],
     )
     assert result.exit_code == 0
     assert "# old content" not in (target / "agent.py").read_text()
     assert "from apx_agent import" in (target / "agent.py").read_text()
+
+
+def test_scaffold_apps_threads_custom_instructions(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "my_agent",
+            "--template", "base",
+            "--target", "apps",
+            "--dir", str(tmp_path),
+            "--no-interactive",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # base template with no explicit instructions still gets the default —
+    # this test only proves the plumbing exists; the wizard-driven case
+    # (interactive prompt -> instructions) is covered by
+    # test_scaffold_wizard_instructions_reach_agent_py below.
+    agent_py = (tmp_path / "my_agent" / "agent.py").read_text()
+    assert "instructions='You are a helpful assistant.'" in agent_py
+
+
+def test_scaffold_wizard_instructions_reach_agent_py(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Mock _scaffold_wizard and _scaffold_sanity_check directly rather than
+    # feeding a None/fake WorkspaceClient through the real wizard — those
+    # functions' internals (catalog/schema probing) aren't something this
+    # test should depend on; it only needs to prove instructions plumbing.
+    import apx_agent.cli as cli
+
+    monkeypatch.setattr(cli, "_prompt_for_instructions", lambda: "Answer HR pay questions.")
+    monkeypatch.setattr(
+        cli, "_scaffold_wizard",
+        lambda ws, target, template, catalog, schema: ("apps", "base", None, None, None, None, None),
+    )
+    monkeypatch.setattr(cli, "_scaffold_sanity_check", lambda ws, template, catalog, schema: None)
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "hr_agent",
+            "--dir", str(tmp_path),
+            "--interactive",
+            "--target", "apps",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    agent_py = (tmp_path / "hr_agent" / "agent.py").read_text()
+    assert "instructions='Answer HR pay questions.'" in agent_py
 
 
 # ---------------------------------------------------------------------------
@@ -3572,7 +3628,7 @@ def test_scaffold_bakes_data_target_from_flags(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main, ["agents", "scaffold", "ag", "--catalog", "main", "--schema", "sales",
-               "--dir", str(tmp_path), "--no-yaml"],
+               "--dir", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
     agent_py = (tmp_path / "ag" / "agent.py").read_text()
@@ -3610,11 +3666,13 @@ def test_scaffold_builds_workspace_client_once_across_branches(tmp_path, monkeyp
     # its own client (out of #522's branch-dedup scope); isolate the branches.
     monkeypatch.setattr(cli, "_scaffold_apps", lambda *a, **k: None)
 
+    # --interactive also reaches _prompt_for_instructions(); feed a blank line
+    # so it takes the "fill in later" path rather than aborting on empty stdin.
     result = CliRunner().invoke(main, [
         "agents", "scaffold", "ag",
         "--template", "data", "--catalog", "main", "--schema", "sales",
-        "--interactive", "--dir", str(tmp_path), "--no-yaml",
-    ])
+        "--interactive", "--dir", str(tmp_path),
+    ], input="\n")
 
     assert result.exit_code == 0, result.output
     assert calls["n"] == 1, f"expected one WorkspaceClient build, got {calls['n']}"
@@ -3657,7 +3715,7 @@ def test_scaffold_explicit_target_bakes_example_tool(tmp_path: Path) -> None:
     with patch("apx_agent.cli._probe_first_table", return_value="trips"):
         result = runner.invoke(
             main, ["agents", "scaffold", "ag", "--catalog", "main", "--schema", "sales",
-                   "--dir", str(tmp_path), "--no-yaml"],
+                   "--dir", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
     agent_py = (tmp_path / "ag" / "agent.py").read_text()
@@ -3786,7 +3844,7 @@ def test_unknown_command_no_close_match():
 def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()
-    result = runner.invoke(main, ["agents", "scaffold", "my-agent", "--no-yaml"])
+    result = runner.invoke(main, ["agents", "scaffold", "my-agent"])
     assert result.exit_code == 0
     out = result.output
     assert "cd my-agent" in out
@@ -4646,6 +4704,55 @@ class TestScaffoldCoworker:
         assert '_SCHEMA = "tpch"' in agent_py
         assert 'os.environ.get("APX_CATALOG", _CATALOG)' in agent_py
         assert 'os.environ.get("APX_SCHEMA", _SCHEMA)' in agent_py
+
+
+def test_coworker_flag_no_longer_documents_generate() -> None:
+    result = CliRunner().invoke(main, ["agents", "scaffold", "--help"])
+    assert result.exit_code == 0
+    assert "'generate' to LLM-author" not in result.output
+
+
+def test_coworker_generate_value_is_rejected_or_treated_as_a_name(tmp_path: Path) -> None:
+    # "generate" is no longer special — it's now just an (invalid) gallery name.
+    result = CliRunner().invoke(
+        main,
+        ["agents", "scaffold", "x", "--coworker", "generate", "--dir", str(tmp_path)],
+    )
+    assert result.exit_code != 0
+    assert "No coworker named 'generate'" in result.output
+
+
+def test_coworker_gallery_pick_materializes_full_project(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "my-payroll",
+            "--coworker", "payroll",
+            "--catalog", "main", "--schema", "payroll_demo",
+            "--dir", str(tmp_path),
+            "--no-interactive",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    base = tmp_path / "my-payroll"
+    assert (base / "agent.py").exists()
+    assert (base / "pyproject.toml").exists()
+    assert not (tmp_path / "my-payroll.yaml").exists(), (
+        "gallery pick must no longer write a standalone .yaml"
+    )
+    pyproject = (base / "pyproject.toml").read_text()
+    assert "[tool.apx.agent]" in pyproject
+
+    # Prove agent.py actually imports cleanly, not just that it exists —
+    # same standard Task 9's generate test holds itself to.
+    prev = os.getcwd()
+    os.chdir(base)
+    try:
+        describe_result = CliRunner().invoke(main, ["agents", "describe"])
+    finally:
+        os.chdir(prev)
+    assert describe_result.exit_code == 0, describe_result.output
 
 
 # ---------------------------------------------------------------------------
@@ -6519,8 +6626,7 @@ class TestGenerateOnboardingPlan:
         assert fake_ws.serving_endpoints.query.call_count == 1
 
     def test_passes_chatmessage_not_dicts(self) -> None:
-        """Same regression class as test_generate_coworker_yaml_passes_chatmessage_not_dicts:
-        the SDK calls .as_dict() on each message, so dicts AttributeError at runtime."""
+        """The SDK calls .as_dict() on each message, so dicts AttributeError at runtime."""
         from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 
         from apx_agent.cli import _generate_onboarding_plan
@@ -6628,6 +6734,99 @@ class TestGenerateOnboardingPlan:
         assert fake_ws.serving_endpoints.query.call_count == 2  # one retry attempted
 
 
+class TestClassifyAgentDescription:
+    def test_classify_agent_description_parses_coworker_shape(self) -> None:
+        from apx_agent.cli import _classify_agent_description
+
+        fake_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({
+                "template": "coworker",
+                "name": "unbilled-revenue-agent",
+                "persona": "a revenue operations analyst",
+                "objective": "flag unbilled revenue",
+                "join_key": "account_id",
+                "catalog_hint": None,
+                "schema_hint": None,
+                "missing": [],
+            })
+        ))])
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = fake_response
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _classify_agent_description(
+                None, "an agent that joins Salesforce closed deals with NetSuite "
+                "payments by account_id and flags unbilled revenue"
+            )
+
+        assert result.template == "coworker"
+        assert result.name == "unbilled-revenue-agent"
+        assert result.join_key == "account_id"
+        assert result.missing == ()
+
+    def test_classify_agent_description_retries_on_invalid_json(self) -> None:
+        from apx_agent.cli import _classify_agent_description
+
+        bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))])
+        good = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({
+                "template": "base", "name": "helper-agent", "persona": None,
+                "objective": None, "join_key": None, "catalog_hint": None,
+                "schema_hint": None, "missing": [],
+            })
+        ))])
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.side_effect = [bad, good]
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _classify_agent_description(None, "a simple helper agent")
+
+        assert result.template == "base"
+        assert fake_ws.serving_endpoints.query.call_count == 2
+
+    def test_classify_agent_description_raises_after_second_failure(self) -> None:
+        import click
+        from apx_agent.cli import _classify_agent_description
+
+        bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="still not json"))])
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.return_value = bad
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            with pytest.raises(click.ClickException):
+                _classify_agent_description(None, "a simple helper agent")
+
+    def test_classify_agent_description_retries_on_out_of_enum_template(self) -> None:
+        # Valid JSON but an out-of-enum "template" value must not reach the
+        # _GEN_AUTHOR_PROMPTS[classification.template] lookup in
+        # _author_agent_yaml as an uncaught KeyError -- it should be treated
+        # like any other malformed classification and trigger the retry.
+        from apx_agent.cli import _classify_agent_description
+
+        bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({
+                "template": "analytics", "name": "x", "persona": None,
+                "objective": None, "join_key": None, "catalog_hint": None,
+                "schema_hint": None, "missing": [],
+            })
+        ))])
+        good = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({
+                "template": "base", "name": "helper-agent", "persona": None,
+                "objective": None, "join_key": None, "catalog_hint": None,
+                "schema_hint": None, "missing": [],
+            })
+        ))])
+        fake_ws = MagicMock()
+        fake_ws.serving_endpoints.query.side_effect = [bad, good]
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+            result = _classify_agent_description(None, "a simple helper agent")
+
+        assert result.template == "base"
+        assert fake_ws.serving_endpoints.query.call_count == 2
+
+
 class TestOnboardCommand:
     def _mock_generate(self, monkeypatch: "pytest.MonkeyPatch", result: "Any") -> None:
         import apx_agent.cli as cli_mod
@@ -6724,37 +6923,6 @@ class TestOnboardCommand:
 
         assert cli_result.exit_code != 0
         assert not (tmp_path / "example_org-onboarding-plan.md").exists()
-
-
-# ---------------------------------------------------------------------------
-# Regression: coworker-gen must pass ChatMessage objects to serving_endpoints.query,
-# not raw dicts. The SDK calls .as_dict() on each message, so dicts AttributeError
-# at runtime — the bug this guards (path was previously untested).
-# ---------------------------------------------------------------------------
-
-
-def test_generate_coworker_yaml_passes_chatmessage_not_dicts() -> None:
-    from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-
-    from apx_agent.cli import _generate_coworker_yaml
-
-    fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content="name: demo\n"))]
-    )
-    answers = iter(["Salesforce", "deals", "NetSuite", "invoices", "account_id", "RevOps", "unbilled deals"])
-
-    with patch("apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)), patch(
-        "databricks.sdk.WorkspaceClient", return_value=fake_ws
-    ):
-        out = _generate_coworker_yaml(None)
-
-    assert out == "name: demo"
-    msgs = fake_ws.serving_endpoints.query.call_args.kwargs["messages"]
-    assert msgs and all(isinstance(m, ChatMessage) for m in msgs), (
-        f"messages must be ChatMessage objects (SDK calls .as_dict()); got {[type(m).__name__ for m in msgs]}"
-    )
-    assert msgs[0].role == ChatMessageRole.USER
 
 
 # ---------------------------------------------------------------------------
@@ -7293,6 +7461,402 @@ def test_agents_status_json_sub_agents_shape() -> None:
          "error": "env ref resolved to empty — variable unset"},
     ]
     assert payload["healthy"] is True
+
+
+# ---------------------------------------------------------------------------
+# _materialize_agent
+# ---------------------------------------------------------------------------
+
+
+def test_materialize_agent_writes_full_project(tmp_path: Path) -> None:
+    from apx_agent._models import AgentConfig
+    from apx_agent.cli import _materialize_agent
+
+    config = AgentConfig(
+        name="mat-agent",
+        model="databricks-claude-sonnet-4-6",
+        instructions="Answer questions.",
+        template={"name": "base"},
+    )
+    target = tmp_path / "mat-agent"
+    _materialize_agent(config, target, force=False)
+
+    # generate_project()'s own output
+    assert (target / "agent.py").exists()
+    assert (target / "pyproject.toml").exists()
+    assert (target / "databricks.yml").exists()
+    assert (target / "app.yml").exists()
+    assert (target / "agent_server" / "start_server.py").exists()
+    # the auxiliary files generate_project() doesn't write but _scaffold_apps
+    # does — _materialize_agent must add these so gallery-pick/generate don't
+    # produce a thinner starter pack than plain scaffold.
+    assert (target / "README.md").exists()
+    assert (target / ".env.example").exists()
+    assert (target / ".gitignore").exists()
+    assert (target / "scripts" / "__init__.py").exists()
+    assert (target / "scripts" / "quickstart.py").exists()
+
+
+def test_materialize_agent_refuses_overwrite_without_force(tmp_path: Path) -> None:
+    import click
+    from apx_agent._models import AgentConfig
+    from apx_agent.cli import _materialize_agent
+
+    target = tmp_path / "existing"
+    target.mkdir()
+    (target / "junk.txt").write_text("hi")
+    config = AgentConfig(name="existing", model="databricks-claude-sonnet-4-6", instructions="")
+    with pytest.raises(click.ClickException, match="already exists"):
+        _materialize_agent(config, target, force=False)
+
+
+def test_materialize_agent_bakes_schema_for_data_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # generate/gallery materialization must ground the project the same way
+    # scaffold/run/deploy do: a data/coworker config with a resolved
+    # catalog/schema gets .apx/schema.json baked in (no runtime DESCRIBE).
+    import json
+
+    import apx_agent.cli as cli
+    from apx_agent._models import AgentConfig
+    from apx_agent.cli import _materialize_agent
+
+    manifest = {"catalog": "main", "schema": "sales", "tables": {"t": ["a(int)"]}}
+    monkeypatch.setattr(
+        cli, "_schema_manifest_for_scaffold", lambda c, s, profile=None: manifest
+    )
+
+    config = AgentConfig(
+        name="grounded-agent",
+        model="databricks-claude-sonnet-4-6",
+        instructions="Answer sales questions.",
+        template={"name": "data", "catalog": "main", "schema": "sales"},
+    )
+    target = tmp_path / "grounded-agent"
+    _materialize_agent(config, target, force=False)
+
+    schema_json = target / ".apx" / "schema.json"
+    assert schema_json.is_file(), "expected .apx/schema.json to be baked in"
+    assert json.loads(schema_json.read_text()) == manifest
+
+
+# ---------------------------------------------------------------------------
+# `_resolve_generate_data_source`
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_generate_data_source_prefers_explicit_flags() -> None:
+    from apx_agent.cli import _GenerateClassification, _resolve_generate_data_source
+
+    classification = _GenerateClassification(
+        template="data", name="x", persona=None, objective=None, join_key=None,
+        catalog_hint="hinted_cat", schema_hint="hinted_sch", missing=(),
+    )
+    result = _resolve_generate_data_source(classification, "explicit_cat", "explicit_sch", None)
+    assert result.catalog == "explicit_cat"
+    assert result.schema == "explicit_sch"
+
+
+def test_resolve_generate_data_source_base_template_has_no_source() -> None:
+    from apx_agent.cli import _GenerateClassification, _resolve_generate_data_source
+
+    classification = _GenerateClassification(
+        template="base", name="x", persona=None, objective=None, join_key=None,
+        catalog_hint=None, schema_hint=None, missing=(),
+    )
+    result = _resolve_generate_data_source(classification, None, None, None)
+    assert result.catalog is None
+    assert result.schema is None
+
+
+def test_resolve_generate_data_source_falls_back_to_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apx_agent.cli as cli
+    from apx_agent.cli import _GenerateClassification, _resolve_generate_data_source
+
+    monkeypatch.setattr(cli, "_discover_default_data", lambda profile=None: None)
+    classification = _GenerateClassification(
+        template="data", name="x", persona=None, objective=None, join_key=None,
+        catalog_hint=None, schema_hint=None, missing=(),
+    )
+    result = _resolve_generate_data_source(classification, None, None, None)
+    assert result.catalog == "samples"
+    assert result.schema == "nyctaxi"
+
+
+# ---------------------------------------------------------------------------
+# `_author_agent_yaml`
+# ---------------------------------------------------------------------------
+
+
+def test_author_agent_yaml_base_template_round_trips_through_load_spec(tmp_path: Path) -> None:
+    from apx_agent._yaml_spec import load_spec
+    from apx_agent.cli import (
+        _GenerateClassification, _ResolvedDataSource, _author_agent_yaml,
+    )
+
+    classification = _GenerateClassification(
+        template="base", name="helper-agent", persona=None, objective=None,
+        join_key=None, catalog_hint=None, schema_hint=None, missing=(),
+    )
+    data_source = _ResolvedDataSource(catalog=None, schema=None)
+    yaml_text = "name: helper-agent\nmodel: databricks-claude-sonnet-4-6\ninstructions: Help with things.\ntools: []\n"
+
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=yaml_text))]
+    )
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = _author_agent_yaml(None, classification, data_source, {})
+
+    spec_path = tmp_path / "helper-agent.yaml"
+    spec_path.write_text(result)
+    config = load_spec(spec_path, strict=False)
+    assert config.name == "helper-agent"
+
+
+def test_author_agent_yaml_retries_on_invalid_yaml(tmp_path: Path) -> None:
+    from apx_agent.cli import (
+        _GenerateClassification, _ResolvedDataSource, _author_agent_yaml,
+    )
+
+    classification = _GenerateClassification(
+        template="base", name="helper-agent", persona=None, objective=None,
+        join_key=None, catalog_hint=None, schema_hint=None, missing=(),
+    )
+    data_source = _ResolvedDataSource(catalog=None, schema=None)
+
+    bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="not: valid: : yaml: :"))])
+    good = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content="name: helper-agent\nmodel: databricks-claude-sonnet-4-6\ninstructions: Help.\ntools: []\n"
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [bad, good]
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = _author_agent_yaml(None, classification, data_source, {})
+
+    assert "helper-agent" in result
+    assert fake_ws.serving_endpoints.query.call_count == 2
+
+
+def test_author_agent_yaml_coworker_template_round_trips(tmp_path: Path) -> None:
+    from apx_agent._yaml_spec import load_spec
+    from apx_agent.cli import (
+        _GenerateClassification, _ResolvedDataSource, _author_agent_yaml,
+    )
+
+    classification = _GenerateClassification(
+        template="coworker", name="unbilled-revenue-agent",
+        persona="a revenue operations analyst", objective="flag unbilled revenue",
+        join_key="account_id", catalog_hint=None, schema_hint=None, missing=(),
+    )
+    data_source = _ResolvedDataSource(catalog="main", schema="revops")
+    yaml_text = (
+        "name: unbilled-revenue-agent\n"
+        "model: databricks-claude-sonnet-4-6\n"
+        "instructions: You are a revenue operations analyst.\n"
+        "template:\n  name: coworker\n  catalog: main\n  schema: revops\n"
+        "  persona: a revenue operations analyst\n  join_key: account_id\n"
+        "  objective: flag unbilled revenue\n  memory: persistent\n"
+        "tools: []\n"
+    )
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=yaml_text))]
+    )
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = _author_agent_yaml(None, classification, data_source, {})
+
+    spec_path = tmp_path / "unbilled-revenue-agent.yaml"
+    spec_path.write_text(result)
+    config = load_spec(spec_path, strict=False)
+    assert config.template["catalog"] == "main"
+
+
+def test_author_agent_yaml_data_template_round_trips(tmp_path: Path) -> None:
+    from apx_agent._yaml_spec import load_spec
+    from apx_agent.cli import (
+        _GenerateClassification, _ResolvedDataSource, _author_agent_yaml,
+    )
+
+    classification = _GenerateClassification(
+        template="data", name="sales-agent", persona=None, objective=None,
+        join_key=None, catalog_hint=None, schema_hint=None, missing=(),
+    )
+    data_source = _ResolvedDataSource(catalog="main", schema="sales")
+    yaml_text = (
+        "name: sales-agent\nmodel: databricks-claude-sonnet-4-6\n"
+        "instructions: Answer sales questions.\n"
+        "template:\n  name: data\n  catalog: main\n  schema: sales\n"
+        "tools: []\n"
+    )
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=yaml_text))]
+    )
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = _author_agent_yaml(None, classification, data_source, {})
+
+    spec_path = tmp_path / "sales-agent.yaml"
+    spec_path.write_text(result)
+    config = load_spec(spec_path, strict=False)
+    assert config.template["schema"] == "sales"
+
+
+# ---------------------------------------------------------------------------
+# `apx-agent generate`
+# ---------------------------------------------------------------------------
+
+
+def test_generate_command_materializes_describable_project(tmp_path: Path) -> None:
+    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({
+            "template": "base", "name": "helper-agent", "persona": None,
+            "objective": None, "join_key": None, "catalog_hint": None,
+            "schema_hint": None, "missing": [],
+        })
+    ))])
+    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=(
+            "name: helper-agent\nmodel: databricks-claude-sonnet-4-6\n"
+            "instructions: Help with general questions.\ntools: []\n"
+        )
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+
+    runner = CliRunner()
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = runner.invoke(
+            main,
+            ["generate", "a simple helper agent that answers general questions",
+             "--dir", str(tmp_path)],
+        )
+    assert result.exit_code == 0, result.output
+
+    project = tmp_path / "helper-agent"
+    assert (project / "agent.py").exists()
+    assert (project / "pyproject.toml").exists()
+
+    # click.testing.CliRunner.invoke (click 8.3.1, this repo's pinned
+    # version) has no cwd kwarg — chdir manually instead. Also clear the
+    # bare "agent" module from sys.modules: other tests (e.g. the
+    # coworker-gallery test) import an agent.py under that same default
+    # module name from a different directory, and importlib.import_module
+    # would otherwise hand back their cached module instead of this one's.
+    prev = os.getcwd()
+    sys.modules.pop("agent", None)
+    os.chdir(project)
+    try:
+        describe_result = CliRunner().invoke(main, ["agents", "describe"])
+    finally:
+        os.chdir(prev)
+        sys.modules.pop("agent", None)
+    assert describe_result.exit_code == 0, describe_result.output
+    assert "helper-agent" in describe_result.output or "Help with general questions" in describe_result.output
+
+
+def test_generate_sanitizes_llm_authored_name_before_building_path(tmp_path: Path) -> None:
+    # AgentConfig.name is an unconstrained str -- an LLM-authored YAML could
+    # contain a path-traversal-shaped name. generate() must not use it
+    # unsanitized to build the materialize target, matching the guard
+    # scaffold() already applies to its own `name` argument.
+    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({
+            "template": "base", "name": "escape-agent", "persona": None,
+            "objective": None, "join_key": None, "catalog_hint": None,
+            "schema_hint": None, "missing": [],
+        })
+    ))])
+    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=(
+            "name: ../../escaped-agent\nmodel: databricks-claude-sonnet-4-6\n"
+            "instructions: Help.\ntools: []\n"
+        )
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = CliRunner().invoke(
+            main, ["generate", "an agent", "--dir", str(tmp_path)],
+        )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "escaped-agent").exists()
+    assert not (tmp_path.parent / "escaped-agent").exists()
+
+
+def test_generate_target_exists_needs_force(tmp_path: Path) -> None:
+    (tmp_path / "helper-agent").mkdir()
+    (tmp_path / "helper-agent" / "junk.txt").write_text("hi")
+
+    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({
+            "template": "base", "name": "helper-agent", "persona": None,
+            "objective": None, "join_key": None, "catalog_hint": None,
+            "schema_hint": None, "missing": [],
+        })
+    ))])
+    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content="name: helper-agent\nmodel: databricks-claude-sonnet-4-6\ninstructions: Help.\ntools: []\n"
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = CliRunner().invoke(
+            main, ["generate", "a helper agent", "--dir", str(tmp_path)],
+        )
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+
+
+def test_generate_llm_failure_points_at_scaffold_fallback() -> None:
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = RuntimeError("connection refused")
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = CliRunner().invoke(main, ["generate", "a helper agent"])
+    assert result.exit_code != 0
+    assert "apx-agent agents scaffold" in result.output
+
+
+def test_generate_prompts_only_for_classifier_flagged_missing_fields(tmp_path: Path) -> None:
+    # missing=["objective"] must drive exactly one click.prompt for the
+    # objective field — proves `filled` is actually threaded from the
+    # classifier's `missing` list through to the interactive fill step.
+    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({
+            "template": "data", "name": "sales-agent", "persona": None,
+            "objective": None, "join_key": None, "catalog_hint": None,
+            "schema_hint": None, "missing": ["objective"],
+        })
+    ))])
+    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=(
+            "name: sales-agent\nmodel: databricks-claude-sonnet-4-6\n"
+            "instructions: Answer sales questions.\n"
+            "template:\n  name: data\n  catalog: main\n  schema: sales\n"
+            "tools: []\n"
+        )
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
+        result = CliRunner().invoke(
+            main,
+            [
+                "generate", "a data agent for finance",
+                "--catalog", "main", "--schema", "sales",
+                "--dir", str(tmp_path),
+            ],
+            input="unbilled deals\n",
+        )
+    assert result.exit_code == 0, result.output
+    assert "What should the agent surface?" in result.output
+    assert (tmp_path / "sales-agent" / "agent.py").exists()
 
 
 # ---------------------------------------------------------------------------

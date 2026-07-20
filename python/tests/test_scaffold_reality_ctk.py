@@ -31,7 +31,6 @@ def test_scaffold_outputs_are_real_not_just_present(tmp_path: Path) -> None:
             "agents", "scaffold", "my_agent",
             "--target", "model-serving",
             "--dir", str(tmp_path),
-            "--no-yaml",
         ],
     )
     assert result.exit_code == 0, result.output

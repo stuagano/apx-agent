@@ -125,13 +125,9 @@ or to use `"managed"` instead.
 apx-agent agents scaffold my-coworker --template coworker
 ```
 
-By default this writes `my-coworker.yaml`, a deployable coworker spec. Deploy it with `apx-agent agents deploy my-coworker.yaml --target apps`.
-
-If you want a local project directory first, add `--no-yaml`:
-
-```bash
-apx-agent agents scaffold my-coworker --template coworker --no-yaml
-```
+This writes a real, editable `my-coworker/` project directory. Describe it in
+plain English instead with `apx-agent generate "..."` — same output shape,
+just a different way to tell it what to build.
 
 The project directory includes two files you care about:
 
