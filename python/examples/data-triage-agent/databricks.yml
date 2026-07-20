@@ -48,15 +48,13 @@ artifacts:
       cp -r integrations .build/ 2>/dev/null || true
       cp -r sub_agents .build/ 2>/dev/null || true
       # Framework boilerplate + project files (don't edit agent_server/).
-      cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
-      # Stage the apx-agent wheel + rewrite editable -> wheel path.
-      WHEEL=$(ls apx_agent-*.whl 2>/dev/null | head -1) || true
-      if [ -n "$WHEEL" ]; then
-        cp "$WHEEL" .build/
-        sed -i.bak -E 's|apx-agent = \{ path = "\.\./\.\." *, editable = true *\}|apx-agent = { path = "./'"$WHEEL"'" }|g' .build/pyproject.toml
-        rm -f .build/pyproject.toml.bak
-        (cd .build && uv lock --quiet)
-      fi
+      cp -r agent_server scripts README.md .build/ 2>/dev/null || true
+      cp apx_agent-*.whl .build/ 2>/dev/null || true
+      # pyproject.toml and uv.lock are written by apx deploy (wheel-pinned +
+      # sanitized to public PyPI). Do NOT copy or re-`uv lock` them here:
+      # bundle deploy re-runs this script AFTER apx's sanitize, and a local
+      # `uv lock` re-poisons the lock with UV_INDEX_URL's internal pypi-proxy,
+      # which the App container can't reach. See bakehouse-agent.
 
 resources:
   apps:
@@ -67,6 +65,12 @@ resources:
         pipeline (presence -> lineage -> pipeline -> genie -> code -> synthesis).
         Delegates SQL + Delta forensics to a data-inspector sub-agent via A2A.
       source_code_path: ./.build
+
+      # OBO scopes the forwarded-user token carries — the presence/lineage
+      # steps and the delegated data-inspector both hit the SQL APIs.
+      user_api_scopes:
+        - sql
+        - serving.serving-endpoints
 
       resources:
         - name: llm-endpoint

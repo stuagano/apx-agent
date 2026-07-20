@@ -42,8 +42,12 @@ artifacts:
       cp tools.py .build/ 2>/dev/null || true
       cp -r sub_agents .build/ 2>/dev/null || true
       # Project files + framework-managed dirs (don't edit these).
-      cp -r agent_server scripts pyproject.toml uv.lock README.md .build/ 2>/dev/null || true
+      cp -r agent_server scripts README.md .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
+      # pyproject.toml and uv.lock are written by apx deploy (wheel-pinned).
+      # Do NOT copy them here — bundle deploy re-runs this script and would
+      # overwrite the rewritten versions with the editable+../../ reference,
+      # which fails in the App container (no ../.. path). See bakehouse-agent.
 
 resources:
   apps:
