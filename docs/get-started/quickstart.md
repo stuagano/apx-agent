@@ -1,6 +1,6 @@
 # Quickstart
 
-In this guide you'll install apx-agent, scaffold a YAML spec grounded in a Unity Catalog schema, and deploy it to Databricks Apps.
+In this guide you'll install apx-agent, scaffold a real agent project grounded in a Unity Catalog schema, and deploy it to Databricks Apps.
 
 **What you'll build:** a governed data agent that queries your Unity Catalog schema, runs every query as the calling user's identity, and streams answers through a built-in chat UI. You'll deploy it to Databricks Apps in the final step.
 
@@ -9,7 +9,7 @@ In this guide you'll install apx-agent, scaffold a YAML spec grounded in a Unity
 ---
 
 > **Coming from Google ADK or OpenAI Agents SDK?**
-> `LlmAgent` (aliased as `Agent`) is your `Agent`. `DataAgent` is a specialized `Agent` grounded in a real UC schema. The scaffold below writes that intent into YAML; deploy generates the Apps project from it. See [migration.md](migration.md) for a full concept-mapping table.
+> `LlmAgent` (aliased as `Agent`) is your `Agent`. `DataAgent` is a specialized `Agent` grounded in a real UC schema. The scaffold below writes that intent directly into a real `agent.py`. See [migration.md](migration.md) for a full concept-mapping table.
 
 ---
 
@@ -85,60 +85,74 @@ uv run apx-agent doctor --offline  # skip the live workspace round-trip (CI / of
 
 ## Scaffold and deploy
 
-### Step 5 — Scaffold a YAML spec
+### Step 5 — Scaffold a real project
+
+Two ways to tell apx-agent what to build — both produce the same durable,
+editable project, never just a spec file:
 
 ```bash
+# Flags/wizard:
 uv run apx-agent agents scaffold my-agent
+
+# Or describe it in plain English instead:
+uv run apx-agent generate "an agent that answers questions about my sales data"
 ```
 
-By default, scaffold writes `my-agent.yaml` in the current directory and does not create `my-agent/`. It records the agent name, model, instructions, tools, guardrails, and the `data` template with catalog/schema placeholders when you don't pass them.
+`scaffold` writes `my-agent/` with `agent.py`, `pyproject.toml`, `databricks.yml`,
+`agent_server/`, and scripts — grounded against a `data` template with your
+catalog/schema (auto-detected, or pass `--catalog`/`--schema` explicitly).
+`generate` does the same, but an LLM infers the template kind, persona, and
+data source from your description and only asks follow-up questions for
+whatever it couldn't confidently fill in.
 
-> **Skip interactive prompts:** `uv run apx-agent agents scaffold my-agent --no-interactive` uses defaults. You can reconfigure later by editing the YAML or re-running scaffold.
+> **Skip interactive prompts:** `uv run apx-agent agents scaffold my-agent --no-interactive` uses defaults. You can reconfigure later by editing `agent.py` or re-running scaffold with `--force`.
 
-> **Spec location:** scaffold writes the YAML in the current directory. `cd` to your preferred parent directory first.
+> **Project location:** scaffold writes into the current directory by default; pass `--dir` to choose another.
 
 ### What scaffold gave you
 
-```yaml
-name: my-agent
-description: ""
-model: databricks-claude-sonnet-4-6
-instructions: ""
-examples: []
-template:
-  name: data
-  catalog: $CATALOG
-  schema: $SCHEMA
-guardrails:
-  injection_detection: false
-tools: []
+```python
+import os
+
+from apx_agent import DataAgent
+
+_CATALOG = "samples"
+_SCHEMA = "nyctaxi"
+
+agent = DataAgent(
+    os.environ.get("APX_CATALOG", _CATALOG),
+    os.environ.get("APX_SCHEMA", _SCHEMA),
+    name="my-agent",
+)
 ```
 
-That's a deployable spec. Fill in `$CATALOG` and `$SCHEMA` (or pass `--catalog` / `--schema` when scaffolding) before deploying.
+That's `my-agent/agent.py` — a real, editable Python file, not a spec you have
+to fill in later. When the workspace can't be reached (or you don't pass
+`--catalog`/`--schema`), scaffold grounds the agent against `samples.nyctaxi`
+so a fresh `apx-agent agents run` can answer a real question immediately.
 
 ### Step 6 — Deploy to Databricks Apps
 
 ```bash
-uv run apx-agent agents deploy my-agent.yaml --target apps
+cd my-agent && uv sync
+uv run apx-agent agents deploy --target apps
 ```
 
-`deploy` reads `my-agent.yaml`, generates a Databricks Apps project in a temporary directory, bundles it, creates the App, and prints the URL when it finishes.
+This bundles the project directory, creates the App, and prints the URL when
+it finishes.
 
-> **Deploy to Model Serving instead:** generate a project directory with `--no-yaml`, then run `uv run apx-agent agents deploy --target model-serving --name <catalog.schema.model>` from inside that project.
+> **Deploy to Model Serving instead:** `uv run apx-agent agents deploy --target model-serving --name <catalog.schema.model>` from inside the project.
 
 ---
 
-## Optional local project
-
-Use `--no-yaml` when you want an editable project directory and local FastAPI dev UI before deploying.
+## Run locally first
 
 ```bash
-uv run apx-agent agents scaffold my-agent --no-yaml
 cd my-agent && uv sync
 uv run apx-agent agents run --reload
 ```
 
-This writes `my-agent/` with `agent.py`, `pyproject.toml`, `databricks.yml`, `agent_server/`, and scripts. FastAPI starts on `:8000` with file-watch reload; leave it running in one terminal and edit `agent.py` in your IDE in the other.
+FastAPI starts on `:8000` with file-watch reload; leave it running in one terminal and edit `agent.py` in your IDE in the other.
 
 ### Walk through the dev UI
 
@@ -178,9 +192,10 @@ If the app shows a 502 or `/readyz` returns an error, run `uv run apx-agent doct
 
 ## Updating your agent
 
-After a YAML-first deploy, edit `my-agent.yaml` locally and rerun `apx-agent agents deploy my-agent.yaml --target apps`.
-
-If you deployed from a `--no-yaml` project directory, `apx-agent agents deploy` uploads your code to a path in your Databricks workspace. To update that project without redeploying from the CLI:
+Edit `agent.py` locally and rerun `apx-agent agents deploy --target apps` to
+push the change. `apx-agent agents deploy` uploads your code to a path in
+your Databricks workspace, so you can also update it without redeploying
+from the CLI:
 
 1. Go to your workspace → **Apps** → select your app
 2. Click **Edit source** to open `agent.py` in the workspace editor
@@ -241,10 +256,8 @@ agent = CoworkerAgent(
 Scaffold one with:
 
 ```bash
-apx-agent agents scaffold my-coworker --template coworker --no-yaml
+apx-agent agents scaffold my-coworker --template coworker
 ```
-
-(Drop `--no-yaml` to get a `my-coworker.yaml` spec you deploy directly instead of a local project.)
 
 See [../agents/coworker.md](../agents/coworker.md) for the full reference.
 

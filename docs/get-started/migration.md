@@ -230,10 +230,9 @@ Neither ADK nor the OpenAI Agents SDK has a built-in deploy story. apx-agent add
 
 ```bash
 # apx-agent — no equivalent in ADK or OpenAI SDK
-apx-agent agents scaffold my-agent   # writes my-agent.yaml
-apx-agent agents deploy my-agent.yaml --target apps  # generates project + deploys
-apx-agent agents scaffold my-agent --no-yaml         # optional local project dir
+apx-agent agents scaffold my-agent   # writes a real my-agent/ project
 cd my-agent && apx-agent agents run                  # local dev server with hot reload
+apx-agent agents deploy --target apps                # bundle + deploy to Databricks Apps
 apx-agent agents deploy --target model-serving --name main.agents.my_agent
 ```
 
@@ -254,7 +253,8 @@ These have no equivalent in ADK or the OpenAI Agents SDK:
 | `vector_search_tool(...)` | Databricks Vector Search index as a retrieval tool |
 | OBO identity passthrough | The calling user's OAuth token is forwarded to all tool calls, UC functions, and sub-agents — no service principal needed |
 | `apx-agent agents deploy` | One-command deploy to Databricks Apps or Model Serving |
-| `apx-agent agents scaffold` | YAML-first scaffold; add `--no-yaml` for project generation |
+| `apx-agent agents scaffold` | Scaffolds a real, editable project from flags/wizard |
+| `apx-agent generate` | Same output as scaffold, described in plain English instead |
 | `apx-agent uc publish` | Syncs `@tool(uc=...)` functions to Unity Catalog |
 
 See [data-agent.md](../agents/data-agent.md), [coworker.md](../agents/coworker.md), [tools/overview.md](../tools/overview.md), and [identity-passthrough.md](../safety/identity-passthrough.md).

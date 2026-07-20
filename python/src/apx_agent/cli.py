@@ -40,9 +40,12 @@ import time
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
 
 import click
+
+if TYPE_CHECKING:
+    from ._models import AgentConfig
 
 # Suppress noisy third-party deprecation warnings that users can't act on.
 warnings.filterwarnings(
@@ -1279,7 +1282,7 @@ _SCHEMA = "<SCHEMA>"
 agent = DataAgent(
     os.environ.get("APX_CATALOG", _CATALOG),
     os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS>,
-    name="<APP_NAME>",
+    name="<APP_NAME>"<INSTRUCTIONS_ARG>,
 )
 '''
 
@@ -1309,7 +1312,7 @@ from apx_agent import LlmAgent
 
 agent = LlmAgent(
     tools=[],
-    instructions="You are a helpful assistant.",
+    instructions=<INSTRUCTIONS_VALUE>,
     name="<APP_NAME>",
 )
 '''
@@ -1333,7 +1336,7 @@ _SCHEMA = "<SCHEMA>"
 agent = CoworkerAgent(
     os.environ.get("APX_CATALOG", _CATALOG),
     os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS><PERSONA_ARG><JOIN_KEY_ARG><OBJECTIVE_ARG>,
-    name="<APP_NAME>",
+    name="<APP_NAME>"<INSTRUCTIONS_ARG>,
 )
 '''
 
@@ -2223,9 +2226,165 @@ def _generate_onboarding_plan(profile: "str | None") -> _OnboardingPlan:
     )
 
 
-_COWORKER_GEN_PROMPT = """\
-You are an expert at designing Databricks coworker agents. Generate a YAML spec for a coworker
-agent that joins two enterprise data systems and surfaces actionable insights.
+class _GenerateClassification(NamedTuple):
+    """Structured extraction from a natural-language agent description."""
+    template: str
+    name: str
+    persona: "str | None"
+    objective: "str | None"
+    join_key: "str | None"
+    catalog_hint: "str | None"
+    schema_hint: "str | None"
+    missing: "tuple[str, ...]"
+
+
+_CLASSIFY_PROMPT = """\
+You are classifying a natural-language agent request for apx-agent.
+Given the user's description, return ONLY this JSON (no markdown fences):
+
+{{
+  "template": "base" | "data" | "coworker",
+  "name": "<kebab-case-slug>",
+  "persona": "<one-line analyst persona, or null>",
+  "objective": "<2-3 sentences on what it should surface, or null>",
+  "join_key": "<field name joining two systems, or null - coworker only>",
+  "catalog_hint": "<a catalog name if the description names one, else null>",
+  "schema_hint": "<a schema name if named, else null>",
+  "missing": ["<field names you could not confidently fill: persona, objective, or join_key>"]
+}}
+
+Rules:
+- "coworker" requires joining two distinct systems on a key - if the
+  description doesn't clearly describe two systems, classify as "data"
+  (grounded in one UC schema) or "base" (no data source) instead.
+- Only list a field in "missing" if the template you chose actually needs it
+  (never list join_key for template=data or base).
+
+Description: {description}
+
+Output ONLY the JSON object. No explanation, no markdown fences.
+"""
+
+
+def _query_generate_llm(ws: "Any", prompt_text: str) -> str:
+    """One LLM call for `generate`; raises ClickException on failure."""
+    from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+
+    try:
+        response = ws.serving_endpoints.query(
+            name="databricks-claude-sonnet-4-6",
+            messages=[ChatMessage(role=ChatMessageRole.USER, content=prompt_text)],
+            max_tokens=1500,
+        )
+        choices = response.choices
+        if not choices or choices[0].message is None or choices[0].message.content is None:
+            raise click.ClickException("LLM returned an empty response.")
+        return choices[0].message.content.strip()
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(
+            f"LLM generation failed: {exc}\n"
+            "Ensure you have a valid Databricks profile with access to "
+            "databricks-claude-sonnet-4-6, or use `apx-agent agents scaffold` "
+            "for the deterministic wizard instead."
+        ) from exc
+
+
+_GENERATE_TEMPLATES = ("base", "data", "coworker")
+
+
+def _parse_classification(text: str) -> "_GenerateClassification | None":
+    """Best-effort JSON parse into a _GenerateClassification, or None on failure."""
+    try:
+        data = json.loads(text)
+        if data["template"] not in _GENERATE_TEMPLATES:
+            return None
+        return _GenerateClassification(
+            template=data["template"],
+            name=data["name"],
+            persona=data.get("persona"),
+            objective=data.get("objective"),
+            join_key=data.get("join_key"),
+            catalog_hint=data.get("catalog_hint"),
+            schema_hint=data.get("schema_hint"),
+            missing=tuple(data.get("missing") or ()),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def _classify_agent_description(profile: "str | None", description: str) -> _GenerateClassification:
+    """LLM call #1: classify a natural-language description into structured fields."""
+    from databricks.sdk import WorkspaceClient
+
+    try:
+        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    except Exception as exc:
+        raise click.ClickException(
+            f"Could not connect to the workspace: {exc}\n"
+            "Ensure you have a valid Databricks profile with access to "
+            "databricks-claude-sonnet-4-6."
+        ) from exc
+
+    prompt = _CLASSIFY_PROMPT.format(description=description)
+    text = _query_generate_llm(ws, prompt)
+    parsed = _parse_classification(text)
+    if parsed is not None:
+        return parsed
+
+    retry_prompt = (
+        f"{prompt}\n\nYour previous response failed to parse as the required "
+        f"JSON shape. Return ONLY the JSON object, no markdown fences, no "
+        f"explanation."
+    )
+    text = _query_generate_llm(ws, retry_prompt)
+    parsed = _parse_classification(text)
+    if parsed is not None:
+        return parsed
+
+    raise click.ClickException(
+        "The LLM's classification response could not be parsed as JSON after "
+        "one retry. Try rephrasing your description, or use "
+        "`apx-agent agents scaffold` for the deterministic wizard instead."
+    )
+
+
+class _ResolvedDataSource(NamedTuple):
+    """Concrete catalog/schema for a materialized agent — never a $VAR placeholder."""
+    catalog: "str | None"
+    schema: "str | None"
+
+
+def _resolve_generate_data_source(
+    classification: _GenerateClassification,
+    catalog: "str | None", schema: "str | None", profile: "str | None",
+) -> _ResolvedDataSource:
+    """Resolve catalog/schema for `generate`, always landing on something
+    concrete for template in {data, coworker} — never a bare $CATALOG, since
+    a materialized agent.py embeds it as a literal Python string."""
+    if classification.template == "base":
+        return _ResolvedDataSource(catalog=None, schema=None)
+
+    if catalog and schema:
+        return _ResolvedDataSource(catalog=catalog, schema=schema)
+
+    if classification.catalog_hint and classification.schema_hint:
+        return _ResolvedDataSource(
+            catalog=classification.catalog_hint, schema=classification.schema_hint,
+        )
+
+    found = _discover_default_data(profile)
+    if found:
+        found_catalog, found_schema, _table = found
+        return _ResolvedDataSource(catalog=found_catalog, schema=found_schema)
+
+    return _ResolvedDataSource(catalog="samples", schema="nyctaxi")
+
+
+_COWORKER_GEN_AUTHOR_PROMPT = """\
+You are an expert at designing Databricks coworker agents. Generate a YAML
+spec for a coworker agent that joins two enterprise data systems.
 
 Use EXACTLY this structure (no extra keys, no markdown fences):
 
@@ -2234,48 +2393,24 @@ description: >
   <1-2 sentence description ending with a period.>
 model: databricks-claude-sonnet-4-6
 instructions: >
-  You are <persona>. Always cite the <join_key> when surfacing discrepancies.
-  <2-3 sentences about how to distinguish error types and what to prioritise.>
+  You are <persona>. Always cite the join key when surfacing discrepancies.
 examples:
   - "<example question 1>"
   - "<example question 2>"
-  - "<example question 3>"
-  - "<example question 4>"
 
 template:
   name: coworker
-  catalog: $CATALOG
-  schema: $SCHEMA
+  catalog: {catalog}
+  schema: {schema}
   persona: <persona one-liner>
   join_key: <join key field name>
   objective: >
     <2-3 sentences about the core reconciliation objective.>
   memory: persistent
-  warehouse_id: $WAREHOUSE_ID
   include_functions: true
-
-memory:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: <name_underscored>
-  table_name: $CATALOG.$SCHEMA.apx_<name_underscored>_memory
-  embedding_model: databricks-bge-large-en
-  embedding_dim: 1024
-  auto_create: true
-  validate_at_boot: true
-
-session:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: <name_underscored>
-  table_name: $CATALOG.$SCHEMA.apx_<name_underscored>_sessions
-  auto_create: true
-  validate_at_boot: true
 
 guardrails:
   injection_detection: true
-  blocked_tools: []
-  rate_limit: null
 
 tools: []
 
@@ -2285,50 +2420,143 @@ Here is the user's coworker definition:
 Output ONLY the YAML. No explanation, no markdown fences.
 """
 
+_DATA_GEN_PROMPT = """\
+You are an expert at designing Databricks data agents. Generate a YAML spec
+for a data agent grounded in one Unity Catalog schema.
 
-def _generate_coworker_yaml(profile: "str | None") -> str:
-    """Ask the user a few questions then use an LLM to author the full coworker YAML."""
-    click.echo("\nLet's define your coworker. Answer a few questions:\n")
-    system_a = click.prompt("System A (e.g. Salesforce, SAP, Oracle ERP)")
-    system_a_data = click.prompt(f"What data lives in {system_a}? (e.g. closed deals, invoices)")
-    system_b = click.prompt("System B (e.g. NetSuite, Workday, ServiceNow)")
-    system_b_data = click.prompt(f"What data lives in {system_b}? (e.g. payments, HR records)")
-    join_key = click.prompt("Join key between the two systems (e.g. account_id, employee_id)")
-    persona = click.prompt("Analyst persona (e.g. a revenue operations analyst)")
-    objective = click.prompt("What should the coworker surface? (e.g. unbilled deals, pay discrepancies)")
+Use EXACTLY this structure (no extra keys, no markdown fences):
 
-    spec = (
-        f"System A: {system_a} — {system_a_data}\n"
-        f"System B: {system_b} — {system_b_data}\n"
-        f"Join key: {join_key}\n"
-        f"Persona: {persona}\n"
-        f"Objective: {objective}"
-    )
-    click.echo("\nGenerating coworker YAML...\n")
+name: <kebab-case-name>
+description: >
+  <1-2 sentence description ending with a period.>
+model: databricks-claude-sonnet-4-6
+instructions: >
+  <2-3 sentences on what this agent answers and how it should behave.>
+examples:
+  - "<example question 1>"
+  - "<example question 2>"
+
+template:
+  name: data
+  catalog: {catalog}
+  schema: {schema}
+
+guardrails:
+  injection_detection: true
+
+tools: []
+
+Here is the user's description:
+{spec}
+
+Output ONLY the YAML. No explanation, no markdown fences.
+"""
+
+_BASE_GEN_PROMPT = """\
+You are an expert at designing apx-agent agents. Generate a YAML spec for a
+plain agent with no Unity Catalog data source.
+
+Use EXACTLY this structure (no extra keys, no markdown fences):
+
+name: <kebab-case-name>
+description: >
+  <1-2 sentence description ending with a period.>
+model: databricks-claude-sonnet-4-6
+instructions: >
+  <2-3 sentences on what this agent does and how it should behave.>
+examples:
+  - "<example question 1>"
+  - "<example question 2>"
+
+guardrails:
+  injection_detection: true
+
+tools: []
+
+Here is the user's description:
+{spec}
+
+Output ONLY the YAML. No explanation, no markdown fences.
+"""
+
+_GEN_AUTHOR_PROMPTS: "dict[str, str]" = {
+    "coworker": _COWORKER_GEN_AUTHOR_PROMPT,
+    "data": _DATA_GEN_PROMPT,
+    "base": _BASE_GEN_PROMPT,
+}
+
+
+def _author_agent_yaml(
+    profile: "str | None",
+    classification: _GenerateClassification,
+    data_source: _ResolvedDataSource,
+    filled: "dict[str, str]",
+) -> str:
+    """LLM call #2: author the full YAML spec text for the classified template."""
+    import yaml
+    from ._yaml_spec import SpecValidationError, load_spec
+    from databricks.sdk import WorkspaceClient
+
     try:
-        from databricks.sdk import WorkspaceClient
-        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
         ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
-        response = ws.serving_endpoints.query(
-            name="databricks-claude-sonnet-4-6",
-            messages=[
-                ChatMessage(
-                    role=ChatMessageRole.USER,
-                    content=_COWORKER_GEN_PROMPT.format(spec=spec),
-                )
-            ],
-            max_tokens=1200,
-        )
-        choices = response.choices
-        if not choices or choices[0].message is None or choices[0].message.content is None:
-            raise click.ClickException("LLM returned an empty response.")
-        return choices[0].message.content.strip()
     except Exception as exc:
         raise click.ClickException(
-            f"LLM generation failed: {exc}\n"
+            f"Could not connect to the workspace: {exc}\n"
             "Ensure you have a valid Databricks profile with access to "
-            "databricks-claude-sonnet-4-6, or pick from the gallery with --coworker list."
+            "databricks-claude-sonnet-4-6."
         ) from exc
+
+    persona = filled.get("persona", classification.persona)
+    objective = filled.get("objective", classification.objective)
+    join_key = filled.get("join_key", classification.join_key)
+
+    spec_context_lines = [f"Name: {classification.name}"]
+    if persona:
+        spec_context_lines.append(f"Persona: {persona}")
+    if objective:
+        spec_context_lines.append(f"Objective: {objective}")
+    if join_key:
+        spec_context_lines.append(f"Join key: {join_key}")
+    spec_context = "\n".join(spec_context_lines)
+
+    prompt_template = _GEN_AUTHOR_PROMPTS[classification.template]
+    # All three templates' .format() calls take the same three kwargs —
+    # _BASE_GEN_PROMPT simply doesn't reference {catalog}/{schema} in its
+    # text, and str.format() silently ignores unused kwargs, so passing all
+    # three unconditionally is simpler and correct for every template kind.
+    prompt = prompt_template.format(
+        spec=spec_context,
+        catalog=data_source.catalog or "$CATALOG",
+        schema=data_source.schema or "$SCHEMA",
+    )
+
+    yaml_text = _query_generate_llm(ws, prompt)
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_text)
+        tmp_path = Path(f.name)
+    try:
+        load_spec(tmp_path, strict=False)
+        return yaml_text
+    except (SpecValidationError, yaml.YAMLError) as e:
+        retry_prompt = (
+            f"{prompt}\n\nYour previous response failed validation with this "
+            f"error: {e}\n\nReturn the full YAML again, fixing the error. "
+            f"Output ONLY the YAML, no markdown fences."
+        )
+        yaml_text = _query_generate_llm(ws, retry_prompt)
+        tmp_path.write_text(yaml_text)
+        try:
+            load_spec(tmp_path, strict=False)
+            return yaml_text
+        except (SpecValidationError, yaml.YAMLError) as e2:
+            raise click.ClickException(
+                f"The LLM's authored spec failed validation twice: {e2}\n\n"
+                f"Raw output:\n{yaml_text}"
+            ) from e2
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _pick_coworker_gallery() -> "tuple[str, Path]":
@@ -2443,6 +2671,71 @@ def onboard(profile: "str | None", directory: str, force: bool) -> None:
             f"Wrote {spec_path} (UNVALIDATED — {result.validation_error})\n"
             "Review and fix the spec block before using it."
         )
+
+
+@main.command()
+@click.argument("description", required=False, default=None)
+@click.option(
+    "--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+    help="Databricks CLI profile for the LLM calls and workspace probing.",
+)
+@click.option("--catalog", default=None, help="Catalog for the agent's data source. Skips auto-detection.")
+@click.option("--schema", default=None, help="Schema for the agent's data source. Skips auto-detection.")
+@click.option(
+    "--dir", "directory", default=".", type=click.Path(file_okay=False),
+    help="Directory to write the project into. Default: current directory.",
+)
+@click.option("--force", is_flag=True, help="Overwrite an existing project directory.")
+def generate(
+    description: "str | None", profile: "str | None",
+    catalog: "str | None", schema: "str | None",
+    directory: str, force: bool,
+) -> None:
+    """Describe an agent in plain English; an LLM authors it as a real project.
+
+    Classifies your description into a template (base/data/coworker), asks
+    only for whatever it couldn't confidently fill in, then authors and
+    materializes a durable, hand-editable project — the same output shape
+    `apx-agent agents scaffold` produces, just described in English instead
+    of flags.
+    """
+    from ._yaml_spec import load_spec
+
+    if not description:
+        description = cast(str, click.prompt("Describe the agent you want (plain English)"))
+
+    click.echo("\nClassifying your description...")
+    classification = _classify_agent_description(profile, description)
+
+    data_source = _resolve_generate_data_source(classification, catalog, schema, profile)
+
+    filled: "dict[str, str]" = {}
+    field_prompts = {
+        "persona": "Analyst persona (e.g. a revenue operations analyst)",
+        "objective": "What should the agent surface? (e.g. unbilled deals)",
+        "join_key": "Join key between the two systems (e.g. account_id)",
+    }
+    for field in classification.missing:
+        prompt_text = field_prompts.get(field)
+        if prompt_text:
+            filled[field] = click.prompt(prompt_text)
+
+    click.echo("Generating agent spec...")
+    yaml_text = _author_agent_yaml(profile, classification, data_source, filled)
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_text)
+        tmp_yaml_path = Path(f.name)
+    try:
+        config = load_spec(tmp_yaml_path, strict=False)
+    finally:
+        tmp_yaml_path.unlink(missing_ok=True)
+
+    # config.name comes from the LLM-authored YAML — sanitize before using it
+    # as a filesystem path component, matching scaffold's existing guard.
+    target = Path(directory) / Path(config.name).name
+    _materialize_agent(config, target, force=force, profile=profile)
 
 
 def _pick_template() -> str:
@@ -2767,6 +3060,7 @@ def _scaffold_apps(
     table: str | None = None, template: str = "data",
     persona: str | None = None, objective: str | None = None,
     join_key: str | None = None, lakebase: bool = True,
+    instructions: str | None = None,
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
@@ -2808,6 +3102,8 @@ def _scaffold_apps(
     persona_arg = f", persona={repr(persona)}" if persona else ""
     objective_arg = f", objective={repr(objective)}" if objective else ""
     join_key_arg = f", join_key={repr(join_key)}" if join_key else ""
+    instructions_arg = f", instructions={repr(instructions)}" if instructions else ""
+    instructions_value = repr(instructions) if instructions else repr("You are a helpful assistant.")
 
     import re as _re
     name_slug = _re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
@@ -2839,6 +3135,8 @@ def _scaffold_apps(
             .replace("<PERSONA_ARG>", persona_arg)
             .replace("<OBJECTIVE_ARG>", objective_arg)
             .replace("<JOIN_KEY_ARG>", join_key_arg)
+            .replace("<INSTRUCTIONS_ARG>", instructions_arg)
+            .replace("<INSTRUCTIONS_VALUE>", instructions_value)
             .replace("<APX_AGENT_DEP>", apx_dep)
             .replace("<APX_AGENT_SOURCE>", apx_source)
             .replace("<KNOWLEDGE_LINE>", knowledge_line)
@@ -2861,7 +3159,7 @@ def _scaffold_apps(
         # ADK-style layout: the user's agent definition lives at top-level
         # ``agent.py``. ``agent_server/`` is framework boilerplate only.
         "agent.py": (
-            _SCAFFOLD_APPS_AGENT_BASE.replace("<APP_NAME>", name) if template == "base"
+            _sub(_SCAFFOLD_APPS_AGENT_BASE) if template == "base"
             else _sub(_SCAFFOLD_APPS_AGENT_COWORKER if template == "coworker" else _SCAFFOLD_APPS_AGENT)
         ),
         "agent_server/__init__.py": "",
@@ -2884,41 +3182,70 @@ def _scaffold_apps(
         _write_okf_bundle_for_scaffold(target, manifest, force=force)
 
 
-def _echo_scaffold_yaml_done(out: Path, *, catalog: str | None, schema: str | None) -> None:
-    """Print a consistent, correct post-YAML message and offer to run locally."""
-    import subprocess as _sp
-    import sys
+def _materialize_agent(
+    config: "AgentConfig", target: Path, *, force: bool,
+    source_dir: Path | None = None, profile: str | None = None,
+) -> None:
+    """Compile *config* into a durable, hand-editable project at *target*.
 
-    click.echo(f"\nSpec written to {out.name}")
-    if not (catalog and schema):
-        missing = " and ".join(
-            v for v, flag in [("$CATALOG", catalog), ("$SCHEMA", schema)] if not flag
+    Shared by ``scaffold``'s gallery pick and ``generate`` — both start from
+    an arbitrary structured spec (a gallery YAML, an LLM-authored YAML) that
+    ``_scaffold_apps``'s scalar templating can't represent. Wraps
+    ``generate_project()`` (the compiler ``run``/``deploy`` already use for
+    standalone ``.yaml`` specs) and adds the auxiliary files it doesn't write
+    but ``_scaffold_apps`` does, so output quality doesn't depend on which
+    authoring path produced the config.
+    """
+    from ._project_gen import generate_project
+
+    if target.exists() and not force and any(target.iterdir()):
+        raise click.ClickException(
+            f"{target} already exists and is not empty. Pass --force to overwrite."
         )
-        click.echo(f"  Open {out.name} and fill in {missing} before running.")
-        click.echo(f"\n  apx-agent agents run {out.name}     # run locally")
-        click.echo(f"  apx-agent agents deploy {out.name}  # deploy to Databricks Apps")
-        return
+    target.mkdir(parents=True, exist_ok=True)
 
-    if sys.stdin.isatty():
-        click.echo()
-        launch = click.confirm("Start the local dev server now?", default=True)
-        if launch:
-            _sp.run(["apx-agent", "run", str(out)], check=False)
-            return
+    generate_project(config, target, source_dir=source_dir)
 
-    click.echo(f"\n  apx-agent agents run {out.name}     # run locally")
-    click.echo(f"  apx-agent agents deploy {out.name}  # deploy to Databricks Apps")
+    aux_files = {
+        ".env.example": _SCAFFOLD_APPS_ENV_EXAMPLE,
+        ".gitignore": _SCAFFOLD_GITIGNORE,
+        "README.md": _SCAFFOLD_APPS_README.replace("<APP_NAME>", config.name),
+        "scripts/__init__.py": "",
+        "scripts/quickstart.py": _SCAFFOLD_APPS_QUICKSTART.replace("<APP_NAME>", config.name),
+    }
+    for rel_path, content in aux_files.items():
+        path = target / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists() or force:
+            path.write_text(content)
+
+    # Ground the materialized agent the same way scaffold/run/deploy do: bake
+    # .apx/schema.json so the DataAgent declares its UC tables (no runtime
+    # DESCRIBE; the dev-UI DATA panel shows them). generate_project() writes no
+    # .apx/, so without this a gallery-picked or generated data/coworker project
+    # runs ungrounded. Best-effort — falls back to live introspection when the
+    # template has no resolved catalog/schema or the schema can't be read.
+    if _bake_schema_into_project(target, config, profile):
+        click.echo("  baked .apx/schema.json from the UC schema", err=True)
+
+    click.echo()
+    click.echo(f"Scaffolded {config.name} at {target} (target=apps).")
+    click.echo(f"Next: cd {target.name} && uv sync && uv run apx-agent run    # serve locally")
+    click.echo("Tip: run `uv run apx-agent doctor` to check your environment before deploying.")
+    click.echo("      uv run apx-agent deploy                  # → Databricks Apps")
 
 
 def _scaffold_from_gallery(
     gallery_yaml_path: Path,
     name: str,
-    directory: Path,
     catalog: "str | None",
     schema: "str | None",
-) -> None:
-    """Copy a gallery YAML to <directory>/<name>.yaml, patching name/catalog/schema."""
+) -> "AgentConfig":
+    """Patch a gallery YAML's name/catalog/schema/memory-table fields and
+    return the validated AgentConfig — ready for _materialize_agent."""
     import yaml as _yaml
+    from ._models import AgentConfig
+
     data = _yaml.safe_load(gallery_yaml_path.read_text())
     data["name"] = name
     if catalog and "template" in data:
@@ -2936,9 +3263,7 @@ def _scaffold_from_gallery(
         if section in data and "table_name" in data[section]:
             suffix = "memory" if section == "memory" else "sessions"
             data[section]["table_name"] = f"{cat}.{sch}.apx_{safe_name}_{suffix}"
-    out = directory / f"{name}.yaml"
-    out.write_text(_yaml.dump(data, sort_keys=False, allow_unicode=True))
-    _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
+    return AgentConfig.model_validate(data)
 
 
 def _prompt_for_instructions() -> str | None:
@@ -2951,62 +3276,6 @@ def _prompt_for_instructions() -> str | None:
         show_default=False,
     )
     return raw.strip() or None
-
-
-def _scaffold_to_yaml(
-    name: str,
-    directory: Path,
-    scaffold_template: str,
-    catalog: str | None,
-    schema: str | None,
-    persona: str | None,
-    join_key: str | None,
-    objective: str | None,
-    instructions: str | None = None,
-) -> None:
-    import yaml as _yaml
-    spec: dict = {
-        "name": name,
-        "description": "",
-        "model": "databricks-claude-sonnet-4-6",
-        "instructions": instructions or "",
-        "examples": [],
-    }
-    if scaffold_template in ("coworker", "data"):
-        spec["template"] = {
-            "name": scaffold_template,
-            "catalog": catalog or "$CATALOG",
-            "schema": schema or "$SCHEMA",
-        }
-        if scaffold_template == "coworker":
-            spec["template"]["persona"] = persona or "a data analyst"
-            spec["template"]["join_key"] = join_key or ""
-            spec["template"]["objective"] = objective or ""
-            spec["template"]["memory"] = "persistent"
-            safe_name = name.replace("-", "_")
-            cat = catalog or "$CATALOG"
-            sch = schema or "$SCHEMA"
-            spec["memory"] = {
-                "type": "lakebase",
-                "host": "${LAKEBASE_HOST}",
-                "database": safe_name,
-                "table_name": f"{cat}.{sch}.apx_{safe_name}_memory",
-                "embedding_model": "databricks-bge-large-en",
-                "embedding_dim": 1024,
-                "auto_create": True,
-            }
-            spec["session"] = {
-                "type": "lakebase",
-                "host": "${LAKEBASE_HOST}",
-                "database": safe_name,
-                "table_name": f"{cat}.{sch}.apx_{safe_name}_sessions",
-                "auto_create": True,
-            }
-    spec["guardrails"] = {"injection_detection": True}
-    spec["tools"] = []
-    out = directory / f"{name}.yaml"
-    out.write_text(_yaml.dump(spec, sort_keys=False, allow_unicode=True))
-    _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
 
 
 @agents.command()
@@ -3066,10 +3335,10 @@ def _scaffold_to_yaml(
     "--coworker", "coworker_spec", default=None, is_eager=False,
     metavar="[list|NAME]",
     help=(
-        "Pick or generate a coworker. Use 'list' to browse the gallery, "
-        "'generate' to LLM-author one from your description, "
+        "Pick a coworker. Use 'list' to browse the gallery, "
         "a coworker name to select directly, or omit the value to use "
-        "--template coworker."
+        "--template coworker. For natural-language authoring, use "
+        "`apx-agent generate` instead."
     ),
 )
 @click.option("--data", "use_data", is_flag=True, default=False,
@@ -3085,18 +3354,11 @@ def _scaffold_to_yaml(
     help="Run the setup wizard (target, template, catalog, schema, persona). "
          "Defaults to on when stdin is a TTY.",
 )
-@click.option(
-    "--yaml/--no-yaml", "emit_yaml", default=True,
-    help="Output a YAML spec file instead of a full project directory "
-         "(default: on — unless --target is passed explicitly, which "
-         "scaffolds that runtime's project layout; pass --yaml to keep "
-         "the spec output).",
-)
 def scaffold(
     name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
     scaffold_template: str | None, coworker_spec: str | None, use_data: bool,
-    lakebase: bool, interactive: bool | None, emit_yaml: bool,
+    lakebase: bool, interactive: bool | None,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -3152,46 +3414,17 @@ def scaffold(
     elif use_data:
         scaffold_template = "data"
 
-    # An explicit --target is a request for that runtime's documented project
-    # layout (#449): the Apps agent_server/ bundle or the flat model-serving
-    # project. Don't let the default-on --yaml spec flow silently reroute it
-    # to a YAML spec — only an explicitly passed --yaml keeps the spec output.
-    if scaffold_target is not None and emit_yaml:
-        _yaml_source = click.get_current_context().get_parameter_source("emit_yaml")
-        if _yaml_source is not click.core.ParameterSource.COMMANDLINE:
-            emit_yaml = False
-
-    if not emit_yaml:
-        if target.exists() and not force:
-            if any(target.iterdir()):
-                raise click.ClickException(
-                    f"{target} already exists and is not empty. Pass --force to overwrite."
-                )
-        target.mkdir(parents=True, exist_ok=True)
+    if target.exists() and not force:
+        if any(target.iterdir()):
+            raise click.ClickException(
+                f"{target} already exists and is not empty. Pass --force to overwrite."
+            )
+    target.mkdir(parents=True, exist_ok=True)
 
     # -----------------------------------------------------------------------
     # Step 0: template/catalog/schema pickers and sanity check.
     # Triggered by passing "list" as the value for any of these options.
     # -----------------------------------------------------------------------
-    gallery_yaml_path: "Path | None" = None
-    generated_yaml_str: "str | None" = None
-    if coworker_spec is not None and coworker_spec not in ("",):
-        if coworker_spec == "list":
-            # --coworker list → interactive gallery picker
-            _, gallery_yaml_path = _pick_coworker_gallery()
-        elif coworker_spec == "generate":
-            # --coworker generate → LLM-author from user's description
-            generated_yaml_str = _generate_coworker_yaml(profile)
-        else:
-            # --coworker <name> → find by name in the gallery
-            found = _find_gallery_yaml_by_name(coworker_spec)
-            if found is None:
-                raise click.ClickException(
-                    f"No coworker named {coworker_spec!r} in the gallery. "
-                    "Use --coworker list to browse, or --coworker generate to author one."
-                )
-            gallery_yaml_path = found
-
     if scaffold_template == "list" or catalog == "list" or schema == "list":
         ws = _scaffold_ws()
         if scaffold_template == "list":
@@ -3233,33 +3466,7 @@ def scaffold(
         scaffold_target = scaffold_target or "apps"
         scaffold_template = scaffold_template or "data"
 
-    if emit_yaml:
-        Path(directory).mkdir(parents=True, exist_ok=True)
-        if generated_yaml_str is not None:
-            out = Path(directory) / f"{project_name}.yaml"
-            out.write_text(generated_yaml_str)
-            _echo_scaffold_yaml_done(out, catalog=catalog, schema=schema)
-        elif gallery_yaml_path is not None:
-            _scaffold_from_gallery(
-                gallery_yaml_path=gallery_yaml_path,
-                name=project_name,
-                directory=Path(directory),
-                catalog=catalog,
-                schema=schema,
-            )
-        else:
-            _scaffold_to_yaml(
-                name=project_name,
-                directory=Path(directory),
-                scaffold_template=scaffold_template or "base",
-                catalog=catalog,
-                schema=schema,
-                persona=persona,
-                join_key=join_key,
-                objective=objective,
-                instructions=_prompt_for_instructions() if interactive_mode else None,
-            )
-        return
+    instructions: str | None = _prompt_for_instructions() if interactive_mode else None
 
     # -----------------------------------------------------------------------
     # Step 2: validate the combination before touching the filesystem.
@@ -3272,7 +3479,9 @@ def scaffold(
 
     # -----------------------------------------------------------------------
     # Step 3: resolve the data source — explicit > auto-detect > demo fallback.
-    # Base template has no data source; skip entirely.
+    # Base template has no data source; skip entirely. Runs before the
+    # gallery pick below so a materialized agent.py always gets a concrete
+    # catalog/schema — unlike a YAML spec, it can't defer to $CATALOG/$SCHEMA.
     # -----------------------------------------------------------------------
     table: str | None = None
     if scaffold_template == "base":
@@ -3299,11 +3508,31 @@ def scaffold(
                 "or pass --catalog/--schema to ground the agent in your own data)"
             )
 
+    # -----------------------------------------------------------------------
+    # Step 4: gallery pick — materialize a full project directly.
+    # -----------------------------------------------------------------------
+    if coworker_spec is not None and coworker_spec not in ("",):
+        if coworker_spec == "list":
+            # --coworker list → interactive gallery picker
+            _, gallery_yaml_path = _pick_coworker_gallery()
+        else:
+            # --coworker <name> → find by name in the gallery
+            found = _find_gallery_yaml_by_name(coworker_spec)
+            if found is None:
+                raise click.ClickException(
+                    f"No coworker named {coworker_spec!r} in the gallery. "
+                    "Use --coworker list to browse."
+                )
+            gallery_yaml_path = found
+        config = _scaffold_from_gallery(gallery_yaml_path, project_name, catalog, schema)
+        _materialize_agent(config, target, force=force, profile=profile)
+        return
+
     if scaffold_target == "apps":
         _scaffold_apps(
             target, project_name, force, catalog, schema, table,
             template=scaffold_template, persona=persona, objective=objective,
-            join_key=join_key, lakebase=lakebase,
+            join_key=join_key, lakebase=lakebase, instructions=instructions,
         )
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)
