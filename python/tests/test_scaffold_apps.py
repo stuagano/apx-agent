@@ -596,3 +596,48 @@ def test_scaffold_explicit_target_non_tty_writes_model_serving_layout(
     assert (base / "agent.py").exists()
     assert (base / "app.py").exists()
     assert not (tmp_path / "flat_agent.yaml").exists()
+
+
+# ---------------------------------------------------------------------------
+# _resolve_scaffold_data_source — the extracted resolver (#522). Four branches:
+# base (no source), explicit catalog+schema, auto-detect, unreachable fallback.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_data_source_base_template_has_no_source() -> None:
+    import apx_agent.cli as cli
+
+    assert cli._resolve_scaffold_data_source("base", None, None, None) == ("", "", None)
+
+
+def test_resolve_data_source_explicit_probes_first_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apx_agent.cli as cli
+
+    monkeypatch.setattr(cli, "_probe_first_table", lambda c, s, p: "trips")
+    assert cli._resolve_scaffold_data_source("data", "main", "sales", None) == (
+        "main", "sales", "trips",
+    )
+
+
+def test_resolve_data_source_auto_detects_when_unspecified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apx_agent.cli as cli
+
+    monkeypatch.setattr(cli, "_discover_default_data", lambda p: ("cat", "sch", "tbl"))
+    assert cli._resolve_scaffold_data_source("data", None, None, None) == (
+        "cat", "sch", "tbl",
+    )
+
+
+def test_resolve_data_source_falls_back_to_samples_when_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apx_agent.cli as cli
+
+    monkeypatch.setattr(cli, "_discover_default_data", lambda p: None)
+    assert cli._resolve_scaffold_data_source("data", None, None, None) == (
+        "samples", "nyctaxi", None,
+    )
