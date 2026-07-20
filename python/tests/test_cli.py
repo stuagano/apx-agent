@@ -5419,6 +5419,74 @@ class TestTracesDelete:
 
 
 # ---------------------------------------------------------------------------
+# `apx-agent agents apps`
+# ---------------------------------------------------------------------------
+
+
+def _fake_app(name, state="RUNNING", url=None, update_time=None):
+    return SimpleNamespace(
+        name=name,
+        app_status=SimpleNamespace(state=SimpleNamespace(value=state)),
+        update_time=update_time,
+        url=url,
+    )
+
+
+class TestAgentsApps:
+    def test_text_format_lists_apps(self):
+        ws = MagicMock()
+        ws.apps.list.return_value = [_fake_app("b-app"), _fake_app("a-app")]
+        with patch("apx_agent.cli._connect_workspace",
+                   return_value=(ws, SimpleNamespace(host="https://ws.example.com"))):
+            result = CliRunner().invoke(main, ["agents", "apps"])
+        assert result.exit_code == 0, result.output
+        # Sorted by name.
+        assert result.output.index("a-app") < result.output.index("b-app")
+
+    def test_json_format_emits_structured_rows(self):
+        ws = MagicMock()
+        ws.apps.list.return_value = [
+            _fake_app("payroll-app", state="RUNNING", url="https://payroll.example.com"),
+        ]
+        with patch("apx_agent.cli._connect_workspace",
+                   return_value=(ws, SimpleNamespace(host="https://ws.example.com"))):
+            result = CliRunner().invoke(main, ["agents", "apps", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.output)
+        assert rows == [{
+            "name": "payroll-app", "state": "RUNNING",
+            "updated": None, "url": "https://payroll.example.com",
+        }]
+
+    def test_json_alias_equivalent_to_format_json(self):
+        ws = MagicMock()
+        ws.apps.list.return_value = [_fake_app("a")]
+        with patch("apx_agent.cli._connect_workspace",
+                   return_value=(ws, SimpleNamespace(host="https://ws.example.com"))):
+            result = CliRunner().invoke(main, ["agents", "apps", "--json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)[0]["name"] == "a"
+
+    def test_json_format_empty_list(self):
+        ws = MagicMock()
+        ws.apps.list.return_value = []
+        with patch("apx_agent.cli._connect_workspace",
+                   return_value=(ws, SimpleNamespace(host="https://ws.example.com"))):
+            result = CliRunner().invoke(main, ["agents", "apps", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == []
+
+    def test_text_format_empty_list_hints_deploy(self):
+        ws = MagicMock()
+        ws.apps.list.return_value = []
+        with patch("apx_agent.cli._connect_workspace",
+                   return_value=(ws, SimpleNamespace(host="https://ws.example.com"))):
+            result = CliRunner().invoke(main, ["agents", "apps"])
+        assert result.exit_code == 0, result.output
+        assert "apx-agent agents deploy" in result.output
+
+
+# ---------------------------------------------------------------------------
 # `apx-agent agents delete`
 # ---------------------------------------------------------------------------
 

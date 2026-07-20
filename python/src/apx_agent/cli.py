@@ -4000,11 +4000,15 @@ def stop(agent_name: str | None, port: int | None, host: str, stop_all: bool) ->
 @agents.command("apps")
 @click.option("--profile", default=None, help="Databricks CLI profile to use.")
 @click.option("--host", default=None, help="Workspace URL (overrides profile).")
-def apps_list(profile: str | None, host: str | None) -> None:
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]),
+              default="text", help="Output format.")
+def apps_list(profile: str | None, host: str | None, fmt: str) -> None:
     """List Databricks Apps deployed in the workspace.
 
     Shows name, state, URL, and last-updated time for every app visible
-    to the current credentials. Use --profile to pick a specific workspace.
+    to the current credentials — every Databricks App, not just apx-managed
+    agents; use --profile to pick a specific workspace. For only apx-managed
+    agents (with tool/resource counts), see `apx-agent agents list --apps-only`.
 
     Examples:
 
@@ -4033,50 +4037,69 @@ def apps_list(profile: str | None, host: str | None) -> None:
         raise click.ClickException(f"Failed to list apps: {exc}")
 
     if not app_list:
-        click.echo("No Databricks Apps found in this workspace.")
-        click.echo("Deploy one with:  apx-agent agents deploy")
+        if fmt == "json":
+            click.echo(json.dumps([]))
+        else:
+            click.echo("No Databricks Apps found in this workspace.")
+            click.echo("Deploy one with:  apx-agent agents deploy")
         return
 
     # Resolve workspace host for URL construction.
     ws_host = cfg.host.rstrip("/") if cfg.host else ""
 
-    # Header
-    click.echo(f"\n{'NAME':<32} {'STATE':<12} {'UPDATED':<20}  URL")
-    click.echo("─" * 100)
-
-    for app in sorted(app_list, key=lambda a: (a.name or "")):
+    def _resolve(app: Any) -> dict[str, Any]:
         name = app.name or "?"
         state = (
             (app.app_status.state.value if hasattr(app.app_status.state, "value") else str(app.app_status.state))
             if app.app_status and app.app_status.state
             else "UNKNOWN"
         )
-        # Colour-code state for quick scanning.
-        state_display = {
-            "RUNNING": click.style("RUNNING", fg="green"),
-            "STARTING": click.style("STARTING", fg="yellow"),
-            "DEPLOYING": click.style("DEPLOYING", fg="yellow"),
-            "ERROR": click.style("ERROR", fg="red"),
-            "STOPPED": click.style("STOPPED", fg="red"),
-            "IDLE": click.style("IDLE", fg="blue"),
-        }.get(state, state)
-
-        updated = ""
+        updated_iso: str | None = None
+        updated_display = ""
         if app.update_time:
             try:
                 from datetime import datetime, timezone
                 ts = app.update_time
                 if isinstance(ts, (int, float)):
                     ts = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-                updated = ts.strftime("%Y-%m-%d %H:%M") if isinstance(ts, datetime) else str(ts)[:16]
+                if isinstance(ts, datetime):
+                    updated_iso = ts.isoformat()
+                    updated_display = ts.strftime("%Y-%m-%d %H:%M")
+                else:
+                    updated_display = str(ts)[:16]
             except Exception:
                 pass
-
         url = getattr(app, "url", None) or ""
         if not url and ws_host and name:
             url = f"{ws_host}/apps/{name}"
+        return {
+            "name": name, "state": state, "updated": updated_iso,
+            "updated_display": updated_display, "url": url,
+        }
 
-        click.echo(f"{name:<32} {state_display:<12} {updated:<20}  {url}")
+    rows = [_resolve(app) for app in sorted(app_list, key=lambda a: (a.name or ""))]
+
+    if fmt == "json":
+        click.echo(json.dumps([
+            {"name": r["name"], "state": r["state"], "updated": r["updated"], "url": r["url"]}
+            for r in rows
+        ], indent=2))
+        return
+
+    # Colour-code state for quick scanning.
+    state_colors = {
+        "RUNNING": "green", "STARTING": "yellow", "DEPLOYING": "yellow",
+        "ERROR": "red", "STOPPED": "red", "IDLE": "blue",
+    }
+
+    # Header
+    click.echo(f"\n{'NAME':<32} {'STATE':<12} {'UPDATED':<20}  URL")
+    click.echo("─" * 100)
+
+    for r in rows:
+        state_display = click.style(r["state"], fg=state_colors[r["state"]]) \
+            if r["state"] in state_colors else r["state"]
+        click.echo(f"{r['name']:<32} {state_display:<12} {r['updated_display']:<20}  {r['url']}")
 
     click.echo()
 
