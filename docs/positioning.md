@@ -69,7 +69,7 @@ declaration composes into a fleet without changing how governance works.
 - **Remote composition (A2A)** — when a sub-agent has its own consumers, deploy cadence, or
   scaling profile, it lives in its own app and is reached with `sub_agents=[url]`. Every
   deployed agent serves an A2A discovery card at `/.well-known/agent.json`; siblings find each
-  other by probe. `/readyz` and `apx-agent doctor` report per-sub-agent reachability.
+  other by probe. `apx-agent doctor` reports per-sub-agent reachability.
 - **Governed per hop** — the cross-app call uses the app-to-app auth path, so the caller's
   identity is passed through. A downstream agent's tools run under the *asking user's* UC
   grants, not a shared service principal — the same identity-passthrough guarantee a single

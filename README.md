@@ -294,8 +294,8 @@ When you split an agent into its own app, the sub-agent call goes through the
 downstream agent's tools still run under the *asking user's* UC grants, not a
 shared service principal. Every deployed agent serves an [A2A discovery
 card](docs/multi-agent/a2a.md) at `/.well-known/agent.json`, so sibling apps find
-each other by probe, not by hardcoded config. `/readyz` and `apx-agent doctor`
-report whether each declared sub-agent is actually reachable.
+each other by probe, not by hardcoded config. `apx-agent doctor` reports whether
+each declared sub-agent is actually reachable.
 
 This is the layer the platform leaves open. Databricks
 [Agent Services](https://docs.databricks.com/aws/en/ai-gateway/agent-services)
