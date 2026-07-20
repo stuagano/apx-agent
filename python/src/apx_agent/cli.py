@@ -3278,6 +3278,61 @@ def _prompt_for_instructions() -> str | None:
     return raw.strip() or None
 
 
+class _ScaffoldDataSource(NamedTuple):
+    catalog: str
+    schema: str
+    table: str | None
+
+
+def _resolve_scaffold_data_source(
+    template: str, catalog: str | None, schema: str | None, profile: str | None
+) -> _ScaffoldDataSource:
+    """Resolve the scaffold's data source: explicit > auto-detect > demo fallback.
+
+    The ``base`` template has no data source (returns empty catalog/schema). A
+    materialized agent.py needs a concrete catalog/schema — unlike a YAML spec it
+    can't defer to ``$CATALOG``/``$SCHEMA`` — so this runs before the gallery
+    pick. Echoes the chosen source (with guidance on the unreachable-workspace
+    fallback) as a side effect, matching the prior inline behaviour.
+    """
+    if template == "base":
+        return _ScaffoldDataSource(catalog or "", schema or "", None)
+    if catalog and schema:
+        table = _probe_first_table(catalog, schema, profile)
+        extra = f" (example tool over `{table}`)" if table else ""
+        click.echo(f"# data source: {catalog}.{schema}{extra}")
+        return _ScaffoldDataSource(catalog, schema, table)
+    found = _discover_default_data(profile)
+    if found:
+        catalog, schema, table = found
+        extra = f" (example tool over `{table}`)" if table else ""
+        click.echo(
+            f"# data source: {catalog}.{schema} — auto-detected from your "
+            f"workspace{extra}"
+        )
+        return _ScaffoldDataSource(catalog, schema, table)
+    click.echo(
+        "# data source: samples.nyctaxi (fallback — couldn't reach the "
+        "workspace; run `databricks auth login` if you haven't authenticated, "
+        "or pass --catalog/--schema to ground the agent in your own data)"
+    )
+    return _ScaffoldDataSource("samples", "nyctaxi", None)
+
+
+def _echo_scaffold_next_steps(name: str, target: Path, scaffold_target: str) -> None:
+    """Print the post-scaffold next-step guidance for a freshly written project."""
+    click.echo()
+    click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")
+    click.echo(f"Next: cd {name} && uv sync && uv run apx-agent agents run    # serve locally")
+    click.echo("Tip: run `uv run apx-agent doctor` to check your environment before deploying.")
+    if scaffold_target == "apps":
+        click.echo("      uv run apx-agent agents deploy                  # → Databricks Apps")
+    else:
+        click.echo(
+            "      uv run apx-agent agents deploy --model <endpoint> --name <catalog.schema.model>"
+        )
+
+
 @agents.command()
 @click.argument("name")
 @click.option(
@@ -3479,34 +3534,13 @@ def scaffold(
 
     # -----------------------------------------------------------------------
     # Step 3: resolve the data source — explicit > auto-detect > demo fallback.
-    # Base template has no data source; skip entirely. Runs before the
-    # gallery pick below so a materialized agent.py always gets a concrete
-    # catalog/schema — unlike a YAML spec, it can't defer to $CATALOG/$SCHEMA.
+    # Runs before the gallery pick below so a materialized agent.py always gets
+    # a concrete catalog/schema — unlike a YAML spec, it can't defer to
+    # $CATALOG/$SCHEMA.
     # -----------------------------------------------------------------------
-    table: str | None = None
-    if scaffold_template == "base":
-        catalog = catalog or ""
-        schema = schema or ""
-    elif catalog and schema:
-        table = _probe_first_table(catalog, schema, profile)
-        extra = f" (example tool over `{table}`)" if table else ""
-        click.echo(f"# data source: {catalog}.{schema}{extra}")
-    else:
-        found = _discover_default_data(profile)
-        if found:
-            catalog, schema, table = found
-            extra = f" (example tool over `{table}`)" if table else ""
-            click.echo(
-                f"# data source: {catalog}.{schema} — auto-detected from your "
-                f"workspace{extra}"
-            )
-        else:
-            catalog, schema = "samples", "nyctaxi"
-            click.echo(
-                "# data source: samples.nyctaxi (fallback — couldn't reach the "
-                "workspace; run `databricks auth login` if you haven't authenticated, "
-                "or pass --catalog/--schema to ground the agent in your own data)"
-            )
+    catalog, schema, table = _resolve_scaffold_data_source(
+        scaffold_template, catalog, schema, profile
+    )
 
     # -----------------------------------------------------------------------
     # Step 4: gallery pick — materialize a full project directly.
@@ -3537,16 +3571,7 @@ def scaffold(
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)
 
-    click.echo()
-    click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")
-    click.echo(f"Next: cd {name} && uv sync && uv run apx-agent agents run    # serve locally")
-    click.echo("Tip: run `uv run apx-agent doctor` to check your environment before deploying.")
-    if scaffold_target == "apps":
-        click.echo("      uv run apx-agent agents deploy                  # → Databricks Apps")
-    else:
-        click.echo(
-            "      uv run apx-agent agents deploy --model <endpoint> --name <catalog.schema.model>"
-        )
+    _echo_scaffold_next_steps(name, target, scaffold_target)
 
     if scaffold_target == "apps" and lakebase:
         _echo_lakebase_guidance()
