@@ -1,0 +1,97 @@
+# Financial Reporting Coworker — Billing × General Ledger
+#
+# The situation this replaces: a reporting team hand-generates accounting
+# reports and drops them on Google Drive or a bucket share; finance consumes
+# them as spreadsheets. There is no source of truth — the "right number" lives
+# in whoever's copy — and no governance, lineage, or access audit.
+#
+# The governed version: publish the reconciliation as governed UC tables (a
+# scheduled job, not a manual export), then declare THIS coworker on top. Finance
+# asks in natural language; the coworker runs SQL against those tables under UC
+# governance with identity passed per hop (OBO), so every read is authorized and
+# audited — not a shared link. The answer IS the report, computed live from the
+# single source of truth, so nobody hand-uploads and nothing drifts. Finance
+# exports the returned rows to a sheet themselves — same figures, no stale copy.
+#
+# Why a coworker and not just Consumer/Genie One: Consumer access surfaces
+# dashboards, Genie agents, and apps — but not files/volumes, and finance often
+# resists a dashboard format. A coworker answers the question in the numbers-in-a-
+# table form finance already wants, closing that gap without a file-share layer
+# inside Databricks.
+#
+# Data requirements: both systems landed in the same UC schema.
+# Typical tables: billing_invoices, gl_journal_entries, gl_accounts
+
+name: financial-reporting-coworker
+description: >
+  Reconciles billed amounts (billing system) against posted revenue (general
+  ledger). Answers finance's reporting questions by running SQL against governed
+  tables — figures computed live, no hand-exported spreadsheets, no drift.
+model: databricks-claude-sonnet-4-6
+instructions: >
+  You are a financial reporting analyst. Always cite the invoice_id or
+  gl_account when surfacing a discrepancy, and state variances in dollar terms.
+  Distinguish timing differences (billed this period, posted next) from true
+  reconciliation errors. When asked for a report, run SQL against the governed
+  tables and return the figures — never quote from a prior export.
+examples:
+  - "Reconcile billed revenue against the GL for last close — where do they diverge?"
+  - "Which invoices were billed but never posted to the ledger this period?"
+  - "Show me the revenue variance by account, biggest dollar gaps first"
+  - "Give me the monthly billing summary finance usually pulls into their sheet"
+
+template:
+  name: coworker
+  catalog: $CATALOG
+  schema: $SCHEMA
+  persona: a financial reporting analyst
+  join_key: invoice ID
+  objective: >
+    Reconcile billed amounts against posted revenue in the general ledger.
+    Surface unposted invoices, billing-vs-ledger variances, and timing
+    differences, and return the periodic report figures finance consumes today
+    as spreadsheets — computed live from the governed source of truth.
+  memory: persistent
+  warehouse_id: $WAREHOUSE_ID
+  include_functions: true
+
+memory:
+  type: lakebase
+  host: $LAKEBASE_HOST
+  database: finrep_coworker
+  table_name: $CATALOG.$SCHEMA.apx_finrep_coworker_memory
+  embedding_model: databricks-bge-large-en
+  embedding_dim: 1024
+  auto_create: true
+  validate_at_boot: true
+
+session:
+  type: lakebase
+  host: $LAKEBASE_HOST
+  database: finrep_coworker
+  table_name: $CATALOG.$SCHEMA.apx_finrep_coworker_sessions
+  auto_create: true
+  validate_at_boot: true
+
+guardrails:
+  injection_detection: true
+  blocked_tools: []
+  rate_limit: null
+
+# The governed data tool. `sql` runs against the warehouse under the calling
+# user's identity (OBO), so UC table grants apply per read and every query is
+# audited — this is what makes "the answer is the report" a governed claim, not
+# a shared file. Swap for a `genie` space if you'd rather ground on a curated
+# semantic model than let the agent author SQL.
+tools:
+  - type: sql
+    warehouse_id: $WAREHOUSE_ID
+    name: query_finance_data
+    description: >
+      Run SQL against the governed billing and general-ledger tables and return
+      the rows. Auth is per-call user identity — the query sees only what the
+      calling user has UC grants on.
+# - type: genie
+#   space_id: $GENIE_SPACE_ID
+#   name: ask_finance_data
+#   description: Answer questions about billing, revenue, and the general ledger.

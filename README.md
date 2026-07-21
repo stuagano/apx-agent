@@ -81,6 +81,7 @@ That declaration becomes: an agent grounded in its schema before the first quest
 | **Memory backends** | Lakebase, UC managed memory, or in-memory — same interface, declared not implemented |
 | **Observation** | Tool calls, spans, and conversation deltas normalized before they reach any renderer |
 | **Governance** | Identity passthrough, UC grants, and audit logging wired from the declaration |
+| **Multi-agent** | `sub_agents=[url]` + A2A — agents call each other across apps, identity passed through per hop, all declared |
 
 You write a Python object or a TOML block. The normalization work is apx-agent's job.
 
@@ -268,6 +269,50 @@ apx-agent agents scaffold my-coworker --template coworker   # writes my-coworker
 ```
 
 See [docs/agents/coworker.md](docs/agents/coworker.md) for the full reference.
+
+---
+
+## Many agents — a governed fleet
+
+Wiring is tolerable for one agent. For a fleet — agents calling each other across
+apps, each hop needing auth, discovery, and reachability — it's the whole job.
+That's the wiring apx-agent deletes. One agent declares another and calls it:
+
+```python
+# Local: compose in one process
+investigation = SequentialAgent(agents=[presence, lineage, code, synthesis])
+
+# Remote: call a sibling agent in its own app, over A2A
+agent = Agent(
+    instructions="Route to the right specialist.",
+    sub_agents=["$DATA_TRIAGE_URL", "$BILLING_URL"],   # $VARs expand at startup
+)
+```
+
+When you split an agent into its own app, the sub-agent call goes through the
+**app-to-app auth path** — the caller's identity is passed through per hop, so a
+downstream agent's tools still run under the *asking user's* UC grants, not a
+shared service principal. Every deployed agent serves an [A2A discovery
+card](docs/multi-agent/a2a.md) at `/.well-known/agent.json`, so sibling apps find
+each other by probe, not by hardcoded config. `apx-agent doctor` reports whether
+each declared sub-agent is actually reachable.
+
+This is the layer the platform leaves open. Databricks
+[Agent Services](https://docs.databricks.com/aws/en/ai-gateway/agent-services)
+(Beta) registers agents in Unity Catalog for discovery and permissions — but its
+own docs note "Runtime invocation is not available. Agents cannot be called
+through a registered agent service." apx-agent is the runtime path: registered or
+not, a declared agent can *call* another, governed, per hop.
+
+Two examples ship this end-to-end:
+
+| Example | Multi-agent shape |
+|---|---|
+| **data-triage-agent** | 6-step `SequentialAgent` (local) delegating SQL + Delta forensics to a **data-inspector** sub-agent in its own app **over A2A** |
+| **customer_triage** | `HandoffAgent` over four specialists (triage / billing / account / technical) with principal-keyed memory recall surviving each handoff — Apps deploy verified live on `fe-stable` |
+
+Pick the deploy boundary by lifecycle and consumers, not agent count — see
+[docs/multi-agent/overview.md](docs/multi-agent/overview.md).
 
 ---
 

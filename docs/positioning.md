@@ -22,9 +22,12 @@ Use apx-agent when you want a **production data agent**:
   `uc_comment_writer` tool) run as the calling user under their grants and are audited.
 - **Deployed to Databricks.** Targets Databricks Apps and model serving, with sessions,
   semantic memory, and MLflow tracing wired from the declaration.
-- **Declared, not wired.** One Python object or a `[tool.apx.agent]` TOML block becomes a
-  working, observable, governed agent; apx-agent normalizes the LLM API formats, memory
-  backends, conversation history, and trace schemas underneath.
+- **Declared, not wired — for one agent and for many.** One Python object or a
+  `[tool.apx.agent]` TOML block becomes a working, observable, governed agent; apx-agent
+  normalizes the LLM API formats, memory backends, conversation history, and trace schemas
+  underneath. The same declaration scales to a **fleet**: `sub_agents=[url]` and A2A let agents
+  call each other across apps, with the caller's identity passed through per hop so downstream
+  tools still run under the asking user's UC grants — see [the fleet section below](#a-governed-fleet-not-just-one-agent).
 
 Canonical examples are `DataAgent` (one line over a UC schema) and `CoworkerAgent` (join two
 source systems on a shared key) — see [agents/overview.md](agents/overview.md).
@@ -46,7 +49,7 @@ What apx-agent adds is the layer the GA authoring workflow leaves to the develop
 | Built-in UC data tools (connect via MCP / custom endpoints) | `sql_tool`, `genie_tool`, `uc_function_tool`, `vector_search_tool` — built-in and governed |
 | End-user identity passthrough (manual `get_user_workspace_client()`) | identity passthrough wired declaratively; tools run as the asking user, and metadata writes run under their grants |
 | Memory / state backends (not configured for you) | Lakebase / UC managed semantic memory and sessions, declared |
-| Multi-agent orchestration (supported but not demonstrated) | `SequentialAgent`, `ParallelAgent`, `RouterAgent`, composition |
+| Multi-agent orchestration (structural primitives, no cross-app runtime or governed-per-hop story) | `SequentialAgent` / `ParallelAgent` / `RouterAgent` / `HandoffAgent` locally, **plus `sub_agents=[url]` + A2A across apps with identity passed through per hop** — shipped and demonstrated (`data-triage-agent` over A2A, `customer_triage` handoffs) |
 | Authoring (write a `ResponsesAgent`, wrap your framework) | declare a `[tool.apx.agent]` block or a Python object; apx-agent compiles it and normalizes the LLM, memory, and trace formats |
 
 In short: apx-agent is a batteries-included, governed, data-grounded toolkit over the same
@@ -54,6 +57,41 @@ primitives the GA framework exposes — the way an opinionated framework sits ov
 one. Use the raw framework when you want maximum control over a custom `ResponsesAgent`; use
 apx-agent when you want a governed, UC-grounded data agent without wiring the grounding,
 data-plane tools, identity passthrough, and memory yourself.
+
+## A governed fleet, not just one agent
+
+Single-agent grounding and governance is the on-ramp. The payoff is that the *same*
+declaration composes into a fleet without changing how governance works.
+
+- **Local composition** — `SequentialAgent`, `ParallelAgent`, `LoopAgent`, `RouterAgent`,
+  `HandoffAgent` compose agents in one process when they share a lifecycle and have no external
+  caller.
+- **Remote composition (A2A)** — when a sub-agent has its own consumers, deploy cadence, or
+  scaling profile, it lives in its own app and is reached with `sub_agents=[url]`. Every
+  deployed agent serves an A2A discovery card at `/.well-known/agent.json`; siblings find each
+  other by probe. `apx-agent doctor` reports per-sub-agent reachability.
+- **Governed per hop** — the cross-app call uses the app-to-app auth path, so the caller's
+  identity is passed through. A downstream agent's tools run under the *asking user's* UC
+  grants, not a shared service principal — the same identity-passthrough guarantee a single
+  agent gives, extended across the fleet.
+
+This is precisely the gap the platform leaves open. Databricks
+[Agent Services](https://docs.databricks.com/aws/en/ai-gateway/agent-services) (Beta) lets you
+"register agents from any team in one place, browse and discover them alongside your tables,
+models, and functions, and set permissions with the same grants that protect your other Unity
+Catalog assets" — registration, discovery, and UC permissions. But its own documentation states:
+"Runtime invocation is not available. Agents cannot be called through a registered agent
+service." apx-agent is the **runtime** layer over that governance surface: registered or not, a
+declared agent can actually *call* another agent, across apps, governed per hop. The two compose
+— register the fleet in Agent Services for org-wide discovery; let apx-agent's A2A make the
+agents talk.
+
+Two examples ship this end-to-end: `data-triage-agent` (a 6-step `SequentialAgent` delegating to
+a `data-inspector` sub-agent over A2A) and `customer_triage` (a `HandoffAgent` over four
+specialists with memory recall surviving each handoff — Apps deploy verified live on
+`fe-stable`). See [multi-agent/overview.md](multi-agent/overview.md) for the local-vs-remote
+decision matrix and [multi-agent/a2a.md](multi-agent/a2a.md) for the discovery card and
+app-to-app auth.
 
 ## By hand vs. declared: a worked comparison
 
