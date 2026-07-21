@@ -1,0 +1,53 @@
+# Financial Reporting Coworker — SYNTHETIC PROOF
+#
+# Resolved copy of ../financial-reporting.yaml with placeholders filled against
+# synthetic tables, so the "answer is the report" motion can be run end-to-end.
+# SQL-tool-only: Lakebase memory/session are intentionally omitted for this
+# first proof. Reproduce by creating three tables in any UC schema you can write
+# to (billing_invoices, gl_journal_entries, gl_accounts), setting catalog/schema/
+# warehouse_id below, then: apx-agent agents run <this file>.
+#
+# Proven end-to-end 2026-07-21: the coworker authored SQL against the governed
+# tables under the caller's identity and correctly separated an unposted invoice,
+# a short-posted amount (true error), and a period-cut timing difference.
+
+name: financial-reporting-coworker
+description: >
+  Reconciles billed amounts (billing system) against posted revenue (general
+  ledger). Answers finance's reporting questions by running SQL against governed
+  tables — figures computed live, no hand-exported spreadsheets, no drift.
+model: databricks-claude-sonnet-4-6
+instructions: >
+  You are a financial reporting analyst. Always cite the invoice_id or
+  gl_account when surfacing a discrepancy, and state variances in dollar terms.
+  Distinguish timing differences (billed this period, posted next) from true
+  reconciliation errors. When asked for a report, run SQL against the governed
+  tables and return the figures — never quote from a prior export.
+
+template:
+  name: coworker
+  catalog: serverless_stable_blrf7o_catalog
+  schema: apx_finrep_demo
+  persona: a financial reporting analyst
+  join_key: invoice ID
+  objective: >
+    Reconcile billed amounts against posted revenue in the general ledger.
+    Surface unposted invoices, billing-vs-ledger variances, and timing
+    differences.
+  memory: "off"
+  warehouse_id: 7407f2b64f47dc86
+  include_functions: false
+
+guardrails:
+  injection_detection: true
+  blocked_tools: []
+  rate_limit: null
+
+tools:
+  - type: sql
+    warehouse_id: 7407f2b64f47dc86
+    name: query_finance_data
+    description: >
+      Run SQL against the governed billing and general-ledger tables and return
+      the rows. Auth is per-call user identity — the query sees only what the
+      calling user has UC grants on.
