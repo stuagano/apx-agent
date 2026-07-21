@@ -103,6 +103,25 @@ from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_prob
 logger = logging.getLogger(__name__)
 
 
+def _edit_panel_inventory(ctx: AgentContext | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return live local-tool schemas and remote-agent descriptors for Edit."""
+    if ctx is None:
+        return [], []
+    schemas: list[dict[str, Any]] = []
+    agents: list[dict[str, Any]] = []
+    for tool in ctx.tools or []:
+        item = {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.input_schema or {},
+        }
+        if tool.sub_agent_url:
+            agents.append({**item, "url": tool.sub_agent_url})
+        else:
+            schemas.append(item)
+    return schemas, agents
+
+
 # ── Response contracts for the read-only MEMORY + CONVERSATIONS routes ───────
 # These model the *existing* success shapes the dev UI's embedded JS already
 # reads — field names/types mirror the source dataclasses exactly so the
@@ -1577,12 +1596,19 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     @router.get("/_apx/edit")
     async def edit_dev_ui(request: Request) -> HTMLResponse:
         path = _find_agent_router_path()
+        ctx: AgentContext | None = request.app.state.agent_context
+        live_schemas, live_agents = _edit_panel_inventory(ctx)
         if path and path.exists():
-            return HTMLResponse(_render_edit_ui(path.read_text()))
+            return HTMLResponse(
+                _render_edit_ui(
+                    path.read_text(),
+                    initial_schemas=live_schemas,
+                    initial_agents=live_agents,
+                )
+            )
         # No agent.py on disk (config-only / template agent). Synthesize a
         # read-only ADK-style view from the live agent config + live tool schemas
         # so the Edit page shows the agent instead of an empty "not found" page.
-        ctx: AgentContext | None = request.app.state.agent_context
         if ctx is not None and getattr(ctx.config, "template", None):
             from ._project_gen import render_agent_py
             try:
@@ -1590,13 +1616,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             except Exception:  # noqa: BLE001 — fall back to the not-found page
                 code = ""
             if code:
-                schemas = [
-                    {"name": t.name, "description": t.description,
-                     "parameters": t.input_schema or {}}
-                    for t in (ctx.tools or [])
-                ]
                 return HTMLResponse(
-                    _render_edit_ui(code, read_only=True, initial_schemas=schemas)
+                    _render_edit_ui(
+                        code,
+                        read_only=True,
+                        initial_schemas=live_schemas,
+                        initial_agents=live_agents,
+                    )
                 )
         return HTMLResponse(_render_edit_ui("", not_found=True))
 
