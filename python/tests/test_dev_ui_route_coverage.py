@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from apx_agent import AgentConfig, AgentContext
 from apx_agent import _dev
 from apx_agent._dev import build_dev_ui_router
-from apx_agent._models import AgentCard
+from apx_agent._models import AgentCard, AgentTool
 
 
 BASE_AGENT_ROUTER = '''\
@@ -154,6 +154,29 @@ def _make_ctx(*, agent: Any | None = None, model: str = "fake-model") -> AgentCo
     return AgentContext(config=config, tools=[], card=card, agent=agent)  # type: ignore[arg-type]
 
 
+def _make_ctx_with_tools(*, agent: Any | None = None) -> AgentContext:
+    config = AgentConfig(
+        name="dev-ui-test",
+        model="fake-model",
+        instructions="Use warehouse data carefully.",
+    )
+    tools = [
+        AgentTool(
+            name="existing_tool",
+            description="Existing test helper.",
+            input_schema={"type": "object", "properties": {"value": {"type": "string"}}},
+        ),
+        AgentTool(
+            name="billing_specialist",
+            description="Handles billing questions.",
+            input_schema={"type": "object", "properties": {"message": {"type": "string"}}},
+            sub_agent_url="https://billing.example.com",
+        ),
+    ]
+    card = AgentCard(name="dev-ui-test", description="", skills=[])
+    return AgentContext(config=config, tools=tools, card=card, agent=agent)  # type: ignore[arg-type]
+
+
 @pytest.fixture
 def agent_router_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "agent_router.py"
@@ -226,6 +249,28 @@ def _patch_suggest_http_client(
         return _FakeSuggestHTTPClient(payload)
 
     monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+
+@pytest.mark.asyncio
+async def test_edit_page_lists_live_tools_and_remote_agents_separately(
+    agent_router_path: Path,
+) -> None:
+    app = FastAPI()
+    app.state.agent_context = _make_ctx_with_tools(agent=_FakeAgent())
+    app.state.workspace_client = _FakeWorkspaceClient()
+    app.include_router(build_dev_ui_router())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/_apx/edit")
+
+    assert response.status_code == 200
+    html = response.text
+    assert "Tools & Agents" in html
+    assert "Available Tools" in html
+    assert "Available Agents" in html
+    assert "existing_tool" in html
+    assert "billing_specialist" in html
+    assert "https://billing.example.com" in html
 
 
 @pytest.mark.asyncio

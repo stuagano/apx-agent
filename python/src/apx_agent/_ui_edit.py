@@ -952,6 +952,7 @@ def _render_edit_ui(
     *,
     read_only: bool = False,
     initial_schemas: "list[dict[str, Any]] | None" = None,
+    initial_agents: "list[dict[str, Any]] | None" = None,
 ) -> str:
     """Return a split-panel authoring page: CodeMirror left, schema preview right.
 
@@ -992,6 +993,7 @@ def _render_edit_ui(
         not_found_banner = ""
     read_only_js = "true" if read_only else "false"
     initial_schemas_js = _json.dumps(initial_schemas or [])
+    initial_agents_js = _json.dumps(initial_agents or [])
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1033,11 +1035,16 @@ def _render_edit_ui(
                           text-transform: uppercase; letter-spacing: .6px; }}
   #schema-header .schema-hint {{ font-size: 10px; color: #333; font-style: italic; }}
   #schema-list {{ flex: 1; overflow-y: auto; padding: 8px; }}
-  .tool-card {{ background: #111; border: 1px solid #1e1e1e; border-radius: 6px;
+  .panel-section {{ margin-bottom: 12px; }}
+  .panel-section-title {{ font-size: 10px; font-weight: 700; color: #555;
+                          text-transform: uppercase; letter-spacing: .6px;
+                          margin: 4px 4px 8px; }}
+  .tool-card, .agent-card {{ background: #111; border: 1px solid #1e1e1e; border-radius: 6px;
                 padding: 10px 12px; margin-bottom: 8px; }}
-  .tool-name {{ font-size: 12px; font-weight: 600; color: #e8e8e8; font-family: monospace;
+  .tool-name, .agent-name {{ font-size: 12px; font-weight: 600; color: #e8e8e8; font-family: monospace;
                 margin-bottom: 4px; }}
-  .tool-desc {{ font-size: 11px; color: #666; margin-bottom: 6px; line-height: 1.4; }}
+  .tool-desc, .agent-desc {{ font-size: 11px; color: #666; margin-bottom: 6px; line-height: 1.4; }}
+  .agent-url {{ font-size: 10px; color: #555; font-family: monospace; word-break: break-all; }}
   .tool-params {{ display: flex; flex-direction: column; gap: 3px; }}
   .param-row {{ display: flex; gap: 6px; align-items: baseline; }}
   .param-name {{ font-size: 11px; font-family: monospace; color: #a5f3fc; }}
@@ -1156,8 +1163,8 @@ def _render_edit_ui(
   <div id="editor-wrap"></div>
   <div id="schema-panel">
     <div id="schema-header">
-      <span>Tool Schemas</span>
-      <span class="schema-hint">what the model sees</span>
+      <span>Tools & Agents</span>
+      <span class="schema-hint">callable surfaces</span>
     </div>
     <div id="schema-list"><p class="no-params" style="padding:12px">Loading…</p></div>
   </div>
@@ -1257,6 +1264,7 @@ const INITIAL  = {content_js};
 const WS_TYPE  = {ws_type_js};  // AppClient alias detected from source
 const READ_ONLY = {read_only_js};
 const INITIAL_SCHEMAS = {initial_schemas_js};
+const INITIAL_AGENTS = {initial_agents_js};
 
 const view = new EditorView({{
   doc: INITIAL,
@@ -1333,11 +1341,14 @@ function escHtml(s) {{
 
 function renderSchemas(schemas) {{
   const el = document.getElementById('schema-list');
-  if (!schemas.length) {{
-    el.innerHTML = '<p class="no-params" style="padding:12px;color:#333">No tools found</p>';
+  const agents = INITIAL_AGENTS || [];
+  if (!schemas.length && !agents.length) {{
+    el.innerHTML = '<p class="no-params" style="padding:12px;color:#333">No tools or agents found</p>';
     return;
   }}
-  el.innerHTML = schemas.map(s => {{
+  const toolHtml = schemas.length ? `<div class="panel-section">
+    <div class="panel-section-title">Available Tools</div>
+    ${{schemas.map(s => {{
     if (s._error) return `<p class="schema-error">${{escHtml(s._error)}}</p>`;
     const props = s.parameters?.properties ?? {{}};
     const paramHtml = Object.keys(props).length
@@ -1352,7 +1363,15 @@ function renderSchemas(schemas) {{
       <div class="tool-desc">${{s.description ? escHtml(s.description) : '<em style="color:#333">No description</em>'}}</div>
       <div class="tool-params">${{paramHtml}}</div>
     </div>`;
-  }}).join('');
+  }}).join('')}}</div>` : '';
+  const agentHtml = agents.length ? `<div class="panel-section">
+    <div class="panel-section-title">Available Agents</div>
+    ${{agents.map(a => `<div class="agent-card">
+      <div class="agent-name">${{escHtml(a.name)}}</div>
+      <div class="agent-desc">${{a.description ? escHtml(a.description) : '<em style="color:#333">No description</em>'}}</div>
+      ${{a.url ? `<div class="agent-url">${{escHtml(a.url)}}</div>` : ''}}
+    </div>`).join('')}}</div>` : '';
+  el.innerHTML = toolHtml + agentHtml;
 }}
 
 // Initial preview
@@ -1560,5 +1579,4 @@ document.getElementById('btn-insert').addEventListener('click', async () => {{
 {_topology_minimap_html()}
 </body>
 </html>"""
-
 
