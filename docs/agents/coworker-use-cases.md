@@ -96,10 +96,15 @@ objective  = "identify revenue leakage between closed deals and invoiced amounts
 memory     = "persistent"
 ```
 
-Nothing else changes. One template, six coworkers — the Spec fields are the
+Nothing else changes. One template, seven coworkers — the Spec fields are the
 blanks, the customer's schema and persona are the fill. That's why the
 use-case list below can grow without any new code: a new use case is a new
 pair of landed systems plus a one-paragraph persona, not a new agent class.
+
+Each use case below has a **runnable declaration** under
+[`docs/coworkers/`](../coworkers/) — a complete YAML spec grounded on a governed
+`sql` tool (bound to a warehouse, run under per-call user identity so UC grants
+apply). Point it at your schema, set the env vars, and it serves.
 
 **The pattern:** the join key is a business entity (employee, deal, asset,
 shipment, encounter), each system is authoritative for half the record, and the
@@ -110,16 +115,18 @@ between two screens.
 
 ### Payroll Agent — Kronos × Workday
 
+- **Runnable:** [`coworkers/payroll.yaml`](../coworkers/payroll.yaml)
 - **Join key:** employee ID
 - **System A (Kronos):** time and attendance — what hours were actually worked
 - **System B (Workday):** HR and payroll — what the employee should be paid
 - **Question only the join answers:** "Why doesn't this paycheck match the
   hours worked, and which punches or pay rules caused the discrepancy?"
 
-## Five more
+## Six more
 
 ### 1. Quote-to-Cash Agent — Salesforce × NetSuite
 
+- **Runnable:** [`coworkers/quote-to-cash.yaml`](../coworkers/quote-to-cash.yaml)
 - **Join key:** account / opportunity → invoice
 - **Salesforce:** what was sold and on what terms
 - **NetSuite:** what was billed and collected
@@ -129,6 +136,7 @@ between two screens.
 
 ### 2. Onboarding/Offboarding Agent — Workday × Okta (or AD)
 
+- **Runnable:** [`coworkers/onboarding.yaml`](../coworkers/onboarding.yaml)
 - **Join key:** employee ID
 - **Workday:** employment status, start/term dates
 - **Okta/AD:** what access actually exists
@@ -138,6 +146,7 @@ between two screens.
 
 ### 3. Warranty & Entitlement Agent — ServiceNow × SAP
 
+- **Runnable:** [`coworkers/warranty-entitlement.yaml`](../coworkers/warranty-entitlement.yaml)
 - **Join key:** customer / asset serial number
 - **ServiceNow:** what broke, what the customer is asking for
 - **SAP:** contract, warranty terms, parts inventory
@@ -147,6 +156,7 @@ between two screens.
 
 ### 4. Order-Status Agent — Oracle ERP × project44/FourKites (TMS)
 
+- **Runnable:** [`coworkers/order-status.yaml`](../coworkers/order-status.yaml)
 - **Join key:** PO / shipment number
 - **Oracle ERP:** what was ordered and invoiced
 - **TMS:** where the freight physically is
@@ -156,12 +166,26 @@ between two screens.
 
 ### 5. Claims Integrity Agent — Epic × claims/clearinghouse
 
+- **Runnable:** [`coworkers/claims-integrity.yaml`](../coworkers/claims-integrity.yaml)
 - **Join key:** patient encounter
 - **Epic (EHR):** what care was documented
 - **Claims system:** what was coded, submitted, and denied
 - **Question:** "Why was this claim denied, and is the supporting
   documentation actually in the chart?" Denial management is a huge labor
   line item and it's purely a cross-system reconciliation problem.
+
+### 6. Financial Reporting Agent — Billing × General Ledger
+
+- **Runnable:** [`coworkers/financial-reporting.yaml`](../coworkers/financial-reporting.yaml)
+- **Join key:** invoice ID
+- **Billing system:** what was invoiced to customers
+- **General ledger:** what revenue was posted to the books
+- **Question:** "Reconcile billed revenue against the GL for last close — which
+  invoices never posted, and where are the dollar variances?" This is the
+  governed replacement for a reporting team hand-exporting accounting reports
+  to Google Drive: the answer *is* the report, computed live from the source of
+  truth, so finance stops consuming stale spreadsheets. (Origin: a real customer
+  onboarding thread.)
 
 ## Why this sells
 
