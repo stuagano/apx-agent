@@ -1,0 +1,96 @@
+# Databricks Asset Bundle config for the customer triage orchestrator (Apps target).
+#
+# Routes customer queries to remote specialist agents (billing, technical,
+# account) over A2A. Each specialist is deployed as its own Databricks App.
+#
+# Deploy:
+#   uv sync && uv run quickstart
+#   databricks bundle deploy --target dev --profile <profile>
+
+bundle:
+  name: customer-triage-orchestrator
+
+sync:
+  include:
+    - .build/**
+
+variables:
+  llm_endpoint_name:
+    description: Foundation model endpoint the agent calls.
+    default: databricks-claude-sonnet-4-6
+  mlflow_experiment_id:
+    description: MLflow experiment ID for tracing.
+    default: ""
+  billing_specialist_url:
+    description: URL of the deployed billing specialist app.
+    default: ""
+  technical_specialist_url:
+    description: URL of the deployed technical specialist app.
+    default: ""
+  account_specialist_url:
+    description: URL of the deployed account specialist app.
+    default: ""
+
+artifacts:
+  default:
+    build: |
+      set -e
+      mkdir -p .build
+      cp agent.py .build/ 2>/dev/null || true
+      cp app.py .build/ 2>/dev/null || true
+      cp -r agent_server .build/ 2>/dev/null || true
+      cp apx_agent-*.whl .build/ 2>/dev/null || true
+
+resources:
+  apps:
+    customer-triage-orchestrator:
+      name: customer-triage-orchestrator
+      description: |
+        apx-agent customer triage orchestrator — classifies queries and
+        routes to billing, technical, or account specialists over A2A.
+        Each specialist is a separate Databricks App.
+      source_code_path: ./.build
+
+      user_api_scopes:
+        - sql
+        - serving.serving-endpoints
+
+      resources:
+        - name: llm-endpoint
+          description: Foundation model endpoint used by the agent.
+          serving_endpoint:
+            name: ${var.llm_endpoint_name}
+            permission: CAN_QUERY
+
+      config:
+        command:
+          - uvicorn
+          - agent_server.start_server:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - $DATABRICKS_APP_PORT
+        env:
+          - name: APX_MODEL
+            value: ${var.llm_endpoint_name}
+          - name: APX_SMOKE_MODE
+            value: "1"
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
+          - name: BILLING_SPECIALIST_URL
+            value: ${var.billing_specialist_url}
+          - name: TECHNICAL_SPECIALIST_URL
+            value: ${var.technical_specialist_url}
+          - name: ACCOUNT_SPECIALIST_URL
+            value: ${var.account_specialist_url}
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
