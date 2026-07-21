@@ -1,0 +1,37 @@
+[project]
+name = "technical-specialist"
+version = "0.1.0"
+description = "apx-agent technical specialist — errors, outages, integration issues. Standalone A2A sub-agent."
+requires-python = ">=3.11"
+dependencies = [
+    "apx-agent[langgraph]",
+    "langgraph>=1.1.0",
+    "mlflow[databricks]>=3.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+quickstart = "scripts.quickstart:main"
+
+[tool.uv.sources]
+apx-agent = { path = "../../..", editable = true }
+
+[tool.apx.agent]
+name = "technical_specialist"
+description = "Handles technical support, error messages, outages, and integration issues."
+model = "databricks-claude-sonnet-4-6"
+module = "agent:agent"
+
+[tool.apx.deploy]
+target = "apps"
+bundle_name = "technical-specialist"
+app_name = "technical-specialist"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent_server"]
