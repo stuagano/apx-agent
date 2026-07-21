@@ -1,0 +1,33 @@
+name: Follow-up
+description: Scoped improvement discovered during review or implementation.
+title: "follow-up: "
+labels: ["follow-up"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Where this came from and what evidence supports it.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What should be changed, and what is explicitly out of scope?
+    validations:
+      required: true
+  - type: textarea
+    id: value
+    attributes:
+      label: Value
+      description: Why this is worth doing.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: Tests or checks that should prove completion.
+    validations:
+      required: false

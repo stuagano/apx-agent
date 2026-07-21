@@ -1,0 +1,47 @@
+name: Security or Governance
+description: Security, identity, governance, permissions, or auditability risk.
+title: "security: "
+labels: ["security"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the confirmed risk.
+    validations:
+      required: true
+  - type: textarea
+    id: affected_surface
+    attributes:
+      label: Affected Surface
+      description: Files, commands, runtime path, deployment target, or data path involved.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Exact lines, traces, commands, or behavior proving the risk.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Who or what could be affected?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_fix
+    attributes:
+      label: Smallest Proposed Fix
+      description: Preserve UC governance, identity propagation, approvals, tracing, and audit metadata.
+    validations:
+      required: false
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: Tests, probes, or read-after-write checks that should prove the fix.
+    validations:
+      required: false
