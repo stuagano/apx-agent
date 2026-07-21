@@ -186,14 +186,8 @@ between two screens.
   to Google Drive: the answer *is* the report, computed live from the source of
   truth, so finance stops consuming stale spreadsheets. (Origin: a real customer
   onboarding thread.)
-- **Access model:** two roles. Reporting *writes* the governed tables (scheduled
-  job as a service principal); internal consumers like accounting *read* under
-  their own identity via the coworker's OBO `sql` tool — writer/reader separation
-  by UC grant, not by who holds the share link.
-- **Phasing:** the governed table on a schedule is the first win (consumable as
-  plain SQL); declaring the coworker on top is a later, optional phase. Land the
-  *internal* handoff first — where you control both ends — before touching any
-  external/contracted customer's existing file handoff.
+- **Deep dive:** [Financial Reporting Coworker](financial-reporting-coworker.md)
+  — access model (writer/reader split), phasing, and a proven synthetic run.
 
 ## Why this sells
 
