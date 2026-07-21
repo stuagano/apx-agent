@@ -1,0 +1,43 @@
+name: Reality Drift
+description: Documentation, examples, or claims no longer match shipped behavior.
+title: "ctk: "
+labels: ["ctk", "documentation"]
+body:
+  - type: textarea
+    id: claim
+    attributes:
+      label: Stale Claim
+      description: Quote the exact claim and identify the file.
+    validations:
+      required: true
+  - type: textarea
+    id: reality
+    attributes:
+      label: Current Reality
+      description: Quote or link the current source, test, or behavior that contradicts the claim.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Why this drift matters for users, maintainers, or generated guidance.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_fix
+    attributes:
+      label: Smallest Proposed Fix
+      description: The narrowest doc, test, or code update that reconciles the claim.
+    validations:
+      required: false
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: How to prove the updated claim matches reality.
+      value: |
+        - Read back the changed artifact.
+        - Run the relevant `*_reality_ctk.py` test or `make check`.
+    validations:
+      required: false
