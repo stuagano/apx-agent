@@ -57,8 +57,16 @@ guardrails:
   blocked_tools: []
   rate_limit: null
 
-tools: []
-# Uncomment to add a Genie space for natural-language data access:
+# The governed data tool. `sql` runs against the warehouse under the calling
+# user's identity (OBO), so UC table grants apply per read and every query is
+# audited. Swap for the commented `genie` block to ground on a curated semantic
+# model instead of letting the agent author SQL.
+tools:
+  - type: sql
+    warehouse_id: $WAREHOUSE_ID
+    name: ask_payroll_data
+    description: Answer questions about payroll and time-and-attendance data.
+# Uncomment to ground on a Genie space instead of on-the-fly SQL:
 # - type: genie
 #   space_id: $GENIE_SPACE_ID
 #   name: ask_payroll_data
