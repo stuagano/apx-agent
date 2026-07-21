@@ -61,7 +61,15 @@ guardrails:
   blocked_tools: []
   rate_limit: null
 
-tools: []
+# The governed data tool. `sql` runs against the warehouse under the calling
+# user's identity (OBO), so UC table grants apply per read and every query is
+# audited. Swap for the commented `genie` block to ground on a curated semantic
+# model instead of letting the agent author SQL.
+tools:
+  - type: sql
+    warehouse_id: $WAREHOUSE_ID
+    name: ask_service_data
+    description: Answer questions about cases, warranties, and parts inventory.
 # - type: genie
 #   space_id: $GENIE_SPACE_ID
 #   name: ask_service_data
