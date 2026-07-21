@@ -19,6 +19,21 @@
 # table form finance already wants, closing that gap without a file-share layer
 # inside Databricks.
 #
+# Access model: two roles, not one. The reporting team WRITES the governed
+# tables (the scheduled job runs as a service principal with grants on the source
+# schemas); internal consumers (e.g. accounting) READ, and only read — they never
+# touch the volume or the job. Because the coworker's `sql` tool runs under the
+# caller's identity (OBO), a reader sees exactly what their UC grants allow, and
+# every read is audited. Writer/reader separation is enforced by grants, not by
+# who has the share link.
+#
+# Phasing (how this actually lands): reporting's first goal is just getting the
+# transformation running in Databricks on a schedule — the governed table is the
+# win, consumable via plain SQL. Declaring this coworker on top is a later,
+# optional phase (changing how internal customers digest the numbers). For
+# external/contracted customers the existing file handoff may stay as-is; the
+# coworker replaces the INTERNAL handoff first, where you control both ends.
+#
 # Data requirements: both systems landed in the same UC schema.
 # Typical tables: billing_invoices, gl_journal_entries, gl_accounts
 
