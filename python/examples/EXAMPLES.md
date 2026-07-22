@@ -2,6 +2,11 @@
 
 Quick index — what each example does and which direction data/auth flows.
 
+> **Adding an example?** Start from [`TEMPLATE/README.md`](./TEMPLATE/) — it
+> codifies the shared README shape (a `## What it does` opener, then
+> `## Part 1: Workspace setup` / `## Part 2: Local development` /
+> `## Part 3: Deploy to Databricks Apps`) so every example reads the same way.
+
 ## Agents & Apps
 
 | Example | What it does |
