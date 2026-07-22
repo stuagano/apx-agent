@@ -11,9 +11,9 @@ export default defineConfig({
     tailwindcss(),
   ],
   resolve: {
-    alias: { "@": path.resolve(__dirname, "./ui") },
+    alias: { "@": path.resolve(__dirname, "./client") },
   },
-  root: "./ui",
+  root: "./client",
   build: {
     outDir: path.resolve(__dirname, "./__dist__"),
     emptyOutDir: true,

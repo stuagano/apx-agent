@@ -18,8 +18,8 @@
       "noUncheckedSideEffectImports": true,
       "baseUrl": ".",
       "paths": {
-        "@/*": ["./src/agent_hub/ui/*"]
+        "@/*": ["./client/*"]
       }
     },
-    "include": ["src/agent_hub/ui", "vite.config.ts", "src/agent_hub/ui/types/vite-env.d.ts"]
+    "include": ["client", "vite.config.ts", "client/types/vite-env.d.ts"]
 }
