@@ -22,7 +22,7 @@ app-entrypoint = "app:app"
 api-prefix = "/api"
 
 [tool.apx.ui]
-ui-root = "ui"
+ui-root = "client"
 dist-dir = "__dist__"
 
 [build-system]
