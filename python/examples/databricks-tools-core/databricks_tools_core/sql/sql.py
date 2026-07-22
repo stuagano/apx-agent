@@ -15,6 +15,24 @@ from .warehouse import get_best_warehouse
 logger = logging.getLogger(__name__)
 
 
+def sql_literal(value: str) -> str:
+    """Escape a string for safe interpolation into a SQL single-quoted literal.
+
+    Uses the ANSI doubled-quote convention (``'`` -> ``''``), which is the
+    correct escaping for Databricks SQL string literals. Returns only the
+    escaped inner text (no surrounding quotes), so callers wrap it themselves:
+
+        >>> f"WHERE name = '{sql_literal(name)}'"
+
+    Args:
+        value: The raw string to escape.
+
+    Returns:
+        The value with every single quote doubled.
+    """
+    return value.replace("'", "''")
+
+
 def execute_sql(
     sql_query: str,
     warehouse_id: Optional[str] = None,

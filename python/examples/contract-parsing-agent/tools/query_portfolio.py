@@ -5,15 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from apx_agent import Dependencies
+from databricks_tools_core.sql import sql_literal
 
 from config import get_settings
 from ._sql import run_sql
 
 Workspace = Dependencies.Client
-
-
-def _quote(s: str) -> str:
-    return s.replace("'", "''")
 
 
 def query_portfolio(
@@ -37,11 +34,11 @@ def query_portfolio(
     table = s.qualified_table("primary")
     where: list[str] = []
     if counterparty:
-        where.append(f"counterparty = '{_quote(counterparty)}'")
+        where.append(f"counterparty = '{sql_literal(counterparty)}'")
     if contract_type:
-        where.append(f"contract_type = '{_quote(contract_type)}'")
+        where.append(f"contract_type = '{sql_literal(contract_type)}'")
     if pricing_model:
-        where.append(f"pricing_model = '{_quote(pricing_model)}'")
+        where.append(f"pricing_model = '{sql_literal(pricing_model)}'")
     if auto_renewal is not None:
         where.append(f"auto_renewal = {'true' if auto_renewal else 'false'}")
     if expires_within_days is not None:

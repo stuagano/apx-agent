@@ -12,6 +12,7 @@ from typing import Any
 from databricks.sdk.service.sql import StatementState
 
 from apx_agent import Dependencies
+from databricks_tools_core.sql import sql_literal
 
 Workspace = Dependencies.Workspace
 logger = logging.getLogger(__name__)
@@ -372,7 +373,7 @@ def search_tables(query: str, ws: Workspace) -> dict[str, Any]:
     what they want ('billing', 'customers', 'usage') but doesn't know the
     catalog/schema.
     query: substring to match against table names and comments (case-insensitive)."""
-    safe_query = query.replace("'", "''")
+    safe_query = sql_literal(query)
     sql = f"""
         SELECT table_catalog, table_schema, table_name, table_type, comment
         FROM system.information_schema.tables

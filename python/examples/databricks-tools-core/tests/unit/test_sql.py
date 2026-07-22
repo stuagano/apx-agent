@@ -4,7 +4,7 @@ from unittest import mock
 
 from databricks.sdk.service.sql import QueryTag, State, StatementState
 
-from databricks_tools_core.sql import execute_sql, execute_sql_multi, list_warehouses
+from databricks_tools_core.sql import execute_sql, execute_sql_multi, list_warehouses, sql_literal
 from databricks_tools_core.sql.sql_utils import SQLExecutor
 from databricks_tools_core.sql.warehouse import _sort_within_tier, get_best_warehouse
 
@@ -342,3 +342,24 @@ class TestClientInjection:
             execute_sql_multi(sql_content="SELECT 1;", warehouse_id="wh-123", client=supplied)
 
         assert mock_parallel_cls.call_args.kwargs["client"] is supplied
+
+
+class TestSQLLiteral:
+    """Tests for the sql_literal doubled-quote escaper."""
+
+    def test_no_quotes_unchanged(self):
+        assert sql_literal("Acme Corp") == "Acme Corp"
+
+    def test_single_quote_doubled(self):
+        assert sql_literal("O'Brien") == "O''Brien"
+
+    def test_multiple_quotes_all_doubled(self):
+        assert sql_literal("''") == "''''"
+
+    def test_empty_string(self):
+        assert sql_literal("") == ""
+
+    def test_wrapped_produces_valid_literal(self):
+        # The canonical usage: caller wraps the escaped inner text in quotes.
+        inner = sql_literal("O'Brien")
+        assert f"'{inner}'" == "'O''Brien'"
