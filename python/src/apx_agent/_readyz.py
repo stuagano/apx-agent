@@ -32,8 +32,8 @@ Checks:
     ``"unavailable"`` (mlflow not installed / tracing off). Tracing has only
     these two states — it never causes ``degraded`` on its own (a legitimately
     tracing-off deploy is still ready).
-  * ``tools_registered`` — integer count of tools on the agent (informational,
-    never fails).
+  * ``tools_registered`` — integer count of tools reachable anywhere in the
+    agent tree, including router/composite leaves (informational, never fails).
   * ``tool_exec`` — best-effort, always ``"skipped"`` for now (running a real
     tool needs OBO / user data access this self-test lacks).
   * ``data`` — DataAgent discovery/wiring health: ``"ok"`` or a short degraded
@@ -47,7 +47,8 @@ Checks:
     MCP is extra-gated, so it NEVER gates readiness — a non-MCP deploy still
     reads ready/200 even though ``mcp == "not-configured"``.
   * ``sub_agents`` — declared-sub-agent reachability (issue #445). Present
-    only when the agent declares sub-agent URLs:
+    whenever a sub-agent URL is declared anywhere in the tree — including on
+    router/composite leaves, not just an ``LlmAgent`` root (issue #561):
     ``{"degraded": bool, "agents": [{url, reachable, name?|error?}]}``.
     INFORMATIONAL ONLY — a down peer degrades delegation, it does not kill
     the agent, so this NEVER flips overall readiness on its own.
@@ -92,13 +93,38 @@ _DEFAULT_MODEL = "databricks-claude-sonnet-4-6"
 
 
 def _count_tools(agent: "BaseAgent") -> int:
-    """Number of tools registered directly on the agent — never raises."""
-    try:
-        from ._topology import _agent_tools
+    """Number of tools reachable anywhere in the agent tree — never raises.
 
-        return len(_agent_tools(agent))
+    Walks router/composite leaves (issue #561) so a router-rooted agent whose
+    tools live on its branches doesn't report a misleading ``0``.
+    """
+    try:
+        from ._resources import _iter_tool_fns
+
+        return len(list(_iter_tool_fns(agent)))
     except Exception:  # pragma: no cover — defensive
         return 0
+
+
+def _collect_sub_agent_urls(agent: "BaseAgent") -> list[str]:
+    """Deduplicated sub-agent URLs reachable anywhere in the tree — never raises.
+
+    Reads leaves too (issue #561): sub-agents declared on ``KeywordRouter``
+    branches or other composite leaves are surfaced, not only those on an
+    ``LlmAgent`` root. Order preserved by first occurrence.
+    """
+    try:
+        from ._resources import _iter_sub_agents
+
+        seen: set[str] = set()
+        urls: list[str] = []
+        for url in _iter_sub_agents(agent):
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+        return urls
+    except Exception:  # pragma: no cover — defensive
+        return list(getattr(agent, "_sub_agent_urls", []))
 
 
 def _extract_assistant_text(response: Any) -> str:
@@ -260,7 +286,7 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
         # delegation, it does not kill the agent — so it NEVER flips overall
         # readiness. Computed outside the try so the detail survives a
         # canned-probe error too.
-        sub_agent_urls = list(getattr(agent, "_sub_agent_urls", []))
+        sub_agent_urls = _collect_sub_agent_urls(agent)
         if sub_agent_urls:
             checks["sub_agents"] = _sub_agents_check(sub_agent_urls)
         try:

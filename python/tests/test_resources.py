@@ -212,6 +212,41 @@ def test_collect_walks_loop_agent() -> None:
     assert ResourceSpec("genie_space", "space-loop") in specs
 
 
+def test_collect_walks_keyword_router_leaves() -> None:
+    # Issue #561: a KeywordRouter's branch + default leaves must be walked, so
+    # tool resources declared on them reach the collected spec list.
+    from apx_agent import KeywordRouter
+
+    branch = Agent(tools=[genie_tool("space-branch")])
+    default = Agent(tools=[uc_function_tool("main.tools.default")])
+    router = KeywordRouter(branches=[("inv", branch, ["investigate"])], default=default)
+    specs = collect_resource_specs(router, model="m")
+    assert ResourceSpec("genie_space", "space-branch") in specs
+    assert ResourceSpec("uc_function", "main.tools.default") in specs
+
+
+def test_collect_walks_router_agent_routes() -> None:
+    # Issue #561: RouterAgent keeps (name, description, agent) triples; the walk
+    # must descend into the agent, not choke on the triple.
+    from apx_agent import RouterAgent
+
+    a = Agent(name="a", description="d", tools=[genie_tool("space-route")])
+    router = RouterAgent(agents=[a])
+    specs = collect_resource_specs(router, model="m")
+    assert ResourceSpec("genie_space", "space-route") in specs
+
+
+def test_iter_sub_agents_reaches_keyword_router_leaf() -> None:
+    # Issue #561: sub_agents declared on a leaf under a KeywordRouter root are
+    # surfaced by the leaf-walk (previously returned nothing).
+    from apx_agent import KeywordRouter
+    from apx_agent._resources import _iter_sub_agents
+
+    leaf = Agent(tools=[_plain_tool], sub_agents=["endpoints/peer"])
+    router = KeywordRouter(branches=[("inv", leaf, ["go"])], default=Agent(tools=[_plain_tool]))
+    assert list(_iter_sub_agents(router)) == ["endpoints/peer"]
+
+
 def test_collect_dedupes_repeated_resources() -> None:
     # Same UC function registered twice — only one resource entry.
     agent = Agent(
