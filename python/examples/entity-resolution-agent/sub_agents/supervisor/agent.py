@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from apx_agent import Dependencies, LlmAgent
+from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_literal
 
 Workspace = Dependencies.Workspace
 
@@ -22,10 +23,6 @@ _ACRONYM_RE = re.compile(r"\b[A-Z]{2,5}\b")
 
 def _is_abnormal(name: str) -> bool:
     return bool(_INITIAL_RE.search(name) or _ACRONYM_RE.search(name))
-
-
-def _esc(s: str) -> str:
-    return s.replace("'", "''")
 
 
 def normalize_record(
@@ -168,30 +165,17 @@ def _sql_fallback(name, address, ws):
     if not table:
         return {"error": "UTILITY_ACCOUNT_TABLE not configured", "candidates": [], "count": 0}
 
-    tokens = [_esc(t.strip(".,")) for t in name.split() if len(t.strip(".,")) > 1]
+    tokens = [sql_literal(t.strip(".,")) for t in name.split() if len(t.strip(".,")) > 1]
     name_conditions = " AND ".join(f"name ILIKE '%{t}%'" for t in tokens)
-    addr_token = _esc(address.split()[0]) if address else ""
+    addr_token = sql_literal(address.split()[0]) if address else ""
     address_clause = f"AND address ILIKE '%{addr_token}%'" if address else ""
     sql = f"SELECT account_id, name, address FROM {table} WHERE {name_conditions} {address_clause} LIMIT 20"
 
-    def _warehouse_id(workspace):
-        for wh in workspace.warehouses.list():
-            if wh.warehouse_type and "serverless" in str(wh.warehouse_type).lower():
-                return wh.id or ""
-        for wh in workspace.warehouses.list():
-            if wh.id:
-                return wh.id
-        raise RuntimeError("No SQL warehouse available")
-
-    from databricks.sdk.service.sql import StatementState
-    result = ws.statement_execution.execute_statement(
-        warehouse_id=_warehouse_id(ws), statement=sql, wait_timeout="30s",
-    )
-    if result.status is None or result.status.state != StatementState.SUCCEEDED:
-        return {"error": f"SQL failed: {result.status.error if result.status else 'unknown'}", "candidates": [], "count": 0}
-
-    cols = [c.name for c in (result.manifest.schema.columns or [])]
-    candidates = [dict(zip(cols, r)) for r in (result.result.data_array or [])]
+    # Warehouse selection + execution run as the caller's OBO identity (client=ws).
+    try:
+        candidates = execute_sql(sql, client=ws, timeout=30)
+    except SQLExecutionError as e:
+        return {"error": f"SQL failed: {e}", "candidates": [], "count": 0}
     return {"candidates": candidates, "count": len(candidates), "strategy": "sql"}
 
 

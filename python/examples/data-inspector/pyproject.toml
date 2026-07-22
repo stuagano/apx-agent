@@ -9,6 +9,7 @@ dependencies = [
     # compile_to_chat_agent (Model Serving) and compile_to_responses_agent
     # (Apps) both import langchain_core via the langgraph compiler.
     "apx-agent[langgraph]",
+    "databricks-tools-core",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.119.0",
     "pydantic-settings>=2.11.0",

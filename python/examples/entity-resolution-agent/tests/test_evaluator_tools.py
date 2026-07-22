@@ -65,13 +65,12 @@ def test_evaluate_candidates_account_number_boosts_score(mock_ws):
 
 
 def test_log_decision_writes_sql(mock_ws):
+    """log_decision now delegates to databricks_tools_core.execute_sql (client=ws).
+
+    Mock that seam and assert the INSERT SQL and OBO client are threaded through.
+    """
+    from unittest.mock import patch
     from sub_agents.evaluator.agent import log_decision
-    from databricks.sdk.service.sql import StatementStatus, StatementState
-    sql_result = MagicMock()
-    sql_result.status = StatementStatus(state=StatementState.SUCCEEDED)
-    sql_result.manifest.schema.columns = [_col("account_id")]
-    sql_result.result.data_array = []
-    mock_ws.statement_execution.execute_statement.return_value = sql_result
 
     decision = {
         "applicant_name": "Jane Smith",
@@ -82,9 +81,12 @@ def test_log_decision_writes_sql(mock_ws):
         "confidence": 0.92,
         "candidates_reviewed": 2,
     }
-    result = log_decision(decision=decision, ws=mock_ws)
+    with patch("sub_agents.evaluator.agent.execute_sql", return_value=[]) as mock_exec:
+        result = log_decision(decision=decision, ws=mock_ws)
+
     assert result["status"] == "logged"
-    mock_ws.statement_execution.execute_statement.assert_called_once()
-    call_sql = mock_ws.statement_execution.execute_statement.call_args[1]["statement"]
+    mock_exec.assert_called_once()
+    call_sql = mock_exec.call_args.args[0]
     assert "INSERT" in call_sql.upper()
     assert "afr_processing" in call_sql
+    assert mock_exec.call_args.kwargs["client"] is mock_ws

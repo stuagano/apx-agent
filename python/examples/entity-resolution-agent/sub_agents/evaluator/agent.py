@@ -12,6 +12,7 @@ import os
 from typing import Any
 
 from apx_agent import Dependencies, LlmAgent
+from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_literal
 
 Workspace = Dependencies.Workspace
 
@@ -138,17 +139,6 @@ def log_decision(
     if not table:
         return {"status": "skipped", "reason": "AFR_DECISION_TABLE not configured"}
 
-    def _get_warehouse_id(workspace: Any) -> str:
-        for wh in workspace.warehouses.list():
-            if wh.warehouse_type and "serverless" in str(wh.warehouse_type).lower():
-                return wh.id or ""
-        for wh in workspace.warehouses.list():
-            if wh.id:
-                return wh.id
-        raise RuntimeError("No SQL warehouse available")
-
-    from databricks.sdk.service.sql import StatementState
-
     sql = f"""
         INSERT INTO {table}
         (applicant_name, matched, account_id, category, rationale, confidence, candidates_reviewed, decision_ts)
@@ -157,20 +147,17 @@ def log_decision(
             {str(decision.get("matched", False)).upper()},
             '{decision.get("account_id") or ""}',
             '{decision.get("category", "")}',
-            '{decision.get("rationale", "").replace("'", "''")}',
+            '{sql_literal(decision.get("rationale", ""))}',
             {decision.get("confidence", 0.0)},
             {decision.get("candidates_reviewed", 0)},
             CURRENT_TIMESTAMP()
         )
     """
-    result = ws.statement_execution.execute_statement(
-        warehouse_id=_get_warehouse_id(ws),
-        statement=sql,
-        wait_timeout="30s",
-    )
-    if result.status is None or result.status.state != StatementState.SUCCEEDED:
-        error_msg = result.status.error if result.status else "unknown"
-        return {"status": "error", "reason": str(error_msg)}
+    # Warehouse selection + execution run as the caller's OBO identity (client=ws).
+    try:
+        execute_sql(sql, client=ws, timeout=30)
+    except SQLExecutionError as e:
+        return {"status": "error", "reason": str(e)}
     return {"status": "logged"}
 
 

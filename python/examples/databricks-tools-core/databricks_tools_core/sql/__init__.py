@@ -4,7 +4,7 @@ SQL - SQL Warehouse Operations
 Functions for executing SQL queries, managing SQL warehouses, and getting table statistics.
 """
 
-from .sql import execute_sql, execute_sql_multi
+from .sql import execute_sql, execute_sql_multi, sql_literal
 from .warehouse import list_warehouses, get_best_warehouse
 from .table_stats import get_table_stats_and_schema, get_volume_folder_details
 from .sql_utils import (
@@ -22,6 +22,7 @@ __all__ = [
     # SQL execution
     "execute_sql",
     "execute_sql_multi",
+    "sql_literal",
     # Warehouse management
     "list_warehouses",
     "get_best_warehouse",

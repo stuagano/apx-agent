@@ -10,6 +10,8 @@ import os
 import re
 from typing import Any
 
+from databricks_tools_core.sql import SQLExecutionError, execute_sql
+
 _INITIAL_RE = re.compile(r"\b[A-Z]\.\s*")
 _ACRONYM_RE = re.compile(r"\b[A-Z]{2,5}\b")
 
@@ -114,27 +116,11 @@ def sql_search(
     address_clause = f"AND address ILIKE '%{address.split()[0]}%'" if address else ""
     sql = f"SELECT account_id, name, address FROM {table} WHERE {name_conditions} {address_clause} LIMIT 20"
 
-    def _warehouse_id(workspace: Any) -> str:
-        for wh in workspace.warehouses.list():
-            if wh.warehouse_type and "serverless" in str(wh.warehouse_type).lower():
-                return wh.id or ""
-        for wh in workspace.warehouses.list():
-            if wh.id:
-                return wh.id
-        raise RuntimeError("No SQL warehouse available")
-
-    from databricks.sdk.service.sql import StatementState
-    result = ws.statement_execution.execute_statement(
-        warehouse_id=_warehouse_id(ws),
-        statement=sql,
-        wait_timeout="30s",
-    )
-    if result.status is None or result.status.state != StatementState.SUCCEEDED:
-        error_msg = result.status.error if result.status else "unknown"
-        return {"error": f"SQL failed: {error_msg}", "candidates": [], "count": 0}
-
-    cols = [c.name for c in (result.manifest.schema.columns or [])]
-    candidates = [dict(zip(cols, r)) for r in (result.result.data_array or [])]
+    # Warehouse selection + execution run as the caller's OBO identity (client=ws).
+    try:
+        candidates = execute_sql(sql, client=ws, timeout=30)
+    except SQLExecutionError as e:
+        return {"error": f"SQL failed: {e}", "candidates": [], "count": 0}
     return {"candidates": candidates, "count": len(candidates), "source": "live"}
 
 

@@ -1,7 +1,7 @@
 """Unit tests for the account-search-service core search functions."""
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from search import normalize, search, vector_search, sql_search
 from tests.conftest import _col, _vs_result
@@ -91,13 +91,17 @@ def test_search_routes_to_vector_for_normal_name(mock_ws):
 
 
 def test_search_routes_to_sql_for_initials(mock_ws):
-    from databricks.sdk.service.sql import StatementStatus, StatementState
-    sql_result = MagicMock()
-    sql_result.status = StatementStatus(state=StatementState.SUCCEEDED)
-    sql_result.manifest.schema.columns = [_col("account_id"), _col("name"), _col("address")]
-    sql_result.result.data_array = [["acct-010", "J. Williams", "55 Oak St"]]
-    mock_ws.statement_execution.execute_statement.return_value = sql_result
+    # sql_search now delegates to databricks_tools_core.execute_sql, threading
+    # the OBO client (client=ws). Mock that seam and assert the client is passed.
+    with patch(
+        "search.execute_sql",
+        return_value=[{"account_id": "acct-010", "name": "J. Williams", "address": "55 Oak St"}],
+    ) as mock_exec:
+        result = search("J. Williams", "55 Oak St", ws=mock_ws)
 
-    result = search("J. Williams", "55 Oak St", ws=mock_ws)
     assert result["strategy"] == "sql"
+    assert result["candidates"] == [
+        {"account_id": "acct-010", "name": "J. Williams", "address": "55 Oak St"}
+    ]
+    assert mock_exec.call_args.kwargs["client"] is mock_ws
     mock_ws.vector_search_indexes.query_index.assert_not_called()

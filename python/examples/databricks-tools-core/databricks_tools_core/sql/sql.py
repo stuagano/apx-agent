@@ -7,10 +7,30 @@ High-level functions for executing SQL queries on Databricks.
 import logging
 from typing import Any, Dict, List, Optional
 
+from databricks.sdk import WorkspaceClient
+
 from .sql_utils import SQLExecutor, SQLExecutionError, SQLParallelExecutor
 from .warehouse import get_best_warehouse
 
 logger = logging.getLogger(__name__)
+
+
+def sql_literal(value: str) -> str:
+    """Escape a string for safe interpolation into a SQL single-quoted literal.
+
+    Uses the ANSI doubled-quote convention (``'`` -> ``''``), which is the
+    correct escaping for Databricks SQL string literals. Returns only the
+    escaped inner text (no surrounding quotes), so callers wrap it themselves:
+
+        >>> f"WHERE name = '{sql_literal(name)}'"
+
+    Args:
+        value: The raw string to escape.
+
+    Returns:
+        The value with every single quote doubled.
+    """
+    return value.replace("'", "''")
 
 
 def execute_sql(
@@ -20,6 +40,7 @@ def execute_sql(
     schema: Optional[str] = None,
     timeout: int = 180,
     query_tags: Optional[str] = None,
+    client: Optional[WorkspaceClient] = None,
 ) -> List[Dict[str, Any]]:
     """
     Execute a SQL query on a Databricks SQL Warehouse.
@@ -36,6 +57,10 @@ def execute_sql(
         query_tags: Optional query tags for cost attribution and filtering.
             Format: "key:value,key2:value2" (e.g., "team:eng,cost_center:701").
             Appears in system.query.history and Query History UI.
+        client: Optional WorkspaceClient. When provided, both warehouse
+            auto-selection and query execution run as that client's identity
+            (e.g. a per-user OBO client); when omitted, falls back to the
+            ambient client from get_workspace_client().
 
     Returns:
         List of dictionaries, each representing a row with column names as keys.
@@ -52,7 +77,7 @@ def execute_sql(
     # Auto-select warehouse if not provided
     if not warehouse_id:
         logger.debug("No warehouse_id provided, selecting best available warehouse")
-        warehouse_id = get_best_warehouse()
+        warehouse_id = get_best_warehouse(client=client)
         if not warehouse_id:
             raise SQLExecutionError(
                 "No SQL warehouse available in the workspace. "
@@ -62,7 +87,7 @@ def execute_sql(
         logger.debug(f"Auto-selected warehouse: {warehouse_id}")
 
     # Execute the query
-    executor = SQLExecutor(warehouse_id=warehouse_id)
+    executor = SQLExecutor(warehouse_id=warehouse_id, client=client)
     return executor.execute(
         sql_query=sql_query,
         catalog=catalog,
@@ -80,6 +105,7 @@ def execute_sql_multi(
     timeout: int = 180,
     max_workers: int = 4,
     query_tags: Optional[str] = None,
+    client: Optional[WorkspaceClient] = None,
 ) -> Dict[str, Any]:
     """
     Execute multiple SQL statements with dependency-aware parallelism.
@@ -99,6 +125,10 @@ def execute_sql_multi(
         timeout: Timeout per query in seconds (default: 180)
         max_workers: Maximum parallel queries per group (default: 4)
         query_tags: Optional query tags for cost attribution (e.g., "team:eng,cost_center:701").
+        client: Optional WorkspaceClient. When provided, both warehouse
+            auto-selection and query execution run as that client's identity
+            (e.g. a per-user OBO client); when omitted, falls back to the
+            ambient client from get_workspace_client().
 
     Returns:
         Dictionary with:
@@ -136,7 +166,7 @@ def execute_sql_multi(
     # Auto-select warehouse if not provided
     if not warehouse_id:
         logger.debug("No warehouse_id provided, selecting best available warehouse")
-        warehouse_id = get_best_warehouse()
+        warehouse_id = get_best_warehouse(client=client)
         if not warehouse_id:
             raise SQLExecutionError(
                 "No SQL warehouse available in the workspace. "
@@ -149,6 +179,7 @@ def execute_sql_multi(
     executor = SQLParallelExecutor(
         warehouse_id=warehouse_id,
         max_workers=max_workers,
+        client=client,
     )
     return executor.execute(
         sql_content=sql_content,

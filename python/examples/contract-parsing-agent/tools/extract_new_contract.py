@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from apx_agent import Dependencies
+from databricks_tools_core.sql import sql_literal
 
 from config import get_settings
 from extraction import extract
@@ -28,7 +29,7 @@ def _quote(v: Any) -> str:
         return "true" if v else "false"
     if isinstance(v, (int, float)):
         return str(v)
-    return "'" + str(v).replace("'", "''") + "'"
+    return "'" + sql_literal(str(v)) + "'"
 
 
 def extract_new_contract(volume_path: str, ws: Workspace = None) -> dict[str, Any]:
