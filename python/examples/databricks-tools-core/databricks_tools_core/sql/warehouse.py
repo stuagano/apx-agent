@@ -7,6 +7,7 @@ Functions for listing and selecting SQL warehouses.
 import logging
 from typing import Any, Dict, List, Optional
 
+from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import State
 
 from ..auth import get_workspace_client, get_current_username
@@ -14,12 +15,15 @@ from ..auth import get_workspace_client, get_current_username
 logger = logging.getLogger(__name__)
 
 
-def list_warehouses(limit: int = 20) -> List[Dict[str, Any]]:
+def list_warehouses(limit: int = 20, client: Optional[WorkspaceClient] = None) -> List[Dict[str, Any]]:
     """
     List SQL warehouses, with online (RUNNING) warehouses first.
 
     Args:
         limit: Maximum number of warehouses to return (default: 20)
+        client: Optional WorkspaceClient. When provided, queries run as that
+            client's identity (e.g. a per-user OBO client); when omitted, falls
+            back to the ambient client from get_workspace_client().
 
     Returns:
         List of warehouse dictionaries with keys:
@@ -35,7 +39,7 @@ def list_warehouses(limit: int = 20) -> List[Dict[str, Any]]:
     Raises:
         Exception: If API request fails
     """
-    client = get_workspace_client()
+    client = client or get_workspace_client()
 
     try:
         warehouses = list(client.warehouses.list())
@@ -94,7 +98,22 @@ def _sort_within_tier(warehouses: list, current_user: Optional[str]) -> list:
     return sorted(warehouses, key=sort_key)
 
 
-def get_best_warehouse() -> Optional[str]:
+def _username_for_client(client: WorkspaceClient) -> Optional[str]:
+    """Best-effort current username for an explicitly-supplied client.
+
+    Mirrors get_current_username()'s graceful degradation (returns None on
+    failure) but reads identity from the caller-supplied client so the
+    user-owned warehouse preference stays consistent with that client's
+    identity rather than the ambient one.
+    """
+    try:
+        return client.current_user.me().user_name
+    except Exception as e:
+        logger.debug(f"Failed to fetch current username from supplied client: {e}")
+        return None
+
+
+def get_best_warehouse(client: Optional[WorkspaceClient] = None) -> Optional[str]:
     """
     Select the best available SQL warehouse based on priority rules.
 
@@ -109,14 +128,23 @@ def get_best_warehouse() -> Optional[str]:
     4. Stopped warehouse with 'shared' in name
     5. Any stopped warehouse
 
+    Args:
+        client: Optional WorkspaceClient. When provided, both the warehouse
+            listing and the user-owned preference use that client's identity
+            (e.g. a per-user OBO client); when omitted, falls back to the
+            ambient client from get_workspace_client().
+
     Returns:
         Warehouse ID string, or None if no warehouses available
 
     Raises:
         Exception: If API request fails
     """
-    client = get_workspace_client()
-    current_user = get_current_username()
+    if client is not None:
+        current_user = _username_for_client(client)
+    else:
+        client = get_workspace_client()
+        current_user = get_current_username()
 
     try:
         warehouses = list(client.warehouses.list())
