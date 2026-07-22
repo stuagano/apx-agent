@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from databricks_tools_core.sql import sql_literal
+
 
 def _names_share_surname(name_a: str, name_b: str) -> bool:
     parts_a = name_a.lower().split()
@@ -122,7 +124,7 @@ def log_decision(
             {str(decision.get("matched", False)).upper()},
             '{decision.get("account_id") or ""}',
             '{decision.get("category", "")}',
-            '{decision.get("rationale", "").replace("'", "''")}',
+            '{sql_literal(decision.get("rationale", ""))}',
             {decision.get("confidence", 0.0)},
             {decision.get("candidates_reviewed", 0)},
             CURRENT_TIMESTAMP()

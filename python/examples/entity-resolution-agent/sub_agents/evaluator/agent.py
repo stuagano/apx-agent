@@ -12,6 +12,7 @@ import os
 from typing import Any
 
 from apx_agent import Dependencies, LlmAgent
+from databricks_tools_core.sql import sql_literal
 
 Workspace = Dependencies.Workspace
 
@@ -157,7 +158,7 @@ def log_decision(
             {str(decision.get("matched", False)).upper()},
             '{decision.get("account_id") or ""}',
             '{decision.get("category", "")}',
-            '{decision.get("rationale", "").replace("'", "''")}',
+            '{sql_literal(decision.get("rationale", ""))}',
             {decision.get("confidence", 0.0)},
             {decision.get("candidates_reviewed", 0)},
             CURRENT_TIMESTAMP()

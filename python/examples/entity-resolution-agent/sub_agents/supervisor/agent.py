@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from apx_agent import Dependencies, LlmAgent
+from databricks_tools_core.sql import sql_literal
 
 Workspace = Dependencies.Workspace
 
@@ -22,10 +23,6 @@ _ACRONYM_RE = re.compile(r"\b[A-Z]{2,5}\b")
 
 def _is_abnormal(name: str) -> bool:
     return bool(_INITIAL_RE.search(name) or _ACRONYM_RE.search(name))
-
-
-def _esc(s: str) -> str:
-    return s.replace("'", "''")
 
 
 def normalize_record(
@@ -168,9 +165,9 @@ def _sql_fallback(name, address, ws):
     if not table:
         return {"error": "UTILITY_ACCOUNT_TABLE not configured", "candidates": [], "count": 0}
 
-    tokens = [_esc(t.strip(".,")) for t in name.split() if len(t.strip(".,")) > 1]
+    tokens = [sql_literal(t.strip(".,")) for t in name.split() if len(t.strip(".,")) > 1]
     name_conditions = " AND ".join(f"name ILIKE '%{t}%'" for t in tokens)
-    addr_token = _esc(address.split()[0]) if address else ""
+    addr_token = sql_literal(address.split()[0]) if address else ""
     address_clause = f"AND address ILIKE '%{addr_token}%'" if address else ""
     sql = f"SELECT account_id, name, address FROM {table} WHERE {name_conditions} {address_clause} LIMIT 20"
 
