@@ -395,6 +395,33 @@ class TestReadyzSubAgents:
         assert body["checks"]["sub_agents"]["degraded"] is True
         assert "event loop exploded" in body["checks"]["sub_agents"]["error"]
 
+    def test_router_root_surfaces_leaf_sub_agents(self, monkeypatch):
+        """Issue #561: a KeywordRouter root with sub_agents declared on a leaf
+        must still report the peer under checks['sub_agents'] — /readyz walks
+        leaves, it does not read only the root object."""
+        from apx_agent._agents import KeywordRouter
+        from apx_agent._doctor import SubAgentProbe
+
+        leaf = Agent(tools=[_trivial_tool], sub_agents=["https://peer.example.com"])
+        fallback = Agent(tools=[_trivial_tool])
+        router = KeywordRouter(
+            branches=[("inv", leaf, ["investigate"])], default=fallback
+        )
+        monkeypatch.setattr(
+            "apx_agent._doctor.probe_sub_agents",
+            lambda urls: [
+                SubAgentProbe(url=u, reachable=True, name="peer-agent") for u in urls
+            ],
+        )
+        body = self._client(router, monkeypatch).get("/readyz").json()
+        assert body["checks"]["sub_agents"] == {
+            "degraded": False,
+            "agents": [{"url": "https://peer.example.com", "reachable": True,
+                        "name": "peer-agent"}],
+        }
+        # tools_registered walks leaves too — not a misleading 0 for a router root.
+        assert body["checks"]["tools_registered"] >= 1
+
 
 # ---------------------------------------------------------------------------
 # create_app integration (#449) — every served agent gets /readyz
