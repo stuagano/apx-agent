@@ -13,7 +13,7 @@ import re
 from typing import Any
 
 from apx_agent import Dependencies, LlmAgent
-from databricks_tools_core.sql import sql_literal
+from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_literal
 
 Workspace = Dependencies.Workspace
 
@@ -171,24 +171,11 @@ def _sql_fallback(name, address, ws):
     address_clause = f"AND address ILIKE '%{addr_token}%'" if address else ""
     sql = f"SELECT account_id, name, address FROM {table} WHERE {name_conditions} {address_clause} LIMIT 20"
 
-    def _warehouse_id(workspace):
-        for wh in workspace.warehouses.list():
-            if wh.warehouse_type and "serverless" in str(wh.warehouse_type).lower():
-                return wh.id or ""
-        for wh in workspace.warehouses.list():
-            if wh.id:
-                return wh.id
-        raise RuntimeError("No SQL warehouse available")
-
-    from databricks.sdk.service.sql import StatementState
-    result = ws.statement_execution.execute_statement(
-        warehouse_id=_warehouse_id(ws), statement=sql, wait_timeout="30s",
-    )
-    if result.status is None or result.status.state != StatementState.SUCCEEDED:
-        return {"error": f"SQL failed: {result.status.error if result.status else 'unknown'}", "candidates": [], "count": 0}
-
-    cols = [c.name for c in (result.manifest.schema.columns or [])]
-    candidates = [dict(zip(cols, r)) for r in (result.result.data_array or [])]
+    # Warehouse selection + execution run as the caller's OBO identity (client=ws).
+    try:
+        candidates = execute_sql(sql, client=ws, timeout=30)
+    except SQLExecutionError as e:
+        return {"error": f"SQL failed: {e}", "candidates": [], "count": 0}
     return {"candidates": candidates, "count": len(candidates), "strategy": "sql"}
 
 
