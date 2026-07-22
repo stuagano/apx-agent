@@ -43,7 +43,16 @@ def run_sql_query(sql: str, ws: Workspace) -> dict[str, Any]:
     Use this to check if specific data exists, count rows, or inspect values.
     sql: a SELECT query (read-only)"""
     # Local because: framework sql_tool pins a warehouse at construction time; here we discover a serverless warehouse from the caller's accessible list at runtime.
-    rows = _run_sql(ws, sql)
+    try:
+        rows = _run_sql(ws, sql)
+    except Exception as e:
+        # Contain the failure to this step so the SequentialAgent pipeline can
+        # treat "the query was denied / failed" as a finding and keep going,
+        # instead of a single tool RuntimeError becoming an opaque 500 that
+        # discards every downstream step (#562). The error is returned to the
+        # agent (and the caller), not hidden. `_run_sql` already prefixes
+        # "Query failed:", so surface its message as-is.
+        return {"error": str(e)}
     return {"row_count": len(rows), "rows": rows[:50]}
 
 
@@ -75,18 +84,22 @@ def get_table_lineage(table_full_name: str, ws: Workspace) -> dict[str, Any]:
     """Get upstream sources that feed into this table via Unity Catalog lineage.
     Use to trace where data comes from when it's missing from a target table."""
     # Local because: framework lineage_tool() uses UC's REST lineage API. We query system.access.table_lineage directly so the result can be joined with jobs/pipelines in find_jobs_for_table — UC REST doesn't expose that join.
-    rows = _run_sql(ws, f"""
-        SELECT
-            source_table_full_name,
-            entity_type,
-            created_by,
-            MAX(event_time) AS last_seen
-        FROM system.access.table_lineage
-        WHERE target_table_full_name = '{table_full_name}'
-        GROUP BY source_table_full_name, entity_type, created_by
-        ORDER BY last_seen DESC
-        LIMIT 20
-    """)
+    try:
+        rows = _run_sql(ws, f"""
+            SELECT
+                source_table_full_name,
+                entity_type,
+                created_by,
+                MAX(event_time) AS last_seen
+            FROM system.access.table_lineage
+            WHERE target_table_full_name = '{table_full_name}'
+            GROUP BY source_table_full_name, entity_type, created_by
+            ORDER BY last_seen DESC
+            LIMIT 20
+        """)
+    except Exception as e:
+        # Contain, don't crash the pipeline (#562).
+        return {"error": f"Lineage lookup failed: {e}"}
     return {"target": table_full_name, "upstream_sources": rows}
 
 
@@ -94,19 +107,23 @@ def find_jobs_for_table(table_full_name: str, ws: Workspace) -> dict[str, Any]:
     """Find Databricks jobs that write to a given table via Unity Catalog lineage.
     Returns entity IDs to follow up with get_job_run_history."""
     # Local because: needs the same system.access.table_lineage SQL surface as get_table_lineage to identify WORKFLOW_RUN / PIPELINE_UPDATE writers.
-    rows = _run_sql(ws, f"""
-        SELECT DISTINCT
-            entity_id,
-            entity_type,
-            created_by,
-            MAX(event_time) AS last_write
-        FROM system.access.table_lineage
-        WHERE target_table_full_name = '{table_full_name}'
-          AND entity_type IN ('WORKFLOW_RUN', 'PIPELINE_UPDATE')
-        GROUP BY entity_id, entity_type, created_by
-        ORDER BY last_write DESC
-        LIMIT 10
-    """)
+    try:
+        rows = _run_sql(ws, f"""
+            SELECT DISTINCT
+                entity_id,
+                entity_type,
+                created_by,
+                MAX(event_time) AS last_write
+            FROM system.access.table_lineage
+            WHERE target_table_full_name = '{table_full_name}'
+              AND entity_type IN ('WORKFLOW_RUN', 'PIPELINE_UPDATE')
+            GROUP BY entity_id, entity_type, created_by
+            ORDER BY last_write DESC
+            LIMIT 10
+        """)
+    except Exception as e:
+        # Contain, don't crash the pipeline (#562).
+        return {"error": f"Writer lookup failed: {e}"}
     return {"table": table_full_name, "writers": rows}
 
 
