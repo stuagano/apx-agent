@@ -49,11 +49,17 @@ resources:
         data-triage-agent; /mcp surface for Genie / Genie Code.
       source_code_path: ./.build
 
-      # OBO scopes the forwarded-user token carries. The Delta/UC forensics
-      # tools call the SQL warehouses + statement-execution APIs, so `sql` is
-      # required — without it those calls 403 ("Invalid scope, required: sql").
+      # OBO scopes the forwarded-user token carries. The Delta forensics tools
+      # call the SQL warehouses + statement-execution APIs, so `sql` is required
+      # — without it those calls 403 ("Invalid scope, required: sql"). The UC
+      # discovery tools (list_catalogs/schemas/tables, search_tables,
+      # get_table_info) call the Unity Catalog REST API, which needs
+      # `unity-catalog` — without it they 403 ("required scopes: unity-catalog").
+      # Prod-only: local dev uses the developer's full-scope CLI profile, so the
+      # gap only surfaces once deployed with a scope-limited OBO token (#563).
       user_api_scopes:
         - sql
+        - unity-catalog
         - serving.serving-endpoints
 
       resources:

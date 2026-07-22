@@ -186,42 +186,23 @@ def _sub_agent_to_endpoint(raw: str) -> ResourceSpec | None:
 def _iter_tool_fns(agent: "BaseAgent") -> Iterable[Any]:
     """Yield the raw tool callables registered anywhere in the agent tree.
 
-    Encapsulates the lookup against each agent type's internal state so the
-    rest of this module stays agnostic.
+    Descends into every composition type via ``_iter_child_agents`` (the same
+    canonical child-walk the topology/discovery card uses), so router/composite
+    leaves — including ``KeywordRouter`` branches and ``RouterAgent`` routes —
+    are reached, not just the direct children a hand-rolled walk happened to
+    enumerate.
     """
-    from ._agents import (
-        HandoffAgent,
-        LlmAgent,
-        LoopAgent,
-        ParallelAgent,
-        RouterAgent,
-        SequentialAgent,
-    )
+    from ._agents import LlmAgent
+    from ._topology import _iter_child_agents
 
     if isinstance(agent, LlmAgent):
         for fn in agent._tool_fns:
             yield fn
         return
 
-    if isinstance(agent, LoopAgent):
-        yield from _iter_tool_fns(agent._inner)
-        return
-
-    if isinstance(agent, (SequentialAgent, ParallelAgent)):
-        for sub in agent._agents:
-            yield from _iter_tool_fns(sub)
-        return
-
-    if isinstance(agent, (RouterAgent, HandoffAgent)):
-        # Both keep a dict/list of branch agents
-        children = (
-            getattr(agent, "_agents", None)
-            or getattr(agent, "_routes", None)
-            or {}
-        )
-        if isinstance(children, dict):
-            children = list(children.values())
-        for sub in children:
+    children = _iter_child_agents(agent)
+    if children:
+        for _name, sub in children:
             yield from _iter_tool_fns(sub)
         return
 
@@ -235,41 +216,22 @@ def _iter_tool_fns(agent: "BaseAgent") -> Iterable[Any]:
 
 
 def _iter_sub_agents(agent: "BaseAgent") -> Iterable[str]:
-    """Yield raw sub_agent URL strings registered anywhere in the tree."""
-    from ._agents import (
-        HandoffAgent,
-        LlmAgent,
-        LoopAgent,
-        ParallelAgent,
-        RouterAgent,
-        SequentialAgent,
-    )
+    """Yield raw sub_agent URL strings registered anywhere in the tree.
+
+    Like :func:`_iter_tool_fns`, descends through ``_iter_child_agents`` so
+    sub-agents declared on router/composite leaves (``KeywordRouter`` branches,
+    ``RouterAgent`` routes) are surfaced — not only those on the root.
+    """
+    from ._agents import LlmAgent
+    from ._topology import _iter_child_agents
 
     if isinstance(agent, LlmAgent):
         for u in agent._sub_agent_urls:
             yield u
         return
 
-    if isinstance(agent, LoopAgent):
-        yield from _iter_sub_agents(agent._inner)
-        return
-
-    if isinstance(agent, (SequentialAgent, ParallelAgent)):
-        for sub in agent._agents:
-            yield from _iter_sub_agents(sub)
-        return
-
-    if isinstance(agent, (RouterAgent, HandoffAgent)):
-        children = (
-            getattr(agent, "_agents", None)
-            or getattr(agent, "_routes", None)
-            or {}
-        )
-        if isinstance(children, dict):
-            children = list(children.values())
-        for sub in children:
-            yield from _iter_sub_agents(sub)
-        return
+    for _name, sub in _iter_child_agents(agent):
+        yield from _iter_sub_agents(sub)
 
 
 def collect_resource_specs(
