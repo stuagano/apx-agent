@@ -9,9 +9,8 @@ import logging
 import math
 from typing import Any
 
-from databricks.sdk.service.sql import StatementState
-
 from apx_agent import Dependencies
+from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_literal
 
 Workspace = Dependencies.Workspace
 logger = logging.getLogger(__name__)
@@ -21,31 +20,14 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _get_warehouse_id(ws: Any) -> str:
-    for wh in ws.warehouses.list():
-        if wh.warehouse_type and "serverless" in str(wh.warehouse_type).lower():
-            return wh.id or ""
-    for wh in ws.warehouses.list():
-        if wh.id:
-            return wh.id
-    raise RuntimeError("No SQL warehouse available")
-
-
 def _run_sql(ws: Any, sql: str) -> list[dict[str, Any]]:
-    result = ws.statement_execution.execute_statement(
-        warehouse_id=_get_warehouse_id(ws),
-        statement=sql,
-        wait_timeout="30s",
-    )
-    status = result.status
-    if status is None or status.state != StatementState.SUCCEEDED:
-        error_msg = status.error if status else "unknown error"
-        raise RuntimeError(f"Query failed: {error_msg}")
-    if not result.manifest or not result.manifest.schema:
-        return []
-    cols = [c.name for c in (result.manifest.schema.columns or [])]
-    rows = result.result.data_array or [] if result.result else []
-    return [dict(zip(cols, r)) for r in rows]
+    """Execute a query via databricks-tools-core, running as the caller's OBO
+    identity (client=ws) with the same 30s timeout and error contract as before.
+    """
+    try:
+        return execute_sql(sql, client=ws, timeout=30)
+    except SQLExecutionError as e:
+        raise RuntimeError(f"Query failed: {e}")
 
 
 def _get_current_version(ws: Any, table: str) -> int:
@@ -372,7 +354,7 @@ def search_tables(query: str, ws: Workspace) -> dict[str, Any]:
     what they want ('billing', 'customers', 'usage') but doesn't know the
     catalog/schema.
     query: substring to match against table names and comments (case-insensitive)."""
-    safe_query = query.replace("'", "''")
+    safe_query = sql_literal(query)
     sql = f"""
         SELECT table_catalog, table_schema, table_name, table_type, comment
         FROM system.information_schema.tables

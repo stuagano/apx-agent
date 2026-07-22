@@ -9,6 +9,7 @@ dependencies = [
     # (Apps deploy path) — it pulls in langchain + langgraph + databricks-langchain.
     # Same dep also covers the Model Serving compile_to_chat_agent path.
     "apx-agent[langgraph]",
+    "databricks-tools-core",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.119.0",
     "pydantic-settings>=2.11.0",

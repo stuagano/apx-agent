@@ -3,7 +3,7 @@
 import typing
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from apx_agent import Dependencies, create_app
 from app import app as _base_app
@@ -26,15 +26,11 @@ def set_env(monkeypatch):
 
 @pytest.fixture
 def client(mock_ws):
-    from databricks.sdk.service.sql import StatementStatus, StatementState
-    log_result = MagicMock()
-    log_result.status = StatementStatus(state=StatementState.SUCCEEDED)
-    log_result.manifest.schema.columns = [_col("account_id")]
-    log_result.result.data_array = []
-    mock_ws.statement_execution.execute_statement.return_value = log_result
-
+    # log_decision now delegates to databricks_tools_core.execute_sql (client=ws).
+    # Patch that seam so the decision-logging INSERT is a benign success.
     _base_app.dependency_overrides[_WS_DEP_FUNC] = lambda: mock_ws
-    yield TestClient(_base_app)
+    with patch("evaluator.execute_sql", return_value=[]):
+        yield TestClient(_base_app)
     _base_app.dependency_overrides.clear()
 
 

@@ -4,7 +4,7 @@ from unittest import mock
 
 from databricks.sdk.service.sql import QueryTag, State, StatementState
 
-from databricks_tools_core.sql import execute_sql, execute_sql_multi
+from databricks_tools_core.sql import execute_sql, execute_sql_multi, list_warehouses, sql_literal
 from databricks_tools_core.sql.sql_utils import SQLExecutor
 from databricks_tools_core.sql.warehouse import _sort_within_tier, get_best_warehouse
 
@@ -222,3 +222,144 @@ class TestGetBestWarehouseServerless:
 
         result = get_best_warehouse()
         assert result == "c1"
+
+
+class TestClientInjection:
+    """Approach 4: an optional caller-supplied client preserves OBO identity.
+
+    When client= is passed, that exact client must be used (no ambient
+    get_workspace_client() call). When omitted, behavior is unchanged and it
+    still falls back to get_workspace_client().
+    """
+
+    def test_get_best_warehouse_uses_supplied_client(self):
+        """get_best_warehouse(client=ws) lists via ws, never the ambient client."""
+        supplied = mock.Mock()
+        supplied.warehouses.list.return_value = [
+            _make_warehouse("s1", "Shared endpoint", State.RUNNING),
+        ]
+        supplied.current_user.me.return_value = mock.Mock(user_name="me@example.com")
+
+        with mock.patch("databricks_tools_core.sql.warehouse.get_workspace_client") as mock_ambient, mock.patch(
+            "databricks_tools_core.sql.warehouse.get_current_username"
+        ) as mock_ambient_user:
+            result = get_best_warehouse(client=supplied)
+
+        assert result == "s1"
+        supplied.warehouses.list.assert_called_once()
+        mock_ambient.assert_not_called()
+        mock_ambient_user.assert_not_called()
+
+    @mock.patch("databricks_tools_core.sql.warehouse.get_current_username", return_value="me@example.com")
+    @mock.patch("databricks_tools_core.sql.warehouse.get_workspace_client")
+    def test_get_best_warehouse_falls_back_when_no_client(self, mock_ambient, mock_user):
+        """Without client=, get_best_warehouse resolves via get_workspace_client()."""
+        ambient = mock.Mock()
+        ambient.warehouses.list.return_value = [_make_warehouse("a1", "Shared endpoint", State.RUNNING)]
+        mock_ambient.return_value = ambient
+
+        result = get_best_warehouse()
+
+        assert result == "a1"
+        mock_ambient.assert_called_once()
+        ambient.warehouses.list.assert_called_once()
+
+    def test_list_warehouses_uses_supplied_client(self):
+        """list_warehouses(client=ws) lists via ws, never the ambient client."""
+        supplied = mock.Mock()
+        supplied.warehouses.list.return_value = [_make_warehouse("s1", "WH", State.RUNNING)]
+
+        with mock.patch("databricks_tools_core.sql.warehouse.get_workspace_client") as mock_ambient:
+            result = list_warehouses(client=supplied)
+
+        assert [w["id"] for w in result] == ["s1"]
+        supplied.warehouses.list.assert_called_once()
+        mock_ambient.assert_not_called()
+
+    @mock.patch("databricks_tools_core.sql.warehouse.get_workspace_client")
+    def test_list_warehouses_falls_back_when_no_client(self, mock_ambient):
+        """Without client=, list_warehouses resolves via get_workspace_client()."""
+        ambient = mock.Mock()
+        ambient.warehouses.list.return_value = [_make_warehouse("a1", "WH", State.RUNNING)]
+        mock_ambient.return_value = ambient
+
+        result = list_warehouses()
+
+        assert [w["id"] for w in result] == ["a1"]
+        mock_ambient.assert_called_once()
+
+    @mock.patch("databricks_tools_core.sql.sql.get_best_warehouse", return_value="wh-123")
+    def test_execute_sql_threads_client_to_executor(self, mock_warehouse):
+        """execute_sql(client=ws) constructs SQLExecutor with that client."""
+        supplied = mock.Mock()
+        with mock.patch("databricks_tools_core.sql.sql.SQLExecutor") as mock_executor_cls:
+            mock_executor = mock.Mock()
+            mock_executor.execute.return_value = [{"n": 1}]
+            mock_executor_cls.return_value = mock_executor
+
+            execute_sql(sql_query="SELECT 1", warehouse_id="wh-123", client=supplied)
+
+        assert mock_executor_cls.call_args.kwargs["client"] is supplied
+
+    @mock.patch("databricks_tools_core.sql.sql.get_best_warehouse", return_value="wh-123")
+    def test_execute_sql_client_used_for_warehouse_autoselect(self, mock_warehouse):
+        """execute_sql(client=ws) with no warehouse passes client to get_best_warehouse."""
+        supplied = mock.Mock()
+        with mock.patch("databricks_tools_core.sql.sql.SQLExecutor") as mock_executor_cls:
+            mock_executor_cls.return_value.execute.return_value = []
+            execute_sql(sql_query="SELECT 1", client=supplied)
+
+        assert mock_warehouse.call_args.kwargs["client"] is supplied
+
+    def test_execute_sql_end_to_end_uses_supplied_client(self):
+        """execute_sql(client=ws) issues the statement via ws.statement_execution."""
+        supplied = mock.Mock()
+        resp = mock.Mock()
+        resp.statement_id = "stmt-1"
+        supplied.statement_execution.execute_statement.return_value = resp
+        status = mock.Mock()
+        status.status.state = StatementState.SUCCEEDED
+        status.result = mock.Mock()
+        status.result.data_array = []
+        status.manifest = None
+        supplied.statement_execution.get_statement.return_value = status
+
+        with mock.patch("databricks_tools_core.sql.sql_utils.executor.get_workspace_client") as mock_ambient:
+            execute_sql(sql_query="SELECT 1", warehouse_id="wh-123", client=supplied)
+
+        supplied.statement_execution.execute_statement.assert_called_once()
+        mock_ambient.assert_not_called()
+
+    @mock.patch("databricks_tools_core.sql.sql.get_best_warehouse", return_value="wh-123")
+    def test_execute_sql_multi_threads_client(self, mock_warehouse):
+        """execute_sql_multi(client=ws) constructs SQLParallelExecutor with that client."""
+        supplied = mock.Mock()
+        with mock.patch("databricks_tools_core.sql.sql.SQLParallelExecutor") as mock_parallel_cls:
+            mock_parallel_cls.return_value.execute.return_value = {
+                "results": {},
+                "execution_summary": {},
+            }
+            execute_sql_multi(sql_content="SELECT 1;", warehouse_id="wh-123", client=supplied)
+
+        assert mock_parallel_cls.call_args.kwargs["client"] is supplied
+
+
+class TestSQLLiteral:
+    """Tests for the sql_literal doubled-quote escaper."""
+
+    def test_no_quotes_unchanged(self):
+        assert sql_literal("Acme Corp") == "Acme Corp"
+
+    def test_single_quote_doubled(self):
+        assert sql_literal("O'Brien") == "O''Brien"
+
+    def test_multiple_quotes_all_doubled(self):
+        assert sql_literal("''") == "''''"
+
+    def test_empty_string(self):
+        assert sql_literal("") == ""
+
+    def test_wrapped_produces_valid_literal(self):
+        # The canonical usage: caller wraps the escaped inner text in quotes.
+        inner = sql_literal("O'Brien")
+        assert f"'{inner}'" == "'O''Brien'"

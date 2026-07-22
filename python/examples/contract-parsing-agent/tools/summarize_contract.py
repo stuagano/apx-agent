@@ -5,15 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from apx_agent import Dependencies
+from databricks_tools_core.sql import sql_literal
 
 from config import get_settings
 from ._sql import run_sql
 
 Workspace = Dependencies.Client
-
-
-def _quote(s: str) -> str:
-    return s.replace("'", "''")
 
 
 def summarize_contract(contract_id: str, ws: Workspace = None) -> dict[str, Any]:
@@ -24,7 +21,7 @@ def summarize_contract(contract_id: str, ws: Workspace = None) -> dict[str, Any]
     s = get_settings()
     table = s.qualified_table("primary")
     sql = (
-        f"SELECT * FROM {table} WHERE contract_id = '{_quote(contract_id)}' LIMIT 1"
+        f"SELECT * FROM {table} WHERE contract_id = '{sql_literal(contract_id)}' LIMIT 1"
     )
     rows = run_sql(ws, sql)
     if not rows:

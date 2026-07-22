@@ -72,20 +72,20 @@ def test_search_accounts_keeps_highest_score_on_dedup(mock_ws):
 
 
 def test_search_accounts_sql_path_for_initials(mock_ws):
-    """Names with initials trigger the SQL fallback via _sql_fallback."""
-    from sub_agents.supervisor.agent import search_accounts
-    from databricks.sdk.service.sql import StatementStatus, StatementState
+    """Names with initials trigger the SQL fallback via _sql_fallback.
 
-    sql_result = MagicMock()
-    sql_result.status = StatementStatus(state=StatementState.SUCCEEDED)
-    sql_result.manifest.schema.columns = [_col("account_id"), _col("name"), _col("address")]
-    sql_result.result.data_array = [["acct-010", "J. Williams", "55 Oak St"]]
-    mock_ws.statement_execution.execute_statement.return_value = sql_result
+    _sql_fallback now delegates to databricks_tools_core.execute_sql, threading
+    the OBO client (client=ws). Mock that seam and assert the client is passed.
+    """
+    from unittest.mock import patch
+    from sub_agents.supervisor.agent import search_accounts
 
     # Clear VS indexes so the local path falls through to SQL
-    import os
     import pytest
-    with pytest.MonkeyPatch().context() as mp:
+    with pytest.MonkeyPatch().context() as mp, patch(
+        "sub_agents.supervisor.agent.execute_sql",
+        return_value=[{"account_id": "acct-010", "name": "J. Williams", "address": "55 Oak St"}],
+    ) as mock_exec:
         mp.delenv("VS_INDEX_FULL", raising=False)
         mp.delenv("VS_INDEX_LAST_ADDR", raising=False)
         mp.delenv("VS_INDEX_FIRST_EMAIL", raising=False)
@@ -93,6 +93,7 @@ def test_search_accounts_sql_path_for_initials(mock_ws):
 
     mock_ws.vector_search_indexes.query_index.assert_not_called()
     assert result["count"] == 1
+    assert mock_exec.call_args.kwargs["client"] is mock_ws
 
 
 def test_search_accounts_demo_mode(monkeypatch):
