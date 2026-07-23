@@ -3783,38 +3783,34 @@ def scaffold(
         )
 
     # -----------------------------------------------------------------------
-    # Step 3: resolve the data source — explicit > auto-detect > demo fallback.
-    # Gallery / template scaffolds need a concrete catalog/schema before
-    # materialize. Onboard TOML paths keep TBD placeholders until the user
-    # (or wizard) pins --catalog/--schema — skip the samples fallback there.
+    # Step 3: onboard TOML handoff — before demo data-source resolve so TBD
+    # placeholders are not silently overwritten by samples.nyctaxi.
     # -----------------------------------------------------------------------
-    pinned_catalog, pinned_schema = catalog, schema
-    toml_coworker = (
-        _coworker_toml_path(coworker_spec)
-        if coworker_spec and coworker_spec not in ("", "list")
-        else None
-    )
-    if toml_coworker is None:
-        catalog, schema, table = _resolve_scaffold_data_source(
-            scaffold_template, catalog, schema, profile
-        )
-    else:
-        table = None
+    if coworker_spec is not None and coworker_spec not in ("", "list"):
+        toml_coworker = _coworker_toml_path(coworker_spec)
+        if toml_coworker is not None:
+            config = _scaffold_from_coworker_toml(
+                toml_coworker, project_name, catalog, schema,
+            )
+            _materialize_agent(config, target, force=force, profile=profile)
+            return
 
     # -----------------------------------------------------------------------
-    # Step 4: gallery pick — materialize a full project directly.
+    # Step 4: resolve the data source — explicit > auto-detect > demo fallback.
+    # Runs before gallery / template materialize so agent.py always gets a
+    # concrete catalog/schema (str, not Optional).
+    # -----------------------------------------------------------------------
+    catalog, schema, table = _resolve_scaffold_data_source(
+        scaffold_template, catalog, schema, profile
+    )
+
+    # -----------------------------------------------------------------------
+    # Step 5: gallery pick — materialize a full project directly.
     # -----------------------------------------------------------------------
     if coworker_spec is not None and coworker_spec not in ("",):
         if coworker_spec == "list":
             # --coworker list → interactive gallery picker
             _, gallery_yaml_path = _pick_coworker_gallery()
-            config = _scaffold_from_gallery(
-                gallery_yaml_path, project_name, catalog, schema,
-            )
-        elif toml_coworker is not None:
-            config = _scaffold_from_coworker_toml(
-                toml_coworker, project_name, pinned_catalog, pinned_schema,
-            )
         else:
             # --coworker <name> → find by name in the gallery
             found = _find_gallery_yaml_by_name(coworker_spec)
@@ -3825,9 +3821,10 @@ def scaffold(
                     "Use --coworker list to browse, or pass a "
                     "`*-coworker.toml` from `apx-agent onboard`."
                 )
-            config = _scaffold_from_gallery(
-                found, project_name, catalog, schema,
-            )
+            gallery_yaml_path = found
+        config = _scaffold_from_gallery(
+            gallery_yaml_path, project_name, catalog, schema,
+        )
         _materialize_agent(config, target, force=force, profile=profile)
         return
 
