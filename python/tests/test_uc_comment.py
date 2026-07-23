@@ -324,3 +324,49 @@ class TestUcCommentToolBulk:
             "COMMENT ON TABLE `main`.`sales`.`orders` IS 'One row per order.'",
             "ALTER TABLE `main`.`sales`.`orders` ALTER COLUMN `total_usd` COMMENT 'USD total.'",
         ]
+
+    @pytest.mark.asyncio
+    async def test_bulk_invalid_identifier_writes_nothing(self):
+        tool = _make_tool()
+        ws = _fake_ws()
+        calls = []
+
+        def _fake_run_sql(ws_arg, stmt, *, warehouse_id=None):
+            calls.append(stmt)
+            return []
+
+        with patch("apx_agent.uc_comment.run_sql", _fake_run_sql):
+            result = await tool(
+                ws=ws,
+                comments=[
+                    {"table": "orders", "comment": "ok"},
+                    {"table": "bad-name; DROP", "comment": "evil"},
+                ],
+            )
+
+        assert result["status"] == "error"
+        assert calls == [], "no statement may run when any identifier is invalid"
+
+    @pytest.mark.asyncio
+    async def test_bulk_partial_when_one_write_fails(self):
+        tool = _make_tool()
+        ws = _fake_ws()
+
+        def _fake_run_sql(ws_arg, stmt, *, warehouse_id=None):
+            if "returns" in stmt:
+                raise RuntimeError("PERMISSION_DENIED: MODIFY")
+            return []
+
+        with patch("apx_agent.uc_comment.run_sql", _fake_run_sql):
+            result = await tool(
+                ws=ws,
+                comments=[
+                    {"table": "orders", "comment": "fine"},
+                    {"table": "returns", "comment": "denied"},
+                ],
+            )
+
+        assert result["status"] == "partial"
+        assert result["applied"] == 1
+        assert result["failed"] == 1
+        assert [r["status"] for r in result["results"]] == ["ok", "error"]

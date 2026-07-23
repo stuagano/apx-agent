@@ -50,7 +50,7 @@ def uc_comment_tool(
         f"MODIFY grant. Provide `table`, an optional `column`, and the `comment` text."
     )
 
-    def _build_stmt(table: str, comment: str, column: str | None) -> str:
+    def _build_stmt(table: str | None, comment: str | None, column: str | None) -> str:
         fqn = f"`{catalog}`.`{schema}`.`{table}`"
         lit = _esc_literal(comment or "")
         if column is None:
@@ -90,7 +90,16 @@ def uc_comment_tool(
                 return {"status": "error", "statement": stmt, "message": str(e)}
             return {"status": "ok", "statement": stmt}
 
-        # Bulk mode. (validation gate + per-row execution added in Task 2)
+        # Bulk mode.
+        # Validate every identifier up front — a malformed batch never
+        # partially applies because of a bad name.
+        for row in comments:
+            err = _bad_ident(row.get("table"), row.get("column"))
+            if err is not None:
+                return {"status": "error", "applied": 0, "failed": len(comments),
+                        "results": [{"status": "error", "message": err,
+                                     "table": row.get("table"), "column": row.get("column")}]}
+
         results: list[dict[str, Any]] = []
         applied = 0
         for row in comments:
