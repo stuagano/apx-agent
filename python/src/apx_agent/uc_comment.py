@@ -50,29 +50,75 @@ def uc_comment_tool(
         f"MODIFY grant. Provide `table`, an optional `column`, and the `comment` text."
     )
 
-    async def _update_uc_comment(
-        table: str,
-        comment: str,
-        ws: UserClientDependency,  # type: ignore[valid-type]
-        column: str | None = None,
-    ) -> dict[str, Any]:
-        """Placeholder doc — overwritten below."""
-        if not _IDENT.match(table or ""):
-            return {"status": "error", "message": f"invalid table identifier: {table!r}"}
-        if column is not None and not _IDENT.match(column):
-            return {"status": "error", "message": f"invalid column identifier: {column!r}"}
+    def _build_stmt(table: str | None, comment: str | None, column: str | None) -> str:
         fqn = f"`{catalog}`.`{schema}`.`{table}`"
         lit = _esc_literal(comment or "")
         if column is None:
-            stmt = f"COMMENT ON TABLE {fqn} IS '{lit}'"
-        else:
-            stmt = f"ALTER TABLE {fqn} ALTER COLUMN `{column}` COMMENT '{lit}'"
-        try:
-            run_sql(ws, stmt, warehouse_id=warehouse_id)
-        except Exception as e:
-            logger.warning("uc_comment write failed: %s", e)
-            return {"status": "error", "statement": stmt, "message": str(e)}
-        return {"status": "ok", "statement": stmt}
+            return f"COMMENT ON TABLE {fqn} IS '{lit}'"
+        return f"ALTER TABLE {fqn} ALTER COLUMN `{column}` COMMENT '{lit}'"
+
+    def _bad_ident(table: str | None, column: str | None) -> str | None:
+        if not _IDENT.match(table or ""):
+            return f"invalid table identifier: {table!r}"
+        if column is not None and not _IDENT.match(column):
+            return f"invalid column identifier: {column!r}"
+        return None
+
+    async def _update_uc_comment(
+        ws: UserClientDependency,  # type: ignore[valid-type]
+        table: str | None = None,
+        comment: str | None = None,
+        column: str | None = None,
+        comments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Placeholder doc — overwritten below."""
+        if comments is not None and table is not None:
+            return {"status": "error",
+                    "message": "provide either (table, comment) or comments=[...], not both"}
+        if comments is None:
+            if table is None or comment is None:
+                return {"status": "error",
+                        "message": "provide (table, comment) or comments=[...]"}
+            err = _bad_ident(table, column)
+            if err is not None:
+                return {"status": "error", "message": err}
+            stmt = _build_stmt(table, comment, column)
+            try:
+                run_sql(ws, stmt, warehouse_id=warehouse_id)
+            except Exception as e:
+                logger.warning("uc_comment write failed: %s", e)
+                return {"status": "error", "statement": stmt, "message": str(e)}
+            return {"status": "ok", "statement": stmt}
+
+        # Bulk mode.
+        # Validate every identifier up front — a malformed batch never
+        # partially applies because of a bad name.
+        for row in comments:
+            err = _bad_ident(row.get("table"), row.get("column"))
+            if err is not None:
+                return {"status": "error", "applied": 0, "failed": len(comments),
+                        "results": [{"status": "error", "message": err,
+                                     "table": row.get("table"), "column": row.get("column")}]}
+
+        results: list[dict[str, Any]] = []
+        applied = 0
+        for row in comments:
+            r_table = row.get("table")
+            r_column = row.get("column")
+            r_comment = row.get("comment")
+            stmt = _build_stmt(r_table, r_comment, r_column)
+            try:
+                run_sql(ws, stmt, warehouse_id=warehouse_id)
+                applied += 1
+                results.append({"status": "ok", "statement": stmt,
+                                "table": r_table, "column": r_column})
+            except Exception as e:
+                logger.warning("uc_comment bulk write failed: %s", e)
+                results.append({"status": "error", "statement": stmt, "message": str(e),
+                                "table": r_table, "column": r_column})
+        failed = len(results) - applied
+        status = "ok" if failed == 0 else ("error" if applied == 0 else "partial")
+        return {"status": status, "applied": applied, "failed": failed, "results": results}
 
     return build_tool(
         _update_uc_comment,
