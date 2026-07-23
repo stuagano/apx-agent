@@ -2763,30 +2763,61 @@ def _scaffold_from_coworker_toml(
     )
 
 
+class _GovernanceReceipt(NamedTuple):
+    """Claim-vs-reality outcome after materializing a project.
+
+    ``ok`` is True only when required files exist and, for UC-grounded
+    projects, the CLI identity can list the declared schema. Grounding
+    bake is surfaced in the printed receipt but does not block ``ok`` —
+    the agent can still introspect live UC when ``.apx/schema.json`` is
+    missing. ``--deploy`` refuses unless ``ok`` is True.
+    """
+    ok: bool
+    blockers: tuple[str, ...]
+
+
 def _emit_governance_receipt(
     target: Path,
-    config: "AgentConfig",
+    config: "AgentConfig | None" = None,
     *,
+    catalog: "str | None" = None,
+    schema: "str | None" = None,
     profile: "str | None",
-) -> None:
+) -> _GovernanceReceipt:
     """Print a claim-vs-reality receipt after materializing a project.
 
     Proves project files exist, surfaces the declared UC data source, reports
     whether grounding baked, and runs a best-effort tables.list as the CLI
-    identity (OBO smoke for the authoring path).
+    identity (OBO smoke for the authoring path). Returns a structured
+    receipt so ``--deploy`` can fail closed when the receipt is not green.
     """
+    blockers: list[str] = []
     click.echo()
     click.echo("## Governance receipt")
     click.echo(f"  project:   {target}")
     agent_py = target / "agent.py"
     pyproject = target / "pyproject.toml"
+    agent_ok = agent_py.is_file()
+    pyproject_ok = pyproject.is_file()
     click.echo(
-        f"  files:     agent.py={'ok' if agent_py.is_file() else 'MISSING'}; "
-        f"pyproject.toml={'ok' if pyproject.is_file() else 'MISSING'}"
+        f"  files:     agent.py={'ok' if agent_ok else 'MISSING'}; "
+        f"pyproject.toml={'ok' if pyproject_ok else 'MISSING'}"
     )
-    tmpl = config.template or {}
-    cat = tmpl.get("catalog")
-    sch = tmpl.get("schema")
+    if not agent_ok:
+        blockers.append("agent.py missing")
+    if not pyproject_ok:
+        blockers.append("pyproject.toml missing")
+
+    if config is not None:
+        tmpl = config.template or {}
+        cat = catalog or tmpl.get("catalog")
+        sch = schema or tmpl.get("schema")
+    else:
+        cat = catalog
+        sch = schema
+    cat = cat if isinstance(cat, str) and cat.strip() else None
+    sch = sch if isinstance(sch, str) and sch.strip() else None
+
     if cat and sch:
         click.echo(f"  data:      {cat}.{sch}")
     else:
@@ -2811,6 +2842,7 @@ def _emit_governance_receipt(
     if cat and sch:
         ws = _make_ws_for_scaffold(profile)
         if ws is None:
+            blockers.append("no workspace connection for identity smoke")
             click.echo(
                 "  identity:  skipped (no workspace connection) — "
                 "run `uv run apx-agent doctor` after auth"
@@ -2832,12 +2864,98 @@ def _emit_governance_receipt(
                     f"{cat}.{sch} as {who}"
                 )
             except Exception as e:
+                blockers.append(f"identity cannot list {cat}.{sch}: {e}")
                 click.echo(
                     f"  identity:  FAILED listing {cat}.{sch} as {who}: {e}"
                 )
+    receipt = _GovernanceReceipt(ok=not blockers, blockers=tuple(blockers))
+    if receipt.ok:
+        click.echo("  status:    green")
+    else:
+        click.echo(f"  status:    blocked ({len(receipt.blockers)})")
     click.echo(
         f"  next:      cd {target.name} && uv sync && uv run apx-agent doctor"
     )
+    return receipt
+
+
+def _deploy_receipt_gated(
+    target: Path,
+    receipt: _GovernanceReceipt,
+    *,
+    profile: "str | None",
+    scaffold_target: str = "apps",
+) -> str:
+    """Run Apps deploy only when the governance receipt is green.
+
+    Returns the live app URL (empty when the app was not started). Extends
+    the printed receipt with app URL + readyz outcome. Raises on a red
+    receipt, non-apps target, or deploy/readyz failure.
+    """
+    if scaffold_target != "apps":
+        raise click.UsageError(
+            "--deploy only works with --target apps "
+            "(model-serving deploy stays a separate `agents deploy` step)."
+        )
+    if not receipt.ok:
+        detail = "\n".join(f"  • {b}" for b in receipt.blockers)
+        raise click.ClickException(
+            "--deploy refused: governance receipt is not green:\n"
+            f"{detail}\n"
+            "Fix the blockers (auth, UC access, missing files), then re-run "
+            "with --deploy, or deploy later via `uv run apx-agent agents deploy`."
+        )
+    click.echo()
+    click.echo("## Deploy (receipt-gated)")
+    prev = Path.cwd()
+    os.chdir(target)
+    try:
+        app_url = _deploy_apps(
+            module="agent:agent",
+            profile=profile,
+            bundle_target="dev",
+            no_run=False,
+            auto_update_yml=False,
+            auto_build_wheel=True,
+            auto_experiment=True,
+            vars=(),
+            env_pairs=(),
+            secret_env_pairs=(),
+            json_output=False,
+            readyz_gate=True,
+            register_uc=True,
+            uc_name=None,
+        )
+    finally:
+        os.chdir(prev)
+    click.echo()
+    click.echo("## Deploy receipt")
+    click.echo(f"  app_url:   {app_url or '(none)'}")
+    click.echo("  readyz:    passed")
+    return app_url
+
+
+def _echo_post_materialize_next_steps(
+    name: str,
+    *,
+    scaffold_target: str = "apps",
+) -> None:
+    """Print local next-step guidance when ``--deploy`` was not requested."""
+    click.echo(
+        f"Next: cd {name} && uv sync && uv run apx-agent agents run    # serve locally"
+    )
+    click.echo(
+        "Tip: run `uv run apx-agent doctor` to check your environment before deploying."
+    )
+    if scaffold_target == "apps":
+        click.echo(
+            "      uv run apx-agent agents deploy                  # → Databricks Apps"
+        )
+    else:
+        click.echo(
+            "      uv run apx-agent agents deploy --model <endpoint> "
+            "--name <catalog.schema.model>"
+        )
 
 
 @main.command()
@@ -2928,11 +3046,17 @@ def onboard(profile: "str | None", directory: str, force: bool) -> None:
     help="Directory to write the project into. Default: current directory.",
 )
 @click.option("--force", is_flag=True, help="Overwrite an existing project directory.")
+@click.option(
+    "--deploy", is_flag=True, default=False,
+    help="After a green governance receipt, deploy to Databricks Apps "
+         "(bundle-target=dev) and append the live app URL + readyz to the "
+         "receipt. Refuses when the receipt is blocked. Default is local only.",
+)
 def generate(
     description: "str | None", profile: "str | None",
     catalog: "str | None", schema: "str | None",
     demo: bool,
-    directory: str, force: bool,
+    directory: str, force: bool, deploy: bool,
 ) -> None:
     """Describe an agent in plain English; an LLM authors it as a real project.
 
@@ -2945,6 +3069,8 @@ def generate(
     Data/coworker agents require a resolvable Unity Catalog source
     (``--catalog``/``--schema``, classifier hints, or a non-demo discovery
     hit). Pass ``--demo`` to opt into ``samples.nyctaxi``.
+
+    Pass ``--deploy`` to receipt-gate an Apps deploy after materialize.
     """
     from ._yaml_spec import load_spec
 
@@ -2985,7 +3111,9 @@ def generate(
     # config.name comes from the LLM-authored YAML — sanitize before using it
     # as a filesystem path component, matching scaffold's existing guard.
     target = Path(directory) / Path(config.name).name
-    _materialize_agent(config, target, force=force, profile=profile)
+    _materialize_agent(
+        config, target, force=force, profile=profile, deploy=deploy,
+    )
 
 
 def _pick_template() -> str:
@@ -3435,6 +3563,7 @@ def _scaffold_apps(
 def _materialize_agent(
     config: "AgentConfig", target: Path, *, force: bool,
     source_dir: Path | None = None, profile: str | None = None,
+    deploy: bool = False,
 ) -> None:
     """Compile *config* into a durable, hand-editable project at *target*.
 
@@ -3445,6 +3574,8 @@ def _materialize_agent(
     standalone ``.yaml`` specs) and adds the auxiliary files it doesn't write
     but ``_scaffold_apps`` does, so output quality doesn't depend on which
     authoring path produced the config.
+
+    When ``deploy`` is True, a green governance receipt gates an Apps deploy.
     """
     from ._project_gen import generate_project
 
@@ -3480,9 +3611,11 @@ def _materialize_agent(
 
     click.echo()
     click.echo(f"Scaffolded {config.name} at {target} (target=apps).")
-    _emit_governance_receipt(target, config, profile=profile)
-    click.echo(f"Next: cd {target.name} && uv sync && uv run apx-agent run    # serve locally")
-    click.echo("      uv run apx-agent deploy                  # → Databricks Apps")
+    receipt = _emit_governance_receipt(target, config, profile=profile)
+    if deploy:
+        _deploy_receipt_gated(target, receipt, profile=profile)
+        return
+    _echo_post_materialize_next_steps(config.name)
 
 
 def _scaffold_from_gallery(
@@ -3569,18 +3702,28 @@ def _resolve_scaffold_data_source(
     return _ScaffoldDataSource("samples", "nyctaxi", None)
 
 
-def _echo_scaffold_next_steps(name: str, target: Path, scaffold_target: str) -> None:
-    """Print the post-scaffold next-step guidance for a freshly written project."""
+def _echo_scaffold_next_steps(
+    name: str,
+    target: Path,
+    scaffold_target: str,
+    *,
+    catalog: str | None = None,
+    schema: str | None = None,
+    profile: str | None = None,
+    deploy: bool = False,
+) -> None:
+    """Receipt + optional receipt-gated deploy + next-step guidance."""
     click.echo()
     click.echo(f"Scaffolded {name} at {target} (target={scaffold_target}).")
-    click.echo(f"Next: cd {name} && uv sync && uv run apx-agent agents run    # serve locally")
-    click.echo("Tip: run `uv run apx-agent doctor` to check your environment before deploying.")
-    if scaffold_target == "apps":
-        click.echo("      uv run apx-agent agents deploy                  # → Databricks Apps")
-    else:
-        click.echo(
-            "      uv run apx-agent agents deploy --model <endpoint> --name <catalog.schema.model>"
+    receipt = _emit_governance_receipt(
+        target, catalog=catalog, schema=schema, profile=profile,
+    )
+    if deploy:
+        _deploy_receipt_gated(
+            target, receipt, profile=profile, scaffold_target=scaffold_target,
         )
+        return
+    _echo_post_materialize_next_steps(name, scaffold_target=scaffold_target)
 
 
 @agents.command()
@@ -3659,11 +3802,18 @@ def _echo_scaffold_next_steps(name: str, target: Path, scaffold_target: str) -> 
     help="Run the setup wizard (target, template, catalog, schema, persona). "
          "Defaults to on when stdin is a TTY.",
 )
+@click.option(
+    "--deploy", is_flag=True, default=False,
+    help="After a green governance receipt, deploy to Databricks Apps "
+         "(bundle-target=dev) and append the live app URL + readyz to the "
+         "receipt. Requires --target apps. Refuses when the receipt is "
+         "blocked. Default is local only.",
+)
 def scaffold(
     name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
     scaffold_template: str | None, coworker_spec: str | None, use_data: bool,
-    lakebase: bool, interactive: bool | None,
+    lakebase: bool, interactive: bool | None, deploy: bool,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -3676,6 +3826,8 @@ def scaffold(
     ``--catalog``/``--schema``, the workspace is probed (best-effort) for a
     catalog/schema you can read — preferring ``samples.nyctaxi`` — so a fresh
     ``apx-agent agents run`` can answer a real question immediately.
+
+    Pass ``--deploy`` to receipt-gate an Apps deploy after scaffold.
     """
     target = Path(directory) / name
 
@@ -3781,6 +3933,11 @@ def scaffold(
             "--template coworker requires --target apps "
             "(model-serving coworker scaffold is a follow-up)."
         )
+    if deploy and scaffold_target != "apps":
+        raise click.UsageError(
+            "--deploy only works with --target apps "
+            "(model-serving deploy stays a separate `agents deploy` step)."
+        )
 
     # -----------------------------------------------------------------------
     # Step 3: onboard TOML handoff — before demo data-source resolve so TBD
@@ -3792,7 +3949,9 @@ def scaffold(
             config = _scaffold_from_coworker_toml(
                 toml_coworker, project_name, catalog, schema,
             )
-            _materialize_agent(config, target, force=force, profile=profile)
+            _materialize_agent(
+                config, target, force=force, profile=profile, deploy=deploy,
+            )
             return
 
     # -----------------------------------------------------------------------
@@ -3825,7 +3984,9 @@ def scaffold(
         config = _scaffold_from_gallery(
             gallery_yaml_path, project_name, catalog, schema,
         )
-        _materialize_agent(config, target, force=force, profile=profile)
+        _materialize_agent(
+            config, target, force=force, profile=profile, deploy=deploy,
+        )
         return
 
     if scaffold_target == "apps":
@@ -3837,7 +3998,10 @@ def scaffold(
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)
 
-    _echo_scaffold_next_steps(name, target, scaffold_target)
+    _echo_scaffold_next_steps(
+        name, target, scaffold_target,
+        catalog=catalog, schema=schema, profile=profile, deploy=deploy,
+    )
 
     if scaffold_target == "apps" and lakebase:
         _echo_lakebase_guidance()
@@ -7610,14 +7774,14 @@ def _deploy_apps(
     app_name_override: str | None = None,
     poll_timeout_seconds: int = 300,
     readyz_attempts: int = 5,
-) -> None:
+) -> str:
     """Implement ``apx-agent agents deploy --target apps``.
 
     Routes all progress logs to stderr (so ``--json-output`` can keep stdout
     clean), runs the bundle validate → deploy → run → poll-ready sequence,
     registers a UC version manifest (unless ``--no-register-uc``), and prints
     either the app URL (default) or a single JSON summary (``--json-output``) at
-    the end.
+    the end. Returns the app URL (empty when ``--no-run`` or poll found none).
 
     Every deploy through here stamps provenance tags (git SHA, dirty flag,
     uv.lock hash) on the registered manifest version (issue #403). The canary /
@@ -7630,7 +7794,7 @@ def _deploy_apps(
         click.echo(msg, err=True)
 
     with _json_cli_errors(json_output):
-        _deploy_apps_impl(
+        return _deploy_apps_impl(
             cwd=cwd, module=module, profile=profile,
             bundle_target=bundle_target, no_run=no_run,
             auto_update_yml=auto_update_yml,
@@ -7671,7 +7835,7 @@ def _deploy_apps_impl(
     poll_timeout_seconds: int = 300,
     readyz_attempts: int = 5,
     log: Any,
-) -> None:
+) -> str:
     """Inner body of ``_deploy_apps`` — see docstring there."""
     log(f"# apx-agent agents deploy --target apps (bundle-target={bundle_target}, "
         f"profile={profile or '<default>'})")
@@ -8006,6 +8170,7 @@ def _deploy_apps_impl(
     else:
         log(f"# app ready: {app_name}")
         click.echo(app_url)
+    return app_url
 
 
 # ---------------------------------------------------------------------------
