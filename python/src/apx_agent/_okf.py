@@ -535,6 +535,39 @@ def apply_uc_comments(
     return modified
 
 
+def okf_comments_for_uc(okf_root: "Path | str") -> dict[str, dict[str, str]]:
+    """Read curated descriptions OUT of an OKF bundle, for pushing to UC.
+
+    Returns ``{table: {"_table": <overview>, <col>: <description>}}`` with empty
+    values omitted so a sync never blanks an existing UC comment. Inverse of
+    :func:`apply_uc_comments`. Never writes; totalised per-table — a malformed
+    table is skipped (logged), never raises out.
+    """
+    root = Path(okf_root)
+    tdir = root / "tables"
+    out: dict[str, dict[str, str]] = {}
+    if not tdir.is_dir():
+        return out
+    for path in sorted(p for p in tdir.glob("*.md") if p.name not in _RESERVED):
+        table = path.stem
+        try:
+            doc = OKFDocument.parse(path.read_text())
+            entry: dict[str, str] = {}
+            overview = _extract_section(doc.body, "Overview").strip()
+            if overview:
+                entry["_table"] = overview
+            for r in _schema_rows_with_desc(doc.body):
+                desc = r["description"].strip()
+                if desc:
+                    entry[r["name"]] = desc
+            if entry:
+                out[table] = entry
+        except Exception as e:
+            logger.warning("okf_comments_for_uc: skipped table %r: %s", table, e)
+            continue
+    return out
+
+
 def refresh_okf_schema(
     okf_root: "Path | str", manifest: dict, *, timestamp: str, prune: bool = False
 ) -> None:

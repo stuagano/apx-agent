@@ -293,3 +293,134 @@ class TestUcCommentWriterConfigIntegration:
         assert "update_uc_comment" not in names, (
             "uc_comment_writer must not appear unless explicitly declared"
         )
+
+
+class TestUcCommentToolBulk:
+    """comments=[...] writes many statements in one governed call."""
+
+    @pytest.mark.asyncio
+    async def test_bulk_applies_all_rows(self):
+        tool = _make_tool()
+        ws = _fake_ws()
+        stmts = []
+
+        def _fake_run_sql(ws_arg, stmt, *, warehouse_id=None):
+            stmts.append(stmt)
+            return []
+
+        with patch("apx_agent.uc_comment.run_sql", _fake_run_sql):
+            result = await tool(
+                ws=ws,
+                comments=[
+                    {"table": "orders", "comment": "One row per order."},
+                    {"table": "orders", "column": "total_usd", "comment": "USD total."},
+                ],
+            )
+
+        assert result["status"] == "ok"
+        assert result["applied"] == 2
+        assert result["failed"] == 0
+        assert stmts == [
+            "COMMENT ON TABLE `main`.`sales`.`orders` IS 'One row per order.'",
+            "ALTER TABLE `main`.`sales`.`orders` ALTER COLUMN `total_usd` COMMENT 'USD total.'",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_bulk_invalid_identifier_writes_nothing(self):
+        tool = _make_tool()
+        ws = _fake_ws()
+        calls = []
+
+        def _fake_run_sql(ws_arg, stmt, *, warehouse_id=None):
+            calls.append(stmt)
+            return []
+
+        with patch("apx_agent.uc_comment.run_sql", _fake_run_sql):
+            result = await tool(
+                ws=ws,
+                comments=[
+                    {"table": "orders", "comment": "ok"},
+                    {"table": "bad-name; DROP", "comment": "evil"},
+                ],
+            )
+
+        assert result["status"] == "error"
+        assert calls == [], "no statement may run when any identifier is invalid"
+
+    @pytest.mark.asyncio
+    async def test_bulk_and_single_args_are_mutually_exclusive(self):
+        tool = _make_tool()
+        ws = _fake_ws()
+        calls = []
+
+        def _fake_run_sql(ws_arg, stmt, *, warehouse_id=None):
+            calls.append(stmt)
+            return []
+
+        with patch("apx_agent.uc_comment.run_sql", _fake_run_sql):
+            result = await tool(
+                ws=ws,
+                table="orders",
+                comment="single",
+                comments=[{"table": "orders", "comment": "bulk"}],
+            )
+
+        assert result["status"] == "error"
+        assert calls == [], "no statement may run when both arg styles are given"
+
+    @pytest.mark.asyncio
+    async def test_bulk_backslash_quote_breakout_neutralized(self):
+        """Classic SQL-injection via backslash+quote is neutralized in bulk path too.
+
+        Uses the same input and asserts the same escaped form as
+        test_backslash_quote_breakout_neutralized — bulk dispatches through the
+        same _build_stmt / _esc_literal path, so the emitted statement must be
+        identical.
+        """
+        tool = _make_tool()
+        ws = _fake_ws()
+        stmts = []
+
+        def _fake_run_sql(ws_arg, stmt, *, warehouse_id=None):
+            stmts.append(stmt)
+            return []
+
+        with patch("apx_agent.uc_comment.run_sql", _fake_run_sql):
+            result = await tool(
+                ws=ws,
+                comments=[{"table": "orders", "comment": "\\'; DROP TABLE x; --"}],
+            )
+
+        assert result["status"] == "ok"
+        assert len(stmts) == 1
+        # Same expected form as the single-path test:
+        # comment \'; DROP TABLE x; -- → \\'' ; DROP TABLE x; --  inside quotes
+        assert stmts[0] == (
+            "COMMENT ON TABLE `main`.`sales`.`orders` IS "
+            "'\\\\''; DROP TABLE x; --'"
+        )
+        assert stmts[0].count("'") % 2 == 0
+
+    @pytest.mark.asyncio
+    async def test_bulk_partial_when_one_write_fails(self):
+        tool = _make_tool()
+        ws = _fake_ws()
+
+        def _fake_run_sql(ws_arg, stmt, *, warehouse_id=None):
+            if "returns" in stmt:
+                raise RuntimeError("PERMISSION_DENIED: MODIFY")
+            return []
+
+        with patch("apx_agent.uc_comment.run_sql", _fake_run_sql):
+            result = await tool(
+                ws=ws,
+                comments=[
+                    {"table": "orders", "comment": "fine"},
+                    {"table": "returns", "comment": "denied"},
+                ],
+            )
+
+        assert result["status"] == "partial"
+        assert result["applied"] == 1
+        assert result["failed"] == 1
+        assert [r["status"] for r in result["results"]] == ["ok", "error"]

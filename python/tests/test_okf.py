@@ -436,3 +436,55 @@ class TestApplyUCComments:
         assert modified == 1                                      # only the good table enriched
         assert "UC net." in (okf / "tables" / "pay_runs.md").read_text()
         assert "skipped" in caplog.text and "broken" in caplog.text   # corrupt table named in a warning
+
+
+class TestOKFCommentsForUC:
+    def test_okf_comments_for_uc_reads_overview_and_columns(self, tmp_path):
+        from apx_agent._okf import okf_comments_for_uc
+
+        tdir = tmp_path / "tables"
+        tdir.mkdir(parents=True)
+        (tdir / "orders.md").write_text(
+            "# Overview\nOne row per customer order.\n\n"
+            "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `id` | bigint | Surrogate key. |\n"
+            "| `total_usd` | double |  |\n"  # empty description — must be omitted
+        )
+
+        out = okf_comments_for_uc(tmp_path)
+
+        assert out["orders"]["_table"] == "One row per customer order."
+        assert out["orders"]["id"] == "Surrogate key."
+        assert "total_usd" not in out["orders"]  # empty cell not emitted
+
+    def test_okf_comments_for_uc_skips_malformed_table(self, tmp_path):
+        from apx_agent._okf import okf_comments_for_uc
+
+        tdir = tmp_path / "tables"
+        tdir.mkdir(parents=True)
+        (tdir / "good.md").write_text(
+            "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `x` | int | the x. |\n"
+        )
+        (tdir / "broken.md").write_text("---\nbad: [unclosed\n---\n")
+
+        out = okf_comments_for_uc(tmp_path)
+
+        assert out["good"]["x"] == "the x."
+        assert "broken" not in out  # skipped, not raised
+
+    def test_okf_comments_for_uc_ignores_reserved_files(self, tmp_path):
+        from apx_agent._okf import okf_comments_for_uc
+
+        tdir = tmp_path / "tables"
+        tdir.mkdir(parents=True)
+        (tdir / "orders.md").write_text(
+            "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `id` | bigint | Key. |\n"
+        )
+        (tdir / "index.md").write_text("# Overview\nThis is the index, not a table.\n")
+
+        out = okf_comments_for_uc(tmp_path)
+
+        assert "orders" in out
+        assert "index" not in out
