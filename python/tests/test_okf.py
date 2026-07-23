@@ -488,3 +488,54 @@ class TestOKFCommentsForUC:
 
         assert "orders" in out
         assert "index" not in out
+
+
+class TestDiffOkfUcComments:
+    def test_diff_reports_changed_and_new_skips_equal(self):
+        from apx_agent._okf import CommentDiff, diff_okf_uc_comments, format_comment_diff
+
+        desired = {
+            "orders": {
+                "_table": "One row per order.",
+                "id": "Surrogate key.",
+                "total": "USD total.",
+            },
+            "customers": {"name": "Display name."},
+        }
+        live = {
+            "orders": {
+                "_table": "One row per order.",  # equal — omit
+                "id": "old id",  # changed
+                # total missing in live — new
+            },
+            # customers missing entirely — new
+        }
+
+        changes = diff_okf_uc_comments(desired, live)
+
+        assert changes == [
+            CommentDiff(table="customers", column="name", old="", new="Display name."),
+            CommentDiff(table="orders", column="id", old="old id", new="Surrogate key."),
+            CommentDiff(table="orders", column="total", old="", new="USD total."),
+        ]
+        text = format_comment_diff(changes)
+        assert "3 comment change(s):" in text
+        assert "orders.id:" in text
+        assert "- old id" in text
+        assert "+ Surrogate key." in text
+
+    def test_diff_empty_when_in_sync(self):
+        from apx_agent._okf import diff_okf_uc_comments, format_comment_diff
+
+        desired = {"orders": {"_table": "Orders.", "id": "Key."}}
+        live = {"orders": {"_table": "Orders.", "id": "Key.", "extra": "ignored"}}
+        assert diff_okf_uc_comments(desired, live) == []
+        assert format_comment_diff([]) == "No comment changes."
+
+    def test_diff_never_emits_blanking_for_keys_absent_from_desired(self):
+        from apx_agent._okf import diff_okf_uc_comments
+
+        # Live has a comment OKF does not curate — must not appear as a clear.
+        desired = {"orders": {"id": "Key."}}
+        live = {"orders": {"_table": "Live overview.", "id": "Key.", "secret": "PII."}}
+        assert diff_okf_uc_comments(desired, live) == []
