@@ -466,9 +466,25 @@ class TestOKFCommentsForUC:
             "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
             "| `x` | int | the x. |\n"
         )
-        (tdir / "broken.md").write_text("\x00 not a valid okf doc")
+        (tdir / "broken.md").write_text("---\nbad: [unclosed\n---\n")
 
         out = okf_comments_for_uc(tmp_path)
 
         assert out["good"]["x"] == "the x."
         assert "broken" not in out  # skipped, not raised
+
+    def test_okf_comments_for_uc_ignores_reserved_files(self, tmp_path):
+        from apx_agent._okf import okf_comments_for_uc
+
+        tdir = tmp_path / "tables"
+        tdir.mkdir(parents=True)
+        (tdir / "orders.md").write_text(
+            "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n"
+            "| `id` | bigint | Key. |\n"
+        )
+        (tdir / "index.md").write_text("# Overview\nThis is the index, not a table.\n")
+
+        out = okf_comments_for_uc(tmp_path)
+
+        assert "orders" in out
+        assert "index" not in out

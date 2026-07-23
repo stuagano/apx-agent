@@ -548,7 +548,7 @@ def okf_comments_for_uc(okf_root: "Path | str") -> dict[str, dict[str, str]]:
     out: dict[str, dict[str, str]] = {}
     if not tdir.is_dir():
         return out
-    for path in sorted(tdir.glob("*.md")):
+    for path in sorted(p for p in tdir.glob("*.md") if p.name not in _RESERVED):
         table = path.stem
         try:
             doc = OKFDocument.parse(path.read_text())
