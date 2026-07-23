@@ -293,3 +293,34 @@ class TestUcCommentWriterConfigIntegration:
         assert "update_uc_comment" not in names, (
             "uc_comment_writer must not appear unless explicitly declared"
         )
+
+
+class TestUcCommentToolBulk:
+    """comments=[...] writes many statements in one governed call."""
+
+    @pytest.mark.asyncio
+    async def test_bulk_applies_all_rows(self):
+        tool = _make_tool()
+        ws = _fake_ws()
+        stmts = []
+
+        def _fake_run_sql(ws_arg, stmt, *, warehouse_id=None):
+            stmts.append(stmt)
+            return []
+
+        with patch("apx_agent.uc_comment.run_sql", _fake_run_sql):
+            result = await tool(
+                ws=ws,
+                comments=[
+                    {"table": "orders", "comment": "One row per order."},
+                    {"table": "orders", "column": "total_usd", "comment": "USD total."},
+                ],
+            )
+
+        assert result["status"] == "ok"
+        assert result["applied"] == 2
+        assert result["failed"] == 0
+        assert stmts == [
+            "COMMENT ON TABLE `main`.`sales`.`orders` IS 'One row per order.'",
+            "ALTER TABLE `main`.`sales`.`orders` ALTER COLUMN `total_usd` COMMENT 'USD total.'",
+        ]
