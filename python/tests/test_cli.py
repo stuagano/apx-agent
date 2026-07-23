@@ -7113,6 +7113,139 @@ class TestPullComments:
         assert "Could not read comments" in result.output
 
 
+class TestPushComments:
+    def _seed_okf(self, tmp_path):
+        import json
+        from apx_agent._okf import OKFDocument, write_okf_bundle
+
+        apx = tmp_path / ".apx"
+        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        write_okf_bundle(
+            m,
+            apx / "okf",
+            timestamp="z",
+            descriptions={"pay_runs": {"gross_pay": "Gross before deductions."}},
+        )
+        path = apx / "okf" / "tables" / "pay_runs.md"
+        doc = OKFDocument.parse(path.read_text())
+        doc.body = "# Overview\nPayroll facts.\n\n" + doc.body
+        path.write_text(doc.serialize())
+        (apx / "schema.json").write_text(json.dumps(m))
+        return apx
+
+    def _fake_ws(self, table_comment: str | None = None, col_comment: str | None = None):
+        from types import SimpleNamespace
+
+        fake_tables = [
+            SimpleNamespace(
+                name="pay_runs",
+                comment=table_comment,
+                columns=[SimpleNamespace(name="gross_pay", comment=col_comment)],
+            )
+        ]
+        return SimpleNamespace(
+            tables=SimpleNamespace(list=lambda catalog_name, schema_name: fake_tables)
+        )
+
+    def test_push_diff_only_prints_plan_and_does_not_write(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        self._seed_okf(tmp_path)
+        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda *a, **k: self._fake_ws())
+        wrote: list[str] = []
+
+        def _capture_run_sql(ws, stmt, warehouse_id=None):
+            wrote.append(stmt)
+
+        monkeypatch.setattr("apx_agent._sql.run_sql", _capture_run_sql)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["push-comments", "--diff"])
+        assert result.exit_code == 0, result.output
+        assert "comment change(s)" in result.output
+        assert "pay_runs:" in result.output
+        assert "pay_runs.gross_pay:" in result.output
+        assert "--diff only; no writes" in result.output
+        assert wrote == []
+
+    def test_push_yes_applies_comment_statements(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        self._seed_okf(tmp_path)
+        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda *a, **k: self._fake_ws())
+        wrote: list[str] = []
+
+        def _capture_run_sql(ws, stmt, warehouse_id=None):
+            wrote.append(stmt)
+
+        monkeypatch.setattr("apx_agent._sql.run_sql", _capture_run_sql)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["push-comments", "--yes"])
+        assert result.exit_code == 0, result.output
+        assert any("COMMENT ON TABLE" in s for s in wrote)
+        assert any("ALTER TABLE" in s and "COMMENT" in s for s in wrote)
+        assert "applied 2/2" in result.output
+
+    def test_push_aborts_without_yes_when_confirm_declined(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        self._seed_okf(tmp_path)
+        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda *a, **k: self._fake_ws())
+        wrote: list[str] = []
+        monkeypatch.setattr(
+            "apx_agent._sql.run_sql",
+            lambda *a, **k: wrote.append("ran"),
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["push-comments"], input="n\n")
+        assert result.exit_code == 0, result.output
+        assert "aborted; no writes" in result.output
+        assert wrote == []
+
+    def test_push_already_in_sync_is_noop(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        self._seed_okf(tmp_path)
+        monkeypatch.setattr(
+            cli,
+            "_make_ws_for_scaffold",
+            lambda *a, **k: self._fake_ws(
+                table_comment="Payroll facts.",
+                col_comment="Gross before deductions.",
+            ),
+        )
+        wrote: list[str] = []
+        monkeypatch.setattr(
+            "apx_agent._sql.run_sql",
+            lambda *a, **k: wrote.append("ran"),
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["push-comments", "--yes"])
+        assert result.exit_code == 0, result.output
+        assert "already matches OKF" in result.output
+        assert wrote == []
+
+    def test_push_no_bundle_errors_cleanly(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent.cli import agents
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(agents, ["push-comments", "--diff"])
+        assert result.exit_code != 0
+        assert "No .apx" in result.output or "no .apx" in result.output.lower()
+
+
 # ---------------------------------------------------------------------------
 # Model-serving deploy: provenance version tags (issue #403)
 # ---------------------------------------------------------------------------

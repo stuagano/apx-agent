@@ -16,9 +16,9 @@ Subcommands:
 Most agent-facing commands accept ``--module MODULE:VAR`` to point at the
 agent definition (defaults to ``agent:agent``); the module must be importable
 from the current working directory. The OKF bundle commands
-(``refresh-schema`` / ``migrate-to-okf`` / ``pull-comments``) and
-``scaffold`` / ``cost`` operate on the project, not a loaded agent, and so
-take no ``--module``.
+(``refresh-schema`` / ``migrate-to-okf`` / ``pull-comments`` /
+``push-comments``) and ``scaffold`` / ``cost`` operate on the project, not a
+loaded agent, and so take no ``--module``.
 
 The CLI is a thin orchestration layer over the primitives — every command
 maps to a single ``apx_agent`` call. The CLI's value isn't logic; it's
@@ -3721,6 +3721,53 @@ def migrate_to_okf(force: bool) -> None:
     click.echo(f"Wrote OKF bundle to {okf_root} (schema.json regenerated as derived cache).")
 
 
+class _OkfProject(NamedTuple):
+    catalog: str
+    schema: str
+    okf_root: Path
+
+
+def _require_okf_project() -> _OkfProject:
+    """Resolve ``.apx`` grounding + OKF root for comment pull/push commands."""
+    from ._schema import load_baked_schema, APX_DIR
+
+    existing = load_baked_schema(Path.cwd())
+    if not existing or not existing.get("catalog") or not existing.get("schema"):
+        raise click.ClickException(
+            "No .apx grounding found. This command only applies to a full "
+            "project scaffold (apx-agent agents scaffold <name> --target apps "
+            "--catalog CAT --schema SCHEMA), not the default YAML-spec scaffold."
+        )
+    okf_root = Path.cwd() / APX_DIR / "okf"
+    if not okf_root.is_dir():
+        raise click.ClickException(
+            "No .apx/okf bundle found. Run `apx-agent agents migrate-to-okf` first."
+        )
+    return _OkfProject(
+        catalog=existing["catalog"],
+        schema=existing["schema"],
+        okf_root=okf_root,
+    )
+
+
+def _read_live_uc_comments(ws: "Any", catalog: str, schema: str) -> dict:
+    """Tables-API snapshot ``{table: {_table: …, col: …}}`` for comment sync."""
+    comments: dict = {}
+    try:
+        for t in ws.tables.list(catalog_name=catalog, schema_name=schema):
+            name = getattr(t, "name", None)
+            if not name:
+                continue
+            cmap: dict = {"_table": getattr(t, "comment", None) or ""}
+            for c in (getattr(t, "columns", None) or []):
+                if getattr(c, "name", None):
+                    cmap[c.name] = getattr(c, "comment", None) or ""
+            comments[name] = cmap
+    except Exception as e:
+        raise click.ClickException(f"Could not read comments for {catalog}.{schema}: {e}")
+    return comments
+
+
 @agents.command("pull-comments")
 @click.option("--profile", default=None,
               help="Databricks CLI profile to read UC comments with. "
@@ -3736,44 +3783,111 @@ def pull_comments(profile: str | None, overwrite: bool) -> None:
     descriptions are kept unless --overwrite. Does NOT write to Unity Catalog.
     """
     from ._okf import apply_uc_comments
-    from ._schema import load_baked_schema, APX_DIR
 
-    existing = load_baked_schema(Path.cwd())
-    if not existing or not existing.get("catalog") or not existing.get("schema"):
-        raise click.ClickException(
-            "No .apx grounding found. This command only applies to a full "
-            "project scaffold (apx-agent agents scaffold <name> --target apps "
-            "--catalog CAT --schema SCHEMA), not the default YAML-spec scaffold."
-        )
-    okf_root = Path.cwd() / APX_DIR / "okf"
-    if not okf_root.is_dir():
-        raise click.ClickException(
-            "No .apx/okf bundle found. Run `apx-agent agents migrate-to-okf` first."
-        )
-    catalog, schema = existing["catalog"], existing["schema"]
+    project = _require_okf_project()
+    catalog, schema, okf_root = project.catalog, project.schema, project.okf_root
     ws = _make_ws_for_scaffold(profile)
     if ws is None:
         raise click.ClickException(
             f"Could not connect to a workspace to read comments for {catalog}.{schema}."
         )
-    comments: dict = {}
-    try:
-        for t in ws.tables.list(catalog_name=catalog, schema_name=schema):
-            name = getattr(t, "name", None)
-            if not name:
-                continue
-            cmap: dict = {"_table": getattr(t, "comment", None) or ""}
-            for c in (getattr(t, "columns", None) or []):
-                if getattr(c, "name", None):
-                    cmap[c.name] = getattr(c, "comment", None) or ""
-            comments[name] = cmap
-    except Exception as e:
-        raise click.ClickException(f"Could not read comments for {catalog}.{schema}: {e}")
+    comments = _read_live_uc_comments(ws, catalog, schema)
     n = apply_uc_comments(okf_root, comments, overwrite=overwrite)
     click.echo(
         f"pull-comments: enriched {n} table{'s' if n != 1 else ''} in {okf_root} "
         f"from {catalog}.{schema} (read-only)."
     )
+
+
+@agents.command("push-comments")
+@click.option("--profile", default=None,
+              help="Databricks CLI profile for reading/writing UC comments. "
+                   "Falls back to $DATABRICKS_CONFIG_PROFILE.")
+@click.option("--warehouse-id", default=None,
+              help="SQL warehouse for COMMENT writes. Auto-detected when omitted.")
+@click.option("--diff", "diff_only", is_flag=True,
+              help="Print the planned COMMENT writes and exit without applying.")
+@click.option("--yes", is_flag=True,
+              help="Apply the planned writes without an interactive confirmation.")
+def push_comments(
+    profile: str | None,
+    warehouse_id: str | None,
+    diff_only: bool,
+    yes: bool,
+) -> None:
+    """Push curated OKF descriptions to Unity Catalog COMMENTs (writes).
+
+    Diffs this project's OKF bundle against live UC comments, prints the plan,
+    then asks for confirmation before applying (unless ``--yes``). ``--diff``
+    prints the plan and exits. Empty OKF cells are never pushed, so a sync
+    never blanks an existing UC comment. Writes run as the CLI identity via
+    the SQL warehouse (requires UC MODIFY).
+    """
+    from ._okf import (
+        diff_okf_uc_comments,
+        format_comment_diff,
+        okf_comments_for_uc,
+    )
+    from ._sql import run_sql
+    from ._sql_escape import sql_escape
+
+    project = _require_okf_project()
+    catalog, schema, okf_root = project.catalog, project.schema, project.okf_root
+    ws = _make_ws_for_scaffold(profile)
+    if ws is None:
+        raise click.ClickException(
+            f"Could not connect to a workspace to read comments for {catalog}.{schema}."
+        )
+    desired = okf_comments_for_uc(okf_root)
+    live = _read_live_uc_comments(ws, catalog, schema)
+    changes = diff_okf_uc_comments(desired, live)
+    click.echo(format_comment_diff(changes))
+    if not changes:
+        click.echo(f"push-comments: {catalog}.{schema} already matches OKF.")
+        return
+    if diff_only:
+        click.echo("push-comments: --diff only; no writes.")
+        return
+    if not yes and not click.confirm(
+        f"Apply {len(changes)} COMMENT write(s) to {catalog}.{schema}?",
+        default=False,
+    ):
+        click.echo("push-comments: aborted; no writes.")
+        return
+
+    _ident = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    for c in changes:
+        if not _ident.match(c.table):
+            raise click.ClickException(f"invalid table identifier: {c.table!r}")
+        if c.column is not None and not _ident.match(c.column):
+            raise click.ClickException(f"invalid column identifier: {c.column!r}")
+
+    applied = 0
+    failed = 0
+    for c in changes:
+        fqn = f"`{catalog}`.`{schema}`.`{c.table}`"
+        lit = sql_escape(c.new)
+        if c.column is None:
+            stmt = f"COMMENT ON TABLE {fqn} IS '{lit}'"
+        else:
+            stmt = f"ALTER TABLE {fqn} ALTER COLUMN `{c.column}` COMMENT '{lit}'"
+        try:
+            run_sql(ws, stmt, warehouse_id=warehouse_id)
+            applied += 1
+        except Exception as e:
+            failed += 1
+            click.echo(f"  failed {c.table}"
+                       + (f".{c.column}" if c.column else "")
+                       + f": {e}", err=True)
+    click.echo(
+        f"push-comments: applied {applied}/{len(changes)} to {catalog}.{schema}"
+        + (f" ({failed} failed)" if failed else "")
+        + "."
+    )
+    if failed:
+        raise click.ClickException(
+            f"push-comments: {failed} COMMENT write(s) failed."
+        )
 
 
 def _port_is_free(port: int, host: str) -> bool:

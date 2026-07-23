@@ -568,6 +568,59 @@ def okf_comments_for_uc(okf_root: "Path | str") -> dict[str, dict[str, str]]:
     return out
 
 
+@dataclass(frozen=True)
+class CommentDiff:
+    """One planned UC COMMENT write: OKF desired text differs from live UC.
+
+    ``column`` is ``None`` for a table-level comment (``_table`` / Overview).
+    """
+
+    table: str
+    column: str | None
+    old: str
+    new: str
+
+
+def diff_okf_uc_comments(
+    desired: dict[str, dict[str, str]],
+    live: dict[str, dict[str, str]],
+) -> list[CommentDiff]:
+    """Diff OKF-desired comments against live UC comments.
+
+    Only keys present in ``desired`` are considered — empty OKF cells are
+    omitted by :func:`okf_comments_for_uc`, so a sync never blanks live UC.
+    Returns changes in stable ``(table, column)`` order; table-level
+    (``column is None``) sorts before columns.
+    """
+    changes: list[CommentDiff] = []
+    for table in sorted(desired):
+        wanted = desired[table]
+        have = live.get(table, {})
+        keys = sorted(wanted, key=lambda k: (k != "_table", k))
+        for key in keys:
+            new = wanted[key]
+            old = have.get(key, "")
+            if new == old:
+                continue
+            column = None if key == "_table" else key
+            changes.append(CommentDiff(table=table, column=column, old=old, new=new))
+    return changes
+
+
+def format_comment_diff(changes: list[CommentDiff]) -> str:
+    """Human-readable plan for :func:`diff_okf_uc_comments` results."""
+    if not changes:
+        return "No comment changes."
+    lines: list[str] = [f"{len(changes)} comment change(s):"]
+    for c in changes:
+        target = c.table if c.column is None else f"{c.table}.{c.column}"
+        old_disp = c.old if c.old else "(empty)"
+        lines.append(f"  {target}:")
+        lines.append(f"    - {old_disp}")
+        lines.append(f"    + {c.new}")
+    return "\n".join(lines)
+
+
 def refresh_okf_schema(
     okf_root: "Path | str", manifest: dict, *, timestamp: str, prune: bool = False
 ) -> None:
