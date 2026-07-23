@@ -23,6 +23,7 @@ from typing import NamedTuple
 from unittest.mock import MagicMock, patch
 
 import pytest
+import click
 from click.testing import CliRunner, Result
 
 from apx_agent._doctor import SubAgentProbe
@@ -4714,26 +4715,44 @@ def test_coworker_flag_no_longer_documents_generate() -> None:
 
 def test_coworker_generate_value_is_rejected_or_treated_as_a_name(tmp_path: Path) -> None:
     # "generate" is no longer special — it's now just an (invalid) gallery name.
-    result = CliRunner().invoke(
-        main,
-        ["agents", "scaffold", "x", "--coworker", "generate", "--dir", str(tmp_path)],
-    )
+    import apx_agent.cli as cli
+
+    with patch.object(cli, "_discover_default_data", return_value=None), \
+         patch.object(cli, "_probe_first_table", return_value=None), \
+         patch.object(cli, "_make_ws_for_scaffold", return_value=None):
+        result = CliRunner().invoke(
+            main,
+            [
+                "agents", "scaffold", "x", "--coworker", "generate",
+                "--catalog", "c", "--schema", "s",
+                "--dir", str(tmp_path), "--no-interactive",
+            ],
+        )
     assert result.exit_code != 0
     assert "No coworker named 'generate'" in result.output
 
 
 def test_coworker_gallery_pick_materializes_full_project(tmp_path: Path) -> None:
+    import apx_agent.cli as cli
+
+    monkey_ws = MagicMock()
+    monkey_ws.tables.list.return_value = []
+    monkey_ws.current_user.me.return_value = SimpleNamespace(user_name="fe@example.com")
     runner = CliRunner()
-    result = runner.invoke(
-        main,
-        [
-            "agents", "scaffold", "my-payroll",
-            "--coworker", "payroll",
-            "--catalog", "main", "--schema", "payroll_demo",
-            "--dir", str(tmp_path),
-            "--no-interactive",
-        ],
-    )
+    with patch.object(cli, "_make_ws_for_scaffold", return_value=monkey_ws), \
+         patch.object(cli, "_bake_schema_into_project", return_value=False), \
+         patch.object(cli, "_discover_default_data", return_value=None), \
+         patch.object(cli, "_probe_first_table", return_value=None):
+        result = runner.invoke(
+            main,
+            [
+                "agents", "scaffold", "my-payroll",
+                "--coworker", "payroll",
+                "--catalog", "main", "--schema", "payroll_demo",
+                "--dir", str(tmp_path),
+                "--no-interactive",
+            ],
+        )
     assert result.exit_code == 0, result.output
     base = tmp_path / "my-payroll"
     assert (base / "agent.py").exists()
@@ -4743,6 +4762,7 @@ def test_coworker_gallery_pick_materializes_full_project(tmp_path: Path) -> None
     )
     pyproject = (base / "pyproject.toml").read_text()
     assert "[tool.apx.agent]" in pyproject
+    assert "## Governance receipt" in result.output
 
     # Prove agent.py actually imports cleanly, not just that it exists —
     # same standard Task 9's generate test holds itself to.
@@ -4753,6 +4773,90 @@ def test_coworker_gallery_pick_materializes_full_project(tmp_path: Path) -> None
     finally:
         os.chdir(prev)
     assert describe_result.exit_code == 0, describe_result.output
+
+
+def test_coworker_toml_path_materializes_with_catalog_override(tmp_path: Path) -> None:
+    """onboard → scaffold handoff: --coworker path/to.toml + --catalog/--schema."""
+    import apx_agent.cli as cli
+
+    toml_path = tmp_path / "acme-coworker.toml"
+    toml_path.write_text(
+        'catalog = "TBD-catalog"\n'
+        'schema = "TBD-schema"\n'
+        'persona = "a grants analyst"\n'
+        'join_key = "grant_id"\n'
+        'objective = "Surface grant reporting mismatches."\n'
+        'memory = "persistent"\n'
+    )
+    monkey_ws = MagicMock()
+    monkey_ws.tables.list.return_value = []
+    monkey_ws.current_user.me.return_value = SimpleNamespace(user_name="fe@example.com")
+
+    with patch.object(cli, "_make_ws_for_scaffold", return_value=monkey_ws), \
+         patch.object(cli, "_bake_schema_into_project", return_value=False), \
+         patch.object(cli, "_discover_default_data", return_value=None):
+        result = CliRunner().invoke(
+            main,
+            [
+                "agents", "scaffold", "acme-grants",
+                "--coworker", str(toml_path),
+                "--catalog", "main", "--schema", "grants_demo",
+                "--dir", str(tmp_path),
+                "--no-interactive",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    project = tmp_path / "acme-grants"
+    assert (project / "agent.py").is_file()
+    agent_py = (project / "agent.py").read_text()
+    assert "CoworkerAgent" in agent_py
+    assert "'main'" in agent_py and "'grants_demo'" in agent_py
+    assert "## Governance receipt" in result.output
+    assert "main.grants_demo" in result.output
+
+
+def test_coworker_toml_tbd_without_override_fails(tmp_path: Path) -> None:
+    toml_path = tmp_path / "acme-coworker.toml"
+    toml_path.write_text(
+        'catalog = "TBD-catalog"\n'
+        'schema = "TBD-schema"\n'
+        'persona = "an analyst"\n'
+        'join_key = "id"\n'
+        'objective = "Reconcile two systems."\n'
+        'memory = "off"\n'
+    )
+    result = CliRunner().invoke(
+        main,
+        [
+            "agents", "scaffold", "acme",
+            "--coworker", str(toml_path),
+            "--dir", str(tmp_path),
+            "--no-interactive",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "TBD-catalog" in result.output or "TBD-schema" in result.output
+
+
+def test_scaffold_from_coworker_toml_helper_builds_config(tmp_path: Path) -> None:
+    from apx_agent.cli import _scaffold_from_coworker_toml
+
+    path = tmp_path / "x-coworker.toml"
+    path.write_text(
+        'catalog = "c"\n'
+        'schema = "s"\n'
+        'persona = "a finance analyst"\n'
+        'join_key = "account_id"\n'
+        'objective = "Find unbilled deals."\n'
+        'memory = "off"\n'
+    )
+    config = _scaffold_from_coworker_toml(path, "x", None, None)
+    assert config.name == "x"
+    assert config.template is not None
+    assert config.template["catalog"] == "c"
+    assert config.template["schema"] == "s"
+    assert config.template["join_key"] == "account_id"
+    assert "finance analyst" in config.instructions
 
 
 # ---------------------------------------------------------------------------
@@ -7628,6 +7732,32 @@ def test_materialize_agent_writes_full_project(tmp_path: Path) -> None:
     assert (target / ".gitignore").exists()
     assert (target / "scripts" / "__init__.py").exists()
     assert (target / "scripts" / "quickstart.py").exists()
+    # Receipt is printed by materialize for every authoring path.
+    # (Captured via click? _materialize_agent uses click.echo — assert files only here.)
+
+
+def test_assert_generate_data_source_readable_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apx_agent.cli as cli
+    from apx_agent.cli import _ResolvedDataSource, _assert_generate_data_source_readable
+
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile=None: None)
+    with pytest.raises(click.ClickException, match="Could not connect"):
+        _assert_generate_data_source_readable(
+            _ResolvedDataSource(catalog="c", schema="s"),
+            None,
+            allow_demo=False,
+        )
+
+
+def test_assert_generate_data_source_readable_demo_skips_probe() -> None:
+    from apx_agent.cli import _ResolvedDataSource, _assert_generate_data_source_readable
+
+    # Must not raise even with no workspace — --demo opts out of the live check.
+    _assert_generate_data_source_readable(
+        _ResolvedDataSource(catalog="samples", schema="nyctaxi"),
+        None,
+        allow_demo=True,
+    )
 
 
 def test_materialize_agent_refuses_overwrite_without_force(tmp_path: Path) -> None:
@@ -7712,9 +7842,36 @@ def test_resolve_generate_data_source_falls_back_to_samples(monkeypatch: pytest.
         template="data", name="x", persona=None, objective=None, join_key=None,
         catalog_hint=None, schema_hint=None, missing=(),
     )
-    result = _resolve_generate_data_source(classification, None, None, None)
+    with pytest.raises(click.ClickException, match="Could not resolve"):
+        _resolve_generate_data_source(classification, None, None, None, allow_demo=False)
+
+    result = _resolve_generate_data_source(
+        classification, None, None, None, allow_demo=True,
+    )
     assert result.catalog == "samples"
     assert result.schema == "nyctaxi"
+
+
+def test_resolve_generate_data_source_demo_required_for_discovered_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apx_agent.cli as cli
+    from apx_agent.cli import _GenerateClassification, _resolve_generate_data_source
+
+    monkeypatch.setattr(
+        cli, "_discover_default_data",
+        lambda profile=None: ("samples", "nyctaxi", "trips"),
+    )
+    classification = _GenerateClassification(
+        template="data", name="x", persona=None, objective=None, join_key=None,
+        catalog_hint=None, schema_hint=None, missing=(),
+    )
+    with pytest.raises(click.ClickException, match="Could not resolve"):
+        _resolve_generate_data_source(classification, None, None, None, allow_demo=False)
+    result = _resolve_generate_data_source(
+        classification, None, None, None, allow_demo=True,
+    )
+    assert result == ("samples", "nyctaxi")
 
 
 # ---------------------------------------------------------------------------
@@ -7867,6 +8024,7 @@ def test_generate_command_materializes_describable_project(tmp_path: Path) -> No
              "--dir", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
+    assert "## Governance receipt" in result.output
 
     project = tmp_path / "helper-agent"
     assert (project / "agent.py").exists()
