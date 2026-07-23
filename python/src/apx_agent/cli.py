@@ -2359,10 +2359,16 @@ class _ResolvedDataSource(NamedTuple):
 def _resolve_generate_data_source(
     classification: _GenerateClassification,
     catalog: "str | None", schema: "str | None", profile: "str | None",
+    *,
+    allow_demo: bool = False,
 ) -> _ResolvedDataSource:
     """Resolve catalog/schema for `generate`, always landing on something
     concrete for template in {data, coworker} — never a bare $CATALOG, since
-    a materialized agent.py embeds it as a literal Python string."""
+    a materialized agent.py embeds it as a literal Python string.
+
+    Never silently falls back to ``samples.nyctaxi``. Pass ``allow_demo=True``
+    (``--demo``) for the samples demo schema when nothing else resolves.
+    """
     if classification.template == "base":
         return _ResolvedDataSource(catalog=None, schema=None)
 
@@ -2377,9 +2383,58 @@ def _resolve_generate_data_source(
     found = _discover_default_data(profile)
     if found:
         found_catalog, found_schema, _table = found
-        return _ResolvedDataSource(catalog=found_catalog, schema=found_schema)
+        is_demo = found_catalog == "samples" and found_schema == "nyctaxi"
+        if not is_demo or allow_demo:
+            return _ResolvedDataSource(catalog=found_catalog, schema=found_schema)
 
-    return _ResolvedDataSource(catalog="samples", schema="nyctaxi")
+    if allow_demo:
+        return _ResolvedDataSource(catalog="samples", schema="nyctaxi")
+
+    raise click.ClickException(
+        "Could not resolve a Unity Catalog data source for this agent.\n"
+        "Pass --catalog and --schema for the schema the agent should ground "
+        "in, name them in the description so the classifier can hint them, "
+        "or pass --demo to use samples.nyctaxi."
+    )
+
+
+def _assert_generate_data_source_readable(
+    data_source: _ResolvedDataSource,
+    profile: "str | None",
+    *,
+    allow_demo: bool,
+) -> None:
+    """Fail closed when generate's resolved catalog.schema is unreachable.
+
+    ``--demo`` may target samples.nyctaxi even when the workspace probe fails;
+    every other path must prove the schema is listable under the CLI identity.
+    """
+    if data_source.catalog is None or data_source.schema is None:
+        return
+    if (
+        allow_demo
+        and data_source.catalog == "samples"
+        and data_source.schema == "nyctaxi"
+    ):
+        return
+    ws = _make_ws_for_scaffold(profile)
+    if ws is None:
+        raise click.ClickException(
+            f"Could not connect to the workspace to validate "
+            f"{data_source.catalog}.{data_source.schema}.\n"
+            "Authenticate (`databricks auth login`) or pass --demo for "
+            "samples.nyctaxi without a live UC check."
+        )
+    try:
+        list(ws.tables.list(
+            catalog_name=data_source.catalog, schema_name=data_source.schema,
+        ))
+    except Exception as e:
+        raise click.ClickException(
+            f"Unity Catalog schema {data_source.catalog}.{data_source.schema} "
+            f"is not readable under this identity: {e}\n"
+            "Pass a catalog/schema you can SELECT from, or --demo."
+        ) from e
 
 
 _COWORKER_GEN_AUTHOR_PROMPT = """\
@@ -2607,6 +2662,184 @@ def _find_gallery_yaml_by_name(name: str) -> "Path | None":
     return None
 
 
+def _coworker_toml_path(value: str) -> "Path | None":
+    """Return a Path when *value* names a coworker TOML file, else None.
+
+    Gallery names stay gallery names; a ``.toml`` suffix or an existing file
+    path is treated as the onboard → scaffold handoff surface.
+    """
+    path = Path(value)
+    if value.endswith(".toml") or path.is_file():
+        return path
+    return None
+
+
+def _scaffold_from_coworker_toml(
+    toml_path: Path,
+    name: str,
+    catalog: "str | None",
+    schema: "str | None",
+) -> "AgentConfig":
+    """Load an onboard ``*-coworker.toml`` into an AgentConfig for materialize."""
+    import tomllib
+
+    from apx_agent.coworker import CoworkerTemplate
+    from ._models import AgentConfig
+
+    if not toml_path.is_file():
+        raise click.ClickException(
+            f"No coworker TOML at {toml_path}. Pass a path to a "
+            "`*-coworker.toml` from `apx-agent onboard`, or a gallery name."
+        )
+    text = toml_path.read_text()
+    first_line = text.splitlines()[0] if text.strip() else ""
+    if "UNVALIDATED" in first_line:
+        raise click.ClickException(
+            f"{toml_path} is marked UNVALIDATED. Fix the Spec and remove the "
+            "UNVALIDATED header before scaffolding."
+        )
+    if toml_path.name.endswith(".DRAFT.toml"):
+        raise click.ClickException(
+            f"{toml_path} is a DRAFT (failed onboard validation). Fix it and "
+            "rename to `*-coworker.toml` before scaffolding."
+        )
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise click.ClickException(f"Invalid coworker TOML {toml_path}: {e}") from e
+    if catalog:
+        parsed["catalog"] = catalog
+    if schema:
+        parsed["schema"] = schema
+    try:
+        spec = CoworkerTemplate.Spec(**parsed)
+    except Exception as e:
+        raise click.ClickException(
+            f"Coworker TOML failed Spec validation: {e}"
+        ) from e
+    if spec.catalog.startswith("TBD-") or spec.schema_name.startswith("TBD-"):
+        raise click.ClickException(
+            f"{toml_path} still has TBD-catalog / TBD-schema placeholders.\n"
+            "Pass --catalog and --schema for where the two source systems "
+            "will land (or edit the TOML), then re-run scaffold."
+        )
+    persona = spec.persona
+    join_key = spec.join_key
+    instructions = ""
+    if persona:
+        instructions = f"You are {persona}."
+        if join_key:
+            instructions += f" Always cite the {join_key} when surfacing discrepancies."
+    template: dict[str, Any] = {
+        "name": "coworker",
+        "catalog": spec.catalog,
+        "schema": spec.schema_name,
+        "memory": spec.memory,
+        "include_functions": spec.include_functions,
+    }
+    if persona is not None:
+        template["persona"] = persona
+    if join_key is not None:
+        template["join_key"] = join_key
+    if spec.objective is not None:
+        template["objective"] = spec.objective
+    if spec.warehouse_id is not None:
+        template["warehouse_id"] = spec.warehouse_id
+    if spec.genie_space is not None:
+        template["genie_space"] = spec.genie_space
+    if spec.vector_index is not None:
+        template["vector_index"] = spec.vector_index
+    if spec.knowledge is not None:
+        template["knowledge"] = spec.knowledge
+    return AgentConfig(
+        name=name,
+        description=(
+            spec.objective.strip() if spec.objective else f"Coworker agent {name}."
+        ),
+        model="databricks-claude-sonnet-4-6",
+        instructions=instructions,
+        template=template,
+        tools=[],
+    )
+
+
+def _emit_governance_receipt(
+    target: Path,
+    config: "AgentConfig",
+    *,
+    profile: "str | None",
+) -> None:
+    """Print a claim-vs-reality receipt after materializing a project.
+
+    Proves project files exist, surfaces the declared UC data source, reports
+    whether grounding baked, and runs a best-effort tables.list as the CLI
+    identity (OBO smoke for the authoring path).
+    """
+    click.echo()
+    click.echo("## Governance receipt")
+    click.echo(f"  project:   {target}")
+    agent_py = target / "agent.py"
+    pyproject = target / "pyproject.toml"
+    click.echo(
+        f"  files:     agent.py={'ok' if agent_py.is_file() else 'MISSING'}; "
+        f"pyproject.toml={'ok' if pyproject.is_file() else 'MISSING'}"
+    )
+    tmpl = config.template or {}
+    cat = tmpl.get("catalog")
+    sch = tmpl.get("schema")
+    if cat and sch:
+        click.echo(f"  data:      {cat}.{sch}")
+    else:
+        click.echo("  data:      (none — base / no UC template)")
+
+    schema_path = target / APX_DIR / "schema.json"
+    if schema_path.is_file():
+        try:
+            baked = json.loads(schema_path.read_text())
+            n_tables = len(baked.get("tables") or {})
+            click.echo(
+                f"  grounding: {schema_path.relative_to(target)} "
+                f"({n_tables} table{'s' if n_tables != 1 else ''})"
+            )
+        except Exception as e:
+            click.echo(f"  grounding: {schema_path.name} present but unreadable ({e})")
+    elif cat and sch:
+        click.echo("  grounding: .apx/schema.json missing (agent may run ungrounded)")
+    else:
+        click.echo("  grounding: n/a")
+
+    if cat and sch:
+        ws = _make_ws_for_scaffold(profile)
+        if ws is None:
+            click.echo(
+                "  identity:  skipped (no workspace connection) — "
+                "run `uv run apx-agent doctor` after auth"
+            )
+        else:
+            who = "CLI identity"
+            try:
+                me = ws.current_user.me()
+                who = getattr(me, "user_name", None) or getattr(me, "name", None) or who
+            except Exception:
+                pass
+            try:
+                names = [
+                    t.name for t in ws.tables.list(catalog_name=cat, schema_name=sch)
+                    if getattr(t, "name", None)
+                ]
+                click.echo(
+                    f"  identity:  listed {len(names)} table(s) in "
+                    f"{cat}.{sch} as {who}"
+                )
+            except Exception as e:
+                click.echo(
+                    f"  identity:  FAILED listing {cat}.{sch} as {who}: {e}"
+                )
+    click.echo(
+        f"  next:      cd {target.name} && uv sync && uv run apx-agent doctor"
+    )
+
+
 @main.command()
 @click.option(
     "--profile", default=None,
@@ -2629,7 +2862,8 @@ def onboard(profile: "str | None", directory: str, force: bool) -> None:
     - <org-slug>-coworker.toml — a draft CoworkerTemplate.Spec block (written
       as <org-slug>-coworker.DRAFT.toml instead if it fails validation).
 
-    Next step after review: apx-agent agents scaffold --coworker <path-to-toml>.
+    Next step after review: apx-agent agents scaffold --coworker <path-to-toml>
+    --catalog CAT --schema SCHEMA (replace TBD placeholders).
     """
     from apx_agent._publish import _slug
 
@@ -2665,7 +2899,10 @@ def onboard(profile: "str | None", directory: str, force: bool) -> None:
 
     if result.validation_error is None:
         click.echo(f"Wrote {spec_path}")
-        click.echo(f"\nNext step: apx-agent agents scaffold --coworker {spec_path}")
+        click.echo(
+            f"\nNext step: apx-agent agents scaffold --coworker {spec_path} "
+            f"--catalog CAT --schema SCHEMA"
+        )
     else:
         click.echo(
             f"Wrote {spec_path} (UNVALIDATED — {result.validation_error})\n"
@@ -2682,6 +2919,11 @@ def onboard(profile: "str | None", directory: str, force: bool) -> None:
 @click.option("--catalog", default=None, help="Catalog for the agent's data source. Skips auto-detection.")
 @click.option("--schema", default=None, help="Schema for the agent's data source. Skips auto-detection.")
 @click.option(
+    "--demo", is_flag=True, default=False,
+    help="Allow samples.nyctaxi when no catalog/schema resolves. "
+         "Without --demo, generate fails closed instead of silent demo fallback.",
+)
+@click.option(
     "--dir", "directory", default=".", type=click.Path(file_okay=False),
     help="Directory to write the project into. Default: current directory.",
 )
@@ -2689,6 +2931,7 @@ def onboard(profile: "str | None", directory: str, force: bool) -> None:
 def generate(
     description: "str | None", profile: "str | None",
     catalog: "str | None", schema: "str | None",
+    demo: bool,
     directory: str, force: bool,
 ) -> None:
     """Describe an agent in plain English; an LLM authors it as a real project.
@@ -2698,6 +2941,10 @@ def generate(
     materializes a durable, hand-editable project — the same output shape
     `apx-agent agents scaffold` produces, just described in English instead
     of flags.
+
+    Data/coworker agents require a resolvable Unity Catalog source
+    (``--catalog``/``--schema``, classifier hints, or a non-demo discovery
+    hit). Pass ``--demo`` to opt into ``samples.nyctaxi``.
     """
     from ._yaml_spec import load_spec
 
@@ -2707,7 +2954,10 @@ def generate(
     click.echo("\nClassifying your description...")
     classification = _classify_agent_description(profile, description)
 
-    data_source = _resolve_generate_data_source(classification, catalog, schema, profile)
+    data_source = _resolve_generate_data_source(
+        classification, catalog, schema, profile, allow_demo=demo,
+    )
+    _assert_generate_data_source_readable(data_source, profile, allow_demo=demo)
 
     filled: "dict[str, str]" = {}
     field_prompts = {
@@ -3230,8 +3480,8 @@ def _materialize_agent(
 
     click.echo()
     click.echo(f"Scaffolded {config.name} at {target} (target=apps).")
+    _emit_governance_receipt(target, config, profile=profile)
     click.echo(f"Next: cd {target.name} && uv sync && uv run apx-agent run    # serve locally")
-    click.echo("Tip: run `uv run apx-agent doctor` to check your environment before deploying.")
     click.echo("      uv run apx-agent deploy                  # → Databricks Apps")
 
 
@@ -3388,12 +3638,12 @@ def _echo_scaffold_next_steps(name: str, target: Path, scaffold_target: str) -> 
 )
 @click.option(
     "--coworker", "coworker_spec", default=None, is_eager=False,
-    metavar="[list|NAME]",
+    metavar="[list|NAME|PATH.toml]",
     help=(
-        "Pick a coworker. Use 'list' to browse the gallery, "
-        "a coworker name to select directly, or omit the value to use "
-        "--template coworker. For natural-language authoring, use "
-        "`apx-agent generate` instead."
+        "Pick a coworker: 'list' to browse the gallery, a gallery name, "
+        "or a path to a `*-coworker.toml` from `apx-agent onboard`. "
+        "TOML paths with TBD-catalog/TBD-schema require --catalog/--schema. "
+        "For natural-language authoring, use `apx-agent generate` instead."
     ),
 )
 @click.option("--data", "use_data", is_flag=True, default=False,
@@ -3533,17 +3783,29 @@ def scaffold(
         )
 
     # -----------------------------------------------------------------------
-    # Step 3: resolve the data source — explicit > auto-detect > demo fallback.
-    # Runs before the gallery pick below so a materialized agent.py always gets
-    # a concrete catalog/schema — unlike a YAML spec, it can't defer to
-    # $CATALOG/$SCHEMA.
+    # Step 3: onboard TOML handoff — before demo data-source resolve so TBD
+    # placeholders are not silently overwritten by samples.nyctaxi.
+    # -----------------------------------------------------------------------
+    if coworker_spec is not None and coworker_spec not in ("", "list"):
+        toml_coworker = _coworker_toml_path(coworker_spec)
+        if toml_coworker is not None:
+            config = _scaffold_from_coworker_toml(
+                toml_coworker, project_name, catalog, schema,
+            )
+            _materialize_agent(config, target, force=force, profile=profile)
+            return
+
+    # -----------------------------------------------------------------------
+    # Step 4: resolve the data source — explicit > auto-detect > demo fallback.
+    # Runs before gallery / template materialize so agent.py always gets a
+    # concrete catalog/schema (str, not Optional).
     # -----------------------------------------------------------------------
     catalog, schema, table = _resolve_scaffold_data_source(
         scaffold_template, catalog, schema, profile
     )
 
     # -----------------------------------------------------------------------
-    # Step 4: gallery pick — materialize a full project directly.
+    # Step 5: gallery pick — materialize a full project directly.
     # -----------------------------------------------------------------------
     if coworker_spec is not None and coworker_spec not in ("",):
         if coworker_spec == "list":
@@ -3554,11 +3816,15 @@ def scaffold(
             found = _find_gallery_yaml_by_name(coworker_spec)
             if found is None:
                 raise click.ClickException(
-                    f"No coworker named {coworker_spec!r} in the gallery. "
-                    "Use --coworker list to browse."
+                    f"No coworker named {coworker_spec!r} in the gallery, "
+                    "and it is not a path to a .toml Spec. "
+                    "Use --coworker list to browse, or pass a "
+                    "`*-coworker.toml` from `apx-agent onboard`."
                 )
             gallery_yaml_path = found
-        config = _scaffold_from_gallery(gallery_yaml_path, project_name, catalog, schema)
+        config = _scaffold_from_gallery(
+            gallery_yaml_path, project_name, catalog, schema,
+        )
         _materialize_agent(config, target, force=force, profile=profile)
         return
 
