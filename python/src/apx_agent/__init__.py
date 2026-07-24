@@ -137,6 +137,7 @@ from ._resources import (
     attach_resources,
     collect_resource_specs,
     mlflow_resources_for,
+    require_user_api_scopes,
     resources_to_databricks_yml,
 )
 
@@ -482,6 +483,7 @@ __all__ = [
     # Resource declaration
     "ResourceSpec",
     "attach_resources",
+    "require_user_api_scopes",
     "collect_resource_specs",
     "mlflow_resources_for",
     "resources_to_databricks_yml",
