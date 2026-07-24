@@ -9,7 +9,7 @@ import logging
 import math
 from typing import Any
 
-from apx_agent import Dependencies
+from apx_agent import Dependencies, require_user_api_scopes
 from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_literal
 
 Workspace = Dependencies.Workspace
@@ -346,6 +346,19 @@ def list_tables(catalog: str, schema: str, ws: Workspace) -> dict[str, Any]:
             "comment": t.comment,
         })
     return {"catalog": catalog, "schema": schema, "tables": tables, "count": len(tables)}
+
+
+# get_table_info + the discovery tools above call the Unity Catalog metadata
+# REST API (ws.tables.get() / ws.catalogs.list() / ws.schemas.list() /
+# ws.tables.list()), which needs the `unity-catalog` OBO scope. It names no
+# specific securable, so no ResourceSpec can imply it — declare it directly so
+# `apx-agent deploy` unions `unity-catalog` into databricks.yml automatically
+# instead of relying on a hand-edited scope (#563). search_tables and the
+# SQL/Delta tools below use the `sql` scope the scaffold already ships.
+require_user_api_scopes(get_table_info, ["unity-catalog"])
+require_user_api_scopes(list_catalogs, ["unity-catalog"])
+require_user_api_scopes(list_schemas, ["unity-catalog"])
+require_user_api_scopes(list_tables, ["unity-catalog"])
 
 
 def search_tables(query: str, ws: Workspace) -> dict[str, Any]:

@@ -516,3 +516,62 @@ def test_user_api_scopes_empty() -> None:
     from apx_agent._resources import user_api_scopes_for
 
     assert user_api_scopes_for([]) == []
+
+
+# --- require_user_api_scopes (tool-declared scopes with no securable) #563 ----
+
+def test_require_user_api_scopes_round_trip() -> None:
+    from apx_agent import require_user_api_scopes
+    from apx_agent._resources import get_user_api_scopes
+
+    def uc_tool(ws: Any) -> None: ...
+
+    returned = require_user_api_scopes(uc_tool, ["unity-catalog"])
+    assert returned is uc_tool  # returns fn for chaining
+    assert get_user_api_scopes(uc_tool) == ["unity-catalog"]
+
+
+def test_require_user_api_scopes_dedups_and_accumulates() -> None:
+    from apx_agent import require_user_api_scopes
+    from apx_agent._resources import get_user_api_scopes
+
+    def uc_tool(ws: Any) -> None: ...
+
+    require_user_api_scopes(uc_tool, ["unity-catalog", "unity-catalog"])
+    require_user_api_scopes(uc_tool, ["sql", "unity-catalog"])
+    assert get_user_api_scopes(uc_tool) == ["unity-catalog", "sql"]
+
+
+def test_require_user_api_scopes_rejects_unknown() -> None:
+    from apx_agent import require_user_api_scopes
+
+    def uc_tool(ws: Any) -> None: ...
+
+    with pytest.raises(ValueError, match="Unknown user_api_scope"):
+        require_user_api_scopes(uc_tool, ["unity-catlog"])  # typo
+
+
+def test_get_user_api_scopes_unset_is_empty() -> None:
+    from apx_agent._resources import get_user_api_scopes
+
+    assert get_user_api_scopes(_plain_tool) == []
+
+
+def test_collect_user_api_scopes_walks_router_leaves() -> None:
+    # #563: a scope declared on a tool that lives on a KeywordRouter leaf must
+    # be surfaced by the tree walk, so deploy can union unity-catalog in.
+    from apx_agent import KeywordRouter, require_user_api_scopes
+    from apx_agent._resources import collect_user_api_scopes
+
+    def uc_tool(ws: Any) -> None: ...
+
+    require_user_api_scopes(uc_tool, ["unity-catalog"])
+    leaf = Agent(tools=[uc_tool])
+    router = KeywordRouter(branches=[("inv", leaf, ["go"])], default=Agent(tools=[_plain_tool]))
+    assert collect_user_api_scopes(router) == ["unity-catalog"]
+
+
+def test_collect_user_api_scopes_none_declared() -> None:
+    from apx_agent._resources import collect_user_api_scopes
+
+    assert collect_user_api_scopes(Agent(tools=[_plain_tool])) == []
