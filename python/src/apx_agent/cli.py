@@ -7657,6 +7657,7 @@ def _auto_update_databricks_yml(
     """
     from apx_agent._resources import (
         collect_resource_specs,
+        collect_user_api_scopes,
         resources_to_databricks_yml,
         user_api_scopes_for,
     )
@@ -7719,10 +7720,17 @@ def _auto_update_databricks_yml(
 
     # Union the OBO scopes the agent's tools need onto the existing baseline
     # (the scaffold ships sql + serving; this adds dashboards.genie / vectorsearch
-    # etc. when the agent actually uses those tools). Never drops existing scopes.
+    # etc. when the agent actually uses those tools). Two sources: scopes derived
+    # from ResourceSpecs, plus scopes a tool declared directly via
+    # require_user_api_scopes for API surfaces with no securable to derive from —
+    # e.g. unity-catalog for UC metadata/discovery calls (#563). Never drops
+    # existing scopes.
     derived_scopes = user_api_scopes_for(specs)
+    tool_declared_scopes = collect_user_api_scopes(agent)
     existing_scopes = app_block.get("user_api_scopes") or []
-    merged_scopes = sorted(set(existing_scopes) | set(derived_scopes))
+    merged_scopes = sorted(
+        set(existing_scopes) | set(derived_scopes) | set(tool_declared_scopes)
+    )
     new_scopes = sorted(set(merged_scopes) - set(existing_scopes))
     if merged_scopes:
         app_block["user_api_scopes"] = merged_scopes

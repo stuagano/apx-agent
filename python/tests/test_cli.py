@@ -4396,6 +4396,29 @@ class TestDatabricksYmlMergePreservesComments:
         assert "# inline comment" in out
         assert "# a note about this block" in out
 
+    def test_auto_update_yml_unions_tool_declared_scope(self, tmp_path):
+        # #563: a tool that declares unity-catalog via require_user_api_scopes
+        # gets that scope unioned into databricks.yml at deploy time, even
+        # though no ResourceSpec implies it. Turns the prod-only "missing
+        # scopes" 500 into a scope declared at deploy time.
+        import yaml as pyyaml
+        from apx_agent import Agent, require_user_api_scopes
+        from apx_agent.cli import _auto_update_databricks_yml
+
+        def list_catalogs(ws) -> None: ...
+        require_user_api_scopes(list_catalogs, ["unity-catalog"])
+
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(self._SEED)
+
+        _auto_update_databricks_yml(
+            tmp_path, agent=Agent(tools=[list_catalogs]),
+            bundle_key="my-agent", log=lambda msg: None,
+        )
+
+        app = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]
+        assert "unity-catalog" in app["user_api_scopes"]
+
 
 def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

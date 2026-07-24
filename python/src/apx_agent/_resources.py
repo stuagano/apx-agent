@@ -24,6 +24,11 @@ The spec layer is mlflow-free so the package imports cleanly without the
 
 Custom tools can opt in by setting ``my_tool._apx_resources`` to a list of
 ``ResourceSpec`` instances at definition time.
+
+A tool that calls a Databricks API with no securable to point a ``ResourceSpec``
+at — the UC metadata/discovery REST API is the motivating case — can instead
+declare its raw OBO scope directly via ``require_user_api_scopes`` (#563);
+``collect_user_api_scopes`` gathers those for the Apps deploy to union in.
 """
 
 from __future__ import annotations
@@ -111,6 +116,67 @@ def get_resources(fn: Any) -> list[ResourceSpec]:
     if not specs:
         return []
     return [s for s in specs if isinstance(s, ResourceSpec)]
+
+
+# ---------------------------------------------------------------------------
+# Tool-side raw OBO-scope declaration
+# ---------------------------------------------------------------------------
+
+
+# The raw Databricks OBO scopes a tool may declare directly. Kept as a closed
+# set so a typo becomes a deploy-time error instead of another prod-only
+# "missing scopes" 500 (#563). These mirror ``_KIND_TO_SCOPE``'s values plus
+# ``unity-catalog`` — the one scope no ResourceSpec can imply.
+_KNOWN_USER_API_SCOPES = frozenset({
+    "sql",
+    "unity-catalog",
+    "serving.serving-endpoints",
+    "dashboards.genie",
+    "vectorsearch.vector-search-endpoints",
+})
+
+
+def require_user_api_scopes(fn: Any, scopes: Iterable[str]) -> Any:
+    """Declare raw OBO ``user_api_scopes`` a tool needs. Returns ``fn``.
+
+    Most scopes are *derived* from a tool's ``ResourceSpec``s (a Genie space
+    implies ``dashboards.genie``; a serving endpoint implies
+    ``serving.serving-endpoints`` — see :func:`user_api_scopes_for`). Use this
+    only for a tool that calls a Databricks API with **no securable** to point a
+    ``ResourceSpec`` at. The UC metadata/discovery REST API is the motivating
+    case: ``ws.catalogs.list()`` / ``ws.schemas.list()`` / ``ws.tables.get()``
+    need the ``unity-catalog`` scope but name no specific table or function, so
+    the scope can't be inferred from a resource (#563)::
+
+        def list_catalogs(ws): ...
+        require_user_api_scopes(list_catalogs, ["unity-catalog"])
+
+    ``apx-agent deploy`` unions these declared scopes onto the resource-derived
+    baseline in ``databricks.yml`` — turning a runtime "does not have required
+    scopes" 500 into a scope declared at deploy time. Raises ``ValueError`` on
+    an unknown scope string so a typo fails fast rather than silently.
+    """
+    cleaned = [s for s in scopes if s]
+    unknown = [s for s in cleaned if s not in _KNOWN_USER_API_SCOPES]
+    if unknown:
+        raise ValueError(
+            f"Unknown user_api_scope(s) {unknown}. "
+            f"Known scopes: {sorted(_KNOWN_USER_API_SCOPES)}"
+        )
+    merged = list(getattr(fn, "_apx_user_api_scopes", []) or [])
+    for s in cleaned:
+        if s not in merged:
+            merged.append(s)
+    fn._apx_user_api_scopes = merged  # type: ignore[attr-defined]
+    return fn
+
+
+def get_user_api_scopes(fn: Any) -> list[str]:
+    """Return the raw OBO scopes declared on ``fn`` via ``require_user_api_scopes``."""
+    scopes = getattr(fn, "_apx_user_api_scopes", None)
+    if not scopes:
+        return []
+    return [s for s in scopes if isinstance(s, str) and s]
 
 
 # ---------------------------------------------------------------------------
@@ -553,4 +619,20 @@ def user_api_scopes_for(resources: Iterable["ResourceSpec"]) -> list[str]:
     scopes = {
         _KIND_TO_SCOPE[s.kind] for s in resources if s.kind in _KIND_TO_SCOPE
     }
+    return sorted(scopes)
+
+
+def collect_user_api_scopes(agent: "BaseAgent") -> list[str]:
+    """Raw OBO scopes declared by tools anywhere in the agent tree.
+
+    Walks the same tool set as :func:`collect_resource_specs` (so router /
+    composite leaves are included) and unions every tool's
+    :func:`require_user_api_scopes` declaration. Sorted + de-duplicated. These
+    are scopes with no backing ``ResourceSpec`` — e.g. ``unity-catalog`` for UC
+    metadata/discovery calls — so :func:`user_api_scopes_for` can't derive them;
+    the deploy path unions this onto the derived baseline (#563).
+    """
+    scopes: set[str] = set()
+    for fn in _iter_tool_fns(agent):
+        scopes.update(get_user_api_scopes(fn))
     return sorted(scopes)
