@@ -7352,6 +7352,218 @@ class TestPushComments:
         assert "No .apx" in result.output or "no .apx" in result.output.lower()
 
 
+class TestDriftPr:
+    def _seed_okf(self, tmp_path):
+        import json
+        from apx_agent._okf import OKFDocument, write_okf_bundle
+
+        apx = tmp_path / ".apx"
+        m = {
+            "catalog": "c",
+            "schema": "s",
+            "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]},
+        }
+        write_okf_bundle(
+            m,
+            apx / "okf",
+            timestamp="z",
+            descriptions={"pay_runs": {"gross_pay": "Gross before deductions."}},
+        )
+        path = apx / "okf" / "tables" / "pay_runs.md"
+        doc = OKFDocument.parse(path.read_text())
+        doc.body = "# Overview\nPayroll facts.\n\n" + doc.body
+        path.write_text(doc.serialize())
+        (apx / "schema.json").write_text(json.dumps(m))
+        return apx
+
+    def _fake_ws(self, table_comment=None, col_comment=None):
+        from types import SimpleNamespace
+
+        fake_tables = [
+            SimpleNamespace(
+                name="pay_runs",
+                comment=table_comment,
+                columns=[SimpleNamespace(name="gross_pay", comment=col_comment)],
+            )
+        ]
+        return SimpleNamespace(
+            tables=SimpleNamespace(list=lambda catalog_name, schema_name: fake_tables)
+        )
+
+    def test_push_no_drift_skips_pr(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        self._seed_okf(tmp_path)
+        monkeypatch.setattr(
+            cli, "_make_ws_for_scaffold",
+            lambda *a, **k: self._fake_ws(
+                table_comment="Payroll facts.",
+                col_comment="Gross before deductions.",
+            ),
+        )
+        monkeypatch.setattr(cli, "_git_repo_root", lambda cwd: tmp_path)
+        open_pr = MagicMock()
+        monkeypatch.setattr(cli, "_commit_paths_and_open_pr", open_pr)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            agents, ["drift-pr", "--direction", "push"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "already matches OKF" in result.output
+        open_pr.assert_not_called()
+        assert not (tmp_path / ".apx" / "okf" / "DRIFT.md").exists()
+
+    def test_push_dry_run_writes_nothing_persistent(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        self._seed_okf(tmp_path)
+        monkeypatch.setattr(
+            cli, "_make_ws_for_scaffold",
+            lambda *a, **k: self._fake_ws(table_comment=None, col_comment=None),
+        )
+        monkeypatch.setattr(cli, "_git_repo_root", lambda cwd: tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            agents, ["drift-pr", "--direction", "push", "--dry-run"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "dry-run" in result.output
+        assert "comment change" in result.output.lower() or "change(s)" in result.output
+        assert not (tmp_path / ".apx" / "okf" / "DRIFT.md").exists()
+
+    def test_push_opens_pr_with_drift_report(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        self._seed_okf(tmp_path)
+        monkeypatch.setattr(
+            cli, "_make_ws_for_scaffold",
+            lambda *a, **k: self._fake_ws(table_comment=None, col_comment=None),
+        )
+        monkeypatch.setattr(cli, "_git_repo_root", lambda cwd: tmp_path)
+
+        def _fake_open(*, repo, branch, title, body, paths, dry_run):
+            assert dry_run is False
+            assert paths and paths[0].name == "DRIFT.md"
+            assert paths[0].is_file()
+            assert "push-comments" in body
+            assert "okf-drift/push-" in branch
+            return "https://github.com/example/repo/pull/1"
+
+        monkeypatch.setattr(cli, "_commit_paths_and_open_pr", _fake_open)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            agents, ["drift-pr", "--direction", "push"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "https://github.com/example/repo/pull/1" in result.output
+        assert (tmp_path / ".apx" / "okf" / "DRIFT.md").is_file()
+
+    def test_pull_dry_run_restores_okf(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        apx = self._seed_okf(tmp_path)
+        # Clear curated overview/desc so UC fill would change files.
+        path = apx / "okf" / "tables" / "pay_runs.md"
+        before = path.read_text()
+        # rewrite with empty descriptions via seed without descriptions
+        import json
+        from apx_agent._okf import write_okf_bundle
+
+        write_okf_bundle(
+            {"catalog": "c", "schema": "s",
+             "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}},
+            apx / "okf",
+            timestamp="z",
+        )
+        (apx / "schema.json").write_text(json.dumps({
+            "catalog": "c", "schema": "s",
+            "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]},
+        }))
+        before = path.read_text()
+
+        monkeypatch.setattr(
+            cli, "_make_ws_for_scaffold",
+            lambda *a, **k: self._fake_ws(
+                table_comment="Core payroll table.",
+                col_comment="Gross before deductions.",
+            ),
+        )
+        monkeypatch.setattr(cli, "_git_repo_root", lambda cwd: tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            agents, ["drift-pr", "--direction", "pull", "--dry-run"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "dry-run" in result.output
+        assert path.read_text() == before
+
+    def test_pull_opens_pr_when_okf_enriched(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+        import json
+        from apx_agent._okf import write_okf_bundle
+
+        apx = tmp_path / ".apx"
+        write_okf_bundle(
+            {"catalog": "c", "schema": "s",
+             "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}},
+            apx / "okf",
+            timestamp="z",
+        )
+        (apx / "schema.json").write_text(json.dumps({
+            "catalog": "c", "schema": "s",
+            "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]},
+        }))
+
+        monkeypatch.setattr(
+            cli, "_make_ws_for_scaffold",
+            lambda *a, **k: self._fake_ws(
+                table_comment="Core payroll table.",
+                col_comment="Gross before deductions.",
+            ),
+        )
+        monkeypatch.setattr(cli, "_git_repo_root", lambda cwd: tmp_path)
+
+        def _fake_open(*, repo, branch, title, body, paths, dry_run):
+            assert any(p.name == "pay_runs.md" for p in paths)
+            assert "okf-drift/pull-" in branch
+            assert "pull UC comments" in title
+            return "https://github.com/example/repo/pull/2"
+
+        monkeypatch.setattr(cli, "_commit_paths_and_open_pr", _fake_open)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            agents, ["drift-pr", "--direction", "pull"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "https://github.com/example/repo/pull/2" in result.output
+        body = (apx / "okf" / "tables" / "pay_runs.md").read_text()
+        assert "Gross before deductions." in body
+        assert "Core payroll table." in body
+
+    def test_direction_required(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent.cli import agents
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(agents, ["drift-pr"])
+        assert result.exit_code != 0
+
+
 # ---------------------------------------------------------------------------
 # Model-serving deploy: provenance version tags (issue #403)
 # ---------------------------------------------------------------------------
