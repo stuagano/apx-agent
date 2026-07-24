@@ -18,6 +18,9 @@ import json
 import logging
 import re
 
+import sqlglot
+from sqlglot import ErrorLevel, ParseError, exp
+
 logger = logging.getLogger(__name__)
 
 REQUIRED_FRONTMATTER_KEYS = ("type", "title", "description", "timestamp")
@@ -334,6 +337,127 @@ def _parse_golden_queries(examples_section: str) -> list[dict]:
             continue
         out.append({"question": question, "sql": sql, "params": _parse_gq_params(block)})
     return out
+
+
+def golden_query_validation_errors(
+    enrichment: dict[str, dict[str, str]],
+    manifest: dict,
+) -> list[str]:
+    """Validate enriched ``# Examples`` SQL against the baked UC schema.
+
+    Uses SQLGlot's Databricks parser, then checks that each example is one
+    read-only query whose physical tables belong to the baked catalog/schema
+    and whose columns exist in those tables. CTE names and projection aliases
+    are handled as derived names, not mistaken for UC objects.
+
+    Returns stable human-readable errors; an empty list means the examples are
+    safe to write. Sections without ``examples`` need no SQL validation.
+    """
+    catalog = manifest.get("catalog")
+    schema = manifest.get("schema")
+    manifest_tables = manifest.get("tables")
+    if not isinstance(catalog, str) or not isinstance(schema, str):
+        return ["baked schema is missing catalog/schema"]
+    if not isinstance(manifest_tables, dict):
+        return ["baked schema has no tables map"]
+
+    known_columns: dict[str, set[str]] = {}
+    for table, columns in manifest_tables.items():
+        if not isinstance(table, str) or not isinstance(columns, list):
+            continue
+        known_columns[table] = {
+            _split_col(column)[0]
+            for column in columns
+            if isinstance(column, str) and column.strip()
+        }
+
+    errors: list[str] = []
+    for owner, sections in sorted(enrichment.items()):
+        examples = sections.get("examples")
+        if not examples:
+            continue
+        queries = _parse_golden_queries(examples)
+        if not queries:
+            errors.append(f"{owner}: # Examples contains no fenced SQL query")
+            continue
+        for index, query in enumerate(queries, 1):
+            question = query.get("question")
+            label = f"{owner} / {question}" if question else f"{owner} / example {index}"
+            sql = query.get("sql")
+            if not isinstance(sql, str) or not sql.strip():
+                errors.append(f"{label}: SQL is empty")
+                continue
+            rendered = sql.replace("{catalog}", catalog).replace("{schema}", schema)
+            try:
+                statements = sqlglot.parse(
+                    rendered,
+                    read="databricks",
+                    error_level=ErrorLevel.IMMEDIATE,
+                )
+            except (ParseError, TimeoutError) as exc:
+                errors.append(f"{label}: invalid Databricks SQL: {exc}")
+                continue
+            if len(statements) != 1:
+                errors.append(f"{label}: expected one SQL statement, got {len(statements)}")
+                continue
+            tree = statements[0]
+            if not isinstance(tree, exp.Query):
+                errors.append(f"{label}: only read-only SELECT/WITH queries are allowed")
+                continue
+
+            cte_names = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
+            aliases: dict[str, str] = {}
+            referenced_names: set[str] = set()
+            for table in tree.find_all(exp.Table):
+                name = table.name
+                if name in cte_names:
+                    continue
+                referenced_names.add(name)
+                aliases[table.alias_or_name] = name
+                aliases[name] = name
+                if name not in known_columns:
+                    errors.append(f"{label}: unknown table {name!r}")
+                    continue
+                if table.catalog and table.catalog != catalog:
+                    errors.append(
+                        f"{label}: table {name!r} uses catalog {table.catalog!r}, "
+                        f"expected {catalog!r}"
+                    )
+                if table.db and table.db != schema:
+                    errors.append(
+                        f"{label}: table {name!r} uses schema {table.db!r}, "
+                        f"expected {schema!r}"
+                    )
+
+            available_columns = {
+                column
+                for table in referenced_names
+                if table in known_columns
+                for column in known_columns[table]
+            }
+            derived_names = {
+                alias.alias for alias in tree.find_all(exp.Alias) if alias.alias
+            }
+            for column in tree.find_all(exp.Column):
+                name = column.name
+                if name == "*" or name in derived_names:
+                    continue
+                qualifier = column.table
+                if qualifier in cte_names:
+                    continue
+                if qualifier:
+                    table_name = aliases.get(qualifier)
+                    if table_name and (
+                        table_name not in known_columns
+                        or name not in known_columns[table_name]
+                    ):
+                        errors.append(
+                            f"{label}: unknown column {qualifier}.{name} "
+                            f"for table {table_name!r}"
+                        )
+                elif referenced_names and name not in available_columns:
+                    errors.append(f"{label}: unknown column {name!r}")
+    return errors
 
 
 def okf_grounding(okf_root: "Path | str") -> "dict | None":

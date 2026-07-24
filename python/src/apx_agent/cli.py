@@ -4685,7 +4685,11 @@ def enrich_okf(
     """
     from databricks.sdk import WorkspaceClient
 
-    from ._okf import apply_table_enrichment, okf_manifest
+    from ._okf import (
+        apply_table_enrichment,
+        golden_query_validation_errors,
+        okf_manifest,
+    )
     from ._schema import load_baked_schema
 
     if not description:
@@ -4732,12 +4736,18 @@ def enrich_okf(
     click.echo("enrich: authoring Joins/Examples via LLM...")
     raw = _query_generate_llm(ws, prompt, max_tokens=3000)
     payload = _parse_enrich_payload(raw)
-    known = set(tables)
-    unknown = sorted(set(payload) - known)
+    unknown = sorted(set(payload) - set(tables))
     if unknown:
         raise click.ClickException(
             "enrich: LLM returned unknown table name(s): "
             f"{', '.join(unknown)}. Refusing to write any OKF files."
+        )
+    sql_errors = golden_query_validation_errors(payload, manifest)
+    if sql_errors:
+        detail = "\n".join(f"  • {error}" for error in sql_errors)
+        raise click.ClickException(
+            "enrich: golden-query validation failed; refusing to write any "
+            f"OKF files:\n{detail}"
         )
 
     click.echo(f"enrich: plan for {len(payload)} table(s):")
