@@ -7718,6 +7718,43 @@ class TestEnrichOkf:
         assert "unknown table name(s): invented_table" in result.output
         assert path.read_text() == before
 
+    def test_enrich_rejects_invalid_golden_query_before_confirmation(
+        self, tmp_path, monkeypatch,
+    ):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        apx = self._seed(tmp_path)
+        path = apx / "okf" / "tables" / "pay_runs.md"
+        before = path.read_text()
+        payload_json = json.dumps({
+            "tables": {
+                "pay_runs": {
+                    "examples": (
+                        "### Delete old rows\n"
+                        "```sql\nDELETE FROM c.s.pay_runs\n```"
+                    ),
+                },
+            },
+        })
+        monkeypatch.setattr(cli, "_query_generate_llm", lambda *a, **k: payload_json)
+        monkeypatch.setattr(
+            "databricks.sdk.WorkspaceClient",
+            lambda **kw: MagicMock(),
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            agents,
+            ["enrich", "payroll questions", "--yes"],
+        )
+        assert result.exit_code != 0
+        assert "golden-query validation failed" in result.output
+        assert "only read-only SELECT/WITH" in result.output
+        assert "Write this enrichment" not in result.output
+        assert path.read_text() == before
+
     def test_receipt_tips_enrich_when_no_joins(self, tmp_path, monkeypatch):
         from apx_agent import cli
         from apx_agent._okf import write_okf_bundle

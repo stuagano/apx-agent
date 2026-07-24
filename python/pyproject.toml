@@ -27,6 +27,7 @@ dependencies = [
     # databricks.yml merge writers in cli.py — plain PyYAML safe_load/dump
     # silently strips comments on every write (#527).
     "ruamel.yaml>=0.18.0",
+    "sqlglot>=30.12.0",
 ]
 
 [project.optional-dependencies]
