@@ -3666,6 +3666,8 @@ def test_scaffold_builds_workspace_client_once_across_branches(tmp_path, monkeyp
     # Stop at the project writer — the manifest step is a separate helper with
     # its own client (out of #522's branch-dedup scope); isolate the branches.
     monkeypatch.setattr(cli, "_scaffold_apps", lambda *a, **k: None)
+    # Post-write receipt/deploy is out of #522 scope (and would rebuild a client).
+    monkeypatch.setattr(cli, "_echo_scaffold_next_steps", lambda *a, **k: None)
 
     # --interactive also reaches _prompt_for_instructions(); feed a blank line
     # so it takes the "fill in later" path rather than aborting on empty stdin.
@@ -8046,6 +8048,147 @@ def test_generate_command_materializes_describable_project(tmp_path: Path) -> No
         sys.modules.pop("agent", None)
     assert describe_result.exit_code == 0, describe_result.output
     assert "helper-agent" in describe_result.output or "Help with general questions" in describe_result.output
+
+
+def test_generate_deploy_refuses_when_receipt_blocked(tmp_path: Path) -> None:
+    """--deploy must fail closed when the governance receipt is not green."""
+    import apx_agent.cli as cli
+
+    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({
+            "template": "data", "name": "sales-agent", "persona": None,
+            "objective": None, "join_key": None, "catalog_hint": "main",
+            "schema_hint": "sales", "missing": [],
+        })
+    ))])
+    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=(
+            "name: sales-agent\nmodel: databricks-claude-sonnet-4-6\n"
+            "instructions: Answer sales questions.\n"
+            "template:\n  name: data\n  catalog: main\n  schema: sales\n"
+            "tools: []\n"
+        )
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+    deploy_mock = MagicMock(return_value="https://app.example/")
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
+         patch.object(cli, "_resolve_generate_data_source",
+                      return_value=cli._ResolvedDataSource(catalog="main", schema="sales")), \
+         patch.object(cli, "_assert_generate_data_source_readable"), \
+         patch.object(cli, "_bake_schema_into_project", return_value=False), \
+         patch.object(cli, "_make_ws_for_scaffold", return_value=None), \
+         patch.object(cli, "_deploy_apps", deploy_mock):
+        result = CliRunner().invoke(
+            main,
+            ["generate", "a sales agent", "--dir", str(tmp_path), "--deploy"],
+        )
+    assert result.exit_code != 0, result.output
+    assert "--deploy refused" in result.output
+    assert "no workspace connection" in result.output
+    deploy_mock.assert_not_called()
+
+
+def test_generate_deploy_runs_when_receipt_green(tmp_path: Path) -> None:
+    """Green receipt gates Apps deploy and appends URL/readyz to the receipt."""
+    import apx_agent.cli as cli
+
+    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({
+            "template": "base", "name": "helper-agent", "persona": None,
+            "objective": None, "join_key": None, "catalog_hint": None,
+            "schema_hint": None, "missing": [],
+        })
+    ))])
+    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=(
+            "name: helper-agent\nmodel: databricks-claude-sonnet-4-6\n"
+            "instructions: Help with general questions.\ntools: []\n"
+        )
+    ))])
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+    deploy_mock = MagicMock(return_value="https://helper.databricksapps.com")
+
+    with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
+         patch.object(cli, "_deploy_apps", deploy_mock):
+        result = CliRunner().invoke(
+            main,
+            ["generate", "a simple helper", "--dir", str(tmp_path), "--deploy"],
+        )
+    assert result.exit_code == 0, result.output
+    assert "## Deploy (receipt-gated)" in result.output
+    assert "## Deploy receipt" in result.output
+    assert "https://helper.databricksapps.com" in result.output
+    assert "readyz:    passed" in result.output
+    deploy_mock.assert_called_once()
+    assert (tmp_path / "helper-agent" / "agent.py").is_file()
+
+
+def test_scaffold_deploy_refuses_model_serving(tmp_path: Path) -> None:
+    result = CliRunner().invoke(
+        main,
+        [
+            "agents", "scaffold", "ms",
+            "--target", "model-serving",
+            "--dir", str(tmp_path),
+            "--no-interactive",
+            "--deploy",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--deploy only works with --target apps" in result.output
+
+
+def test_scaffold_deploy_receipt_gated(tmp_path: Path) -> None:
+    import apx_agent.cli as cli
+
+    monkey_ws = MagicMock()
+    monkey_ws.tables.list.return_value = [SimpleNamespace(name="trips")]
+    monkey_ws.current_user.me.return_value = SimpleNamespace(user_name="fe@example.com")
+    deploy_mock = MagicMock(return_value="https://payroll.databricksapps.com")
+
+    with patch.object(cli, "_make_ws_for_scaffold", return_value=monkey_ws), \
+         patch.object(cli, "_bake_schema_into_project", return_value=False), \
+         patch.object(cli, "_discover_default_data", return_value=None), \
+         patch.object(cli, "_probe_first_table", return_value=None), \
+         patch.object(cli, "_deploy_apps", deploy_mock):
+        result = CliRunner().invoke(
+            main,
+            [
+                "agents", "scaffold", "my-payroll",
+                "--coworker", "payroll",
+                "--catalog", "main", "--schema", "payroll_demo",
+                "--dir", str(tmp_path),
+                "--no-interactive",
+                "--deploy",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert "## Deploy receipt" in result.output
+    assert "https://payroll.databricksapps.com" in result.output
+    deploy_mock.assert_called_once()
+
+
+def test_emit_governance_receipt_blocks_identity_failure(tmp_path: Path) -> None:
+    import apx_agent.cli as cli
+
+    project = tmp_path / "ag"
+    project.mkdir()
+    (project / "agent.py").write_text("agent = None\n")
+    (project / "pyproject.toml").write_text('[project]\nname = "ag"\n')
+
+    bad_ws = MagicMock()
+    bad_ws.current_user.me.return_value = SimpleNamespace(user_name="fe@example.com")
+    bad_ws.tables.list.side_effect = RuntimeError("PERMISSION_DENIED")
+
+    with patch.object(cli, "_make_ws_for_scaffold", return_value=bad_ws):
+        receipt = cli._emit_governance_receipt(
+            project, catalog="main", schema="sales", profile=None,
+        )
+    assert not receipt.ok
+    assert any("identity cannot list" in b for b in receipt.blockers)
 
 
 def test_generate_sanitizes_llm_authored_name_before_building_path(tmp_path: Path) -> None:
