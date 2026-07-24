@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from apx_agent._okf import (
     _parse_golden_queries,
+    golden_query_validation_errors,
     okf_grounding,
     write_okf_bundle,
 )
@@ -97,6 +98,81 @@ SELECT 1
 def test_empty_section_returns_empty():
     assert _parse_golden_queries("") == []
     assert _parse_golden_queries("   \n  ") == []
+
+
+_VALIDATION_MANIFEST = {
+    "catalog": "c",
+    "schema": "s",
+    "tables": {
+        "orders": ["id(bigint)", "customer_id(bigint)", "amount(decimal(10,2))"],
+        "customers": ["id(bigint)", "name(string)"],
+    },
+}
+
+
+def _validation_errors(sql: str) -> list[str]:
+    examples = f"### Question\n```sql\n{sql}\n```"
+    return golden_query_validation_errors(
+        {"orders": {"examples": examples}},
+        _VALIDATION_MANIFEST,
+    )
+
+
+def test_validation_accepts_known_join_tables_columns_and_placeholders():
+    sql = """
+SELECT c.name, SUM(o.amount) AS total
+FROM {catalog}.{schema}.orders AS o
+JOIN {catalog}.{schema}.customers AS c ON o.customer_id = c.id
+GROUP BY c.name
+"""
+    assert _validation_errors(sql) == []
+
+
+def test_validation_accepts_cte_and_projection_alias():
+    sql = """
+WITH totals AS (
+  SELECT customer_id, SUM(amount) AS total
+  FROM {catalog}.{schema}.orders
+  GROUP BY customer_id
+)
+SELECT customer_id, total FROM totals ORDER BY total DESC
+"""
+    assert _validation_errors(sql) == []
+
+
+def test_validation_rejects_unknown_table_and_wrong_schema():
+    errors = _validation_errors(
+        "SELECT id FROM c.other.orders JOIN c.s.refunds USING (id)"
+    )
+    assert any("schema 'other', expected 's'" in error for error in errors)
+    assert any("unknown table 'refunds'" in error for error in errors)
+
+
+def test_validation_rejects_unknown_qualified_and_unqualified_columns():
+    errors = _validation_errors(
+        "SELECT o.missing, imaginary FROM c.s.orders AS o"
+    )
+    assert any("unknown column o.missing" in error for error in errors)
+    assert any("unknown column 'imaginary'" in error for error in errors)
+
+
+def test_validation_rejects_mutation_and_multiple_statements():
+    assert any(
+        "only read-only SELECT/WITH" in error
+        for error in _validation_errors("DELETE FROM c.s.orders")
+    )
+    assert any(
+        "expected one SQL statement" in error
+        for error in _validation_errors("SELECT id FROM c.s.orders; SELECT 2")
+    )
+
+
+def test_validation_rejects_examples_without_fenced_sql():
+    errors = golden_query_validation_errors(
+        {"orders": {"examples": "Show recent orders."}},
+        _VALIDATION_MANIFEST,
+    )
+    assert errors == ["orders: # Examples contains no fenced SQL query"]
 
 
 def test_star_bullet_params_and_extra_text_tolerated():
