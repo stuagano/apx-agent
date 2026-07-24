@@ -4665,11 +4665,16 @@ def _parse_enrich_payload(text: str) -> dict[str, dict[str, str]]:
     "--dry-run", is_flag=True, default=False,
     help="Author and print the enrichment plan without writing OKF files.",
 )
+@click.option(
+    "--yes", is_flag=True, default=False,
+    help="Write the authored enrichment without interactive confirmation.",
+)
 def enrich_okf(
     description: str | None,
     profile: str | None,
     overwrite: bool,
     dry_run: bool,
+    yes: bool,
 ) -> None:
     """NL-enrich this project's OKF with Joins / Examples (and Overview).
 
@@ -4727,12 +4732,12 @@ def enrich_okf(
     click.echo("enrich: authoring Joins/Examples via LLM...")
     raw = _query_generate_llm(ws, prompt, max_tokens=3000)
     payload = _parse_enrich_payload(raw)
-    # Drop tables the bake doesn't know — LLM inventing names is a no-op.
     known = set(tables)
-    payload = {k: v for k, v in payload.items() if k in known}
-    if not payload:
+    unknown = sorted(set(payload) - known)
+    if unknown:
         raise click.ClickException(
-            "enrich: LLM only returned unknown table names — refusing to write."
+            "enrich: LLM returned unknown table name(s): "
+            f"{', '.join(unknown)}. Refusing to write any OKF files."
         )
 
     click.echo(f"enrich: plan for {len(payload)} table(s):")
@@ -4742,6 +4747,12 @@ def enrich_okf(
     if dry_run:
         click.echo(json.dumps({"tables": payload}, indent=2))
         click.echo("enrich: --dry-run; no OKF writes.")
+        return
+    if not yes and not click.confirm(
+        f"Write this enrichment into {len(payload)} OKF table file(s)?",
+        default=False,
+    ):
+        click.echo("enrich: aborted; no OKF writes.")
         return
 
     n = apply_table_enrichment(okf_root, payload, overwrite=overwrite)
