@@ -476,6 +476,74 @@ def _schema_block_md(cols: list[str], descriptions: "dict | None" = None) -> str
     return "# Schema\n| Column | Type | Description |\n| --- | --- | --- |\n" + rows
 
 
+def apply_table_enrichment(
+    okf_root: "Path | str",
+    tables: dict[str, dict[str, str]],
+    *,
+    overwrite: bool = False,
+) -> int:
+    """Write optional ``# Overview`` / ``# Joins`` / ``# Examples`` into OKF tables.
+
+    ``tables`` maps table name → keys among ``overview``, ``joins``, ``examples``
+    (values are section bodies *without* the ``# Heading`` line). Empty values
+    are skipped. With ``overwrite=False`` (default), only fills sections that
+    are currently empty. Never touches ``# Schema`` column names/types.
+    Returns the number of table concepts modified. Totalised per-table — a
+    missing/malformed table is skipped, never raises out.
+    """
+    root = Path(okf_root)
+    tdir = root / "tables"
+    modified = 0
+    skipped = 0
+    for table, sections in tables.items():
+        path = tdir / f"{table}.md"
+        if not path.is_file():
+            continue
+        try:
+            doc = OKFDocument.parse(path.read_text())
+            changed = False
+            overview = (sections.get("overview") or "").strip()
+            joins = (sections.get("joins") or "").strip()
+            examples = (sections.get("examples") or "").strip()
+            if overview:
+                existing = _extract_section(doc.body, "Overview").strip()
+                if overwrite or not existing:
+                    safe = re.sub(r"^(#+)", r"\\\1", overview, flags=re.M)
+                    doc.body = _replace_section(
+                        doc.body, "Overview", f"# Overview\n{safe}",
+                    )
+                    changed = True
+            if joins:
+                existing = _extract_section(doc.body, "Joins").strip()
+                if overwrite or not existing:
+                    safe = re.sub(r"^(#+)", r"\\\1", joins, flags=re.M)
+                    doc.body = _replace_section(
+                        doc.body, "Joins", f"# Joins\n{safe}",
+                    )
+                    changed = True
+            if examples:
+                existing = _extract_section(doc.body, "Examples").strip()
+                if overwrite or not existing:
+                    # Keep ### / fences intact — golden-query structure.
+                    doc.body = _replace_section(
+                        doc.body, "Examples", f"# Examples\n{examples}",
+                    )
+                    changed = True
+            if changed:
+                path.write_text(doc.serialize())
+                modified += 1
+        except Exception as e:
+            skipped += 1
+            logger.warning("apply_table_enrichment: skipped table %r: %s", table, e)
+            continue
+    if skipped:
+        logger.warning(
+            "apply_table_enrichment: skipped %d malformed table%s",
+            skipped, "" if skipped == 1 else "s",
+        )
+    return modified
+
+
 def apply_uc_comments(
     okf_root: "Path | str",
     comments: dict,

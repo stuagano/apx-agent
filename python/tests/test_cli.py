@@ -7564,6 +7564,133 @@ class TestDriftPr:
         assert result.exit_code != 0
 
 
+class TestEnrichOkf:
+    def _seed(self, tmp_path):
+        import json
+        from apx_agent._okf import write_okf_bundle
+
+        apx = tmp_path / ".apx"
+        m = {
+            "catalog": "c",
+            "schema": "s",
+            "tables": {"pay_runs": ["gross_pay(decimal(6,2))", "employee_id(string)"]},
+        }
+        write_okf_bundle(m, apx / "okf", timestamp="z")
+        (apx / "schema.json").write_text(json.dumps(m))
+        return apx
+
+    def test_parse_enrich_payload_accepts_fenced_json(self):
+        from apx_agent.cli import _parse_enrich_payload
+
+        raw = (
+            "```json\n"
+            '{"tables": {"pay_runs": {"joins": "a = b", "examples": "### q\\n```sql\\nSELECT 1\\n```"}}}\n'
+            "```"
+        )
+        out = _parse_enrich_payload(raw)
+        assert out["pay_runs"]["joins"] == "a = b"
+        assert "SELECT 1" in out["pay_runs"]["examples"]
+
+    def test_parse_enrich_payload_rejects_empty_tables(self):
+        import click
+        from apx_agent.cli import _parse_enrich_payload
+
+        try:
+            _parse_enrich_payload('{"tables": {}}')
+            raise AssertionError("expected ClickException")
+        except click.ClickException as e:
+            assert "tables" in str(e).lower()
+
+    def test_enrich_dry_run_does_not_write(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        apx = self._seed(tmp_path)
+        before = (apx / "okf" / "tables" / "pay_runs.md").read_text()
+        payload_json = json.dumps({
+            "tables": {
+                "pay_runs": {
+                    "joins": "pay_runs.employee_id = employees.id",
+                    "examples": "### sample\n```sql\nSELECT 1\n```",
+                },
+            },
+        })
+        monkeypatch.setattr(cli, "_query_generate_llm", lambda *a, **k: payload_json)
+        monkeypatch.setattr(
+            "databricks.sdk.WorkspaceClient",
+            lambda **kw: MagicMock(),
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            agents,
+            ["enrich", "payroll joins", "--dry-run"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "dry-run" in result.output
+        assert (apx / "okf" / "tables" / "pay_runs.md").read_text() == before
+
+    def test_enrich_writes_joins(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        apx = self._seed(tmp_path)
+        payload_json = json.dumps({
+            "tables": {
+                "pay_runs": {
+                    "joins": "pay_runs.employee_id = employees.id",
+                    "overview": "One row per pay run.",
+                },
+            },
+        })
+        monkeypatch.setattr(cli, "_query_generate_llm", lambda *a, **k: payload_json)
+        monkeypatch.setattr(
+            "databricks.sdk.WorkspaceClient",
+            lambda **kw: MagicMock(),
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            agents,
+            ["enrich", "how pay_runs joins employees"],
+        )
+        assert result.exit_code == 0, result.output
+        body = (apx / "okf" / "tables" / "pay_runs.md").read_text()
+        assert "employee_id = employees.id" in body
+        assert "One row per pay run." in body
+        assert "push-comments --diff" in result.output
+
+    def test_receipt_tips_enrich_when_no_joins(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        from apx_agent._okf import write_okf_bundle
+        import json
+
+        apx = tmp_path / ".apx"
+        m = {"catalog": "c", "schema": "s", "tables": {"t": ["id(int)"]}}
+        write_okf_bundle(m, apx / "okf", timestamp="z")
+        (apx / "schema.json").write_text(json.dumps(m))
+        (tmp_path / "agent.py").write_text("x=1\n")
+        (tmp_path / "pyproject.toml").write_text('[project]\nname="x"\n')
+        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda *a, **k: None)
+
+        # Capture click.echo via CliRunner by invoking a tiny wrapper — call helper
+        # directly and capture stdout.
+        from click.testing import CliRunner
+        import click
+
+        @click.command("x")
+        def _cmd():
+            cli._emit_governance_receipt(
+                tmp_path, catalog="c", schema="s", profile=None,
+            )
+
+        result = CliRunner().invoke(_cmd)
+        assert result.exit_code == 0, result.output
+        assert "agents enrich" in result.output
+
+
 # ---------------------------------------------------------------------------
 # Model-serving deploy: provenance version tags (issue #403)
 # ---------------------------------------------------------------------------
