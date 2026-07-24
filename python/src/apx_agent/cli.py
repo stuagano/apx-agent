@@ -17,7 +17,7 @@ Most agent-facing commands accept ``--module MODULE:VAR`` to point at the
 agent definition (defaults to ``agent:agent``); the module must be importable
 from the current working directory. The OKF bundle commands
 (``refresh-schema`` / ``migrate-to-okf`` / ``pull-comments`` /
-``push-comments`` / ``drift-pr``) and ``scaffold`` / ``cost`` operate on the project, not a
+``push-comments`` / ``drift-pr`` / ``enrich``) and ``scaffold`` / ``cost`` operate on the project, not a
 loaded agent, and so take no ``--module``.
 
 The CLI is a thin orchestration layer over the primitives — every command
@@ -2267,15 +2267,15 @@ Output ONLY the JSON object. No explanation, no markdown fences.
 """
 
 
-def _query_generate_llm(ws: "Any", prompt_text: str) -> str:
-    """One LLM call for `generate`; raises ClickException on failure."""
+def _query_generate_llm(ws: "Any", prompt_text: str, *, max_tokens: int = 1500) -> str:
+    """One LLM call for `generate` / `enrich`; raises ClickException on failure."""
     from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 
     try:
         response = ws.serving_endpoints.query(
             name="databricks-claude-sonnet-4-6",
             messages=[ChatMessage(role=ChatMessageRole.USER, content=prompt_text)],
-            max_tokens=1500,
+            max_tokens=max_tokens,
         )
         choices = response.choices
         if not choices or choices[0].message is None or choices[0].message.content is None:
@@ -2825,6 +2825,7 @@ def _emit_governance_receipt(
         click.echo("  data:      (none — base / no UC template)")
 
     schema_path = target / APX_DIR / "schema.json"
+    okf_root = target / APX_DIR / "okf"
     if schema_path.is_file():
         try:
             baked = json.loads(schema_path.read_text())
@@ -2839,6 +2840,19 @@ def _emit_governance_receipt(
         click.echo("  grounding: .apx/schema.json missing (agent may run ungrounded)")
     else:
         click.echo("  grounding: n/a")
+
+    # Semantic OKF tip: schema bake alone is thin — Joins/Examples make the
+    # agent actually grounded. Offer enrich when the bundle lacks them.
+    if okf_root.is_dir() and cat and sch:
+        from ._okf import okf_grounding
+
+        g = okf_grounding(okf_root)
+        has_joins = bool(g and any((v.get("joins") or "").strip() for v in g.values()))
+        if not has_joins:
+            click.echo(
+                "  tip:       uv run apx-agent agents enrich "
+                "\"describe joins and example questions for this schema\""
+            )
 
     if cat and sch:
         ws = _make_ws_for_scaffold(profile)
@@ -4564,6 +4578,182 @@ def drift_pr(
     )
     if url:
         click.echo(f"drift-pr: opened {url}")
+
+
+_ENRICH_PROMPT = """\
+You enrich an OKF (Open Knowledge Framework) bundle for a Databricks agent.
+
+Catalog.schema: {catalog}.{schema}
+User intent: {description}
+
+Tables and columns (from the local schema bake):
+{tables_block}
+
+Return ONLY a JSON object (no markdown fences) of the form:
+{{
+  "tables": {{
+    "<table_name>": {{
+      "overview": "<1-3 sentence table purpose, optional>",
+      "joins": "<how this table joins to others; keys and cardinality>",
+      "examples": "<markdown under # Examples: prefer ### <question> then a ```sql fence>"
+    }}
+  }}
+}}
+
+Rules:
+- Only include tables from the list above.
+- Prefer joins + examples; overview only when it adds real semantic value.
+- SQL examples must reference {catalog}.{schema}.<table> or unqualified table names
+  that exist above — never invent tables/columns.
+- Empty string values are omitted by the writer; prefer omitting unused keys.
+- Output JSON only.
+"""
+
+
+def _parse_enrich_payload(text: str) -> dict[str, dict[str, str]]:
+    """Parse LLM enrich JSON into ``{table: {overview?, joins?, examples?}}``."""
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise click.ClickException(
+            f"enrich: LLM returned non-JSON: {e}\n\nRaw:\n{text}"
+        ) from e
+    tables = data.get("tables") if isinstance(data, dict) else None
+    if not isinstance(tables, dict) or not tables:
+        raise click.ClickException(
+            "enrich: JSON must contain a non-empty \"tables\" object.\n\n"
+            f"Raw:\n{text}"
+        )
+    out: dict[str, dict[str, str]] = {}
+    for name, secs in tables.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(secs, dict):
+            continue
+        entry: dict[str, str] = {}
+        for key in ("overview", "joins", "examples"):
+            val = secs.get(key)
+            if isinstance(val, str) and val.strip():
+                entry[key] = val.strip()
+        if entry:
+            out[name.strip()] = entry
+    if not out:
+        raise click.ClickException(
+            "enrich: no usable overview/joins/examples in LLM JSON.\n\n"
+            f"Raw:\n{text}"
+        )
+    return out
+
+
+@agents.command("enrich")
+@click.argument("description", required=False, default=None)
+@click.option(
+    "--profile", default=None,
+    help="Databricks CLI profile for the LLM call. "
+         "Falls back to $DATABRICKS_CONFIG_PROFILE.",
+)
+@click.option(
+    "--overwrite", is_flag=True, default=False,
+    help="Replace existing # Overview / # Joins / # Examples (default: "
+         "only fill empty sections).",
+)
+@click.option(
+    "--dry-run", is_flag=True, default=False,
+    help="Author and print the enrichment plan without writing OKF files.",
+)
+def enrich_okf(
+    description: str | None,
+    profile: str | None,
+    overwrite: bool,
+    dry_run: bool,
+) -> None:
+    """NL-enrich this project's OKF with Joins / Examples (and Overview).
+
+    Authors semantic grounding into ``.apx/okf/tables/*.md`` from a plain-English
+    description plus the baked schema. Does not write Unity Catalog comments —
+    follow with ``push-comments --diff`` or ``drift-pr --direction push`` when
+    you want UC to catch up.
+    """
+    from databricks.sdk import WorkspaceClient
+
+    from ._okf import apply_table_enrichment, okf_manifest
+    from ._schema import load_baked_schema
+
+    if not description:
+        description = cast(
+            str,
+            click.prompt(
+                "Describe the joins / questions this agent should know about"
+            ),
+        )
+
+    project = _require_okf_project()
+    catalog, schema, okf_root = project.catalog, project.schema, project.okf_root
+    manifest = load_baked_schema(Path.cwd()) or okf_manifest(okf_root)
+    if not manifest or not manifest.get("tables"):
+        raise click.ClickException(
+            "No tables in .apx/schema.json / OKF manifest — nothing to enrich."
+        )
+    tables = manifest["tables"]
+    lines: list[str] = []
+    for tname in sorted(tables):
+        cols = tables[tname]
+        if isinstance(cols, list):
+            col_s = ", ".join(str(c) for c in cols)
+        else:
+            col_s = str(cols)
+        lines.append(f"- {tname}: {col_s}")
+    tables_block = "\n".join(lines)
+    prompt = _ENRICH_PROMPT.format(
+        catalog=catalog,
+        schema=schema,
+        description=description.strip(),
+        tables_block=tables_block,
+    )
+
+    try:
+        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    except Exception as exc:
+        raise click.ClickException(
+            f"Could not connect to the workspace: {exc}\n"
+            "Ensure you have a valid Databricks profile with access to "
+            "databricks-claude-sonnet-4-6."
+        ) from exc
+
+    click.echo("enrich: authoring Joins/Examples via LLM...")
+    raw = _query_generate_llm(ws, prompt, max_tokens=3000)
+    payload = _parse_enrich_payload(raw)
+    # Drop tables the bake doesn't know — LLM inventing names is a no-op.
+    known = set(tables)
+    payload = {k: v for k, v in payload.items() if k in known}
+    if not payload:
+        raise click.ClickException(
+            "enrich: LLM only returned unknown table names — refusing to write."
+        )
+
+    click.echo(f"enrich: plan for {len(payload)} table(s):")
+    for tname, secs in sorted(payload.items()):
+        keys = ", ".join(sorted(secs))
+        click.echo(f"  {tname}: {keys}")
+    if dry_run:
+        click.echo(json.dumps({"tables": payload}, indent=2))
+        click.echo("enrich: --dry-run; no OKF writes.")
+        return
+
+    n = apply_table_enrichment(okf_root, payload, overwrite=overwrite)
+    click.echo(
+        f"enrich: wrote sections into {n} table file(s) under {okf_root}."
+    )
+    click.echo(
+        "Next: uv run apx-agent agents push-comments --diff   # review UC plan"
+    )
+    click.echo(
+        "      uv run apx-agent agents drift-pr --direction push --dry-run"
+    )
 
 
 def _port_is_free(port: int, host: str) -> bool:

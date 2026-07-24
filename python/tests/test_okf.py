@@ -539,3 +539,62 @@ class TestDiffOkfUcComments:
         desired = {"orders": {"id": "Key."}}
         live = {"orders": {"_table": "Live overview.", "id": "Key.", "secret": "PII."}}
         assert diff_okf_uc_comments(desired, live) == []
+
+
+class TestApplyTableEnrichment:
+    def _bundle(self, okf):
+        from apx_agent._okf import write_okf_bundle
+
+        write_okf_bundle(
+            {"catalog": "c", "schema": "s",
+             "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}},
+            okf,
+            timestamp="z",
+        )
+        return okf
+
+    def test_writes_joins_and_examples(self, tmp_path):
+        from apx_agent._okf import (
+            apply_table_enrichment, OKFDocument, _extract_section, okf_grounding,
+        )
+
+        okf = self._bundle(tmp_path / "okf")
+        n = apply_table_enrichment(okf, {
+            "pay_runs": {
+                "overview": "Payroll facts per run.",
+                "joins": "pay_runs.employee_id = employees.id",
+                "examples": (
+                    "### Who was paid?\n"
+                    "```sql\nSELECT * FROM pay_runs LIMIT 5\n```"
+                ),
+            },
+        })
+        assert n == 1
+        doc = OKFDocument.parse((okf / "tables" / "pay_runs.md").read_text())
+        assert "Payroll facts" in _extract_section(doc.body, "Overview")
+        assert "employee_id" in _extract_section(doc.body, "Joins")
+        assert "SELECT * FROM pay_runs" in _extract_section(doc.body, "Examples")
+        g = okf_grounding(okf)
+        assert g is not None
+        assert "employee_id" in g["pay_runs"]["joins"]
+
+    def test_no_overwrite_keeps_existing_joins(self, tmp_path):
+        from apx_agent._okf import apply_table_enrichment, OKFDocument, _extract_section
+
+        okf = self._bundle(tmp_path / "okf")
+        apply_table_enrichment(okf, {
+            "pay_runs": {"joins": "first join key"},
+        })
+        apply_table_enrichment(okf, {
+            "pay_runs": {"joins": "second join key"},
+        }, overwrite=False)
+        doc = OKFDocument.parse((okf / "tables" / "pay_runs.md").read_text())
+        assert "first join key" in _extract_section(doc.body, "Joins")
+        assert "second join key" not in _extract_section(doc.body, "Joins")
+
+    def test_unknown_table_skipped(self, tmp_path):
+        from apx_agent._okf import apply_table_enrichment
+
+        okf = self._bundle(tmp_path / "okf")
+        n = apply_table_enrichment(okf, {"nope": {"joins": "x"}})
+        assert n == 0
