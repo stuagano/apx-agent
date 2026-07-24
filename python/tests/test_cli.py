@@ -7654,13 +7654,69 @@ class TestEnrichOkf:
 
         result = CliRunner().invoke(
             agents,
-            ["enrich", "how pay_runs joins employees"],
+            ["enrich", "how pay_runs joins employees", "--yes"],
         )
         assert result.exit_code == 0, result.output
         body = (apx / "okf" / "tables" / "pay_runs.md").read_text()
         assert "employee_id = employees.id" in body
         assert "One row per pay run." in body
         assert "push-comments --diff" in result.output
+
+    def test_enrich_defaults_to_abort_without_writes(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        apx = self._seed(tmp_path)
+        path = apx / "okf" / "tables" / "pay_runs.md"
+        before = path.read_text()
+        payload_json = json.dumps({
+            "tables": {"pay_runs": {"joins": "pay_runs.employee_id = employees.id"}},
+        })
+        monkeypatch.setattr(cli, "_query_generate_llm", lambda *a, **k: payload_json)
+        monkeypatch.setattr(
+            "databricks.sdk.WorkspaceClient",
+            lambda **kw: MagicMock(),
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            agents,
+            ["enrich", "payroll joins"],
+            input="n\n",
+        )
+        assert result.exit_code == 0, result.output
+        assert "aborted; no OKF writes" in result.output
+        assert path.read_text() == before
+
+    def test_enrich_rejects_any_unknown_table(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        apx = self._seed(tmp_path)
+        path = apx / "okf" / "tables" / "pay_runs.md"
+        before = path.read_text()
+        payload_json = json.dumps({
+            "tables": {
+                "pay_runs": {"joins": "pay_runs.employee_id = employees.id"},
+                "invented_table": {"overview": "This table does not exist."},
+            },
+        })
+        monkeypatch.setattr(cli, "_query_generate_llm", lambda *a, **k: payload_json)
+        monkeypatch.setattr(
+            "databricks.sdk.WorkspaceClient",
+            lambda **kw: MagicMock(),
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            agents,
+            ["enrich", "payroll joins", "--yes"],
+        )
+        assert result.exit_code != 0
+        assert "unknown table name(s): invented_table" in result.output
+        assert path.read_text() == before
 
     def test_receipt_tips_enrich_when_no_joins(self, tmp_path, monkeypatch):
         from apx_agent import cli
