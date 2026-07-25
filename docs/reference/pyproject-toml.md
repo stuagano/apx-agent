@@ -141,9 +141,9 @@ name        = "ask_data"
 description = "Answer questions from a Genie space."
 
 [[tool.apx.tools]]
-type  = "vector_search"
-index = "main.docs.embeddings"
-name  = "search_docs"
+type       = "vector_search"
+index_name = "main.docs.embeddings"
+name       = "search_docs"
 ```
 
 These are additive — they attach on top of whatever tools the code agent

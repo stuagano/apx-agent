@@ -1,8 +1,11 @@
 import os
 import textwrap
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from apx_agent import Agent
+from apx_agent._resources import ResourceSpec, get_resources
 from apx_agent._tool_config import (
     ToolConfigError,
     load_config_tools,
@@ -51,6 +54,45 @@ def test_same_name_collision_requires_explicit_name():
             {"type": "vector_search", "index_name": "a.b.c"},
             {"type": "vector_search", "index_name": "a.b.d"},  # both default to "vector_search"
         ])
+
+
+def test_vector_search_declarative_index_key_is_index_name():
+    """Doc/code contract: the [[tool.apx.tools]] key is `index_name`, not `index`.
+
+    Pins the fix for the pyproject-toml.md example, which used `index` and failed
+    at load with 'unexpected keyword argument index'.
+    """
+    fns = load_config_tools([{"type": "vector_search", "index_name": "main.docs.embeddings", "name": "search_docs"}])
+    assert fns[0].__name__ == "search_docs"
+    assert ResourceSpec("vector_search_index", "main.docs.embeddings") in get_resources(fns[0])
+    with pytest.raises(ToolConfigError, match="index"):
+        load_config_tools([{"type": "vector_search", "index": "main.docs.embeddings"}])
+
+
+@pytest.mark.asyncio
+async def test_vector_search_declarative_forwards_full_surface():
+    """The declarative path already carries columns / num_results / filters_json
+    through to the tool — so the richer vector-search config needs no new surface."""
+    fns = load_config_tools([{
+        "type": "vector_search",
+        "index_name": "main.search.docs_index",
+        "columns": ["doc_id", "title"],
+        "num_results": 3,
+        "filters_json": '{"lang": "en"}',
+        "name": "find_docs",
+    }])
+    ws = MagicMock()
+    ws.vector_search_indexes.query_index.return_value = SimpleNamespace(
+        manifest=SimpleNamespace(columns=[SimpleNamespace(name="doc_id"), SimpleNamespace(name="title")]),
+        result=SimpleNamespace(data_array=[["d1", "T1"]]),
+    )
+    result = await fns[0](query="q", ws=ws)
+    assert result == [{"doc_id": "d1", "title": "T1"}]
+    kw = ws.vector_search_indexes.query_index.call_args.kwargs
+    assert kw["index_name"] == "main.search.docs_index"
+    assert kw["columns"] == ["doc_id", "title"]
+    assert kw["num_results"] == 3
+    assert kw["filters_json"] == '{"lang": "en"}'
 
 
 def test_env_var_resolved_on_string_values(monkeypatch):
