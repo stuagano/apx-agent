@@ -239,6 +239,10 @@ from ._cancellation import (
     cancellable,
 )
 
+# Tool-facing exceptions — raise ToolError to contain a tool failure as a
+# legible finding instead of a turn-aborting 500 (#562).
+from ._errors import ToolError
+
 # Policies — ALLOW / ASK / DENY governance with human-in-the-loop approvals
 from ._policy import (
     Approval,
@@ -569,6 +573,8 @@ __all__ = [
     "CancelToken",
     "ToolCancelled",
     "cancellable",
+    # Tool-facing exceptions
+    "ToolError",
     # Policies — ALLOW / ASK / DENY with human-in-the-loop approvals
     "Approval",
     "ApprovalRequired",

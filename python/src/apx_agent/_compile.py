@@ -278,15 +278,18 @@ def _governance_exception_middleware() -> Any:
 
     ``before_tool`` guards (Watchdog reject, PolicyGate DENY/ASK) and
     cancellable tools signal via exceptions — ``PermissionError`` (incl.
-    ``ApprovalRequired``) and ``ToolCancelled``. Without this middleware
-    LangGraph's tool node re-raises them, which kills the WHOLE turn:
-    the user sees a dead stream instead of the agent explaining the
-    rejection and offering an alternative.
+    ``ApprovalRequired``) and ``ToolCancelled``. A tool author also opts a
+    plain operational failure into containment by raising ``ToolError`` (#562):
+    a denied query or missing table an investigation agent should *reason
+    about*, not die on. Without this middleware LangGraph's tool node re-raises
+    all of them, which kills the WHOLE turn — in a ``SequentialAgent`` one
+    tool raise aborts every downstream step as an opaque HTTP 500.
 
     Converting them to error ``ToolMessage``s keeps the loop alive — the
     LLM reads the reason (the exception message carries it) and can
-    respond. Genuine bugs (TypeError, KeyError, ...) still propagate and
-    fail loud.
+    respond. Genuine bugs (TypeError, KeyError, a bare RuntimeError) are NOT
+    ``ToolError`` and still propagate and fail loud, so a real defect is never
+    hidden behind a plausible tool message.
 
     Implements BOTH the sync (``wrap_tool_call``) and async
     (``awrap_tool_call``) hooks: the served ``/invocations``/ChatAgent paths
@@ -300,6 +303,13 @@ def _governance_exception_middleware() -> Any:
     from langchain_core.messages import ToolMessage
 
     from ._cancellation import ToolCancelled
+    from ._errors import ToolError
+
+    # Exceptions a tool call may raise that are legible signals, not bugs:
+    # governance rejections/cancellation and an author-declared operational
+    # failure (ToolError, #562). Each is contained as an error ToolMessage;
+    # anything not in this tuple propagates and fails loud.
+    _CONTAINED = (PermissionError, ToolCancelled, ToolError)
 
     def _to_error(request: Any, exc: Exception) -> ToolMessage:
         return ToolMessage(
@@ -312,13 +322,13 @@ def _governance_exception_middleware() -> Any:
         def wrap_tool_call(self, request: Any, handler: Any) -> Any:
             try:
                 return handler(request)
-            except (PermissionError, ToolCancelled) as exc:
+            except _CONTAINED as exc:
                 return _to_error(request, exc)
 
         async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
             try:
                 return await handler(request)
-            except (PermissionError, ToolCancelled) as exc:
+            except _CONTAINED as exc:
                 return _to_error(request, exc)
 
     return _GovernanceErrorMiddleware()
