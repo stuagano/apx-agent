@@ -15,7 +15,7 @@ from typing import Any
 
 from databricks.sdk.service.dashboards import MessageStatus
 
-from apx_agent import Dependencies
+from apx_agent import Dependencies, ToolError
 from databricks_tools_core.sql import SQLExecutionError, execute_sql
 
 Workspace = Dependencies.Workspace
@@ -35,7 +35,12 @@ def _run_sql(ws: Any, sql: str) -> list[dict[str, Any]]:
     try:
         return execute_sql(sql, client=ws, timeout=30)
     except SQLExecutionError as e:
-        raise RuntimeError(f"Query failed: {e}")
+        # A denied/failed query is a finding, not a crash: ToolError is
+        # contained by the governance middleware as a tool result the agent
+        # reasons about, so one failed query no longer aborts the whole
+        # SequentialAgent pipeline as an opaque 500 (#562). Every tool built on
+        # _run_sql inherits this containment without its own try/except.
+        raise ToolError(f"Query failed: {e}") from e
 
 
 def run_sql_query(sql: str, ws: Workspace) -> dict[str, Any]:
@@ -43,16 +48,9 @@ def run_sql_query(sql: str, ws: Workspace) -> dict[str, Any]:
     Use this to check if specific data exists, count rows, or inspect values.
     sql: a SELECT query (read-only)"""
     # Local because: framework sql_tool pins a warehouse at construction time; here we discover a serverless warehouse from the caller's accessible list at runtime.
-    try:
-        rows = _run_sql(ws, sql)
-    except Exception as e:
-        # Contain the failure to this step so the SequentialAgent pipeline can
-        # treat "the query was denied / failed" as a finding and keep going,
-        # instead of a single tool RuntimeError becoming an opaque 500 that
-        # discards every downstream step (#562). The error is returned to the
-        # agent (and the caller), not hidden. `_run_sql` already prefixes
-        # "Query failed:", so surface its message as-is.
-        return {"error": str(e)}
+    # No local try/except needed: _run_sql raises ToolError, which the framework
+    # contains as a legible tool result instead of a pipeline-aborting 500 (#562).
+    rows = _run_sql(ws, sql)
     return {"row_count": len(rows), "rows": rows[:50]}
 
 

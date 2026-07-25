@@ -9,7 +9,7 @@ import logging
 import math
 from typing import Any
 
-from apx_agent import Dependencies, require_user_api_scopes
+from apx_agent import Dependencies, ToolError, require_user_api_scopes
 from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_literal
 
 Workspace = Dependencies.Workspace
@@ -27,13 +27,17 @@ def _run_sql(ws: Any, sql: str) -> list[dict[str, Any]]:
     try:
         return execute_sql(sql, client=ws, timeout=30)
     except SQLExecutionError as e:
-        raise RuntimeError(f"Query failed: {e}")
+        # A denied/failed query is a finding, not a crash: raise ToolError so
+        # the governance middleware contains it as a tool result the agent
+        # reasons about, instead of a RuntimeError that aborts the whole
+        # SequentialAgent turn as an opaque 500 across the A2A hop (#562).
+        raise ToolError(f"Query failed: {e}") from e
 
 
 def _get_current_version(ws: Any, table: str) -> int:
     rows = _run_sql(ws, f"DESCRIBE HISTORY {table} LIMIT 1")
     if not rows:
-        raise RuntimeError(f"No history found for {table}")
+        raise ToolError(f"No history found for {table}")
     return int(rows[0]["version"])
 
 
