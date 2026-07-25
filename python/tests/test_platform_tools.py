@@ -47,7 +47,8 @@ def test_vector_search_attaches_resource() -> None:
 def test_vector_search_default_name_and_description() -> None:
     tool_fn = vector_search_tool("main.search.docs_index")
     assert tool_fn.__name__ == "vector_search"
-    assert "main.search.docs_index" in (tool_fn.__doc__ or "")
+    assert tool_fn.__doc__ is not None
+    assert "main.search.docs_index" in tool_fn.__doc__
 
 
 def test_vector_search_custom_name_and_description() -> None:
@@ -103,9 +104,23 @@ def test_sql_tool_attaches_warehouse_resource_when_id_given() -> None:
 
 
 def test_sql_tool_no_resource_without_warehouse_id() -> None:
+    from apx_agent._resources import get_user_api_scopes
+
     tool_fn = sql_tool()
-    # No warehouse declared → no resource (auto-discovery at call time)
+    # No warehouse declared → no resource (auto-discovery at call time), but
+    # the `sql` OBO scope is still declared so deploy does not depend on the
+    # scaffold baseline.
     assert get_resources(tool_fn) == []
+    assert get_user_api_scopes(tool_fn) == ["sql"]
+
+
+def test_sql_tool_with_warehouse_derives_sql_via_resource_not_raw_scope() -> None:
+    from apx_agent._resources import get_user_api_scopes, user_api_scopes_for
+
+    tool_fn = sql_tool(warehouse_id="wh-prod-123")
+    specs = get_resources(tool_fn)
+    assert user_api_scopes_for(specs) == ["sql"]
+    assert get_user_api_scopes(tool_fn) == []
 
 
 def test_sql_tool_default_name() -> None:

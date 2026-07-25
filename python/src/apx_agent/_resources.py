@@ -612,9 +612,9 @@ def user_api_scopes_for(resources: Iterable["ResourceSpec"]) -> list[str]:
 
     e.g. a Genie space → ``dashboards.genie``; a serving endpoint →
     ``serving.serving-endpoints``. Returned sorted + de-duplicated. Note: a
-    ``sql_tool`` that auto-discovers its warehouse declares no SQL resource, so
-    the ``sql`` baseline is kept in the scaffold rather than derived here — the
-    deploy *unions* these derived scopes onto that baseline.
+    ``sql_tool`` that auto-discovers its warehouse declares no SQL resource —
+    that path uses :func:`require_user_api_scopes` for ``sql`` instead, and
+    deploy unions both sources onto the scaffold baseline.
     """
     scopes = {
         _KIND_TO_SCOPE[s.kind] for s in resources if s.kind in _KIND_TO_SCOPE

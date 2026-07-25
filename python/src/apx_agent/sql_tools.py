@@ -49,9 +49,11 @@ def sql_tool(
 
     Args:
         warehouse_id: Fixed SQL warehouse ID to use. When set, declared as
-            a ``DatabricksSQLWarehouse`` resource at log time. When omitted,
-            the warehouse is auto-discovered on each call (no resource
-            declaration).
+            a ``DatabricksSQLWarehouse`` resource at log time (which also
+            derives the ``sql`` OBO scope). When omitted, the warehouse is
+            auto-discovered on each call (no resource declaration); the
+            ``sql`` OBO scope is still declared so deploy does not depend on
+            the scaffold baseline alone.
         name: Tool name shown to the LLM. Defaults to ``"run_sql"``.
         description: Tool description shown to the LLM. When omitted,
             generated from the warehouse_id (or a generic description).
@@ -59,7 +61,7 @@ def sql_tool(
             with a warning if the query produces more. Default 1000.
     """
     from ._defaults import UserClientDependency
-    from ._resources import ResourceSpec
+    from ._resources import ResourceSpec, require_user_api_scopes
     from ._tool_factory import build_tool
 
     if description is None:
@@ -96,9 +98,12 @@ def sql_tool(
             "rows": rows,
         }
 
-    return build_tool(
+    tool = build_tool(
         _run_sql,
         name=name,
         description=_desc,
         resources=[ResourceSpec("sql_warehouse", warehouse_id)] if warehouse_id else (),
     )
+    if not warehouse_id:
+        require_user_api_scopes(tool, ["sql"])
+    return tool
