@@ -17,6 +17,10 @@ so that ``UserClientDependency`` is resolved eagerly at function definition time
 import logging
 from typing import Any
 
+from databricks.sdk.errors.base import DatabricksError
+
+from ._errors import ToolError
+
 logger = logging.getLogger(__name__)
 
 
@@ -109,7 +113,12 @@ def genie_tool(
 
     async def _ask_genie(question: str, ws: UserClientDependency) -> str:  # type: ignore[valid-type]
         """Placeholder doc — overwritten below."""
-        msg = _run_genie_query(ws, space_id, question)
+        try:
+            msg = _run_genie_query(ws, space_id, question)
+        except DatabricksError as e:
+            # A Genie API failure is a finding, not a pipeline-fatal 500 (#562)
+            # — matches the structured genie_query_tool, which already contains.
+            raise ToolError(f"Genie query failed: {e}") from e
         if not _is_completed(msg):
             logger.warning("Genie query ended with status %s in space %s", msg.status, space_id)
             return f"Genie query did not complete (status: {msg.status})."
