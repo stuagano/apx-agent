@@ -4419,6 +4419,35 @@ class TestDatabricksYmlMergePreservesComments:
         app = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]
         assert "unity-catalog" in app["user_api_scopes"]
 
+    def test_auto_update_yml_unions_sql_from_auto_discover_sql_tool(self, tmp_path):
+        # sql_tool() with no warehouse_id attaches no ResourceSpec, but still
+        # needs the `sql` OBO scope. Deploy must union it from the tool
+        # declaration rather than relying on the scaffold baseline alone.
+        import yaml as pyyaml
+        from apx_agent import Agent, sql_tool
+        from apx_agent.cli import _auto_update_databricks_yml
+
+        yml_path = tmp_path / "databricks.yml"
+        # Seed WITHOUT sql so the derived scope is the only source.
+        yml_path.write_text(
+            "bundle:\n  name: my-agent\n"
+            "resources:\n  apps:\n    my-agent:\n"
+            "      name: my-agent\n"
+            "      source_code_path: ./.build\n"
+            "      user_api_scopes:\n"
+            "        - serving.serving-endpoints\n"
+            "      resources: []\n"
+        )
+
+        _auto_update_databricks_yml(
+            tmp_path, agent=Agent(tools=[sql_tool()]),
+            bundle_key="my-agent", log=lambda msg: None,
+        )
+
+        app = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]
+        assert "sql" in app["user_api_scopes"]
+        assert "serving.serving-endpoints" in app["user_api_scopes"]
+
 
 def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
