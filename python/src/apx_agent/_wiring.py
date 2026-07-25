@@ -173,6 +173,47 @@ def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
     setattr(agent, "_apx_config_guards_applied", True)
 
 
+def attach_declared_vector_search(agent: BaseAgent, config: AgentConfig) -> None:
+    """Wire ``[tool.apx.agent] vector_search_index`` into the agent as a tool.
+
+    Mints a ``vector_search_tool`` for the declared index and registers it on the
+    agent, so a declared index becomes a live tool in both the A2A card and the
+    compiled LangGraph. Called from ``finalize_agent`` BEFORE
+    ``agent.collect_tools()``, mirroring ``attach_declared_memory``.
+
+    The tool is a pure closure — its workspace client is injected per-request and
+    runs as the calling user — so no ``ws`` is needed at attach time and no boot
+    probe/degraded path applies (unlike Lakebase memory).
+
+    Guards, matching the declared-memory / ``merge_config_tools`` precedent:
+    - a composition root with no ``_register_tool`` warns and is skipped
+      (attach on a leaf ``LlmAgent``);
+    - a code-wired ``vector_search`` tool wins on name collision — the declared
+      index is skipped. This also makes a second call a no-op (idempotent).
+    """
+    register = getattr(agent, "_register_tool", None)
+    if register is None:
+        logger.warning(
+            "[tool.apx.agent] vector_search_index declared on a %s root that has no "
+            "_register_tool — skipping (attach on a leaf LlmAgent).",
+            type(agent).__name__,
+        )
+        return
+
+    existing = {getattr(fn, "__name__", None) for fn in getattr(agent, "_tool_fns", [])}
+    if "vector_search" in existing:
+        logger.warning(
+            "[tool.apx.agent] vector_search_index declares a 'vector_search' tool but "
+            "the agent already wires one — keeping the code-wired tool, ignoring the "
+            "declared index.",
+        )
+        return
+
+    from .vector_search import vector_search_tool  # noqa: PLC0415
+
+    register(vector_search_tool(config.vector_search_index))
+
+
 def finalize_agent(
     agent: BaseAgent,
     config: AgentConfig | None = None,
@@ -219,6 +260,13 @@ def finalize_agent(
         from ._memory_wiring import attach_declared_memory  # noqa: PLC0415
 
         attach_declared_memory(agent, config, ws=ws)
+
+        # E3d: wire a config-declared Vector Search index as a tool, after the
+        # tool merge + memory attach so code-wired names are already in the
+        # collision set. Must run BEFORE agent.collect_tools() (the A2A card
+        # snapshot) so the tool appears in the card and compiled graph.
+        if config.vector_search_index is not None:
+            attach_declared_vector_search(agent, config)
 
     # Late ws-binding: a DataAgent constructed at import time (the Python-canonical
     # agent.py path) has ws=None and so couldn't wire its UC-function tools. Now
