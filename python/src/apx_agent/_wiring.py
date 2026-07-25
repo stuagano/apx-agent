@@ -186,11 +186,16 @@ def attach_declared_vector_search(agent: BaseAgent, config: AgentConfig) -> None
     probe/degraded path applies (unlike Lakebase memory).
 
     Guards, matching the declared-memory / ``merge_config_tools`` precedent:
+    - no ``vector_search_index`` declared → no-op;
     - a composition root with no ``_register_tool`` warns and is skipped
       (attach on a leaf ``LlmAgent``);
     - a code-wired ``vector_search`` tool wins on name collision — the declared
       index is skipped. This also makes a second call a no-op (idempotent).
     """
+    index_name = config.vector_search_index
+    if index_name is None:
+        return
+
     register = getattr(agent, "_register_tool", None)
     if register is None:
         logger.warning(
@@ -211,7 +216,7 @@ def attach_declared_vector_search(agent: BaseAgent, config: AgentConfig) -> None
 
     from .vector_search import vector_search_tool  # noqa: PLC0415
 
-    register(vector_search_tool(config.vector_search_index))
+    register(vector_search_tool(index_name))
 
 
 def finalize_agent(
@@ -265,8 +270,8 @@ def finalize_agent(
         # tool merge + memory attach so code-wired names are already in the
         # collision set. Must run BEFORE agent.collect_tools() (the A2A card
         # snapshot) so the tool appears in the card and compiled graph.
-        if config.vector_search_index is not None:
-            attach_declared_vector_search(agent, config)
+        # Self-guards when no index is declared (like attach_declared_memory).
+        attach_declared_vector_search(agent, config)
 
     # Late ws-binding: a DataAgent constructed at import time (the Python-canonical
     # agent.py path) has ws=None and so couldn't wire its UC-function tools. Now
