@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from apx_agent import Dependencies
+from apx_agent import Dependencies, ToolError
 from databricks.sdk.service.sql import StatementParameterListItem, StatementState
 
 from config import get_settings
@@ -23,7 +23,7 @@ def _warehouse_id(ws: Any) -> str:
         (serverless if wh.warehouse_type and "serverless" in str(wh.warehouse_type).lower() else others).append(wh)
     pool = serverless or others
     if not pool:
-        raise RuntimeError("No running SQL warehouse found")
+        raise ToolError("No running SQL warehouse found")
     return pool[0].id
 
 
@@ -44,7 +44,7 @@ def _fetch_row(application_id: str, ws: Any) -> dict[str, Any] | None:
         wait_timeout="30s",
     )
     if not result.status or result.status.state != StatementState.SUCCEEDED:
-        raise RuntimeError(f"household query failed: {result.status.error if result.status else 'unknown'}")
+        raise ToolError(f"household query failed: {result.status.error if result.status else 'unknown'}")
     rows = (result.result.data_array or []) if result.result else []
     if not rows:
         return None

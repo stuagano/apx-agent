@@ -211,3 +211,20 @@ class TestGenieQueryToolExecution:
         result = await tool(question="anything", ws=ws)
         assert "error" in result
         assert "network down" in result["error"]
+
+
+class TestGenieToolContainment:
+    @pytest.mark.asyncio
+    async def test_genie_tool_contains_databricks_error(self):
+        # #562: a Genie API failure is a finding the runtime contains, not a
+        # pipeline-fatal 500 — genie_tool raises ToolError, matching the
+        # already-contained structured genie_query_tool.
+        from databricks.sdk.errors import DatabricksError
+
+        from apx_agent import ToolError
+
+        ws = MagicMock()
+        ws.genie.start_conversation_and_wait.side_effect = DatabricksError("space unavailable")
+        tool = genie_tool("space-123")
+        with pytest.raises(ToolError, match="Genie query failed"):
+            await tool(question="anything", ws=ws)

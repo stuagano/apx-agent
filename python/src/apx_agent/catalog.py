@@ -10,6 +10,9 @@ import math
 import re
 from typing import Any
 
+from databricks.sdk.errors.base import DatabricksError
+
+from ._errors import ToolError
 from ._sql import run_sql, sql_str_literal
 
 logger = logging.getLogger(__name__)
@@ -123,11 +126,17 @@ def lineage_tool(
 
     async def _get_lineage(table_name: str, ws: UserClientDependency) -> dict[str, Any]:  # type: ignore[valid-type]
         """Placeholder doc — overwritten below."""
-        result = ws.api_client.do(
-            "GET",
-            "/api/2.1/unity-catalog/lineage-tracking/table-lineage",
-            query={"table_name": table_name},
-        )
+        try:
+            result = ws.api_client.do(
+                "GET",
+                "/api/2.1/unity-catalog/lineage-tracking/table-lineage",
+                query={"table_name": table_name},
+            )
+        except DatabricksError as e:
+            # A missing table / denied access is a finding the agent should
+            # reason about, not a pipeline-fatal 500 (#562). Parsing bugs below
+            # are NOT caught, so a genuine defect still fails loud.
+            raise ToolError(f"get_table_lineage failed for {table_name!r}: {e}") from e
         assert isinstance(result, dict)
         upstreams = [
             {
@@ -182,7 +191,11 @@ def schema_tool(
 
     async def _describe_table(table_name: str, ws: UserClientDependency) -> list[dict[str, Any]]:  # type: ignore[valid-type]
         """Placeholder doc — overwritten below."""
-        t = ws.tables.get(full_name=table_name)
+        try:
+            t = ws.tables.get(full_name=table_name)
+        except DatabricksError as e:
+            # Missing table / denied access is a finding, not a 500 (#562).
+            raise ToolError(f"describe_table failed for {table_name!r}: {e}") from e
         return [
             {
                 "name": col.name,
@@ -281,7 +294,11 @@ def uc_function_tool(
         """Placeholder doc — overwritten below."""
         # Fetch and cache function definition on first call
         if not _cache:
-            func_info = ws.functions.get(function_name)
+            try:
+                func_info = ws.functions.get(function_name)
+            except DatabricksError as e:
+                # Unknown function / denied access is a finding, not a 500 (#562).
+                raise ToolError(f"UC function {function_name!r} lookup failed: {e}") from e
             raw_params = getattr(getattr(func_info, "input_params", None), "parameters", None) or []
             _cache["parameters"] = sorted(
                 [
@@ -308,7 +325,12 @@ def uc_function_tool(
             else f"SELECT {function_name}({', '.join(sql_args)})"
         )
 
-        rows = run_sql(ws, sql, warehouse_id=None)
+        try:
+            rows = run_sql(ws, sql, warehouse_id=None)
+        except (DatabricksError, RuntimeError) as e:
+            # run_sql raises RuntimeError on query failure (incl. the #556
+            # re-authorize hint). Contain it as a finding rather than a 500 (#562).
+            raise ToolError(f"UC function {function_name!r} call failed: {e}") from e
 
         # Scalar function: unwrap the single cell
         if rows and len(rows) == 1 and len(rows[0]) == 1:

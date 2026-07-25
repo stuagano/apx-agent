@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from apx_agent import Dependencies
+from apx_agent import Dependencies, ToolError
 
 from config import get_settings
 
@@ -45,7 +45,7 @@ def _warehouse_id(ws: Any) -> str:
         (serverless if wh.warehouse_type and "serverless" in str(wh.warehouse_type).lower() else others).append(wh)
     pool = serverless or others
     if not pool:
-        raise RuntimeError("No running SQL warehouse found")
+        raise ToolError("No running SQL warehouse found")
     return pool[0].id
 
 
