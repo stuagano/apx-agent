@@ -7961,6 +7961,60 @@ def _auto_update_databricks_yml(
     return _BundleUpdateResult(added=added, skipped=skipped)
 
 
+def _warn_missing_user_api_scopes(
+    doc: dict[str, Any], *, module: str, bundle_key: str, log: Any,
+) -> list[str]:
+    """Deploy-time check: warn when a tool needs an OBO scope databricks.yml omits.
+
+    Turns a runtime "does not have required scopes" 500 into a deploy-time
+    warning (#563). ``--auto-update-yml`` MERGES the needed scopes in and is the
+    fix; but that flag is off by default, so without this check the scope
+    derivation never runs on the common ``deploy`` / ``redeploy`` path and a tool
+    that needs e.g. ``unity-catalog`` ships with stale ``user_api_scopes`` and
+    403s at runtime with nothing catching it.
+
+    The needed set is the SAME union the merge would write —
+    ``user_api_scopes_for(collect_resource_specs) ∪ collect_user_api_scopes``.
+    This only compares and warns; it NEVER mutates the operator's file (that
+    stays opt-in behind ``--auto-update-yml``). Best-effort: any failure to load
+    or introspect the agent skips the check rather than aborting the deploy —
+    the real agent load happens later on the deploy path, where errors surface.
+
+    Returns the sorted missing scopes (empty if none / on skip) for testability.
+    """
+    try:
+        from apx_agent._resources import (
+            collect_resource_specs,
+            collect_user_api_scopes,
+            user_api_scopes_for,
+        )
+
+        agent = _load_finalized_agent(module)
+        needed = set(user_api_scopes_for(collect_resource_specs(agent))) | set(
+            collect_user_api_scopes(agent)
+        )
+        if not needed:
+            return []
+        resources = doc.get("resources") if isinstance(doc, dict) else None
+        apps = resources.get("apps") if isinstance(resources, dict) else None
+        app_block = apps.get(bundle_key) if isinstance(apps, dict) else None
+        declared_raw = app_block.get("user_api_scopes") if isinstance(app_block, dict) else None
+        declared = set(declared_raw or [])
+        missing = sorted(needed - declared)
+    except Exception as exc:  # best-effort — never block a deploy on the check
+        logger.debug("user_api_scopes pre-check skipped: %s", exc)
+        return []
+    if missing:
+        log(
+            f"# WARNING: agent tools need OBO scope(s) not declared in "
+            f"databricks.yml: {', '.join(missing)}. Without them the deployed "
+            f"app 403s at runtime (\"does not have required scopes\"). Add them "
+            f"to resources.apps.{bundle_key}.user_api_scopes, or re-run deploy "
+            f"with --auto-update-yml to merge them automatically."
+        )
+    return missing
+
+
 def _poll_app_ready(
     app_name: str,
     profile: str | None,
@@ -8319,13 +8373,21 @@ def _deploy_apps_impl(
     else:
         log(f"# resolved app_name: {resolved_app_name}")
 
-    # 2. Optional auto-merge resources
+    # 2. Reconcile the OBO scopes / resources the agent's tools need against
+    #    databricks.yml. --auto-update-yml MERGES them in (never clobbering);
+    #    without it (the default) we still CHECK and warn about any missing OBO
+    #    scope, so a tool that needs e.g. `unity-catalog` surfaces as a
+    #    deploy-time warning instead of a runtime "does not have required
+    #    scopes" 500 — the derivation now fires on the common deploy/redeploy
+    #    path, not only under the opt-in flag (#563).
     if auto_update_yml:
-        log("# auto-update-yml: merging agent ResourceSpec into databricks.yml")
+        log("# auto-update-yml: merging agent ResourceSpec + OBO scopes into databricks.yml")
         agent = _load_finalized_agent(module)
         _auto_update_databricks_yml(
             cwd, agent=agent, bundle_key=bundle_key, log=log,
         )
+    else:
+        _warn_missing_user_api_scopes(doc, module=module, bundle_key=bundle_key, log=log)
 
     # 2a. --env / --secret-env (issue #415): merge caller-supplied runtime
     # env into resources.apps.<key>.config.env before the bundle deploy.
