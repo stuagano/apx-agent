@@ -308,7 +308,7 @@ class AgentConfig(BaseModel):
     temperature: float | None = None  # None = use model default
     max_tokens: int | None = None  # None = use model default
     max_iterations: int = 10  # safety cap on the tool-calling loop
-    vector_search_index: str | None = None  # Used by dev UI; RAG runtime not yet implemented
+    vector_search_index: str | None = None  # FQ index name; wired as a vector_search_tool by finalize_agent
     sub_agents: list[str] = []  # URLs (or $ENV_VAR refs) of remote agents to consume as tools
     url: str | None = None  # Public URL of this agent (supports $ENV_VAR); used for registry self-announcement
     registry: str | None = None  # URL of an agent registry to auto-register with on startup (supports $ENV_VAR)
