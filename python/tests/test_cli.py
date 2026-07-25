@@ -4419,6 +4419,36 @@ class TestDatabricksYmlMergePreservesComments:
         app = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]
         assert "unity-catalog" in app["user_api_scopes"]
 
+    def test_auto_update_yml_never_drops_existing_scopes(self, tmp_path):
+        # The scope union is additive: an operator's existing user_api_scopes
+        # (incl. ones no tool derives) survive when the merge adds a new one.
+        import yaml as pyyaml
+        from apx_agent import Agent, require_user_api_scopes
+        from apx_agent.cli import _auto_update_databricks_yml
+
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(
+            "resources:\n"
+            "  apps:\n"
+            "    my-agent:\n"
+            "      name: my-agent\n"
+            "      user_api_scopes:\n"
+            "      - sql\n"
+            "      - serving.serving-endpoints\n"
+            "      config: {}\n"
+        )
+
+        def list_catalogs(ws) -> None: ...
+        require_user_api_scopes(list_catalogs, ["unity-catalog"])
+
+        _auto_update_databricks_yml(
+            tmp_path, agent=Agent(tools=[list_catalogs]),
+            bundle_key="my-agent", log=lambda msg: None,
+        )
+
+        scopes = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]["user_api_scopes"]
+        assert set(scopes) == {"sql", "serving.serving-endpoints", "unity-catalog"}
+
     def test_auto_update_yml_unions_sql_from_auto_discover_sql_tool(self, tmp_path):
         # sql_tool() with no warehouse_id attaches no ResourceSpec, but still
         # needs the `sql` OBO scope. Deploy must union it from the tool
@@ -4447,6 +4477,72 @@ class TestDatabricksYmlMergePreservesComments:
         app = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]
         assert "sql" in app["user_api_scopes"]
         assert "serving.serving-endpoints" in app["user_api_scopes"]
+
+
+class TestDeployScopePrecheck:
+    """Day-2 (#563): an apps deploy WARNS (never mutates) when a tool needs an
+    OBO scope databricks.yml omits — so the scope derivation fires on the common
+    deploy/redeploy path, not only under the opt-in --auto-update-yml flag.
+    """
+
+    def _doc(self, scopes: list[str]) -> dict:
+        return {"resources": {"apps": {"my-agent": {
+            "name": "my-agent",
+            "user_api_scopes": list(scopes),
+        }}}}
+
+    def _agent_needing_unity_catalog(self):
+        from apx_agent import Agent, require_user_api_scopes
+
+        def list_catalogs(ws) -> None: ...
+        require_user_api_scopes(list_catalogs, ["unity-catalog"])
+        return Agent(tools=[list_catalogs])
+
+    def test_warns_on_missing_scope(self, monkeypatch):
+        from apx_agent.cli import _warn_missing_user_api_scopes
+
+        monkeypatch.setattr(
+            "apx_agent.cli._load_finalized_agent",
+            lambda module: self._agent_needing_unity_catalog(),
+        )
+        logs: list[str] = []
+        missing = _warn_missing_user_api_scopes(
+            self._doc(["sql", "serving.serving-endpoints"]),
+            module="agent", bundle_key="my-agent", log=logs.append,
+        )
+        assert missing == ["unity-catalog"]
+        assert any("unity-catalog" in m and "WARNING" in m for m in logs)
+
+    def test_silent_when_scope_present(self, monkeypatch):
+        from apx_agent.cli import _warn_missing_user_api_scopes
+
+        monkeypatch.setattr(
+            "apx_agent.cli._load_finalized_agent",
+            lambda module: self._agent_needing_unity_catalog(),
+        )
+        logs: list[str] = []
+        missing = _warn_missing_user_api_scopes(
+            self._doc(["sql", "unity-catalog"]),
+            module="agent", bundle_key="my-agent", log=logs.append,
+        )
+        assert missing == []
+        assert logs == []
+
+    def test_best_effort_on_agent_load_failure(self, monkeypatch):
+        # A failure to load/introspect the agent skips the check silently — the
+        # pre-check must never abort a deploy.
+        from apx_agent.cli import _warn_missing_user_api_scopes
+
+        def _boom(module):
+            raise RuntimeError("cannot import user module")
+
+        monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _boom)
+        logs: list[str] = []
+        missing = _warn_missing_user_api_scopes(
+            self._doc(["sql"]), module="agent", bundle_key="my-agent", log=logs.append,
+        )
+        assert missing == []
+        assert logs == []
 
 
 def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
