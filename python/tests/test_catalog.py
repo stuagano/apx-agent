@@ -332,3 +332,82 @@ class TestUcFunctionToolFactory:
         tool = uc_function_tool("main.tools.fn")
         result = await tool(params={}, ws=ws)
         assert result == [{"a": "1"}, {"a": "2"}]
+
+
+# ---------------------------------------------------------------------------
+# #562 containment: metadata factories surface a DatabricksError as ToolError
+# (a legible finding the runtime contains) while parsing bugs still propagate.
+# ---------------------------------------------------------------------------
+
+
+class TestMetadataFactoryContainment:
+    @pytest.mark.asyncio
+    async def test_schema_tool_contains_databricks_error(self):
+        from databricks.sdk.errors import NotFound
+
+        from apx_agent import ToolError
+
+        ws = MagicMock()
+        ws.tables.get.side_effect = NotFound("Table 'main.s.missing' does not exist")
+        tool = schema_tool()
+        with pytest.raises(ToolError, match="describe_table failed"):
+            await tool(table_name="main.s.missing", ws=ws)
+
+    @pytest.mark.asyncio
+    async def test_schema_tool_lets_parsing_bug_propagate(self):
+        # ws.tables.get succeeds, but a non-Databricks bug in row handling
+        # (accessing .columns raises) is NOT a finding — it must fail loud,
+        # not be contained as a ToolError.
+        class _BadTable:
+            @property
+            def columns(self):
+                raise KeyError("bug in parsing")
+
+        ws = MagicMock()
+        ws.tables.get.return_value = _BadTable()
+        tool = schema_tool()
+        with pytest.raises(KeyError):
+            await tool(table_name="main.s.t", ws=ws)
+
+    @pytest.mark.asyncio
+    async def test_lineage_tool_contains_databricks_error(self):
+        from databricks.sdk.errors import PermissionDenied
+
+        from apx_agent import ToolError
+
+        ws = MagicMock()
+        ws.api_client.do.side_effect = PermissionDenied("no access to lineage")
+        tool = lineage_tool()
+        with pytest.raises(ToolError, match="get_table_lineage failed"):
+            await tool(table_name="main.s.t", ws=ws)
+
+    @pytest.mark.asyncio
+    async def test_uc_function_tool_contains_lookup_error(self):
+        from databricks.sdk.errors import NotFound
+
+        from apx_agent import ToolError
+
+        ws = MagicMock()
+        ws.functions.get.side_effect = NotFound("function not found")
+        tool = uc_function_tool("main.tools.missing")
+        with pytest.raises(ToolError, match="lookup failed"):
+            await tool(params={}, ws=ws)
+
+    @pytest.mark.asyncio
+    async def test_uc_function_tool_contains_query_failure(self, monkeypatch):
+        # run_sql raises RuntimeError on a failed query (incl. the #556
+        # re-authorize hint); the factory contains it as a ToolError. Uses
+        # monkeypatch so the override is restored after the test.
+        from apx_agent import ToolError
+        from apx_agent import catalog as cat_module
+
+        ws = MagicMock()
+        ws.functions.get.return_value = _make_func_info([("x", "STRING", 0)])
+
+        def _boom(ws, sql, **kw):
+            raise RuntimeError("Query failed: warehouse denied")
+
+        monkeypatch.setattr(cat_module, "run_sql", _boom)
+        tool = uc_function_tool("main.tools.fn")
+        with pytest.raises(ToolError, match="call failed"):
+            await tool(params={"x": "a"}, ws=ws)
