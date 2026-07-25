@@ -1,0 +1,30 @@
+name: Auto-enable auto-merge
+
+# Make auto-merge the default: when a PR is opened (or marked ready), turn on
+# squash auto-merge so it lands automatically once the required CI checks pass.
+# Merging is still gated entirely by branch protection's required checks/reviews
+# — this only flips the switch a human would otherwise click per PR.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+# Enabling auto-merge needs write on pull requests; contents:write covers the
+# eventual merge commit.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    runs-on: ubuntu-latest
+    # Skip drafts (not mergeable yet) and fork PRs (their GITHUB_TOKEN is
+    # read-only, so enabling auto-merge would 403).
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Enable squash auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
