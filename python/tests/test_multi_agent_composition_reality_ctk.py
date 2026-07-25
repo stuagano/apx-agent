@@ -261,8 +261,15 @@ def test_parallel_agent_merges_all_outputs(monkeypatch: pytest.MonkeyPatch) -> N
             return "first-tool-fake"
 
         def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
-            self._bound_tools = tools
-            return self
+            # Return a fresh instance per branch: ParallelAgent compiles and runs
+            # both branches concurrently against the model this factory returns,
+            # so storing bound tools on a SHARED instance races — both branches
+            # could read the other's tools and call the same tool (flaky "Branch
+            # B tool never executed"). A per-bind clone gives each branch its own
+            # bound tools with no shared mutable state.
+            clone = _FirstToolModel(key=self.key)
+            clone._bound_tools = tools
+            return clone
 
         def _generate(self, messages: list[BaseMessage], **kwargs: Any) -> ChatResult:
             last_tool = next(
