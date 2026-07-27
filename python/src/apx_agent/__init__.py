@@ -54,6 +54,7 @@ from ._defaults import Dependencies
 
 # SQL utilities
 from ._sql import decode_statement, get_warehouse_id, run_sql
+from ._sql_durable import run_sql_durable
 
 # Provider compatibility layer — get_llm() factory + named subclasses
 from ._llm import ChatDatabricksGptReasoning, get_llm
@@ -429,6 +430,7 @@ __all__ = [
     "decode_statement",
     "get_warehouse_id",
     "run_sql",
+    "run_sql_durable",
     # Provider compat
     "ChatDatabricksGptReasoning",
     "get_llm",
