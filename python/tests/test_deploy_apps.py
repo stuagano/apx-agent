@@ -2414,7 +2414,9 @@ dependencies = [
     )
     calls = _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps", "--json-output"])
+    result = runner.invoke(
+        main, ["agents", "deploy", "--target", "apps", "--json-output"]
+    )
     assert result.exit_code != 0
     assert ["bundle", "validate"] not in [c[:2] for c in calls]
     last = result.output.strip().splitlines()[-1]
@@ -2435,7 +2437,10 @@ def test_successful_deploy_writes_workspace_state(
 
     monkeypatch.setattr("apx_agent.cli._maybe_write_deploy_state", capture)
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--target", "apps", "--no-run"])
+    result = runner.invoke(
+        main,
+        ["agents", "deploy", "--target", "apps", "--no-readyz-gate"],
+    )
     assert result.exit_code == 0, result.output
     assert saved, "expected _maybe_write_deploy_state to be called"
     assert saved[0]["app_name"] == "my-app"
