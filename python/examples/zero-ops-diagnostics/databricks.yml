@@ -1,0 +1,94 @@
+bundle:
+  name: zero-ops-diagnostics
+
+# The root apx-agent ``.gitignore`` excludes ``**/.build/`` because that
+# directory is built from source by ``databricks bundle deploy`` — checking
+# it in would leak wheels + duplicated source. But DAB sync honors
+# ``.gitignore`` when uploading, which means the staging tree referenced by
+# ``source_code_path: ./.build`` would be empty inside the App container.
+# ``sync.include`` overrides the ignore for this one path so the bundle can
+# upload the staged tree without un-ignoring it everywhere else.
+sync:
+  include:
+    - .build/**
+
+variables:
+  workspace_user:
+    description: User who owns the experiment
+    default: ${workspace.current_user.userName}
+  llm_endpoint_name:
+    description: Foundation model endpoint the agent calls.
+    default: databricks-claude-sonnet-4-6
+  mlflow_experiment_id:
+    description: |
+      MLflow experiment ID for tracing. Populated by scripts/quickstart.py
+      into a local .env file and surfaced here for the app environment.
+    default: ""
+
+artifacts:
+  default:
+    build: |
+      mkdir -p .build
+      cp agent.py .build/ 2>/dev/null || true
+      cp tools.py .build/ 2>/dev/null || true
+      cp -r sub_agents .build/ 2>/dev/null || true
+      cp -r agent_server scripts README.md .build/ 2>/dev/null || true
+      cp app.yaml .build/ 2>/dev/null || true
+      cp apx_agent-*.whl .build/ 2>/dev/null || true
+
+resources:
+  experiments:
+    zero-ops-diagnostics_experiment:
+      name: /Users/${var.workspace_user}/${bundle.name}-${bundle.target}
+
+  apps:
+    zero-ops-diagnostics:
+      name: zero-ops-diagnostics
+      description: Self-serve expensive DBSQL / Jobs / cost diagnostics
+      source_code_path: ./.build
+      user_api_scopes:
+        - sql
+        - serving.serving-endpoints
+      resources:
+        - name: experiment
+          experiment:
+            experiment_id: ${resources.experiments.zero-ops-diagnostics_experiment.id}
+            permission: CAN_MANAGE
+        - name: llm-endpoint
+          description: Foundation model endpoint used by the agent.
+          serving_endpoint:
+            name: ${var.llm_endpoint_name}
+            permission: CAN_QUERY
+
+      config:
+        command:
+          - uvicorn
+          - agent_server.start_server:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - $DATABRICKS_APP_PORT
+        env:
+          - name: APX_MODEL
+            value: ${var.llm_endpoint_name}
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
+
+targets:
+  dev:
+    mode: development
+    default: true
+  staging:
+    mode: production
+    resources:
+      apps:
+        zero-ops-diagnostics:
+          name: zero-ops-diagnostics-staging
+  prod:
+    mode: production
+    resources:
+      apps:
+        zero-ops-diagnostics:
+          name: zero-ops-diagnostics
