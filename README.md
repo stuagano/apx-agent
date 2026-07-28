@@ -380,6 +380,8 @@ See [docs/get-started/cli.md](docs/get-started/cli.md) for the full surface.
 | Identity passthrough + OBO | [docs/safety/identity-passthrough.md](docs/safety/identity-passthrough.md) |
 | Compliance (Watchdog, audit log) | [docs/safety/compliance.md](docs/safety/compliance.md) |
 | Deploy targets | [docs/deploy/apps-vs-model-serving.md](docs/deploy/apps-vs-model-serving.md) |
+| Scaffolded Apps CI/CD | [docs/deploy-cicd.md](docs/deploy-cicd.md) |
+| Upgrade apx-agent pins safely | [docs/upgrade.md](docs/upgrade.md) |
 | Evaluation | [docs/evaluate/overview.md](docs/evaluate/overview.md) |
 | Configuration (`pyproject.toml`) | [docs/reference/configuration.md](docs/reference/configuration.md) |
 | Coming from ADK or OpenAI Agents SDK | [docs/get-started/migration.md](docs/get-started/migration.md) |
