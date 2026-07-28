@@ -24,7 +24,8 @@ response, and tears down the bundle — every time.
 
 ## When it runs
 
-- On every PR to `main` that touches:
+- On every PR to `main` that touches (once the commented `pull_request`
+  trigger is enabled):
   - `python/src/apx_agent/**`
   - `python/examples/memory_demo/**`
   - `.github/workflows/apps-smoke-test.yml`
@@ -33,6 +34,10 @@ response, and tears down the bundle — every time.
 
 PRs that don't touch the watched paths skip the smoke test by design —
 docs-only PRs shouldn't burn DBUs.
+
+This workflow is framework CI only (ephemeral `memory_demo`). Agent
+project **dev / staging / prod** deploys live in scaffolded repos — see
+[deploy-cicd.md](deploy-cicd.md).
 
 ## Required GitHub secrets
 

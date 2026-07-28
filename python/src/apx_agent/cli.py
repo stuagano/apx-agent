@@ -61,6 +61,16 @@ warnings.filterwarnings(
 )
 
 from . import _doctor as _doctor_mod
+from ._ci_templates import CiProvider, render_ci_files
+from ._deploy_state import (
+    ApxAppDeployState,
+    delete_deploy_state,
+    load_deploy_state,
+    resolve_deployer,
+    save_deploy_state,
+    utc_now_iso,
+)
+from ._meta import compare_pinned_sha, discover_framework_sha
 from ._schema import introspect_schema_columns, APX_DIR
 
 logger = logging.getLogger(__name__)
@@ -1017,13 +1027,32 @@ def _status_prompt_string(cwd: Path) -> str:
     help="Emit a machine-readable orientation payload (profile, project, declared "
          "agents, suggested next commands) — one call for an AI agent to get its bearings.",
 )
-def status(as_prompt: bool, as_json: bool) -> None:
+@click.option(
+    "--bundle-target", default=None,
+    help="Read workspace deploy state for this DAB target (dev / staging / prod).",
+)
+@click.option(
+    "--profile", default=None,
+    help="Databricks CLI / SDK profile for workspace deploy state.",
+)
+@click.option("--json-output", is_flag=True, help="Emit deploy state as JSON.")
+def status(
+    as_prompt: bool,
+    as_json: bool,
+    bundle_target: str | None,
+    profile: str | None,
+    json_output: bool,
+) -> None:
     """Show the active profile and project context — offline, no API call.
 
     Run on demand to confirm what you're pointed at before deploying. Pass
     --prompt for a compact one-liner you can wire into your shell prompt, or
     --json for a full orientation payload (what's declared here + next steps).
     """
+    if bundle_target is not None or profile is not None or json_output:
+        _show_deploy_state_status(bundle_target or "dev", profile, json_output)
+        return
+
     from . import _doctor as _d
 
     cwd = Path.cwd()
@@ -1212,6 +1241,11 @@ dependencies = [
 [project.scripts]
 quickstart = "scripts.quickstart:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
 <APX_AGENT_SOURCE>
 [tool.apx.agent]
 name = "<APP_NAME>"
@@ -1238,6 +1272,19 @@ examples = [
 # space_id = "$GENIE_SPACE_ID"
 # name = "ask_data"
 # description = "Answer questions from a Genie space."
+'''
+
+_SCAFFOLD_APPS_TEST_IMPORT = '''\
+"""Smoke test — keeps CI green on a fresh scaffold."""
+
+from __future__ import annotations
+
+
+def test_agent_importable() -> None:
+    from agent import agent
+
+    assert agent is not None
+    assert getattr(agent, "name", None) == "<APP_NAME>"
 '''
 
 
@@ -1631,15 +1678,18 @@ resources:
 <CATALOG_SCHEMA_ENV_BLOCK>
 
 targets:
+  # Laptop / local deploys only — CI never uses ``dev``.
   dev:
     mode: development
     default: true
+  # CI staging (PR main → release). Point at a non-prod workspace via
+  # DATABRICKS_HOST_STAGING / CLIENT_ID / CLIENT_SECRET in CI secrets.
   staging:
     mode: production
     resources:
       apps:
         <APP_NAME>:
-          name: <APP_NAME>
+          name: <APP_NAME>-staging
   prod:
     mode: production
     resources:
@@ -1663,7 +1713,7 @@ apx-agent project targeting Databricks Apps.
 
 ## Setup
 ```bash
-uv sync
+uv sync --group dev
 uv run quickstart  # creates the MLflow experiment + writes .env
 ```
 
@@ -1719,6 +1769,31 @@ Repeat the same recipe for `prod` (its own `variables:` override + its own
 deploy; `--profile` selects which workspace credentials to use — they're
 independent, so forgetting to change `--profile` when you add a `staging`
 override just redeploys to the same workspace under a different catalog.
+
+## Upgrade apx-agent
+Bump the `@ref` in `pyproject.toml` (tag or commit SHA), then:
+```bash
+uv lock --upgrade-package apx-agent
+uv sync --group dev
+uv run apx deploy --target apps
+```
+Always `uv sync` before deploy — `apx deploy` bundles the *running*
+install into the App wheel. See the framework's `docs/upgrade.md`.
+
+## CI/CD
+Scaffolded pipelines follow a three-stage branch flow (``dev`` is laptop-only):
+
+| Trigger | What runs |
+|---|---|
+| PR → `main` | unit tests |
+| PR → `release` | unit tests + deploy `--bundle-target staging` |
+| Push to `release` | gated deploy `--bundle-target prod` |
+
+Configure secrets `DATABRICKS_HOST_{STAGING,PROD}`,
+`DATABRICKS_CLIENT_ID_*`, `DATABRICKS_CLIENT_SECRET_*` (and optional
+`FRAMEWORK_REPO_TOKEN` for a private apx-agent pin). Create a GitHub
+Environment named `prod` with required reviewers. Full walkthrough:
+framework `docs/deploy-cicd.md`.
 
 ## Edit
 Define your agent + tools in `agent.py` (top-level). The
@@ -3436,13 +3511,17 @@ def _find_nearby_framework_python(start: Path) -> Path | None:
 
 def _scaffold_install_ref() -> str:
     """Git ref to pin in scaffolded pyprojects when installing apx-agent from
-    GitHub. Uses the running version (``v0.2.3``) when it's a clean release,
-    else ``main`` for dev installs / unknown versions. The user can always
-    rewrite the tag later — this just picks a sensible default."""
-    import re
-    from importlib.metadata import version
+    GitHub.
+
+    Prefer a resolved VCS commit SHA (PEP 610 ``direct_url.json``) so
+    generated repos pin a reproducible build. Fall back to ``vX.Y.Z`` when
+    the running install is a clean release tag, else ``main``.
+    """
+    discovered = discover_framework_sha()
+    if discovered.sha:
+        return discovered.sha
     try:
-        v = version("apx-agent")
+        v = importlib.metadata.version("apx-agent")
     except Exception:
         return "main"
     return f"v{v}" if re.match(r"^\d+\.\d+\.\d+$", v) else "main"
@@ -3454,11 +3533,13 @@ def _scaffold_apps(
     persona: str | None = None, objective: str | None = None,
     join_key: str | None = None, lakebase: bool = True,
     instructions: str | None = None,
+    ci: CiProvider | None = "github",
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
     Produces the ``agent_server/`` + ``scripts/`` + ``databricks.yml``
-    bundle shape consumed by ``databricks bundle deploy``.
+    bundle shape consumed by ``databricks bundle deploy``, plus optional
+    CI templates (``--ci github|gitlab``).
     """
     if template == "base":
         prelude = extra_tools = ""
@@ -3489,7 +3570,8 @@ def _scaffold_apps(
         apx_source = (
             "# [tool.uv.sources] intentionally omitted — the git+https URL in\n"
             "# [project].dependencies above is the install source. Bump the @ref\n"
-            "# in that URL to upgrade; switch to a PyPI pin once apx-agent ships there.\n"
+            "# in that URL to upgrade (prefer a commit SHA); then\n"
+            "# `uv lock --upgrade-package apx-agent && uv sync`. See docs/upgrade.md.\n"
         )
 
     persona_arg = f", persona={repr(persona)}" if persona else ""
@@ -3559,10 +3641,13 @@ def _scaffold_apps(
         "agent_server/start_server.py": _SCAFFOLD_APPS_START_SERVER,
         "scripts/__init__.py": "",
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
+        "tests/test_agent_imports.py": _sub(_SCAFFOLD_APPS_TEST_IMPORT),
     }
     if manifest is not None:
         from ._okf import dump_schema_cache
         files[".apx/schema.json"] = dump_schema_cache(manifest)
+    if ci is not None:
+        files.update(render_ci_files(name, ci))
     for rel_path, content in files.items():
         path = target / rel_path
         if path.exists() and not force:
@@ -3824,11 +3909,25 @@ def _echo_scaffold_next_steps(
          "receipt. Requires --target apps. Refuses when the receipt is "
          "blocked. Default is local only.",
 )
+@click.option(
+    "--ci",
+    "ci_provider",
+    type=click.Choice(["github", "gitlab", "none"]),
+    default="github",
+    show_default=True,
+    help=(
+        "CI templates to emit for Apps scaffolds. "
+        "'github' writes .github/workflows (PR→main unit, PR→release staging "
+        "deploy, push→release gated prod). 'gitlab' writes .gitlab-ci.yml. "
+        "'none' skips CI files. Ignored for --target model-serving."
+    ),
+)
 def scaffold(
     name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
     scaffold_template: str | None, coworker_spec: str | None, use_data: bool,
     lakebase: bool, interactive: bool | None, deploy: bool,
+    ci_provider: str,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
@@ -4005,10 +4104,13 @@ def scaffold(
         return
 
     if scaffold_target == "apps":
+        ci: CiProvider | None = None
+        if ci_provider in ("github", "gitlab"):
+            ci = cast(CiProvider, ci_provider)
         _scaffold_apps(
             target, project_name, force, catalog, schema, table,
             template=scaffold_template, persona=persona, objective=objective,
-            join_key=join_key, lakebase=lakebase, instructions=instructions,
+            join_key=join_key, lakebase=lakebase, instructions=instructions, ci=ci,
         )
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)
@@ -8359,6 +8461,12 @@ def _deploy_apps_impl(
     log(f"# apx-agent agents deploy --target apps (bundle-target={bundle_target}, "
         f"profile={profile or '<default>'})")
 
+    pin = compare_pinned_sha(cwd)
+    if not pin.matches and not pin.skipped:
+        raise click.ClickException(pin.message)
+    if not pin.skipped:
+        log(f"# framework pin: {pin.message}")
+
     # 1. Pre-flight
     _preflight_databricks_cli()
     _preflight_apps(cwd)
@@ -8664,6 +8772,23 @@ def _deploy_apps_impl(
             cwd, _resolved_history_uc_name, "apps", extra_version_tags or {},
         )
 
+    # 6b. Best-effort workspace deploy state (does not fail the deploy).
+    experiment_id: str | None = None
+    for v in list(vars or ()) + extra_vars:
+        if v.startswith("mlflow_experiment_id="):
+            experiment_id = v.split("=", 1)[1] or None
+            break
+    _maybe_write_deploy_state(
+        profile=profile,
+        app_name=app_name,
+        bundle_target=bundle_target,
+        app_url=app_url or None,
+        experiment_id=experiment_id,
+        pin=pin,
+        wheel_path=wheel_path,
+        log=log,
+    )
+
     # 7. Final report
     if json_output:
         # Enriched summary (issue #417): a CI job records what it shipped —
@@ -8698,6 +8823,174 @@ def _deploy_apps_impl(
         log(f"# app ready: {app_name}")
         click.echo(app_url)
     return app_url
+
+
+def _maybe_write_deploy_state(
+    *,
+    profile: str | None,
+    app_name: str,
+    bundle_target: str,
+    app_url: str | None,
+    experiment_id: str | None,
+    pin: Any,
+    wheel_path: Path | None,
+    log: Any,
+) -> None:
+    """Persist Apps deploy metadata to ``/Shared/apx-agent/.../_state/``."""
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        state = ApxAppDeployState(
+            app_name=app_name,
+            bundle_target=bundle_target,
+            app_url=app_url,
+            experiment_id=experiment_id,
+            framework_ref=getattr(pin, "pinned_ref", None),
+            running_sha=getattr(pin, "running_sha", None),
+            wheel_name=wheel_path.name if wheel_path else None,
+            deployed_at=utc_now_iso(),
+        )
+        save_deploy_state(
+            ws,
+            state,
+            deployer=resolve_deployer(ws),
+            action="update",
+        )
+        log(f"# wrote deploy state: /Shared/apx-agent/{app_name}/_state/{bundle_target}.json")
+    except Exception as exc:
+        log(f"# warning: could not write deploy state ({exc})")
+
+
+# ---------------------------------------------------------------------------
+# destroy / status (Apps workspace state)
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option(
+    "--bundle-target", default="dev",
+    help="DAB target to destroy (dev / staging / prod).",
+)
+@click.option(
+    "--profile", default=None,
+    help="Databricks CLI profile for bundle destroy + workspace state.",
+)
+@click.option(
+    "--yes", "assume_yes", is_flag=True,
+    help="Skip interactive confirmation.",
+)
+@click.option("--json-output", is_flag=True, help="Emit a JSON summary.")
+def destroy(
+    bundle_target: str,
+    profile: str | None,
+    assume_yes: bool,
+    json_output: bool,
+) -> None:
+    """Tear down a Databricks Apps bundle and clear workspace deploy state.
+
+    Runs ``databricks bundle destroy --target <bundle-target> --auto-approve``
+    from the project root, then deletes
+    ``/Shared/apx-agent/<app>/_state/<target>.json`` (best-effort).
+    """
+    cwd = Path.cwd()
+    _preflight_apps(cwd)
+    doc = _read_databricks_yml(cwd)
+    _bundle_key, app_name = _resolve_app_name(doc)
+
+    state_summary = ""
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        prior = load_deploy_state(ws, app_name, bundle_target)
+        if prior is not None:
+            state_summary = (
+                f" (url={prior.app_url or '?'}, deployed_at={prior.deployed_at})"
+            )
+    except Exception:
+        ws = None  # type: ignore[assignment]
+        prior = None
+
+    click.echo(
+        f"Destroy app={app_name} bundle-target={bundle_target}{state_summary}",
+        err=True,
+    )
+    if not assume_yes:
+        click.confirm("Proceed with bundle destroy?", abort=True)
+
+    proc = _run_databricks_cmd(
+        ["bundle", "destroy", "--target", bundle_target, "--auto-approve"],
+        profile=profile,
+    )
+    if proc.returncode != 0:
+        msg = (
+            f"`databricks bundle destroy` failed (exit {proc.returncode}). "
+            f"Last lines:\n{_tail_lines(proc.stderr or proc.stdout)}"
+        )
+        if json_output:
+            click.echo(json.dumps({"ok": False, "error": msg, "app_name": app_name}))
+            raise click.exceptions.Exit(1)
+        raise click.ClickException(msg)
+
+    try:
+        if ws is None:
+            from databricks.sdk import WorkspaceClient
+
+            ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        delete_deploy_state(ws, app_name, bundle_target)
+        click.echo(
+            f"# cleared deploy state: /Shared/apx-agent/{app_name}/_state/"
+            f"{bundle_target}.json",
+            err=True,
+        )
+    except Exception as exc:
+        click.echo(f"# warning: could not clear deploy state ({exc})", err=True)
+
+    if json_output:
+        click.echo(json.dumps({
+            "ok": True,
+            "app_name": app_name,
+            "bundle_target": bundle_target,
+            "destroyed": True,
+        }))
+    else:
+        click.echo(f"destroyed {app_name} ({bundle_target})")
+
+
+def _show_deploy_state_status(
+    bundle_target: str,
+    profile: str | None,
+    json_output: bool,
+) -> None:
+    """Show workspace-backed Apps deploy state for this project."""
+    cwd = Path.cwd()
+    _preflight_apps(cwd)
+    doc = _read_databricks_yml(cwd)
+    _bundle_key, app_name = _resolve_app_name(doc)
+
+    from databricks.sdk import WorkspaceClient
+
+    ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    state = load_deploy_state(ws, app_name, bundle_target)
+    if state is None:
+        msg = f"no deploy state for {app_name}/{bundle_target}"
+        if json_output:
+            click.echo(json.dumps({
+                "ok": True,
+                "app_name": app_name,
+                "bundle_target": bundle_target,
+                "state": None,
+            }))
+        else:
+            click.echo(msg)
+        return
+
+    payload = state.model_dump_workspace()
+    if json_output:
+        click.echo(json.dumps({"ok": True, "state": payload}))
+    else:
+        click.echo(json.dumps(payload, indent=2))
 
 
 # ---------------------------------------------------------------------------

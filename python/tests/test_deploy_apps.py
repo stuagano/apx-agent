@@ -2385,3 +2385,59 @@ class TestAgentsRedeploy:
 
         result = CliRunner().invoke(main, ["agents", "redeploy", "main.apx.my_agent"])
         assert result.exit_code == 1
+
+
+def test_pin_mismatch_aborts_deploy(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Git pin mismatch hard-fails before bundle validate/deploy."""
+    (scaffold / "pyproject.toml").write_text(
+        """\
+[project]
+name = "test-app"
+dependencies = [
+  "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@deadbeef#subdirectory=python",
+]
+""",
+        encoding="utf-8",
+    )
+    from apx_agent import _meta
+
+    monkeypatch.setattr(
+        _meta,
+        "discover_framework_sha",
+        lambda: _meta.DiscoveryResult(
+            sha="cafebabe01234567",
+            requested_ref="cafebabe01234567",
+            reason="",
+        ),
+    )
+    calls = _install_subprocess_mock(monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(main, ["deploy", "--target", "apps", "--json-output"])
+    assert result.exit_code != 0
+    assert ["bundle", "validate"] not in [c[:2] for c in calls]
+    last = result.output.strip().splitlines()[-1]
+    payload = json.loads(last)
+    assert payload["ok"] is False
+    assert "deadbeef" in payload["error"] or "pin" in payload["error"].lower()
+
+
+def test_successful_deploy_writes_workspace_state(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After poll-ready, deploy persists workspace _state (best-effort)."""
+    _install_subprocess_mock(monkeypatch)
+    saved: list[dict[str, Any]] = []
+
+    def capture(**kwargs: Any) -> None:
+        saved.append(kwargs)
+
+    monkeypatch.setattr("apx_agent.cli._maybe_write_deploy_state", capture)
+    runner = CliRunner()
+    result = runner.invoke(main, ["deploy", "--target", "apps", "--no-run"])
+    assert result.exit_code == 0, result.output
+    assert saved, "expected _maybe_write_deploy_state to be called"
+    assert saved[0]["app_name"] == "my-app"
+    assert saved[0]["bundle_target"] == "dev"
+    assert saved[0]["app_url"] and "databricksapps.com" in saved[0]["app_url"]
