@@ -1,0 +1,35 @@
+[project]
+name = "zero-ops-diagnostics"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    # The [langgraph] extra is REQUIRED at runtime for any app that calls
+    # ``compile_to_responses_agent``: it transitively pulls in langchain +
+    # langgraph + databricks-langchain, which the responses-agent compiler
+    # imports lazily under the hood.
+    "apx-agent[langgraph]",
+    "mlflow[databricks]>=3.0",
+]
+
+[project.scripts]
+quickstart = "scripts.quickstart:main"
+
+[tool.uv.sources]
+# Editable local install — keeps `uv sync` working from this directory.
+# At deploy time apx deploy builds a wheel and rewrites .build/pyproject.toml
+# to reference it. Drop this block and pin "apx-agent[langgraph]==<version>"
+# once published to PyPI.
+apx-agent = { path = "../..", editable = true }
+
+[tool.apx.metadata]
+app-name = "zero-ops-diagnostics"
+app-slug = "zero_ops_diagnostics"
+app-entrypoint = "app:app"
+api-prefix = "/api"
+
+[tool.apx.agent]
+name = "zero-ops-diagnostics"
+description = "Self-serve expensive workload triage: DBSQL, Jobs/Spark, and billing cost."
+model = "databricks-claude-sonnet-4-6"
+instructions = "You are a helpful assistant."
+module = "agent:agent"
