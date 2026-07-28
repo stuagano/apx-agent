@@ -46,6 +46,10 @@ APPS_EXPECTED_FILES: tuple[str, ...] = (
     "agent_server/start_server.py",
     "scripts/__init__.py",
     "scripts/quickstart.py",
+    "tests/test_agent_imports.py",
+    ".github/workflows/pr-to-main.yml",
+    ".github/workflows/pr-to-release.yml",
+    ".github/workflows/release-deploy-prod.yml",
 )
 
 
@@ -106,10 +110,15 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     experiments = parsed["resources"]["experiments"]
     assert "my_agent_experiment" in experiments
 
-    # Targets are pre-wired for dev (default) + prod.
+    # Targets are pre-wired for laptop ``dev`` + CI ``staging`` / ``prod``.
     assert "dev" in parsed["targets"]
+    assert "staging" in parsed["targets"]
     assert "prod" in parsed["targets"]
     assert parsed["targets"]["dev"]["default"] is True
+    assert (
+        parsed["targets"]["staging"]["resources"]["apps"]["my_agent"]["name"]
+        == "my_agent-staging"
+    )
 
     # Version correlation (issue #404): the bundle declares the correlation
     # vars and threads them into the app container env, so deploy can inject
@@ -157,6 +166,9 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
     scripts = parsed["project"]["scripts"]
     assert scripts["quickstart"] == "scripts.quickstart:main"
     assert "start-server" not in scripts
+
+    # Dev group powers scaffolded CI (``uv sync --group dev``).
+    assert "pytest>=8.0" in parsed["dependency-groups"]["dev"]
 
 
 # ---------------------------------------------------------------------------
@@ -641,3 +653,35 @@ def test_resolve_data_source_falls_back_to_samples_when_unreachable(
     assert cli._resolve_scaffold_data_source("data", None, None, None) == (
         "samples", "nyctaxi", None,
     )
+
+
+def test_scaffold_apps_ci_none_skips_workflows(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "my_agent", "--target", "apps", "--ci", "none",
+            "--dir", str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    base = tmp_path / "my_agent"
+    assert not (base / ".github").exists()
+    assert not (base / ".gitlab-ci.yml").exists()
+    assert (base / "tests" / "test_agent_imports.py").exists()
+
+
+def test_scaffold_apps_ci_gitlab(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "my_agent", "--target", "apps", "--ci", "gitlab",
+            "--dir", str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    base = tmp_path / "my_agent"
+    assert (base / ".gitlab-ci.yml").exists()
+    assert not (base / ".github").exists()
+    assert "bundle-target staging" in (base / ".gitlab-ci.yml").read_text()
