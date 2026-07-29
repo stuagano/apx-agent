@@ -154,6 +154,7 @@ def _card_from_a2a(
         tags=tags or [],
         mcp_endpoint=a2a.get("mcpEndpoint"),
         last_seen=datetime.now(timezone.utc),
+        supports_invoke=bool(url) and is_trusted_agent_url(url),
     )
 
 
@@ -257,6 +258,35 @@ async def refresh_all_agents():
             agent.last_seen = None
             results.append(agent)
     return results
+
+
+@router.post("/agents/discover-workspace", response_model=list[AgentCard], operation_id="discoverWorkspaceAgents")
+async def discover_workspace_agents(request: Request):
+    """Scan Databricks Apps for apx A2A cards and register them.
+
+    Also re-crawls ``AGENT_HUB_AGENT_URLS``. Use this from the Hub UI to
+    refresh the registry without restarting the app.
+    """
+    from .workspace_discovery import bootstrap_workspace_agents
+
+    ws = getattr(request.app.state, "workspace_client", None)
+    if ws is None:
+        from databricks.sdk import WorkspaceClient
+
+        ws = WorkspaceClient()
+        request.app.state.workspace_client = ws
+
+    await bootstrap_workspace_agents(
+        ws,
+        register_from_a2a=_card_from_a2a,
+        crawl_agent=_crawl_agent,
+        agents=_AGENTS,
+        extra_urls=_AUTO_REGISTER_URLS,
+    )
+    return sorted(
+        _AGENTS.values(),
+        key=lambda a: (a.status != "live", a.display_name),
+    )
 
 
 @router.get("/agents/{agent_id}/card", operation_id="getAgentA2ACard")

@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import Navbar from "@/components/apx/navbar";
 import ChatPanel from "@/components/apx/ChatPanel";
-import { listAgents, type AgentCard } from "@/lib/api";
+import { discoverWorkspaceAgents, listAgents, type AgentCard } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -70,10 +70,25 @@ function AgentListItem({
 }
 
 function AgentHub() {
+  const queryClient = useQueryClient();
   const { data: agents, isLoading } = useQuery({
     queryKey: ["agents"],
     queryFn: listAgents,
   });
+
+  const discover = useMutation({
+    mutationFn: () => discoverWorkspaceAgents(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+
+  // Re-run workspace discovery once on mount so the UI picks up Apps that
+  // came online after Hub startup (server already discovers in lifespan).
+  useEffect(() => {
+    discover.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot on mount
+  }, []);
 
   const live = agents?.data.filter((a) => a.status === "live") ?? [];
   const other = agents?.data.filter((a) => a.status !== "live") ?? [];
@@ -87,9 +102,26 @@ function AgentHub() {
       <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Left panel — agent list */}
         <div className="w-72 shrink-0 border-r flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b shrink-0">
-            <h1 className="font-semibold text-sm">Agent Hub</h1>
-            <p className="text-xs text-muted-foreground mt-0.5">Select an agent to chat</p>
+          <div className="px-4 py-3 border-b shrink-0 space-y-2">
+            <div>
+              <h1 className="font-semibold text-sm">Agent Hub</h1>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {discover.isPending
+                  ? "Discovering workspace agents…"
+                  : "Select an agent to chat"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => discover.mutate()}
+              disabled={discover.isPending}
+              className="w-full text-xs rounded-md border px-2 py-1.5 hover:bg-accent/50 disabled:opacity-50"
+            >
+              {discover.isPending ? "Refreshing…" : "Refresh discovery"}
+            </button>
+            {discover.isError && (
+              <p className="text-[11px] text-red-500">Discovery failed — check Hub logs.</p>
+            )}
           </div>
 
           <div className="flex-1 overflow-y-auto p-2 min-h-0">
@@ -119,17 +151,24 @@ function AgentHub() {
                 {other.length > 0 && (
                   <div>
                     <p className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                      In Development
+                      Other
                     </p>
                     {other.map((a) => (
                       <AgentListItem
                         key={a.id}
                         agent={a}
-                        selected={false}
-                        onSelect={() => {}}
+                        selected={selectedAgent?.id === a.id}
+                        onSelect={() => setSelectedAgent(a)}
                       />
                     ))}
                   </div>
+                )}
+                {!live.length && !other.length && (
+                  <p className="px-3 py-4 text-xs text-muted-foreground">
+                    {discover.isPending
+                      ? "Scanning Databricks Apps for A2A cards…"
+                      : "No agents found yet. Deploy an Apps agent with /.well-known/agent.json, or use Refresh."}
+                  </p>
                 )}
               </>
             )}

@@ -32,6 +32,8 @@ class AppAgentInfo:
     description: str | None
     tool_count: int
     state: str
+    tools: tuple[str, ...] = ()
+    """Skill / tool names from the A2A card (best-effort)."""
 
 
 def _bearer_headers(ws: Any) -> dict[str, str]:
@@ -141,14 +143,21 @@ def discover_app_agents(
             card = fut.result()
             if card is None:
                 continue
+            skills = card.get("skills") or []
+            tool_names = tuple(
+                str(s.get("name"))
+                for s in skills
+                if isinstance(s, dict) and s.get("name")
+            )
             found.append(
                 AppAgentInfo(
                     name=str(card.get("name") or app_name),
                     app_name=app_name,
                     url=url,
                     description=card.get("description"),
-                    tool_count=len(card.get("skills") or []),
+                    tool_count=len(tool_names) if tool_names else len(skills),
                     state="RUNNING",  # it answered the card, so it's up
+                    tools=tool_names,
                 )
             )
     found.sort(key=lambda a: a.name)

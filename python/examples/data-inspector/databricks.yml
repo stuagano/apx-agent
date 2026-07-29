@@ -84,8 +84,6 @@ resources:
             value: databricks
           - name: MLFLOW_EXPERIMENT_ID
             value: ${var.mlflow_experiment_id}
-          - name: APX_DEV_UI
-            value: "1"
 
 targets:
   dev:

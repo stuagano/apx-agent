@@ -377,6 +377,68 @@ class WorkspaceContextResponse(BaseModel):
     used_schemas: list[str]
 
 
+class WorkspaceDiscoveredAgent(BaseModel):
+    """One agent from ``GET /_apx/workspace-agents`` (Apps A2A and/or UC tags)."""
+
+    name: str
+    source: str  # "app" | "uc"
+    app_name: str | None = None
+    url: str | None = None
+    description: str | None = None
+    tools: list[str] = []
+    tool_count: int = 0
+    state: str = "unknown"
+    uc_name: str | None = None
+    model_endpoint: str | None = None
+
+
+class WorkspaceAgentsResponse(BaseModel):
+    """Shape of ``GET /_apx/workspace-agents`` — workspace peer discovery."""
+
+    agents: list[WorkspaceDiscoveredAgent]
+
+
+class WorkspaceFunctionInfo(BaseModel):
+    """One UC function from ``GET /_apx/workspace-functions``."""
+
+    full_name: str
+    catalog: str
+    schema_name: str
+    name: str
+    comment: str | None = None
+
+
+class WorkspaceFunctionsResponse(BaseModel):
+    """Shape of ``GET /_apx/workspace-functions``."""
+
+    catalog: str
+    schema_name: str
+    functions: list[WorkspaceFunctionInfo]
+
+
+class WorkspaceApiInfo(BaseModel):
+    """One API surface from ``GET /_apx/workspace-apis``.
+
+    ``kind`` is ``serving_endpoint``, ``genie_space``, or ``vector_search_index``.
+    Genie and Vector Search include Managed MCP URLs when the workspace host
+    is known; serving endpoints expose the HTTP invocations URL instead.
+    """
+
+    kind: str
+    name: str
+    state: str | None = None
+    description: str | None = None
+    url: str | None = None
+    mcp_url: str | None = None
+    extra: dict[str, Any] | None = None
+
+
+class WorkspaceApisResponse(BaseModel):
+    """Shape of ``GET /_apx/workspace-apis``."""
+
+    apis: list[WorkspaceApiInfo]
+
+
 class TopologyNode(BaseModel):
     """One node of ``TopologyResponse.nodes``: ``{id, type, label,
     description}``.
