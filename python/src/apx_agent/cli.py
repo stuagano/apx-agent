@@ -1402,6 +1402,8 @@ agent lives. This file wires it into the Databricks Apps runtime:
     so Genie / Genie Code can consume the same agent.
   * Mounts ``/readyz`` — a capability self-test that proves the agent answers
     and traces (used by ``apx-agent agents deploy`` as a readiness gate).
+  * Mounts the Dev UI at ``/_apx/*`` (Chat, Discover, Edit, Probe, …) via
+    ``mount_mcp_endpoints`` — available on deployed Apps behind SSO.
 
 Run via ``uvicorn agent_server.start_server:app --host 0.0.0.0 --port $DATABRICKS_APP_PORT``
 (driven by ``databricks.yml`` on deploy).

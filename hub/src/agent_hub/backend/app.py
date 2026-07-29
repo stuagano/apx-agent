@@ -6,33 +6,44 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .._metadata import app_name, dist_dir
-from .router import router, _AUTO_REGISTER_URLS, _crawl_agent, _card_from_a2a, _AGENTS
+from .router import (
+    router,
+    _AUTO_REGISTER_URLS,
+    _crawl_agent,
+    _card_from_a2a,
+    _AGENTS,
+)
+from .workspace_discovery import bootstrap_workspace_agents
 
-import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-async def _auto_register() -> None:
-    """Crawl deployed agents and register them on startup."""
-    for url in _AUTO_REGISTER_URLS:
-        try:
-            a2a = await _crawl_agent(url)
-            if a2a:
-                card = _card_from_a2a(a2a, url)
-                _AGENTS[card.id] = card
-                logger.info("Auto-registered '%s' from %s (%d tools)", card.id, url, len(card.tools))
-            else:
-                logger.warning("Could not reach %s — skipping", url)
-        except Exception as e:
-            logger.warning("Auto-register failed for %s: %s", url, e)
+async def _auto_register(app: FastAPI) -> None:
+    """Discover workspace Apps agents + crawl AGENT_HUB_AGENT_URLS overlay."""
+    ws = getattr(app.state, "workspace_client", None)
+    if ws is None:
+        logger.warning("No workspace_client on app.state — skipping workspace discovery")
+        ws = WorkspaceClient()
+        app.state.workspace_client = ws
+    try:
+        await bootstrap_workspace_agents(
+            ws,
+            register_from_a2a=_card_from_a2a,
+            crawl_agent=_crawl_agent,
+            agents=_AGENTS,
+            extra_urls=_AUTO_REGISTER_URLS,
+        )
+    except Exception as e:
+        logger.warning("Startup agent discovery failed: %s", e)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.workspace_client = WorkspaceClient()
-    asyncio.create_task(_auto_register())
+    # Await discovery so the first /api/agents list already includes workspace peers.
+    await _auto_register(app)
     yield
 
 

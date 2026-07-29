@@ -70,7 +70,10 @@ from ._apx_models import (
     WarehouseInfo,
     WireAgentRequest,
     WireAgentResponse,
+    WorkspaceAgentsResponse,
+    WorkspaceApisResponse,
     WorkspaceContextResponse,
+    WorkspaceFunctionsResponse,
 )
 from ._models import AgentContext, AgentTool
 from ._topology import build_topology, inspect_node
@@ -2085,6 +2088,135 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "used_catalogs": used_catalogs,
             "used_schemas": used_schemas,
         }
+
+    @router.get("/_apx/discover", include_in_schema=False)
+    async def discover_ui() -> Any:
+        """Workspace peer-agent + UC-function discovery page."""
+        from ._ui_discover import render_discover_ui
+
+        return HTMLResponse(render_discover_ui())
+
+    @router.get("/_apx/workspace-agents", response_model=WorkspaceAgentsResponse)
+    async def workspace_agents(request: Request) -> Any:
+        """Discover apx agents in the workspace (Apps A2A cards + UC tags).
+
+        Best-effort: Apps that don't answer ``/.well-known/agent.json`` and
+        UC models without ``apx.agent.name`` are omitted. Never raises.
+        """
+        import asyncio as _asyncio
+
+        from ._apps_discovery import discover_app_agents
+        from ._topology import discover_topology
+
+        ws: WorkspaceClient = request.app.state.workspace_client
+        app_agents = await _asyncio.to_thread(discover_app_agents, ws)
+        by_key: dict[str, dict[str, Any]] = {}
+        for a in app_agents:
+            key = (a.name or a.app_name).replace("-", "_").lower()
+            by_key[key] = {
+                "name": a.name,
+                "source": "app",
+                "app_name": a.app_name,
+                "url": a.url,
+                "description": a.description,
+                "tools": list(a.tools),
+                "tool_count": a.tool_count,
+                "state": a.state,
+                "uc_name": None,
+                "model_endpoint": None,
+            }
+        try:
+            topo = await _asyncio.to_thread(discover_topology, ws)
+        except Exception:
+            topo = None
+        if topo is not None:
+            for node in topo.nodes:
+                key = node.name.replace("-", "_").lower()
+                if key in by_key:
+                    by_key[key]["uc_name"] = node.uc_name
+                    by_key[key]["model_endpoint"] = node.model_endpoint
+                    if by_key[key]["tool_count"] == 0 and node.tool_count:
+                        by_key[key]["tool_count"] = node.tool_count
+                else:
+                    by_key[key] = {
+                        "name": node.name,
+                        "source": "uc",
+                        "app_name": None,
+                        "url": None,
+                        "description": None,
+                        "tools": [],
+                        "tool_count": node.tool_count or 0,
+                        "state": "registered",
+                        "uc_name": node.uc_name,
+                        "model_endpoint": node.model_endpoint,
+                    }
+        agents = sorted(by_key.values(), key=lambda x: x["name"].lower())
+        return {"agents": agents}
+
+    @router.get("/_apx/workspace-functions", response_model=WorkspaceFunctionsResponse)
+    async def workspace_functions(
+        request: Request,
+        catalog: str,
+        schema: str,
+    ) -> Any:
+        """List Unity Catalog functions in ``catalog.schema`` (tool candidates)."""
+        import asyncio as _asyncio
+
+        if not catalog.strip() or not schema.strip():
+            raise HTTPException(status_code=400, detail="catalog and schema are required")
+        ws: WorkspaceClient = request.app.state.workspace_client
+        cat, sch = catalog.strip(), schema.strip()
+
+        def _list() -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            try:
+                for fn in ws.functions.list(catalog_name=cat, schema_name=sch):
+                    name = getattr(fn, "name", None) or ""
+                    full = getattr(fn, "full_name", None) or f"{cat}.{sch}.{name}"
+                    out.append({
+                        "full_name": full,
+                        "catalog": cat,
+                        "schema_name": sch,
+                        "name": name,
+                        "comment": getattr(fn, "comment", None),
+                    })
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            out.sort(key=lambda r: r["name"].lower())
+            return out
+
+        functions = await _asyncio.to_thread(_list)
+        return {"catalog": cat, "schema_name": sch, "functions": functions}
+
+    @router.get("/_apx/workspace-apis", response_model=WorkspaceApisResponse)
+    async def workspace_apis(request: Request) -> Any:
+        """Discover Model Serving, Genie, and Vector Search APIs (with Managed MCP URLs).
+
+        Best-effort per source — a permission error on one family omits that
+        family rather than failing the whole response.
+        """
+        import asyncio as _asyncio
+
+        from ._workspace_apis import discover_workspace_apis
+
+        ws: WorkspaceClient = request.app.state.workspace_client
+
+        def _run() -> list[dict[str, Any]]:
+            return [
+                {
+                    "kind": a.kind,
+                    "name": a.name,
+                    "state": a.state,
+                    "description": a.description,
+                    "url": a.url,
+                    "mcp_url": a.mcp_url,
+                    "extra": a.extra,
+                }
+                for a in discover_workspace_apis(ws)
+            ]
+
+        apis = await _asyncio.to_thread(_run)
+        return {"apis": apis}
 
     @router.get("/_apx/grounding")
     async def grounding_ui() -> Any:

@@ -1000,28 +1000,24 @@ def mount_mcp_endpoints(
     # gets populated in the lifespan startup event below.
     _mount_protocol_routes(app)
 
-    # End-user chat at / — ships in every runtime, including Apps (unlike the
-    # dev UI below). Mounted before the DATABRICKS_APP_PORT gate on purpose.
+    # End-user chat at / — ships in every runtime, including Apps.
     from ._ui_root_chat import build_root_chat_router
 
     app.include_router(build_root_chat_router())
 
-    # Dev UI (/_apx/*) — available when running locally with `apx-agent run`.
-    # Absent in production Apps deployments (DATABRICKS_APP_PORT is set by
-    # the Apps runtime). The mount is call-time so it runs before the startup
-    # event and the routes are registered on the first request.
-    if not os.environ.get("DATABRICKS_APP_PORT"):
-        # Swallowed so the app still serves; recorded on app.state for local
-        # diagnosis. No /readyz check — dev-UI is intentionally off in deploys.
-        app.state.dev_ui_mount_error = None
-        try:
-            from ._dev import build_dev_ui_router
+    # Dev UI (/_apx/*) — Chat, Discover, Edit, Probe, Topology, Eval.
+    # Mounted in local ``apx run`` AND deployed Databricks Apps so peers can
+    # discover each other from a live App URL. Write routes stay gated by
+    # ``APX_DEV_UI_TOKEN`` when ``DATABRICKS_APP_PORT`` is set (see ``_dev``).
+    app.state.dev_ui_mount_error = None
+    try:
+        from ._dev import build_dev_ui_router
 
-            app.include_router(build_dev_ui_router())
-            logger.info("Dev UI mounted at /_apx/* (local dev mode)")
-        except Exception as exc:  # pragma: no cover — optional dep
-            app.state.dev_ui_mount_error = str(exc)
-            logger.info("Dev UI not mounted (%s: %s)", type(exc).__name__, exc)
+        app.include_router(build_dev_ui_router())
+        logger.info("Dev UI mounted at /_apx/*")
+    except Exception as exc:  # pragma: no cover — optional dep
+        app.state.dev_ui_mount_error = str(exc)
+        logger.info("Dev UI not mounted (%s: %s)", type(exc).__name__, exc)
 
     # Track the in-flight MCP lifecycle so shutdown can close it cleanly.
     _state_key = "_apx_mount_state"

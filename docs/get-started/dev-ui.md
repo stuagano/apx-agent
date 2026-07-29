@@ -1,13 +1,30 @@
 # Dev UI
 
-Apps-hosted agents include built-in development tooling under the `/_apx/*` path. Each surface is self-contained and styled to a shared dark theme; a fixed header (rendered by `_ui_nav.py`) lets you jump between them.
+Apps-hosted agents include built-in development tooling under the `/_apx/*` path
+(mounted by `mount_mcp_endpoints` in both local `apx run` and deployed Apps).
+Each surface is self-contained and styled to a shared dark theme; a fixed header
+(rendered by `_ui_nav.py`) lets you jump between them.
+
+On a **deployed App**, chat/Discover/Probe reads work behind workspace SSO.
+**Write** routes (edit source, create tools, replay) stay denied unless you set
+`APX_DEV_UI_TOKEN` and send `X-APX-Dev-Token`.
 
 Model Serving deployments use AI Playground as the equivalent surface.
 
 ## Surfaces
 
-### `/_apx/agent` — Chat
-Interactive chat interface for testing the running agent. Streams responses, surfaces tool calls inline, and shows a setup banner if `[tool.apx.agent]` isn't configured. Use this to exercise the agent end-to-end while iterating.
+### `/_apx/agent` — Chat shell
+Tabbed shell (Chat · Edit · Eval · **Discover** · Probe) for testing the running
+agent. Streams responses, surfaces tool calls inline, and hosts the other
+`/_apx/*` pages in an iframe.
+
+### `/_apx/discover` — Workspace peer + UC tool + API discovery
+Auto-scans Databricks Apps for `/.well-known/agent.json` A2A cards, merges
+UC-tagged apx models, lists Unity Catalog functions as tool candidates, and
+surfaces Model Serving endpoints, Genie spaces, and Vector Search indexes
+(with Managed MCP URLs where Databricks hosts them). Runs on page load;
+Refresh re-scans. Backed by `GET /_apx/workspace-agents`,
+`/_apx/workspace-functions`, and `/_apx/workspace-apis`.
 
 ### `/_apx/topology` — Interactive topology graph
 
