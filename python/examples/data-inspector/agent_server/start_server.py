@@ -45,12 +45,8 @@ app = server.app
 
 mount_mcp_endpoints(app, agent)
 
-# Optional dev UI (/_apx/*) — opt in via APX_DEV_UI=1. Useful for showing the
-# visual builder + chat + traces on a deployed app behind workspace SSO.
-if os.environ.get("APX_DEV_UI") == "1":
-    from apx_agent._dev import build_dev_ui_router
-
-    app.include_router(build_dev_ui_router())
+# Dev UI (/_apx/* including Discover) is mounted by mount_mcp_endpoints for
+# both local and Apps runtimes. Writes on Apps still require APX_DEV_UI_TOKEN.
 
 
 if __name__ == "__main__":

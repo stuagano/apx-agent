@@ -62,7 +62,7 @@ Config tools are **additive** and are merged onto the agent on every runtime —
 
 - `APX_TOOLS_ALLOWED_HOSTS` — comma-separated host allow-list. When set, `openapi` / `mcp_tool` / `mcp_toolkit` tools may only point at those hosts; an out-of-list host is a hard error. Unset (the default) means no restriction.
 - `APX_TOOLS_STRICT=1` — promote a tool whose factory fails at load time (e.g. an unreachable MCP server) to a hard error. The default is to skip that tool with a warning so one bad endpoint doesn't take the whole agent down.
-- `APX_DEV_UI_TOKEN` — shared secret that guards the dev-UI **write** endpoints (`POST /_apx/edit`, `/_apx/tools/new`, `/_apx/replay/*`, `DELETE /_apx/tools/{name}`, and the SSRF probe). On a deployed App these writes are **denied by default**; set this token and send it as the `X-APX-Dev-Token` header to enable them. Unset locally (not a deployed App), writes are allowed for developer convenience.
+- `APX_DEV_UI_TOKEN` — shared secret that guards the Dev UI **write** endpoints (`POST /_apx/edit`, `/_apx/tools/new`, `/_apx/replay/*`, `DELETE /_apx/tools/{name}`, and the SSRF probe). The Dev UI itself (Chat, Discover, Probe, Topology) mounts on deployed Apps; **writes** on Apps are **denied by default**. Set this token and send it as the `X-APX-Dev-Token` header to enable writes. Unset locally (not a deployed App), writes are allowed for developer convenience.
 
 ### `type = "uc_comment_writer"` — governed UC COMMENT writes
 

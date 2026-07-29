@@ -1,10 +1,11 @@
 """End-user chat at ``/`` — the public face of a deployed agent.
 
-Guards two things the dev UI does NOT do:
+Guards two things:
   1. The page is self-contained (markdown libs inlined, talks to /responses) —
-     no /_apx/* assets, which aren't mounted in production.
-  2. It ships in the Apps runtime. The dev UI is gated off when
-     DATABRICKS_APP_PORT is set; the root chat must survive that gate.
+     it does not depend on /_apx/* assets.
+  2. It ships in the Apps runtime alongside the Dev UI (``/_apx/*``), so a
+     deployed agent always has a simple chat at ``/`` even if someone deep-links
+     past the Dev shell.
 
 It targets /responses (ResponsesAgent {input}->{output}) deliberately: that
 contract is identical on both serve paths, whereas /invocations is ChatAgent
@@ -81,10 +82,9 @@ async def test_setup_agent_mounts_root_chat():
 
 
 @pytest.mark.asyncio
-async def test_root_chat_ships_in_apps_runtime_but_dev_ui_does_not(monkeypatch):
-    """The regression this feature fixes: in the Apps runtime the dev UI is
-    gated off, so a deployed agent had nothing at /. Root chat must mount; the
-    dev console must not."""
+async def test_root_chat_and_dev_ui_both_ship_in_apps_runtime(monkeypatch):
+    """Deployed Apps get root chat at ``/`` and the Dev UI at ``/_apx/*``
+    (Discover, Chat shell, Probe, …). Write endpoints stay token-gated."""
     monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
     from apx_agent._wiring import mount_mcp_endpoints
 
@@ -92,4 +92,5 @@ async def test_root_chat_ships_in_apps_runtime_but_dev_ui_does_not(monkeypatch):
     mount_mcp_endpoints(app, LlmAgent(tools=[get_weather]), AgentConfig(name="t"))
     paths = [r.path for r in app.routes]
     assert "/" in paths, "root chat must ship in the Apps runtime"
-    assert "/_apx/agent" not in paths, "dev console must stay off in Apps"
+    assert "/_apx/agent" in paths, "Dev UI (incl. Discover) must mount on Apps"
+    assert "/_apx/discover" in paths, "Discover must be available on deployed Apps"

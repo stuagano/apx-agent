@@ -171,6 +171,37 @@ export function useRefreshAllAgents(options?: {
         ...options?.mutation
     });
 }
+export const discoverWorkspaceAgents = async (options?: RequestInit): Promise<{
+    data: AgentCard[];
+}> =>{
+    const res = await fetch("/api/agents/discover-workspace", {
+        ...options,
+        method: "POST"
+    });
+    if (!res.ok) {
+        const body = await res.text();
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(body);
+        } catch  {
+            parsed = body;
+        }
+        throw new ApiError(res.status, res.statusText, parsed);
+    }
+    return {
+        data: await res.json()
+    };
+};
+export function useDiscoverWorkspaceAgents(options?: {
+    mutation?: UseMutationOptions<{
+        data: AgentCard[];
+    }, ApiError, void>;
+}) {
+    return useMutation({
+        mutationFn: ()=>discoverWorkspaceAgents(),
+        ...options?.mutation
+    });
+}
 export const registerAgent = async (data: RegisterRequest, options?: RequestInit): Promise<{
     data: AgentCard;
 }> =>{
