@@ -1,0 +1,14 @@
+{
+  "catalog": "samples",
+  "schema": "nyctaxi",
+  "tables": {
+    "trips": [
+      "tpep_pickup_datetime(timestamp)",
+      "tpep_dropoff_datetime(timestamp)",
+      "trip_distance(double)",
+      "fare_amount(double)",
+      "pickup_zip(int)",
+      "dropoff_zip(int)"
+    ]
+  }
+}

@@ -15,7 +15,10 @@ from apx_agent._okf import okf_columns, write_okf_bundle
 from apx_agent._ui_grounding import (
     apply_column_descriptions,
     build_column_curation,
+    ensure_knowledge_in_pyproject,
     generate_column_descriptions,
+    generate_okf_pack,
+    grounding_columns_payload,
 )
 
 
@@ -49,7 +52,10 @@ class _FakeWs:
         return [
             SimpleNamespace(
                 name=t, comment="",
-                columns=[SimpleNamespace(name=c, comment=cm) for c, cm in cols.items()],
+                columns=[
+                    SimpleNamespace(name=c, comment=cm, type_text="STRING")
+                    for c, cm in cols.items()
+                ],
             )
             for t, cols in self._c.items()
         ]
@@ -133,11 +139,32 @@ async def test_routes_round_trip_a_description(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_no_bundle_get_is_empty_and_post_is_404(tmp_path, monkeypatch):
     app = _app(monkeypatch, None, None)
+    monkeypatch.setattr(
+        "apx_agent._ui_grounding.resolve_data_source_for_grounding",
+        lambda ctx=None, start=None: None,
+    )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
         got = await ac.get("/_apx/grounding/columns")
-        assert got.status_code == 200 and got.json()["tables"] == []
+        assert got.status_code == 200
+        body = got.json()
+        assert body["tables"] == [] and body["can_generate"] is False
         post = await ac.post("/_apx/grounding/columns", json={"accepted": {}})
         assert post.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_no_bundle_get_offers_generate_cta(tmp_path, monkeypatch):
+    app = _app(monkeypatch, None, None)
+    monkeypatch.setattr(
+        "apx_agent._ui_grounding.resolve_data_source_for_grounding",
+        lambda ctx=None, start=None: ("samples", "nyctaxi"),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        got = (await ac.get("/_apx/grounding/columns")).json()
+    assert got["tables"] == []
+    assert got["can_generate"] is True
+    assert got["generate_from"] == "samples.nyctaxi"
+    assert got["catalog"] == "samples" and got["schema"] == "nyctaxi"
 
 
 @pytest.mark.asyncio
@@ -147,6 +174,75 @@ async def test_grounding_routes_published_to_openapi(tmp_path, monkeypatch):
         paths = (await ac.get("/openapi.json")).json()["paths"]
     assert "get" in paths["/_apx/grounding/columns"]
     assert "post" in paths["/_apx/grounding/columns"]
+    assert "post" in paths["/_apx/grounding/generate"]
+
+
+# ── Generate pack ─────────────────────────────────────────────────────────────
+
+
+def test_generate_okf_pack_writes_bundle_and_wires_knowledge(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "t"\nversion = "0.1.0"\n\n[tool.apx.agent]\nname = "t"\n'
+    )
+    (tmp_path / "agent.py").write_text(
+        'from apx_agent import DataAgent\n\nagent = DataAgent("samples", "nyctaxi", name="t")\n'
+    )
+    ws = _FakeWs({"trips": {"trip_id": "unique id", "fare": "fare amount"}})
+    result = generate_okf_pack(ws, "samples", "nyctaxi", project_root=tmp_path)
+    assert result["ok"] is True and result["table_count"] == 1
+    assert (tmp_path / ".apx" / "okf" / "tables" / "trips.md").is_file()
+    assert (tmp_path / ".apx" / "schema.json").is_file()
+    assert 'knowledge = "./.apx/okf"' in (tmp_path / "pyproject.toml").read_text()
+    assert 'knowledge="./.apx/okf"' in (tmp_path / "agent.py").read_text()
+    cols = {c["name"]: c["description"] for c in okf_columns(tmp_path / ".apx" / "okf")["trips"]}
+    assert cols["trip_id"] == "unique id"
+
+
+def test_generate_okf_pack_refuses_existing_without_force(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "t"\nversion = "0.1.0"\n\n[tool.apx.agent]\nname = "t"\n'
+    )
+    ws = _FakeWs({"trips": {"id": ""}})
+    generate_okf_pack(ws, "samples", "nyctaxi", project_root=tmp_path)
+    with pytest.raises(ValueError, match="already exists"):
+        generate_okf_pack(ws, "samples", "nyctaxi", project_root=tmp_path)
+
+
+def test_ensure_knowledge_idempotent(tmp_path):
+    py = tmp_path / "pyproject.toml"
+    py.write_text('[tool.apx.agent]\nname = "t"\nknowledge = "./.apx/okf"\n')
+    assert ensure_knowledge_in_pyproject(tmp_path) is False
+
+
+def test_grounding_columns_payload_empty_with_source():
+    payload = grounding_columns_payload(None, None, None)
+    assert payload["can_generate"] is False and payload["tables"] == []
+
+
+@pytest.mark.asyncio
+async def test_generate_route_creates_pack(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "t"\nversion = "0.1.0"\n\n[tool.apx.agent]\nname = "t"\n'
+    )
+    monkeypatch.setattr("apx_agent._ui_grounding.resolve_okf_root", lambda start=None: None)
+    monkeypatch.setattr(
+        "apx_agent._ui_grounding.resolve_project_root", lambda start=None: tmp_path
+    )
+    monkeypatch.setattr(
+        "apx_agent._ui_grounding.resolve_data_source_for_grounding",
+        lambda ctx=None, start=None: ("samples", "nyctaxi"),
+    )
+    ws = _FakeWs({"trips": {"id": "row id"}})
+    app = FastAPI()
+    app.state.workspace_client = ws
+    app.state.agent_context = None
+    app.include_router(build_dev_ui_router())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.post("/_apx/grounding/generate", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["table_count"] == 1
+    assert (tmp_path / ".apx" / "okf").is_dir()
 
 
 # ── Phase B: the curation panel ──────────────────────────────────────────────
@@ -159,7 +255,9 @@ def test_render_grounding_ui_ships_the_panel():
     assert "<!DOCTYPE html>" in html
     # fetches the curation state and posts changes back to the same route
     assert "/_apx/grounding/columns" in html
+    assert "/_apx/grounding/generate" in html
     assert "async function load()" in html and "async function save()" in html
+    assert "Generate pack" in html
     assert "class=\"accept\"" in html  # per-field accept control
     assert "!d.ok" in html             # surfaces save failures (policy #4)
     assert 'href="/_apx/grounding"' in html  # canonical nav, active tab

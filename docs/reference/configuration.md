@@ -62,7 +62,7 @@ Config tools are **additive** and are merged onto the agent on every runtime —
 
 - `APX_TOOLS_ALLOWED_HOSTS` — comma-separated host allow-list. When set, `openapi` / `mcp_tool` / `mcp_toolkit` tools may only point at those hosts; an out-of-list host is a hard error. Unset (the default) means no restriction.
 - `APX_TOOLS_STRICT=1` — promote a tool whose factory fails at load time (e.g. an unreachable MCP server) to a hard error. The default is to skip that tool with a warning so one bad endpoint doesn't take the whole agent down.
-- `APX_DEV_UI_TOKEN` — shared secret that guards the Dev UI **write** endpoints (`POST /_apx/edit`, `/_apx/tools/new`, `/_apx/replay/*`, `DELETE /_apx/tools/{name}`, and the SSRF probe). The Dev UI itself (Chat, Discover, Probe, Topology) mounts on deployed Apps; **writes** on Apps are **denied by default**. Set this token and send it as the `X-APX-Dev-Token` header to enable writes. Unset locally (not a deployed App), writes are allowed for developer convenience.
+- `APX_DEV_UI_TOKEN` — optional shared secret for **non-browser** Dev UI writes (CI / curl). On deployed Apps, browser writes are authorized by Apps SSO (`X-Forwarded-Access-Token`). When this token is set, `X-APX-Dev-Token` (or `?token=`) is also accepted. Locally (not a deployed App), writes are allowed without either.
 
 ### `type = "uc_comment_writer"` — governed UC COMMENT writes
 
@@ -178,7 +178,7 @@ knowledge = "./.apx/okf"   # relative to project root
 
 **Graceful degradation:** If the path does not exist at startup (e.g. a freshly-cloned project before `apx-agent okf pull` has been run), grounding falls back silently to the cwd walk. The agent still starts.
 
-**Project generation:** `apx-agent agents scaffold` can emit `knowledge = "./.apx/okf"` in the generated `pyproject.toml` **only when it also writes an `.apx/okf/` bundle** — i.e. when schema introspection succeeds and returns readable tables. If no tables are found (or auth fails), neither the knob nor the bundle is written, so the two are always coherent. Deploying a hand-authored `.yaml` spec directly (`apx-agent agents deploy <spec>.yaml`) uses `generate_project` at deploy time and does not auto-emit this knob; set `knowledge:` explicitly in your YAML spec if you ship your own bundle.
+**Project generation:** `apx-agent agents scaffold` emits an `.apx/okf/` pack **by default** whenever catalog.schema introspection succeeds, and writes both `knowledge = "./.apx/okf"` in `pyproject.toml` and `knowledge="./.apx/okf"` on the generated `DataAgent` / `CoworkerAgent`. If introspection fails (no grants / empty schema), neither the knob nor the bundle is written — ungrounded is the escape hatch. On a running App with no pack yet, Grounding's empty state offers **Generate pack from `catalog.schema`** (`POST /_apx/grounding/generate`). Deploying a hand-authored `.yaml` spec directly (`apx-agent agents deploy <spec>.yaml`) uses `generate_project` at deploy time and does not auto-emit this knob; set `knowledge:` explicitly in your YAML spec if you ship your own bundle.
 
 ## Declarative memory — `[tool.apx.agent.memory]`
 

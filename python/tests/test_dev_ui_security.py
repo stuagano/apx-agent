@@ -28,31 +28,42 @@ def _req(method: str = "POST", path: str = "/_apx/edit", headers=None, query=Non
 # --- H17: dev-UI write authorization --------------------------------------
 
 
-def test_local_no_token_allows_writes(monkeypatch):
+def test_local_allows_writes(monkeypatch):
     monkeypatch.delenv("DATABRICKS_APP_PORT", raising=False)
     monkeypatch.delenv("APX_DEV_UI_TOKEN", raising=False)
-    # Should not raise.
     _enforce_dev_write_auth(_req())
 
 
-def test_deployed_no_token_denies_writes(monkeypatch):
+def test_deployed_without_sso_denies_writes(monkeypatch):
     monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
     monkeypatch.delenv("APX_DEV_UI_TOKEN", raising=False)
     with pytest.raises(HTTPException) as exc:
         _enforce_dev_write_auth(_req())
     assert exc.value.status_code == 403
+    assert "SSO" in exc.value.detail
 
 
-def test_deployed_token_requires_matching_header(monkeypatch):
+def test_deployed_sso_allows_writes(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
+    monkeypatch.delenv("APX_DEV_UI_TOKEN", raising=False)
+    _enforce_dev_write_auth(
+        _req(headers={"x-forwarded-access-token": "obo-user-token"})
+    )
+
+
+def test_deployed_token_still_works_as_automation_override(monkeypatch):
     monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
     monkeypatch.setenv("APX_DEV_UI_TOKEN", "s3cret")
     with pytest.raises(HTTPException):
         _enforce_dev_write_auth(_req())
     with pytest.raises(HTTPException):
         _enforce_dev_write_auth(_req(headers={"x-apx-dev-token": "wrong"}))
-    # Correct header (or query param) is accepted — should not raise.
     _enforce_dev_write_auth(_req(headers={"x-apx-dev-token": "s3cret"}))
     _enforce_dev_write_auth(_req(query={"token": "s3cret"}))
+    # SSO wins even when a token is configured.
+    _enforce_dev_write_auth(
+        _req(headers={"x-forwarded-access-token": "obo-user-token"})
+    )
 
 
 @pytest.mark.asyncio
@@ -60,28 +71,30 @@ async def test_guard_gates_writes_and_probe_not_reads(monkeypatch):
     monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
     monkeypatch.delenv("APX_DEV_UI_TOKEN", raising=False)
 
-    # Write method → gated.
     with pytest.raises(HTTPException):
         await _dev_write_guard(_req(method="POST", path="/_apx/tools/new"))
-    # DELETE → gated.
     with pytest.raises(HTTPException):
         await _dev_write_guard(_req(method="DELETE", path="/_apx/tools/foo"))
-    # SSRF probe (GET) → gated by path.
     with pytest.raises(HTTPException):
         await _dev_write_guard(_req(method="GET", path="/_apx/setup/probe-json"))
-    # Deploy stream (GET that spawns `apx-agent deploy`) → gated by path.
     with pytest.raises(HTTPException):
         await _dev_write_guard(_req(method="GET", path="/_apx/deploy/stream"))
-    # Read diagnostic (H9) → NOT gated.
     await _dev_write_guard(_req(method="GET", path="/_apx/probe/checks"))
+    # Signed-in SSO unlocks writes.
+    await _dev_write_guard(
+        _req(
+            method="POST",
+            path="/_apx/tools/new",
+            headers={"x-forwarded-access-token": "obo"},
+        )
+    )
 
 
 @pytest.mark.asyncio
 async def test_guard_gates_per_principal_data_reads_on_deployed_app(monkeypatch):
-    """#468: on a deployed App the per-principal data reads must require the
-    operator token, so one viewer can't read another's data."""
+    """#468: on a deployed App per-principal data reads need SSO (or token)."""
     monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
-    monkeypatch.setenv("APX_DEV_UI_TOKEN", "s3cret")
+    monkeypatch.delenv("APX_DEV_UI_TOKEN", raising=False)
 
     for path in (
         "/_apx/approvals",
@@ -93,12 +106,14 @@ async def test_guard_gates_per_principal_data_reads_on_deployed_app(monkeypatch)
     ):
         with pytest.raises(HTTPException):
             await _dev_write_guard(_req(method="GET", path=path))
-        # …but allowed with the operator token.
         await _dev_write_guard(
-            _req(method="GET", path=path, headers={"x-apx-dev-token": "s3cret"})
+            _req(
+                method="GET",
+                path=path,
+                headers={"x-forwarded-access-token": "obo"},
+            )
         )
 
-    # Benign reads stay open (end-user chat + diagnostics keep working).
     for path in ("/_apx/chat", "/_apx/topology", "/_apx/probe/checks"):
         await _dev_write_guard(_req(method="GET", path=path))
 

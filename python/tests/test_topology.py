@@ -118,7 +118,89 @@ def test_discover_classifies_apps_urls_separately() -> None:
     assert len(topo.edges) == 1
     e = topo.edges[0]
     assert e.target_kind == "app_url"
-    assert "billing.workspace.databricksapps.com" in e.target
+    assert e.target == "billing"
+
+
+def test_classify_peer_env_ref_friendly_label() -> None:
+    from apx_agent._topology import _classify_sub_agent
+
+    ref = _classify_sub_agent("$APX_PEER_MCP_DATA_INSPECTOR_URL")
+    assert ref.kind == "env_ref"
+    assert ref.display_name == "mcp-data-inspector"
+
+    url = _classify_sub_agent(
+        "https://mcp-data-inspector-7474660064938119.aws.databricksapps.com"
+    )
+    assert url.kind == "app_url"
+    assert url.display_name == "mcp-data-inspector"
+
+
+def test_build_topology_labels_peer_env_ref(monkeypatch) -> None:
+    from apx_agent import Agent
+    from apx_agent._models import AgentCard, AgentConfig, AgentContext
+    from apx_agent._topology import build_topology
+
+    monkeypatch.setenv(
+        "APX_PEER_MCP_DATA_INSPECTOR_URL",
+        "https://mcp-data-inspector-7474660064938119.aws.databricksapps.com",
+    )
+    agent = Agent(
+        tools=[],
+        instructions="hi",
+        sub_agents=["$APX_PEER_MCP_DATA_INSPECTOR_URL"],
+    )
+    config = AgentConfig(name="hello-world", model="databricks-claude-sonnet-4-6")
+    card = AgentCard(name="hello-world", description="", skills=[])
+    ctx = AgentContext(config=config, tools=[], card=card, agent=agent)
+    topo = build_topology(ctx)
+    nodes = {n["id"]: n for n in topo["nodes"]}
+    sub = nodes["endpoint:$APX_PEER_MCP_DATA_INSPECTOR_URL"]
+    assert sub["label"] == "mcp-data-inspector"
+    assert "$APX_PEER_MCP_DATA_INSPECTOR_URL" in (sub["description"] or "")
+    assert "mcp-data-inspector-7474660064938119" in (sub["description"] or "")
+
+
+def test_build_topology_skips_materialized_sub_agent_tool(monkeypatch) -> None:
+    """Remote peers must not appear as both uses-tool and delegates-to."""
+    from apx_agent import Agent
+    from apx_agent._models import AgentCard, AgentConfig, AgentContext
+    from apx_agent._topology import build_topology
+
+    monkeypatch.setenv(
+        "APX_PEER_MCP_DATA_INSPECTOR_URL",
+        "https://mcp-data-inspector.example.databricksapps.com",
+    )
+    agent = Agent(
+        tools=[],
+        instructions="hi",
+        sub_agents=["$APX_PEER_MCP_DATA_INSPECTOR_URL"],
+    )
+    # Simulate hot-apply materialization of the remote callable.
+    async def _fake_delegate(message: str) -> str:
+        return "ok"
+
+    _fake_delegate.__name__ = "data_inspector"
+    _fake_delegate.__apx_sub_agent_url__ = (
+        "https://mcp-data-inspector.example.databricksapps.com"
+    )
+    agent._tool_fns.append(_fake_delegate)
+    agent._materialized_sub_agent_urls.add(
+        "https://mcp-data-inspector.example.databricksapps.com"
+    )
+
+    config = AgentConfig(name="hello-world", model="databricks-claude-sonnet-4-6")
+    card = AgentCard(name="hello-world", description="", skills=[])
+    ctx = AgentContext(config=config, tools=[], card=card, agent=agent)
+    topo = build_topology(ctx)
+    labels = {n["label"] for n in topo["nodes"]}
+    kinds = {(e["target"], e["kind"]) for e in topo["edges"]}
+    assert "mcp-data-inspector" in labels
+    assert "data_inspector" not in labels
+    assert any(k == "delegates-to" for _, k in kinds)
+    assert not any(
+        e["kind"] == "uses-tool" and "data_inspector" in e["target"]
+        for e in topo["edges"]
+    )
 
 
 def test_discover_falls_back_to_csv_sub_agents_tag() -> None:
@@ -225,7 +307,7 @@ def test_render_handles_empty_topology() -> None:
 from apx_agent import Agent, AgentConfig, AgentContext, HandoffAgent  # noqa: E402
 from apx_agent._models import AgentCard  # noqa: E402
 from apx_agent._resources import ResourceSpec, attach_resources  # noqa: E402
-from apx_agent._topology import build_topology, inspect_node  # noqa: E402
+from apx_agent._topology import build_topology, inspect_node, route_highlight_from_spans  # noqa: E402
 
 
 def _make_ctx(agent, *, name: str = "test-agent", model: str = "databricks-claude-sonnet-4-6") -> AgentContext:
@@ -387,3 +469,77 @@ def test_inspect_node_omits_resource_url_without_host(monkeypatch) -> None:
     node = inspect_node(ctx, "uc:main.tools.classify_intent")
     assert node is not None
     assert "url" not in node["resource"]
+
+
+def test_inspect_agent_actions_can_edit_instructions() -> None:
+    ctx = _make_ctx(Agent(tools=[], instructions="be brief"))
+    node = inspect_node(ctx, "agent:root")
+    assert node is not None
+    assert node["actions"]["canEditInstructions"] is True
+    assert node["actions"]["canUnwire"] is False
+    assert node["actions"]["wireTarget"] == "agent"
+
+
+def test_inspect_sub_agent_actions_can_unwire(monkeypatch) -> None:
+    monkeypatch.setenv("APX_PEER_MCP_DATA_INSPECTOR_URL", "https://peer.example.com")
+    agent = Agent(
+        tools=[],
+        instructions="x",
+        sub_agents=["$APX_PEER_MCP_DATA_INSPECTOR_URL"],
+    )
+    ctx = _make_ctx(agent)
+    node = inspect_node(ctx, "endpoint:$APX_PEER_MCP_DATA_INSPECTOR_URL")
+    assert node is not None
+    assert node["type"] == "SubAgent"
+    assert node["label"] == "mcp-data-inspector"
+    assert node["actions"]["canUnwire"] is True
+    assert node["actions"]["unwire"]["kind"] == "agent"
+    assert node["actions"]["unwire"]["ref"] == "$APX_PEER_MCP_DATA_INSPECTOR_URL"
+
+
+def test_inspect_builtin_tool_not_unwirable() -> None:
+    def run_sql(query: str) -> str:
+        return query
+
+    ctx = _make_ctx(Agent(tools=[run_sql], instructions="x"))
+    node = inspect_node(ctx, "tool:agent:root:run_sql")
+    assert node is not None
+    assert node["actions"]["canUnwire"] is False
+
+
+def test_is_factory_tool_binding() -> None:
+    from apx_agent._ui_edit import _is_factory_tool_binding
+
+    src = '''
+from apx_agent import Agent, uc_function_tool
+lookup = uc_function_tool("main.tools.lookup")
+agent = Agent(tools=[lookup], instructions="x")
+'''
+    assert _is_factory_tool_binding(src, "lookup") is True
+    assert _is_factory_tool_binding(src, "agent") is False
+
+
+def test_route_highlight_from_spans_lights_tool_path() -> None:
+    def run_sql(query: str) -> str:
+        return query
+
+    ctx = _make_ctx(Agent(tools=[run_sql], instructions="x"))
+    topo = build_topology(ctx)
+    spans = [
+        {"name": "agent", "span_type": "AGENT"},
+        {"name": "run_sql", "span_type": "TOOL"},
+    ]
+    hit = route_highlight_from_spans(topo, spans)
+    assert "run_sql" in hit["tool_names"]
+    assert any(nid.endswith(":run_sql") for nid in hit["node_ids"])
+    assert "agent:root" in hit["node_ids"]
+    assert any(eid.endswith(":uses-tool") for eid in hit["edge_ids"])
+
+
+def test_route_highlight_empty_when_no_tool_spans() -> None:
+    ctx = _make_ctx(Agent(tools=[], instructions="x"))
+    topo = build_topology(ctx)
+    hit = route_highlight_from_spans(topo, [{"name": "llm", "span_type": "CHAT_MODEL"}])
+    assert hit["node_ids"] == []
+    assert hit["edge_ids"] == []
+    assert hit["tool_names"] == []

@@ -22,10 +22,16 @@ from apx_agent import DataAgent
 # It answers questions grounded in that schema and queries via a SQL tool that
 # runs as the calling user — their Unity Catalog grants apply.
 #
-# Make it your own:
-#   * point it at your own data:  DataAgent("main", "sales", name="hello-world")
-#   * pass ``ws=WorkspaceClient()`` to auto-discover the schema's tables + UC
-#     functions and ground the instructions in the real columns
-#   * add ``genie_space=...`` / ``vector_index=...`` for Genie or Vector Search
-#   * or drop back to a plain ``Agent(tools=[...])`` with your own ``@tool``s
-agent = DataAgent("samples", "nyctaxi", name="hello-world")
+# Peer Apps wired via Topology / Discover (URLs in App env as APX_PEER_*).
+agent = DataAgent(
+    "samples",
+    "nyctaxi",
+    name="hello-world",
+    # OKF grounding bundle (same idea as Google knowledge-catalog / BigQuery
+    # enrichment agents): schema + semantics under .apx/okf, curated in Grounding.
+    knowledge="./.apx/okf",
+    sub_agents=[
+        "$APX_PEER_MCP_DATA_INSPECTOR_URL",
+        "$APX_PEER_MCP_DATA_TRIAGE_AGENT_URL",
+    ],
+)

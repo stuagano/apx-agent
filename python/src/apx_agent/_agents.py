@@ -488,6 +488,11 @@ class LlmAgent(BaseAgent):
         invocation observes it, repairing a degraded registration (#440).
         """
         if base_url in self._materialized_sub_agent_urls:
+            # Retroactively stamp an already-registered delegate so Topology
+            # can hide it from uses-tool after a hot-apply / older process.
+            for fn in self._tool_fns:
+                if getattr(fn, "__name__", None) == name:
+                    fn.__apx_sub_agent_url__ = base_url  # type: ignore[attr-defined]
             return
         if any(fn.__name__ == name for fn in self._tool_fns):
             logger.warning(
@@ -500,15 +505,18 @@ class LlmAgent(BaseAgent):
             return
         from ._agent_tool import remote_agent_tool  # noqa: PLC0415 — avoid import cycle
 
-        self._register_tool(
-            remote_agent_tool(
-                base_url,
-                name=name,
-                description=description,
-                input_schema=input_schema,
-                on_card=lambda card: self._upgrade_sub_agent(base_url, card.description),
-            )
+        tool = remote_agent_tool(
+            base_url,
+            name=name,
+            description=description,
+            input_schema=input_schema,
+            on_card=lambda card: self._upgrade_sub_agent(base_url, card.description),
         )
+        # Topology uses this to avoid double-drawing the same peer as both
+        # uses-tool and delegates-to (hot-apply materializes a callable tool
+        # AND keeps the URL in ``_sub_agent_urls``).
+        tool.__apx_sub_agent_url__ = base_url  # type: ignore[attr-defined]
+        self._register_tool(tool)
         self._materialized_sub_agent_urls.add(base_url)
 
 

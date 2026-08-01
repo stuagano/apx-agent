@@ -76,6 +76,30 @@ def test_apps_list_failure_is_non_fatal():
     assert discover_app_agents(ws) == []
 
 
+def test_env_seed_urls_used_when_list_empty(monkeypatch):
+    monkeypatch.setenv(
+        "APX_DISCOVER_APP_URLS",
+        "peer=https://peer.example,https://mcp-data-inspector-7474660064938119.aws.databricksapps.com",
+    )
+    probed: list[str] = []
+
+    def fake_probe(url, headers, timeout):
+        probed.append(url)
+        if url == "https://peer.example":
+            return CARD
+        return None
+
+    monkeypatch.setattr(_apps_discovery, "_probe_card", fake_probe)
+    ws = SimpleNamespace(
+        apps=SimpleNamespace(list=lambda: []),
+        config=SimpleNamespace(authenticate=lambda: {"Authorization": "Bearer x"}),
+    )
+    found = discover_app_agents(ws)
+    assert "https://peer.example" in probed
+    assert any("mcp-data-inspector" in u for u in probed)
+    assert [a.app_name for a in found] == ["peer"]
+
+
 def test_list_merges_app_agent_as_its_own_row(monkeypatch):
     # No UC agents; one app-discovered agent → it shows up in `list` with
     # serving=apps and its url, not a UC name.

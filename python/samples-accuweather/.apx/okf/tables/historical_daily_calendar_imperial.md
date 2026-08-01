@@ -1,0 +1,119 @@
+---
+type: Unity Catalog Table
+title: historical_daily_calendar_imperial
+description: historical_daily_calendar_imperial table.
+resource: samples.accuweather.historical_daily_calendar_imperial
+timestamp: '2026-08-01T14:55:32.244118+00:00'
+---
+
+# Schema
+| Column | Type | Description |
+| --- | --- | --- |
+| `city_name` | string |  |
+| `country_code` | string |  |
+| `latitude` | double |  |
+| `longitude` | double |  |
+| `date` | date |  |
+| `cloud_base_height_avg` | bigint |  |
+| `cloud_base_height_max` | bigint |  |
+| `cloud_base_height_min` | bigint |  |
+| `cloud_cover_avg` | double |  |
+| `cloud_cover_max` | double |  |
+| `cloud_cover_min` | double |  |
+| `cloud_cover_perc_avg` | bigint |  |
+| `cloud_cover_perc_max` | bigint |  |
+| `cloud_cover_perc_min` | bigint |  |
+| `degree_days_cooling` | double |  |
+| `degree_days_freezing` | double |  |
+| `degree_days_growing` | double |  |
+| `degree_days_heating` | double |  |
+| `humidity_relative_avg` | double |  |
+| `humidity_relative_max` | double |  |
+| `humidity_relative_min` | double |  |
+| `index_uv_avg` | double |  |
+| `index_uv_max` | double |  |
+| `index_uv_min` | double |  |
+| `minutes_of_ice_total` | string |  |
+| `minutes_of_precipitation_total` | bigint |  |
+| `minutes_of_sun_total` | bigint |  |
+| `minutes_of_rain_total` | string |  |
+| `minutes_of_snow_total` | bigint |  |
+| `has_ice` | string |  |
+| `ice_lwe_rate_avg` | string |  |
+| `ice_lwe_rate_max` | string |  |
+| `ice_lwe_rate_min` | string |  |
+| `ice_lwe_total` | string |  |
+| `has_precipitation` | boolean |  |
+| `precipitation_lwe_rate_avg` | double |  |
+| `precipitation_lwe_rate_max` | double |  |
+| `precipitation_lwe_rate_min` | double |  |
+| `precipitation_lwe_total` | double |  |
+| `precipitation_type_desc_predominant` | string |  |
+| `precipitation_type_predominant` | bigint |  |
+| `pressure_avg` | double |  |
+| `pressure_max` | double |  |
+| `pressure_min` | double |  |
+| `pressure_msl_avg` | double |  |
+| `pressure_msl_max` | double |  |
+| `pressure_msl_min` | double |  |
+| `has_rain` | string |  |
+| `rain_lwe_rate_avg` | string |  |
+| `rain_lwe_rate_max` | string |  |
+| `rain_lwe_rate_min` | string |  |
+| `rain_lwe_total` | string |  |
+| `snow_cover_avg` | string |  |
+| `snow_cover_max` | string |  |
+| `snow_cover_min` | string |  |
+| `snow_depth_avg` | string |  |
+| `snow_depth_max` | string |  |
+| `snow_depth_min` | string |  |
+| `snow_liquid_ratio_accuweather_avg` | double |  |
+| `snow_liquid_ratio_accuweather_max` | double |  |
+| `snow_liquid_ratio_accuweather_min` | double |  |
+| `has_snow` | boolean |  |
+| `snow_avg` | string |  |
+| `snow_max` | string |  |
+| `snow_min` | string |  |
+| `snow_total` | string |  |
+| `snow_lwe_rate_avg` | double |  |
+| `snow_lwe_rate_max` | double |  |
+| `snow_lwe_rate_min` | double |  |
+| `snow_lwe_total` | double |  |
+| `solar_irradiance_avg` | double |  |
+| `solar_irradiance_max` | double |  |
+| `solar_irradiance_total` | double |  |
+| `solar_radiation_net_avg` | double |  |
+| `solar_radiation_net_max` | double |  |
+| `solar_radiation_net_total` | double |  |
+| `temperature_avg` | double |  |
+| `temperature_max` | double |  |
+| `temperature_min` | double |  |
+| `temperature_dew_point_avg` | double |  |
+| `temperature_dew_point_max` | double |  |
+| `temperature_dew_point_min` | double |  |
+| `temperature_heat_index_avg` | double |  |
+| `temperature_heat_index_max` | double |  |
+| `temperature_heat_index_min` | double |  |
+| `temperature_realfeel_avg` | double |  |
+| `temperature_realfeel_max` | double |  |
+| `temperature_realfeel_min` | double |  |
+| `temperature_realfeel_shade_avg` | double |  |
+| `temperature_realfeel_shade_max` | double |  |
+| `temperature_realfeel_shade_min` | double |  |
+| `temperature_wind_chill_avg` | double |  |
+| `temperature_wind_chill_max` | double |  |
+| `temperature_wind_chill_min` | double |  |
+| `visibility_avg` | double |  |
+| `visibility_max` | double |  |
+| `visibility_min` | double |  |
+| `wind_direction_avg` | double |  |
+| `wind_direction_predominant` | double |  |
+| `wind_gust_avg` | double |  |
+| `wind_gust_max` | double |  |
+| `wind_gust_min` | double |  |
+| `wind_gust_instantaneous_avg` | string |  |
+| `wind_gust_instantaneous_max` | string |  |
+| `wind_gust_instantaneous_min` | string |  |
+| `wind_speed_avg` | double |  |
+| `wind_speed_max` | double |  |
+| `wind_speed_min` | double |  |
