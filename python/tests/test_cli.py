@@ -4375,6 +4375,47 @@ class TestDatabricksYmlMergePreservesComments:
         assert "original" in yml_path.read_text()
         assert "new" not in yml_path.read_text()
 
+    def test_scrub_removes_plaintext_env_keeps_secret_refs(self, tmp_path):
+        from apx_agent.cli import (
+            _merge_env_into_databricks_yml,
+            _scrub_plaintext_env_from_databricks_yml,
+            _EnvPair,
+            _SecretEnvRef,
+        )
+
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(
+            "resources:\n"
+            "  apps:\n"
+            "    my-agent:\n"
+            "      name: my-agent\n"
+            "      config:\n"
+            "        env:\n"
+            "        - name: KEEP_ME\n"
+            "          value: stable\n"
+        )
+        logs: list[str] = []
+        merge = _merge_env_into_databricks_yml(
+            tmp_path,
+            bundle_key="my-agent",
+            env_pairs=[_EnvPair(name="APX_PEER_FOO_URL", value="https://x.example")],
+            secret_env_pairs=[_SecretEnvRef(name="OPENAI_API_KEY", scope="s", key="k")],
+            log=logs.append,
+        )
+        assert "APX_PEER_FOO_URL" in merge.env_added
+        _scrub_plaintext_env_from_databricks_yml(
+            tmp_path,
+            bundle_key="my-agent",
+            names=merge.env_added,
+            log=logs.append,
+        )
+        out = yml_path.read_text()
+        assert "APX_PEER_FOO_URL" not in out
+        assert "https://x.example" not in out
+        assert "KEEP_ME" in out and "stable" in out
+        assert "OPENAI_API_KEY" in out  # secret valueFrom persists
+        assert any("env scrub" in m for m in logs)
+
     def test_auto_update_yml_preserves_comments(self, tmp_path, monkeypatch):
         from apx_agent.cli import _auto_update_databricks_yml
 

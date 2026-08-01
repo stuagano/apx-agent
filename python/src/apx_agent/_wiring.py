@@ -1008,7 +1008,8 @@ def mount_mcp_endpoints(
     # Dev UI (/_apx/*) — Chat, Discover, Edit, Probe, Topology, Eval.
     # Mounted in local ``apx run`` AND deployed Databricks Apps so peers can
     # discover each other from a live App URL. Write routes stay gated by
-    # ``APX_DEV_UI_TOKEN`` when ``DATABRICKS_APP_PORT`` is set (see ``_dev``).
+    # Dev-UI writes on Apps: SSO (X-Forwarded-Access-Token) or optional
+    # ``APX_DEV_UI_TOKEN`` for automation (see ``_dev._enforce_dev_write_auth``).
     app.state.dev_ui_mount_error = None
     try:
         from ._dev import build_dev_ui_router

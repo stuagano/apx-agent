@@ -1,14 +1,13 @@
 // Right-side details panel for the topology UI.
 //
 // Fetches `/_apx/topology/inspect/{nodeId}` on mount and whenever `nodeId`
-// changes. Renders an InspectResponse — one of agent / tool / resource /
-// subAgent will be populated. Falls back to a derived inspect response from
-// `sample-topology.json` in dev mode so the panel can be developed without a
-// running backend.
+// changes. Supports Save (instructions) and Unwire (peer / factory tool)
+// via the same Discover SSO write paths.
 
 import { useEffect, useState } from "react";
 import type {
   AgentDetails,
+  InspectActions,
   InspectResponse,
   NodeType,
   ResourceDetails,
@@ -16,20 +15,26 @@ import type {
   ToolDetails,
   TopoNode,
 } from "./types";
+import {
+  postUnwireAgent,
+  postUnwireTool,
+  saveInstructions,
+} from "./wire";
 import sampleTopology from "./sample-topology.json";
 
 export interface NodeInspectorProps {
   nodeId: string;
   onClose: () => void;
+  /** Called after a successful Save / Unwire so the graph can refresh. */
+  onMutated?: (msg: string) => void;
+  onError?: (msg: string) => void;
 }
-
-// --- styles -----------------------------------------------------------------
 
 const panelStyle: React.CSSProperties = {
   width: 360,
   height: "100%",
   borderLeft: "1px solid var(--border)",
-  background: "var(--bg-panel)",
+  background: "var(--bg-panel, var(--panel))",
   color: "var(--text)",
   display: "flex",
   flexDirection: "column",
@@ -56,7 +61,7 @@ const headerTitleStyle: React.CSSProperties = {
 
 const headerTypeStyle: React.CSSProperties = {
   fontSize: 11,
-  color: "var(--text-muted)",
+  color: "var(--muted, var(--text-muted))",
   textTransform: "uppercase",
   letterSpacing: 0.4,
   marginTop: 2,
@@ -80,7 +85,7 @@ const sectionStyle: React.CSSProperties = {
 
 const sectionTitleStyle: React.CSSProperties = {
   fontSize: 11,
-  color: "var(--text-muted)",
+  color: "var(--muted, var(--text-muted))",
   textTransform: "uppercase",
   letterSpacing: 0.4,
   marginBottom: 8,
@@ -96,7 +101,7 @@ const dlStyle: React.CSSProperties = {
 
 const dtStyle: React.CSSProperties = {
   fontSize: 11,
-  color: "var(--text-muted)",
+  color: "var(--muted, var(--text-muted))",
   textTransform: "uppercase",
   letterSpacing: 0.3,
   marginBottom: 2,
@@ -109,16 +114,36 @@ const ddStyle: React.CSSProperties = {
   wordBreak: "break-word",
 };
 
-const truncatedTextStyle: React.CSSProperties = {
-  ...ddStyle,
-  whiteSpace: "pre-wrap",
-  maxHeight: 200,
-  overflow: "auto",
+const textareaStyle: React.CSSProperties = {
+  width: "100%",
+  minHeight: 140,
+  resize: "vertical",
+  font: "inherit",
+  fontSize: 12,
+  lineHeight: 1.4,
+  color: "var(--text)",
   background: "var(--code-bg)",
   border: "1px solid var(--border)",
   borderRadius: 4,
   padding: 8,
-  fontSize: 12,
+  boxSizing: "border-box",
+};
+
+const actionsRowStyle: React.CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 8,
+  marginTop: 12,
+};
+
+const dangerBtnStyle: React.CSSProperties = {
+  font: "inherit",
+  cursor: "pointer",
+  color: "#fca5a5",
+  background: "#2a1215",
+  border: "1px solid #7f1d1d",
+  borderRadius: 6,
+  padding: "6px 12px",
 };
 
 const preStyle: React.CSSProperties = {
@@ -127,8 +152,6 @@ const preStyle: React.CSSProperties = {
   overflow: "auto",
   fontSize: 12,
 };
-
-// --- helpers ----------------------------------------------------------------
 
 const RESOURCE_KIND_LABELS: Record<ResourceDetails["resourceKind"], string> = {
   uc_function: "UC Function",
@@ -159,24 +182,20 @@ function isAgentLikeType(type: NodeType): boolean {
   return (
     type === "Agent" ||
     type === "LlmAgent" ||
+    type === "DataAgent" ||
     type === "SequentialAgent" ||
     type === "ParallelAgent" ||
     type === "LoopAgent" ||
     type === "RouterAgent" ||
-    type === "HandoffAgent"
+    type === "HandoffAgent" ||
+    type === "KeywordRouter"
   );
 }
 
-/**
- * Build a plausible InspectResponse from the bundled sample topology so the
- * panel can be developed and demoed without a backend.
- */
 function buildFallback(nodeId: string): InspectResponse | null {
   const nodes = (sampleTopology as { nodes: TopoNode[] }).nodes;
   const node = nodes.find((n) => n.id === nodeId);
-  if (!node) {
-    return null;
-  }
+  if (!node) return null;
 
   const base: InspectResponse = {
     id: node.id,
@@ -196,20 +215,27 @@ function buildFallback(nodeId: string): InspectResponse | null {
       subAgentCount: node.id === "agent:root" ? 3 : 0,
       maxIterations: node.type === "LoopAgent" ? 10 : undefined,
     };
-    return { ...base, agent };
+    return {
+      ...base,
+      agent,
+      actions: {
+        canEditInstructions: true,
+        canUnwire: false,
+        wireTarget: "agent",
+      },
+    };
   }
 
   const resourceKind = resourceKindForNodeType(node.type);
   if (resourceKind) {
-    const resource: ResourceDetails = {
-      resourceKind,
-      identifier: node.label,
-      url:
-        resourceKind === "uc_function" || resourceKind === "vector_index"
-          ? undefined
-          : `https://example.cloud.databricks.com/${resourceKind}/${encodeURIComponent(node.label)}`,
+    return {
+      ...base,
+      resource: {
+        resourceKind,
+        identifier: node.label,
+      },
+      actions: { canEditInstructions: false, canUnwire: false },
     };
-    return { ...base, resource };
   }
 
   if (node.type === "SubAgent") {
@@ -217,11 +243,20 @@ function buildFallback(nodeId: string): InspectResponse | null {
       url: "https://remote.example.com/agent",
       cardSource: "well-known",
       resolvedName: node.label,
+      ref: "$APX_PEER_EXAMPLE_URL",
     };
-    return { ...base, subAgent };
+    return {
+      ...base,
+      subAgent,
+      actions: {
+        canEditInstructions: false,
+        canUnwire: true,
+        wireTarget: "agent",
+        unwire: { kind: "agent", target: "agent", ref: "$APX_PEER_EXAMPLE_URL" },
+      },
+    };
   }
 
-  // Default: a generic tool.
   const tool: ToolDetails = {
     name: node.label,
     description: node.description,
@@ -235,16 +270,16 @@ function buildFallback(nodeId: string): InspectResponse | null {
     isSync: true,
     hasObOTokenDep: false,
   };
-  return { ...base, tool };
+  return { ...base, tool, actions: { canEditInstructions: false, canUnwire: false } };
 }
 
-// --- component --------------------------------------------------------------
-
 export function NodeInspector(props: NodeInspectorProps) {
-  const { nodeId, onClose } = props;
+  const { nodeId, onClose, onMutated, onError } = props;
   const [data, setData] = useState<InspectResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [instrDraft, setInstrDraft] = useState("");
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -255,14 +290,13 @@ export function NodeInspector(props: NodeInspectorProps) {
     const url = `/_apx/topology/inspect/${encodeURIComponent(nodeId)}`;
     fetch(url)
       .then(async (res) => {
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return (await res.json()) as InspectResponse;
       })
       .then((json) => {
         if (cancelled) return;
         setData(json);
+        setInstrDraft(json.agent?.instructions || "");
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -272,6 +306,7 @@ export function NodeInspector(props: NodeInspectorProps) {
           const fallback = buildFallback(nodeId);
           if (fallback) {
             setData(fallback);
+            setInstrDraft(fallback.agent?.instructions || "");
             setLoading(false);
             return;
           }
@@ -284,6 +319,60 @@ export function NodeInspector(props: NodeInspectorProps) {
       cancelled = true;
     };
   }, [nodeId]);
+
+  const onSaveInstructions = async () => {
+    const text = instrDraft.trim();
+    if (!text) {
+      onError?.("Instructions cannot be empty.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await saveInstructions(text);
+      if (!result.ok) {
+        onError?.(result.detail || result.error || "Save failed");
+        return;
+      }
+      onMutated?.("Instructions saved — live in Chat.");
+    } catch (err: unknown) {
+      onError?.(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onUnwire = async (actions: InspectActions) => {
+    const uw = actions.unwire;
+    if (!uw) return;
+    const label =
+      uw.kind === "agent"
+        ? uw.ref || data?.label || "peer"
+        : uw.binding_name || data?.label || "tool";
+    if (!window.confirm(`Unwire ${label} from ${uw.target}?`)) return;
+    setBusy(true);
+    try {
+      const result =
+        uw.kind === "agent"
+          ? await postUnwireAgent({ target: uw.target, ref: uw.ref || "" })
+          : await postUnwireTool({
+              target: uw.target,
+              binding_name: uw.binding_name || "",
+            });
+      if (!result.ok) {
+        onError?.(result.detail || result.error || "Unwire failed");
+        return;
+      }
+      const live = result.applied_live
+        ? "Removed live — no deploy needed."
+        : "Removed from agent.py — restart if Chat still sees it.";
+      onMutated?.(`Unwired ${label}. ${live}`);
+      onClose();
+    } catch (err: unknown) {
+      onError?.(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div style={panelStyle}>
@@ -300,24 +389,46 @@ export function NodeInspector(props: NodeInspectorProps) {
       </div>
 
       <div style={bodyStyle}>
-        {loading && <div style={{ color: "var(--text-muted)" }}>Loading…</div>}
+        {loading && <div style={{ color: "var(--muted)" }}>Loading…</div>}
 
         {error && !loading && (
           <div style={{ color: "#f87171" }}>Could not load node details: {error}</div>
         )}
 
-        {data && !loading && !error && <InspectBody data={data} />}
+        {data && !loading && !error && (
+          <InspectBody
+            data={data}
+            instrDraft={instrDraft}
+            setInstrDraft={setInstrDraft}
+            busy={busy}
+            onSaveInstructions={onSaveInstructions}
+            onUnwire={onUnwire}
+          />
+        )}
       </div>
     </div>
   );
 }
 
-// --- body renderer ----------------------------------------------------------
-
-function InspectBody({ data }: { data: InspectResponse }) {
+function InspectBody({
+  data,
+  instrDraft,
+  setInstrDraft,
+  busy,
+  onSaveInstructions,
+  onUnwire,
+}: {
+  data: InspectResponse;
+  instrDraft: string;
+  setInstrDraft: (v: string) => void;
+  busy: boolean;
+  onSaveInstructions: () => void;
+  onUnwire: (actions: InspectActions) => void;
+}) {
+  const actions = data.actions;
   return (
     <>
-      {data.description && (
+      {data.description && !data.agent && (
         <section style={sectionStyle}>
           <div style={sectionTitleStyle}>Description</div>
           <div style={ddStyle}>{data.description}</div>
@@ -333,10 +444,40 @@ function InspectBody({ data }: { data: InspectResponse }) {
         </dl>
       </section>
 
-      {data.agent && <AgentSection details={data.agent} />}
+      {data.agent && (
+        <AgentSection
+          details={data.agent}
+          canEdit={!!actions?.canEditInstructions}
+          instrDraft={instrDraft}
+          setInstrDraft={setInstrDraft}
+          busy={busy}
+          onSave={onSaveInstructions}
+        />
+      )}
       {data.tool && <ToolSection details={data.tool} />}
       {data.resource && <ResourceSection details={data.resource} />}
       {data.subAgent && <SubAgentSection details={data.subAgent} />}
+
+      {actions?.canUnwire && actions.unwire && (
+        <section style={sectionStyle}>
+          <div style={sectionTitleStyle}>Edit</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+            Remove this {actions.unwire.kind === "agent" ? "peer" : "tool"} from{" "}
+            <code>{actions.unwire.target}</code> (writes agent.py + hot-applies when
+            possible).
+          </div>
+          <div style={actionsRowStyle}>
+            <button
+              type="button"
+              style={dangerBtnStyle}
+              disabled={busy}
+              onClick={() => onUnwire(actions)}
+            >
+              {busy ? "Working…" : "Unwire"}
+            </button>
+          </div>
+        </section>
+      )}
     </>
   );
 }
@@ -350,7 +491,22 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function AgentSection({ details }: { details: AgentDetails }) {
+function AgentSection({
+  details,
+  canEdit,
+  instrDraft,
+  setInstrDraft,
+  busy,
+  onSave,
+}: {
+  details: AgentDetails;
+  canEdit: boolean;
+  instrDraft: string;
+  setInstrDraft: (v: string) => void;
+  busy: boolean;
+  onSave: () => void;
+}) {
+  const dirty = canEdit && instrDraft !== (details.instructions || "");
   return (
     <section style={sectionStyle}>
       <div style={sectionTitleStyle}>Agent</div>
@@ -368,12 +524,47 @@ function AgentSection({ details }: { details: AgentDetails }) {
         {details.maxIterations !== undefined && (
           <Field label="Max iterations">{details.maxIterations}</Field>
         )}
-        {details.instructions && (
-          <div>
-            <dt style={dtStyle}>Instructions</dt>
-            <dd style={truncatedTextStyle}>{details.instructions}</dd>
-          </div>
-        )}
+        <div>
+          <dt style={dtStyle}>Instructions</dt>
+          <dd style={ddStyle}>
+            {canEdit ? (
+              <>
+                <textarea
+                  style={textareaStyle}
+                  value={instrDraft}
+                  onChange={(e) => setInstrDraft(e.target.value)}
+                  spellCheck={false}
+                />
+                <div style={actionsRowStyle}>
+                  <button
+                    type="button"
+                    className="apx-btn"
+                    disabled={busy || !dirty}
+                    onClick={onSave}
+                  >
+                    {busy ? "Saving…" : "Save"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div
+                style={{
+                  ...ddStyle,
+                  whiteSpace: "pre-wrap",
+                  maxHeight: 200,
+                  overflow: "auto",
+                  background: "var(--code-bg)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 4,
+                  padding: 8,
+                  fontSize: 12,
+                }}
+              >
+                {details.instructions || "(none)"}
+              </div>
+            )}
+          </dd>
+        </div>
       </dl>
     </section>
   );
@@ -431,7 +622,17 @@ function SubAgentSection({ details }: { details: SubAgentDetails }) {
     <section style={sectionStyle}>
       <div style={sectionTitleStyle}>Sub-agent</div>
       <dl style={dlStyle}>
-        {details.url && (
+        {details.resolvedName && (
+          <Field label="Resolved name">
+            <code>{details.resolvedName}</code>
+          </Field>
+        )}
+        {details.ref && (
+          <Field label="Ref">
+            <code>{details.ref}</code>
+          </Field>
+        )}
+        {details.url && details.url !== details.ref && (
           <Field label="URL">
             <a href={details.url} target="_blank" rel="noreferrer">
               {details.url}
@@ -439,11 +640,6 @@ function SubAgentSection({ details }: { details: SubAgentDetails }) {
           </Field>
         )}
         {details.cardSource && <Field label="Card source">{details.cardSource}</Field>}
-        {details.resolvedName && (
-          <Field label="Resolved name">
-            <code>{details.resolvedName}</code>
-          </Field>
-        )}
       </dl>
     </section>
   );
