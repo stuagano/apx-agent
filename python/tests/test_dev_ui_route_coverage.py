@@ -882,8 +882,8 @@ async def test_w2b_tools_new_response_keeps_conditional_keys(
     client: AsyncClient, agent_router_path: Path
 ) -> None:
     """`response_model=dict[str, Any]` must pass the handler's conditional
-    `{ok, wired[, agents, note]}` through verbatim — no strip, no strict-model
-    default keys added (the rootId/agentName regression from #276)."""
+    `{ok, wired[, agents, note, restart_required]}` through verbatim — no strip,
+    no strict-model default keys added (the rootId/agentName regression from #276)."""
     r = await client.post("/_apx/tools/new", json={
         "name": "my_new_tool",
         "description": "A tool.",
@@ -895,7 +895,7 @@ async def test_w2b_tools_new_response_keeps_conditional_keys(
     data = r.json()
     assert data["ok"] is True
     assert "wired" in data
-    assert set(data) <= {"ok", "wired", "agents", "note"}  # no stray/added keys
+    assert set(data) <= {"ok", "wired", "agents", "note", "restart_required"}
 
 
 @pytest.mark.asyncio
