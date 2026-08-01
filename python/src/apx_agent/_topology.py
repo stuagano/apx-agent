@@ -29,6 +29,7 @@ import inspect
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -174,13 +175,24 @@ def _classify_sub_agent(raw: str) -> _SubAgentRef:
     """Split a sub_agent reference into ``(display_name, kind)``.
 
     Strips ``endpoints/`` / ``serving-endpoints/`` prefixes; treats
-    URLs containing ``databricksapps.com`` as Apps deployments; falls
-    back to a bare name otherwise.
+    URLs containing ``databricksapps.com`` as Apps deployments; resolves
+    ``$APX_PEER_*_URL`` env refs to a friendly peer slug; falls back to a
+    bare name otherwise.
     """
     raw = raw.strip()
+    if raw.startswith("$"):
+        key = raw[1:].strip("{}")
+        if key.startswith("APX_PEER_") and key.endswith("_URL"):
+            slug = key[len("APX_PEER_") : -len("_URL")]
+            label = slug.replace("_", "-").lower() or key
+            return _SubAgentRef(display_name=label, kind="env_ref")
+        return _SubAgentRef(display_name=key or raw, kind="env_ref")
     if "databricksapps.com" in raw:
-        # Apps URL — keep the URL but tag accordingly
-        return _SubAgentRef(display_name=raw, kind="app_url")
+        host = raw.split("//", 1)[-1].split("/", 1)[0]
+        app = host.split(".", 1)[0]
+        m = re.match(r"^(.+)-(\d{10,})$", app)
+        label = m.group(1) if m else (app or raw)
+        return _SubAgentRef(display_name=label, kind="app_url")
     if raw.startswith(("endpoints/", "serving-endpoints/")):
         _, _, name = raw.partition("/")
         return _SubAgentRef(display_name=name, kind="endpoint")
@@ -516,8 +528,13 @@ def build_topology(ctx: "AgentContext") -> dict[str, Any]:
             "description": (_instructions_for(agent) or "").strip()[:280] or None,
         })
 
-        # Tool nodes + their resource nodes
+        # Tool nodes + their resource nodes. Skip callables that are the
+        # materialization of a ``sub_agents=`` peer — those already appear as
+        # SubAgent / delegates-to nodes below (otherwise Topology double-draws
+        # the same remote as uses-tool + delegates-to).
         for fn in _agent_tools(agent):
+            if getattr(fn, "__apx_sub_agent_url__", None):
+                continue
             tool_name = getattr(fn, "__name__", "tool")
             tool_id = f"tool:{agent_id}:{tool_name}"
             specs = get_resources(fn)
@@ -552,12 +569,21 @@ def build_topology(ctx: "AgentContext") -> dict[str, Any]:
 
         # Sub-agent URLs declared on this agent (remote A2A)
         for raw_url in _agent_sub_agent_urls(agent):
+            ref = _classify_sub_agent(raw_url)
+            resolved = raw_url
+            if raw_url.startswith("$"):
+                env_key = raw_url[1:].strip("{}")
+                resolved = os.environ.get(env_key) or raw_url
             sub_id = f"endpoint:{raw_url}"
+            desc = f"Remote sub-agent ({raw_url}"
+            if resolved != raw_url:
+                desc += f" → {resolved}"
+            desc += ")"
             _add_node({
                 "id": sub_id,
                 "type": "SubAgent",
-                "label": raw_url,
-                "description": f"Remote sub-agent URL: {raw_url}",
+                "label": ref.display_name,
+                "description": desc,
             })
             _add_edge(agent_id, sub_id, "delegates-to")
 
@@ -596,12 +622,112 @@ def build_topology(ctx: "AgentContext") -> dict[str, Any]:
     }
 
 
+def route_highlight_from_spans(
+    topology: dict[str, Any],
+    spans: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Map serialized MLflow spans onto topology node/edge ids for last-turn highlight.
+
+    Matches TOOL (and similarly named) span ``name`` values against topology
+    node labels and id suffixes (``tool:…:run_sql``, ``endpoint:$APX_PEER_…``).
+    Then walks edges so the path from the root through each hit lights up.
+    """
+    nodes = list(topology.get("nodes") or [])
+    edges = list(topology.get("edges") or [])
+    root_id = topology.get("rootId") or "agent:root"
+
+    # Prefer TOOL spans; also accept CHAIN/AGENT names that match a node label
+    # (remote peer materializations often land as non-TOOL spans).
+    candidate_names: list[str] = []
+    for span in spans:
+        name = (span.get("name") or "").strip()
+        if not name:
+            continue
+        st = str(span.get("span_type") or "").upper()
+        if st == "TOOL" or name in {n.get("label") for n in nodes}:
+            candidate_names.append(name)
+
+    hit_ids: set[str] = set()
+    matched_names: list[str] = []
+    for name in candidate_names:
+        for node in nodes:
+            nid = str(node.get("id") or "")
+            label = str(node.get("label") or "")
+            if label == name or nid.endswith(f":{name}"):
+                hit_ids.add(nid)
+                if name not in matched_names:
+                    matched_names.append(name)
+
+    if not hit_ids:
+        return {
+            "node_ids": [],
+            "edge_ids": [],
+            "tool_names": [],
+        }
+
+    # Include ancestors: any edge whose target is already highlighted pulls
+    # its source in, iterating until closure (root → tool path).
+    parent_of: dict[str, list[str]] = {}
+    for edge in edges:
+        parent_of.setdefault(str(edge["target"]), []).append(str(edge["source"]))
+
+    frontier = set(hit_ids)
+    while frontier:
+        nxt: set[str] = set()
+        for nid in frontier:
+            for parent in parent_of.get(nid, []):
+                if parent not in hit_ids:
+                    hit_ids.add(parent)
+                    nxt.add(parent)
+        frontier = nxt
+
+    if root_id in {str(n.get("id")) for n in nodes}:
+        hit_ids.add(root_id)
+
+    edge_ids = [
+        str(e["id"])
+        for e in edges
+        if str(e["source"]) in hit_ids and str(e["target"]) in hit_ids
+    ]
+    return {
+        "node_ids": sorted(hit_ids),
+        "edge_ids": edge_ids,
+        "tool_names": matched_names,
+    }
+
+
+def _discover_target_for_agent_id(agent_id: str) -> str:
+    """Map a topology agent node id to the Discover wire ``target`` name."""
+    if agent_id == "agent:root":
+        return "agent"
+    if agent_id.startswith("agent:root."):
+        return agent_id.rsplit(".", 1)[-1]
+    return "agent"
+
+
+def _leaf_editable(agent: "BaseAgent") -> bool:
+    """True when inspector may edit instructions on this agent class."""
+    from ._agents import LlmAgent
+    from .data_agent import DataAgent
+
+    return isinstance(agent, (LlmAgent, DataAgent))
+
+
 def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
     """Return the ``InspectResponse`` dict for ``node_id``, or ``None`` if unknown."""
     from ._resources import get_resources
+    from ._ui_edit import _find_agent_router_path, _is_factory_tool_binding
 
     if not node_id:
         return None
+
+    source = ""
+    path = _find_agent_router_path()
+    if path is not None and path.exists():
+        try:
+            source = path.read_text()
+        except Exception:
+            source = ""
 
     # Agent IDs: ``agent:root`` (root) or ``agent:root.<child_name>...`` (nested)
     if node_id == "agent:root" or node_id.startswith("agent:root."):
@@ -611,7 +737,8 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
         agent_obj, label = target
         instr = _instructions_for(agent_obj)
         tools = _agent_tools(agent_obj)
-        sub_count = len(_iter_child_agents(agent_obj))
+        sub_count = len(_iter_child_agents(agent_obj)) + len(_agent_sub_agent_urls(agent_obj))
+        wire_target = _discover_target_for_agent_id(node_id)
         agent_details: dict[str, Any] = {
             "className": type(agent_obj).__name__,
             "instructions": instr[:4096] if instr else None,
@@ -622,12 +749,18 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
         max_iter = getattr(agent_obj, "_max_iterations", None)
         if max_iter is not None:
             agent_details["maxIterations"] = max_iter
+        actions: dict[str, Any] = {
+            "canEditInstructions": _leaf_editable(agent_obj),
+            "canUnwire": False,
+            "wireTarget": wire_target,
+        }
         return {
             "id": node_id,
             "type": _agent_class_to_node_type(agent_obj),
             "label": label,
             "description": (instr or "").strip()[:280] or None,
             "agent": agent_details,
+            "actions": actions,
         }
 
     # Tool IDs: ``tool:<agent_id>:<tool_name>`` where <agent_id> contains a colon
@@ -654,6 +787,19 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
             tool_node_type = mapped[0] if mapped else "Tool"
         else:
             tool_node_type = "Tool"
+        wire_target = _discover_target_for_agent_id(owner_agent_id)
+        can_unwire = bool(source) and _is_factory_tool_binding(source, tool_name)
+        tool_actions: dict[str, Any] = {
+            "canEditInstructions": False,
+            "canUnwire": can_unwire,
+            "wireTarget": wire_target,
+        }
+        if can_unwire:
+            tool_actions["unwire"] = {
+                "kind": "tool",
+                "target": wire_target,
+                "binding_name": tool_name,
+            }
         return {
             "id": node_id,
             "type": tool_node_type,
@@ -666,6 +812,7 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
                 "isSync": not inspect.iscoroutinefunction(fn),
                 "hasObOTokenDep": _tool_has_obo_dep(fn),
             },
+            "actions": tool_actions,
         }
 
     # Resource IDs: ``<prefix>:<identifier>``
@@ -689,17 +836,31 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
     # Differentiate ServingEndpoint vs SubAgent: SubAgent if any LlmAgent in the
     # tree lists this URL as a sub_agent. (Only matters for endpoint: prefix.)
     if prefix == "endpoint":
-        for agent_obj, _ in _walk_all_agents(ctx):
-            if identifier in _agent_sub_agent_urls(agent_obj):
+        for agent_obj, agent_id in _walk_all_agents(ctx):
+            urls = _agent_sub_agent_urls(agent_obj)
+            if identifier in urls:
+                ref = _classify_sub_agent(identifier)
+                wire_target = _discover_target_for_agent_id(agent_id)
                 return {
                     "id": node_id,
                     "type": "SubAgent",
-                    "label": identifier,
-                    "description": f"Remote sub-agent URL: {identifier}",
+                    "label": ref.display_name,
+                    "description": f"Remote sub-agent ({identifier})",
                     "subAgent": {
                         "url": identifier,
                         "cardSource": "config",
-                        "resolvedName": identifier,
+                        "resolvedName": ref.display_name,
+                        "ref": identifier,
+                    },
+                    "actions": {
+                        "canEditInstructions": False,
+                        "canUnwire": True,
+                        "wireTarget": wire_target,
+                        "unwire": {
+                            "kind": "agent",
+                            "target": wire_target,
+                            "ref": identifier,
+                        },
                     },
                 }
 
@@ -717,6 +878,7 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
         "label": identifier,
         "description": f"{kind}: {identifier}",
         "resource": resource_details,
+        "actions": {"canEditInstructions": False, "canUnwire": False},
     }
 
 

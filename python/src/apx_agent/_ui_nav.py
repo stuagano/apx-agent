@@ -2,6 +2,37 @@
 
 from __future__ import annotations
 
+
+def _apx_dev_fetch_js() -> str:
+    """JS ``fetch`` wrapper for Dev UI writes.
+
+    On deployed Apps, writes are authorized by Apps SSO
+    (``X-Forwarded-Access-Token`` injected by the proxy) — no pasted token.
+    Optionally forwards ``X-APX-Dev-Token`` from ``localStorage`` / ``?token=``
+    when set (CI / automation override).
+    """
+    return """
+<script>
+(function () {
+  function readToken() {
+    try {
+      var q = new URLSearchParams(window.location.search).get('token');
+      if (q) { localStorage.setItem('apxDevToken', q); return q; }
+    } catch (e) {}
+    try { return localStorage.getItem('apxDevToken') || ''; } catch (e) { return ''; }
+  }
+  window.apxDevFetch = async function (url, init) {
+    init = init || {};
+    var headers = new Headers(init.headers || {});
+    var t = readToken();
+    if (t) headers.set('X-APX-Dev-Token', t);
+    return fetch(url, Object.assign({}, init, { headers: headers }));
+  };
+})();
+</script>
+"""
+
+
 def _apx_nav_css() -> str:
     return """
   #apx-header { position:fixed;top:0;left:0;right:0;z-index:1000;background:#111;border-bottom:1px solid #2a2a2a; }
@@ -84,7 +115,7 @@ def _deploy_overlay_html() -> str:
     });
   }
 </script>
-""" + """
+""" + _apx_dev_fetch_js() + """
 <style>
   #btn-deploy { background: #1a1040; color: #a78bfa; border: 1px solid #4c1d95;
                 border-radius: 6px; padding: 5px 14px; font-size: 12px; font-weight: 600;

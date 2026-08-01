@@ -32,3 +32,5 @@ instructions = "You are a helpful assistant."
 # ``agent.py``. ``agent_server/start_server.py`` is framework boilerplate
 # that imports + wraps it for the Databricks Apps runtime.
 module = "agent:agent"
+# OKF grounding substrate — Grounding tab + DataAgent instructions.
+knowledge = "./.apx/okf"

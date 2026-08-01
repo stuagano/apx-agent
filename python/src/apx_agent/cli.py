@@ -1160,7 +1160,7 @@ from apx_agent import DataAgent
 # A governed data agent over ``{catalog}.{schema}`` (schema baked at scaffold
 # time — no runtime discovery needed). To switch catalogs or refresh the
 # baked schema: ``apx-agent agents scaffold <name> --catalog <cat> --schema <sch>``.
-agent = DataAgent("{catalog}", "{schema}"{extra_tools})
+agent = DataAgent("{catalog}", "{schema}"{extra_tools}{knowledge_arg})
 '''
 
 
@@ -1330,7 +1330,7 @@ _SCHEMA = "<SCHEMA>"
 agent = DataAgent(
     os.environ.get("APX_CATALOG", _CATALOG),
     os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS>,
-    name="<APP_NAME>"<INSTRUCTIONS_ARG>,
+    name="<APP_NAME>"<INSTRUCTIONS_ARG><KNOWLEDGE_ARG>,
 )
 '''
 
@@ -1384,7 +1384,7 @@ _SCHEMA = "<SCHEMA>"
 agent = CoworkerAgent(
     os.environ.get("APX_CATALOG", _CATALOG),
     os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS><PERSONA_ARG><JOIN_KEY_ARG><OBJECTIVE_ARG>,
-    name="<APP_NAME>"<INSTRUCTIONS_ARG>,
+    name="<APP_NAME>"<INSTRUCTIONS_ARG><KNOWLEDGE_ARG>,
 )
 '''
 
@@ -3442,11 +3442,13 @@ def _scaffold_model_serving(
 
     manifest = _schema_manifest_for_scaffold(catalog, schema)
     knowledge_line = 'knowledge = "./.apx/okf"\n' if manifest is not None else ""
+    knowledge_arg = ', knowledge="./.apx/okf"' if manifest is not None else ""
     files = {
         "pyproject.toml": _SCAFFOLD_PYPROJECT.format(name=name, knowledge_line=knowledge_line),
         "agent.py": _SCAFFOLD_AGENT.format(
             name=name, catalog=catalog, schema=schema,
             example_tool=prelude, extra_tools=extra_tools,
+            knowledge_arg=knowledge_arg,
         ),
         "app.py": _SCAFFOLD_APP,
         ".gitignore": _SCAFFOLD_GITIGNORE,
@@ -3588,6 +3590,7 @@ def _scaffold_apps(
     # Emit the knowledge knob iff the bundle is actually being written (manifest is not None).
     # This keeps pyproject.toml coherent: the knob resolves iff the bundle exists on disk.
     knowledge_line = 'knowledge = "./.apx/okf"\n' if manifest is not None else ""
+    knowledge_arg = ', knowledge="./.apx/okf"' if manifest is not None else ""
 
     # Splice UC catalog/schema as DAB variables only when this template
     # actually has a data source (#323) — a base LlmAgent scaffold has no
@@ -3617,6 +3620,7 @@ def _scaffold_apps(
             .replace("<APX_AGENT_DEP>", apx_dep)
             .replace("<APX_AGENT_SOURCE>", apx_source)
             .replace("<KNOWLEDGE_LINE>", knowledge_line)
+            .replace("<KNOWLEDGE_ARG>", knowledge_arg)
         )
 
     # Enable a durable Lakebase session store by default (--no-lakebase opts out to
@@ -7870,9 +7874,11 @@ def _merge_env_into_databricks_yml(
 ) -> _EnvMergeResult:
     """Merge --env / --secret-env entries into ``resources.apps.<key>.config.env``.
 
-    Same contract as ``_auto_update_databricks_yml``: the merge PERSISTS in
-    databricks.yml, and an entry whose ``name`` already exists in
-    ``config.env`` is NEVER clobbered — it is skipped with a warning.
+    Plaintext ``--env`` is merged for the bundle upload then scrubbed by
+    ``_scrub_plaintext_env_from_databricks_yml`` after deploy (peer URLs /
+    tokens must not linger in source). ``--secret-env`` value_from refs
+    persist. An entry whose ``name`` already exists in ``config.env`` is
+    NEVER clobbered — it is skipped with a warning.
 
     ``--secret-env`` additionally declares a Databricks secret app resource
     (permission READ) and points the env entry at it via ``valueFrom``; only
@@ -7953,6 +7959,63 @@ def _merge_env_into_databricks_yml(
     return _EnvMergeResult(
         env_added=env_added, secret_added=secret_added, skipped=skipped,
     )
+
+
+def _scrub_plaintext_env_from_databricks_yml(
+    cwd: Path,
+    *,
+    bundle_key: str,
+    names: list[str],
+    log: Any,
+) -> None:
+    """Remove plaintext ``--env`` entries previously merged for a deploy.
+
+    Peer URLs / tokens must not linger in ``databricks.yml`` after the bundle
+    has been uploaded. Only removes entries whose ``name`` is in ``names`` and
+    that carry a literal ``value`` (never ``value_from`` / ``valueFrom`` secret
+    refs from ``--secret-env``). No-op when nothing matches.
+    """
+    if not names:
+        return
+    want = set(names)
+    path = cwd / "databricks.yml"
+    if not path.is_file():
+        return
+    yml, doc = _load_databricks_yml_roundtrip(cwd)
+    try:
+        env_list = doc["resources"]["apps"][bundle_key]["config"]["env"]
+    except (KeyError, TypeError):
+        return
+    if not isinstance(env_list, list):
+        return
+    kept: list[Any] = []
+    removed: list[str] = []
+    for entry in env_list:
+        if not isinstance(entry, dict):
+            kept.append(entry)
+            continue
+        name = entry.get("name")
+        if (
+            isinstance(name, str)
+            and name in want
+            and ("value" in entry)
+            and ("valueFrom" not in entry)
+            and ("value_from" not in entry)
+        ):
+            removed.append(name)
+            continue
+        kept.append(entry)
+    if not removed:
+        return
+    doc["resources"]["apps"][bundle_key]["config"]["env"] = kept
+    with path.open("w") as f:
+        yml.dump(doc, f)
+    log(
+        "  env scrub: removed plaintext --env from databricks.yml "
+        f"(uploaded with deploy; not left in source): {', '.join(removed)}"
+    )
+
+
 
 
 def _auto_update_databricks_yml(
@@ -8501,15 +8564,17 @@ def _deploy_apps_impl(
 
     # 2a. --env / --secret-env (issue #415): merge caller-supplied runtime
     # env into resources.apps.<key>.config.env before the bundle deploy.
-    # The merge PERSISTS in databricks.yml; existing entries are never
-    # clobbered. Only key NAMES are logged — never values.
+    # Plaintext --env is ephemeral (scrubbed after deploy); --secret-env
+    # value_from refs persist. Existing entries are never clobbered. Only
+    # key NAMES are logged — never values.
     injected_env_keys: list[str] = []
     injected_secret_env_keys: list[str] = []
     if env_pairs or secret_env_pairs:
         parsed_env = [_parse_env_flag(e) for e in env_pairs]
         parsed_secret = [_parse_secret_env_flag(s) for s in secret_env_pairs]
         log("# env config: merging --env/--secret-env into databricks.yml "
-            "(the merge persists in the file)")
+            "(plaintext --env is ephemeral — scrubbed after deploy; "
+            "--secret-env value_from refs persist)")
         merge = _merge_env_into_databricks_yml(
             cwd, bundle_key=bundle_key,
             env_pairs=parsed_env, secret_env_pairs=parsed_secret, log=log,
@@ -8517,314 +8582,320 @@ def _deploy_apps_impl(
         injected_env_keys = merge.env_added
         injected_secret_env_keys = merge.secret_added
 
-    # 2b. Auto-build apx-agent wheel + populate .build/
-    wheel_path: Path | None = None
-    if auto_build_wheel:
-        wheel_path = _ensure_apx_wheel(cwd)
-        if wheel_path:
-            log(f"  built apx-agent wheel: {wheel_path}")
-        _run_bundle_artifacts(cwd)
-        log("  populated .build/")
-        # Stage the dependency manifest into .build/. The artifacts script
-        # omits pyproject.toml/uv.lock by design — without them the Apps
-        # container has no manifest and falls back to base-image packages
-        # (older mlflow, no mlflow.genai) → 502 (issue #116). Runs for BOTH the
-        # wheel (editable/local) and git+https install shapes; passing the
-        # wheel_path (possibly None) selects which.
-        build_dir = cwd / ".build"
-        if build_dir.is_dir():
-            _stage_build_manifest(build_dir, wheel_path)
-            # Fail loud at deploy time rather than as a runtime 502 if the
-            # manifest somehow didn't land.
-            if not (build_dir / "pyproject.toml").exists():
-                raise click.ClickException(
-                    "deploy aborted: .build/pyproject.toml is missing after "
-                    "staging — the Apps container would have no dependency "
-                    "manifest and 502 on startup. Check that the project root "
-                    "has a pyproject.toml."
-                )
-    else:
-        log("# --no-auto-build-wheel: skipping wheel build + artifacts step")
-
-    # 2c. Auto-resolve mlflow_experiment_id if the bundle wants it and the
-    # caller didn't pass one. Looks up / creates an experiment at
-    # /Users/<current-user>/<bundle_name>-<target>.
-    extra_vars: list[str] = []
-    # Track the experiment id we end up deploying with, from either the
-    # caller's --var or our auto-create. Used post-poll to grant the app SP
-    # access so tracing can land.
-    resolved_exp_id: str | None = None
-    for v in vars or ():
-        if v.startswith("mlflow_experiment_id="):
-            resolved_exp_id = v.split("=", 1)[1].strip() or None
-            break
-    if auto_experiment and resolved_exp_id is None:
-        eid = _ensure_experiment_id(
-            profile=profile,
-            bundle_name=app_name,
-            bundle_target=bundle_target,
-            env_value=None,
-        )
-        if eid:
-            resolved_exp_id = eid
-            extra_vars.append(f"mlflow_experiment_id={eid}")
-
-    # 2d. Version correlation (issue #404): pass the deploy commit into the
-    # app container as APX_GIT_SHA so every trace carries an apx.git_sha tag
-    # and `canary analyze --target apps` can attribute traffic per version.
-    # The sha is read from the provenance tags already computed for this
-    # deploy (single source — never recomputed). Only injected when the
-    # bundle declares the `apx_git_sha` variable (new scaffolds do), so
-    # pre-#404 bundles keep deploying untouched; an explicit caller
-    # `--var apx_git_sha=` always wins.
-    from ._apps_registry import GIT_SHA_TAG
-    correlation_sha = (extra_version_tags or {}).get(GIT_SHA_TAG)
-    declared_bundle_vars = doc.get("variables")
-    if (
-        correlation_sha
-        and isinstance(declared_bundle_vars, dict)
-        and "apx_git_sha" in declared_bundle_vars
-        and not any(v.startswith("apx_git_sha=") for v in vars or ())
-    ):
-        extra_vars.append(f"apx_git_sha={correlation_sha}")
-        log(f"  version correlation: APX_GIT_SHA={correlation_sha[:12]} → app env")
-
-    deploy_var_args: list[str] = []
-    for v in list(vars or ()) + extra_vars:
-        deploy_var_args.extend(["--var", v])
-
-    # 3. databricks bundle validate
-    log("# databricks bundle validate")
-    validate_proc = _run_databricks_cmd(
-        ["bundle", "validate", "--target", bundle_target] + deploy_var_args,
-        profile=profile,
-    )
-    if validate_proc.returncode != 0:
-        msg = (
-            f"`databricks bundle validate` failed (exit {validate_proc.returncode}). "
-            f"Last lines:\n{_tail_lines(validate_proc.stderr or validate_proc.stdout)}"
-        )
-        with _json_cli_errors(json_output, extra={"app_name": app_name}):
-            raise click.ClickException(msg)
-
-    # 4. databricks bundle deploy
-    log("# databricks bundle deploy")
-    deploy_t0 = time.monotonic()
-    deploy_proc = _run_databricks_cmd(
-        ["bundle", "deploy", "--target", bundle_target] + deploy_var_args,
-        profile=profile,
-    )
-    deploy_seconds = round(time.monotonic() - deploy_t0, 2)
-    if deploy_proc.returncode != 0:
-        msg = (
-            f"`databricks bundle deploy` failed (exit {deploy_proc.returncode}). "
-            f"Last lines:\n{_tail_lines(deploy_proc.stderr or deploy_proc.stdout)}"
-        )
-        with _json_cli_errors(json_output, extra={"app_name": app_name}):
-            raise click.ClickException(msg)
-    log(f"  bundle deploy finished in {deploy_seconds:.1f}s")
-
-    # 5. databricks bundle run <bundle_key>
-    # bundle run takes the YAML KEY under resources.apps, which may differ
-    # from the workspace app name (which is what `apps get` consumes).
-    run_seconds: float | None = None
-    if not no_run:
-        log(f"# databricks bundle run {bundle_key}")
-        run_t0 = time.monotonic()
-        run_proc = _run_databricks_cmd(
-            ["bundle", "run", bundle_key, "--target", bundle_target] + deploy_var_args,
-            profile=profile,
-        )
-        run_seconds = round(time.monotonic() - run_t0, 2)
-        if run_proc.returncode != 0:
-            # Non-fatal — the app may already be running. Surface the tail
-            # and proceed to polling so we still verify readiness.
-            log(f"  bundle run returned {run_proc.returncode} (continuing)")
-            log(f"  last lines:\n{_tail_lines(run_proc.stderr or run_proc.stdout)}")
+    try:
+        # 2b. Auto-build apx-agent wheel + populate .build/
+        wheel_path: Path | None = None
+        if auto_build_wheel:
+            wheel_path = _ensure_apx_wheel(cwd)
+            if wheel_path:
+                log(f"  built apx-agent wheel: {wheel_path}")
+            _run_bundle_artifacts(cwd)
+            log("  populated .build/")
+            # Stage the dependency manifest into .build/. The artifacts script
+            # omits pyproject.toml/uv.lock by design — without them the Apps
+            # container has no manifest and falls back to base-image packages
+            # (older mlflow, no mlflow.genai) → 502 (issue #116). Runs for BOTH the
+            # wheel (editable/local) and git+https install shapes; passing the
+            # wheel_path (possibly None) selects which.
+            build_dir = cwd / ".build"
+            if build_dir.is_dir():
+                _stage_build_manifest(build_dir, wheel_path)
+                # Fail loud at deploy time rather than as a runtime 502 if the
+                # manifest somehow didn't land.
+                if not (build_dir / "pyproject.toml").exists():
+                    raise click.ClickException(
+                        "deploy aborted: .build/pyproject.toml is missing after "
+                        "staging — the Apps container would have no dependency "
+                        "manifest and 502 on startup. Check that the project root "
+                        "has a pyproject.toml."
+                    )
         else:
-            log(f"  bundle run finished in {run_seconds:.1f}s")
-    else:
-        log("# --no-run: skipping `databricks bundle run`")
+            log("# --no-auto-build-wheel: skipping wheel build + artifacts step")
 
-    # 6. Poll for ACTIVE/RUNNING via `databricks apps get`. Skipped with
-    # --no-run (issue #413): the app was never started, so polling would just
-    # burn the timeout, and the readyz gate below self-skips on the empty
-    # app_url. The UC manifest registration (6d) still runs — it records
-    # intent/version and doesn't need the app up.
-    app_url = ""
-    if no_run:
-        log("# --no-run: app not started — skipping readiness poll + readyz gate")
-    else:
-        log(f"# polling `databricks apps get {app_name}` for ACTIVE/RUNNING")
-        payload = _poll_app_ready(
-            app_name, profile, timeout_seconds=poll_timeout_seconds, log=log,
-        )
-        app_url = payload.get("url") or ""
-
-        # 6b. Grant the app's service principal access to the tracing
-        # experiment. The experiment is created under the deploying user, but
-        # the app runs as its SP — without this grant every span is dropped.
-        # Best-effort.
-        sp = payload.get("service_principal_client_id")
-        if sp and resolved_exp_id:
-            if _grant_experiment_to_sp(resolved_exp_id, sp, profile=profile):
-                log("  granted app SP CAN_MANAGE on tracing experiment")
-
-    # 6c. readyz gate: prove the app actually answers + traces, not just that
-    # the container booted. A green deploy should mean "the agent works".
-    # The check dict is kept for the JSON summary (issue #417); it stays None
-    # when the gate is off or --no-run left the app without a URL.
-    readyz_checks: dict[str, Any] | None = None
-    if readyz_gate and app_url:
-        log(f"# readyz gate: GET {app_url}/readyz")
-        ok, checks = _check_readyz(app_url, profile=profile, attempts=readyz_attempts)
-        readyz_checks = checks
-        if ok:
-            log(f"  readyz: ready ({checks})")
-        else:
-            # Parse checks dict into human-readable lines so the error
-            # names the failing capability rather than dumping raw JSON.
-            if isinstance(checks, dict):
-                failing = [
-                    f"  • {k}: {v}"
-                    for k, v in checks.items()
-                    if v not in ("ok", None, True)
-                ]
-                detail = "\n".join(failing) if failing else str(checks)
-            else:
-                detail = str(checks)
-            log("# fetching app logs for crash context...")
-            log_tail = _fetch_app_log_tail(app_name, profile=profile)
-            logs_cmd = f"databricks apps logs {app_name}"
-            if profile:
-                logs_cmd += f" --profile {profile}"
-            # Ledger the failed deploy (issue #401): the broken app IS live,
-            # so the UC version trail must record it — tagged failed so no
-            # one mistakes it for a healthy version. Best-effort, like the
-            # success-path registration.
-            if register_uc:
-                _register_apps_manifest_step(
-                    module=module,
-                    config=_read_apx_agent_config(),
-                    app_name=app_name,
-                    bundle_target=bundle_target,
-                    uc_name_override=uc_name,
-                    extra_version_tags={
-                        **(extra_version_tags or {}),
-                        "apx.apps.readyz": "failed",
-                    },
-                    profile=profile,
-                    log=log,
-                )
-            recovery = _apps_readyz_recovery_hint(
-                app_name, profile=profile, uc_name_override=uc_name, log=log,
+        # 2c. Auto-resolve mlflow_experiment_id if the bundle wants it and the
+        # caller didn't pass one. Looks up / creates an experiment at
+        # /Users/<current-user>/<bundle_name>-<target>.
+        extra_vars: list[str] = []
+        # Track the experiment id we end up deploying with, from either the
+        # caller's --var or our auto-create. Used post-poll to grant the app SP
+        # access so tracing can land.
+        resolved_exp_id: str | None = None
+        for v in vars or ():
+            if v.startswith("mlflow_experiment_id="):
+                resolved_exp_id = v.split("=", 1)[1].strip() or None
+                break
+        if auto_experiment and resolved_exp_id is None:
+            eid = _ensure_experiment_id(
+                profile=profile,
+                bundle_name=app_name,
+                bundle_target=bundle_target,
+                env_value=None,
             )
+            if eid:
+                resolved_exp_id = eid
+                extra_vars.append(f"mlflow_experiment_id={eid}")
+
+        # 2d. Version correlation (issue #404): pass the deploy commit into the
+        # app container as APX_GIT_SHA so every trace carries an apx.git_sha tag
+        # and `canary analyze --target apps` can attribute traffic per version.
+        # The sha is read from the provenance tags already computed for this
+        # deploy (single source — never recomputed). Only injected when the
+        # bundle declares the `apx_git_sha` variable (new scaffolds do), so
+        # pre-#404 bundles keep deploying untouched; an explicit caller
+        # `--var apx_git_sha=` always wins.
+        from ._apps_registry import GIT_SHA_TAG
+        correlation_sha = (extra_version_tags or {}).get(GIT_SHA_TAG)
+        declared_bundle_vars = doc.get("variables")
+        if (
+            correlation_sha
+            and isinstance(declared_bundle_vars, dict)
+            and "apx_git_sha" in declared_bundle_vars
+            and not any(v.startswith("apx_git_sha=") for v in vars or ())
+        ):
+            extra_vars.append(f"apx_git_sha={correlation_sha}")
+            log(f"  version correlation: APX_GIT_SHA={correlation_sha[:12]} → app env")
+
+        deploy_var_args: list[str] = []
+        for v in list(vars or ()) + extra_vars:
+            deploy_var_args.extend(["--var", v])
+
+        # 3. databricks bundle validate
+        log("# databricks bundle validate")
+        validate_proc = _run_databricks_cmd(
+            ["bundle", "validate", "--target", bundle_target] + deploy_var_args,
+            profile=profile,
+        )
+        if validate_proc.returncode != 0:
             msg = (
-                f"readyz gate failed — the app is STILL LIVE, serving in a "
-                f"failed state:\n"
-                f"  app: {app_name}\n"
-                f"  url: {app_url}\n"
-                f"{detail}\n\n"
-                f"App logs (last 40 lines):\n"
-                f"{'─' * 60}\n"
-                f"{log_tail}\n"
-                f"{'─' * 60}\n\n"
-                f"Full logs:  {logs_cmd}\n"
-                f"{recovery}\n"
-                f"(Or re-run with --no-readyz-gate to accept this state.)"
+                f"`databricks bundle validate` failed (exit {validate_proc.returncode}). "
+                f"Last lines:\n{_tail_lines(validate_proc.stderr or validate_proc.stdout)}"
             )
-            if json_output:
-                click.echo(json.dumps({
-                    "ok": False,
-                    "error": msg,
-                    "app_name": app_name,
-                    "app_url": app_url,
-                    "readyz": checks,
-                }, default=str))
-                raise click.exceptions.Exit(1)
-            raise click.ClickException(msg)
+            with _json_cli_errors(json_output, extra={"app_name": app_name}):
+                raise click.ClickException(msg)
 
-    # 6d. Register a UC version manifest for the deployed App (best-effort).
-    # Runs after the App is live so a registration failure never blocks the
-    # deploy. Skips with a loud notice when no UC name / model is configured.
-    registered_version: str | None = None
-    if register_uc:
-        registered_version = _register_apps_manifest_step(
-            module=module,
-            config=_read_apx_agent_config(),
+        # 4. databricks bundle deploy
+        log("# databricks bundle deploy")
+        deploy_t0 = time.monotonic()
+        deploy_proc = _run_databricks_cmd(
+            ["bundle", "deploy", "--target", bundle_target] + deploy_var_args,
+            profile=profile,
+        )
+        deploy_seconds = round(time.monotonic() - deploy_t0, 2)
+        if deploy_proc.returncode != 0:
+            msg = (
+                f"`databricks bundle deploy` failed (exit {deploy_proc.returncode}). "
+                f"Last lines:\n{_tail_lines(deploy_proc.stderr or deploy_proc.stdout)}"
+            )
+            with _json_cli_errors(json_output, extra={"app_name": app_name}):
+                raise click.ClickException(msg)
+        log(f"  bundle deploy finished in {deploy_seconds:.1f}s")
+
+        # 5. databricks bundle run <bundle_key>
+        # bundle run takes the YAML KEY under resources.apps, which may differ
+        # from the workspace app name (which is what `apps get` consumes).
+        run_seconds: float | None = None
+        if not no_run:
+            log(f"# databricks bundle run {bundle_key}")
+            run_t0 = time.monotonic()
+            run_proc = _run_databricks_cmd(
+                ["bundle", "run", bundle_key, "--target", bundle_target] + deploy_var_args,
+                profile=profile,
+            )
+            run_seconds = round(time.monotonic() - run_t0, 2)
+            if run_proc.returncode != 0:
+                # Non-fatal — the app may already be running. Surface the tail
+                # and proceed to polling so we still verify readiness.
+                log(f"  bundle run returned {run_proc.returncode} (continuing)")
+                log(f"  last lines:\n{_tail_lines(run_proc.stderr or run_proc.stdout)}")
+            else:
+                log(f"  bundle run finished in {run_seconds:.1f}s")
+        else:
+            log("# --no-run: skipping `databricks bundle run`")
+
+        # 6. Poll for ACTIVE/RUNNING via `databricks apps get`. Skipped with
+        # --no-run (issue #413): the app was never started, so polling would just
+        # burn the timeout, and the readyz gate below self-skips on the empty
+        # app_url. The UC manifest registration (6d) still runs — it records
+        # intent/version and doesn't need the app up.
+        app_url = ""
+        if no_run:
+            log("# --no-run: app not started — skipping readiness poll + readyz gate")
+        else:
+            log(f"# polling `databricks apps get {app_name}` for ACTIVE/RUNNING")
+            payload = _poll_app_ready(
+                app_name, profile, timeout_seconds=poll_timeout_seconds, log=log,
+            )
+            app_url = payload.get("url") or ""
+
+            # 6b. Grant the app's service principal access to the tracing
+            # experiment. The experiment is created under the deploying user, but
+            # the app runs as its SP — without this grant every span is dropped.
+            # Best-effort.
+            sp = payload.get("service_principal_client_id")
+            if sp and resolved_exp_id:
+                if _grant_experiment_to_sp(resolved_exp_id, sp, profile=profile):
+                    log("  granted app SP CAN_MANAGE on tracing experiment")
+
+        # 6c. readyz gate: prove the app actually answers + traces, not just that
+        # the container booted. A green deploy should mean "the agent works".
+        # The check dict is kept for the JSON summary (issue #417); it stays None
+        # when the gate is off or --no-run left the app without a URL.
+        readyz_checks: dict[str, Any] | None = None
+        if readyz_gate and app_url:
+            log(f"# readyz gate: GET {app_url}/readyz")
+            ok, checks = _check_readyz(app_url, profile=profile, attempts=readyz_attempts)
+            readyz_checks = checks
+            if ok:
+                log(f"  readyz: ready ({checks})")
+            else:
+                # Parse checks dict into human-readable lines so the error
+                # names the failing capability rather than dumping raw JSON.
+                if isinstance(checks, dict):
+                    failing = [
+                        f"  • {k}: {v}"
+                        for k, v in checks.items()
+                        if v not in ("ok", None, True)
+                    ]
+                    detail = "\n".join(failing) if failing else str(checks)
+                else:
+                    detail = str(checks)
+                log("# fetching app logs for crash context...")
+                log_tail = _fetch_app_log_tail(app_name, profile=profile)
+                logs_cmd = f"databricks apps logs {app_name}"
+                if profile:
+                    logs_cmd += f" --profile {profile}"
+                # Ledger the failed deploy (issue #401): the broken app IS live,
+                # so the UC version trail must record it — tagged failed so no
+                # one mistakes it for a healthy version. Best-effort, like the
+                # success-path registration.
+                if register_uc:
+                    _register_apps_manifest_step(
+                        module=module,
+                        config=_read_apx_agent_config(),
+                        app_name=app_name,
+                        bundle_target=bundle_target,
+                        uc_name_override=uc_name,
+                        extra_version_tags={
+                            **(extra_version_tags or {}),
+                            "apx.apps.readyz": "failed",
+                        },
+                        profile=profile,
+                        log=log,
+                    )
+                recovery = _apps_readyz_recovery_hint(
+                    app_name, profile=profile, uc_name_override=uc_name, log=log,
+                )
+                msg = (
+                    f"readyz gate failed — the app is STILL LIVE, serving in a "
+                    f"failed state:\n"
+                    f"  app: {app_name}\n"
+                    f"  url: {app_url}\n"
+                    f"{detail}\n\n"
+                    f"App logs (last 40 lines):\n"
+                    f"{'─' * 60}\n"
+                    f"{log_tail}\n"
+                    f"{'─' * 60}\n\n"
+                    f"Full logs:  {logs_cmd}\n"
+                    f"{recovery}\n"
+                    f"(Or re-run with --no-readyz-gate to accept this state.)"
+                )
+                if json_output:
+                    click.echo(json.dumps({
+                        "ok": False,
+                        "error": msg,
+                        "app_name": app_name,
+                        "app_url": app_url,
+                        "readyz": checks,
+                    }, default=str))
+                    raise click.exceptions.Exit(1)
+                raise click.ClickException(msg)
+
+        # 6d. Register a UC version manifest for the deployed App (best-effort).
+        # Runs after the App is live so a registration failure never blocks the
+        # deploy. Skips with a loud notice when no UC name / model is configured.
+        registered_version: str | None = None
+        if register_uc:
+            registered_version = _register_apps_manifest_step(
+                module=module,
+                config=_read_apx_agent_config(),
+                app_name=app_name,
+                bundle_target=bundle_target,
+                uc_name_override=uc_name,
+                extra_version_tags=extra_version_tags,
+                profile=profile,
+                log=log,
+            )
+        else:
+            log("# --no-register-uc: skipping the UC version-manifest registration")
+
+        # 6e. Record local deploy history (redeploy convenience) — best-effort,
+        # like every other provenance step above. Recorded whenever a UC identity
+        # resolves, independent of --no-register-uc: "where does this source
+        # live" is meaningful even when the UC write itself was skipped.
+        _resolved_history_uc_name = _resolve_apps_uc_name(
+            _read_apx_agent_config(), app_name, override=uc_name,
+        )
+        if _resolved_history_uc_name is not None:
+            _record_deploy_history(
+                cwd, _resolved_history_uc_name, "apps", extra_version_tags or {},
+            )
+
+        # 6b. Best-effort workspace deploy state (does not fail the deploy).
+        experiment_id: str | None = None
+        for v in list(vars or ()) + extra_vars:
+            if v.startswith("mlflow_experiment_id="):
+                experiment_id = v.split("=", 1)[1] or None
+                break
+        _maybe_write_deploy_state(
+            profile=profile,
             app_name=app_name,
             bundle_target=bundle_target,
-            uc_name_override=uc_name,
-            extra_version_tags=extra_version_tags,
-            profile=profile,
+            app_url=app_url or None,
+            experiment_id=experiment_id,
+            pin=pin,
+            wheel_path=wheel_path,
             log=log,
         )
-    else:
-        log("# --no-register-uc: skipping the UC version-manifest registration")
 
-    # 6e. Record local deploy history (redeploy convenience) — best-effort,
-    # like every other provenance step above. Recorded whenever a UC identity
-    # resolves, independent of --no-register-uc: "where does this source
-    # live" is meaningful even when the UC write itself was skipped.
-    _resolved_history_uc_name = _resolve_apps_uc_name(
-        _read_apx_agent_config(), app_name, override=uc_name,
-    )
-    if _resolved_history_uc_name is not None:
-        _record_deploy_history(
-            cwd, _resolved_history_uc_name, "apps", extra_version_tags or {},
-        )
-
-    # 6b. Best-effort workspace deploy state (does not fail the deploy).
-    experiment_id: str | None = None
-    for v in list(vars or ()) + extra_vars:
-        if v.startswith("mlflow_experiment_id="):
-            experiment_id = v.split("=", 1)[1] or None
-            break
-    _maybe_write_deploy_state(
-        profile=profile,
-        app_name=app_name,
-        bundle_target=bundle_target,
-        app_url=app_url or None,
-        experiment_id=experiment_id,
-        pin=pin,
-        wheel_path=wheel_path,
-        log=log,
-    )
-
-    # 7. Final report
-    if json_output:
-        # Enriched summary (issue #417): a CI job records what it shipped —
-        # UC name + registered version, git/lock provenance (threaded from the
-        # tags stamped on the manifest, never recomputed), and readyz checks.
-        from ._apps_registry import GIT_DIRTY_TAG, GIT_SHA_TAG, LOCK_SHA256_TAG
-        prov = extra_version_tags or {}
-        dirty_tag = prov.get(GIT_DIRTY_TAG)
-        click.echo(json.dumps({
-            "ok": True,
-            "app_name": app_name,
-            "app_url": app_url,
-            "bundle_target": bundle_target,
-            "deploy_seconds": deploy_seconds,
-            "run_seconds": run_seconds,
-            "uc_name": _resolve_apps_uc_name(
-                _read_apx_agent_config(), app_name, override=uc_name,
-            ),
-            "version": registered_version,
-            "git_sha": prov.get(GIT_SHA_TAG),
-            "git_dirty": None if dirty_tag is None else dirty_tag == "true",
-            "lock_sha256": prov.get(LOCK_SHA256_TAG),
-            # --env / --secret-env (issue #415): key NAMES only, never values.
-            "env_keys": injected_env_keys,
-            "secret_env_keys": injected_secret_env_keys,
-            "readyz": readyz_checks,
-        }, default=str))
-    elif no_run:
-        log(f"# app not started (--no-run); run `databricks bundle run "
-            f"{bundle_key} --target {bundle_target}` or rerun without --no-run")
-    else:
-        log(f"# app ready: {app_name}")
-        click.echo(app_url)
-    return app_url
+        # 7. Final report
+        if json_output:
+            # Enriched summary (issue #417): a CI job records what it shipped —
+            # UC name + registered version, git/lock provenance (threaded from the
+            # tags stamped on the manifest, never recomputed), and readyz checks.
+            from ._apps_registry import GIT_DIRTY_TAG, GIT_SHA_TAG, LOCK_SHA256_TAG
+            prov = extra_version_tags or {}
+            dirty_tag = prov.get(GIT_DIRTY_TAG)
+            click.echo(json.dumps({
+                "ok": True,
+                "app_name": app_name,
+                "app_url": app_url,
+                "bundle_target": bundle_target,
+                "deploy_seconds": deploy_seconds,
+                "run_seconds": run_seconds,
+                "uc_name": _resolve_apps_uc_name(
+                    _read_apx_agent_config(), app_name, override=uc_name,
+                ),
+                "version": registered_version,
+                "git_sha": prov.get(GIT_SHA_TAG),
+                "git_dirty": None if dirty_tag is None else dirty_tag == "true",
+                "lock_sha256": prov.get(LOCK_SHA256_TAG),
+                # --env / --secret-env (issue #415): key NAMES only, never values.
+                "env_keys": injected_env_keys,
+                "secret_env_keys": injected_secret_env_keys,
+                "readyz": readyz_checks,
+            }, default=str))
+        elif no_run:
+            log(f"# app not started (--no-run); run `databricks bundle run "
+                f"{bundle_key} --target {bundle_target}` or rerun without --no-run")
+        else:
+            log(f"# app ready: {app_name}")
+            click.echo(app_url)
+        return app_url
+    finally:
+        if injected_env_keys:
+            _scrub_plaintext_env_from_databricks_yml(
+                cwd, bundle_key=bundle_key, names=injected_env_keys, log=log,
+            )
 
 
 def _maybe_write_deploy_state(

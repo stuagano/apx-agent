@@ -439,6 +439,63 @@ class WorkspaceApisResponse(BaseModel):
     apis: list[WorkspaceApiInfo]
 
 
+class DiscoverTargetInfo(BaseModel):
+    """One agent assignment from ``GET /_apx/discover/targets``."""
+
+    name: str
+    kind: str
+    eligible: bool
+    reason: str | None = None
+    sub_agents: list[str] = []
+
+
+class DiscoverTargetsResponse(BaseModel):
+    """Shape of ``GET /_apx/discover/targets``."""
+
+    targets: list[DiscoverTargetInfo]
+    source_path: str | None = None
+
+
+class DiscoverWireAgentRequest(BaseModel):
+    """Body for ``POST /_apx/discover/wire-agent`` / ``unwire-agent``.
+
+    ``url`` is required for wire; unwire may omit it when ``ref`` is set.
+    """
+
+    url: str = ""
+    name: str | None = None
+    app_name: str | None = None
+    target: str = "agent"
+    use_env: bool = True
+    ref: str | None = None  # for unwire: exact sub_agents entry to remove
+
+
+class DiscoverWireToolRequest(BaseModel):
+    """Body for ``POST /_apx/discover/wire-tool`` / ``unwire-tool``."""
+
+    kind: str  # uc_function | genie_space | vector_search_index
+    target: str = "agent"
+    full_name: str | None = None  # uc_function
+    space_id: str | None = None  # genie_space
+    title: str | None = None  # genie display name for slug
+    index_name: str | None = None  # vector_search_index
+    columns: list[str] | None = None
+    binding_name: str | None = None  # override / unwire key
+
+
+class DiscoverWireResponse(BaseModel):
+    """Shared success shape for Discover wire/unwire mutators."""
+
+    ok: bool
+    restart_required: bool = False
+    applied_live: bool = False
+    target: str | None = None
+    ref: str | None = None
+    binding_name: str | None = None
+    already_present: bool = False
+    error: str | None = None
+
+
 class TopologyNode(BaseModel):
     """One node of ``TopologyResponse.nodes``: ``{id, type, label,
     description}``.
@@ -481,6 +538,42 @@ class TopologyResponse(BaseModel):
     agentName: str
     nodes: list[TopologyNode]
     edges: list[TopologyEdge]
+
+
+class TopologyTracingResponse(BaseModel):
+    """``GET /_apx/topology/tracing`` — where this agent writes MLflow traces."""
+
+    experiment_id: str | None = None
+    experiment_name: str | None = None
+    workspace_host: str | None = None
+    experiment_url: str | None = None
+    configured: bool = False
+
+
+class TopologyTracingSetRequest(BaseModel):
+    """Body of ``POST /_apx/topology/tracing`` — set ``MLFLOW_EXPERIMENT_ID``."""
+
+    experiment_id: str
+
+
+class TopologyTracingSetResponse(BaseModel):
+    """Success shape of ``POST /_apx/topology/tracing``."""
+
+    ok: bool
+    experiment_id: str
+    experiment_name: str | None = None
+    experiment_url: str | None = None
+    restart_hint: str | None = None
+
+
+class LastRouteResponse(BaseModel):
+    """``GET /_apx/traces/last-route`` — topology nodes/edges hit by the latest turn."""
+
+    trace_id: str | None = None
+    node_ids: list[str] = []
+    edge_ids: list[str] = []
+    tool_names: list[str] = []
+    span_count: int = 0
 
 
 # ── Wave 2 / PR-W2a: codegen file-ops writes (edit / preview / delete) ────────
@@ -658,8 +751,10 @@ class TableColumns(BaseModel):
 class GroundingColumnsResponse(BaseModel):
     """Success shape of ``GET /_apx/grounding/columns`` — the per-column current-
     vs-suggested curation state for the agent's OKF bundle. ``tables`` is empty
-    when the project has no OKF bundle. ``schema`` shadows ``BaseModel.schema``
-    so the field is aliased (same trick as :class:`ToolSchemaResponse`).
+    when the project has no OKF bundle; then ``can_generate`` / ``generate_from``
+    drive the empty-state Generate-pack CTA when a catalog.schema is known.
+    ``schema`` shadows ``BaseModel.schema`` so the field is aliased (same trick
+    as :class:`ToolSchemaResponse`).
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -667,6 +762,8 @@ class GroundingColumnsResponse(BaseModel):
     catalog: str
     schema_: str = Field(alias="schema")
     tables: list[TableColumns]
+    can_generate: bool = False
+    generate_from: str = ""
 
 
 class ColumnDescriptionsRequest(BaseModel):
@@ -684,6 +781,33 @@ class ColumnDescriptionsSaveResponse(BaseModel):
 
     ok: bool
     modified: int
+
+
+class GroundingGenerateRequest(BaseModel):
+    """Body of ``POST /_apx/grounding/generate`` — optional catalog/schema
+    override (defaults to the live DataAgent / agent.py / env source) and
+    ``force`` to overwrite an existing ``.apx/okf`` pack."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    catalog: str | None = None
+    schema_: str | None = Field(default=None, alias="schema")
+    force: bool = False
+
+
+class GroundingGenerateResponse(BaseModel):
+    """Success shape of ``POST /_apx/grounding/generate``: pack written + whether
+    ``knowledge=`` was wired into project config. Error paths return a
+    ``JSONResponse`` and bypass this model."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    ok: bool
+    catalog: str
+    schema_: str = Field(alias="schema")
+    table_count: int
+    knowledge_wired: bool
+    restart_required: bool = True
 
 
 class ColumnSuggestRequest(BaseModel):

@@ -10,7 +10,7 @@ bundle:
 # upload the staged tree without un-ignoring it everywhere else.
 sync:
   include:
-    - .build/**
+  - .build/**
 
 variables:
   workspace_user:
@@ -41,6 +41,8 @@ artifacts:
       cp -r sub_agents .build/ 2>/dev/null || true
       # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts README.md .build/ 2>/dev/null || true
+      # OKF grounding + schema cache must ship into the App (F8).
+      cp -r .apx .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
       # pyproject.toml and uv.lock are written by apx deploy (wheel-pinned).
       # Do NOT copy them here — bundle deploy re-runs this script and would
@@ -60,40 +62,40 @@ resources:
       # caller. `sql` is what DataAgent / sql_tool need. (iam.* are auto; changing
       # scopes requires users to re-authorize the app.)
       user_api_scopes:
-        - sql
-        - serving.serving-endpoints
+      - sql
+      - serving.serving-endpoints
       resources:
-        - name: experiment
-          experiment:
-            experiment_id: ${resources.experiments.hello-world_experiment.id}
-            permission: CAN_MANAGE
+      - name: experiment
+        experiment:
+          experiment_id: ${resources.experiments.hello-world_experiment.id}
+          permission: CAN_MANAGE
         # apx deploy --target apps will auto-add resources from the agent's
         # ResourceSpec list. For now, list any extras here manually:
-        - name: llm-endpoint
-          description: Foundation model endpoint used by the agent.
-          serving_endpoint:
-            name: ${var.llm_endpoint_name}
-            permission: CAN_QUERY
+      - name: llm-endpoint
+        description: Foundation model endpoint used by the agent.
+        serving_endpoint:
+          name: ${var.llm_endpoint_name}
+          permission: CAN_QUERY
 
       # NOTE: the DAB schema for ``apps.<name>.config`` uses ``env`` (a list
       # of {name, value} dicts) — NOT ``env_variables``. ``bundle validate``
       # warns about unknown keys, so keep this aligned.
       config:
         command:
-          - uvicorn
-          - agent_server.start_server:app
-          - --host
-          - 0.0.0.0
-          - --port
-          - $DATABRICKS_APP_PORT
+        - uvicorn
+        - agent_server.start_server:app
+        - --host
+        - 0.0.0.0
+        - --port
+        - $DATABRICKS_APP_PORT
         env:
-          - name: APX_MODEL
-            value: ${var.llm_endpoint_name}
-          - name: MLFLOW_TRACKING_URI
-            value: databricks
-          - name: MLFLOW_EXPERIMENT_ID
-            value: ${var.mlflow_experiment_id}
-
+        - name: APX_MODEL
+          value: ${var.llm_endpoint_name}
+        - name: MLFLOW_TRACKING_URI
+          value: databricks
+        - name: MLFLOW_EXPERIMENT_ID
+          value: ${var.mlflow_experiment_id}
+          # Peer / Discover seed: pass via --env at deploy (do not commit URLs if sensitive).
 targets:
   dev:
     mode: development

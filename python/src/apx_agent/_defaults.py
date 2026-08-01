@@ -186,6 +186,26 @@ def _get_user_client(headers: HeadersDependency) -> WorkspaceClient:
     return _obo_ws_from_headers(headers)
 
 
+def _ws_prefer_obo(request: Request) -> WorkspaceClient:
+    """Workspace client for Discover / Topology catalog reads.
+
+    Prefer the caller's OBO token when present so ``apps.list`` / Genie / VS
+    see what the signed-in user can see. Fall back to the app-level SP client
+    (local ``apx-agent run``, or Apps GETs without OBO) — never fail-closed
+    for these browse endpoints.
+    """
+    token = (request.headers.get("X-Forwarded-Access-Token") or "").strip()
+    if token:
+        try:
+            return _make_workspace_client(token=token)
+        except Exception:
+            logger.debug(
+                "OBO workspace client failed; falling back to app client",
+                exc_info=True,
+            )
+    return request.app.state.workspace_client
+
+
 ClientDependency: TypeAlias = Annotated[WorkspaceClient, Depends(_get_workspace_client)]
 UserClientDependency: TypeAlias = Annotated[WorkspaceClient, Depends(_get_user_client)]
 

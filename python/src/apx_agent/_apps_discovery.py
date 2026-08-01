@@ -101,6 +101,44 @@ def fetch_app_card(ws: Any, name: str, *, timeout: float = 4.0) -> dict[str, Any
     return None
 
 
+def _env_app_candidates() -> list[tuple[str, str]]:
+    """Optional ``APX_DISCOVER_APP_URLS`` seed when ``apps.list`` is empty.
+
+    Databricks Apps OBO tokens are scoped to ``user_api_scopes`` (often just
+    ``sql`` + ``serving``), so ``apps.list`` fails inside the App even for the
+    signed-in user. Deploy can seed peer App URLs here:
+
+      APX_DISCOVER_APP_URLS=mcp-data-inspector=https://…,https://other…
+
+    Entries are ``name=url`` or bare ``url`` (name inferred from hostname).
+    """
+    import os
+    import re
+
+    raw = (os.environ.get("APX_DISCOVER_APP_URLS") or "").strip()
+    if not raw:
+        return []
+    out: list[tuple[str, str]] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part and not part.startswith("http"):
+            name, _, url = part.partition("=")
+            name, url = name.strip(), url.strip()
+        else:
+            url = part
+            host = re.sub(r"^https?://", "", url).split("/")[0]
+            name = host.split(".")[0].rsplit("-", 1)[0] if host else "app"
+            # hostname is often ``<app>-<workspaceId>`` — strip trailing digits block
+            m = re.match(r"^(.+)-(\d{10,})$", host.split(".")[0] if host else "")
+            if m:
+                name = m.group(1)
+        if url.startswith("http"):
+            out.append((name or "app", url.rstrip("/")))
+    return out
+
+
 def discover_app_agents(
     ws: Any, *, timeout: float = 2.5, max_workers: int = 24
 ) -> list[AppAgentInfo]:
@@ -113,21 +151,38 @@ def discover_app_agents(
     needs a ``get()`` per app — so we can't pre-filter to RUNNING cheaply; the
     bounded-timeout probe is the filter instead.)
 
+    When ``apps.list`` is empty or denied (common for App SP / scoped OBO),
+    also probes URLs from ``APX_DISCOVER_APP_URLS`` (see ``_env_app_candidates``).
+
     :param ws: A Databricks ``WorkspaceClient``.
     :param timeout: Per-probe HTTP timeout in seconds.
     :param max_workers: Max concurrent probes.
     :returns: Discovered app agents (possibly empty); never raises.
     """
+    candidates: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
     try:
         apps = list(ws.apps.list())
     except Exception:
-        return []
+        apps = []
 
-    candidates = [
-        (getattr(app, "name", "?"), url)
-        for app in apps
-        if (url := getattr(app, "url", None))
-    ]
+    for app in apps:
+        url = getattr(app, "url", None)
+        if not url:
+            continue
+        key = url.rstrip("/")
+        if key in seen_urls:
+            continue
+        seen_urls.add(key)
+        candidates.append((getattr(app, "name", "?"), key))
+
+    for name, url in _env_app_candidates():
+        key = url.rstrip("/")
+        if key in seen_urls:
+            continue
+        seen_urls.add(key)
+        candidates.append((name, key))
+
     if not candidates:
         return []
 

@@ -28,6 +28,12 @@ export default defineConfig({
     proxy: {
       "/_apx/topology.json": "http://localhost:8000",
       "/_apx/topology/inspect": "http://localhost:8000",
+      "/_apx/topology/tracing": "http://localhost:8000",
+      "/_apx/traces": "http://localhost:8000",
+      "/_apx/discover": "http://localhost:8000",
+      "/_apx/workspace-context": "http://localhost:8000",
+      "/_apx/setup": "http://localhost:8000",
+      "/responses": "http://localhost:8000",
     },
   },
 });

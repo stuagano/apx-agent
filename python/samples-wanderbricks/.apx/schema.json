@@ -1,0 +1,152 @@
+{
+  "catalog": "samples",
+  "schema": "wanderbricks",
+  "tables": {
+    "amenities": [
+      "amenity_id(bigint)",
+      "name(string)",
+      "category(string)",
+      "icon(string)"
+    ],
+    "booking_updates": [
+      "booking_id(bigint)",
+      "booking_update_id(bigint)",
+      "check_in(date)",
+      "check_out(date)",
+      "created_at(timestamp)",
+      "guests_count(int)",
+      "property_id(bigint)",
+      "status(string)",
+      "total_amount(float)",
+      "updated_at(timestamp)",
+      "user_id(bigint)"
+    ],
+    "bookings": [
+      "booking_id(bigint)",
+      "user_id(bigint)",
+      "property_id(bigint)",
+      "check_in(date)",
+      "check_out(date)",
+      "guests_count(int)",
+      "total_amount(float)",
+      "status(string)",
+      "created_at(timestamp)",
+      "updated_at(timestamp)"
+    ],
+    "clickstream": [
+      "event(string)",
+      "metadata(struct<device:string,referrer:string>)",
+      "property_id(bigint)",
+      "timestamp(timestamp)",
+      "user_id(bigint)"
+    ],
+    "countries": [
+      "country(string)",
+      "country_code(string)",
+      "continent(string)"
+    ],
+    "customer_support_logs": [
+      "created_at(string)",
+      "messages(array<struct<message:string,sender:string,sentiment:string,timestamp:string>>)",
+      "support_agent_id(string)",
+      "ticket_id(string)",
+      "user_id(bigint)"
+    ],
+    "destinations": [
+      "destination_id(bigint)",
+      "destination(string)",
+      "country(string)",
+      "state_or_province(string)",
+      "state_or_province_code(string)",
+      "description(string)"
+    ],
+    "employees": [
+      "employee_id(bigint)",
+      "host_id(bigint)",
+      "name(string)",
+      "role(string)",
+      "email(string)",
+      "phone(string)",
+      "country(string)",
+      "joined_at(date)",
+      "end_service_date(date)",
+      "is_currently_employed(boolean)"
+    ],
+    "hosts": [
+      "host_id(bigint)",
+      "name(string)",
+      "email(string)",
+      "phone(string)",
+      "is_verified(boolean)",
+      "is_active(boolean)",
+      "rating(float)",
+      "country(string)",
+      "joined_at(date)"
+    ],
+    "page_views": [
+      "device_type(string)",
+      "page_url(string)",
+      "property_id(bigint)",
+      "referrer(string)",
+      "timestamp(timestamp)",
+      "user_id(bigint)",
+      "view_id(bigint)"
+    ],
+    "payments": [
+      "payment_id(bigint)",
+      "booking_id(bigint)",
+      "amount(decimal(15,4))",
+      "payment_method(string)",
+      "status(string)",
+      "payment_date(timestamp)"
+    ],
+    "properties": [
+      "property_id(bigint)",
+      "host_id(bigint)",
+      "destination_id(bigint)",
+      "title(string)",
+      "description(string)",
+      "base_price(float)",
+      "property_type(string)",
+      "max_guests(int)",
+      "bedrooms(int)",
+      "bathrooms(int)",
+      "property_latitude(float)",
+      "property_longitude(float)",
+      "created_at(date)"
+    ],
+    "property_amenities": [
+      "property_id(bigint)",
+      "amenity_id(bigint)"
+    ],
+    "property_images": [
+      "image_id(bigint)",
+      "property_id(bigint)",
+      "url(string)",
+      "sequence(int)",
+      "is_primary(boolean)",
+      "uploaded_at(date)"
+    ],
+    "reviews": [
+      "booking_id(bigint)",
+      "comment(string)",
+      "created_at(timestamp)",
+      "is_deleted(boolean)",
+      "property_id(bigint)",
+      "rating(double)",
+      "review_id(bigint)",
+      "updated_at(timestamp)",
+      "user_id(bigint)"
+    ],
+    "users": [
+      "user_id(bigint)",
+      "email(string)",
+      "name(string)",
+      "country(string)",
+      "user_type(string)",
+      "created_at(timestamp)",
+      "is_business(boolean)",
+      "company_name(string)"
+    ]
+  }
+}

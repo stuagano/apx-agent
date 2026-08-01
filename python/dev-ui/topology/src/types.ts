@@ -82,6 +82,22 @@ export interface SubAgentDetails {
   url?: string;
   cardSource?: "well-known" | "name-resolve" | "config";
   resolvedName?: string;
+  /** Exact ``sub_agents=`` entry (e.g. ``$APX_PEER_…_URL``). */
+  ref?: string;
+}
+
+export interface InspectUnwireAction {
+  kind: "agent" | "tool";
+  target: string;
+  ref?: string;
+  binding_name?: string;
+}
+
+export interface InspectActions {
+  canEditInstructions?: boolean;
+  canUnwire?: boolean;
+  wireTarget?: string;
+  unwire?: InspectUnwireAction;
 }
 
 export interface InspectResponse {
@@ -93,6 +109,7 @@ export interface InspectResponse {
   tool?: ToolDetails;
   resource?: ResourceDetails;
   subAgent?: SubAgentDetails;
+  actions?: InspectActions;
 }
 
 // Color map for node types — matches the visual contract in the spec.

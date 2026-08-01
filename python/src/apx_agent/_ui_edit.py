@@ -178,6 +178,12 @@ _LEAF_AGENT_TOOL_KWARG = {
     "CoworkerAgent": "extra_tools",
 }
 
+_COMPOSITION_WRAPPERS = {"SequentialAgent", "ParallelAgent", "RouterAgent", "HandoffAgent"}
+
+# Constructors that accept remote ``sub_agents=[url|$ENV]`` (A2A peers).
+# DataAgent is an LlmAgent subclass and forwards ``sub_agents=`` via kwargs.
+_SUB_AGENT_ELIGIBLE = frozenset({"Agent", "LlmAgent", "DataAgent"})
+
 
 def _call_func_name(call: Any) -> str:
     """Constructor name of an ``ast.Call`` (e.g. ``Agent``, ``DataAgent``)."""
@@ -747,6 +753,291 @@ def _set_agent_tools(source: str, tools: list[str], *, target: str = "agent") ->
     return _set_agent_kwarg(source, arg=kwarg, literal=literal, target=target)
 
 
+def _outer_call_name(source: str, target: str) -> str | None:
+    """Constructor name of the top-level call assigned to ``target``, if any."""
+    import ast as _ast
+
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return None
+    for stmt in tree.body:
+        if (
+            isinstance(stmt, _ast.Assign)
+            and stmt.targets
+            and isinstance(stmt.targets[0], _ast.Name)
+            and stmt.targets[0].id == target
+            and isinstance(stmt.value, _ast.Call)
+        ):
+            return _call_func_name(stmt.value)
+    return None
+
+
+def _list_sub_agent_targets(source: str) -> list[dict[str, Any]]:
+    """List agent assignments and whether they can take remote ``sub_agents=``.
+
+    Each entry: ``{name, kind, eligible, reason?, sub_agents}``.
+    Leaf ``Agent``/``LlmAgent``/``DataAgent`` (including ``LoopAgent(Agent(...))``)
+    are eligible. Composition roots (Handoff/Router/…) are listed ineligible so the
+    UI can explain why and still offer their leaves.
+    """
+    import ast as _ast
+
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return []
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for stmt in tree.body:
+        if not (
+            isinstance(stmt, _ast.Assign)
+            and stmt.targets
+            and isinstance(stmt.targets[0], _ast.Name)
+        ):
+            continue
+        name = stmt.targets[0].id
+        if name in seen:
+            continue
+        seen.add(name)
+        outer = _call_func_name(stmt.value) if isinstance(stmt.value, _ast.Call) else ""
+        leaf = _find_root_agent_call(source, name)
+        leaf_kind = _call_func_name(leaf) if leaf is not None else ""
+
+        if leaf is not None and leaf_kind in _SUB_AGENT_ELIGIBLE:
+            out.append({
+                "name": name,
+                "kind": leaf_kind,
+                "eligible": True,
+                "reason": None,
+                "sub_agents": _get_agent_sub_agents(source, name),
+            })
+        elif outer in _COMPOSITION_WRAPPERS:
+            out.append({
+                "name": name,
+                "kind": outer,
+                "eligible": False,
+                "reason": f"{outer} does not take sub_agents=; wire a leaf Agent instead",
+                "sub_agents": [],
+            })
+        elif outer:
+            out.append({
+                "name": name,
+                "kind": outer,
+                "eligible": False,
+                "reason": f"{outer} does not support remote sub_agents=",
+                "sub_agents": [],
+            })
+    return out
+
+
+def _get_agent_sub_agents(source: str, target: str) -> list[str]:
+    """Return string entries of ``sub_agents=`` on ``target``'s Agent call."""
+    import ast as _ast
+
+    call = _find_root_agent_call(source, target)
+    if call is None:
+        return []
+    kw = next((k for k in call.keywords if k.arg == "sub_agents"), None)
+    if kw is None or not isinstance(kw.value, _ast.List):
+        return []
+    refs: list[str] = []
+    for elt in kw.value.elts:
+        if isinstance(elt, _ast.Constant) and isinstance(elt.value, str):
+            refs.append(elt.value)
+        else:
+            try:
+                refs.append(_ast.unparse(elt))
+            except Exception:
+                pass
+    return refs
+
+
+def _set_agent_sub_agents(source: str, urls: list[str], *, target: str = "agent") -> str:
+    """Set ``sub_agents=[...]`` on ``target``'s Agent/LlmAgent call."""
+    literal = "[" + ", ".join(repr(u) for u in urls) + "]"
+    return _set_agent_kwarg(source, arg="sub_agents", literal=literal, target=target)
+
+
+def _append_sub_agent(
+    source: str, url_or_env_ref: str, *, target: str = "agent"
+) -> tuple[str, bool]:
+    """Append a remote peer ref to ``sub_agents=``. Returns ``(source, already_present)``."""
+    existing = _get_agent_sub_agents(source, target)
+    if url_or_env_ref in existing:
+        return source, True
+    # Also treat a bare URL as duplicate of an env ref that already points at it
+    # only when the exact string matches — callers pass the env ref form.
+    return _set_agent_sub_agents(source, existing + [url_or_env_ref], target=target), False
+
+
+def _remove_sub_agent(source: str, url_or_env_ref: str, *, target: str = "agent") -> str:
+    """Drop ``url_or_env_ref`` from ``sub_agents=`` on ``target`` (no-op if absent)."""
+    existing = _get_agent_sub_agents(source, target)
+    if url_or_env_ref not in existing:
+        return source
+    remaining = [u for u in existing if u != url_or_env_ref]
+    return _set_agent_sub_agents(source, remaining, target=target)
+
+
+def _peer_env_key(name: str) -> str:
+    """Derive ``APX_PEER_<SLUG>_URL`` from an app/agent display name."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", (name or "peer").strip()).strip("_").upper()
+    if not slug or slug[0].isdigit():
+        slug = f"PEER_{slug}" if slug else "PEER"
+    return f"APX_PEER_{slug}_URL"
+
+
+def _slug_tool_name(identifier: str, existing: set[str] | None = None) -> str:
+    """Turn a UC/full name into a safe Python binding (avoiding ``existing``)."""
+    existing = existing or set()
+    parts = [p for p in identifier.split(".") if p]
+    raw = parts[-1] if parts else "tool"
+    base = re.sub(r"\W", "_", raw) or "tool"
+    if base[0].isdigit():
+        base = f"t_{base}"
+    if base not in existing:
+        return base
+    if len(parts) >= 2:
+        cand = re.sub(r"\W", "_", f"{parts[-2]}_{base}")
+        if cand not in existing:
+            return cand
+    i = 2
+    while f"{base}_{i}" in existing:
+        i += 1
+    return f"{base}_{i}"
+
+
+def _existing_binding_names(source: str) -> set[str]:
+    """Names already assigned or defined as functions in ``source``."""
+    import ast as _ast
+
+    names: set[str] = set()
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return names
+    for node in tree.body:
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            names.add(node.name)
+        elif isinstance(node, _ast.Assign):
+            for t in node.targets:
+                if isinstance(t, _ast.Name):
+                    names.add(t.id)
+    return names
+
+
+_FACTORY_TOOL_CALLEES = frozenset({
+    "uc_function_tool",
+    "genie_tool",
+    "vector_search_tool",
+})
+
+
+def _is_factory_tool_binding(source: str, binding_name: str) -> bool:
+    """True when ``binding_name = uc_function_tool|genie_tool|vector_search_tool(...)``."""
+    import ast as _ast
+
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return False
+    for node in tree.body:
+        if not (
+            isinstance(node, _ast.Assign)
+            and node.targets
+            and isinstance(node.targets[0], _ast.Name)
+            and node.targets[0].id == binding_name
+            and isinstance(node.value, _ast.Call)
+        ):
+            continue
+        return _call_func_name(node.value) in _FACTORY_TOOL_CALLEES
+    return False
+
+
+def _splice_factory_tool(
+    source: str,
+    *,
+    import_names: list[str] | tuple[str, ...],
+    binding_name: str,
+    call_expr: str,
+    target: str = "agent",
+) -> str:
+    """Insert ``binding = factory(...)`` and wire ``binding`` into ``target``'s tools.
+
+    ``call_expr`` is the RHS only (e.g. ``uc_function_tool("main.ml.fn")``).
+    """
+    import ast as _ast
+
+    source = _ensure_apx_import(source, *import_names)
+    binding_line = f"{binding_name} = {call_expr}\n"
+
+    insert_at: int | None = None
+    try:
+        for s in _ast.parse(source).body:
+            if (
+                isinstance(s, _ast.Assign)
+                and s.targets
+                and isinstance(s.targets[0], _ast.Name)
+                and s.targets[0].id == target
+            ):
+                insert_at = _abs_offset(source, s.lineno, 0)
+                break
+    except SyntaxError:
+        pass
+
+    if insert_at is None:
+        result = source.rstrip("\n") + "\n\n" + binding_line
+    else:
+        result = source[:insert_at] + binding_line + "\n" + source[insert_at:]
+
+    existing = _agent_tool_names(result, target)
+    if existing is not None and binding_name not in existing:
+        result = _set_agent_tools(result, existing + [binding_name], target=target)
+    return result
+
+
+def _remove_factory_binding(source: str, binding_name: str) -> str:
+    """Remove ``binding_name = ...`` assignment and drop it from all tools lists."""
+    import ast as _ast
+
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return source
+
+    target_assign = next(
+        (
+            n for n in tree.body
+            if isinstance(n, _ast.Assign)
+            and n.targets
+            and isinstance(n.targets[0], _ast.Name)
+            and n.targets[0].id == binding_name
+        ),
+        None,
+    )
+    result = source
+    if target_assign is not None:
+        start_line = target_assign.lineno
+        end_line = target_assign.end_lineno or target_assign.lineno
+        lines = result.splitlines(keepends=True)
+        del lines[start_line - 1:end_line]
+        result = re.sub(r"\n{3,}", "\n\n", "".join(lines))
+
+    try:
+        for node in _parse_agent_nodes(result):
+            names = node.get("tools") or []
+            if binding_name in names:
+                result = _set_agent_tools(
+                    result, [n for n in names if n != binding_name], target=node["name"]
+                )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("_remove_factory_binding: unwiring %r failed: %s", binding_name, e)
+    return result
+
+
 def _set_agent_wrapper(source: str, wrapper: str, *, target: str = "agent") -> str:
     """Change the single-agent wrapper of ``{target}`` while preserving the inner
     ``Agent(...)`` call verbatim — name=, sub_agents=, temperature=, everything.
@@ -796,8 +1087,6 @@ def _set_agent_wrapper(source: str, wrapper: str, *, target: str = "agent") -> s
 # ---------------------------------------------------------------------------
 # Multi-agent composition — wire defined leaf agents into a workflow root
 # ---------------------------------------------------------------------------
-
-_COMPOSITION_WRAPPERS = {"SequentialAgent", "ParallelAgent", "RouterAgent", "HandoffAgent"}
 
 
 def _ensure_apx_import(source: str, *names: str) -> str:
@@ -1296,7 +1585,7 @@ async function save() {{
   const msg = document.getElementById('status-msg');
   msg.textContent = 'Saving…'; msg.className = '';
   try {{
-    const r = await fetch('/_apx/edit', {{
+    const r = await (window.apxDevFetch||fetch)('/_apx/edit', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
       body: JSON.stringify({{ content }}),
@@ -1322,7 +1611,7 @@ function schedulePreview() {{
 
 async function refreshPreview(source) {{
   try {{
-    const r = await fetch('/_apx/edit/preview', {{
+    const r = await (window.apxDevFetch||fetch)('/_apx/edit/preview', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
       body: JSON.stringify({{ source }}),
@@ -1435,7 +1724,7 @@ function updatePreview() {{
 async function populateAgentPicker() {{
   const sel = document.getElementById('f-agent');
   try {{
-    const r = await fetch('/_apx/setup/agents');
+    const r = await (window.apxDevFetch||fetch)('/_apx/setup/agents');
     const nodes = r.ok ? await r.json() : [];
     const list = Array.isArray(nodes) ? nodes : [];
     // Offer the leaf agents first (where tools usually belong), then the root.
@@ -1471,11 +1760,11 @@ document.getElementById('btn-generate').addEventListener('click', async () => {{
   try {{
     // Persist the buffer first so the generator grounds on the latest source
     // (it mines table/column names from agent.py).
-    await fetch('/_apx/edit', {{
+    await (window.apxDevFetch||fetch)('/_apx/edit', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{ content: view.state.doc.toString() }}),
     }});
-    const r = await fetch('/_apx/tools/suggest', {{
+    const r = await (window.apxDevFetch||fetch)('/_apx/tools/suggest', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{ prompt }}),
     }});
@@ -1521,14 +1810,14 @@ document.getElementById('btn-insert').addEventListener('click', async () => {{
   try {{
     // 1. Persist the current buffer so the backend splices into the latest
     //    source (it reads the file, not this editor buffer).
-    const sv = await fetch('/_apx/edit', {{
+    const sv = await (window.apxDevFetch||fetch)('/_apx/edit', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{ content: view.state.doc.toString() }}),
     }});
     const svd = await sv.json();
     if (!svd.ok) throw new Error(svd.error || 'Could not save current edits');
     // 2. Create + wire the tool via the backend (correct AST splice + target).
-    const r = await fetch('/_apx/tools/new', {{
+    const r = await (window.apxDevFetch||fetch)('/_apx/tools/new', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify(spec),
     }});

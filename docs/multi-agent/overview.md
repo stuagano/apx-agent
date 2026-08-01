@@ -30,6 +30,11 @@ Keep it local otherwise.
 
 `python/examples/data-triage-agent/` demonstrates both corners in one codebase: a six-step `SequentialAgent` composed locally (deterministic + local), delegating to a `data-inspector` sub-agent over A2A (LLM-driven + remote).
 
+In the Dev UI, **Discover** (`/_apx/discover`) can wire a live Apps peer into
+your agent’s `sub_agents=` (and attach UC / Genie / Vector Search tools) and
+**hot-apply** them onto the running process so Chat can use them without a
+redeploy — see [Dev UI](../get-started/dev-ui.md#apxdiscover--workspace-peer--uc-tool--api-discovery).
+
 ---
 
 ## Handoffs — LLM-driven peer transfer

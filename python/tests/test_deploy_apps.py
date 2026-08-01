@@ -2015,9 +2015,16 @@ def test_deploy_skips_apx_git_sha_var_outside_a_git_repo(
 def test_env_flag_merges_into_bundle_config_env(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """--env KEY=VALUE lands in resources.apps.<key>.config.env before the
-    bundle deploy, key NAMES are echoed, and values are never echoed."""
+    """--env KEY=VALUE is merged for the bundle upload (key NAMES echoed,
+    values never echoed), then scrubbed from databricks.yml so peer URLs /
+    tokens do not linger in source."""
     calls = _install_subprocess_mock(monkeypatch)
+    before_env = yaml.safe_load((scaffold / "databricks.yml").read_text())
+    before_names = {
+        e["name"]
+        for e in (before_env["resources"]["apps"]["my-app"].get("config") or {}).get("env") or []
+        if isinstance(e, dict) and "name" in e
+    }
     result = CliRunner().invoke(main, [
         "agents", "deploy", "--target", "apps",
         "--env", "FEATURE_FLAG=on",
@@ -2027,16 +2034,19 @@ def test_env_flag_merges_into_bundle_config_env(
 
     updated = yaml.safe_load((scaffold / "databricks.yml").read_text())
     env = updated["resources"]["apps"]["my-app"]["config"]["env"]
-    assert {"name": "FEATURE_FLAG", "value": "on"} in env
-    assert {"name": "LOG_LEVEL", "value": "debug"} in env
+    names = {e["name"] for e in env if isinstance(e, dict)}
+    # Plaintext --env must not linger after deploy.
+    assert "FEATURE_FLAG" not in names
+    assert "LOG_LEVEL" not in names
+    assert names == before_names or before_names.issubset(names)
     # The merge happened BEFORE bundle validate/deploy ran.
     assert [c[:2] for c in calls][0] == ["bundle", "validate"]
     # Key names are echoed; values are not.
     assert "FEATURE_FLAG" in result.output
     assert "LOG_LEVEL" in result.output
     assert "debug" not in result.output
-    # Persistence semantics are stated plainly.
-    assert "persists" in result.output
+    assert "scrub" in result.output
+    assert "ephemeral" in result.output
 
 
 def test_env_flag_never_clobbers_user_authored_entry(

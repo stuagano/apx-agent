@@ -1,0 +1,48 @@
+name: pr-to-release
+
+# Validate + deploy to the ``staging`` bundle target on every PR into ``release``.
+# Requires staging OAuth secrets (see docs/deploy-cicd.md).
+
+on:
+  pull_request:
+    branches: [release]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-deploy-staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_STAGING }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID_STAGING }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET_STAGING }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Optional auth for private apx-agent pin
+        env:
+          FRAMEWORK_REPO_TOKEN: ${{ secrets.FRAMEWORK_REPO_TOKEN }}
+        run: |
+          if [ -n "$FRAMEWORK_REPO_TOKEN" ]; then
+            git config --global url."https://${FRAMEWORK_REPO_TOKEN}@github.com/".insteadOf "git@github.com:"
+            git config --global url."https://${FRAMEWORK_REPO_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+            git config --global url."https://${FRAMEWORK_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+
+      - name: Install project
+        run: uv sync --group dev
+
+      - name: Unit tests
+        run: uv run pytest -q
+
+      - name: Deploy to staging
+        run: uv run apx deploy --target apps --bundle-target staging --no-run

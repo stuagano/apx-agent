@@ -8,17 +8,26 @@ pull-comments`` uses).
 Writing accepted descriptions edits the LOCAL OKF bundle (authoring — same trust
 model as editing ``agent_router.py``); it does NOT write to Unity Catalog, so it
 needs no governed-write path.
+
+Also owns the empty-state **Generate pack** path: when a DataAgent declares a
+catalog.schema but the project has no ``.apx/okf/`` yet, Grounding can emit the
+pack from Unity Catalog (Tables API) and wire ``knowledge = "./.apx/okf"``.
 """
 from __future__ import annotations
 
 import logging
+import os
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ._okf import apply_uc_comments, okf_columns, okf_manifest
-from ._schema import APX_DIR
+from ._okf import apply_uc_comments, dump_schema_cache, okf_columns, okf_manifest, write_okf_bundle
+from ._schema import APX_DIR, introspect_schema_columns, load_baked_schema
 
 logger = logging.getLogger(__name__)
+
+_KNOWLEDGE_TOML = 'knowledge = "./.apx/okf"'
 
 
 def resolve_okf_root(start: "Path | str | None" = None) -> "Path | None":
@@ -30,6 +39,241 @@ def resolve_okf_root(start: "Path | str | None" = None) -> "Path | None":
         if okf_root.is_dir():
             return okf_root
     return None
+
+
+def resolve_project_root(start: "Path | str | None" = None) -> "Path | None":
+    """Directory containing ``pyproject.toml``, walking up from ``start`` (cwd
+    by default), then falling back to the agent-module deploy root."""
+    here = (Path(start) if start is not None else Path.cwd()).resolve()
+    for d in [here, *here.parents]:
+        if (d / "pyproject.toml").is_file():
+            return d
+    try:
+        from ._ui_edit import _find_deploy_root
+
+        return _find_deploy_root()
+    except Exception:
+        return None
+
+
+def resolve_data_source_for_grounding(
+    ctx: "Any | None" = None,
+    start: "Path | str | None" = None,
+) -> "tuple[str, str] | None":
+    """Best-effort ``(catalog, schema)`` for Generate-pack when no OKF exists.
+
+    Order: live leaf ``.catalog/.schema`` → ``APX_CATALOG``/``APX_SCHEMA`` →
+    ``agent.py`` AST → baked ``.apx/schema.json``.
+    """
+    agent = getattr(ctx, "agent", None) if ctx is not None else None
+    if agent is not None:
+        try:
+            from ._discover_hot import resolve_live_leaf
+
+            leaf = resolve_live_leaf(agent, "agent") or agent
+        except Exception:
+            leaf = agent
+        cat = getattr(leaf, "catalog", None) or ""
+        sch = getattr(leaf, "schema", None) or ""
+        if isinstance(cat, str) and isinstance(sch, str) and cat and sch:
+            return cat, sch
+
+    env_cat = (os.environ.get("APX_CATALOG") or "").strip()
+    env_sch = (os.environ.get("APX_SCHEMA") or "").strip()
+    if env_cat and env_sch and "$" not in env_cat and "$" not in env_sch:
+        return env_cat, env_sch
+
+    root = resolve_project_root(start)
+    if root is not None:
+        from ._doctor import _data_source_from_agent_py
+
+        pair = _data_source_from_agent_py(root)
+        if pair:
+            return pair
+
+    baked = load_baked_schema(root) if root is not None else load_baked_schema()
+    if (
+        baked
+        and isinstance(baked.get("catalog"), str)
+        and isinstance(baked.get("schema"), str)
+        and baked["catalog"]
+        and baked["schema"]
+    ):
+        return baked["catalog"], baked["schema"]
+    return None
+
+
+def grounding_columns_payload(
+    okf_root: "Path | None",
+    ws: "Any | None",
+    ctx: "Any | None" = None,
+) -> dict[str, Any]:
+    """Shape for ``GET /_apx/grounding/columns`` — curation state, or empty-state
+    Generate-pack metadata when no bundle exists."""
+    if okf_root is not None:
+        data = build_column_curation(okf_root, ws)
+        data["can_generate"] = False
+        data["generate_from"] = ""
+        return data
+    pair = resolve_data_source_for_grounding(ctx)
+    if pair:
+        catalog, schema = pair
+        return {
+            "catalog": catalog,
+            "schema": schema,
+            "tables": [],
+            "can_generate": True,
+            "generate_from": f"{catalog}.{schema}",
+        }
+    return {
+        "catalog": "",
+        "schema": "",
+        "tables": [],
+        "can_generate": False,
+        "generate_from": "",
+    }
+
+
+def ensure_knowledge_in_pyproject(project_root: Path) -> bool:
+    """Insert ``knowledge = "./.apx/okf"`` under ``[tool.apx.agent]`` when absent.
+
+    Returns ``True`` when the file was modified.
+    """
+    path = project_root / "pyproject.toml"
+    if not path.is_file():
+        return False
+    text = path.read_text()
+    if re.search(r"(?m)^\s*knowledge\s*=", text):
+        return False
+    m = re.search(r"(?m)^\[tool\.apx\.agent\]\s*$", text)
+    if not m:
+        return False
+    insert_at = m.end()
+    updated = text[:insert_at] + f"\n{_KNOWLEDGE_TOML}" + text[insert_at:]
+    path.write_text(updated)
+    return True
+
+
+def ensure_knowledge_in_agent_py(project_root: Path) -> bool:
+    """Add ``knowledge="./.apx/okf"`` to the first DataAgent/CoworkerAgent call.
+
+    Best-effort AST rewrite; returns ``True`` when the file was modified.
+    """
+    import ast
+
+    path = project_root / "agent.py"
+    if not path.is_file():
+        return False
+    src = path.read_text()
+    if re.search(r"\bknowledge\s*=", src):
+        return False
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return False
+    targets = {"DataAgent", "CoworkerAgent"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if isinstance(fn, ast.Name):
+            fname = fn.id
+        elif isinstance(fn, ast.Attribute):
+            fname = fn.attr
+        else:
+            continue
+        if fname not in targets:
+            continue
+        if any(k.arg == "knowledge" for k in node.keywords if k.arg):
+            return False
+        # Prefer splicing after an existing ``name=`` kwarg; else before the
+        # closing paren of the call.
+        name_kw = next((k for k in node.keywords if k.arg == "name"), None)
+        insert = ', knowledge="./.apx/okf"'
+        if name_kw is not None and getattr(name_kw, "end_lineno", None):
+            # end_col_offset is past the value expression
+            lines = src.splitlines(keepends=True)
+            lineno = name_kw.end_lineno or name_kw.lineno
+            col = name_kw.end_col_offset or 0
+            # Convert to absolute offset
+            offset = sum(len(lines[i]) for i in range(lineno - 1)) + col
+            updated = src[:offset] + insert + src[offset:]
+        else:
+            end = getattr(node, "end_lineno", None)
+            end_col = getattr(node, "end_col_offset", None)
+            if end is None or end_col is None:
+                return False
+            lines = src.splitlines(keepends=True)
+            # Insert before the closing ')'
+            offset = sum(len(lines[i]) for i in range(end - 1)) + end_col - 1
+            updated = src[:offset] + insert + src[offset:]
+        try:
+            compile(updated, str(path), "exec")
+        except SyntaxError:
+            return False
+        path.write_text(updated)
+        return True
+    return False
+
+
+def generate_okf_pack(
+    ws: Any,
+    catalog: str,
+    schema: str,
+    *,
+    project_root: "Path | None" = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Emit ``.apx/okf`` + ``schema.json`` from UC Tables API for ``catalog.schema``.
+
+    Seeds column descriptions from UC COMMENTs when present. Wires
+    ``knowledge = "./.apx/okf"`` into ``pyproject.toml`` (and ``agent.py`` when
+    possible). Returns a result dict; raises ``ValueError`` for user-facing
+    failures (no tables, pack exists without force, no project root).
+    """
+    root = project_root or resolve_project_root()
+    if root is None:
+        raise ValueError("Could not find project root (pyproject.toml)")
+    catalog = (catalog or "").strip()
+    schema = (schema or "").strip()
+    if not catalog or not schema:
+        raise ValueError("catalog and schema are required")
+
+    okf_root = root / APX_DIR / "okf"
+    if okf_root.is_dir() and not force:
+        raise ValueError(f".apx/okf already exists at {okf_root} (pass force to overwrite)")
+
+    tables = introspect_schema_columns(ws, catalog, schema)
+    if not tables:
+        raise ValueError(
+            f"No tables found for {catalog}.{schema} — check Unity Catalog grants "
+            "and that the schema is not empty"
+        )
+
+    descriptions = fetch_uc_comments(ws, catalog, schema) if ws is not None else {}
+    # fetch_uc_comments maps {table: {col: comment}}; blank comments are fine
+    # for write_okf_bundle (it uses them as Description cells).
+    manifest = {"catalog": catalog, "schema": schema, "tables": tables}
+    ts = datetime.now(timezone.utc).isoformat()
+    write_okf_bundle(manifest, okf_root, timestamp=ts, descriptions=descriptions or None)
+
+    apx = root / APX_DIR
+    apx.mkdir(parents=True, exist_ok=True)
+    regen = okf_manifest(okf_root) or manifest
+    (apx / "schema.json").write_text(dump_schema_cache(regen))
+
+    knowledge_wired = ensure_knowledge_in_pyproject(root)
+    agent_wired = ensure_knowledge_in_agent_py(root)
+
+    return {
+        "ok": True,
+        "catalog": catalog,
+        "schema": schema,
+        "table_count": len(tables),
+        "okf_root": str(okf_root),
+        "knowledge_wired": knowledge_wired or agent_wired,
+        "restart_required": True,
+    }
 
 
 def fetch_uc_comments(ws: Any, catalog: str, schema: str) -> dict[str, dict[str, str]]:
@@ -154,6 +398,13 @@ _GROUNDING_HTML = """<!DOCTYPE html>
   #status { font-size: 12px; color: #666; }
   #status.ok { color: #4ade80; }
   #status.err { color: #f87171; }
+  .empty { margin-top: 8px; }
+  .empty .cta { background: #2563eb; color: #fff; border: none; border-radius: 6px;
+                padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 12px; }
+  .empty .cta:hover { background: #1d4ed8; }
+  .empty .cta:disabled { opacity: .5; cursor: default; }
+  .empty code { font-size: 12px; color: #9bf; }
+  #bar[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -166,7 +417,7 @@ _GROUNDING_HTML = """<!DOCTYPE html>
   <p class="desc">Review and curate the per-column descriptions in your OKF grounding bundle.
   Suggestions come from Unity Catalog COMMENTs. Edits are saved to the local bundle (not Unity Catalog).</p>
   <div id="tables"></div>
-  <div id="bar">
+  <div id="bar" hidden>
     <button id="save">Save changes</button>
     <span id="status"></span>
   </div>
@@ -193,12 +444,48 @@ function setSug(row, text) {
   btn.dataset.sug = text; btn.hidden = false;
 }
 
+async function generatePack(btn, from) {
+  const status = document.getElementById('status');
+  const bar = document.getElementById('bar');
+  bar.hidden = false;
+  btn.disabled = true; btn.textContent = 'Generating…';
+  status.textContent = 'Generating pack from ' + from + '…'; status.className = '';
+  try {
+    const r = await fetch('/_apx/grounding/generate', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    status.textContent = `✓ Pack created (${d.table_count} table${d.table_count === 1 ? '' : 's'}). Restart the agent to load grounding.`;
+    status.className = 'ok';
+    await load();
+  } catch (e) {
+    status.textContent = '✗ ' + e.message; status.className = 'err';
+    btn.disabled = false; btn.textContent = 'Generate pack from ' + from;
+  }
+}
+
 function render(data) {
   const root = document.getElementById('tables');
+  const bar = document.getElementById('bar');
   if (!data.tables || !data.tables.length) {
-    root.innerHTML = '<p class="desc">No OKF grounding bundle found in this project.</p>';
+    bar.hidden = !data.can_generate;
+    if (data.can_generate && data.generate_from) {
+      root.innerHTML =
+        '<div class="empty">' +
+        '<p class="desc">No OKF grounding pack yet. Every DataAgent should have one for ' +
+        '<code>' + esc(data.generate_from) + '</code> — generate it from Unity Catalog.</p>' +
+        '<button class="cta" id="gen">Generate pack from ' + esc(data.generate_from) + '</button>' +
+        '</div>';
+      document.getElementById('gen').addEventListener('click', (e) =>
+        generatePack(e.currentTarget, data.generate_from));
+    } else {
+      root.innerHTML = '<p class="desc">No OKF grounding bundle found. Point a DataAgent at a catalog.schema, then generate a pack here.</p>';
+    }
     return;
   }
+  bar.hidden = false;
   root.innerHTML = '';
   for (const t of data.tables) {
     const head = document.createElement('div'); head.className = 'thead';

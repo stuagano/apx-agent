@@ -46,6 +46,8 @@ from ._apx_models import (
     EvalDataSaveResponse,
     GenerateInstructionsRequest,
     GroundingColumnsResponse,
+    GroundingGenerateRequest,
+    GroundingGenerateResponse,
     JudgeRequest,
     JudgeResponse,
     ProbeResult,
@@ -64,6 +66,10 @@ from ._apx_models import (
     ToolSuggestRequest,
     ToolSuggestResponse,
     TopologyResponse,
+    TopologyTracingResponse,
+    TopologyTracingSetRequest,
+    TopologyTracingSetResponse,
+    LastRouteResponse,
     TraceDetailResponse,
     TraceRow,
     VsIndexInfo,
@@ -74,9 +80,13 @@ from ._apx_models import (
     WorkspaceApisResponse,
     WorkspaceContextResponse,
     WorkspaceFunctionsResponse,
+    DiscoverTargetsResponse,
+    DiscoverWireAgentRequest,
+    DiscoverWireResponse,
+    DiscoverWireToolRequest,
 )
 from ._models import AgentContext, AgentTool
-from ._topology import build_topology, inspect_node
+from ._topology import build_topology, inspect_node, route_highlight_from_spans
 from ._ui_chat import (
     _render_agent_ui,
     _render_unified_shell,
@@ -94,6 +104,15 @@ from ._ui_edit import (
     _fix_sql_identifiers,
     _remove_tool,
     _parse_agent_nodes,
+    _list_sub_agent_targets,
+    _append_sub_agent,
+    _remove_sub_agent,
+    _peer_env_key,
+    _slug_tool_name,
+    _existing_binding_names,
+    _splice_factory_tool,
+    _remove_factory_binding,
+    _get_agent_sub_agents,
 )
 from ._ui_setup import (
     _find_env_path,
@@ -512,6 +531,50 @@ def _drop_warmup_traces(traces: list) -> list:
     return out
 
 
+def _workspace_host_from_request(request: Request) -> str | None:
+    """Best-effort Databricks workspace host for deep links."""
+    try:
+        from ._defaults import _ws_prefer_obo
+
+        ws = _ws_prefer_obo(request)
+        host = (getattr(getattr(ws, "config", None), "host", None) or "").rstrip("/")
+        if host:
+            return host
+    except Exception:
+        pass
+    host = (os.environ.get("DATABRICKS_HOST") or "").rstrip("/")
+    return host or None
+
+
+def _experiment_url(host: str | None, experiment_id: str | None) -> str | None:
+    if not host or not experiment_id:
+        return None
+    return f"{host}/ml/experiments/{experiment_id}"
+
+
+def _lookup_experiment_name(experiment_id: str) -> str | None:
+    try:
+        from mlflow.tracking import MlflowClient
+
+        exp = MlflowClient().get_experiment(experiment_id)
+        return getattr(exp, "name", None) or None
+    except Exception:
+        return None
+
+
+def _latest_buffered_spans() -> tuple[str | None, list[dict]]:
+    """Return ``(trace_id, spans)`` for the newest non-warmup buffered trace."""
+    from ._trace_store import WARMUP_SPAN_NAME, get as _ts_get, list_recent as _ts_list
+
+    for tid in _ts_list(20):
+        spans = _ts_get(tid) or []
+        if any((s.get("name") or "") == WARMUP_SPAN_NAME for s in spans):
+            continue
+        if spans:
+            return tid, spans
+    return None, []
+
+
 def _is_message_heavy(obj: Any) -> bool:
     """True if ``obj`` is (or wraps) a chat message list.
 
@@ -787,29 +850,34 @@ def _parse_judge_output(text: str) -> _JudgeOutput:
 # The dev router hosts code-write/RCE-equivalent endpoints (POST /_apx/edit,
 # /_apx/tools/new, /_apx/tools/suggest, /_apx/replay/*, save_setup, env writes,
 # DELETE /_apx/tools/{name}) and an SSRF probe (/_apx/setup/probe-json). Those
-# write/probe endpoints must not be reachable by every authorized App viewer.
+# write/probe endpoints must not be reachable without a signed-in Apps user.
 #
 # Posture:
-#   * Local ``apx-agent run`` (no DATABRICKS_APP_PORT) → writes allowed (the dev loop).
+#   * Local ``apx-agent run`` (no DATABRICKS_APP_PORT) → writes allowed (the
+#     dev loop).
 #   * Deployed Databricks App (DATABRICKS_APP_PORT set):
-#       - APX_DEV_UI_TOKEN unset  → writes DENIED (safe default).
-#       - APX_DEV_UI_TOKEN set    → require a matching ``X-APX-Dev-Token`` header
-#                                   (or ``token`` query param); 403 otherwise.
+#       - ``X-Forwarded-Access-Token`` present (Apps SSO / OBO) → allow.
+#       - Else if ``APX_DEV_UI_TOKEN`` is set and matches ``X-APX-Dev-Token``
+#         (or ``?token=``) → allow (CI / non-browser automation).
+#       - Else → 403.
 #
-# A dedicated header is used rather than Authorization/Bearer so it never
-# collides with the platform's ``Authorization`` / ``X-Forwarded-Access-Token``.
+# Browser Dev UI writes therefore work for any signed-in App user — no pasted
+# operator token. Optional ``APX_DEV_UI_TOKEN`` remains for scripts.
 # The guard is attached once at the router level and only enforces on
-# state-changing methods plus the SSRF probe, so read GETs stay open.
+# state-changing methods plus the SSRF probe / per-principal data reads, so
+# benign read GETs stay open.
 # ---------------------------------------------------------------------------
 
 _DEV_TOKEN_HEADER = "x-apx-dev-token"
+_OBO_TOKEN_HEADER = "x-forwarded-access-token"
 _DEV_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 # Read GETs that expose per-principal data (approvals, conversations + their
-# items, memories, traces). Gated like writes on a deployed App so a multi-user
-# App doesn't leak one principal's data to another authorized viewer (#468).
+# items, memories, traces). Gated like writes on a deployed App so anonymous
+# callers cannot scrape them; signed-in Apps SSO is enough (#468 tradeoff:
+# any App viewer can read until these routes are principal-scoped).
 # Benign reads (chat HTML, topology, probe, setup discovery) stay open so
-# end-user chat and diagnostics still work without the operator token.
+# end-user chat and diagnostics still work without auth gymnastics.
 _DEV_DATA_READ_SEGMENTS = ("/approvals", "/conversations", "/memories", "/traces")
 
 
@@ -830,29 +898,40 @@ def _enforce_dev_write_auth(request: Request) -> None:
     """
     import hmac
 
-    raw = os.environ.get("APX_DEV_UI_TOKEN")
-    token = raw.strip() if raw else ""
-
-    if not token:
-        # No token configured. Allow locally; deny on a deployed App so the
-        # code-write/probe surface is never open to authorized App viewers.
-        if _is_deployed_app():
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "Dev-UI write endpoints are disabled on deployed Apps. "
-                    "Set the APX_DEV_UI_TOKEN env var and send it as the "
-                    "X-APX-Dev-Token header to enable them."
-                ),
-            )
+    if not _is_deployed_app():
         return
 
-    supplied = request.headers.get(_DEV_TOKEN_HEADER) or request.query_params.get("token") or ""
-    if not (supplied and hmac.compare_digest(supplied, token)):
+    # Apps SSO: proxy injects the caller's OBO token on every browser request.
+    obo = (request.headers.get(_OBO_TOKEN_HEADER) or "").strip()
+    if obo:
+        return
+
+    # Optional shared secret for non-browser automation (CI, curl).
+    raw = os.environ.get("APX_DEV_UI_TOKEN")
+    token = raw.strip() if raw else ""
+    if token:
+        supplied = (
+            request.headers.get(_DEV_TOKEN_HEADER)
+            or request.query_params.get("token")
+            or ""
+        )
+        if supplied and hmac.compare_digest(supplied, token):
+            return
         raise HTTPException(
             status_code=403,
-            detail="Missing or invalid X-APX-Dev-Token for dev-UI write endpoint.",
+            detail=(
+                "Dev-UI writes require Apps SSO (X-Forwarded-Access-Token) "
+                "or a matching X-APX-Dev-Token."
+            ),
         )
+
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Dev-UI write endpoints require a signed-in Databricks Apps user "
+            "(SSO). Open this App in the browser while logged in."
+        ),
+    )
 
 
 async def _dev_write_guard(request: Request) -> None:
@@ -935,6 +1014,15 @@ def _persist_instructions(
             dev_suffix = ctx.config.instructions.split("[DEV MODE]", 1)[1]
             addendum = "\n\n[DEV MODE]" + dev_suffix
         ctx.config.instructions = instructions + addendum
+        # Hot-apply onto the live leaf so Chat picks up the change without restart.
+        try:
+            from ._discover_hot import resolve_live_leaf
+
+            leaf = resolve_live_leaf(ctx.agent, "agent") if ctx.agent is not None else None
+            if leaf is not None:
+                leaf._instructions = instructions
+        except Exception:
+            logger.debug("live instructions hot-apply skipped", exc_info=True)
 
     path = _find_agent_router_path()
     if not path or not path.exists():
@@ -1366,6 +1454,75 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return rows
         return HTMLResponse(_render_traces_list(rows, agent_name))
 
+    @router.get("/_apx/traces/last-route", response_model=LastRouteResponse)
+    async def traces_last_route(request: Request) -> Any:
+        """Map the latest Chat turn onto topology node/edge ids for live highlight.
+
+        Registered before ``/_apx/traces/{trace_id:path}`` so ``last-route`` is
+        not captured as a trace id.
+        """
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        if ctx is None:
+            return JSONResponse(
+                {"error": "Agent context not available"}, status_code=503
+            )
+
+        tid, spans = _latest_buffered_spans()
+        if not spans:
+            # Fall back to tracking-store metadata + buffer/detail fetch for the newest id.
+            experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+            try:
+                from mlflow.tracking import MlflowClient as _MlflowClient
+
+                client = _MlflowClient()
+                exp_ids: list[str] = (
+                    [experiment_id] if experiment_id
+                    else [e.experiment_id for e in client.search_experiments()]
+                )
+                traces = list(client.search_traces(
+                    locations=exp_ids,
+                    max_results=5,
+                    order_by=["timestamp DESC"],
+                    include_spans=False,
+                    flush=True,
+                )) if exp_ids else []
+                traces = _drop_warmup_traces(traces)
+                for t in traces:
+                    candidate = getattr(getattr(t, "info", None), "trace_id", None)
+                    if not candidate:
+                        continue
+                    buffered = None
+                    try:
+                        from ._trace_store import get as _ts_get
+
+                        buffered = _ts_get(candidate)
+                    except Exception:
+                        buffered = None
+                    if buffered:
+                        tid, spans = candidate, buffered
+                        break
+            except Exception:
+                logger.debug("last-route mlflow search failed", exc_info=True)
+
+        if not spans:
+            return {
+                "trace_id": tid,
+                "node_ids": [],
+                "edge_ids": [],
+                "tool_names": [],
+                "span_count": 0,
+            }
+
+        topo = build_topology(ctx)
+        highlight = route_highlight_from_spans(topo, spans)
+        return {
+            "trace_id": tid,
+            "node_ids": highlight["node_ids"],
+            "edge_ids": highlight["edge_ids"],
+            "tool_names": highlight["tool_names"],
+            "span_count": len(spans),
+        }
+
     @router.get("/_apx/traces/{trace_id:path}", response_model=TraceDetailResponse)
     async def trace_detail_ui(trace_id: str, request: Request) -> Any:
         from fastapi.responses import JSONResponse
@@ -1473,6 +1630,60 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if details is None:
             raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
         return details
+
+    @router.get("/_apx/topology/tracing", response_model=TopologyTracingResponse)
+    async def topology_tracing(request: Request) -> Any:
+        """Where this agent writes MLflow traces — experiment id/name + workspace deep link."""
+        experiment_id = (os.environ.get("MLFLOW_EXPERIMENT_ID") or "").strip() or None
+        host = _workspace_host_from_request(request)
+        name = _lookup_experiment_name(experiment_id) if experiment_id else None
+        return {
+            "experiment_id": experiment_id,
+            "experiment_name": name,
+            "workspace_host": host,
+            "experiment_url": _experiment_url(host, experiment_id),
+            "configured": bool(experiment_id),
+        }
+
+    @router.post("/_apx/topology/tracing", response_model=TopologyTracingSetResponse)
+    async def topology_tracing_set(request: Request, body: TopologyTracingSetRequest) -> Any:
+        """Set ``MLFLOW_EXPERIMENT_ID`` (live + .env) so Topology / Chat share one destination."""
+        eid = (body.experiment_id or "").strip()
+        if not eid:
+            return JSONResponse(
+                {"ok": False, "error": "experiment_id required"}, status_code=422
+            )
+
+        # Validate when the tracking store is reachable; still allow set if lookup fails
+        # (local sqlite / egress) so the operator can pin an id ahead of deploy.
+        name = _lookup_experiment_name(eid)
+        os.environ["MLFLOW_EXPERIMENT_ID"] = eid
+        try:
+            import mlflow as _mlflow
+
+            _mlflow.set_experiment(experiment_id=eid)
+        except Exception:
+            logger.debug("mlflow.set_experiment failed for %s", eid, exc_info=True)
+
+        env_path = _find_env_path()
+        if env_path is not None:
+            _write_env_file(env_path, {"MLFLOW_EXPERIMENT_ID": eid})
+            try:
+                await _ws_upload_agent_file(request, env_path, env_path.read_text())
+            except Exception:
+                logger.debug("workspace .env upload skipped", exc_info=True)
+
+        host = _workspace_host_from_request(request)
+        return {
+            "ok": True,
+            "experiment_id": eid,
+            "experiment_name": name,
+            "experiment_url": _experiment_url(host, eid),
+            "restart_hint": (
+                "Live for this process. App.yaml / bundle env still wins on next deploy "
+                "unless you also update mlflow_experiment_id."
+            ),
+        }
 
     @router.get("/_apx/topology/assets/{path:path}", include_in_schema=False)
     async def topology_assets(path: str) -> Any:
@@ -1946,13 +2157,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if not wired:
             leaves = [n["name"] for n in nodes if n["name"] != "agent" and n.get("wrapper") is None]
             return {
-                "ok": True, "wired": False, "agents": leaves,
+                "ok": True, "wired": False, "agents": leaves, "restart_required": True,
                 "note": (
                     f"`{name}` was added to agent.py but not attached to an agent "
                     f"(this agent is composed). Re-add it choosing one of: {', '.join(leaves) or '(define a leaf agent first)'}."
                 ),
             }
-        return {"ok": True, "wired": True}
+        return {"ok": True, "wired": True, "restart_required": True}
 
     @router.delete("/_apx/tools/{fn_name}", response_model=ToolDeleteResponse)
     async def delete_tool(fn_name: str, request: Request) -> Any:
@@ -2049,7 +2260,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         """Return workspace identity + agent resource summary for the Context tab."""
         import asyncio as _asyncio
 
-        ws: WorkspaceClient = request.app.state.workspace_client
+        from ._defaults import _ws_prefer_obo
+
+        ws: WorkspaceClient = _ws_prefer_obo(request)
         ctx = request.app.state.agent_context
 
         # Workspace identity
@@ -2102,13 +2315,17 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         Best-effort: Apps that don't answer ``/.well-known/agent.json`` and
         UC models without ``apx.agent.name`` are omitted. Never raises.
+
+        Uses the caller's OBO token when present so ``apps.list`` runs as the
+        signed-in user (the App SP often cannot list peer Apps).
         """
         import asyncio as _asyncio
 
         from ._apps_discovery import discover_app_agents
+        from ._defaults import _ws_prefer_obo
         from ._topology import discover_topology
 
-        ws: WorkspaceClient = request.app.state.workspace_client
+        ws: WorkspaceClient = _ws_prefer_obo(request)
         app_agents = await _asyncio.to_thread(discover_app_agents, ws)
         by_key: dict[str, dict[str, Any]] = {}
         for a in app_agents:
@@ -2162,9 +2379,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         """List Unity Catalog functions in ``catalog.schema`` (tool candidates)."""
         import asyncio as _asyncio
 
+        from ._defaults import _ws_prefer_obo
+
         if not catalog.strip() or not schema.strip():
             raise HTTPException(status_code=400, detail="catalog and schema are required")
-        ws: WorkspaceClient = request.app.state.workspace_client
+        ws: WorkspaceClient = _ws_prefer_obo(request)
         cat, sch = catalog.strip(), schema.strip()
 
         def _list() -> list[dict[str, Any]]:
@@ -2194,12 +2413,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         Best-effort per source — a permission error on one family omits that
         family rather than failing the whole response.
+
+        Uses the caller's OBO token when present (Genie / VS often need user
+        grants the App SP does not have).
         """
         import asyncio as _asyncio
 
+        from ._defaults import _ws_prefer_obo
         from ._workspace_apis import discover_workspace_apis
 
-        ws: WorkspaceClient = request.app.state.workspace_client
+        ws: WorkspaceClient = _ws_prefer_obo(request)
 
         def _run() -> list[dict[str, Any]]:
             return [
@@ -2218,6 +2441,281 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         apis = await _asyncio.to_thread(_run)
         return {"apis": apis}
 
+    @router.get("/_apx/discover/targets", response_model=DiscoverTargetsResponse)
+    async def discover_targets() -> Any:
+        """List Agent/LlmAgent leaves eligible for remote ``sub_agents=`` wiring."""
+        path = _find_agent_router_path()
+        if path is None or not path.exists():
+            return {"targets": [], "source_path": None}
+        source = path.read_text()
+        return {
+            "targets": _list_sub_agent_targets(source),
+            "source_path": str(path),
+        }
+
+    async def _persist_discover_edit(
+        request: Request, path: Path, content: str, *, env_updates: dict[str, str] | None = None
+    ) -> None:
+        """Write agent source (+ optional .env) and best-effort workspace upload."""
+        try:
+            compile(content, str(path), "exec")
+        except SyntaxError as e:
+            raise HTTPException(
+                status_code=400, detail=f"Syntax error at line {e.lineno}: {e.msg}"
+            ) from e
+        path.write_text(content)
+        await _ws_upload_agent_file(request, path, content)
+        if env_updates:
+            env_path = _find_env_path()
+            if env_path is not None:
+                _write_env_file(env_path, env_updates)
+                await _ws_upload_agent_file(request, env_path, env_path.read_text())
+
+    @router.post("/_apx/discover/wire-agent", response_model=DiscoverWireResponse)
+    async def discover_wire_agent(request: Request, body: DiscoverWireAgentRequest) -> Any:
+        """Append a remote Apps peer to ``sub_agents=`` and hot-apply onto the live agent."""
+        from ._discover_hot import hot_apply_sub_agent
+
+        url = (body.url or "").strip()
+        if not url:
+            raise HTTPException(
+                status_code=400,
+                detail="url is required (UC-only agents without an Apps URL cannot be wired)",
+            )
+        path = _find_agent_router_path()
+        if path is None or not path.exists():
+            raise HTTPException(status_code=400, detail="agent.py not found — Discover wire needs on-disk source")
+        target = (body.target or "agent").strip() or "agent"
+        source = path.read_text()
+        targets = {t["name"]: t for t in _list_sub_agent_targets(source)}
+        info = targets.get(target)
+        if info is None or not info.get("eligible"):
+            reason = (info or {}).get("reason") or f"`{target}` is not an Agent/LlmAgent leaf"
+            raise HTTPException(status_code=400, detail=reason)
+
+        env_key: str | None = None
+        env_updates: dict[str, str] | None = None
+        if body.use_env:
+            label = (body.app_name or body.name or "peer").strip()
+            env_key = _peer_env_key(label)
+            ref = f"${env_key}"
+            env_updates = {env_key: url}
+        else:
+            ref = url
+
+        try:
+            updated, already = _append_sub_agent(source, ref, target=target)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        if not already:
+            await _persist_discover_edit(request, path, updated, env_updates=env_updates)
+
+        applied_live = False
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        if ctx is not None and ctx.agent is not None:
+            try:
+                applied_live = await hot_apply_sub_agent(
+                    ctx, target=target, ref=ref, url=url, env_key=env_key
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("hot-apply sub-agent failed: %s", e)
+
+        return {
+            "ok": True,
+            "restart_required": not applied_live,
+            "applied_live": applied_live,
+            "target": target,
+            "ref": ref,
+            "already_present": already,
+        }
+
+    @router.post("/_apx/discover/unwire-agent", response_model=DiscoverWireResponse)
+    async def discover_unwire_agent(request: Request, body: DiscoverWireAgentRequest) -> Any:
+        """Remove a peer ref from ``sub_agents=`` and drop it from the live agent."""
+        from ._discover_hot import hot_remove_sub_agent
+
+        path = _find_agent_router_path()
+        if path is None or not path.exists():
+            raise HTTPException(status_code=400, detail="agent.py not found")
+        target = (body.target or "agent").strip() or "agent"
+        ref = (body.ref or "").strip()
+        if not ref:
+            if body.use_env:
+                label = (body.app_name or body.name or "peer").strip()
+                ref = f"${_peer_env_key(label)}"
+            else:
+                ref = (body.url or "").strip()
+        if not ref:
+            raise HTTPException(status_code=400, detail="ref or url is required to unwire")
+
+        source = path.read_text()
+        present = ref in _get_agent_sub_agents(source, target)
+        if present:
+            try:
+                updated = _remove_sub_agent(source, ref, target=target)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            await _persist_discover_edit(request, path, updated)
+
+        applied_live = False
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        if ctx is not None and ctx.agent is not None:
+            try:
+                applied_live = await hot_remove_sub_agent(ctx, target=target, ref=ref)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("hot-remove sub-agent failed: %s", e)
+
+        return {
+            "ok": True,
+            "restart_required": present and not applied_live,
+            "applied_live": applied_live,
+            "target": target,
+            "ref": ref,
+            "already_present": present,
+        }
+
+    @router.post("/_apx/discover/wire-tool", response_model=DiscoverWireResponse)
+    async def discover_wire_tool(request: Request, body: DiscoverWireToolRequest) -> Any:
+        """Splice a UC / Genie / Vector Search factory tool and hot-apply it live."""
+        from ._discover_hot import hot_apply_factory_tool
+        from ._ui_edit import _agent_tool_names, _find_root_agent_call
+
+        path = _find_agent_router_path()
+        if path is None or not path.exists():
+            raise HTTPException(status_code=400, detail="agent.py not found — Discover wire needs on-disk source")
+        target = (body.target or "agent").strip() or "agent"
+        kind = (body.kind or "").strip()
+        source = path.read_text()
+
+        if _find_root_agent_call(source, target) is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"`{target}` is not a leaf Agent — pick an Agent/LlmAgent/DataAgent target",
+            )
+
+        existing = _existing_binding_names(source)
+        binding = (body.binding_name or "").strip() or None
+        full = space_id = index = None
+        cols: list[str] | None = None
+
+        if kind == "uc_function":
+            full = (body.full_name or "").strip()
+            if not full or full.count(".") != 2:
+                raise HTTPException(status_code=400, detail="full_name must be catalog.schema.function")
+            binding = binding or _slug_tool_name(full, existing)
+            call_expr = f"uc_function_tool({full!r})"
+            imports = ["uc_function_tool"]
+        elif kind == "genie_space":
+            space_id = (body.space_id or "").strip()
+            if not space_id:
+                raise HTTPException(status_code=400, detail="space_id is required for genie_space")
+            label = (body.title or body.full_name or space_id).strip()
+            binding = binding or _slug_tool_name(f"ask_{label}", existing)
+            if not binding.startswith("ask_") and "ask" not in binding:
+                binding = _slug_tool_name(f"ask_{binding}", existing)
+            call_expr = f"genie_tool({space_id!r}, name={binding!r})"
+            imports = ["genie_tool"]
+        elif kind == "vector_search_index":
+            index = (body.index_name or body.full_name or "").strip()
+            if not index or index.count(".") != 2:
+                raise HTTPException(status_code=400, detail="index_name must be catalog.schema.index")
+            cols = body.columns or ["content"]
+            binding = binding or _slug_tool_name(f"vs_{index.split('.')[-1]}", existing)
+            cols_lit = "[" + ", ".join(repr(c) for c in cols) + "]"
+            call_expr = (
+                f"vector_search_tool({index!r}, columns={cols_lit}, name={binding!r})"
+            )
+            imports = ["vector_search_tool"]
+        elif kind == "serving_endpoint":
+            raise HTTPException(
+                status_code=400,
+                detail="Model Serving endpoints are not tools — set model= / use Playground",
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unsupported kind {kind!r}; use uc_function, genie_space, or vector_search_index",
+            )
+
+        tools_now = _agent_tool_names(source, target) or []
+        already = binding in tools_now and binding in existing
+        if not already:
+            try:
+                updated = _splice_factory_tool(
+                    source,
+                    import_names=imports,
+                    binding_name=binding,
+                    call_expr=call_expr,
+                    target=target,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            await _persist_discover_edit(request, path, updated)
+
+        applied_live = False
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        if ctx is not None and ctx.agent is not None:
+            try:
+                applied_live = await hot_apply_factory_tool(
+                    ctx,
+                    target=target,
+                    kind=kind,
+                    binding_name=binding,
+                    full_name=full,
+                    space_id=space_id,
+                    index_name=index,
+                    columns=cols,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("hot-apply tool failed: %s", e)
+
+        return {
+            "ok": True,
+            "restart_required": not applied_live,
+            "applied_live": applied_live,
+            "target": target,
+            "binding_name": binding,
+            "already_present": already,
+        }
+
+    @router.post("/_apx/discover/unwire-tool", response_model=DiscoverWireResponse)
+    async def discover_unwire_tool(request: Request, body: DiscoverWireToolRequest) -> Any:
+        """Remove a Discover-wired factory binding from source and the live agent."""
+        from ._discover_hot import hot_remove_factory_tool
+
+        binding = (body.binding_name or "").strip()
+        if not binding:
+            raise HTTPException(status_code=400, detail="binding_name is required to unwire a tool")
+        path = _find_agent_router_path()
+        if path is None or not path.exists():
+            raise HTTPException(status_code=400, detail="agent.py not found")
+        target = (body.target or "agent").strip() or "agent"
+        source = path.read_text()
+        updated = _remove_factory_binding(source, binding)
+        present = updated != source
+        if present:
+            await _persist_discover_edit(request, path, updated)
+
+        applied_live = False
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        if ctx is not None and ctx.agent is not None:
+            try:
+                applied_live = await hot_remove_factory_tool(
+                    ctx, target=target, binding_name=binding
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("hot-remove tool failed: %s", e)
+
+        return {
+            "ok": True,
+            "restart_required": present and not applied_live,
+            "applied_live": applied_live,
+            "target": target,
+            "binding_name": binding,
+            "already_present": present,
+        }
+
     @router.get("/_apx/grounding")
     async def grounding_ui() -> Any:
         """The field-description curation page (#292) — review + accept/edit
@@ -2230,15 +2728,15 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def grounding_columns(request: Request) -> Any:
         """Per-column current-vs-suggested description curation state for the
         agent's OKF bundle (#292). Suggestions come from Unity Catalog COMMENTs;
-        the response has empty ``tables`` when the project has no OKF bundle."""
+        empty ``tables`` plus ``can_generate`` when the project has no pack but
+        a DataAgent catalog.schema is known (Generate-pack CTA)."""
         import asyncio as _asyncio
-        from ._ui_grounding import build_column_curation, resolve_okf_root
+        from ._ui_grounding import grounding_columns_payload, resolve_okf_root
 
         okf_root = resolve_okf_root()
-        if okf_root is None:
-            return {"catalog": "", "schema": "", "tables": []}
         ws = getattr(request.app.state, "workspace_client", None)
-        return await _asyncio.to_thread(build_column_curation, okf_root, ws)
+        ctx = getattr(request.app.state, "agent_context", None)
+        return await _asyncio.to_thread(grounding_columns_payload, okf_root, ws, ctx)
 
     @router.post("/_apx/grounding/columns", response_model=ColumnDescriptionsSaveResponse)
     async def save_grounding_columns(
@@ -2256,6 +2754,72 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"ok": False, "error": "No .apx/okf bundle found"}, status_code=404)
         modified = await _asyncio.to_thread(apply_column_descriptions, okf_root, body.accepted)
         return {"ok": True, "modified": modified}
+
+    @router.post("/_apx/grounding/generate", response_model=GroundingGenerateResponse)
+    async def generate_grounding_pack(
+        request: Request, body: GroundingGenerateRequest
+    ) -> Any:
+        """Emit an OKF pack from the DataAgent's catalog.schema via the UC Tables
+        API, wire ``knowledge = "./.apx/okf"``, and seed descriptions from UC
+        COMMENTs. Token-gated like other write routes; restart required to load
+        grounding into the live agent."""
+        import asyncio as _asyncio
+        from fastapi.responses import JSONResponse
+        from ._ui_grounding import (
+            generate_okf_pack,
+            resolve_data_source_for_grounding,
+            resolve_project_root,
+        )
+
+        ws = getattr(request.app.state, "workspace_client", None)
+        if ws is None:
+            return JSONResponse(
+                {"ok": False, "error": "No workspace client available"},
+                status_code=400,
+            )
+        ctx = getattr(request.app.state, "agent_context", None)
+        catalog = (body.catalog or "").strip()
+        schema = (body.schema_ or "").strip()
+        if not (catalog and schema):
+            pair = resolve_data_source_for_grounding(ctx)
+            if not pair:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "No catalog.schema found — set APX_CATALOG/APX_SCHEMA "
+                        "or point agent.py at a DataAgent",
+                    },
+                    status_code=400,
+                )
+            catalog, schema = pair
+        root = resolve_project_root()
+        try:
+            result = await _asyncio.to_thread(
+                generate_okf_pack,
+                ws,
+                catalog,
+                schema,
+                project_root=root,
+                force=body.force,
+            )
+        except ValueError as e:
+            msg = str(e)
+            code = 409 if "already exists" in msg else 400
+            return JSONResponse({"ok": False, "error": msg}, status_code=code)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("generate_okf_pack failed: %s", e)
+            return JSONResponse(
+                {"ok": False, "error": f"Failed to generate pack: {e}"},
+                status_code=500,
+            )
+        return {
+            "ok": True,
+            "catalog": result["catalog"],
+            "schema": result["schema"],
+            "table_count": result["table_count"],
+            "knowledge_wired": result["knowledge_wired"],
+            "restart_required": result.get("restart_required", True),
+        }
 
     @router.post("/_apx/grounding/suggest", response_model=ColumnSuggestResponse)
     async def suggest_grounding_descriptions(
@@ -2677,7 +3241,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             path.write_text(updated)
             await _ws_upload_agent_file(request, path, updated)
 
-        resp: dict[str, Any] = {"ok": True, "applied": applied}
+        resp: dict[str, Any] = {
+            "ok": True,
+            "applied": applied,
+            "restart_required": updated != source,
+        }
         if skipped:
             resp["skipped"] = skipped
             resp["note"] = (
@@ -2870,9 +3438,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             path.write_text(updated)
             await _ws_upload_agent_file(request, path, updated)
         return {
-            "ok": True, "type": pattern,
+            "ok": True,
+            "type": pattern,
             "agents": [leaf["name"] for leaf in leaves],
             "changed": updated != source,
+            "restart_required": updated != source,
         }
 
     @router.get("/_apx/eval/data", response_model=list[EvalCaseResponse])

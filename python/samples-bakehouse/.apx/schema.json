@@ -1,0 +1,69 @@
+{
+  "catalog": "samples",
+  "schema": "bakehouse",
+  "tables": {
+    "media_customer_reviews": [
+      "review(string)",
+      "franchiseID(bigint)",
+      "review_date(timestamp)",
+      "new_id(int)"
+    ],
+    "media_gold_reviews_chunked": [
+      "franchiseID(int)",
+      "review_date(timestamp)",
+      "chunked_text(string)",
+      "chunk_id(string)",
+      "review_uri(string)"
+    ],
+    "sales_customers": [
+      "customerID(bigint)",
+      "first_name(string)",
+      "last_name(string)",
+      "email_address(string)",
+      "phone_number(string)",
+      "address(string)",
+      "city(string)",
+      "state(string)",
+      "country(string)",
+      "continent(string)",
+      "postal_zip_code(bigint)",
+      "gender(string)"
+    ],
+    "sales_franchises": [
+      "franchiseID(bigint)",
+      "name(string)",
+      "city(string)",
+      "district(string)",
+      "zipcode(string)",
+      "country(string)",
+      "size(string)",
+      "longitude(double)",
+      "latitude(double)",
+      "supplierID(bigint)"
+    ],
+    "sales_suppliers": [
+      "supplierID(bigint)",
+      "name(string)",
+      "ingredient(string)",
+      "continent(string)",
+      "city(string)",
+      "district(string)",
+      "size(string)",
+      "longitude(double)",
+      "latitude(double)",
+      "approved(string)"
+    ],
+    "sales_transactions": [
+      "transactionID(bigint)",
+      "customerID(bigint)",
+      "franchiseID(bigint)",
+      "dateTime(timestamp)",
+      "product(string)",
+      "quantity(bigint)",
+      "unitPrice(bigint)",
+      "totalPrice(bigint)",
+      "paymentMethod(string)",
+      "cardNumber(bigint)"
+    ]
+  }
+}

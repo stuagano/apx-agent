@@ -6,14 +6,16 @@
 //   - Selection highlights the node (accent box-shadow) and its incident edges.
 //   - Edge labels show `kind`.
 //   - Click → onNodeClick(nodeId).
-//   - Includes MiniMap, Controls, Background.
+//   - Drop Discover palette chips onto leaf Agents → onWireDrop(nodeId, payload).
+//   - MiniMap + Controls only when showMap (large graphs).
 
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import {
   Background,
   Controls,
   MiniMap,
   ReactFlow,
+  ReactFlowProvider,
   useReactFlow,
   type Edge,
   type Node,
@@ -23,30 +25,36 @@ import {
 import dagre from "dagre";
 
 import { NODE_STYLE, type NodeType, type TopologyResponse } from "./types";
+import {
+  WIRE_MIME,
+  isLeafAgentType,
+  type WirePayload,
+} from "./wire";
 
 import "@xyflow/react/dist/style.css";
 
 export interface TopologyGraphProps {
   data: TopologyResponse;
   selected: string | null;
+  /** Nodes lit by the latest Chat turn (from `/_apx/traces/last-route`). */
+  routeNodeIds?: ReadonlySet<string>;
+  /** Edges lit by the latest Chat turn. */
+  routeEdgeIds?: ReadonlySet<string>;
+  droppableIds?: ReadonlySet<string>;
+  /** Show MiniMap + zoom Controls (default: off for small graphs). */
+  showMap?: boolean;
   onNodeClick: (nodeId: string) => void;
+  onWireDrop?: (nodeId: string, payload: WirePayload) => void;
 }
 
-// Fallback style for any node type the backend emits that isn't in
-// NODE_STYLE (e.g. a newly added agent class). Without this, an unmapped
-// type makes NODE_STYLE[type] undefined and crashes the whole graph render.
 const DEFAULT_NODE_STYLE = { fill: "#1e293b", stroke: "#64748b" };
 const styleFor = (type: string) =>
   NODE_STYLE[type as NodeType] ?? DEFAULT_NODE_STYLE;
 
-// Embed mode (``?embed=1``): hide the Controls + MiniMap chrome so the graph
-// reads cleanly inside a small minimap thumbnail. Pan/zoom still work via
-// mouse/trackpad. Used by the topology minimap on the Edit page.
 const EMBED =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).get("embed") === "1";
 
-// Dagre layout constants — match the spec's Visual contract.
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 56;
 const RANKDIR = "LR";
@@ -61,6 +69,10 @@ interface LayoutResult {
 function layout(
   data: TopologyResponse,
   selected: string | null,
+  routeNodeIds: ReadonlySet<string> | undefined,
+  routeEdgeIds: ReadonlySet<string> | undefined,
+  droppableIds: ReadonlySet<string> | undefined,
+  dropHoverId: string | null,
 ): LayoutResult {
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: RANKDIR, nodesep: NODESEP, ranksep: RANKSEP });
@@ -79,44 +91,71 @@ function layout(
     const pos = g.node(n.id);
     const style = styleFor(n.type);
     const isSelected = selected === n.id;
+    const onRoute = !!routeNodeIds?.has(n.id);
+    const isDroppable = !!droppableIds?.has(n.id) && isLeafAgentType(n.type);
+    const isDropHover = dropHoverId === n.id;
     return {
       id: n.id,
       position: {
-        // dagre gives center coords; react-flow wants top-left.
         x: (pos?.x ?? 0) - NODE_WIDTH / 2,
         y: (pos?.y ?? 0) - NODE_HEIGHT / 2,
       },
-      data: { label: n.label },
+      data: {
+        label: n.label,
+        topoType: n.type,
+        droppable: isDroppable,
+      },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
+      className: [
+        isDroppable ? "apx-droppable" : "",
+        isDropHover ? "apx-drop-hover" : "",
+        onRoute ? "apx-route-active" : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
       style: {
         background: style.fill,
-        border: `1.5px solid ${style.stroke}`,
+        border: `1.5px solid ${
+          isDropHover ? "#4ade80" : onRoute ? "#fbbf24" : style.stroke
+        }`,
         borderRadius: 6,
         color: "#e2e8f0",
         fontSize: 12,
         fontWeight: 500,
         padding: "8px 12px",
         width: NODE_WIDTH,
-        boxShadow: isSelected ? "0 0 0 2px var(--accent, #38bdf8)" : undefined,
+        boxShadow: isSelected
+          ? "0 0 0 2px var(--accent, #38bdf8)"
+          : onRoute
+            ? "0 0 0 2px #fbbf24, 0 0 12px rgba(251, 191, 36, 0.35)"
+            : isDropHover
+              ? "0 0 0 2px #4ade80"
+              : isDroppable
+                ? "0 0 0 1px rgba(74, 222, 128, 0.35)"
+                : undefined,
+        outline: isDroppable ? "1px dashed rgba(74, 222, 128, 0.4)" : undefined,
+        outlineOffset: 2,
       },
     };
   });
 
   const rfEdges: Edge[] = data.edges.map((e) => {
     const incident = selected !== null && (e.source === selected || e.target === selected);
+    const onRoute = !!routeEdgeIds?.has(e.id);
     return {
       id: e.id,
       source: e.source,
       target: e.target,
       label: e.kind,
-      labelStyle: { fill: "#cbd5e1", fontSize: 10 },
+      labelStyle: { fill: onRoute ? "#fde68a" : "#cbd5e1", fontSize: 10 },
       labelBgStyle: { fill: "#0a0a0a", fillOpacity: 0.85 },
-      labelBgPadding: [4, 2],
+      labelBgPadding: [4, 2] as [number, number],
       labelBgBorderRadius: 3,
+      animated: onRoute,
       style: {
-        stroke: incident ? "var(--accent, #38bdf8)" : "#475569",
-        strokeWidth: incident ? 2 : 1,
+        stroke: onRoute ? "#fbbf24" : incident ? "var(--accent, #38bdf8)" : "#475569",
+        strokeWidth: onRoute ? 2.5 : incident ? 2 : 1,
       },
     };
   });
@@ -124,9 +163,6 @@ function layout(
   return { nodes: rfNodes, edges: rfEdges };
 }
 
-// Re-fit the graph when the container (e.g. an embedding iframe) resizes.
-// ReactFlow's `fitView` prop only runs on mount, so without this the graph
-// stays at its initial zoom when the topology minimap expands/collapses.
 function FitOnResize() {
   const { fitView } = useReactFlow();
   useEffect(() => {
@@ -137,32 +173,112 @@ function FitOnResize() {
   return null;
 }
 
-export function TopologyGraph(props: TopologyGraphProps) {
-  const { data, selected, onNodeClick } = props;
+function hitNodeId(
+  flowPos: { x: number; y: number },
+  nodes: Node[],
+): string | null {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const n = nodes[i]!;
+    const w = typeof n.style?.width === "number" ? n.style.width : NODE_WIDTH;
+    const h = NODE_HEIGHT;
+    if (
+      flowPos.x >= n.position.x &&
+      flowPos.x <= n.position.x + w &&
+      flowPos.y >= n.position.y &&
+      flowPos.y <= n.position.y + h
+    ) {
+      return n.id;
+    }
+  }
+  return null;
+}
+
+function TopologyGraphInner(props: TopologyGraphProps) {
+  const {
+    data,
+    selected,
+    routeNodeIds,
+    routeEdgeIds,
+    droppableIds,
+    showMap = false,
+    onNodeClick,
+    onWireDrop,
+  } = props;
+  const [dropHoverId, setDropHoverId] = useState<string | null>(null);
+  const { screenToFlowPosition } = useReactFlow();
 
   const { nodes, edges } = useMemo(
-    () => layout(data, selected),
-    [data, selected],
+    () =>
+      layout(data, selected, routeNodeIds, routeEdgeIds, droppableIds, dropHoverId),
+    [data, selected, routeNodeIds, routeEdgeIds, droppableIds, dropHoverId],
   );
 
   const handleNodeClick: NodeMouseHandler = (_event, node) => {
     onNodeClick(node.id);
   };
 
+  const parsePayload = (e: DragEvent): WirePayload | null => {
+    const raw =
+      e.dataTransfer.getData(WIRE_MIME) || e.dataTransfer.getData("text/plain");
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as WirePayload;
+    } catch {
+      return null;
+    }
+  };
+
+  const onDragOver = useCallback(
+    (e: DragEvent) => {
+      if (!onWireDrop) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "copy";
+      const flowPos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      const id = hitNodeId(flowPos, nodes);
+      if (id && droppableIds?.has(id)) {
+        setDropHoverId(id);
+      } else {
+        setDropHoverId(null);
+      }
+    },
+    [onWireDrop, screenToFlowPosition, nodes, droppableIds],
+  );
+
+  const onDrop = useCallback(
+    (e: DragEvent) => {
+      if (!onWireDrop) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const flowPos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      const id = hitNodeId(flowPos, nodes);
+      setDropHoverId(null);
+      const payload = parsePayload(e);
+      if (!payload) return;
+      // Always invoke so App can toast "not eligible" when id isn't droppable
+      onWireDrop(id || "", payload);
+    },
+    [onWireDrop, screenToFlowPosition, nodes],
+  );
+
   return (
     <ReactFlow
       nodes={nodes}
       edges={edges}
       onNodeClick={handleNodeClick}
+      nodesConnectable={false}
       fitView
       proOptions={{ hideAttribution: true }}
       minZoom={0.2}
       maxZoom={2}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragLeave={() => setDropHoverId(null)}
     >
       <FitOnResize />
       <Background color="#1e293b" gap={20} />
-      {!EMBED && <Controls />}
-      {!EMBED && (
+      {!EMBED && showMap && <Controls />}
+      {!EMBED && showMap && (
         <MiniMap
           pannable
           zoomable
@@ -181,5 +297,13 @@ export function TopologyGraph(props: TopologyGraphProps) {
         />
       )}
     </ReactFlow>
+  );
+}
+
+export function TopologyGraph(props: TopologyGraphProps) {
+  return (
+    <ReactFlowProvider>
+      <TopologyGraphInner {...props} />
+    </ReactFlowProvider>
   );
 }

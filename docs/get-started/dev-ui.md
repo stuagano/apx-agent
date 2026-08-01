@@ -5,9 +5,10 @@ Apps-hosted agents include built-in development tooling under the `/_apx/*` path
 Each surface is self-contained and styled to a shared dark theme; a fixed header
 (rendered by `_ui_nav.py`) lets you jump between them.
 
-On a **deployed App**, chat/Discover/Probe reads work behind workspace SSO.
-**Write** routes (edit source, create tools, replay) stay denied unless you set
-`APX_DEV_UI_TOKEN` and send `X-APX-Dev-Token`.
+On a **deployed App**, chat/Discover/Probe/Topology work behind workspace SSO.
+**Write** routes (edit, wire, create tools, replay) are allowed for any
+**signed-in Apps user** (SSO / `X-Forwarded-Access-Token`). Optional
+`APX_DEV_UI_TOKEN` remains for non-browser automation only.
 
 Model Serving deployments use AI Playground as the equivalent surface.
 
@@ -26,15 +27,41 @@ surfaces Model Serving endpoints, Genie spaces, and Vector Search indexes
 Refresh re-scans. Backed by `GET /_apx/workspace-agents`,
 `/_apx/workspace-functions`, and `/_apx/workspace-apis`.
 
+**Wire-back (writes `agent.py` + hot-applies live):** pick a leaf Agent in the
+**Wire into** dropdown, then:
+
+- **Add as sub-agent** on Apps peers that have a URL — appends
+  `$APX_PEER_<SLUG>_URL` to `sub_agents=`, writes the URL into `.env`, and
+  materializes the remote tool on the **running** agent so Chat can use it
+  immediately (no Apps redeploy)
+- **Unwire** appears on peers already in `sub_agents=` for the selected leaf
+- **Attach as tool** on UC functions, Genie spaces, and Vector Search indexes —
+  splices `uc_function_tool` / `genie_tool` / `vector_search_tool` into
+  `tools=` and registers them live
+- Model Serving cards stay display-only (set `model=` / use Playground)
+
+Mutating Discover / Topology wire calls use Apps SSO on deployed Apps — no
+pasted operator token. Source is still written so the next real deploy/restart
+stays consistent; prefer Chat right after wire when the banner says live apply
+succeeded.
+
 ### `/_apx/topology` — Interactive topology graph
 
 ![topology view of customer_triage — HandoffAgent + 4 specialists + 8 tools + serving endpoint](images/topology-customer-triage.png)
 
-A React-flow visualization of the agent topology: agent nodes, tools, sub-agents, and platform resources (UC functions, Genie spaces, vector indexes, serving endpoints), connected by typed edges (`uses-tool`, `delegates-to`, `calls-model`, `next-step`, `branch`, `iterates`). Click any node to inspect its details in a side panel — instructions, model, JSON Schema, resource identifier, or sub-agent URL. View-only in v1; no in-graph editing or live trace overlay yet.
+A React-flow visualization of the agent topology: agent nodes, tools, sub-agents, and platform resources (UC functions, Genie spaces, vector indexes, serving endpoints), connected by typed edges (`uses-tool`, `delegates-to`, `calls-model`, `next-step`, `branch`, `iterates`). Click any node to inspect its details in a side panel — instructions, model, JSON Schema, resource identifier, or sub-agent URL.
+
+**Drag-to-wire:** the left **Wire** palette lists workspace Apps peers, UC functions (when a catalog/schema is known), Genie spaces, and Vector Search indexes. Drag a chip onto a leaf Agent node (dashed green outline) to call the same Discover wire APIs — live hot-apply when possible, then the graph refreshes. Serving endpoints are not wireable as tools. Hidden in `?embed=1` minimap mode.
+
+**Inspector Save / Unwire:** click a leaf Agent to edit `instructions=` and Save (writes `agent.py` + hot-applies live). Click a peer SubAgent (or a Discover-wired UC/Genie/VS tool) for **Unwire** — same Discover unwire APIs, graph refreshes.
+
+**Chat dock:** a slim Chat panel on the right sends turns via `/responses` without leaving Topology. When the turn finishes, the amber last-turn route highlight refreshes automatically.
+
+**Tracing + last turn:** click the header `traces → <experiment>` badge to set/change `MLFLOW_EXPERIMENT_ID` (SSO write). After a Chat turn (dock or `/_apx/agent`), the path that ran lights up in amber (`GET /_apx/traces/last-route`).
 
 Color coding follows NodeType: pink stroke for routing agents (`HandoffAgent`, `RouterAgent`), blue for `LlmAgent`, slate for tools, green/yellow/cyan/orange for UC functions / Genie spaces / vector indexes / serving endpoints respectively. Selection highlights the node and its incident edges.
 
-Data is served from `GET /_apx/topology.json` (full graph) and `GET /_apx/topology/inspect/{node_id}` (per-node details).
+Data is served from `GET /_apx/topology.json` (full graph), `GET /_apx/topology/inspect/{node_id}` (per-node details), `GET /_apx/topology/tracing` (experiment destination), and `GET /_apx/traces/last-route` (last-turn highlight).
 
 ### `/_apx/edit` — Edit agent source
 Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file to disk; the running agent is compiled at startup, so a save here — like any source change — takes effect on the next restart. Auto-reload on source changes happens only when you start the server with `apx-agent agents run --reload` (the `--reload` flag is off by default).
@@ -43,6 +70,11 @@ Tool authoring also lives here: the **New Tool** modal scaffolds a tool into the
 
 ### `/_apx/probe` — Outbound connectivity tester
 Pass `?url=<url>` to verify outbound network reachability from the App. Pairs with `/_apx/probe/checks` for a curated list of common Databricks endpoints (control plane, model serving, UC, Genie). Useful when an App can't reach a managed MCP / vector index / endpoint.
+
+### `/_apx/grounding` — OKF pack curation
+Per-column description curation for the agent's `.apx/okf/` pack. Suggestions come from Unity Catalog COMMENTs (and optional AI Suggest). Edits write the local bundle only.
+
+When the project has no pack but a DataAgent declares a `catalog.schema`, the empty state shows **Generate pack from `catalog.schema`** (`POST /_apx/grounding/generate`) — introspects via the UC Tables API, seeds descriptions from COMMENTs, writes `.apx/okf/` + `schema.json`, and wires `knowledge = "./.apx/okf"`. Restart the agent to load the new grounding.
 
 ### `/_apx/setup` — First-run wizard
 Picks a catalog/schema, a SQL warehouse, and seeds suggested tools and agent instructions. Writes to `pyproject.toml` and the project's `.env` so the next reload comes up configured. Surfaces a nudge from `/_apx/agent` when `DEMO_CATALOG` / `WAREHOUSE_ID` aren't set.
