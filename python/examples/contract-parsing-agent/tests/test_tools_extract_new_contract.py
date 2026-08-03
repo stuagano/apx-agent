@@ -47,6 +47,15 @@ def test_extract_new_contract_surfaces_extraction_error():
     assert "timeout" in out.get("message", "")
 
 
+def test_extract_new_contract_rejects_non_volume_path():
+    # A path outside /Volumes/ must be refused before extraction/SQL touches it.
+    ws = MagicMock()
+    with patch("tools.extract_new_contract.extract") as mock_extract:
+        out = extract_new_contract(volume_path="/etc/passwd", ws=ws)
+    assert out.get("error") == "invalid_path"
+    mock_extract.assert_not_called()
+
+
 def test_extract_new_contract_surfaces_insert_error():
     ws = MagicMock()
     fake_extract = {

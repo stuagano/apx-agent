@@ -41,6 +41,14 @@ def extract_new_contract(volume_path: str, ws: Workspace = None) -> dict[str, An
     On success, returns the extracted fields and the new contract_id. The new
     record joins the portfolio and is queryable by other tools immediately.
     """
+    if not volume_path.startswith("/Volumes/"):
+        # The path comes from the LLM and is read from disk / recorded in SQL.
+        # Confine it to UC Volumes so it can't reach arbitrary local files (#599).
+        return {
+            "error": "invalid_path",
+            "message": f"volume_path must be under /Volumes/, got: {volume_path}",
+        }
+
     s = get_settings()
     pdf = Path(volume_path)
 
