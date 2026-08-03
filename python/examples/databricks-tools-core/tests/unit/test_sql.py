@@ -2,9 +2,16 @@
 
 from unittest import mock
 
+import pytest
 from databricks.sdk.service.sql import QueryTag, State, StatementState
 
-from databricks_tools_core.sql import execute_sql, execute_sql_multi, list_warehouses, sql_literal
+from databricks_tools_core.sql import (
+    execute_sql,
+    execute_sql_multi,
+    list_warehouses,
+    sql_identifier,
+    sql_literal,
+)
 from databricks_tools_core.sql.sql_utils import SQLExecutor
 from databricks_tools_core.sql.warehouse import _sort_within_tier, get_best_warehouse
 
@@ -363,3 +370,42 @@ class TestSQLLiteral:
         # The canonical usage: caller wraps the escaped inner text in quotes.
         inner = sql_literal("O'Brien")
         assert f"'{inner}'" == "'O''Brien'"
+
+
+class TestSQLIdentifier:
+    """Tests for the sql_identifier unquoted-identifier validator (#599)."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "col",
+            "_hidden",
+            "table1",
+            "main.default.events",
+            "catalog.schema.table",
+            "a.b.c.d",
+        ],
+    )
+    def test_valid_identifiers_pass_through_unchanged(self, name):
+        assert sql_identifier(name) == name
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "",
+            "1table",  # can't start with a digit
+            "has space",
+            "has-dash",
+            "drop; DROP TABLE x",
+            "t WHERE 1=1",
+            "`quoted`",
+            "a..b",  # empty part between dots
+            ".leading",
+            "trailing.",
+            "col)",
+            "t VERSION AS OF 0",
+        ],
+    )
+    def test_injection_and_malformed_names_rejected(self, name):
+        with pytest.raises(ValueError, match="Invalid SQL identifier"):
+            sql_identifier(name)

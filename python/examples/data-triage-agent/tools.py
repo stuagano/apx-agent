@@ -16,7 +16,7 @@ from typing import Any
 from databricks.sdk.service.dashboards import MessageStatus
 
 from apx_agent import Dependencies, ToolError
-from databricks_tools_core.sql import SQLExecutionError, execute_sql
+from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_identifier
 
 Workspace = Dependencies.Workspace
 logger = logging.getLogger(__name__)
@@ -27,6 +27,18 @@ DATA_INSPECTOR_URL = os.environ.get("DATA_INSPECTOR_URL", "http://localhost:9000
 # ---------------------------------------------------------------------------
 # SQL helpers (local — no sub-agent dependency)
 # ---------------------------------------------------------------------------
+
+def _ident(name: str) -> str:
+    """Validate an LLM-supplied table identifier before it reaches SQL. A
+    malformed name is a finding, not a crash: raise ToolError so the runtime
+    contains it (#562). Identifiers can't be bound as parameters and sql_literal
+    can't escape them, so a name validator is the only guard (#599).
+    """
+    try:
+        return sql_identifier(name)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
 
 def _run_sql(ws: Any, sql: str) -> list[dict[str, Any]]:
     """Execute a query via databricks-tools-core, running as the caller's OBO
@@ -58,6 +70,7 @@ def get_table_info(table_full_name: str, ws: Workspace) -> dict[str, Any]:
     """Get schema, row count, and data freshness for a Unity Catalog table.
     table_full_name: catalog.schema.table format"""
     # Local because: framework's table-info path goes through UC REST; here we use a SQL DESCRIBE + COUNT against any reachable warehouse, keeping the same code path as run_sql_query.
+    table_full_name = _ident(table_full_name)
     try:
         schema_rows = _run_sql(ws, f"DESCRIBE TABLE {table_full_name}")
     except Exception as e:
@@ -81,6 +94,7 @@ def get_table_info(table_full_name: str, ws: Workspace) -> dict[str, Any]:
 def get_table_lineage(table_full_name: str, ws: Workspace) -> dict[str, Any]:
     """Get upstream sources that feed into this table via Unity Catalog lineage.
     Use to trace where data comes from when it's missing from a target table."""
+    table_full_name = _ident(table_full_name)
     # Local because: framework lineage_tool() uses UC's REST lineage API. We query system.access.table_lineage directly so the result can be joined with jobs/pipelines in find_jobs_for_table — UC REST doesn't expose that join.
     try:
         rows = _run_sql(ws, f"""
@@ -104,6 +118,7 @@ def get_table_lineage(table_full_name: str, ws: Workspace) -> dict[str, Any]:
 def find_jobs_for_table(table_full_name: str, ws: Workspace) -> dict[str, Any]:
     """Find Databricks jobs that write to a given table via Unity Catalog lineage.
     Returns entity IDs to follow up with get_job_run_history."""
+    table_full_name = _ident(table_full_name)
     # Local because: needs the same system.access.table_lineage SQL surface as get_table_lineage to identify WORKFLOW_RUN / PIPELINE_UPDATE writers.
     try:
         rows = _run_sql(ws, f"""
