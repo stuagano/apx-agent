@@ -30,7 +30,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -170,6 +170,37 @@ def _reply_text(data: Any, *, url: str, agent_name: str) -> str:
         f"shape (top-level: {shape}); expected Responses ('output') or "
         f"ChatAgent ('messages'). Body (truncated): {_json.dumps(data)[:500]}"
     )
+
+
+def _continue_request(event: Any) -> dict[str, Any] | None:
+    """The event's ``task_continue_request`` as a re-sendable dict, else None.
+
+    Supervisor Agent long-task mode pauses before timing out and emits this
+    item; the client must echo it back paired with a ``task_continue_response``
+    to resume (see ``_stream_via_sdk``). Returns a plain dict rather than the
+    SDK event object because the value is both read (``id``) and re-sent as
+    JSON in the next request's ``input``.
+
+    ``None`` for any non-matching event, a missing ``item``, or a match with
+    no ``id`` — an unpairable continuation must never be emitted.
+    """
+    if getattr(event, "type", None) != "response.output_item.done":
+        return None
+    item = getattr(event, "item", None)
+    if item is None:
+        return None
+
+    def _field(name: str) -> Any:
+        if isinstance(item, Mapping):
+            return item.get(name)
+        return getattr(item, name, None)
+
+    if _field("type") != "task_continue_request":
+        return None
+    item_id = _field("id")
+    if not item_id:
+        return None
+    return {"type": "task_continue_request", "id": item_id, "step": _field("step")}
 
 
 class RemoteDatabricksAgent(BaseAgent):

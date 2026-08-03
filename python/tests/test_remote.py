@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 import pytest
 import httpx
 
-from apx_agent._remote import RemoteDatabricksAgent, _url_to_app_name
+from apx_agent._remote import RemoteDatabricksAgent, _url_to_app_name, _continue_request
 from apx_agent._models import Message
 
 
@@ -1345,3 +1345,56 @@ class TestCorrelationHeaders:
         assert received["traceparent"] == f"00-{'ab' * 16}-{'cd' * 8}-01"
         span.set_attribute.assert_called_once_with("apx.outbound.trace_id", "ab" * 16)
         tags_mock.assert_called_once_with({"apx.outbound.trace_id": "ab" * 16})
+
+
+# ---------------------------------------------------------------------------
+# _continue_request helper
+# ---------------------------------------------------------------------------
+
+
+class TestContinueRequest:
+    def _event(self, item, event_type="response.output_item.done"):
+        ev = MagicMock()
+        ev.type = event_type
+        ev.item = item
+        return ev
+
+    def test_returns_dict_for_object_item(self):
+        item = MagicMock()
+        item.type = "task_continue_request"
+        item.id = "continue_abc"
+        item.step = 16
+        assert _continue_request(self._event(item)) == {
+            "type": "task_continue_request",
+            "id": "continue_abc",
+            "step": 16,
+        }
+
+    def test_returns_dict_for_mapping_item(self):
+        item = {"type": "task_continue_request", "id": "continue_xyz", "step": 4}
+        assert _continue_request(self._event(item)) == {
+            "type": "task_continue_request",
+            "id": "continue_xyz",
+            "step": 4,
+        }
+
+    def test_none_formake_delta_event(self):
+        ev = MagicMock()
+        ev.type = "response.output_text.delta"
+        ev.delta = "hi"
+        assert _continue_request(ev) is None
+
+    def test_none_when_item_missing(self):
+        assert _continue_request(self._event(None)) is None
+
+    def test_none_when_item_type_is_other(self):
+        item = {"type": "message", "id": "m1"}
+        assert _continue_request(self._event(item)) is None
+
+    def test_none_when_id_missing(self):
+        item = {"type": "task_continue_request", "step": 3}
+        assert _continue_request(self._event(item)) is None
+
+    def test_none_when_event_type_is_other(self):
+        item = {"type": "task_continue_request", "id": "c1", "step": 1}
+        assert _continue_request(self._event(item, event_type="response.created")) is None
