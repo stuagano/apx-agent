@@ -66,6 +66,7 @@ from ._tool_config import ToolConfigError, load_config_tools, merge_config_tools
 # Eval bridge
 from ._eval import (
     app_predict_fn,
+    clears_scorers,
     endpoint_predict_fn,
     eval_against_endpoint,
     evaluate,
@@ -448,6 +449,7 @@ __all__ = [
     "merge_config_tools",
     # Eval
     "app_predict_fn",
+    "clears_scorers",
     "endpoint_predict_fn",
     "eval_against_endpoint",
     "evaluate",

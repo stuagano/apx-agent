@@ -250,6 +250,67 @@ def _default_scorers(model: str | None = None) -> list[Any]:
     return scorers
 
 
+def clears_scorers(
+    *,
+    model: str | None = None,
+    guidelines: str | None = None,
+    include_tool_calls: bool = True,
+) -> list[Any]:
+    """Return the full applicable CLEARS scorer set (opt-in via ``scorers=``).
+
+    CLEARS is Databricks' agent-quality rubric — Correctness, Latency,
+    Execution, Adherence, Relevance, Safety. This helper returns the maximal
+    set that is runnable as-is:
+
+      * Always: ``Correctness`` (C), ``RelevanceToQuery`` (R), ``Safety`` (S),
+        and — when ``include_tool_calls`` — ``ToolCallCorrectness`` (E).
+      * ``Guidelines`` (A) ONLY when ``guidelines`` text is passed:
+        ``Guidelines()`` raises without it, so it cannot be added
+        unconditionally. Supply the adherence rules to activate the A
+        dimension.
+
+    Latency (L) is trace-derived, not a scorer, so it is not returned; read
+    it from the run's trace timing.
+
+    ``model`` backs the LLM-judge scorers (C, R, S, Guidelines). It is NOT
+    applied to ``ToolCallCorrectness``, which is a deterministic check, not a
+    judge.
+
+    Pass the result via the existing override, e.g.::
+
+        evaluate(..., scorers=clears_scorers(guidelines="Be concise."))
+
+    Falls back to a partial/empty list with a warning if the scorer classes
+    aren't available in the installed mlflow (same as ``_default_scorers``).
+    """
+    scorers: list[Any] = []
+    try:
+        from mlflow.genai.scorers import (  # type: ignore[attr-defined]
+            Correctness,
+            Guidelines,
+            RelevanceToQuery,
+            Safety,
+            ToolCallCorrectness,
+        )
+        if model is not None:
+            scorers.extend([Correctness(model=model), RelevanceToQuery(model=model), Safety(model=model)])
+        else:
+            scorers.extend([Correctness(), RelevanceToQuery(), Safety()])
+        if guidelines is not None:
+            scorers.append(
+                Guidelines(guidelines=guidelines, model=model) if model is not None
+                else Guidelines(guidelines=guidelines)
+            )
+        if include_tool_calls:
+            scorers.append(ToolCallCorrectness())
+    except Exception:
+        logger.warning(
+            "mlflow.genai CLEARS scorers not available; "
+            "callers should pass scorers=... explicitly."
+        )
+    return scorers
+
+
 def evaluate(
     agent: "BaseAgent",
     *,

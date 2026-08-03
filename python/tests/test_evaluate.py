@@ -478,3 +478,56 @@ def test_count_empty_predictions_zero_when_all_present() -> None:
     df = pd.DataFrame({"outputs": ["a", "b", "c"]})
     result = SimpleNamespace(result_df=df)
     assert _count_empty_predictions(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# clears_scorers — opt-in full CLEARS bundle
+# ---------------------------------------------------------------------------
+
+
+def test_clears_scorers_default_no_guidelines() -> None:
+    """No guidelines → C, R, S, ToolCallCorrectness (4); no Guidelines."""
+    from mlflow.genai.scorers import Guidelines
+    from apx_agent._eval import clears_scorers
+    scorers = clears_scorers()
+    assert len(scorers) == 4
+    assert not any(isinstance(s, Guidelines) for s in scorers)
+
+
+def test_clears_scorers_never_raises_without_guidelines() -> None:
+    """The no-guidelines path must not construct Guidelines() (which raises)."""
+    from apx_agent._eval import clears_scorers
+    # Simply calling it is the assertion — a raise here fails the test.
+    clears_scorers()
+
+
+def test_clears_scorers_adds_guidelines_when_text_given() -> None:
+    from mlflow.genai.scorers import Guidelines
+    from apx_agent._eval import clears_scorers
+    scorers = clears_scorers(guidelines="Be concise. Cite sources.")
+    assert len(scorers) == 5
+    assert any(isinstance(s, Guidelines) for s in scorers)
+
+
+def test_clears_scorers_omits_tool_calls_when_disabled() -> None:
+    from mlflow.genai.scorers import ToolCallCorrectness
+    from apx_agent._eval import clears_scorers
+    scorers = clears_scorers(include_tool_calls=False)
+    assert len(scorers) == 3
+    assert not any(isinstance(s, ToolCallCorrectness) for s in scorers)
+
+
+def test_clears_scorers_threads_model_into_judges_only() -> None:
+    """Judge scorers get model=; deterministic ToolCallCorrectness does not."""
+    from mlflow.genai.scorers import ToolCallCorrectness
+    from apx_agent._eval import clears_scorers
+    scorers = clears_scorers(model="databricks", guidelines="Be nice.")
+    judges = [s for s in scorers if not isinstance(s, ToolCallCorrectness)]
+    assert judges  # C, R, S, Guidelines
+    assert all(s.model == "databricks" for s in judges)
+
+
+def test_clears_scorers_exported_from_package() -> None:
+    import apx_agent
+    assert hasattr(apx_agent, "clears_scorers")
+    assert "clears_scorers" in apx_agent.__all__
