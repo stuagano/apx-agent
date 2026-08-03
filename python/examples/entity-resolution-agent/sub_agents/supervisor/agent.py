@@ -196,6 +196,12 @@ If the evaluator sends a retry request with search hints, apply the hints and ca
 """.strip()
 
 supervisor = LlmAgent(
+    name="supervisor",
+    description=(
+        "Normalizes an incoming record and searches candidate account indexes. "
+        "Entry point of entity resolution; hands matched candidates to the "
+        "evaluator and applies any retry hints it returns."
+    ),
     tools=[normalize_record, search_accounts],
     instructions=SUPERVISOR_INSTRUCTIONS,
     max_iterations=6,

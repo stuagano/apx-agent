@@ -68,6 +68,12 @@ else:
 
 
 agent = Agent(
+    name="billing_specialist",
+    description=(
+        "Handles billing inquiries: invoices, charges, refunds, payment methods, "
+        "and order-history lookups. Call for any question about what a customer "
+        "was charged or how they pay. Returns billing explanations and order data."
+    ),
     instructions=(
         "You're a billing specialist. Answer questions about invoices, charges, "
         "refunds, and payment methods. Use get_recent_orders to look up the "

@@ -10,7 +10,7 @@ import os
 import re
 from typing import Any
 
-from databricks_tools_core.sql import SQLExecutionError, execute_sql
+from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_literal
 
 _INITIAL_RE = re.compile(r"\b[A-Z]\.\s*")
 _ACRONYM_RE = re.compile(r"\b[A-Z]{2,5}\b")
@@ -112,8 +112,8 @@ def sql_search(
         return {"error": "UTILITY_ACCOUNT_TABLE not configured", "candidates": [], "count": 0}
 
     tokens = [t.strip(".,") for t in name.split() if len(t.strip(".,")) > 1]
-    name_conditions = " AND ".join(f"name ILIKE '%{t}%'" for t in tokens)
-    address_clause = f"AND address ILIKE '%{address.split()[0]}%'" if address else ""
+    name_conditions = " AND ".join(f"name ILIKE '%{sql_literal(t)}%'" for t in tokens)
+    address_clause = f"AND address ILIKE '%{sql_literal(address.split()[0])}%'" if address else ""
     sql = f"SELECT account_id, name, address FROM {table} WHERE {name_conditions} {address_clause} LIMIT 20"
 
     # Warehouse selection + execution run as the caller's OBO identity (client=ws).

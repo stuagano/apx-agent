@@ -111,6 +111,7 @@ def create_shortage_pipeline() -> SequentialAgent:
             "or is this a novel pattern?"
         ),
         tools=[find_historical_patterns, classify_shortage_severity, *ad_hoc_explorer],
+        before_tool=compose(RateLimit(per_minute=60), _guard.for_tool()),
     )
 
     # ------------------------------------------------------------------
