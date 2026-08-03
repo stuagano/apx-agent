@@ -176,6 +176,9 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
         model_check = check_model_endpoint(cwd, auth_ok=auth.status is Status.OK)
         if model_check is not None:
             authentication.append(model_check)
+        guardrails_check = check_gateway_guardrails(cwd, auth_ok=auth.status is Status.OK)
+        if guardrails_check is not None:
+            authentication.append(guardrails_check)
         apps_check = check_apps_enabled(auth_ok=auth.status is Status.OK)
         if apps_check is not None:
             authentication.append(apps_check)
@@ -472,6 +475,77 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
             f"could not verify endpoint ({msg})",
             "Endpoint lookup failed — check auth and workspace access.",
         )
+
+
+def check_gateway_guardrails(cwd: Path, *, auth_ok: bool) -> Check | None:
+    """WARN when an Apps-target agent's model endpoint has no AI Gateway guardrails.
+
+    A Databricks App is NOT automatically wrapped by Mosaic AI Gateway
+    guardrails — they attach to the Model Serving endpoint the app calls, and
+    enforcement is server-side around inference. So an Apps deployment whose
+    ``model`` endpoint has no guardrails runs PII/injection/safety-unprotected,
+    and nothing surfaces it. This check reads that state back.
+
+    Returns None (nothing to check) unless: an apx project, auth is available,
+    a ``model`` is declared, and the target is ``apps`` — a model-serving deploy
+    *is* the governed endpoint, so there's no bypass to warn about. Never FAILs
+    (advisory finding) and never crashes doctor (lookup errors degrade to WARN).
+    """
+    if not auth_ok or not _is_apx_project(cwd):
+        return None
+    pyproject = cwd / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            return None
+    try:
+        data = tomllib.loads(pyproject.read_text())
+    except Exception:
+        return None
+    model: str | None = (
+        data.get("tool", {}).get("apx", {}).get("agent", {}).get("model")
+    )
+    if not model:
+        return None
+
+    from apx_agent.cli import _detect_target
+    if _detect_target(cwd).target != "apps":
+        return None
+
+    label = f"AI Gateway guardrails ({model})"
+    try:
+        from databricks.sdk import WorkspaceClient
+        ws = WorkspaceClient()
+        ep = ws.serving_endpoints.get(model)
+    except Exception as e:
+        return Check(
+            label, Status.WARN,
+            f"could not verify guardrails ({e})",
+            "Guardrail lookup failed — check auth and workspace access.",
+        )
+
+    gateway = getattr(ep, "ai_gateway", None)
+    guardrails = getattr(gateway, "guardrails", None) if gateway is not None else None
+    active = guardrails is not None and (
+        getattr(guardrails, "input", None) is not None
+        or getattr(guardrails, "output", None) is not None
+    )
+    if active:
+        return Check(
+            label, Status.OK, "guardrails active on the endpoint this App calls", None
+        )
+    return Check(
+        label, Status.WARN,
+        "endpoint has no AI Gateway guardrails — this Apps deployment calls it "
+        "unguarded (PII/injection/safety not enforced)",
+        f"Configure AI Gateway guardrails on the `{model}` serving endpoint "
+        "(Serving UI or the AI Gateway API) so the App's LLM calls are governed.",
+    )
 
 
 def _data_source_from_agent_py(cwd: Path) -> "tuple[str, str] | None":
