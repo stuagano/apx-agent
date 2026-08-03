@@ -13,8 +13,11 @@ set -u
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Best-effort env sync so `make check` / `uv run pytest` are runnable.
+# --frozen: install from the committed lock without re-resolving. Without it,
+# `uv sync` rewrites every URL in uv.lock to the local pypi-proxy index
+# (~/.config/uv/uv.toml), dirtying the whole lockfile on every session start.
 if command -v uv >/dev/null 2>&1 && [ -d "$repo_root/python" ]; then
-  ( cd "$repo_root/python" && uv sync --quiet ) >/dev/null 2>&1 || true
+  ( cd "$repo_root/python" && uv sync --frozen --quiet ) >/dev/null 2>&1 || true
 fi
 
 cat <<'EOF'
