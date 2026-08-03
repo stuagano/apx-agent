@@ -10,6 +10,18 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/uv-lock-heal.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "_caps": "caps-stop-gate",
