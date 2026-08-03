@@ -302,7 +302,11 @@ def clears_scorers(
                 else Guidelines(guidelines=guidelines)
             )
         if include_tool_calls:
-            scorers.append(ToolCallCorrectness())
+            # pyright reads ``name`` as required on this one scorer; at runtime it
+            # defaults to "tool_call_correctness" (``is_required()`` is False), so
+            # the bare call is correct. Same false-positive class as the
+            # ``registered_models.list()`` ignores in _topology.py / cli.py.
+            scorers.append(ToolCallCorrectness())  # type: ignore[call-arg]
     except Exception:
         logger.warning(
             "mlflow.genai CLEARS scorers not available; "
