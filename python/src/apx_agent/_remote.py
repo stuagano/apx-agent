@@ -30,7 +30,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -172,6 +172,42 @@ def _reply_text(data: Any, *, url: str, agent_name: str) -> str:
     )
 
 
+def _continue_request(event: Any) -> dict[str, Any] | None:
+    """The event's ``task_continue_request`` as a re-sendable dict, else None.
+
+    Supervisor Agent long-task mode pauses before timing out and emits this
+    item; the client must echo it back paired with a ``task_continue_response``
+    to resume (see ``_stream_via_sdk``). Returns a plain dict rather than the
+    SDK event object because the value is both read (``id``) and re-sent as
+    JSON in the next request's ``input``.
+
+    ``None`` for any non-matching event, a missing ``item``, or a match with
+    no ``id`` — an unpairable continuation must never be emitted.
+    """
+    if getattr(event, "type", None) != "response.output_item.done":
+        return None
+    item = getattr(event, "item", None)
+    if item is None:
+        return None
+
+    def _field(name: str) -> Any:
+        if isinstance(item, Mapping):
+            return item.get(name)
+        return getattr(item, name, None)
+
+    if _field("type") != "task_continue_request":
+        return None
+    item_id = _field("id")
+    if not item_id:
+        logger.warning(
+            "task_continue_request with no usable 'id' (step %r) — cannot pair a "
+            "continuation, treating as task end; the response may be truncated.",
+            _field("step"),
+        )
+        return None
+    return {"type": "task_continue_request", "id": item_id, "step": _field("step")}
+
+
 class RemoteDatabricksAgent(BaseAgent):
     """A remote agent discovered via its A2A agent card.
 
@@ -191,6 +227,13 @@ class RemoteDatabricksAgent(BaseAgent):
         headers extracted from the incoming FastAPI ``Request``).
     timeout:
         HTTP request timeout in seconds. Default 120.
+    long_task:
+        Enable Supervisor Agent long-running task mode. When set, sends
+        ``databricks_options={"long_task": True}`` and resumes paused tasks
+        via the continuation protocol. Off by default; only meaningful for
+        remotes that implement it (most apx-agent apps do not).
+    max_continuations:
+        Maximum continuation rounds before raising. Defaults to 10.
     """
 
     def __init__(
@@ -200,12 +243,16 @@ class RemoteDatabricksAgent(BaseAgent):
         app_name: str | None = None,
         headers: dict[str, str] | None = None,
         timeout: float = 120.0,
+        long_task: bool = False,
+        max_continuations: int = 10,
     ) -> None:
         self._card_url = _normalize_card_url(card_url)
         self._base_url = self._card_url[: -len(_WELL_KNOWN_CARD_PATH)]
         self._app_name = app_name or _url_to_app_name(self._base_url)
         self._extra_headers = headers or {}
         self._timeout = timeout
+        self._long_task = long_task
+        self._max_continuations = max_continuations
         self._card: AgentCard | None = None
 
     # ------------------------------------------------------------------
@@ -219,6 +266,8 @@ class RemoteDatabricksAgent(BaseAgent):
         *,
         headers: dict[str, str] | None = None,
         timeout: float = 120.0,
+        long_task: bool = False,
+        max_continuations: int = 10,
     ) -> RemoteDatabricksAgent:
         """Create a RemoteDatabricksAgent from a base URL or full card URL.
 
@@ -226,7 +275,13 @@ class RemoteDatabricksAgent(BaseAgent):
         missing (#441). The card is fetched eagerly so metadata is
         available immediately.
         """
-        agent = cls(card_url, headers=headers, timeout=timeout)
+        agent = cls(
+            card_url,
+            headers=headers,
+            timeout=timeout,
+            long_task=long_task,
+            max_continuations=max_continuations,
+        )
         await agent.init()
         return agent
 
@@ -237,6 +292,8 @@ class RemoteDatabricksAgent(BaseAgent):
         *,
         headers: dict[str, str] | None = None,
         timeout: float = 120.0,
+        long_task: bool = False,
+        max_continuations: int = 10,
     ) -> RemoteDatabricksAgent:
         """Create a RemoteDatabricksAgent from a Databricks App name.
 
@@ -254,7 +311,14 @@ class RemoteDatabricksAgent(BaseAgent):
             )
         host = host.rstrip("/")
         card_url = f"{host}/apps/{app_name}/.well-known/agent.json"
-        agent = cls(card_url, app_name=app_name, headers=headers, timeout=timeout)
+        agent = cls(
+            card_url,
+            app_name=app_name,
+            headers=headers,
+            timeout=timeout,
+            long_task=long_task,
+            max_continuations=max_continuations,
+        )
         await agent.init()
         return agent
 
@@ -378,6 +442,15 @@ class RemoteDatabricksAgent(BaseAgent):
         obo_headers = self._obo_headers(request)
         corr_headers = self._correlation_headers()
 
+        # Long-task mode requires the streaming Responses path (continuation
+        # events only arrive on a stream) and deliberately does NOT fall back
+        # to HTTP: /invocations cannot resume a paused task, so falling back
+        # would silently truncate it.
+        if self._app_name and self._long_task:
+            return "".join(
+                [chunk async for chunk in self._stream_via_sdk(messages, corr_headers)]
+            )
+
         # Try DatabricksOpenAI first (automatic OBO via Supervisor)
         if self._app_name:
             try:
@@ -396,6 +469,12 @@ class RemoteDatabricksAgent(BaseAgent):
         await self._init_quietly()
         obo_headers = self._obo_headers(request)
         corr_headers = self._correlation_headers()
+
+        # Long-task mode: no HTTP fallback (see run() for why).
+        if self._app_name and self._long_task:
+            async for chunk in self._stream_via_sdk(messages, corr_headers):
+                yield chunk
+            return
 
         # Try DatabricksOpenAI first — true streaming, deltas relayed as
         # they arrive (#447). Fall back to HTTP only when nothing has been
@@ -553,23 +632,61 @@ class RemoteDatabricksAgent(BaseAgent):
         Relays ``response.output_text.delta`` events as they arrive, so
         first-token latency matches the remote agent's instead of the old
         buffer-everything-then-yield-once behavior (#447).
+
+        When ``long_task`` is set, sends ``databricks_options={"long_task":
+        True}`` and implements Supervisor Agent's task-continuation protocol:
+        a paused remote emits a ``task_continue_request``, which is echoed
+        back paired with a ``task_continue_response`` so the task resumes.
+        Bounded by ``max_continuations``; exhausting it raises rather than
+        returning a partial answer as if it were final.
         """
         from databricks_openai import AsyncDatabricksOpenAI
 
         client = AsyncDatabricksOpenAI()
-        stream = await client.responses.create(
-            model=f"apps/{self._app_name}",
-            # Same EasyInputMessage dict form + cast as _call_via_sdk.
-            input=cast(
-                Any,
-                [{"role": m.role, "content": m.content} for m in messages],
-            ),
-            stream=True,
-            extra_headers=extra_headers,
+        # EasyInputMessage dict form (no "type": "message") so string content
+        # survives — same as _call_via_sdk.
+        payload: list[Any] = [{"role": m.role, "content": m.content} for m in messages]
+        options: dict[str, Any] = (
+            {"databricks_options": {"long_task": True}} if self._long_task else {}
         )
-        async for event in stream:
-            if event.type == "response.output_text.delta" and event.delta:
-                yield event.delta
+        last_step: Any = None
+
+        for _round in range(self._max_continuations + 1):
+            pending: dict[str, Any] | None = None
+            stream = cast(
+                Any,
+                await client.responses.create(
+                    model=f"apps/{self._app_name}",
+                    input=cast(Any, payload),
+                    stream=True,
+                    extra_headers=extra_headers,
+                    **options,
+                ),
+            )
+            async for event in stream:
+                if event.type == "response.output_text.delta" and event.delta:
+                    yield event.delta
+                elif self._long_task:
+                    found = _continue_request(event)
+                    if found is not None:
+                        pending = found
+            if pending is None:
+                return
+            last_step = pending["step"]
+            payload = [
+                *payload,
+                pending,
+                {
+                    "type": "task_continue_response",
+                    "continue_request_id": pending["id"],
+                },
+            ]
+
+        raise RuntimeError(
+            f"remote agent {self._app_name!r} exceeded max_continuations="
+            f"{self._max_continuations} (last step {last_step}); the task did "
+            "not complete. Raise max_continuations or split the task."
+        )
 
     # ------------------------------------------------------------------
     # Internal: direct HTTP path

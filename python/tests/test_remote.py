@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 import pytest
 import httpx
 
-from apx_agent._remote import RemoteDatabricksAgent, _url_to_app_name
+from apx_agent._remote import RemoteDatabricksAgent, _url_to_app_name, _continue_request
 from apx_agent._models import Message
 
 
@@ -492,6 +492,8 @@ class TestRun:
         agent._app_name = app_name
         agent._extra_headers = {}
         agent._timeout = 120.0
+        agent._long_task = False
+        agent._max_continuations = 10
         agent._card = AgentCard(
             name="data-inspector",
             description="Inspects data",
@@ -820,6 +822,8 @@ class TestStreamViaSdk:
         agent._app_name = app_name
         agent._extra_headers = {}
         agent._timeout = 120.0
+        agent._long_task = False
+        agent._max_continuations = 10
         agent._card = AgentCard(
             name=app_name, description="", url=base_url, skills=[]
         )
@@ -969,6 +973,8 @@ class TestOboHeaders:
         agent._app_name = None
         agent._extra_headers = {}
         agent._timeout = 120.0
+        agent._long_task = False
+        agent._max_continuations = 10
         agent._card = AgentCard(name="host", description="", url="https://host", skills=[])
         return agent
 
@@ -1064,6 +1070,8 @@ class TestFetchRemoteTools:
         agent._app_name = "host"
         agent._extra_headers = {}
         agent._timeout = 120.0
+        agent._long_task = False
+        agent._max_continuations = 10
         agent._card = AgentCard(
             name="host",
             description="desc",
@@ -1193,6 +1201,8 @@ class TestFetchRemoteTools:
         agent._app_name = None
         agent._extra_headers = {}
         agent._timeout = 120.0
+        agent._long_task = False
+        agent._max_continuations = 10
         agent._card = None
 
         # Stub init() so it does not attempt to fetch the card over the network;
@@ -1225,6 +1235,8 @@ def make_plain_agent(
     agent._app_name = app_name
     agent._extra_headers = {}
     agent._timeout = 120.0
+    agent._long_task = False
+    agent._max_continuations = 10
     agent._card = AgentCard(name="data-inspector", description="", url=base_url, skills=[])
     return agent
 
@@ -1345,3 +1357,193 @@ class TestCorrelationHeaders:
         assert received["traceparent"] == f"00-{'ab' * 16}-{'cd' * 8}-01"
         span.set_attribute.assert_called_once_with("apx.outbound.trace_id", "ab" * 16)
         tags_mock.assert_called_once_with({"apx.outbound.trace_id": "ab" * 16})
+
+
+# ---------------------------------------------------------------------------
+# _continue_request helper
+# ---------------------------------------------------------------------------
+
+
+class TestContinueRequest:
+    def _event(self, item, event_type="response.output_item.done"):
+        ev = MagicMock()
+        ev.type = event_type
+        ev.item = item
+        return ev
+
+    def test_returns_dict_for_object_item(self):
+        item = MagicMock()
+        item.type = "task_continue_request"
+        item.id = "continue_abc"
+        item.step = 16
+        assert _continue_request(self._event(item)) == {
+            "type": "task_continue_request",
+            "id": "continue_abc",
+            "step": 16,
+        }
+
+    def test_returns_dict_for_mapping_item(self):
+        item = {"type": "task_continue_request", "id": "continue_xyz", "step": 4}
+        assert _continue_request(self._event(item)) == {
+            "type": "task_continue_request",
+            "id": "continue_xyz",
+            "step": 4,
+        }
+
+    def test_none_for_delta_event(self):
+        ev = MagicMock()
+        ev.type = "response.output_text.delta"
+        ev.delta = "hi"
+        assert _continue_request(ev) is None
+
+    def test_none_when_item_missing(self):
+        assert _continue_request(self._event(None)) is None
+
+    def test_none_when_item_type_is_other(self):
+        item = {"type": "message", "id": "m1"}
+        assert _continue_request(self._event(item)) is None
+
+    def test_none_when_id_missing(self):
+        item = {"type": "task_continue_request", "step": 3}
+        assert _continue_request(self._event(item)) is None
+
+    def test_none_when_event_type_is_other(self):
+        item = {"type": "task_continue_request", "id": "c1", "step": 1}
+        assert _continue_request(self._event(item, event_type="response.created")) is None
+
+
+# ---------------------------------------------------------------------------
+# Long-task continuation protocol
+# ---------------------------------------------------------------------------
+
+
+class _FakeStream:
+    """Async-iterable stand-in for the SDK's streaming response."""
+
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __aiter__(self):
+        async def _gen():
+            for ev in self._events:
+                yield ev
+        return _gen()
+
+
+def _continue_event(item_id, step):
+    ev = MagicMock()
+    ev.type = "response.output_item.done"
+    ev.item = {"type": "task_continue_request", "id": item_id, "step": step}
+    return ev
+
+
+class TestLongTaskContinuation:
+    @pytest.mark.asyncio
+    async def test_no_databricks_options_when_disabled(self):
+        agent = make_plain_agent(app_name="my-app")
+        request = make_request()
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
+            sdk = AsyncMock()
+            sdk.responses.create = AsyncMock(return_value=_FakeStream([make_delta_event("hi")]))
+            MockSDK.return_value = sdk
+            chunks = [c async for c in agent.stream([Message(role="user", content="q")], request)]
+        assert chunks == ["hi"]
+        assert sdk.responses.create.call_count == 1
+        assert "databricks_options" not in sdk.responses.create.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_sends_long_task_option_when_enabled(self):
+        agent = make_plain_agent(app_name="my-app")
+        agent._long_task = True
+        request = make_request()
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
+            sdk = AsyncMock()
+            sdk.responses.create = AsyncMock(return_value=_FakeStream([make_delta_event("hi")]))
+            MockSDK.return_value = sdk
+            chunks = [c async for c in agent.stream([Message(role="user", content="q")], request)]
+        assert chunks == ["hi"]
+        assert sdk.responses.create.call_count == 1
+        assert sdk.responses.create.call_args.kwargs["databricks_options"] == {"long_task": True}
+
+    @pytest.mark.asyncio
+    async def test_one_continuation_resumes_and_pairs_response(self):
+        agent = make_plain_agent(app_name="my-app")
+        agent._long_task = True
+        request = make_request()
+        streams = [
+            _FakeStream([make_delta_event("part1"), _continue_event("continue_abc", 16)]),
+            _FakeStream([make_delta_event("part2")]),
+        ]
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
+            sdk = AsyncMock()
+            sdk.responses.create = AsyncMock(side_effect=streams)
+            MockSDK.return_value = sdk
+            chunks = [c async for c in agent.stream([Message(role="user", content="q")], request)]
+        assert chunks == ["part1", "part2"]
+        assert sdk.responses.create.call_count == 2
+        second_input = sdk.responses.create.call_args_list[1].kwargs["input"]
+        assert second_input[-2] == {
+            "type": "task_continue_request", "id": "continue_abc", "step": 16,
+        }
+        assert second_input[-1] == {
+            "type": "task_continue_response", "continue_request_id": "continue_abc",
+        }
+
+    @pytest.mark.asyncio
+    async def test_continuation_event_not_yielded_as_text(self):
+        agent = make_plain_agent(app_name="my-app")
+        agent._long_task = True
+        request = make_request()
+        streams = [
+            _FakeStream([_continue_event("c1", 2)]),
+            _FakeStream([make_delta_event("done")]),
+        ]
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
+            sdk = AsyncMock()
+            sdk.responses.create = AsyncMock(side_effect=streams)
+            MockSDK.return_value = sdk
+            chunks = [c async for c in agent.stream([Message(role="user", content="q")], request)]
+        assert chunks == ["done"]
+
+    @pytest.mark.asyncio
+    async def test_raises_when_cap_exceeded(self):
+        agent = make_plain_agent(app_name="my-app")
+        agent._long_task = True
+        agent._max_continuations = 2
+        request = make_request()
+
+        def _always_continue(*args, **kwargs):
+            return _FakeStream([make_delta_event("x"), _continue_event("c", 1)])
+
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
+            sdk = AsyncMock()
+            sdk.responses.create = AsyncMock(side_effect=_always_continue)
+            MockSDK.return_value = sdk
+            with pytest.raises(RuntimeError, match="max_continuations"):
+                [c async for c in agent.stream([Message(role="user", content="q")], request)]
+
+    @pytest.mark.asyncio
+    async def test_run_accumulates_streamed_text_when_long_task(self):
+        agent = make_plain_agent(app_name="my-app")
+        agent._long_task = True
+        request = make_request()
+        streams = [
+            _FakeStream([make_delta_event("a"), _continue_event("c1", 1)]),
+            _FakeStream([make_delta_event("b")]),
+        ]
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
+            sdk = AsyncMock()
+            sdk.responses.create = AsyncMock(side_effect=streams)
+            MockSDK.return_value = sdk
+            result = await agent.run([Message(role="user", content="q")], request)
+        assert result == "ab"
+
+    def test_constructor_defaults_and_factory_forwarding(self):
+        agent = RemoteDatabricksAgent("https://x.example.com")
+        assert agent._long_task is False
+        assert agent._max_continuations == 10
+        opted = RemoteDatabricksAgent(
+            "https://x.example.com", long_task=True, max_continuations=3
+        )
+        assert opted._long_task is True
+        assert opted._max_continuations == 3
