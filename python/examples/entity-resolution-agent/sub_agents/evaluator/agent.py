@@ -143,10 +143,10 @@ def log_decision(
         INSERT INTO {table}
         (applicant_name, matched, account_id, category, rationale, confidence, candidates_reviewed, decision_ts)
         VALUES (
-            '{decision.get("applicant_name", "")}',
+            '{sql_literal(decision.get("applicant_name", ""))}',
             {str(decision.get("matched", False)).upper()},
-            '{decision.get("account_id") or ""}',
-            '{decision.get("category", "")}',
+            '{sql_literal(decision.get("account_id") or "")}',
+            '{sql_literal(decision.get("category", ""))}',
             '{sql_literal(decision.get("rationale", ""))}',
             {decision.get("confidence", 0.0)},
             {decision.get("candidates_reviewed", 0)},
@@ -186,6 +186,12 @@ Your final response must summarize: who matched (or didn't), why, and the confid
 """.strip()
 
 evaluator = LlmAgent(
+    name="evaluator",
+    description=(
+        "Judges the supervisor's candidate matches and logs the enrollment "
+        "decision. Call to decide whether a record matches an account; may bounce "
+        "back to the supervisor with search hints when candidates are weak."
+    ),
     tools=[evaluate_candidates, log_decision],
     instructions=EVALUATOR_INSTRUCTIONS,
     max_iterations=4,

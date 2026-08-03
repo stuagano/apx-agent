@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from apx_agent import Dependencies, ToolError
+from databricks.sdk.service.sql import StatementParameterListItem
 
 from config import get_settings
 
@@ -56,8 +57,9 @@ def _list_documents(application_id: str, ws: Any) -> list[dict[str, Any]]:
         statement=(
             f"SELECT document_id, document_type, volume_path, ocr_quality_hint "
             f"FROM {s.table('documents')} "
-            f"WHERE application_id = '{application_id}'"
+            f"WHERE application_id = :app_id"
         ),
+        parameters=[StatementParameterListItem(name="app_id", value=application_id, type="STRING")],
         wait_timeout="30s",
     )
     rows = (result.result.data_array or []) if result.result else []
