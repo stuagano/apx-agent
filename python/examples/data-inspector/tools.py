@@ -10,7 +10,12 @@ import math
 from typing import Any
 
 from apx_agent import Dependencies, ToolError, require_user_api_scopes
-from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_literal
+from databricks_tools_core.sql import (
+    SQLExecutionError,
+    execute_sql,
+    sql_identifier,
+    sql_literal,
+)
 
 Workspace = Dependencies.Workspace
 logger = logging.getLogger(__name__)
@@ -19,6 +24,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _ident(name: str) -> str:
+    """Validate an LLM-supplied table/column identifier before it is
+    interpolated unquoted into SQL. A malformed name is a finding, not a crash:
+    raise ToolError so the governance middleware contains it (#562) instead of a
+    ValueError aborting the turn. sql_literal can't cover this — identifiers
+    can't be bound as parameters, so a name validator is the only guard (#599).
+    """
+    try:
+        return sql_identifier(name)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
 
 def _run_sql(ws: Any, sql: str) -> list[dict[str, Any]]:
     """Execute a query via databricks-tools-core, running as the caller's OBO
@@ -57,6 +75,7 @@ def get_table_info(table_full_name: str, ws: Workspace) -> dict[str, Any]:
     """Get schema, row count, and data freshness for a Unity Catalog table.
     Use this first to confirm the table exists and understand its structure.
     table_full_name format: catalog.schema.table"""
+    table_full_name = _ident(table_full_name)
     table = ws.tables.get(table_full_name)
     columns = [
         {"name": c.name, "type": str(c.type_name)}
@@ -100,6 +119,7 @@ def delta_bisect(
     Returns the transition version — the first version where the condition
     result differs from version_lo. Also returns the DESCRIBE HISTORY entry
     for that version so you can see who/what changed it."""
+    table = _ident(table)
     current = _get_current_version(ws, table)
 
     lo = version_lo if version_lo >= 0 else 0
@@ -181,6 +201,8 @@ def delta_bisect_column(
 
     Returns the transition version, the before/after column values, and
     the DESCRIBE HISTORY entry for that version."""
+    table = _ident(table)
+    column = _ident(column)
     current = _get_current_version(ws, table)
 
     lo = version_lo if version_lo >= 0 else 0
@@ -264,6 +286,7 @@ def version_diff(table: str, v_old: int, v_new: int, ws: Workspace) -> dict[str,
     table: fully qualified table name
     v_old: the 'before' version number
     v_new: the 'after' version number"""
+    table = _ident(table)
     added = _run_sql(ws, f"""
         SELECT * FROM {table} VERSION AS OF {v_new}
         EXCEPT
@@ -293,6 +316,7 @@ def audit_lookup(table: str, version: int = -1, ws: Workspace = None) -> dict[st
 
     table: fully qualified table name
     version: specific version to look up (-1 for the 10 most recent versions)"""
+    table = _ident(table)
     if version >= 0:
         rows = _run_sql(ws, f"DESCRIBE HISTORY {table} LIMIT {version + 1}")
         entry = None

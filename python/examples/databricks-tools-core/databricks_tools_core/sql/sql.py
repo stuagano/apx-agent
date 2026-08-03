@@ -5,6 +5,7 @@ High-level functions for executing SQL queries on Databricks.
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from databricks.sdk import WorkspaceClient
@@ -13,6 +14,40 @@ from .sql_utils import SQLExecutor, SQLExecutionError, SQLParallelExecutor
 from .warehouse import get_best_warehouse
 
 logger = logging.getLogger(__name__)
+
+# A single unquoted SQL identifier: leading letter/underscore, then
+# letters/digits/underscores. Deliberately stricter than a backtick-quoted
+# identifier — these values are interpolated *unquoted* into SQL, so no spaces,
+# dots, quotes, or backticks are allowed inside a single part.
+_IDENT_PART = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def sql_identifier(name: str) -> str:
+    """Validate a SQL identifier for safe *unquoted* interpolation into SQL.
+
+    Unlike a string value, an identifier (table/column name) cannot be bound as
+    a parameter and ``sql_literal()`` does not apply — it escapes literals, not
+    identifiers. This is the companion guard for the identifier case: it rejects
+    anything that isn't a plain dotted identifier before it reaches the query.
+
+    Accepts a bare name (``col``) or a dotted name (``catalog.schema.table``);
+    every dot-separated part must match ``[A-Za-z_][A-Za-z0-9_]*``. Returns the
+    name unchanged so callers can inline it:
+
+        >>> f"SELECT {sql_identifier(col)} FROM {sql_identifier(table)}"
+
+    Args:
+        name: The raw identifier (bare or dotted) to validate.
+
+    Returns:
+        The identifier unchanged, once validated.
+
+    Raises:
+        ValueError: If ``name`` is empty or any part is not a plain identifier.
+    """
+    if not name or not all(_IDENT_PART.match(part) for part in name.split(".")):
+        raise ValueError(f"Invalid SQL identifier: {name!r}")
+    return name
 
 
 def sql_literal(value: str) -> str:
