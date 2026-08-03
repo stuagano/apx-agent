@@ -48,6 +48,13 @@ else:
 
 
 agent = Agent(
+    name="technical_specialist",
+    description=(
+        "Handles technical support: product errors, outages, and integration "
+        "issues. Call when the user reports something broken, an error message, "
+        "or a configuration problem. Returns troubleshooting guidance backed by "
+        "the docs index."
+    ),
     instructions=(
         "You're a technical specialist. Answer questions about product errors, "
         "outages, and integration issues. Use the docs_search tool to find "

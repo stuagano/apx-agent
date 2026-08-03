@@ -70,5 +70,5 @@ def get_household(application_id: str, ws: Dependencies.Workspace) -> dict[str, 
     """
     row = _fetch_row(application_id, ws)
     if row is None:
-        raise ValueError(f"no household found for application_id={application_id!r}")
+        raise ToolError(f"no household found for application_id={application_id!r}")
     return row

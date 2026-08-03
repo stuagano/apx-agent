@@ -82,6 +82,13 @@ account_memory_tools = make_memory_tools(
 
 
 agent = Agent(
+    name="account_specialist",
+    description=(
+        "Handles account access: password resets, email changes, and login "
+        "issues, personalized from remembered user preferences. Call for "
+        "questions about accessing or changing account settings. Returns account "
+        "guidance and live account-record lookups."
+    ),
     instructions=(
         "You're an account specialist. Help with password resets, email changes, "
         "and account access.\n"
