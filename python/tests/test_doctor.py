@@ -504,6 +504,86 @@ class TestCheckModelEndpoint:
         assert c.status is Status.WARN
 
 
+class TestCheckGatewayGuardrails:
+    def _make_apps_project(self, tmp_path: Path, model: str) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            f'[tool.apx.agent]\nmodel = "{model}"\n'
+        )
+        (tmp_path / "agent_server").mkdir()
+        (tmp_path / "agent_server" / "start_server.py").write_text("app = None\n")
+
+    def _ep_with_guardrails(self):
+        ep = MagicMock()
+        ep.ai_gateway.guardrails.input = MagicMock()
+        ep.ai_gateway.guardrails.output = None
+        return ep
+
+    def test_not_apx_project_returns_none(self, tmp_path: Path):
+        assert doctor.check_gateway_guardrails(tmp_path, auth_ok=True) is None
+
+    def test_auth_not_ok_returns_none(self, tmp_path: Path):
+        self._make_apps_project(tmp_path, "databricks-claude-sonnet-4-6")
+        assert doctor.check_gateway_guardrails(tmp_path, auth_ok=False) is None
+
+    def test_no_model_key_returns_none(self, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\n")
+        (tmp_path / "agent_server").mkdir()
+        (tmp_path / "agent_server" / "start_server.py").write_text("app = None\n")
+        assert doctor.check_gateway_guardrails(tmp_path, auth_ok=True) is None
+
+    def test_non_apps_target_returns_none(self, tmp_path: Path):
+        self._make_apps_project(tmp_path, "databricks-claude-sonnet-4-6")
+        with patch(
+            "apx_agent.cli._detect_target",
+            return_value=type("T", (), {"target": "model-serving"})(),
+        ):
+            assert doctor.check_gateway_guardrails(tmp_path, auth_ok=True) is None
+
+    def test_guardrails_present_returns_ok(self, tmp_path: Path):
+        self._make_apps_project(tmp_path, "databricks-claude-sonnet-4-6")
+        ws = MagicMock()
+        ws.serving_endpoints.get.return_value = self._ep_with_guardrails()
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_gateway_guardrails(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.OK
+        ws.serving_endpoints.get.assert_called_once_with("databricks-claude-sonnet-4-6")
+
+    def test_guardrails_absent_returns_warn(self, tmp_path: Path):
+        self._make_apps_project(tmp_path, "databricks-claude-sonnet-4-6")
+        ws = MagicMock()
+        ep = MagicMock()
+        ep.ai_gateway = None
+        ws.serving_endpoints.get.return_value = ep
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_gateway_guardrails(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.WARN
+        assert "guardrail" in c.detail.lower()
+        assert c.fix is not None
+
+    def test_gateway_present_no_guardrails_returns_warn(self, tmp_path: Path):
+        self._make_apps_project(tmp_path, "databricks-claude-sonnet-4-6")
+        ws = MagicMock()
+        ep = MagicMock()
+        ep.ai_gateway.guardrails = None
+        ws.serving_endpoints.get.return_value = ep
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_gateway_guardrails(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.WARN
+
+    def test_lookup_error_returns_warn(self, tmp_path: Path):
+        self._make_apps_project(tmp_path, "databricks-claude-sonnet-4-6")
+        ws = MagicMock()
+        ws.serving_endpoints.get.side_effect = Exception("connection timeout")
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
+            c = doctor.check_gateway_guardrails(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.WARN
+        assert "could not verify" in c.detail.lower()
+
+
 class TestCheckUcDataSource:
     def _project(self, tmp_path: Path, catalog: str, schema: str) -> None:
         (tmp_path / "pyproject.toml").write_text(
