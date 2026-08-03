@@ -237,14 +237,14 @@ def _default_scorers(model: str | None = None) -> list[Any]:
     """
     scorers: list[Any] = []
     try:
-        from mlflow.genai.scorers import Correctness, RelevanceToQuery  # type: ignore[attr-defined]
+        from mlflow.genai.scorers import Correctness, RelevanceToQuery, Safety  # type: ignore[attr-defined]
         if model is not None:
-            scorers.extend([Correctness(model=model), RelevanceToQuery(model=model)])
+            scorers.extend([Correctness(model=model), RelevanceToQuery(model=model), Safety(model=model)])
         else:
-            scorers.extend([Correctness(), RelevanceToQuery()])
+            scorers.extend([Correctness(), RelevanceToQuery(), Safety()])
     except Exception:
         logger.warning(
-            "mlflow.genai.scorers.Correctness / RelevanceToQuery not available; "
+            "mlflow.genai.scorers.Correctness / RelevanceToQuery / Safety not available; "
             "callers should pass scorers=... explicitly."
         )
     return scorers

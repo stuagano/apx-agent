@@ -345,14 +345,20 @@ def test_default_scorers_constructs_without_model() -> None:
     scorers = _default_scorers()
     # mlflow's eval extra is installed (importorskip above), so the scorer
     # bundle is non-empty.
-    assert len(scorers) == 2
+    assert len(scorers) == 3
 
 
 def test_default_scorers_applies_judge_model() -> None:
     """A judge override is threaded into each scorer's ``model``."""
     scorers = _default_scorers(model="databricks")
-    assert len(scorers) == 2
+    assert len(scorers) == 3
     assert all(s.model == "databricks" for s in scorers)
+
+
+def test_default_scorers_includes_safety() -> None:
+    from mlflow.genai.scorers import Safety
+    scorers = _default_scorers()
+    assert any(isinstance(s, Safety) for s in scorers)
 
 
 def test_evaluate_threads_judge_model_into_default_scorers() -> None:
