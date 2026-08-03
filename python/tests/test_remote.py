@@ -973,6 +973,8 @@ class TestOboHeaders:
         agent._app_name = None
         agent._extra_headers = {}
         agent._timeout = 120.0
+        agent._long_task = False
+        agent._max_continuations = 10
         agent._card = AgentCard(name="host", description="", url="https://host", skills=[])
         return agent
 
@@ -1068,6 +1070,8 @@ class TestFetchRemoteTools:
         agent._app_name = "host"
         agent._extra_headers = {}
         agent._timeout = 120.0
+        agent._long_task = False
+        agent._max_continuations = 10
         agent._card = AgentCard(
             name="host",
             description="desc",
@@ -1197,6 +1201,8 @@ class TestFetchRemoteTools:
         agent._app_name = None
         agent._extra_headers = {}
         agent._timeout = 120.0
+        agent._long_task = False
+        agent._max_continuations = 10
         agent._card = None
 
         # Stub init() so it does not attempt to fetch the card over the network;
@@ -1384,7 +1390,7 @@ class TestContinueRequest:
             "step": 4,
         }
 
-    def test_none_formake_delta_event(self):
+    def test_none_for_delta_event(self):
         ev = MagicMock()
         ev.type = "response.output_text.delta"
         ev.delta = "hi"
@@ -1432,35 +1438,9 @@ def _continue_event(item_id, step):
 
 
 class TestLongTaskContinuation:
-    def _make_agent_with_card(
-        self,
-        app_name: str = "data-inspector",
-        base_url: str = "https://data-inspector.workspace.databricksapps.com",
-    ) -> RemoteDatabricksAgent:
-        """Build a pre-initialised agent without making network calls."""
-        from apx_agent._models import AgentCard, A2ASkill
-
-        agent = RemoteDatabricksAgent.__new__(RemoteDatabricksAgent)
-        agent._card_url = f"{base_url}/.well-known/agent.json"
-        agent._base_url = base_url
-        agent._app_name = app_name
-        agent._extra_headers = {}
-        agent._timeout = 120.0
-        agent._long_task = False
-        agent._max_continuations = 10
-        agent._card = AgentCard(
-            name="data-inspector",
-            description="Inspects data",
-            url=base_url,
-            skills=[
-                A2ASkill(id="inspect", name="inspect", description="Inspect a table")
-            ],
-        )
-        return agent
-
     @pytest.mark.asyncio
     async def test_no_databricks_options_when_disabled(self):
-        agent = self._make_agent_with_card(app_name="my-app")
+        agent = make_plain_agent(app_name="my-app")
         request = make_request()
         with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
             sdk = AsyncMock()
@@ -1473,7 +1453,7 @@ class TestLongTaskContinuation:
 
     @pytest.mark.asyncio
     async def test_sends_long_task_option_when_enabled(self):
-        agent = self._make_agent_with_card(app_name="my-app")
+        agent = make_plain_agent(app_name="my-app")
         agent._long_task = True
         request = make_request()
         with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK:
@@ -1487,7 +1467,7 @@ class TestLongTaskContinuation:
 
     @pytest.mark.asyncio
     async def test_one_continuation_resumes_and_pairs_response(self):
-        agent = self._make_agent_with_card(app_name="my-app")
+        agent = make_plain_agent(app_name="my-app")
         agent._long_task = True
         request = make_request()
         streams = [
@@ -1511,7 +1491,7 @@ class TestLongTaskContinuation:
 
     @pytest.mark.asyncio
     async def test_continuation_event_not_yielded_as_text(self):
-        agent = self._make_agent_with_card(app_name="my-app")
+        agent = make_plain_agent(app_name="my-app")
         agent._long_task = True
         request = make_request()
         streams = [
@@ -1527,7 +1507,7 @@ class TestLongTaskContinuation:
 
     @pytest.mark.asyncio
     async def test_raises_when_cap_exceeded(self):
-        agent = self._make_agent_with_card(app_name="my-app")
+        agent = make_plain_agent(app_name="my-app")
         agent._long_task = True
         agent._max_continuations = 2
         request = make_request()
@@ -1544,7 +1524,7 @@ class TestLongTaskContinuation:
 
     @pytest.mark.asyncio
     async def test_run_accumulates_streamed_text_when_long_task(self):
-        agent = self._make_agent_with_card(app_name="my-app")
+        agent = make_plain_agent(app_name="my-app")
         agent._long_task = True
         request = make_request()
         streams = [

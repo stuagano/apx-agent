@@ -199,6 +199,11 @@ def _continue_request(event: Any) -> dict[str, Any] | None:
         return None
     item_id = _field("id")
     if not item_id:
+        logger.warning(
+            "task_continue_request with no usable 'id' (step %r) — cannot pair a "
+            "continuation, treating as task end; the response may be truncated.",
+            _field("step"),
+        )
         return None
     return {"type": "task_continue_request", "id": item_id, "step": _field("step")}
 
@@ -222,6 +227,13 @@ class RemoteDatabricksAgent(BaseAgent):
         headers extracted from the incoming FastAPI ``Request``).
     timeout:
         HTTP request timeout in seconds. Default 120.
+    long_task:
+        Enable Supervisor Agent long-running task mode. When set, sends
+        ``databricks_options={"long_task": True}`` and resumes paused tasks
+        via the continuation protocol. Off by default; only meaningful for
+        remotes that implement it (most apx-agent apps do not).
+    max_continuations:
+        Maximum continuation rounds before raising. Defaults to 10.
     """
 
     def __init__(
