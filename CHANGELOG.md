@@ -4,6 +4,57 @@ All notable changes to apx-agent. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are git tags
 (`v*`) and the wheel version is derived from the tag via hatch-vcs.
 
+## [0.4.7] — 2026-08-04
+
+Headline: workspace discovery + topology wire/chat in the Apps Dev UI, remote
+long-task continuation, CLEARS-aligned eval scorers, and an ADK-pattern pass
+across the example agents (safety posture, tool design, SQL identifiers).
+
+### Added
+
+- **Dev UI workspace discovery (#594).** Discover workspace agents, tools, and
+  APIs from Apps; new discover surfaces + models for browsing live inventory.
+- **Topology wire/chat + OKF generate-pack (#595).** Wire/chat flows in the
+  topology UI, OKF pack generation, and samples DataAgent fleet support.
+- **Remote long-task continuation (#604).** Remote agents can continue across
+  long-running turns instead of timing out mid-task.
+- **CLEARS-aligned eval scorers (#596).** Safety default + `clears_scorers()`
+  helper for CLEARS-style evaluation.
+- **Doctor AI Gateway guardrail warning.** `apx-agent doctor` warns when an
+  Apps-target model endpoint lacks AI Gateway guardrails.
+- **ADK-pattern agent skills (#597).** Three skills covering multi-agent
+  composition, tool design, and safety/callbacks.
+
+### Fixed
+
+- **ADK example audit (#598–#608).** SQL identifier validation before unquoted
+  interpolation (#599); `customer_triage` `HandoffAgent` → `RouterAgent`
+  (#600); tool-shape cleanups + `attach_resources` (#601); per-request memory
+  principals, slack OAuth nonce TTL, apx-builder codegen validation +
+  `PolicyGate` ASK on scaffold/deploy (#602).
+- **uv.lock heal.** Idempotent lock regenerate + frozen session-hook path so
+  pypi-proxy churn doesn't poison the tree.
+
+### Docs / chore
+
+- README leads with `LlmAgent` as the product hero (#607).
+- ADK audit report (`docs/adk-audit-2026-08-03.md`); ctk-verify agent + loop
+  commands for claim-vs-reality checks.
+
+## [0.4.6] — 2026-07-28
+
+- Apps scaffold CI, pin checks, deploy state, destroy/status (#593).
+
+## [0.4.5] — 2026-07-28
+
+Large mid-cycle drop after 0.4.4: OKF↔UC comment sync / enrich / drift-PR CLI,
+OBO scope derivation at deploy time, ToolError containment in the runtime and
+metadata factories, declarative `vector_search_index` wiring, SQL helper
+consolidation onto databricks-tools-core, and the zero-ops-diagnostics +
+customer_triage_fleet examples. See the
+[v0.4.5 GitHub release](https://github.com/stuagano/apx-agent/releases/tag/v0.4.5)
+for the full PR list.
+
 ## [0.4.4] — 2026-07-19
 
 Headline: natural-language agent authoring (`apx-agent generate`), a
