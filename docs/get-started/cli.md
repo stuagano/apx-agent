@@ -44,7 +44,7 @@ apx-agent label align --uc-name cat.sch.my_agent --judge domain_quality --run <r
 # override the auto-resolved experiment with --experiment <mlflow-experiment-id>
 apx-agent label start --uc-name cat.sch.my_agent --judge domain_quality --scale 1-5 --experiment 123456789
 apx-agent watchdog violations --hours 24       # recent reject/redact decisions from the UC table
-apx-agent watchdog status --agent customer_triage  # current posture via watchdog's MCP tool
+apx-agent watchdog status --agent customer_triage  # session posture via Guardrails get_agent_compliance
 apx-agent memory recall --principal-id user:alice --query "notification preferences"  # semantic recall
 apx-agent memory remember --principal-id user:alice --content "..." --importance 0.8
 apx-agent examples find --agent-id triage --query "why is my bill high?" -k 5
