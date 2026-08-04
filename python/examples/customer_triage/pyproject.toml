@@ -1,14 +1,14 @@
 [project]
 name = "customer-triage"
 version = "0.1.0"
-description = "apx-agent customer_triage — HandoffAgent + memory, served via Databricks Apps."
+description = "apx-agent customer_triage — RouterAgent + memory, served via Databricks Apps."
 requires-python = ">=3.11"
 dependencies = [
     "apx-agent[langgraph]",
     # langchain 1.2.10 (pulled transitively) imports `ExecutionInfo` from
     # langgraph.runtime which only exists in langgraph >= 1.1.0. Pin here so
     # the resolver can't land on the older line. Surfaced during the
-    # fe-stable smoke deploy of HandoffAgent on 2026-05-20.
+    # fe-stable smoke deploy of RouterAgent (was HandoffAgent) on 2026-05-20.
     "langgraph>=1.1.0",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.115.0",
