@@ -50,11 +50,11 @@ from ._models import (
 logger = logging.getLogger(__name__)
 
 
-# Host suffixes whose origins are trusted to receive a forwarded OBO token,
-# even when they differ from the configured ``card_url`` origin. Covers the
-# ``from_app_name`` case where the card is fetched from the workspace host but
-# ``card.url`` points at the app's own ``*.databricksapps.com`` address.
-_TRUSTED_HOST_SUFFIXES = (".databricksapps.com",)
+# Host suffixes allowed for an *explicit* ``from_app_name`` remap of
+# ``card.url`` (workspace host → that app's ``*.databricksapps.com`` URL).
+# Never treat every Apps host as trusted for OBO (#614) — only same-origin, or
+# a candidate whose ``_url_to_app_name`` matches the operator-supplied app name.
+_APPS_HOST_SUFFIXES = (".databricksapps.com",)
 
 _WELL_KNOWN_CARD_PATH = "/.well-known/agent.json"
 
@@ -76,38 +76,59 @@ def _default_port(scheme: str) -> int:
     return 443 if scheme == "https" else 80
 
 
-def _trusted_origin(candidate: str, configured: str) -> bool:
-    """True if ``candidate``'s origin is safe to forward credentials to.
-
-    Safe means the origin matches the operator-supplied ``configured`` origin
-    (same scheme + host + port), or its host falls under a trusted Databricks
-    Apps suffix. A scheme downgrade (https → http) or alternate port of the same
-    host is treated as untrusted.
-    """
+def _same_origin(candidate: str, configured: str) -> bool:
+    """True when ``candidate`` and ``configured`` share scheme + host + port."""
     try:
         c = urlparse(candidate if "://" in candidate else f"https://{candidate}")
         ref = urlparse(configured if "://" in configured else f"https://{configured}")
     except Exception:
         return False
-    if not c.hostname:
+    if not c.hostname or not ref.hostname:
         return False
-
-    same_origin = (
+    return (
         c.scheme == ref.scheme
         and c.hostname == ref.hostname
         and (c.port or _default_port(c.scheme)) == (ref.port or _default_port(ref.scheme))
     )
-    if same_origin:
+
+
+def _is_apps_https_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    host = hostname.lower()
+    return any(host == suffix.lstrip(".") or host.endswith(suffix) for suffix in _APPS_HOST_SUFFIXES)
+
+
+def _trusted_origin(
+    candidate: str,
+    configured: str,
+    *,
+    expected_app_name: str | None = None,
+) -> bool:
+    """True if ``candidate``'s origin is safe to forward credentials to.
+
+    Safe means:
+
+    * same origin as the operator-supplied ``configured`` card URL, or
+    * ``expected_app_name`` is set (``from_app_name``) and ``candidate`` is an
+      https Apps host whose app name matches that explicit name (#614).
+
+    An open ``*.databricksapps.com`` wildcard is intentionally **not** trusted —
+    a malicious card must not retarget OBO to a different Apps host.
+    """
+    if _same_origin(candidate, configured):
         return True
 
-    # Trusted Databricks Apps host, but only over https (never accept a downgrade).
-    if c.scheme == "https" and any(
-        c.hostname == suffix.lstrip(".") or c.hostname.endswith(suffix)
-        for suffix in _TRUSTED_HOST_SUFFIXES
-    ):
-        return True
+    if not expected_app_name:
+        return False
 
-    return False
+    try:
+        c = urlparse(candidate if "://" in candidate else f"https://{candidate}")
+    except Exception:
+        return False
+    if c.scheme != "https" or not _is_apps_https_host(c.hostname):
+        return False
+    return _url_to_app_name(candidate) == expected_app_name
 
 
 def _url_to_app_name(url: str) -> str | None:
@@ -385,17 +406,19 @@ class RemoteDatabricksAgent(BaseAgent):
         )
 
         # Update base URL from card only when the card's origin is trusted
-        # (matches the configured card_url origin or a Databricks Apps host).
-        # A malicious card could otherwise redirect the forwarded OBO token to
-        # an arbitrary host, so an untrusted card.url is ignored.
+        # (same-origin as configured card_url, or an explicit from_app_name
+        # remap to that app's Apps host — #614). A malicious card must not
+        # redirect the forwarded OBO token to a different Apps host.
         if self._card.url:
             candidate = self._card.url.rstrip("/")
-            if _trusted_origin(candidate, self._card_url):
+            if _trusted_origin(
+                candidate, self._card_url, expected_app_name=self._app_name
+            ):
                 self._base_url = candidate
             else:
                 logger.warning(
                     "Ignoring card.url %s for %s: origin differs from configured "
-                    "card_url %s and is not a trusted host; keeping %s",
+                    "card_url %s and is not an allowlisted app remap; keeping %s",
                     candidate,
                     self._card.name,
                     self._card_url,
@@ -547,7 +570,9 @@ class RemoteDatabricksAgent(BaseAgent):
         was redirected to an untrusted host.
         """
         headers = dict(self._extra_headers)
-        forward_credentials = _trusted_origin(self._base_url, self._card_url)
+        forward_credentials = _trusted_origin(
+            self._base_url, self._card_url, expected_app_name=self._app_name
+        )
         if not forward_credentials:
             logger.warning(
                 "Not forwarding OBO credentials to untrusted base_url %s (configured card_url %s)",
