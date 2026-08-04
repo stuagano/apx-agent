@@ -72,11 +72,17 @@ def _stub_reply(captured: dict[str, Any], text: str) -> None:
     )
 
 
-def _rpc(client: TestClient, method: str, params: dict | None = None, req_id: Any = 1):
+def _rpc(
+    client: TestClient,
+    method: str,
+    params: dict | None = None,
+    req_id: Any = 1,
+    headers: dict[str, str] | None = None,
+):
     body: dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": method}
     if params is not None:
         body["params"] = params
-    return client.post("/", json=body)
+    return client.post("/", json=body, headers=headers or {})
 
 
 def _send_params(text: str, context_id: str | None = None) -> dict:
@@ -124,19 +130,36 @@ class TestTaskStore:
     def test_put_get(self):
         store = TaskStore()
         task = Task(id="t1", contextId="c1", status=TaskStatus(state=TaskState.completed))
-        store.put(task)
-        assert store.get("t1") is task
-        assert store.get("missing") is None
+        store.put(task, owner="alice")
+        assert store.get("t1", caller="alice") is task
+        assert store.get("missing", caller="alice") is None
+
+    def test_get_rejects_mismatched_principal(self):
+        """#617: tasks/get must not return another user's task."""
+        store = TaskStore()
+        task = Task(id="t1", contextId="c1", status=TaskStatus(state=TaskState.completed))
+        store.put(task, owner="alice")
+        assert store.get("t1", caller="bob") is None
+        assert store.get("t1", caller=None) is None
+        assert store.get("t1", caller="alice") is task
+
+    def test_anonymous_owner_matches_anonymous_caller(self):
+        store = TaskStore()
+        task = Task(id="t1", contextId="c1", status=TaskStatus(state=TaskState.completed))
+        store.put(task, owner=None)
+        assert store.get("t1", caller=None) is task
+        assert store.get("t1", caller="bob") is None
 
     def test_evicts_oldest_over_capacity(self):
         store = TaskStore(max_tasks=2)
         for i in range(3):
             store.put(
-                Task(id=f"t{i}", contextId="c", status=TaskStatus(state=TaskState.completed))
+                Task(id=f"t{i}", contextId="c", status=TaskStatus(state=TaskState.completed)),
+                owner="u",
             )
-        assert store.get("t0") is None  # evicted
-        assert store.get("t1") is not None
-        assert store.get("t2") is not None
+        assert store.get("t0", caller="u") is None  # evicted
+        assert store.get("t1", caller="u") is not None
+        assert store.get("t2", caller="u") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +235,35 @@ class TestTasksGetCancel:
         client, _ = a2a_client
         body = _rpc(client, "tasks/get", {"id": "nope"}).json()
         assert body["error"]["code"] == -32001
+
+    def test_get_rejects_other_principals_task(self, a2a_client):
+        """#617: Alice's task id is not readable by Bob (appears as not found)."""
+        client, captured = a2a_client
+        _stub_reply(captured, "alice secret")
+        sent = _rpc(
+            client,
+            "message/send",
+            _send_params("hi"),
+            headers={"X-Forwarded-User": "alice"},
+        ).json()["result"]
+        task_id = sent["id"]
+
+        denied = _rpc(
+            client,
+            "tasks/get",
+            {"id": task_id},
+            headers={"X-Forwarded-User": "bob"},
+        ).json()
+        assert denied["error"]["code"] == -32001
+
+        ok = _rpc(
+            client,
+            "tasks/get",
+            {"id": task_id},
+            headers={"X-Forwarded-User": "alice"},
+        ).json()
+        assert ok["result"]["id"] == task_id
+        assert "alice secret" in ok["result"]["artifacts"][0]["parts"][0]["text"]
 
     def test_cancel_unknown_task_is_task_not_found(self, a2a_client):
         client, _ = a2a_client

@@ -56,28 +56,48 @@ _TASK_NOT_FOUND = -32001
 _TASK_NOT_CANCELABLE = -32002
 
 
+class _OwnedTask:
+    """Task plus the principal that created it (#617)."""
+
+    __slots__ = ("task", "owner")
+
+    def __init__(self, task: Task, owner: str | None) -> None:
+        self.task = task
+        self.owner = owner
+
+
 class TaskStore:
     """Per-process bounded ring of recent tasks, mirroring ``_trace_store``.
 
     Ephemeral and per-replica by design (MVP): ``tasks/get`` is a best-effort
     recent lookup, not durable storage. Thread-safe; evicts oldest over capacity.
+
+    Each entry is bound to the creating principal (#617). ``get`` returns the
+    task only when ``caller`` matches that owner (both ``None`` for local
+    unauthenticated turns). Mismatches look like ``Task not found`` so callers
+    cannot probe other users' task ids.
     """
 
     def __init__(self, max_tasks: int = MAX_TASKS) -> None:
         self._max = max_tasks
-        self._store: "OrderedDict[str, Task]" = OrderedDict()
+        self._store: "OrderedDict[str, _OwnedTask]" = OrderedDict()
         self._lock = threading.Lock()
 
-    def put(self, task: Task) -> None:
+    def put(self, task: Task, *, owner: str | None = None) -> None:
         with self._lock:
-            self._store[task.id] = task
+            self._store[task.id] = _OwnedTask(task, owner)
             self._store.move_to_end(task.id)
             while len(self._store) > self._max:
                 self._store.popitem(last=False)
 
-    def get(self, task_id: str) -> Task | None:
+    def get(self, task_id: str, *, caller: str | None = None) -> Task | None:
         with self._lock:
-            return self._store.get(task_id)
+            owned = self._store.get(task_id)
+            if owned is None:
+                return None
+            if owned.owner != caller:
+                return None
+            return owned.task
 
     def reset(self) -> None:
         with self._lock:
@@ -184,6 +204,7 @@ def mount_a2a_route(
         # contextId → session_id so multi-turn threads through the conversation
         # store exactly as the /invocations context bridge does.
         custom_inputs.setdefault("session_id", context_id)
+        owner = custom_inputs.get("user_id")
 
         # Resume only when the client sent apx_resume AND this thread is actually
         # paused awaiting a decision — checked against the DURABLE checkpointer, so
@@ -232,7 +253,7 @@ def mount_a2a_route(
                     ),
                     history=[inbound, ask_msg],
                 )
-                store.put(task)
+                store.put(task, owner=owner)
                 return task
 
             reply = _reply_text(response)
@@ -267,7 +288,7 @@ def mount_a2a_route(
                 ),
                 history=[inbound],
             )
-        store.put(task)
+        store.put(task, owner=owner)
         return task
 
     @app.post("/", include_in_schema=False)
@@ -329,7 +350,12 @@ def mount_a2a_route(
                         req_id, _INVALID_PARAMS, "Invalid params", data=exc.errors()
                     )
                 else:
-                    task = store.get(q.id)
+                    from ._obo import extract_obo_headers
+
+                    caller = extract_obo_headers(
+                        custom_inputs={}, headers=request.headers
+                    ).get("user_id")
+                    task = store.get(q.id, caller=caller)
                     if task is None:
                         resp = _error_response(req_id, _TASK_NOT_FOUND, "Task not found")
                     else:
@@ -342,7 +368,12 @@ def mount_a2a_route(
                         req_id, _INVALID_PARAMS, "Invalid params", data=exc.errors()
                     )
                 else:
-                    task = store.get(c.id)
+                    from ._obo import extract_obo_headers
+
+                    caller = extract_obo_headers(
+                        custom_inputs={}, headers=request.headers
+                    ).get("user_id")
+                    task = store.get(c.id, caller=caller)
                     if task is None:
                         resp = _error_response(req_id, _TASK_NOT_FOUND, "Task not found")
                     else:
