@@ -1704,63 +1704,72 @@ def test_watchdog_violations_no_rows_prints_helpful_message() -> None:
     assert "No violations matched" in result.output
 
 
-def test_watchdog_status_requires_mcp_url_and_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_watchdog_status_requires_mcp_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APX_WATCHDOG_MCP_URL", raising=False)
-    monkeypatch.delenv("APX_WATCHDOG_MCP_TOOL_NAME", raising=False)
+    monkeypatch.delenv("APX_WATCHDOG_STATUS_TOOL", raising=False)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["watchdog", "status"])
+    result = runner.invoke(main, ["watchdog", "status", "--agent", "triage"])
     assert result.exit_code != 0
     assert "mcp-url" in result.output.lower() or "APX_WATCHDOG_MCP_URL" in result.output
 
 
-def test_watchdog_status_falls_back_to_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APX_WATCHDOG_MCP_URL", "https://watchdog.example.com/mcp")
-    monkeypatch.setenv("APX_WATCHDOG_MCP_TOOL_NAME", "posture_status")
+def test_watchdog_status_requires_agent() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "watchdog", "status",
+        "--mcp-url", "https://guardrails.example.com/mcp",
+    ])
+    assert result.exit_code != 0
+    assert "agent" in result.output.lower()
 
-    fake_transport = MagicMock(return_value={
-        "action": "allow",
-        "reason": "no open violations",
-        "policy_id": None,
-        "domain": "security",
-    })
+
+def test_watchdog_status_falls_back_to_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APX_WATCHDOG_MCP_URL", "https://guardrails.example.com/mcp")
+    monkeypatch.delenv("APX_WATCHDOG_STATUS_TOOL", raising=False)
 
     runner = CliRunner()
-    with patch("apx_agent.make_mcp_transport", return_value=fake_transport):
+    with patch("apx_agent.call_mcp_tool", return_value={
+        "agent_id": "triage",
+        "risk_level": "low",
+        "checks_passed": 3,
+        "checks_denied": 0,
+        "checks_warned": 0,
+        "tables_accessed": ["gold.finance.gl"],
+        "actions_logged": 1,
+        "session_start": "2026-08-04T00:00:00+00:00",
+    }) as mock_call:
         result = runner.invoke(main, ["watchdog", "status", "--agent", "triage"])
 
     assert result.exit_code == 0, result.output
-    assert "allow" in result.output
-    assert "no open violations" in result.output
-    # The transport was invoked with our operation + context
-    request = fake_transport.call_args.args[0]
-    assert request["operation"] == "status"
-    assert request["context"]["agent_name"] == "triage"
+    assert "risk_level" in result.output
+    assert "low" in result.output
+    mock_call.assert_called_once()
+    args, kwargs = mock_call.call_args
+    assert args[0] == "https://guardrails.example.com/mcp"
+    assert args[1] == "get_agent_compliance"
+    assert args[2] == {"agent_id": "triage"}
 
 
 def test_watchdog_status_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_transport = MagicMock(return_value={
-        "action": "reject",
-        "reason": "PII tag missing",
-        "policy_id": "p-7",
-        "domain": "security",
-        "metadata": {"owner": "data-team@x.com"},
-    })
-
     runner = CliRunner()
-    with patch("apx_agent.make_mcp_transport", return_value=fake_transport):
+    with patch("apx_agent.call_mcp_tool", return_value={
+        "agent_id": "triage",
+        "risk_level": "high",
+        "checks_denied": 2,
+    }):
         result = runner.invoke(main, [
             "watchdog", "status",
-            "--mcp-url", "https://watchdog.example.com/mcp",
-            "--mcp-tool", "posture_status",
+            "--mcp-url", "https://guardrails.example.com/mcp",
+            "--mcp-tool", "get_agent_compliance",
             "--agent", "triage",
             "--format", "json",
         ])
 
     parsed = json.loads(result.output)
-    assert parsed["action"] == "reject"
-    assert parsed["policy_id"] == "p-7"
-    assert parsed["metadata"] == {"owner": "data-team@x.com"}
+    assert parsed["agent_id"] == "triage"
+    assert parsed["risk_level"] == "high"
+    assert parsed["checks_denied"] == 2
 
 
 # ---------------------------------------------------------------------------

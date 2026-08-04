@@ -855,11 +855,12 @@ def make_mcp_transport(
     timeout_seconds: float = 5.0,
     auth_headers: dict[str, str] | None = None,
 ) -> TransportFn:
-    """Return a transport that calls a watchdog MCP tool for evaluate requests.
+    """Return a transport that calls Guardrails MCP ``evaluate_operation``.
 
     Uses the streamable-HTTP MCP client (``mcp.client.streamable_http``)
-    to connect to watchdog's MCP endpoint, invoke ``tool_name`` with the
-    operation context, and parse the result into the response shape
+    to connect to the Guardrails MCP endpoint (Watchdog's runtime
+    enforcement surface), invoke ``tool_name`` with the operation
+    context, and parse the result into the response shape
     ``WatchdogClient.evaluate`` expects.
 
     Non-evaluate requests (violation reports) pass through as no-op so
@@ -867,10 +868,10 @@ def make_mcp_transport(
     ``make_watchdog_transport``.
 
     Args:
-        mcp_url: HTTPS URL of watchdog's streamable MCP endpoint.
-        tool_name: Name of the MCP tool to call (one of watchdog's 13).
-            The tool's expected ``arguments`` shape is the request dict
-            this transport receives, minus the ``type`` discriminator.
+        mcp_url: HTTPS URL of the Guardrails MCP streamable endpoint
+            (not Watchdog MCP — that surface is posture query only).
+        tool_name: MCP tool name. Default in docs/examples is
+            ``evaluate_operation``.
         timeout_seconds: Per-call timeout. Default 5s.
         auth_headers: Optional headers to send on the connection
             (e.g. ``{"Authorization": "Bearer <token>"}``).
@@ -880,52 +881,69 @@ def make_mcp_transport(
     propagate to ``WatchdogClient.evaluate``, which applies the fail-open vs
     fail-closed policy; they are not swallowed into an allow here.
     """
-    import json
 
     def _transport(req: dict[str, Any]) -> dict[str, Any]:
         if req.get("type") == "violation_report":
             # Violation reports go to the UC table writer, not MCP.
             return {}
-
-        async def _call() -> dict[str, Any]:
-            from mcp.client.session import ClientSession
-            from mcp.client.streamable_http import streamablehttp_client
-
-            async with streamablehttp_client(mcp_url, headers=auth_headers) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    result = await session.call_tool(
-                        name=tool_name,
-                        arguments={
-                            "operation": req.get("operation"),
-                            "context": req.get("context") or {},
-                        },
-                    )
-                    # MCP tool results are returned as a list of content blocks.
-                    # We expect the tool to return a single JSON-encoded text block
-                    # that parses to {"action": ..., "reason": ..., ...}.
-                    for block in getattr(result, "content", None) or []:
-                        text = getattr(block, "text", None)
-                        if not text:
-                            continue
-                        try:
-                            return json.loads(text)
-                        except json.JSONDecodeError as e:
-                            # Not a clear decision — raise so WatchdogClient
-                            # applies its fail_closed policy instead of allowing.
-                            raise ValueError(
-                                f"watchdog MCP tool {tool_name} returned non-JSON text"
-                            ) from e
-                    raise ValueError(
-                        f"watchdog MCP tool {tool_name} returned no decision content"
-                    )
-
-        # Run loop-safe (works whether or not a loop is already running) and let
-        # transport errors propagate to WatchdogClient.evaluate, which decides
-        # fail-open vs fail-closed. Swallowing them here would force fail-open.
-        return _run_coro_blocking(_call, timeout_seconds)
+        return call_mcp_tool(
+            mcp_url,
+            tool_name,
+            {
+                "operation": req.get("operation"),
+                "context": req.get("context") or {},
+            },
+            timeout_seconds=timeout_seconds,
+            auth_headers=auth_headers,
+        )
 
     return _transport
+
+
+def call_mcp_tool(
+    mcp_url: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    timeout_seconds: float = 5.0,
+    auth_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Call a streamable-HTTP MCP tool and parse a JSON text result.
+
+    Used by ``make_mcp_transport`` (evaluate) and the CLI
+    ``apx-agent watchdog status`` path (posture tools like
+    ``get_agent_compliance``).
+    """
+    import json
+
+    async def _call() -> dict[str, Any]:
+        from mcp.client.session import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        async with streamablehttp_client(mcp_url, headers=auth_headers) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(name=tool_name, arguments=arguments)
+                for block in getattr(result, "content", None) or []:
+                    text = getattr(block, "text", None)
+                    if not text:
+                        continue
+                    try:
+                        parsed = json.loads(text)
+                    except json.JSONDecodeError as e:
+                        raise ValueError(
+                            f"watchdog MCP tool {tool_name} returned non-JSON text"
+                        ) from e
+                    if not isinstance(parsed, dict):
+                        raise ValueError(
+                            f"watchdog MCP tool {tool_name} returned non-object JSON"
+                        )
+                    return parsed
+                raise ValueError(
+                    f"watchdog MCP tool {tool_name} returned no decision content"
+                )
+
+    return _run_coro_blocking(_call, timeout_seconds)
 
 
 # ---------------------------------------------------------------------------
@@ -946,16 +964,15 @@ def make_watchdog_transport(
     """Return a transport bundling MCP evaluate + UC table violation writing.
 
     This is the canonical watchdog transport: evaluate decisions come
-    from watchdog's MCP tool, violation reports flow into watchdog's
-    UC Delta table. Both wire-protocol contracts answered, both
-    composed into one callable that ``WatchdogClient(transport=...)``
-    consumes.
+    from Guardrails MCP ``evaluate_operation``, violation reports flow
+    into Watchdog's ``runtime_violations`` UC Delta table.
 
     Args:
-        mcp_url: Watchdog's streamable-HTTP MCP endpoint.
-        mcp_tool_name: The MCP tool name for policy evaluation.
-        violations_table: Three-part UC name of the violations Delta
-            table watchdog reads from.
+        mcp_url: Guardrails MCP streamable-HTTP endpoint URL.
+        mcp_tool_name: The MCP tool name for policy evaluation
+            (typically ``evaluate_operation``).
+        violations_table: Three-part UC name of the runtime violations
+            Delta table (e.g. ``platform.watchdog.runtime_violations``).
         ws: ``WorkspaceClient`` used for SQL writes.
         warehouse_id: Optional SQL warehouse for the violation writes.
         mcp_timeout_seconds: MCP call timeout.
