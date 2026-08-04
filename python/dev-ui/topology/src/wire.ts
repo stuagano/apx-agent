@@ -84,8 +84,8 @@ async function apxDevFetch(url: string, init: RequestInit = {}): Promise<Respons
   const headers = new Headers(init.headers || {});
   const token = readToken();
   if (token) headers.set("X-APX-Dev-Token", token);
-  // Deployed Apps authorize writes via SSO (X-Forwarded-Access-Token from the
-  // proxy). Optional X-APX-Dev-Token is only for automation overrides.
+  // Discover wire/unwire on Apps requires APX_DEV_UI_TOKEN (#611). Ordinary
+  // Dev-UI writes still accept Apps SSO alone.
   return fetch(url, { ...init, headers });
 }
 

@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from apx_agent._dev import (
     _dev_write_guard,
     _enforce_dev_write_auth,
+    _enforce_discover_operator_auth,
     _parse_judge_output,
 )
 from apx_agent._ui_probe import _validate_probe_url, validate_wire_peer_url
@@ -63,6 +64,79 @@ def test_deployed_token_still_works_as_automation_override(monkeypatch):
     # SSO wins even when a token is configured.
     _enforce_dev_write_auth(
         _req(headers={"x-forwarded-access-token": "obo-user-token"})
+    )
+
+
+# --- #611: Discover wire/unwire requires operator token on Apps ------------
+
+
+def test_discover_operator_local_allows(monkeypatch):
+    monkeypatch.delenv("DATABRICKS_APP_PORT", raising=False)
+    monkeypatch.delenv("APX_DEV_UI_TOKEN", raising=False)
+    _enforce_discover_operator_auth(_req(path="/_apx/discover/wire-agent"))
+
+
+def test_discover_operator_deployed_sso_alone_denies(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
+    monkeypatch.setenv("APX_DEV_UI_TOKEN", "s3cret")
+    with pytest.raises(HTTPException) as exc:
+        _enforce_discover_operator_auth(
+            _req(
+                path="/_apx/discover/wire-agent",
+                headers={"x-forwarded-access-token": "obo-user-token"},
+            )
+        )
+    assert exc.value.status_code == 403
+    assert "shared live agent" in exc.value.detail.lower() or "operator" in exc.value.detail.lower()
+
+
+def test_discover_operator_deployed_requires_configured_token(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
+    monkeypatch.delenv("APX_DEV_UI_TOKEN", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        _enforce_discover_operator_auth(
+            _req(
+                path="/_apx/discover/wire-tool",
+                headers={"x-forwarded-access-token": "obo-user-token"},
+            )
+        )
+    assert exc.value.status_code == 403
+    assert "APX_DEV_UI_TOKEN" in exc.value.detail
+
+
+def test_discover_operator_matching_token_allows(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
+    monkeypatch.setenv("APX_DEV_UI_TOKEN", "s3cret")
+    _enforce_discover_operator_auth(
+        _req(path="/_apx/discover/wire-agent", headers={"x-apx-dev-token": "s3cret"})
+    )
+    _enforce_discover_operator_auth(
+        _req(path="/_apx/discover/unwire-tool", query={"token": "s3cret"})
+    )
+
+
+@pytest.mark.asyncio
+async def test_guard_discover_mutation_needs_operator_even_with_sso(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
+    monkeypatch.setenv("APX_DEV_UI_TOKEN", "s3cret")
+    sso = {"x-forwarded-access-token": "obo-user-token"}
+
+    with pytest.raises(HTTPException) as exc:
+        await _dev_write_guard(
+            _req(method="POST", path="/_apx/discover/wire-agent", headers=sso)
+        )
+    assert exc.value.status_code == 403
+
+    # Ordinary writes still accept SSO alone.
+    await _dev_write_guard(_req(method="POST", path="/_apx/edit", headers=sso))
+
+    # Discover mutation with matching operator token succeeds.
+    await _dev_write_guard(
+        _req(
+            method="POST",
+            path="/_apx/discover/wire-agent",
+            headers={**sso, "x-apx-dev-token": "s3cret"},
+        )
     )
 
 

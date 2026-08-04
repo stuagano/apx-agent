@@ -40,10 +40,12 @@ Refresh re-scans. Backed by `GET /_apx/workspace-agents`,
   `tools=` and registers them live
 - Model Serving cards stay display-only (set `model=` / use Playground)
 
-Mutating Discover / Topology wire calls use Apps SSO on deployed Apps — no
-pasted operator token. Source is still written so the next real deploy/restart
-stays consistent; prefer Chat right after wire when the banner says live apply
-succeeded.
+Mutating Discover / Topology wire calls on a **deployed App** require the
+operator secret ``APX_DEV_UI_TOKEN`` (open Discover/Topology with
+`?token=<secret>`). SSO alone is not enough — wire/unwire mutates the shared
+live agent for every App user. Local ``apx-agent run`` stays open. Source is
+still written so the next real deploy/restart stays consistent; prefer Chat
+right after wire when the banner says live apply succeeded.
 
 ### `/_apx/topology` — Interactive topology graph
 

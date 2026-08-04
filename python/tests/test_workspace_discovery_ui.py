@@ -326,6 +326,50 @@ async def test_discover_wire_agent_rejects_off_allowlist(
 
 
 @pytest.mark.asyncio
+async def test_discover_wire_agent_deployed_sso_alone_forbidden(
+    app: FastAPI, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """#611: on Apps, SSO alone must not mutate the shared live agent."""
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
+    monkeypatch.setenv("APX_DEV_UI_TOKEN", "op-secret")
+    agent_py = tmp_path / "agent.py"
+    agent_py.write_text(
+        'from apx_agent import Agent\n\nagent = Agent(tools=[], instructions="hi")\n'
+    )
+    monkeypatch.setattr("apx_agent._dev._find_agent_router_path", lambda: agent_py)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        denied = await ac.post(
+            "/_apx/discover/wire-agent",
+            headers={"X-Forwarded-Access-Token": "obo-user"},
+            json={
+                "url": "https://peer-app.aws.databricksapps.com",
+                "app_name": "peer-app",
+                "target": "agent",
+            },
+        )
+        assert denied.status_code == 403
+        assert "sub_agents" not in agent_py.read_text()
+
+        monkeypatch.setattr("apx_agent._ui_probe._validate_probe_url", lambda _url: None)
+        ok = await ac.post(
+            "/_apx/discover/wire-agent",
+            headers={
+                "X-Forwarded-Access-Token": "obo-user",
+                "X-APX-Dev-Token": "op-secret",
+            },
+            json={
+                "url": "https://peer-app.aws.databricksapps.com",
+                "app_name": "peer-app",
+                "target": "agent",
+                "use_env": True,
+            },
+        )
+    assert ok.status_code == 200, ok.text
+    assert "$APX_PEER_PEER_APP_URL" in agent_py.read_text()
+
+
+@pytest.mark.asyncio
 async def test_discover_wire_agent_hot_applies(app: FastAPI, tmp_path, monkeypatch: pytest.MonkeyPatch):
     from apx_agent import Agent
     from apx_agent._models import AgentCard, AgentConfig, AgentContext
