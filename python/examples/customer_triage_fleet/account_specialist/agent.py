@@ -74,10 +74,15 @@ for _principal, _seeds in _SEED_MEMORIES.items():
             "tags": list(_seed["tags"]),  # type: ignore[arg-type]
         })
 
+# Per-request OBO identity (X-Forwarded-User) via Dependencies.Principal.
+# default_principal_id keeps local/smoke runs working when no Apps header is
+# present — DEPLOY BLOCKER: multi-user production must not rely on the alice
+# fallback alone (every unauthenticated caller would share one memory scope).
 account_memory_tools = make_memory_tools(
     store=account_memory_store,
     default_principal_id="user:alice",
     namespace_default="profile",
+    _use_dep_principal=True,
 )
 
 

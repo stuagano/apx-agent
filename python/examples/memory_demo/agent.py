@@ -65,10 +65,14 @@ for ex in [
 
 
 # Memory tools — `recall` / `remember` / `forget` bound to the store.
+# Per-request OBO identity via Dependencies.Principal; PRINCIPAL_ID is the
+# local/smoke fallback for seeded demo data. DEPLOY BLOCKER: multi-user
+# production must not rely on the alice fallback alone.
 memory_tools = make_memory_tools(
     store=memory_store,
     default_principal_id=PRINCIPAL_ID,
     namespace_default="profile",
+    _use_dep_principal=True,
 )
 
 

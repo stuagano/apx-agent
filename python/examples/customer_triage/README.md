@@ -169,9 +169,20 @@ account_memory_store = LakebaseMemoryStore(
 
 See [`docs/running/lakebase-recipe.md`](../../../docs/running/lakebase-recipe.md) for the full Lakebase provisioning + pgvector walkthrough, including the `principal_id` index and the ivfflat tuning knob.
 
-**Resolving `principal_id` in production:**
+**Resolving `principal_id` in production (DEPLOY BLOCKER):**
 
-The seeded example pins `default_principal_id="user:alice"` so local dev runs end-to-end without auth wiring. In a real deployment, swap that for the calling user's identity:
+This example already wires `_use_dep_principal=True`, so Apps requests resolve
+memory scope from `X-Forwarded-User` (`Dependencies.Principal`). The seeded
+`default_principal_id="user:alice"` is only a local/smoke fallback when no OBO
+header is present.
+
+**Do not ship multi-user traffic that can hit the alice fallback** — every
+caller without Apps headers would share one memory store. For production:
+
+1. Require Databricks Apps (or equivalent) so `X-Forwarded-User` is always set, **or**
+2. Drop `default_principal_id` and let tools return the no-principal degradation
+   string when identity is missing, **or**
+3. Supply an explicit `principal_id_resolver` that never returns a shared demo id:
 
 ```python
 def _resolve_principal() -> str | None:

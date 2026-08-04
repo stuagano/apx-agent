@@ -1,14 +1,77 @@
+"""Scaffold an apx-agent project into the caller's Databricks Workspace.
+
+Validates ``app_name`` / ``use_case`` before interpolating them into generated
+source, so LLM-supplied strings cannot break out of string literals or land
+illegal Databricks App names.
+"""
+from __future__ import annotations
+
 import base64
+import re
 from dataclasses import dataclass
+
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.workspace import ImportFormat
+
 from apx_agent import Dependencies
+
+# Databricks Apps names: lowercase alphanumeric + hyphens, 2–63 chars,
+# must start/end with alphanumeric. Keep in sync with platform constraints.
+_APP_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+_MAX_USE_CASE_LEN = 500
 
 
 @dataclass
 class GenieSpace:
     id: str
     name: str
+
+
+def _validate_app_name(app_name: str) -> str:
+    """Reject app names that are unsafe to interpolate into generated paths/TOML."""
+    if not _APP_NAME_RE.fullmatch(app_name):
+        raise ValueError(
+            "app_name must be 2–63 chars, lowercase alphanumeric and hyphens, "
+            f"starting and ending with alphanumeric; got {app_name!r}"
+        )
+    return app_name
+
+
+def _validate_use_case(use_case: str) -> str:
+    """Reject use_case strings that break generated Python / TOML literals."""
+    if not use_case or not use_case.strip():
+        raise ValueError("use_case must be a non-empty description")
+    if len(use_case) > _MAX_USE_CASE_LEN:
+        raise ValueError(
+            f"use_case exceeds {_MAX_USE_CASE_LEN} characters "
+            f"(got {len(use_case)})"
+        )
+    # Block characters that would escape a double-quoted Python/TOML string
+    # or inject newlines into generated source.
+    if any(ch in use_case for ch in ('"', "\\", "\n", "\r", "\0")):
+        raise ValueError(
+            'use_case must not contain quotes, backslashes, or newlines'
+        )
+    return use_case
+
+
+def _validate_table_name(table: str) -> str:
+    """Reject UC three-part names with characters unsafe for codegen."""
+    if not re.fullmatch(r"[A-Za-z0-9_]+(\.[A-Za-z0-9_]+){2}", table):
+        raise ValueError(
+            f"table must be a three-part UC name (catalog.schema.table); got {table!r}"
+        )
+    return table
+
+
+def _validate_genie_space(space: GenieSpace) -> GenieSpace:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", space.id):
+        raise ValueError(f"genie space id has illegal characters: {space.id!r}")
+    if any(ch in space.name for ch in ('"', "\\", "\n", "\r")):
+        raise ValueError(
+            f"genie space name must not contain quotes/backslashes/newlines: {space.name!r}"
+        )
+    return space
 
 
 def _generate_files(
@@ -19,6 +82,11 @@ def _generate_files(
     include_lineage: bool = False,
 ) -> dict[str, str]:
     """Generate apx-agent project files. Returns {filename: content}. Pure function — no side effects."""
+    use_case = _validate_use_case(use_case)
+    app_name = _validate_app_name(app_name)
+    tables = [_validate_table_name(t) for t in tables]
+    genie_spaces = [_validate_genie_space(s) for s in genie_spaces]
+
     tool_imports = []
     tool_calls = []
 
@@ -164,6 +232,8 @@ def scaffold_project(
     ws: Dependencies.UserClient,
 ) -> str:
     """Scaffold an apx-agent project in the Databricks Workspace. Returns the workspace path."""
+    app_name = _validate_app_name(app_name)
+    use_case = _validate_use_case(use_case)
     email = ws.current_user.me().user_name
     workspace_path = f"/Users/{email}/apx-builder/{app_name}"
     files = _generate_files(use_case, tables, genie_spaces, app_name, include_lineage)

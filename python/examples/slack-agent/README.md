@@ -72,7 +72,15 @@ await client.post(
 5. Handler exchanges code for access token, stores it keyed by Slack user ID
 6. Returns "Connected!" — every subsequent command uses the stored token
 
-The OAuth `state` parameter is a server-side nonce (not the raw Slack user ID) to prevent CSRF. The nonce is stored in `_pending: dict[str, str]` and popped on callback.
+The OAuth `state` parameter is a server-side nonce (not the raw Slack user ID) to prevent CSRF. Nonces live in an in-memory map with a **10-minute TTL** and are purged on write/lookup, then popped on callback.
+
+### DEPLOY BLOCKER — token store
+
+`token_store.py` is an in-memory `dict` (single-process, resets on redeploy, no
+refresh, no encryption at rest). **Do not copy it into production.** Use a
+durable InstallationStore, a Delta-backed table, or UC u2m credentials (see
+[slack-uc-mcp](../slack-uc-mcp/)). The nonce TTL above does not make the token
+store production-ready.
 
 ## Request Flow (after connect)
 

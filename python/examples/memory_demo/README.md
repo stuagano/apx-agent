@@ -93,8 +93,16 @@ not the App's service principal.
 1. An `InMemoryMemoryStore` and `InMemoryExampleStore` instantiated at module
    load, pre-seeded with five memories and three few-shot examples for a fake
    principal (`alice`).
-2. The agent's tool set is built by `make_memory_tools(store, default_principal_id=...)`
-   — `recall` / `remember` / `forget` are bound to the store automatically.
+2. The agent's tool set is built by
+   `make_memory_tools(..., default_principal_id=..., _use_dep_principal=True)`
+   — `recall` / `remember` / `forget` are bound to the store and resolve the
+   per-request OBO principal (`Dependencies.Principal`) when Apps headers are
+   present. `default_principal_id="alice"` is the local/smoke fallback only.
+
+   **DEPLOY BLOCKER:** do not run multi-user production traffic against the
+   alice fallback — callers without `X-Forwarded-User` would share one memory
+   scope. Require Apps headers, drop the default, or supply a
+   `principal_id_resolver` that never returns a shared demo id.
 3. The system prompt is built by `assemble_context(memory=..., examples=...)` —
    the helper pulls relevant memories + few-shot examples at compile time and
    formats them as markdown blocks before the static instructions.

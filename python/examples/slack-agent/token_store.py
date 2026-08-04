@@ -1,7 +1,12 @@
 # In-memory store: Slack user ID -> Databricks access token.
-# Single-process safe. Resets on redeploy — for production use one of:
+#
+# DEPLOY BLOCKER — demo only. This dict is single-process, resets on redeploy,
+# has no encryption at rest, and has no refresh. For production use one of:
 #   Option B: slack_bolt InstallationStore (e.g. FileInstallationStore)
 #   Option C: Delta table via WorkspaceClient SQL execution
+#   Option D: UC u2m credential store (see slack-uc-mcp)
+
+from __future__ import annotations
 
 _store: dict[str, str] = {}
 

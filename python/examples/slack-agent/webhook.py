@@ -26,9 +26,36 @@ from config import Settings, get_settings
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/slack")
 
-# Short-lived nonce store: nonce -> slack_user_id.
-# In production, add TTL expiry. For this example, in-memory is fine.
-_pending: dict[str, str] = {}
+# Short-lived nonce store: nonce -> (slack_user_id, expires_at_monotonic).
+# TTL prevents unbounded growth and stale CSRF state reuse.
+_NONCE_TTL_S = 600.0
+_pending: dict[str, tuple[str, float]] = {}
+
+
+def _purge_expired_nonces(now: float | None = None) -> None:
+    """Drop expired OAuth nonces. Called on write and on lookup."""
+    deadline = time.monotonic() if now is None else now
+    expired = [nonce for nonce, (_, exp) in _pending.items() if exp <= deadline]
+    for nonce in expired:
+        _pending.pop(nonce, None)
+
+
+def _put_nonce(nonce: str, slack_user_id: str) -> None:
+    now = time.monotonic()
+    _purge_expired_nonces(now)
+    _pending[nonce] = (slack_user_id, now + _NONCE_TTL_S)
+
+
+def _pop_nonce(nonce: str) -> str | None:
+    now = time.monotonic()
+    _purge_expired_nonces(now)
+    entry = _pending.pop(nonce, None)
+    if entry is None:
+        return None
+    slack_user_id, expires_at = entry
+    if expires_at <= now:
+        return None
+    return slack_user_id
 
 
 def _verify_slack_signature(body: bytes, timestamp: str, signature: str, secret: str) -> bool:
@@ -59,7 +86,7 @@ async def install(
     so the callback can verify the request originated from this app's redirect.
     """
     nonce = secrets.token_urlsafe(16)
-    _pending[nonce] = user
+    _put_nonce(nonce, user)
     params = urlencode({
         "response_type": "code",
         "client_id": settings.databricks_client_id,
@@ -104,7 +131,7 @@ async def oauth_callback(
     if not access_token:
         raise HTTPException(status_code=502, detail="No access_token in Databricks response")
 
-    slack_user_id = _pending.pop(state, None)
+    slack_user_id = _pop_nonce(state)
     if slack_user_id is None:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
     token_store.set_token(slack_user_id, access_token)
