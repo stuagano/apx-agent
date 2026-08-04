@@ -1,5 +1,12 @@
 from unittest.mock import MagicMock, patch, call
-from tools.scaffold_project import _generate_files, scaffold_project, GenieSpace
+import pytest
+from tools.scaffold_project import (
+    _generate_files,
+    _validate_app_name,
+    _validate_use_case,
+    scaffold_project,
+    GenieSpace,
+)
 
 
 def test_generate_files_returns_required_files():
@@ -102,3 +109,31 @@ def test_scaffold_project_uploads_all_files():
     assert "mcp-test" in upload_args[2]
     assert "user@example.com" in upload_args[2]
     assert "mcp-test" in result
+
+
+def test_validate_app_name_rejects_unsafe():
+    with pytest.raises(ValueError, match="app_name"):
+        _validate_app_name("Bad_Name")
+    with pytest.raises(ValueError, match="app_name"):
+        _validate_app_name("../etc")
+    with pytest.raises(ValueError, match="app_name"):
+        _validate_app_name('evil";os.system("x')
+
+
+def test_validate_use_case_rejects_escape_chars():
+    with pytest.raises(ValueError, match="use_case"):
+        _validate_use_case('break "out')
+    with pytest.raises(ValueError, match="use_case"):
+        _validate_use_case("line1\nline2")
+    with pytest.raises(ValueError, match="use_case"):
+        _validate_use_case("")
+
+
+def test_generate_files_rejects_unsafe_use_case():
+    with pytest.raises(ValueError, match="use_case"):
+        _generate_files('x"; import os #', ["main.sales.orders"], [], "mcp-sales")
+
+
+def test_generate_files_rejects_unsafe_table():
+    with pytest.raises(ValueError, match="table"):
+        _generate_files("ok", ['main.sales.orders";pass#'], [], "mcp-sales")

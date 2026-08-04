@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import token_store
 from config import Settings, get_settings
-from webhook import _pending, router as slack_router
+from webhook import _put_nonce, _pending, router as slack_router
 
 DATABRICKS_HOST = "adb-123.azuredatabricks.net"
 APP_URL = "https://my-app.databricksapps.com"
@@ -59,7 +59,7 @@ def test_install_includes_redirect_uri(client):
 
 
 def test_oauth_callback_stores_token(client):
-    _pending["test-nonce"] = "U123"  # simulate prior /install call
+    _put_nonce("test-nonce", "U123")  # simulate prior /install call
 
     mock_response = MagicMock()
     mock_response.status_code = 200
@@ -76,6 +76,30 @@ def test_oauth_callback_stores_token(client):
     assert resp.status_code == 200
     assert "Connected" in resp.text
     assert token_store.get_token("U123") == "dapi-real-token"
+
+
+def test_oauth_callback_expired_nonce_returns_400(client, monkeypatch):
+    _put_nonce("stale-nonce", "U123")
+    # Force every pending entry past TTL.
+    monkeypatch.setattr(
+        "webhook._pending",
+        {n: (uid, 0.0) for n, (uid, _) in _pending.items()},
+    )
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"access_token": "dapi-real-token"}
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with patch("webhook.httpx.AsyncClient") as MockAsyncClient:
+        MockAsyncClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockAsyncClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        resp = client.get("/slack/oauth/callback?code=abc123&state=stale-nonce")
+
+    assert resp.status_code == 400
+    assert token_store.get_token("U123") is None
 
 
 def test_oauth_callback_invalid_state_returns_400(client):
