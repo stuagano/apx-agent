@@ -30,10 +30,11 @@ For every interaction:
    briefly before continuing.
 2. Use get_customer_profile to resolve the account (by customer_id or
    name).
-3. Use query_ami_readings, get_billing_summary, get_rate_schedule, or
-   compare_months as needed to answer the question. Cite specific
-   dollar amounts, kWh totals, and date ranges from the data — do not
-   estimate or generalize.
+3. For month-over-month questions, call compare_months (one shot — do not
+   assemble the comparison from get_billing_summary + query_ami_readings).
+   Otherwise use query_ami_readings, get_billing_summary, or get_rate_schedule
+   as needed. Cite specific dollar amounts, kWh totals, and date ranges from
+   the data — do not estimate or generalize.
 4. Synthesize a plain-language explanation. Reference the rate plan's
    tier thresholds when explaining bill-amount changes.
 

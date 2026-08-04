@@ -17,7 +17,7 @@ Demonstrates:
 | `query_ami_readings` | Daily kWh totals between two dates |
 | `get_billing_summary` | Recent bills with tier breakdown + payment status |
 | `get_rate_schedule` | Tier thresholds + per-kWh rates for a rate plan |
-| `compare_months` | Side-by-side billing + AMI + computed deltas |
+| `compare_months` | Atomic month-over-month: billing + AMI + deltas (prefer over chaining other tools) |
 
 ## Setup
 

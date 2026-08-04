@@ -31,20 +31,10 @@ if SMOKE_MODE:
              "status": "delivered", "ordered_at": "2026-04-28"},
         ]
 
-    @tool
-    def format_address(street: str, city: str, region: str, postal_code: str) -> str:
-        """Format a postal address into a canonical multi-line string."""
-        return f"{street}\n{city}, {region} {postal_code}"
-
-    billing_tools = [get_recent_orders, format_address]
+    billing_tools = [get_recent_orders]
 
 else:
     from apx_agent import Dependencies
-
-    @tool(uc="main.agent_tools.format_address", grant=["agent_consumers"])
-    def format_address(street: str, city: str, region: str, postal_code: str) -> str:
-        """Format a postal address into a canonical multi-line string."""
-        return f"{street}\n{city}, {region} {postal_code}"
 
     @tool
     def get_recent_orders(
@@ -64,7 +54,7 @@ else:
             parameters=[{"name": "cid", "value": customer_id, "type": "STRING"}],
         )
 
-    billing_tools = [get_recent_orders, format_address]
+    billing_tools = [get_recent_orders]
 
 
 agent = Agent(

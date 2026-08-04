@@ -60,11 +60,6 @@ if SMOKE_MODE:
         ]
 
     @tool
-    def format_address(street: str, city: str, region: str, postal_code: str) -> str:
-        """Format a postal address into a canonical multi-line string."""
-        return f"{street}\n{city}, {region} {postal_code}"
-
-    @tool
     def docs_search(query: str) -> list[dict]:
         """Search the support docs index (smoke stub).
 
@@ -92,7 +87,7 @@ if SMOKE_MODE:
             "Genie space."
         )
 
-    billing_tools = [get_recent_orders, format_address]
+    billing_tools = [get_recent_orders]
     technical_tools = [docs_search]
     account_extra_tools = [ask_account_data]
 
@@ -116,11 +111,6 @@ else:
             return "account"
         return "other"
 
-    @tool(uc="main.agent_tools.format_address", grant=["agent_consumers"])
-    def format_address(street: str, city: str, region: str, postal_code: str) -> str:
-        """Format a postal address into a canonical multi-line string."""
-        return f"{street}\n{city}, {region} {postal_code}"
-
     @tool
     def get_recent_orders(
         customer_id: str,
@@ -139,7 +129,7 @@ else:
             parameters=[{"name": "cid", "value": customer_id, "type": "STRING"}],
         )
 
-    billing_tools = [get_recent_orders, format_address]
+    billing_tools = [get_recent_orders]
     technical_tools = [
         vector_search_tool(
             "main.support.docs_index",

@@ -27,7 +27,7 @@ from typing import Any
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem, StatementState
 
-from apx_agent import Dependencies
+from apx_agent import Dependencies, ResourceSpec, attach_resources
 
 Client = Dependencies.Client
 Headers = Dependencies.Headers
@@ -41,6 +41,12 @@ SCHEMA = os.environ.get("DEMO_SCHEMA", "billing")
 WAREHOUSE_ID = os.environ.get("WAREHOUSE_ID", "")
 
 # Expected tables: customers, ami_hourly_rollups, billing_history, rate_schedules
+_BILLING_TABLES = (
+    f"{CATALOG}.{SCHEMA}.customers",
+    f"{CATALOG}.{SCHEMA}.ami_hourly_rollups",
+    f"{CATALOG}.{SCHEMA}.billing_history",
+    f"{CATALOG}.{SCHEMA}.rate_schedules",
+)
 
 
 def _param(name: str, value: Any) -> StatementParameterListItem:
@@ -232,11 +238,16 @@ def get_rate_schedule(rate_plan_id: str, ws: Client) -> dict[str, Any]:
 
 
 def compare_months(customer_id: str, month1: str, month2: str, ws: Client) -> dict[str, Any]:
-    """Compare a customer's energy usage and billing between two months.
-    Shows side-by-side billing breakdown and AMI data, plus computed deltas
-    (kWh change, cost change, percentage changes).
+    """Compare one customer's energy usage and billing between two months.
+
+    Call this for any month-over-month question — do not chain
+    get_billing_summary + query_ami_readings and compute deltas yourself.
+    Returns side-by-side billing + AMI for both months plus computed deltas
+    (kWh change, cost change, percentage changes) in one response.
+
     customer_id: e.g. CUST-0001
-    month1 / month2: YYYYMM format (e.g. 202503)"""
+    month1 / month2: YYYYMM format (e.g. 202503)
+    """
 
     bill_sql = """
     SELECT * FROM billing_history
@@ -297,3 +308,23 @@ def compare_months(customer_id: str, month1: str, month2: str, ws: Client) -> di
         }
 
     return result
+
+
+_table_specs = [ResourceSpec("uc_table", t) for t in _BILLING_TABLES]
+for _fn in (
+    get_customer_profile,
+    query_ami_readings,
+    get_billing_summary,
+    get_rate_schedule,
+    compare_months,
+):
+    attach_resources(_fn, _table_specs)
+if WAREHOUSE_ID:
+    for _fn in (
+        get_customer_profile,
+        query_ami_readings,
+        get_billing_summary,
+        get_rate_schedule,
+        compare_months,
+    ):
+        attach_resources(_fn, [ResourceSpec("sql_warehouse", WAREHOUSE_ID)])

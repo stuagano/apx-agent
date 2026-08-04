@@ -1,6 +1,15 @@
 from unittest.mock import patch
 
-from tools.parse_documents import parse_documents
+from apx_agent import ResourceSpec
+from apx_agent._resources import get_resources
+from tools.parse_documents import _VISION_ENDPOINT, parse_documents
+
+
+def test_parse_documents_declares_vision_endpoint_and_documents_table():
+    kinds = {s.kind: s.identifier for s in get_resources(parse_documents)}
+    assert kinds["serving_endpoint"] == _VISION_ENDPOINT
+    assert kinds["uc_table"].endswith(".documents")
+    assert ResourceSpec("serving_endpoint", _VISION_ENDPOINT) in get_resources(parse_documents)
 
 
 @patch("tools.parse_documents._extract_via_vision")

@@ -8,14 +8,13 @@ Maintains a searchable contract portfolio in Unity Catalog. Upload a PDF or text
 
 ## What makes this simple
 
-One `Agent` with four tools — portfolio management handled entirely by the LLM:
+One `Agent` with three tools — portfolio management handled entirely by the LLM:
 
 ```python
 agent = Agent(
     tools=[
         query_portfolio,
         summarize_contract,
-        find_contracts_expiring,
         extract_new_contract,
     ],
     sub_agents=_resolve_sub_agents(),   # optional data-inspector for SQL
@@ -186,8 +185,8 @@ tests/test_extraction.py::test_extraction_schema_valid PASSED
 tests/test_router_contracts.py::test_query_portfolio_returns_list PASSED
 tests/test_router_upload.py::test_upload_stores_file PASSED
 tests/test_tools_extract_new_contract.py::test_extract_writes_row PASSED
-tests/test_tools_find_contracts_expiring.py::test_expiring_filters_by_days PASSED
 tests/test_tools_query_portfolio.py::test_query_filters_by_counterparty PASSED
+tests/test_tools_query_portfolio.py::test_query_portfolio_expiry_window_only PASSED
 tests/test_tools_summarize_contract.py::test_summarize_returns_dict PASSED
 ```
 
@@ -286,9 +285,8 @@ databricks bundle deploy
 
 | Tool | What it does |
 |------|--------------|
-| `query_portfolio` | Filter and list contracts by counterparty, type, or date range |
+| `query_portfolio` | Filter and list contracts (counterparty, type, pricing, auto-renewal, or `expires_within_days` for renewal calendars) |
 | `summarize_contract` | Structured summary of a specific contract by ID |
-| `find_contracts_expiring` | Contracts expiring within N days |
 | `extract_new_contract` | Extract fields from a file in UC volumes and store in the portfolio |
 
 ---
@@ -309,7 +307,6 @@ contract-parsing-agent/
 ├── tools/                               # Agent tool implementations
 │   ├── query_portfolio.py
 │   ├── summarize_contract.py
-│   ├── find_contracts_expiring.py
 │   ├── extract_new_contract.py
 │   └── _sql.py                          # Shared SQL helpers
 ├── scripts/                             # Demo + setup scripts
