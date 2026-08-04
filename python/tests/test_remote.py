@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 import pytest
 import httpx
 
-from apx_agent._remote import RemoteDatabricksAgent, _url_to_app_name, _continue_request
+from apx_agent._remote import (
+    RemoteDatabricksAgent,
+    _continue_request,
+    _trusted_origin,
+    _url_to_app_name,
+)
 from apx_agent._models import Message
 
 
@@ -241,8 +246,9 @@ class TestFromCardUrl:
         assert skill.outputSchema == {"type": "string"}
 
     @pytest.mark.asyncio
-    async def test_updates_base_url_from_card(self):
-        card_data = make_card_data(url="https://canonical.workspace.databricksapps.com")
+    async def test_ignores_cross_host_apps_card_url(self):
+        """#614: open *.databricksapps.com is not enough to retarget OBO."""
+        card_data = make_card_data(url="https://attacker.workspace.databricksapps.com")
 
         async def mock_get(url, **kwargs):
             return make_httpx_response(card_data)
@@ -257,7 +263,67 @@ class TestFromCardUrl:
                 "https://other-host/.well-known/agent.json"
             )
 
-        assert agent._base_url == "https://canonical.workspace.databricksapps.com"
+        assert agent._base_url == "https://other-host"
+
+    @pytest.mark.asyncio
+    async def test_same_origin_card_url_updates_base(self):
+        card_data = make_card_data(url="https://other-host/v2")
+
+        async def mock_get(url, **kwargs):
+            return make_httpx_response(card_data)
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.get = AsyncMock(side_effect=mock_get)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            agent = await RemoteDatabricksAgent.from_card_url(
+                "https://other-host/.well-known/agent.json"
+            )
+
+        assert agent._base_url == "https://other-host/v2"
+
+    @pytest.mark.asyncio
+    async def test_from_app_name_allows_matching_apps_host_remap(self, monkeypatch):
+        """from_app_name may remap workspace card → that app's Apps URL only."""
+        monkeypatch.setenv("DATABRICKS_HOST", "https://my-workspace.databricks.com")
+        apps_url = "https://my-app-1234567890123.aws.databricksapps.com"
+        card_data = make_card_data(name="my-app", url=apps_url)
+
+        async def mock_get(url, **kwargs):
+            return make_httpx_response(card_data)
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.get = AsyncMock(side_effect=mock_get)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            agent = await RemoteDatabricksAgent.from_app_name("my-app")
+
+        assert agent._base_url == apps_url
+
+    @pytest.mark.asyncio
+    async def test_from_app_name_rejects_other_apps_host(self, monkeypatch):
+        monkeypatch.setenv("DATABRICKS_HOST", "https://my-workspace.databricks.com")
+        card_data = make_card_data(
+            name="my-app",
+            url="https://attacker-999.aws.databricksapps.com",
+        )
+
+        async def mock_get(url, **kwargs):
+            return make_httpx_response(card_data)
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.get = AsyncMock(side_effect=mock_get)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            agent = await RemoteDatabricksAgent.from_app_name("my-app")
+
+        assert agent._base_url == "https://my-workspace.databricks.com/apps/my-app"
 
     @pytest.mark.asyncio
     async def test_raises_on_card_fetch_failure(self):
@@ -1018,6 +1084,56 @@ class TestOboHeaders:
         headers = agent._obo_headers(request)
         # Request headers override extra headers
         assert headers["Authorization"] == "Bearer obo"
+
+    def test_withholds_obo_for_cross_apps_host_retarget(self):
+        """#614: base_url on a different Apps host must not get OBO."""
+        agent = self._make_agent()
+        agent._card_url = (
+            "https://data-inspector.workspace.databricksapps.com/.well-known/agent.json"
+        )
+        agent._base_url = "https://attacker.workspace.databricksapps.com"
+        agent._app_name = "data-inspector"
+        request = make_request(
+            {
+                "Authorization": "Bearer secret",
+                "X-Forwarded-Access-Token": "obo-token",
+            }
+        )
+        headers = agent._obo_headers(request)
+        assert "Authorization" not in headers
+        assert "X-Forwarded-Access-Token" not in headers
+
+
+# ---------------------------------------------------------------------------
+# _trusted_origin (#614)
+# ---------------------------------------------------------------------------
+
+
+class TestTrustedOrigin:
+    def test_same_origin_ok(self):
+        assert _trusted_origin(
+            "https://host/v2", "https://host/.well-known/agent.json"
+        )
+
+    def test_open_apps_suffix_alone_rejected(self):
+        assert not _trusted_origin(
+            "https://attacker.workspace.databricksapps.com",
+            "https://other-host/.well-known/agent.json",
+        )
+
+    def test_expected_app_name_allows_matching_apps_host(self):
+        assert _trusted_origin(
+            "https://my-app-1234567890123.aws.databricksapps.com",
+            "https://ws.databricks.com/apps/my-app/.well-known/agent.json",
+            expected_app_name="my-app",
+        )
+
+    def test_expected_app_name_rejects_other_apps_host(self):
+        assert not _trusted_origin(
+            "https://attacker-999.aws.databricksapps.com",
+            "https://ws.databricks.com/apps/my-app/.well-known/agent.json",
+            expected_app_name="my-app",
+        )
 
 
 # ---------------------------------------------------------------------------
