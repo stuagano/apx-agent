@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 import httpx
-from apx_agent import Dependencies, decode_statement, get_llm, run_sql
+from apx_agent import Dependencies, ResourceSpec, attach_resources, decode_statement, run_sql
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.dashboards import GenieMessage, MessageStatus
 
@@ -20,7 +20,6 @@ from config import get_settings
 from models import (
     AlternativePart,
     HistoricalPattern,
-    MarketSignal,
     ShortageSignal,
     VendorListing,
 )
@@ -208,7 +207,7 @@ def find_historical_patterns(
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Market Signal Validation — Vector Search + LLM synthesis
+# Step 3: Market Signal Validation — Vector Search (agent synthesizes verdict)
 # ---------------------------------------------------------------------------
 
 def validate_against_market_news(
@@ -216,20 +215,24 @@ def validate_against_market_news(
     manufacturer: str,
     ws: Dependencies.Workspace,
 ) -> dict[str, Any]:
-    """Search market intelligence documents for evidence confirming or
-    contradicting a shortage signal for this component. Returns a structured
-    verdict with confidence and supporting source references. Use after demand
-    cluster detection to separate noise from real market events."""
+    """Search market intelligence documents for evidence about a shortage signal.
+
+    Returns sources and snippets only — the calling agent synthesizes
+    CONFIRMED / UNCONFIRMED from this evidence. Does not make a nested LLM
+    call (keeps tracing and max_iterations on the outer agent loop).
+
+    Use after demand cluster detection to separate noise from real market events.
+    """
     settings = get_settings()
 
     if not (settings.vs_endpoint and settings.vs_index):
-        return MarketSignal(
-            component_id=component_id,
-            confirmed=False,
-            confidence="LOW",
-            supporting_sources=[],
-            summary="Market validation not configured — set VS_ENDPOINT and VS_INDEX.",
-        ).model_dump()
+        return {
+            "component_id": component_id,
+            "configured": False,
+            "sources": [],
+            "snippets": [],
+            "note": "Market validation not configured — set VS_ENDPOINT and VS_INDEX.",
+        }
 
     try:
         query_text = f"{manufacturer} {component_id} shortage supply constraint pricing"
@@ -250,64 +253,46 @@ def validate_against_market_news(
             )
             for row in result.result.data_array:
                 r = dict(zip(col_names, row))
-                docs.append(r.get("content", ""))
+                content = r.get("content", "")
+                if content:
+                    docs.append(content[:800])
                 src = r.get("source_file", "unknown")
                 if src not in sources:
                     sources.append(src)
 
         if not docs:
-            return MarketSignal(
-                component_id=component_id,
-                confirmed=False,
-                confidence="LOW",
-                supporting_sources=[],
-                summary=f"No market intelligence found for {manufacturer} {component_id}.",
-            ).model_dump()
+            return {
+                "component_id": component_id,
+                "configured": True,
+                "sources": [],
+                "snippets": [],
+                "note": (
+                    f"No market intelligence found for {manufacturer} {component_id}. "
+                    "Treat as UNCONFIRMED unless other evidence exists."
+                ),
+            }
 
-        # Synthesize a verdict using Sonnet — faster + cheaper than Opus for yes/no verdicts.
-        # get_llm() routes by endpoint prefix and applies provider-quirk defenses
-        # (strips temperature/top_p for GPT-5 endpoints). For Claude/Llama/Gemini it
-        # returns plain ChatDatabricks. See apx_agent._llm for the full rationale.
-        from langchain_core.messages import HumanMessage, SystemMessage
-
-        context = "\n\n---\n\n".join(docs[:5])
-        llm = get_llm("databricks-claude-sonnet-4-6")
-        verdict = llm.invoke([
-            SystemMessage(content=(
-                "You are a semiconductor market analyst. Based on the market intelligence "
-                "documents provided, determine whether there is evidence of a shortage or "
-                "significant price movement for the specified component. "
-                "Respond with: CONFIRMED or UNCONFIRMED, confidence (HIGH/MEDIUM/LOW), "
-                "and a 2-3 sentence summary citing specific evidence from the documents."
-            )),
-            HumanMessage(content=(
-                f"Component: {manufacturer} {component_id}\n\n"
-                f"Market Intelligence Documents:\n{context}"
-            )),
-        ])
-
-        answer = verdict.content
-        answer_upper = answer.upper()
-        confirmed = "CONFIRMED" in answer_upper and "UNCONFIRMED" not in answer_upper
-        confidence = "HIGH" if "HIGH" in answer_upper else ("MEDIUM" if "MEDIUM" in answer_upper else "LOW")
-
-        return MarketSignal(
-            component_id=component_id,
-            confirmed=confirmed,
-            confidence=confidence,
-            supporting_sources=sources[:5],
-            summary=answer[:500],
-        ).model_dump()
+        return {
+            "component_id": component_id,
+            "configured": True,
+            "sources": sources[:5],
+            "snippets": docs[:5],
+            "note": (
+                "Synthesize CONFIRMED or UNCONFIRMED from these snippets; "
+                "cite sources in your report."
+            ),
+        }
 
     except Exception as e:
         logger.warning("Vector Search validation failed for %s: %s", component_id, e)
-        return MarketSignal(
-            component_id=component_id,
-            confirmed=False,
-            confidence="LOW",
-            supporting_sources=[],
-            summary=f"Market validation error: {e}",
-        ).model_dump()
+        return {
+            "component_id": component_id,
+            "configured": True,
+            "sources": [],
+            "snippets": [],
+            "error": str(e),
+            "note": "Market validation error — treat as UNCONFIRMED.",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -461,4 +446,44 @@ def find_alternative_parts(
         "alternatives_found": len(alternatives),
         "alternatives": alternatives,
     }
+
+
+# ---------------------------------------------------------------------------
+# Resource declarations for log_agent / Model Serving manifests
+# ---------------------------------------------------------------------------
+
+_settings = get_settings()
+if _settings.demand_orders_table:
+    attach_resources(
+        scan_demand_clusters,
+        [ResourceSpec("uc_table", _settings.demand_orders_table)],
+    )
+if _settings.demand_genie_space_id:
+    attach_resources(
+        scan_demand_clusters,
+        [ResourceSpec("genie_space", _settings.demand_genie_space_id)],
+    )
+if _settings.historical_demand_table:
+    attach_resources(
+        find_historical_patterns,
+        [ResourceSpec("uc_table", _settings.historical_demand_table)],
+    )
+if _settings.vs_index:
+    attach_resources(
+        validate_against_market_news,
+        [ResourceSpec("vector_search_index", _settings.vs_index)],
+    )
+if _settings.parts_catalog_table:
+    attach_resources(
+        find_alternative_parts,
+        [ResourceSpec("uc_table", _settings.parts_catalog_table)],
+    )
+if _settings.databricks_warehouse_id:
+    _wh = [ResourceSpec("sql_warehouse", _settings.databricks_warehouse_id)]
+    for _fn in (
+        scan_demand_clusters,
+        find_historical_patterns,
+        find_alternative_parts,
+    ):
+        attach_resources(_fn, _wh)
 

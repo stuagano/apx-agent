@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from apx_agent import Dependencies
+from apx_agent import Dependencies, ResourceSpec, attach_resources
 from databricks_tools_core.sql import sql_literal
 
 from config import get_settings
@@ -21,14 +21,18 @@ def query_portfolio(
     expires_within_days: int | None = None,
     ws: Workspace = None,
 ) -> dict[str, Any]:
-    """Filter the contract portfolio. Returns a list of contracts matching the
-    provided filters.
+    """Filter the contract portfolio. Returns matching contracts.
+
+    Use this for every portfolio listing — including renewal calendars.
+    Pass expires_within_days alone to list contracts that expire in the next
+    N days and have not already expired (soonest first). Combine with other
+    filters when the question is more specific.
 
     counterparty: utility / counterparty name (exact match)
     contract_type: one of interconnection, ppa, demand_response, tariff, service
     pricing_model: one of fixed, indexed, tiered, time_of_use
     auto_renewal: true to include only auto-renewing contracts
-    expires_within_days: only contracts expiring in the next N days
+    expires_within_days: only not-yet-expired contracts expiring in the next N days
     """
     s = get_settings()
     table = s.qualified_table("primary")
@@ -42,9 +46,9 @@ def query_portfolio(
     if auto_renewal is not None:
         where.append(f"auto_renewal = {'true' if auto_renewal else 'false'}")
     if expires_within_days is not None:
-        where.append(
-            f"expiry_date <= date_add(current_date(), {int(expires_within_days)})"
-        )
+        n = max(1, int(expires_within_days))
+        where.append(f"expiry_date <= date_add(current_date(), {n})")
+        where.append("expiry_date >= current_date()")
     where_clause = (" WHERE " + " AND ".join(where)) if where else ""
     sql = (
         f"SELECT contract_id, counterparty, contract_type, expiry_date, "
@@ -54,3 +58,11 @@ def query_portfolio(
     )
     rows = run_sql(ws, sql)
     return {"rows": rows, "count": len(rows)}
+
+
+_settings = get_settings()
+if _settings.catalog and _settings.schema:
+    attach_resources(
+        query_portfolio,
+        [ResourceSpec("uc_table", _settings.qualified_table("primary"))],
+    )

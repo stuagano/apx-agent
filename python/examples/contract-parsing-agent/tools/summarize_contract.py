@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from apx_agent import Dependencies
+from apx_agent import Dependencies, ResourceSpec, attach_resources
 from databricks_tools_core.sql import sql_literal
 
 from config import get_settings
@@ -27,3 +27,11 @@ def summarize_contract(contract_id: str, ws: Workspace = None) -> dict[str, Any]
     if not rows:
         return {"contract": None, "found": False, "contract_id": contract_id}
     return {"contract": rows[0], "found": True}
+
+
+_settings = get_settings()
+if _settings.catalog and _settings.schema:
+    attach_resources(
+        summarize_contract,
+        [ResourceSpec("uc_table", _settings.qualified_table("primary"))],
+    )

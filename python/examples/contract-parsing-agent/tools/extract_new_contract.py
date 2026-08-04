@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from apx_agent import Dependencies
+from apx_agent import Dependencies, ResourceSpec, attach_resources
 from databricks_tools_core.sql import sql_literal
 
 from config import get_settings
@@ -75,3 +75,13 @@ def extract_new_contract(volume_path: str, ws: Workspace = None) -> dict[str, An
     except Exception as e:
         return {"error": "insert_failed", "message": str(e)}
     return {"contract_id": contract_id, "extracted": extracted}
+
+
+_settings = get_settings()
+_extract_specs: list[ResourceSpec] = []
+if _settings.catalog and _settings.schema:
+    _extract_specs.append(ResourceSpec("uc_table", _settings.qualified_table("primary")))
+if _settings.model:
+    _extract_specs.append(ResourceSpec("serving_endpoint", _settings.model))
+if _extract_specs:
+    attach_resources(extract_new_contract, _extract_specs)

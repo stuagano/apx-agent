@@ -80,7 +80,7 @@ cd orchestrator && databricks bundle deploy --target dev \
 | Component | Role | Key tools |
 |-----------|------|-----------|
 | `orchestrator/` | Triage + route | `classify_intent` (local), 3 remote delegates (auto-materialized from cards) |
-| `billing_specialist/` | Billing domain | `get_recent_orders`, `format_address` |
+| `billing_specialist/` | Billing domain | `get_recent_orders` |
 | `technical_specialist/` | Technical domain | `docs_search` (Vector Search in prod) |
 | `account_specialist/` | Account domain | `recall`, `remember` (semantic memory), `ask_account_data` (Genie) |
 
