@@ -239,6 +239,7 @@ async def test_discover_page_has_wire_actions(app: FastAPI):
 
 @pytest.mark.asyncio
 async def test_discover_targets_and_wire_agent(app: FastAPI, tmp_path, monkeypatch: pytest.MonkeyPatch):
+    peer_url = "https://peer-app.aws.databricksapps.com"
     agent_py = tmp_path / "agent.py"
     agent_py.write_text(
         'from apx_agent import Agent\n\nagent = Agent(tools=[], instructions="hi")\n'
@@ -247,6 +248,7 @@ async def test_discover_targets_and_wire_agent(app: FastAPI, tmp_path, monkeypat
     monkeypatch.setattr("apx_agent._ui_edit._find_agent_router_path", lambda: agent_py)
     monkeypatch.setattr("apx_agent._dev._find_env_path", lambda: tmp_path / ".env")
     monkeypatch.setattr("apx_agent._ui_setup._find_env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr("apx_agent._ui_probe._validate_probe_url", lambda _url: None)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
         t = await ac.get("/_apx/discover/targets")
@@ -256,7 +258,7 @@ async def test_discover_targets_and_wire_agent(app: FastAPI, tmp_path, monkeypat
         w = await ac.post(
             "/_apx/discover/wire-agent",
             json={
-                "url": "https://peer.example",
+                "url": peer_url,
                 "name": "peer",
                 "app_name": "peer-app",
                 "target": "agent",
@@ -271,20 +273,56 @@ async def test_discover_targets_and_wire_agent(app: FastAPI, tmp_path, monkeypat
         assert body["restart_required"] is True
         text = agent_py.read_text()
         assert "$APX_PEER_PEER_APP_URL" in text
-        assert (tmp_path / ".env").read_text().count("APX_PEER_PEER_APP_URL=https://peer.example") == 1
+        assert (tmp_path / ".env").read_text().count(f"APX_PEER_PEER_APP_URL={peer_url}") == 1
 
         again = await ac.post(
             "/_apx/discover/wire-agent",
-            json={"url": "https://peer.example", "app_name": "peer-app", "target": "agent"},
+            json={"url": peer_url, "app_name": "peer-app", "target": "agent"},
         )
         assert again.json()["already_present"] is True
 
         u = await ac.post(
             "/_apx/discover/unwire-agent",
-            json={"url": "https://peer.example", "app_name": "peer-app", "target": "agent", "use_env": True},
+            json={"url": peer_url, "app_name": "peer-app", "target": "agent", "use_env": True},
         )
         assert u.status_code == 200
         assert "$APX_PEER_PEER_APP_URL" not in agent_py.read_text()
+
+
+@pytest.mark.asyncio
+async def test_discover_wire_agent_rejects_off_allowlist(
+    app: FastAPI, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    agent_py = tmp_path / "agent.py"
+    agent_py.write_text(
+        'from apx_agent import Agent\n\nagent = Agent(tools=[], instructions="hi")\n'
+    )
+    monkeypatch.setattr("apx_agent._dev._find_agent_router_path", lambda: agent_py)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        w = await ac.post(
+            "/_apx/discover/wire-agent",
+            json={
+                "url": "https://169.254.169.254/latest/meta-data/",
+                "app_name": "meta",
+                "target": "agent",
+            },
+        )
+    assert w.status_code == 400
+    assert "sub_agents" not in agent_py.read_text()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        w2 = await ac.post(
+            "/_apx/discover/wire-agent",
+            json={
+                "url": "https://evil.example/card",
+                "app_name": "evil",
+                "target": "agent",
+            },
+        )
+    assert w2.status_code == 400
+    assert "databricksapps.com" in w2.json()["detail"]
+    assert "sub_agents" not in agent_py.read_text()
 
 
 @pytest.mark.asyncio
@@ -292,6 +330,7 @@ async def test_discover_wire_agent_hot_applies(app: FastAPI, tmp_path, monkeypat
     from apx_agent import Agent
     from apx_agent._models import AgentCard, AgentConfig, AgentContext
 
+    peer_url = "https://peer-app.aws.databricksapps.com"
     agent_py = tmp_path / "agent.py"
     agent_py.write_text(
         'from apx_agent import Agent\n\nagent = Agent(tools=[], instructions="hi")\n'
@@ -299,6 +338,7 @@ async def test_discover_wire_agent_hot_applies(app: FastAPI, tmp_path, monkeypat
     monkeypatch.setattr("apx_agent._dev._find_agent_router_path", lambda: agent_py)
     monkeypatch.setattr("apx_agent._ui_edit._find_agent_router_path", lambda: agent_py)
     monkeypatch.setattr("apx_agent._dev._find_env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr("apx_agent._ui_probe._validate_probe_url", lambda _url: None)
 
     live = Agent(tools=[], instructions="hi")
     config = AgentConfig(name="disc-test", model="claude-fake")
@@ -317,7 +357,7 @@ async def test_discover_wire_agent_hot_applies(app: FastAPI, tmp_path, monkeypat
         w = await ac.post(
             "/_apx/discover/wire-agent",
             json={
-                "url": "https://peer.example",
+                "url": peer_url,
                 "app_name": "peer-app",
                 "target": "agent",
                 "use_env": True,

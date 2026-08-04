@@ -120,7 +120,7 @@ from ._ui_setup import (
     _write_env_file,
     _render_setup_ui,
 )
-from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes, _validate_probe_url
+from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes, _validate_probe_url, validate_wire_peer_url
 
 logger = logging.getLogger(__name__)
 
@@ -2482,6 +2482,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 status_code=400,
                 detail="url is required (UC-only agents without an Apps URL cannot be wired)",
             )
+        # #610: SSRF + Apps-host allowlist before any disk / live-agent mutation.
+        wire_reason = validate_wire_peer_url(url)
+        if wire_reason is not None:
+            raise HTTPException(status_code=400, detail=wire_reason)
         path = _find_agent_router_path()
         if path is None or not path.exists():
             raise HTTPException(status_code=400, detail="agent.py not found — Discover wire needs on-disk source")

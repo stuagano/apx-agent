@@ -15,6 +15,7 @@ from ._agents import LlmAgent
 from ._env import resolve_env_var
 from ._models import A2ASkill, AgentCard, AgentContext, AgentTool
 from ._topology import _iter_child_agents
+from ._ui_probe import validate_wire_peer_url
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,12 @@ async def hot_apply_sub_agent(
     env_key: str | None = None,
 ) -> bool:
     """Append ``ref`` to the live leaf and materialize the remote tool. Returns applied."""
+    # #610 defense-in-depth: never OBO-fetch an off-allowlist peer even if a
+    # caller bypasses the Discover HTTP gate.
+    wire_reason = validate_wire_peer_url(url)
+    if wire_reason is not None:
+        logger.warning("hot-apply sub-agent rejected url: %s", wire_reason)
+        return False
     leaf = resolve_live_leaf(ctx.agent, target)
     if leaf is None:
         logger.info("hot-apply sub-agent: no live leaf for target=%s", target)

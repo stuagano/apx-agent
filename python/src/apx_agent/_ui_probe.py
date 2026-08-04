@@ -1158,6 +1158,39 @@ def _validate_probe_url(url: str) -> str | None:
     return None
 
 
+_APPS_HOST_SUFFIX = ".databricksapps.com"
+
+
+def validate_wire_peer_url(url: str) -> str | None:
+    """SSRF + Apps-host allowlist for Discover ``wire-agent`` / hot-apply.
+
+    Stricter than :func:`_validate_probe_url`: peers must be ``https`` and the
+    host must be a Databricks Apps URL (``*.databricksapps.com``). Then the
+    probe SSRF resolver check runs so a trusted-suffix name that DNS-rebinds
+    to link-local / private space is still rejected.
+
+    Returns ``None`` when safe, or a human-readable rejection reason.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "Could not parse URL"
+    if parsed.scheme != "https":
+        return "Wire peer URL must use https"
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return "URL has no host"
+    # Suffix match on the hostname only — blocks evil.databricksapps.com.attacker.tld
+    if host != "databricksapps.com" and not host.endswith(_APPS_HOST_SUFFIX):
+        return (
+            f"Host {host!r} is not a Databricks Apps URL "
+            "(must be https://*.databricksapps.com)"
+        )
+    return _validate_probe_url(url)
+
+
 async def _run_probe(url: str) -> dict[str, Any]:
     """Make an outbound GET request and return connectivity diagnostics."""
     import time
