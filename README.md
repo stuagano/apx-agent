@@ -6,6 +6,57 @@
 
 Build governed Databricks agents. Write a Python object — apx-agent compiles it to whichever Databricks runtime you target.
 
+## LlmAgent — you control the loop
+
+`LlmAgent` (aliased as `Agent`) is an LLM + tools + a loop. You decide what it can call, when it stops, and what happens before and after each step.
+
+```python
+from apx_agent import LlmAgent, uc_function_tool, genie_tool
+
+agent = LlmAgent(
+    instructions="Investigate customer accounts.",
+    tools=[
+        uc_function_tool("main.tools.lookup_account"),
+        genie_tool("abc123", description="Answer billing questions"),
+    ],
+    max_iterations=10,
+    # memory="persistent",   # durable semantic recall across sessions
+)
+```
+
+Every hook is optional. None requires subclassing.
+
+```python
+from apx_agent import run_once
+
+# Invoke the agent (no HTTP request needed)
+result = run_once(agent, "Look up account 42.")
+print(result)
+```
+
+**Compose loops explicitly.** `LoopAgent` iterates until a condition is met; `SequentialAgent` pipelines agents in order; `ParallelAgent` fans out; `HandoffAgent` routes conversationally.
+
+```python
+from apx_agent import SequentialAgent
+
+investigation = SequentialAgent(
+    agents=[presence_check, lineage_trace, code_analysis, synthesis],
+    instructions="Investigate why data is missing.",
+)
+```
+
+See [docs/agents/composition.md](docs/agents/composition.md) for the full composition reference.
+
+Three agent types cover most use cases:
+
+| | |
+|---|---|
+| **`LlmAgent`** | The base. You own the loop: tools, hooks, guardrails, iteration cap. |
+| **`DataAgent`** | One line over a Unity Catalog schema. Grounded in real columns, runs as the calling user. |
+| **`CoworkerAgent`** | Joins two source systems on a shared key. Persona, join key, objective. |
+
+Deploy to Databricks Apps or Mosaic AI Model Serving — same agent definition, one flag changes the target.
+
 ```bash
 uv add apx-agent
 uv run apx-agent doctor                          # check auth & environment first
@@ -14,34 +65,6 @@ uv run apx-agent agents deploy my-agent.yaml --target apps
 ```
 
 `doctor` verifies your Databricks auth, tooling, and config before you scaffold. `scaffold` writes `my-agent.yaml` by default. `deploy` reads that spec, generates the Databricks Apps project at deploy time, and prints the App URL when done.
-
-```bash
-uv run apx-agent agents scaffold my-agent --no-yaml
-cd my-agent && uv run apx-agent agents run --reload
-```
-
-Use `--no-yaml` when you want the editable project directory and local FastAPI dev UI first.
-
-### Know what you're pointed at
-
-`apx-agent status` prints the active Databricks profile and project/target — offline, no API call — so you can confirm context before you deploy:
-
-```bash
-$ apx-agent status
-profile: fe-stable
-project: payroll-coworker
-target:  apps
-```
-
-`--prompt` emits a compact one-liner (`apx:payroll-coworker(apps) ▸ fe-stable`). It's safe in an async/cached prompt segment (e.g. starship `[custom]`, powerlevel10k async), but the CLI cold-starts in ~1s, so don't call it on every render of a synchronous `PS1`. For an instant, zero-overhead prompt the same facts read straight from the shell:
-
-```bash
-apx_ps1() {
-  local p="${DATABRICKS_CONFIG_PROFILE:-DEFAULT}"
-  [ -f pyproject.toml ] && grep -q '\[tool.apx.agent\]' pyproject.toml && printf 'apx ▸ %s ' "$p"
-}
-setopt PROMPT_SUBST 2>/dev/null; PROMPT='$(apx_ps1)'"$PROMPT"
-```
 
 ---
 
@@ -102,18 +125,6 @@ Net: **~220 lines → ~15 lines + a TOML block (~90% less code)** — and the de
 
 ---
 
-Three agent types cover most use cases:
-
-| | |
-|---|---|
-| **`LlmAgent`** | The base. You own the loop: tools, hooks, guardrails, iteration cap. |
-| **`DataAgent`** | One line over a Unity Catalog schema. Grounded in real columns, runs as the calling user. |
-| **`CoworkerAgent`** | Joins two source systems on a shared key. Persona, join key, objective. |
-
-Deploy to Databricks Apps or Mosaic AI Model Serving — same agent definition, one flag changes the target.
-
----
-
 ## Quickstart
 
 Python 3.11+ required.
@@ -154,48 +165,26 @@ Use `--no-yaml` only when you need an editable project directory. FastAPI starts
 
 See [docs/get-started/quickstart.md](docs/get-started/quickstart.md) for the full walkthrough.
 
----
+### Know what you're pointed at
 
-## LlmAgent — you control the loop
+`apx-agent status` prints the active Databricks profile and project/target — offline, no API call — so you can confirm context before you deploy:
 
-`LlmAgent` (aliased as `Agent`) is an LLM + tools + a loop. You decide what it can call, when it stops, and what happens before and after each step.
-
-```python
-from apx_agent import LlmAgent, uc_function_tool, genie_tool
-
-agent = LlmAgent(
-    instructions="Investigate customer accounts.",
-    tools=[
-        uc_function_tool("main.tools.lookup_account"),
-        genie_tool("abc123", description="Answer billing questions"),
-    ],
-    max_iterations=10,
-    # memory="persistent",   # durable semantic recall across sessions
-)
+```bash
+$ apx-agent status
+profile: fe-stable
+project: payroll-coworker
+target:  apps
 ```
 
-Every hook is optional. None requires subclassing.
+`--prompt` emits a compact one-liner (`apx:payroll-coworker(apps) ▸ fe-stable`). It's safe in an async/cached prompt segment (e.g. starship `[custom]`, powerlevel10k async), but the CLI cold-starts in ~1s, so don't call it on every render of a synchronous `PS1`. For an instant, zero-overhead prompt the same facts read straight from the shell:
 
-```python
-from apx_agent import run_once
-
-# Invoke the agent (no HTTP request needed)
-result = run_once(agent, "Look up account 42.")
-print(result)
+```bash
+apx_ps1() {
+  local p="${DATABRICKS_CONFIG_PROFILE:-DEFAULT}"
+  [ -f pyproject.toml ] && grep -q '\[tool.apx.agent\]' pyproject.toml && printf 'apx ▸ %s ' "$p"
+}
+setopt PROMPT_SUBST 2>/dev/null; PROMPT='$(apx_ps1)'"$PROMPT"
 ```
-
-**Compose loops explicitly.** `LoopAgent` iterates until a condition is met; `SequentialAgent` pipelines agents in order; `ParallelAgent` fans out; `HandoffAgent` routes conversationally.
-
-```python
-from apx_agent import SequentialAgent
-
-investigation = SequentialAgent(
-    agents=[presence_check, lineage_trace, code_analysis, synthesis],
-    instructions="Investigate why data is missing.",
-)
-```
-
-See [docs/agents/composition.md](docs/agents/composition.md) for the full composition reference.
 
 ---
 
