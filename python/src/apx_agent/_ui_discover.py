@@ -68,7 +68,9 @@ def render_discover_ui() -> str:
   <h1>Discover</h1>
   <p class="sub">Find workspace agents, UC functions, Genie spaces, and Vector Search indexes —
      then wire them into this agent. Changes apply live to Chat when possible (no deploy);
-     agent.py is still updated so the next restart stays in sync.</p>
+     agent.py is still updated so the next restart stays in sync.
+     On a deployed App, wire/unwire needs <code>?token=</code> matching <code>APX_DEV_UI_TOKEN</code>
+     (shared live-agent mutation).</p>
 
   <div id="wire-banner"></div>
 

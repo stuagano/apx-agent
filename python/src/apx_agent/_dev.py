@@ -845,7 +845,7 @@ def _parse_judge_output(text: str) -> _JudgeOutput:
 
 
 # ---------------------------------------------------------------------------
-# Dev-UI write authorization (audit H17/H18)
+# Dev-UI write authorization (audit H17/H18 / #611)
 #
 # The dev router hosts code-write/RCE-equivalent endpoints (POST /_apx/edit,
 # /_apx/tools/new, /_apx/tools/suggest, /_apx/replay/*, save_setup, env writes,
@@ -856,13 +856,18 @@ def _parse_judge_output(text: str) -> _JudgeOutput:
 #   * Local ``apx-agent run`` (no DATABRICKS_APP_PORT) → writes allowed (the
 #     dev loop).
 #   * Deployed Databricks App (DATABRICKS_APP_PORT set):
-#       - ``X-Forwarded-Access-Token`` present (Apps SSO / OBO) → allow.
+#       - ``X-Forwarded-Access-Token`` present (Apps SSO / OBO) → allow
+#         ordinary Dev-UI writes (edit, setup, grounding, …).
 #       - Else if ``APX_DEV_UI_TOKEN`` is set and matches ``X-APX-Dev-Token``
 #         (or ``?token=``) → allow (CI / non-browser automation).
 #       - Else → 403.
+#   * Discover wire/unwire (#611) is stricter on Apps: SSO alone is NOT
+#     enough. Those routes mutate the process-global live agent (and
+#     ``agent.py``) for every App user, so they require a matching
+#     ``APX_DEV_UI_TOKEN``. Open Discover with ``?token=<secret>``.
 #
-# Browser Dev UI writes therefore work for any signed-in App user — no pasted
-# operator token. Optional ``APX_DEV_UI_TOKEN`` remains for scripts.
+# Browser Dev UI ordinary writes therefore work for any signed-in App user —
+# no pasted operator token. Discover wire/unwire needs the operator secret.
 # The guard is attached once at the router level and only enforces on
 # state-changing methods plus the SSRF probe / per-principal data reads, so
 # benign read GETs stay open.
@@ -871,6 +876,14 @@ def _parse_judge_output(text: str) -> _JudgeOutput:
 _DEV_TOKEN_HEADER = "x-apx-dev-token"
 _OBO_TOKEN_HEADER = "x-forwarded-access-token"
 _DEV_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# Discover mutations that hot-apply onto the shared live AgentContext (#611).
+_DISCOVER_MUTATION_SEGMENTS = (
+    "/discover/wire-agent",
+    "/discover/unwire-agent",
+    "/discover/wire-tool",
+    "/discover/unwire-tool",
+)
 
 # Read GETs that expose per-principal data (approvals, conversations + their
 # items, memories, traces). Gated like writes on a deployed App so anonymous
@@ -889,6 +902,14 @@ def _is_deployed_app() -> bool:
     heuristic used elsewhere is not consulted here.
     """
     return bool(os.environ.get("DATABRICKS_APP_PORT"))
+
+
+def _supplied_dev_token(request: Request) -> str:
+    return (
+        request.headers.get(_DEV_TOKEN_HEADER)
+        or request.query_params.get("token")
+        or ""
+    )
 
 
 def _enforce_dev_write_auth(request: Request) -> None:
@@ -910,11 +931,7 @@ def _enforce_dev_write_auth(request: Request) -> None:
     raw = os.environ.get("APX_DEV_UI_TOKEN")
     token = raw.strip() if raw else ""
     if token:
-        supplied = (
-            request.headers.get(_DEV_TOKEN_HEADER)
-            or request.query_params.get("token")
-            or ""
-        )
+        supplied = _supplied_dev_token(request)
         if supplied and hmac.compare_digest(supplied, token):
             return
         raise HTTPException(
@@ -930,6 +947,42 @@ def _enforce_dev_write_auth(request: Request) -> None:
         detail=(
             "Dev-UI write endpoints require a signed-in Databricks Apps user "
             "(SSO). Open this App in the browser while logged in."
+        ),
+    )
+
+
+def _enforce_discover_operator_auth(request: Request) -> None:
+    """Authorize Discover wire/unwire on a deployed App (#611).
+
+    These routes mutate the shared live agent for every principal. SSO alone
+    is a confused-deputy footgun — require ``APX_DEV_UI_TOKEN``. Local
+    ``apx-agent run`` stays open for the solo-dev loop.
+    """
+    import hmac
+
+    if not _is_deployed_app():
+        return
+
+    raw = os.environ.get("APX_DEV_UI_TOKEN")
+    token = raw.strip() if raw else ""
+    if not token:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Discover wire/unwire on a deployed App requires APX_DEV_UI_TOKEN "
+                "(shared live-agent mutation). Set the App secret, then open "
+                "Discover with ?token=<secret>."
+            ),
+        )
+    supplied = _supplied_dev_token(request)
+    if supplied and hmac.compare_digest(supplied, token):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Discover wire/unwire requires the operator X-APX-Dev-Token "
+            "(SSO alone cannot mutate the shared live agent). "
+            "Open /_apx/discover?token=<APX_DEV_UI_TOKEN>."
         ),
     )
 
@@ -959,6 +1012,8 @@ async def _dev_write_guard(request: Request) -> None:
     )
     if request.method in _DEV_WRITE_METHODS or is_side_effecting_get or is_data_read:
         _enforce_dev_write_auth(request)
+        if any(seg in path for seg in _DISCOVER_MUTATION_SEGMENTS):
+            _enforce_discover_operator_auth(request)
 
 
 def inject_create_tool_meta(ctx: AgentContext) -> None:
