@@ -263,14 +263,13 @@ def mount_invocations_route(
         # Unified extractor handles both runtime conventions:
         #   - custom_inputs.user_token (caller-supplied; wins)
         #   - X-Forwarded-Access-Token header (Apps runtime injection)
-        # See ``apx_agent._obo.extract_obo_headers`` for the precedence rule.
-        from ._obo import extract_obo_headers
+        # Identity keys: Apps proxy wins when present (#615).
+        from ._obo import apply_obo_to_custom_inputs, extract_obo_headers
 
         obo = extract_obo_headers(
             custom_inputs=custom_inputs, headers=request.headers
         )
-        for key, val in obo.items():
-            custom_inputs.setdefault(key, val)
+        apply_obo_to_custom_inputs(custom_inputs, obo)
 
         try:
             messages = [ChatAgentMessage(**m) for m in messages_raw]
@@ -418,11 +417,10 @@ def mount_responses_route(
         if user_text:
             logger.info("[user] %s", user_text)
 
-        from ._obo import extract_obo_headers
+        from ._obo import apply_obo_to_custom_inputs, extract_obo_headers
 
         obo = extract_obo_headers(custom_inputs=custom_inputs, headers=request.headers)
-        for key, val in obo.items():
-            custom_inputs.setdefault(key, val)
+        apply_obo_to_custom_inputs(custom_inputs, obo)
 
         try:
             from ._responses_agent import _import_responses_types

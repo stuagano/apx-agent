@@ -31,9 +31,12 @@ Precedence rule (matters when both conventions are present in one request):
      batch caller may want to override the route-injected token.
   2. ``X-Forwarded-Access-Token`` HTTP header — Apps runtime fallback.
 
-The same precedence applies to ``workspace_host`` (``custom_inputs.workspace_host``
-beats ``DATABRICKS_HOST`` env var), ``user_id`` (``custom_inputs.user_id``
-beats ``X-Forwarded-User``), and ``user_email``.
+The same ``custom_inputs``-first rule applies to ``workspace_host``
+(``custom_inputs.workspace_host`` beats ``DATABRICKS_HOST``). For
+``user_id`` / ``user_email`` (#615): in the Databricks Apps runtime, proxy
+``X-Forwarded-User`` / ``X-Forwarded-Email`` win when present — body values
+must not spoof session/memory/approval scoping. Outside Apps, ``custom_inputs``
+still wins (local + Model Serving).
 """
 
 from __future__ import annotations
@@ -46,11 +49,32 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ApxIdentityError",
+    "apply_obo_to_custom_inputs",
     "extract_obo_headers",
     "make_obo_workspace_client",
     "resolve_no_obo_or_raise",
     "scope_session_key",
 ]
+
+# Scoping identity — always overwrite body with extract_obo_headers result (#615).
+_IDENTITY_CUSTOM_INPUT_KEYS = frozenset({"user_id", "user_email"})
+
+
+def apply_obo_to_custom_inputs(
+    custom_inputs: dict[str, Any],
+    obo: Mapping[str, Any],
+) -> None:
+    """Merge extracted OBO fields into ``custom_inputs`` in place.
+
+    Token / host keys use ``setdefault`` (body wins). Identity keys
+    (``user_id``, ``user_email``) always overwrite so Apps proxy identity
+    cannot be stuck behind a spoofed body value after extraction (#615).
+    """
+    for key, val in obo.items():
+        if key in _IDENTITY_CUSTOM_INPUT_KEYS:
+            custom_inputs[key] = val
+        else:
+            custom_inputs.setdefault(key, val)
 
 
 def scope_session_key(
@@ -311,9 +335,14 @@ def extract_obo_headers(
             obo = extract_obo_headers(custom_inputs=..., headers=...)
             ws = WorkspaceClient(token=obo["user_token"], host=obo["workspace_host"])
 
-    Precedence: ``custom_inputs`` wins over headers. ``workspace_host``
-    additionally falls back to the ``DATABRICKS_HOST`` env var when neither
-    source provides it.
+    Precedence:
+      * ``user_token`` — ``custom_inputs`` wins over headers (Model Serving
+        callers supply the token in the body).
+      * ``workspace_host`` — ``custom_inputs`` > ``DATABRICKS_HOST`` >
+        ``X-Forwarded-Host`` (outside Apps only).
+      * ``user_id`` / ``user_email`` — in the Databricks Apps runtime, proxy
+        ``X-Forwarded-*`` headers win when present (#615); otherwise
+        ``custom_inputs`` wins (local / Model Serving).
     """
     ci = dict(custom_inputs) if custom_inputs else {}
     hdrs = _coerce_headers(headers)
@@ -353,19 +382,26 @@ def extract_obo_headers(
     if host:
         out["workspace_host"] = str(host)
 
-    # --- user_id -----------------------------------------------------------
-    user_id = ci.get("user_id")
-    if not user_id:
-        user_id = _header_lookup(hdrs, "X-Forwarded-User")
-    if user_id:
-        out["user_id"] = str(user_id)
+    # --- user_id / user_email (#615) ----------------------------------------
+    # In Apps, the proxy identity is authoritative for session/memory/approval
+    # scoping. A client-supplied custom_inputs.user_id must not override
+    # X-Forwarded-User (confused-deputy / cross-principal resume). Outside
+    # Apps (local + Model Serving), custom_inputs still wins.
+    header_user = _header_lookup(hdrs, "X-Forwarded-User")
+    if _in_databricks_app() and header_user:
+        out["user_id"] = str(header_user)
+    else:
+        user_id = ci.get("user_id") or header_user
+        if user_id:
+            out["user_id"] = str(user_id)
 
-    # --- user_email --------------------------------------------------------
-    user_email = ci.get("user_email")
-    if not user_email:
-        user_email = _header_lookup(hdrs, "X-Forwarded-Email")
-    if user_email:
-        out["user_email"] = str(user_email)
+    header_email = _header_lookup(hdrs, "X-Forwarded-Email")
+    if _in_databricks_app() and header_email:
+        out["user_email"] = str(header_email)
+    else:
+        user_email = ci.get("user_email") or header_email
+        if user_email:
+            out["user_email"] = str(user_email)
 
     return out
 

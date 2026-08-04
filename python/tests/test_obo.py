@@ -77,7 +77,7 @@ def test_apps_headers_case_insensitive() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Precedence: custom_inputs wins
+# Precedence: tokens body-wins; Apps identity proxy-wins (#615)
 # ---------------------------------------------------------------------------
 
 
@@ -103,12 +103,45 @@ def test_precedence_workspace_host_custom_inputs_wins() -> None:
     assert obo["workspace_host"] == "https://body-ws.databricks.com"
 
 
-def test_precedence_user_id_custom_inputs_wins() -> None:
+def test_precedence_user_id_custom_inputs_wins_outside_apps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Outside Apps, body user_id still wins (local / Model Serving)."""
+    monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+    monkeypatch.delenv("DATABRICKS_APP_URL", raising=False)
     obo = extract_obo_headers(
         custom_inputs={"user_id": "body-user"},
         headers={"X-Forwarded-User": "header-user"},
     )
     assert obo["user_id"] == "body-user"
+
+
+def test_precedence_apps_proxy_user_id_beats_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#615: in Apps, X-Forwarded-User wins — body must not spoof principal."""
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+    obo = extract_obo_headers(
+        custom_inputs={"user_id": "alice-spoof", "user_email": "alice@evil"},
+        headers={
+            "X-Forwarded-User": "bob",
+            "X-Forwarded-Email": "bob@company.com",
+        },
+    )
+    assert obo["user_id"] == "bob"
+    assert obo["user_email"] == "bob@company.com"
+
+
+def test_apply_obo_overwrites_spoofed_identity() -> None:
+    from apx_agent._obo import apply_obo_to_custom_inputs
+
+    ci = {"user_id": "alice-spoof", "user_token": "body-tok"}
+    apply_obo_to_custom_inputs(
+        ci,
+        {"user_id": "bob", "user_token": "hdr-tok"},
+    )
+    assert ci["user_id"] == "bob"
+    assert ci["user_token"] == "body-tok"  # setdefault — body token wins
 
 
 # ---------------------------------------------------------------------------
