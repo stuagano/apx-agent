@@ -13865,18 +13865,21 @@ def canary_analyze(
 _ENV_VIOLATIONS_TABLE = "APX_WATCHDOG_VIOLATIONS_TABLE"
 _ENV_MCP_URL = "APX_WATCHDOG_MCP_URL"
 _ENV_MCP_TOOL = "APX_WATCHDOG_MCP_TOOL_NAME"
+_ENV_STATUS_TOOL = "APX_WATCHDOG_STATUS_TOOL"
+_DEFAULT_STATUS_TOOL = "get_agent_compliance"
 
 
 @main.group(cls=_ApxGroup)
 def watchdog() -> None:
     """Inspect databricks-watchdog compliance posture from the CLI.
 
-    Reads the UC violations table and watchdog's MCP tools without
+    Reads the UC violations table and Guardrails MCP tools without
     needing to load the agent. Configure once via env vars:
 
-      APX_WATCHDOG_VIOLATIONS_TABLE=catalog.schema.violations
-      APX_WATCHDOG_MCP_URL=https://watchdog.example.com/mcp
+      APX_WATCHDOG_VIOLATIONS_TABLE=catalog.schema.runtime_violations
+      APX_WATCHDOG_MCP_URL=https://guardrails.example.com/mcp
       APX_WATCHDOG_MCP_TOOL_NAME=evaluate_operation
+      APX_WATCHDOG_STATUS_TOOL=get_agent_compliance
     """
 
 
@@ -13972,13 +13975,15 @@ def watchdog_violations(
 
 
 @watchdog.command("status")
-@click.option("--agent", "agent_name", default=None,
-              help="Agent name to query posture for. Optional; some watchdog "
-                   "tools return workspace-wide status when omitted.")
+@click.option("--agent", "agent_name", required=True,
+              help="Agent name / id to query posture for (passed as agent_id).")
 @click.option("--mcp-url", default=None,
-              help=f"Watchdog MCP endpoint URL. Falls back to ${_ENV_MCP_URL}.")
+              help=f"Guardrails MCP endpoint URL. Falls back to ${_ENV_MCP_URL}.")
 @click.option("--mcp-tool", "mcp_tool_name", default=None,
-              help=f"MCP tool name to invoke. Falls back to ${_ENV_MCP_TOOL}.")
+              help=(
+                  f"Posture MCP tool to invoke. Falls back to ${_ENV_STATUS_TOOL}, "
+                  f"then {_DEFAULT_STATUS_TOOL}."
+              ))
 @click.option("--timeout", "timeout_seconds", default=5.0, type=float,
               help="MCP call timeout. Default 5s.")
 @click.option(
@@ -13986,61 +13991,62 @@ def watchdog_violations(
     default="text", help="Output format.",
 )
 def watchdog_status(
-    agent_name: str | None,
+    agent_name: str,
     mcp_url: str | None,
     mcp_tool_name: str | None,
     timeout_seconds: float,
     fmt: str,
 ) -> None:
-    """Query a watchdog MCP tool for the agent's compliance posture."""
+    """Query Guardrails MCP for the agent's compliance posture.
+
+    Calls ``get_agent_compliance`` by default (not ``evaluate_operation``).
+    Point ``APX_WATCHDOG_MCP_URL`` at the Guardrails MCP URL.
+    """
     import os
 
     url = mcp_url or os.environ.get(_ENV_MCP_URL)
-    tool_name = mcp_tool_name or os.environ.get(_ENV_MCP_TOOL)
+    tool_name = (
+        mcp_tool_name
+        or os.environ.get(_ENV_STATUS_TOOL)
+        or _DEFAULT_STATUS_TOOL
+    )
     if not url:
         raise click.UsageError(
             f"Pass --mcp-url or set {_ENV_MCP_URL}."
         )
-    if not tool_name:
-        raise click.UsageError(
-            f"Pass --mcp-tool or set {_ENV_MCP_TOOL}."
+
+    from apx_agent import call_mcp_tool
+
+    try:
+        payload = call_mcp_tool(
+            url,
+            tool_name,
+            {"agent_id": agent_name},
+            timeout_seconds=timeout_seconds,
         )
-
-    from apx_agent import WatchdogClient, make_mcp_transport
-
-    transport = make_mcp_transport(
-        url, tool_name=tool_name, timeout_seconds=timeout_seconds,
-    )
-    client = WatchdogClient(transport=transport)
-    decision = client.evaluate(
-        operation="status",
-        context={"agent_name": agent_name} if agent_name else {},
-    )
-
-    payload = {
-        "action": decision.action,
-        "reason": decision.reason,
-        "policy_id": decision.policy_id,
-        "domain": decision.domain,
-        "metadata": decision.metadata,
-    }
+    except Exception as e:
+        raise click.ClickException(f"Watchdog status MCP call failed: {e}") from e
 
     if fmt == "json":
         click.echo(json.dumps(payload, indent=2, default=str))
         return
 
-    click.echo("# watchdog status"
-               + (f" for agent={agent_name}" if agent_name else "")
-               + f" via {tool_name}")
-    click.echo(f"  action:     {decision.action}")
-    if decision.reason:
-        click.echo(f"  reason:     {decision.reason}")
-    if decision.policy_id:
-        click.echo(f"  policy_id:  {decision.policy_id}")
-    if decision.domain:
-        click.echo(f"  domain:     {decision.domain}")
-    if decision.metadata:
-        click.echo(f"  metadata:   {json.dumps(decision.metadata, default=str)}")
+    click.echo(f"# watchdog status for agent={agent_name} via {tool_name}")
+    for key in (
+        "agent_id", "risk_level", "checks_passed", "checks_denied",
+        "checks_warned", "tables_accessed", "actions_logged", "session_start",
+    ):
+        if key in payload:
+            value = payload[key]
+            if isinstance(value, (list, dict)):
+                value = json.dumps(value, default=str)
+            click.echo(f"  {key + ':':<18} {value}")
+    extras = {k: v for k, v in payload.items() if k not in {
+        "agent_id", "risk_level", "checks_passed", "checks_denied",
+        "checks_warned", "tables_accessed", "actions_logged", "session_start",
+    }}
+    if extras:
+        click.echo(f"  {'extras:':<18} {json.dumps(extras, default=str)}")
 
 
 # ---------------------------------------------------------------------------

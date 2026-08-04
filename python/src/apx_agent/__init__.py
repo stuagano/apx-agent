@@ -54,6 +54,7 @@ from ._defaults import Dependencies
 
 # SQL utilities
 from ._sql import decode_statement, get_warehouse_id, run_sql
+from ._sql_durable import run_sql_durable
 
 # Provider compatibility layer — get_llm() factory + named subclasses
 from ._llm import ChatDatabricksGptReasoning, get_llm
@@ -347,6 +348,7 @@ from ._watchdog import (
     WatchdogClient,
     WatchdogDecision,
     WatchdogGuard,
+    call_mcp_tool,
     emit_agent_metadata,
     make_mcp_transport,
     make_uc_violation_writer,
@@ -434,6 +436,7 @@ __all__ = [
     "decode_statement",
     "get_warehouse_id",
     "run_sql",
+    "run_sql_durable",
     # Provider compat
     "ChatDatabricksGptReasoning",
     "get_llm",
@@ -660,6 +663,7 @@ __all__ = [
     "WatchdogClient",
     "WatchdogDecision",
     "WatchdogGuard",
+    "call_mcp_tool",
     "emit_agent_metadata",
     "set_uc_tags_for_agent",
     "make_uc_violation_writer",

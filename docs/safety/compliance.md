@@ -41,8 +41,8 @@ The three wire-protocol contracts are pinned:
 | Contract | Mechanism | Helper |
 |---|---|---|
 | Metadata for watchdog's crawler | UC tags on the registered model (`apx.agent.*`) | `set_uc_tags_for_agent(agent, registered_model_name=..., model=...)` |
-| Runtime policy decisions | One of watchdog's 13 MCP tools | `make_mcp_transport(mcp_url, tool_name=...)` |
-| Violation reports | INSERT into a watchdog-owned UC Delta table | `make_uc_violation_writer(violations_table, ws=...)` |
+| Runtime policy decisions | Guardrails MCP `evaluate_operation` | `make_mcp_transport(mcp_url, tool_name="evaluate_operation")` |
+| Violation reports | INSERT into Watchdog-owned `runtime_violations` Delta table | `make_uc_violation_writer(violations_table, ws=...)` |
 
 ```python
 from apx_agent import (
@@ -63,11 +63,11 @@ set_uc_tags_for_agent(
     name="customer_triage",
 )
 
-# Runtime: MCP for evaluate + UC table for violations
+# Runtime: Guardrails MCP for evaluate + UC table for violations
 transport = make_watchdog_transport(
-    mcp_url="https://watchdog.example.com/mcp",
+    mcp_url="https://guardrails.example.com/mcp",  # Guardrails MCP (not Watchdog MCP)
     mcp_tool_name="evaluate_operation",
-    violations_table="main.watchdog.runtime_violations",
+    violations_table="platform.watchdog.runtime_violations",
     ws=ws,
     warehouse_id="wh-prod",
 )
@@ -84,7 +84,9 @@ agent = Agent(
 )
 ```
 
-The MCP transport calls `tools/call` on watchdog's streamable HTTP MCP endpoint; the UC writer auto-creates the violations table on first use (`auto_create=True`) and `INSERT`s a row per reject/redact decision. Both are pluggable — pass a custom `transport` to `WatchdogClient` for a different wire shape.
+The MCP transport calls `tools/call` on the **Guardrails** streamable HTTP MCP endpoint (`evaluate_operation`); the UC writer auto-creates the `runtime_violations` table on first use (`auto_create=True`) and `INSERT`s a row per reject/redact decision. Watchdog MCP (13 query tools) remains the posture-query surface — use `apx-agent watchdog status` which defaults to Guardrails `get_agent_compliance`. Both transports are pluggable — pass a custom `transport` to `WatchdogClient` for a different wire shape.
+
+See also Watchdog's [apx-agent integration guide](https://github.com/stuagano/databricks-watchdog/blob/main/docs/guide/how-to/apx-agent-integration.md).
 
 ## Audit log schema
 
