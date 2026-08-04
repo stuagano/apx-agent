@@ -54,13 +54,15 @@ def _demo() -> None:
     print("-" * 72)
     print("Mid-turn `recall` tool call (what the agent would invoke)")
     print("-" * 72)
-    print(recall_fn("what does alice prefer to eat?"))
+    # principal=None → falls through to default_principal_id (alice seed).
+    print(recall_fn("what does alice prefer to eat?", principal=None))
     print()
     print("-" * 72)
     print("After-response `remember` tool call (new fact from the user)")
     print("-" * 72)
     print(remember_fn(
         "alice booked a hotel at SFO Marriott Marquis for 2026-06-10",
+        principal=None,
     ))
     print()
     print("done.")

@@ -1,5 +1,8 @@
 from unittest.mock import MagicMock
+
+import pytest
 from databricks.sdk.errors import NotFound
+
 from tools.deploy_agent import deploy_agent
 
 
@@ -44,3 +47,10 @@ def test_returns_app_name():
     result = deploy_agent("mcp-my-agent", "/some/path", ws)
 
     assert result == "mcp-my-agent"
+
+
+def test_rejects_unsafe_app_name():
+    ws = MagicMock()
+    with pytest.raises(ValueError, match="app_name"):
+        deploy_agent('evil";rm -rf', "/Users/test/apx-builder/x", ws)
+    ws.apps.get.assert_not_called()

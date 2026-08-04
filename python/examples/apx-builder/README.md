@@ -17,9 +17,19 @@ The agent is wired with five tools (defined in `tools/`):
 |------|-------------|
 | `search_tables` | Search Unity Catalog for tables matching a term. Returns `catalog.schema.table` identifiers (with comments) so the agent can suggest data sources. |
 | `list_genie_spaces` | List the Genie spaces available in the workspace. Returns the `id` and `name` of each space. |
-| `scaffold_project` | Generate a complete apx-agent project (app, agent, tools, config) for the described use case and upload it to a Databricks workspace path. |
-| `deploy_agent` | Create the Databricks App if it doesn't exist, then deploy the scaffolded project from its workspace path. Returns the app name. |
+| `scaffold_project` | Generate a complete apx-agent project (app, agent, tools, config) for the described use case and upload it to a Databricks workspace path. **Gated:** human approval required (`PolicyGate` ASK). Inputs (`app_name`, `use_case`, table names) are validated before codegen. |
+| `deploy_agent` | Create the Databricks App if it doesn't exist, then deploy the scaffolded project from its workspace path. Returns the app name. **Gated:** human approval required. |
 | `poll_deployment` | Wait for the freshly deployed agent to come fully live — API readiness (RUNNING + SUCCEEDED) then an HTTP health check — and return the app URL when it's ready. |
+
+## Safety
+
+- **Input validation** — `app_name` must be a Databricks-safe slug; `use_case`
+  and table/Genie identifiers reject quotes, backslashes, and newlines before
+  they are interpolated into generated source.
+- **Approval gate** — `scaffold_project` and `deploy_agent` are wrapped in a
+  `PolicyGate` ASK. The turn pauses until a human approves via the apx
+  approvals UI (`/_apx/approvals`); discovery tools (`search_tables`,
+  `list_genie_spaces`, `poll_deployment`) are not gated.
 
 ## Run locally
 

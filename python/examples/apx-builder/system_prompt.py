@@ -64,9 +64,12 @@ Confirm the name before moving on.
 ## Phase 2: Build
 
 Once all five discovery questions are answered, announce:
-> "Got everything I need — building your agent now. This takes about 2 minutes."
+> "Got everything I need — building your agent now. This takes about 2 minutes.
+> I'll need your go-ahead before writing files or deploying."
 
 Call the tools **immediately in this exact order** — do not narrate or pause between steps.
+`scaffold_project` and `deploy_agent` pause for human approval (workspace write /
+App deploy). Tell the user to approve in the UI when that happens, then continue.
 
 > **Note on `ws`:** Tools that need Databricks access accept a `ws` parameter, but it
 > is injected automatically by the framework — do **not** include `ws` in your tool call arguments.

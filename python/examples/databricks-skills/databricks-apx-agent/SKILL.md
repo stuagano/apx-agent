@@ -9,8 +9,8 @@ Build Databricks Apps that expose a Genie Space through a conversational AI agen
 
 - `create_app()` — FastAPI app factory with agent protocol wired in
 - `/_apx/agent` — embedded developer UI with live tracing
-- `genie_tool()` / async OBO variant — Genie space as an agent tool
-- `Dependencies.Headers` — OBO auth (user's token passed through)
+- `genie_tool()` — Genie space as an agent tool (async, OBO, declares `attach_resources`)
+- `Dependencies.Headers` / `Dependencies.UserClient` — OBO auth (user's token passed through)
 
 ## Scaffolding Steps
 
@@ -28,76 +28,38 @@ mkdir -p static
 
 ### `app.py`
 
+Replace every `<...>` placeholder before deploy. A literal
+`description="<One-line description...>"` breaks A2A routing if copied
+verbatim — fill in a real one-line description of what the agent does.
+
 ```python
-"""<App Name> — Genie-backed apx agent."""
+"""Sales insights agent — Genie-backed apx agent."""
 
-import asyncio
 import os
-import logging
-from typing import Optional
 
-import httpx
-from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
-from apx_agent import Agent, AgentConfig, Dependencies, create_app
+from apx_agent import Agent, AgentConfig, create_app, genie_tool
 
-logger = logging.getLogger(__name__)
+GENIE_SPACE_ID = os.environ["GENIE_SPACE_ID"]
 
-GENIE_SPACE_ID = os.environ.get("GENIE_SPACE_ID", "<space_id>")
-
-SYSTEM_PROMPT = """You are an AI assistant that answers questions about <domain>.
+SYSTEM_PROMPT = """You are an AI assistant that answers questions about sales pipeline data.
 Use the ask_genie tool to retrieve data. Always provide clear, accurate answers."""
 
-
-async def ask_genie(question: str, headers: Dependencies.Headers) -> str:
-    """Query <domain> data via Genie Space."""
-    token = headers.token.get_secret_value() if headers.token else ""
-    host = f"https://{headers.host}" if headers.host else os.environ.get("DATABRICKS_HOST", "")
-    auth = f"Bearer {token}"
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(
-            f"{host}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/start_conversation",
-            headers={"Authorization": auth},
-            json={"content": question},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        conversation_id = data.get("conversation_id", "")
-        message_id = data.get("message_id", "")
-
-        msg_data: dict = {}
-        for _ in range(30):
-            poll = await client.get(
-                f"{host}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{conversation_id}/messages/{message_id}",
-                headers={"Authorization": auth},
-            )
-            msg_data = poll.json()
-            status = msg_data.get("status", "")
-            if status == "COMPLETED":
-                break
-            if status in ("FAILED", "CANCELLED"):
-                return f"Genie query {status.lower()}."
-            await asyncio.sleep(2)
-
-        if msg_data.get("status") not in ("COMPLETED", "FAILED", "CANCELLED"):
-            return "Genie query timed out after 60 seconds. Please try again."
-
-        for att in msg_data.get("attachments", []):
-            text_block = att.get("text", {})
-            if text_block.get("content"):
-                return str(text_block["content"])
-        return ""
-
+# genie_tool is async + OBO via Dependencies.UserClient, and attaches a
+# ResourceSpec("genie_space", ...) so deploy/resource collection sees the space.
+ask_genie = genie_tool(
+    GENIE_SPACE_ID,
+    name="ask_genie",
+    description="Query sales pipeline and opportunity data via Genie.",
+)
 
 agent = Agent(tools=[ask_genie], instructions=SYSTEM_PROMPT)
 
 config = AgentConfig(
-    name="<app-name>-agent",
-    description="<One-line description of what the agent does>",
+    name="sales-insights-agent",
+    description="Answers natural-language questions about sales pipeline data via Genie.",
 )
 
 app = create_app(agent, config=config)
@@ -112,8 +74,12 @@ def index():
     return FileResponse("static/index.html")
 ```
 
-**Why `Dependencies.Headers` instead of `genie_tool()`?**
-The built-in `genie_tool()` uses synchronous `ws.api_client.do()` which blocks uvicorn's event loop, stalling the SSE stream back to the browser. The async `httpx` pattern above is non-blocking.
+**Why `genie_tool()` (not a hand-rolled Genie poll loop)?**
+`genie_tool()` already runs async under the caller's OBO `WorkspaceClient`,
+declares the Genie space via `attach_resources` / `ResourceSpec`, and surfaces
+failures as `ToolError`. Do not reimplement `/start_conversation` + poll with
+raw `httpx` unless you have a reason the factory cannot cover — and if you do,
+call `attach_resources(fn, [ResourceSpec("genie_space", space_id)])` yourself.
 
 ### `requirements.txt`
 
@@ -146,7 +112,7 @@ command:
 
 env:
   - name: GENIE_SPACE_ID
-    value: "<space_id>"
+    value: "01234567-89ab-cdef-0123-456789abcdef"
 ```
 
 ### `static/index.html`
@@ -158,7 +124,7 @@ Minimal placeholder — the real UI is at `/_apx/agent`.
 <html>
 <head>
   <meta charset="UTF-8">
-  <title><App Name></title>
+  <title>Sales Insights Agent</title>
   <meta http-equiv="refresh" content="0; url=/_apx/agent">
 </head>
 <body>Redirecting to <a href="/_apx/agent">agent UI</a>...</body>
@@ -175,7 +141,7 @@ Minimal placeholder — the real UI is at `/_apx/agent`.
    ws = WorkspaceClient()
    ws.permissions.update(
        request_object_type="genie",
-       request_object_id="<space_id>",
+       request_object_id="01234567-89ab-cdef-0123-456789abcdef",
        access_control_list=[
            AccessControlRequest(group_name="users", permission_level=PermissionLevel.CAN_RUN)
        ]
@@ -203,28 +169,38 @@ Minimal placeholder — the real UI is at `/_apx/agent`.
 
 ## Multiple Genie Spaces
 
-Add one `ask_genie_*` function per space and register all as tools:
+Add one `genie_tool(...)` per space (distinct `name=` / `description=`) and register all as tools:
 
 ```python
-async def ask_genie_sales(question: str, headers: Dependencies.Headers) -> str:
-    """Query sales pipeline and opportunity data."""
-    return await _query_genie(question, headers, SALES_SPACE_ID)
+ask_genie_sales = genie_tool(
+    SALES_SPACE_ID,
+    name="ask_genie_sales",
+    description="Query sales pipeline and opportunity data.",
+)
+ask_genie_support = genie_tool(
+    SUPPORT_SPACE_ID,
+    name="ask_genie_support",
+    description="Query customer support tickets and case history.",
+)
 
-async def ask_genie_support(question: str, headers: Dependencies.Headers) -> str:
-    """Query customer support tickets and case history."""
-    return await _query_genie(question, headers, SUPPORT_SPACE_ID)
-
-agent = Agent(tools=[ask_genie_sales, ask_genie_support], instructions=SYSTEM_PROMPT)
+agent = Agent(
+    tools=[ask_genie_sales, ask_genie_support],
+    instructions=SYSTEM_PROMPT,
+)
 ```
-
-Extract the shared polling logic into a helper `_query_genie(question, headers, space_id)`.
 
 ## What NOT to Do
 
 ```python
-# ❌ WRONG — blocks the event loop, SSE stream hangs
-from apx_agent import genie_tool
-ask_genie = genie_tool(GENIE_SPACE_ID)  # uses sync ws.api_client.do()
+# ❌ WRONG — stub description breaks A2A agent-card routing if copied literally
+config = AgentConfig(
+    name="<app-name>-agent",
+    description="<One-line description of what the agent does>",
+)
+
+# ❌ WRONG — hand-rolled Genie poll without attach_resources
+async def ask_genie(question: str, headers: Dependencies.Headers) -> str:
+    ...  # raw httpx start_conversation + poll — no ResourceSpec declared
 
 # ❌ WRONG — this is for scripts/notebooks, not Databricks Apps
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
@@ -232,7 +208,7 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 # ❌ WRONG — app.mount("/", StaticFiles(...)) intercepts POST /responses
 app.mount("/", StaticFiles(directory="static"), html=True)
 
-# ✅ RIGHT — async httpx with OBO, mounted at /static not /
-async def ask_genie(question: str, headers: Dependencies.Headers) -> str: ...
+# ✅ RIGHT — genie_tool (declares resources) + mount at /static
+ask_genie = genie_tool(GENIE_SPACE_ID, description="Query domain data via Genie.")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 ```

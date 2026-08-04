@@ -82,7 +82,12 @@ cd orchestrator && databricks bundle deploy --target dev \
 | `orchestrator/` | Triage + route | `classify_intent` (local), 3 remote delegates (auto-materialized from cards) |
 | `billing_specialist/` | Billing domain | `get_recent_orders` |
 | `technical_specialist/` | Technical domain | `docs_search` (Vector Search in prod) |
-| `account_specialist/` | Account domain | `recall`, `remember` (semantic memory), `ask_account_data` (Genie) |
+| `account_specialist/` | Account domain | `recall`, `remember` (semantic memory via `_use_dep_principal`), `ask_account_data` (Genie) |
+
+> **DEPLOY BLOCKER (memory):** `account_specialist` falls back to
+> `default_principal_id="user:alice"` when Apps headers are absent. Multi-user
+> production must require `X-Forwarded-User` (or drop the shared default) so
+> callers do not share one memory scope.
 
 ## Compared to `customer_triage` (single-app)
 
