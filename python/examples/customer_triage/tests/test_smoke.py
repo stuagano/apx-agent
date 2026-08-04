@@ -32,19 +32,23 @@ def test_agent_imports() -> None:
     assert hasattr(agent_module, "agent"), "expected a top-level `agent` variable"
 
 
-def test_top_level_agent_is_handoff() -> None:
+def test_top_level_agent_is_router() -> None:
     import agent as agent_module
-    from apx_agent import HandoffAgent
+    from apx_agent import RouterAgent
 
-    assert isinstance(agent_module.agent, HandoffAgent)
+    assert isinstance(agent_module.agent, RouterAgent)
 
 
-def test_specialists_present() -> None:
+def test_routes_present() -> None:
     import agent as agent_module
-    assert "triage" in agent_module.agent._agents
-    assert "billing_specialist" in agent_module.agent._agents
-    assert "technical_specialist" in agent_module.agent._agents
-    assert "account_specialist" in agent_module.agent._agents
+
+    route_names = {name for name, _, _ in agent_module.agent._routes}
+    assert route_names == {
+        "billing_specialist",
+        "technical_specialist",
+        "account_specialist",
+        "other",
+    }
 
 
 def test_classify_intent_is_uc_synced() -> None:
@@ -71,6 +75,6 @@ def test_declared_resources_include_genie_and_vector_search() -> None:
 
     specs = collect_resource_specs(agent_module.agent)
     kinds = {s.kind for s in specs}
-    assert "uc_function" in kinds   # classify_intent + format_address
-    assert "genie_space" in kinds   # account_specialist
+    assert "uc_function" in kinds  # format_address on billing_specialist
+    assert "genie_space" in kinds  # account_specialist
     assert "vector_search_index" in kinds  # technical_specialist

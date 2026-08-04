@@ -1,7 +1,7 @@
 """FastAPI entry point for Databricks Apps — framework boilerplate.
 
 Don't edit this file. Edit ``../agent.py`` instead — that's where the
-HandoffAgent + 4 specialist sub-agents + memory wiring live. This file
+RouterAgent + route agents + memory wiring live. This file
 wires that agent into the Databricks Apps runtime:
 
   * Imports the user's ``agent`` from the top-level ``agent.py``.

@@ -1,6 +1,6 @@
 # Databricks Asset Bundle config for customer_triage (Apps target).
 #
-# Deploys the HandoffAgent + 4 specialist sub-agents as a Databricks App.
+# Deploys the RouterAgent + 4 route agents as a Databricks App.
 # Tradeoffs and rationale: see docs/apps-vs-model-serving.md.
 #
 # Deploy:
@@ -56,7 +56,7 @@ resources:
     customer-triage:
       name: customer-triage
       description: |
-        apx-agent customer_triage — HandoffAgent over billing / technical /
+        apx-agent customer_triage — RouterAgent over billing / technical /
         account specialists, with InMemoryMemoryStore wired into the account
         specialist. Compiled to ResponsesAgent and served via Databricks
         Apps. APX_SMOKE_MODE=1 by default.
