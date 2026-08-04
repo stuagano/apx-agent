@@ -623,25 +623,56 @@ class TestApplyConfigGuardrails:
         assert agent._before_tool is before_tool_ref
         assert len(agent._input_guardrails) == before_input_len
 
-    def test_composition_root_without_before_tool_warns_and_skips(self, caplog):
-        inner = LlmAgent(tools=[get_weather])
-        root = SequentialAgent(agents=[inner])
+    def test_composition_root_applies_tool_rules_to_leaves(self):
+        """#616: Sequential/Handoff roots push blocked_tools onto every leaf."""
+        inner_a = LlmAgent(tools=[get_weather])
+        inner_b = LlmAgent(tools=[get_weather])
+        root = SequentialAgent(agents=[inner_a, inner_b])
         config = self._make_config(blocked_tools=["delete_account"])
-        import logging
-        with caplog.at_level(logging.WARNING, logger="apx_agent._wiring"):
-            apply_config_guardrails(root, config)
+        apply_config_guardrails(root, config)
         assert not hasattr(root, "_before_tool")
-        assert "_before_tool" in caplog.text or "SequentialAgent" in caplog.text
+        for leaf in (inner_a, inner_b):
+            assert leaf._before_tool is not None
+            with pytest.raises(PermissionError, match="delete_account"):
+                leaf._before_tool("delete_account", {})
 
-    def test_composition_root_without_input_guardrails_warns_and_skips(self, caplog):
+    def test_composition_root_applies_injection_to_leaves(self):
         inner = LlmAgent(tools=[get_weather])
         root = SequentialAgent(agents=[inner])
         config = self._make_config(injection_detection=True)
-        import logging
-        with caplog.at_level(logging.WARNING, logger="apx_agent._wiring"):
+        before = len(inner._input_guardrails)
+        apply_config_guardrails(root, config)
+        assert len(inner._input_guardrails) == before + 1
+
+    def test_composition_root_with_no_llm_leaf_fails_loud(self):
+        """#616: declared guardrails that attach nowhere raise (not warn)."""
+        from apx_agent._remote import RemoteDatabricksAgent
+
+        remote = RemoteDatabricksAgent("https://peer.aws.databricksapps.com/.well-known/agent.json")
+        root = SequentialAgent(agents=[remote])
+        config = self._make_config(blocked_tools=["delete_account"])
+        with pytest.raises(ValueError, match="no LlmAgent leaf"):
             apply_config_guardrails(root, config)
-        assert not hasattr(root, "_input_guardrails")
-        assert "_input_guardrails" in caplog.text or "SequentialAgent" in caplog.text
+
+    def test_agent_tool_specialist_inherits_config_tool_rules(self):
+        """#616: agent_tool nested LlmAgent receives parent config gates."""
+        from apx_agent import agent_tool
+
+        def delete_record(id: str) -> str:
+            return id
+
+        specialist = LlmAgent(tools=[delete_record], instructions="specialist")
+        orchestrator = LlmAgent(
+            tools=[agent_tool(specialist, name="specialist")],
+            instructions="orch",
+        )
+        config = self._make_config(blocked_tools=["delete_record"])
+        apply_config_guardrails(orchestrator, config)
+        assert specialist._before_tool is not None
+        with pytest.raises(PermissionError, match="delete_record"):
+            specialist._before_tool("delete_record", {})
+        # Orchestrator also gated (wrapper tool names).
+        assert orchestrator._before_tool is not None
 
     def test_empty_guardrails_config_is_noop(self):
         agent = LlmAgent(tools=[get_weather])

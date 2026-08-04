@@ -117,58 +117,151 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
             )
 
 
+def _guardrails_configured(cfg: Any) -> bool:
+    """True when ``[tool.apx.agent.guardrails]`` declares any active rule."""
+    return bool(
+        cfg.blocked_tools
+        or cfg.allowed_tools is not None
+        or cfg.rate_limit is not None
+        or cfg.injection_detection
+    )
+
+
+def _agent_tool_nested_agents(agent: BaseAgent) -> list[BaseAgent]:
+    """Return ``BaseAgent`` instances closed over by ``agent_tool`` wrappers."""
+    found: list[BaseAgent] = []
+    for fn in getattr(agent, "_tool_fns", []) or []:
+        closure = getattr(fn, "__closure__", None)
+        if not closure:
+            continue
+        for cell in closure:
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                continue
+            if isinstance(value, BaseAgent):
+                found.append(value)
+    return found
+
+
+def _collect_guardrail_targets(agent: BaseAgent) -> list[BaseAgent]:
+    """Every ``LlmAgent`` leaf that can receive config ``before_tool`` / input guards.
+
+    Walks composition children (Sequential / Router / Handoff / …) and
+    ``agent_tool``-wrapped specialists (#616). Remote peers without
+    ``_before_tool`` are skipped — they enforce their own policy.
+    """
+    from ._topology import _iter_child_agents  # noqa: PLC0415
+
+    targets: list[BaseAgent] = []
+    seen: set[int] = set()
+
+    def _walk(node: BaseAgent) -> None:
+        nid = id(node)
+        if nid in seen:
+            return
+        seen.add(nid)
+        children = _iter_child_agents(node)
+        nested = _agent_tool_nested_agents(node)
+        if not children and not nested:
+            if hasattr(node, "_before_tool") or hasattr(node, "_input_guardrails"):
+                targets.append(node)
+            return
+        for _, child in children:
+            _walk(child)
+        for nested_agent in nested:
+            _walk(nested_agent)
+        # Parent LlmAgent that also has tools (orchestrator + agent_tool) still
+        # needs its own gates for wrapper tool names.
+        if hasattr(node, "_before_tool") or hasattr(node, "_input_guardrails"):
+            if node not in targets:
+                targets.append(node)
+
+    _walk(agent)
+    return targets
+
+
+def _attach_config_guards_to_leaf(
+    leaf: BaseAgent,
+    *,
+    input_guardrails: list[Any],
+    before_tool: Any,
+    compose: Any,
+) -> bool:
+    """Attach config guards onto one leaf. Returns True if anything attached."""
+    if getattr(leaf, "_apx_config_guards_applied", False):
+        return False
+    attached = False
+    if input_guardrails:
+        existing_igs = getattr(leaf, "_input_guardrails", None)
+        if existing_igs is not None:
+            existing_igs.extend(input_guardrails)
+            attached = True
+    if before_tool is not None and hasattr(leaf, "_before_tool"):
+        code_hook = getattr(leaf, "_before_tool", None)
+        if code_hook is not None:
+            setattr(leaf, "_before_tool", compose(code_hook, before_tool))
+        else:
+            setattr(leaf, "_before_tool", before_tool)
+        attached = True
+    if attached:
+        setattr(leaf, "_apx_config_guards_applied", True)
+    return attached
+
+
 def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
-    """Apply ``[tool.apx.agent.guardrails]`` config onto the live agent instance.
+    """Apply ``[tool.apx.agent.guardrails]`` config onto live agent leaf instances.
 
     Translates ``config.guardrails`` (a ``GuardrailsConfig``) into built-in
-    guard callables and attaches them additively:
+    guard callables and attaches them additively to every ``LlmAgent`` leaf
+    in the composition tree (and ``agent_tool`` specialists) (#616):
 
     - ``before_tool`` gates (deny / allow / rate-limit) are merged via
       ``compose(existing_code_hook, *config_gates)`` — code hook runs first.
     - ``input_guardrails`` (injection heuristic) are appended — code guards
       run first.
 
-    Idempotent via the ``_apx_config_guards_applied`` sentinel: a second call
-    is a no-op.  ``setup_agent`` can run more than once on the same instance
-    (``mount_mcp_endpoints`` fires its own ``setup_agent`` at startup), so this
-    is a real correctness requirement, not a nicety.
+    Idempotent via the ``_apx_config_guards_applied`` sentinel on the root and
+    each leaf: a second call is a no-op. ``setup_agent`` can run more than once
+    on the same instance (``mount_mcp_endpoints`` fires its own ``setup_agent``
+    at startup), so this is a real correctness requirement, not a nicety.
 
-    Warns (never crashes) when guards are declared on a composition root
-    (e.g. ``SequentialAgent``) that has no ``_before_tool`` /
-    ``_input_guardrails`` — matches the ``sub_agents``-merge precedent.
+    Raises ``ValueError`` when guardrails are declared but no leaf can receive
+    them (composition of remotes-only, etc.) — fail loud, not warn-and-skip.
+    Remote leaves without ``_before_tool`` keep their own policy; document that
+    operators must configure policy on those peers separately.
     """
     if getattr(agent, "_apx_config_guards_applied", False):
         return
 
     from ._guards import build_config_guards, compose  # noqa: PLC0415
 
-    _guards = build_config_guards(config.guardrails)
+    cfg = config.guardrails
+    configured = _guardrails_configured(cfg)
+    _guards = build_config_guards(cfg)
 
-    if _guards.input_guardrails:
-        existing_igs = getattr(agent, "_input_guardrails", None)
-        if existing_igs is None:
-            logger.warning(
-                "config guardrails.injection_detection set on a %s root, "
-                "which has no _input_guardrails (only LlmAgent does) — ignored.",
-                type(agent).__name__,
-            )
-        else:
-            existing_igs.extend(_guards.input_guardrails)
+    if not configured:
+        setattr(agent, "_apx_config_guards_applied", True)
+        return
 
-    if _guards.before_tool is not None:
-        if not hasattr(agent, "_before_tool"):
-            logger.warning(
-                "config guardrails tool rules (blocked_tools / allowed_tools / "
-                "rate_limit) set on a %s root, which has no _before_tool "
-                "(only LlmAgent does) — ignored.",
-                type(agent).__name__,
-            )
-        else:
-            code_hook = getattr(agent, "_before_tool", None)
-            if code_hook is not None:
-                setattr(agent, "_before_tool", compose(code_hook, _guards.before_tool))
-            else:
-                setattr(agent, "_before_tool", _guards.before_tool)
+    targets = _collect_guardrail_targets(agent)
+    attached_any = False
+    for leaf in targets:
+        if _attach_config_guards_to_leaf(
+            leaf,
+            input_guardrails=_guards.input_guardrails,
+            before_tool=_guards.before_tool,
+            compose=compose,
+        ):
+            attached_any = True
+
+    if not attached_any:
+        raise ValueError(
+            f"[tool.apx.agent.guardrails] declared on {type(agent).__name__} but "
+            "no LlmAgent leaf could receive them (composition roots and remote "
+            "agent_tool peers have no _before_tool / _input_guardrails). Attach "
+            "guardrails on each leaf LlmAgent, or ensure the tree contains one."
+        )
 
     setattr(agent, "_apx_config_guards_applied", True)
 
