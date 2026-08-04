@@ -6,9 +6,12 @@ Each surface is self-contained and styled to a shared dark theme; a fixed header
 (rendered by `_ui_nav.py`) lets you jump between them.
 
 On a **deployed App**, chat/Discover/Probe/Topology work behind workspace SSO.
-**Write** routes (edit, wire, create tools, replay) are allowed for any
-**signed-in Apps user** (SSO / `X-Forwarded-Access-Token`). Optional
-`APX_DEV_UI_TOKEN` remains for non-browser automation only.
+Discover inventory GETs use the caller's OBO token and **fail closed** (401)
+when it is missing — they do not list under the App service principal (#612).
+**Write** routes (edit, create tools, replay) are allowed for any **signed-in
+Apps user** (SSO / `X-Forwarded-Access-Token`). Discover wire/unwire additionally
+requires `APX_DEV_UI_TOKEN` (#611). Optional `APX_DEV_UI_TOKEN` also covers
+non-browser automation.
 
 Model Serving deployments use AI Playground as the equivalent surface.
 

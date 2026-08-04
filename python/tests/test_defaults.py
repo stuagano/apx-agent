@@ -246,3 +246,83 @@ class TestDependenciesClass:
         assert Dependencies.Client is not None
         assert Dependencies.UserClient is not None
         assert Dependencies.Headers is not None
+
+
+class TestWsPreferOboFailClosed:
+    """#612 — Discover must not list under App SP when OBO is missing on Apps."""
+
+    def test_apps_no_obo_raises_401(self, monkeypatch):
+        from fastapi import HTTPException
+
+        from apx_agent._defaults import _ws_prefer_obo
+
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+        monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
+        req = MagicMock()
+        req.headers = {}
+        req.app.state.workspace_client = MagicMock(name="app_sp")
+        with pytest.raises(HTTPException) as exc:
+            _ws_prefer_obo(req)
+        assert exc.value.status_code == 401
+        assert "fails closed" in str(exc.value.detail).lower() or "OBO" in str(
+            exc.value.detail
+        )
+
+    def test_local_no_obo_falls_back_to_app_client(self, monkeypatch):
+        from apx_agent._defaults import _ws_prefer_obo
+
+        monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+        monkeypatch.delenv("DATABRICKS_APP_URL", raising=False)
+        app_sp = MagicMock(name="app_sp")
+        req = MagicMock()
+        req.headers = {}
+        req.app.state.workspace_client = app_sp
+        assert _ws_prefer_obo(req) is app_sp
+
+    def test_apps_obo_token_builds_user_client(self, monkeypatch):
+        from apx_agent._defaults import _ws_prefer_obo
+
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+        user_ws = MagicMock(name="obo")
+        monkeypatch.setattr(
+            "apx_agent._defaults._make_workspace_client",
+            lambda **k: user_ws if k.get("token") == "obo-token" else MagicMock(),
+        )
+        req = MagicMock()
+        req.headers = {"X-Forwarded-Access-Token": "obo-token"}
+        req.app.state.workspace_client = MagicMock(name="app_sp")
+        assert _ws_prefer_obo(req) is user_ws
+
+    def test_apps_obo_build_failure_does_not_sp_fallback(self, monkeypatch):
+        from fastapi import HTTPException
+
+        from apx_agent._defaults import _ws_prefer_obo
+
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+        monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
+
+        def _boom(**k):
+            raise RuntimeError("bad token")
+
+        monkeypatch.setattr("apx_agent._defaults._make_workspace_client", _boom)
+        req = MagicMock()
+        req.headers = {"X-Forwarded-Access-Token": "obo-token"}
+        req.app.state.workspace_client = MagicMock(name="app_sp")
+        with pytest.raises(HTTPException) as exc:
+            _ws_prefer_obo(req)
+        assert exc.value.status_code == 401
+        assert "App SP" in exc.value.detail or "#612" in exc.value.detail
+
+    def test_apps_sp_fallback_opt_in_allows_app_client(self, monkeypatch):
+        from apx_agent._defaults import _ws_prefer_obo
+
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+        monkeypatch.setenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", "true")
+        import apx_agent._obo as _obo
+
+        monkeypatch.setattr(_obo, "_warned_no_obo_in_app", False)
+        app_sp = MagicMock(name="app_sp")
+        req = MagicMock()
+        req.headers = {}
+        req.app.state.workspace_client = app_sp
+        assert _ws_prefer_obo(req) is app_sp
