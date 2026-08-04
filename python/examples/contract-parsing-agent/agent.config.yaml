@@ -25,8 +25,9 @@ system_prompt: |
   demand-response contracts, service agreements).
 
   When the user asks about specific contracts or filters across the
-  portfolio, call the appropriate tool. When you don't know which tool fits,
-  delegate to the data-inspector sub-agent's run_sql_query.
+  portfolio, call query_portfolio (use expires_within_days for renewal
+  calendars). When you don't know which tool fits, delegate to the
+  data-inspector sub-agent's run_sql_query.
 
   Never fabricate contracts, counterparties, or values. If a query returns
   no rows, say so plainly.

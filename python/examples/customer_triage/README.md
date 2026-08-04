@@ -7,12 +7,12 @@ A customer-support triage agent that exercises the full apx-agent surface end-to
                               │
         ┌─────────────┬───────┼───────────┬────────┐
         │             │       │           │        │
- billing_specialist  technical_  account_  other
+    billing_specialist  technical_  account_  other
                      specialist  specialist
  ─────────────────  ──────────  ───────────  ─────
  get_recent_orders  docs_search ask_account_data  (ack)
- format_address     (vector_    (genie)
- (SQL warehouse)     search)
+ (SQL / OBO)        (vector_    (genie)
+                     search)
 ```
 
 `RouterAgent` makes **one** routing decision from the closed set
@@ -25,7 +25,7 @@ Genie — so the example walks through every governed-primitive shape.
 
 | apx-agent feature | Where in this example |
 |---|---|
-| `@tool(uc="...")` | `format_address` on billing (UC-synced); `classify_intent` remains a publishable helper |
+| `@tool(uc="...")` | `classify_intent` — publishable UC helper (routing uses specialist `description`s) |
 | `Dependencies.Workspace` injection | `get_recent_orders` — user-scoped SQL via OBO |
 | `vector_search_tool` | `technical_specialist` agent — docs retrieval |
 | `genie_tool` | `account_specialist` agent — natural-language account data |
@@ -54,7 +54,7 @@ This example ships two deploy paths — pick by workload. The full tradeoff writ
 For production endpoints recognized by AI Playground, Review App, Supervisor Agent. Container build pipeline.
 
 ```bash
-# 1. Publish UC-syncable tools on the agent tree (format_address, …)
+# 1. Publish UC-syncable helpers (classify_intent, …)
 apx-agent uc publish --module agent:agent --dry-run    # preview
 apx-agent uc publish --module agent:agent              # actually create + grant
 

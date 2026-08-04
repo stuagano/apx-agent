@@ -75,6 +75,5 @@ def test_declared_resources_include_genie_and_vector_search() -> None:
 
     specs = collect_resource_specs(agent_module.agent)
     kinds = {s.kind for s in specs}
-    assert "uc_function" in kinds  # format_address on billing_specialist
     assert "genie_space" in kinds  # account_specialist
     assert "vector_search_index" in kinds  # technical_specialist

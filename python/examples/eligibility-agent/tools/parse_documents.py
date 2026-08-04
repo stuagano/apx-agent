@@ -2,6 +2,11 @@
 
 Reads document metadata from the catalog, downloads each PDF from a UC Volume,
 renders the first page, and extracts structured fields via multimodal FM API.
+
+The vision call is intentional nested LLM work: structured field extraction
+from a PDF page cannot move into the outer agent loop without losing the image
+payload. It is bounded (max_tokens=600, first page only) and declares the
+serving endpoint via attach_resources so log_agent manifests it.
 """
 from __future__ import annotations
 
@@ -11,10 +16,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from apx_agent import Dependencies, ToolError
+from apx_agent import Dependencies, ResourceSpec, ToolError, attach_resources
 from databricks.sdk.service.sql import StatementParameterListItem
 
 from config import get_settings
+
+_VISION_ENDPOINT = "databricks-claude-sonnet-4-6"
 
 _PROMPTS = {
     "paystub": (
@@ -82,7 +89,7 @@ def _extract_via_vision(volume_path: str, doc_type: str, ws: Any) -> dict[str, A
     prompt = _PROMPTS.get(doc_type, "Extract all visible fields and return JSON.")
     response = ws.api_client.do(
         method="POST",
-        path="/serving-endpoints/databricks-claude-sonnet-4-6/invocations",
+        path=f"/serving-endpoints/{_VISION_ENDPOINT}/invocations",
         body={
             "messages": [
                 {
@@ -112,6 +119,11 @@ def _extract_via_vision(volume_path: str, doc_type: str, ws: Any) -> dict[str, A
 def parse_documents(application_id: str, ws: Dependencies.Workspace) -> dict[str, Any]:
     """Parse all documents for an application via Claude vision.
 
+    Invokes a bounded multimodal serving-endpoint call per PDF (first page,
+    max_tokens=600). Nested relative to the outer agent loop by necessity —
+    the image payload cannot round-trip through tool text. Declares the
+    endpoint and documents table via attach_resources for log_agent.
+
     Returns:
         {
             "application_id": str,
@@ -134,3 +146,9 @@ def parse_documents(application_id: str, ws: Dependencies.Workspace) -> dict[str
             for d in docs
         ],
     }
+
+
+_parse_specs = [ResourceSpec("serving_endpoint", _VISION_ENDPOINT)]
+_s = get_settings()
+_parse_specs.append(ResourceSpec("uc_table", _s.table("documents")))
+attach_resources(parse_documents, _parse_specs)

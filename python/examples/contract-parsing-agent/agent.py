@@ -13,7 +13,6 @@ from apx_agent import Agent
 
 from config import get_settings
 from tools.extract_new_contract import extract_new_contract
-from tools.find_contracts_expiring import find_contracts_expiring
 from tools.query_portfolio import query_portfolio
 from tools.summarize_contract import summarize_contract
 
@@ -33,7 +32,6 @@ agent = Agent(
     tools=[
         query_portfolio,
         summarize_contract,
-        find_contracts_expiring,
         extract_new_contract,
     ],
     sub_agents=_resolve_sub_agents(),

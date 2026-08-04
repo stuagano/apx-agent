@@ -145,8 +145,9 @@ def validate_against_market_news(
     manufacturer: str,
     ws: Dependencies.Workspace,
 ) -> str:
-    """Search market intelligence (Vector Search index) for evidence that
-    confirms or contradicts the signal. Returns a verdict with confidence."""
+    """Search market intelligence (Vector Search index) for evidence.
+    Returns sources/snippets for the calling agent to synthesize CONFIRMED /
+    UNCONFIRMED — no nested LLM call inside the tool."""
     index_name = os.environ["VS_INDEX"]
     result = ws.vector_search_indexes.query_index(
         index_name=index_name,
