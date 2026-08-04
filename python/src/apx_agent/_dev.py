@@ -2371,8 +2371,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         Best-effort: Apps that don't answer ``/.well-known/agent.json`` and
         UC models without ``apx.agent.name`` are omitted. Never raises.
 
-        Uses the caller's OBO token when present so ``apps.list`` runs as the
-        signed-in user (the App SP often cannot list peer Apps).
+        Uses the caller's OBO token so ``apps.list`` runs as the signed-in user.
+        In Apps, fails closed (401) when OBO is missing — never lists under
+        App SP while implying user-scoped Discover (#612).
         """
         import asyncio as _asyncio
 
@@ -2469,8 +2470,8 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         Best-effort per source — a permission error on one family omits that
         family rather than failing the whole response.
 
-        Uses the caller's OBO token when present (Genie / VS often need user
-        grants the App SP does not have).
+        Uses the caller's OBO token (Genie / VS often need user grants the App
+        SP does not have). In Apps, fails closed (401) without OBO (#612).
         """
         import asyncio as _asyncio
 

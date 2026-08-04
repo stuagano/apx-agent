@@ -127,6 +127,24 @@ async def test_workspace_agents_prefers_obo_client(app: FastAPI, monkeypatch: py
 
 
 @pytest.mark.asyncio
+async def test_workspace_agents_apps_no_obo_returns_401(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+):
+    """#612: Discover inventory fails closed on Apps without OBO (no App SP list)."""
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+    monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
+
+    def _should_not_list(ws, **k):
+        raise AssertionError("must not list under App SP without OBO")
+
+    monkeypatch.setattr("apx_agent._apps_discovery.discover_app_agents", _should_not_list)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get("/_apx/workspace-agents")
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_workspace_functions_lists_uc(app: FastAPI):
     fn = MagicMock()
     fn.name = "score_lead"

@@ -189,20 +189,41 @@ def _get_user_client(headers: HeadersDependency) -> WorkspaceClient:
 def _ws_prefer_obo(request: Request) -> WorkspaceClient:
     """Workspace client for Discover / Topology catalog reads.
 
-    Prefer the caller's OBO token when present so ``apps.list`` / Genie / VS
-    see what the signed-in user can see. Fall back to the app-level SP client
-    (local ``apx-agent run``, or Apps GETs without OBO) — never fail-closed
-    for these browse endpoints.
+    Prefer the caller's OBO token when present so inventory matches what the
+    signed-in user can see. In the Databricks Apps runtime, **fail closed**
+    when OBO is missing or unusable (#612 / G2) — never list under App SP
+    while the UI implies user-scoped Discover. Local ``apx-agent run`` still
+    falls back to the app/CLI client. Operators that intentionally want App
+    SP inventory can set ``APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true``.
     """
+    from fastapi import HTTPException
+
+    from ._obo import ApxIdentityError, _in_databricks_app, resolve_no_obo_or_raise
+
     token = (request.headers.get("X-Forwarded-Access-Token") or "").strip()
     if token:
         try:
             return _make_workspace_client(token=token)
-        except Exception:
+        except Exception as exc:
             logger.debug(
-                "OBO workspace client failed; falling back to app client",
+                "OBO workspace client failed for Discover; not falling back to App SP on Apps",
                 exc_info=True,
             )
+            if _in_databricks_app():
+                raise HTTPException(
+                    status_code=401,
+                    detail=(
+                        "Discover requires a usable OBO token "
+                        f"({type(exc).__name__}); not listing under App SP (#612)."
+                    ),
+                ) from exc
+            # Local / non-Apps: fall through to app/CLI client.
+    else:
+        try:
+            resolve_no_obo_or_raise()
+        except ApxIdentityError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+
     return request.app.state.workspace_client
 
 
