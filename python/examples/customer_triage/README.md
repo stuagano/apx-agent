@@ -3,30 +3,34 @@
 A customer-support triage agent that exercises the full apx-agent surface end-to-end. Deploys to **either** Model Serving **or** Databricks Apps via `apx-agent agents deploy --target {model-serving,apps}`.
 
 ```
-                       triage (classifier)
+                    RouterAgent (one routing call)
                               │
-                ┌─────────────┼─────────────┐
-                │             │             │
-        billing_specialist  technical_  account_
-                            specialist  specialist
-        ─────────────────  ──────────  ───────────
-        get_recent_orders  docs_search ask_account_data
-        format_address     (vector_    (genie)
-        (SQL warehouse)     search)
+        ┌─────────────┬───────┼───────────┬────────┐
+        │             │       │           │        │
+ billing_specialist  technical_  account_  other
+                     specialist  specialist
+ ─────────────────  ──────────  ───────────  ─────
+ get_recent_orders  docs_search ask_account_data  (ack)
+ format_address     (vector_    (genie)
+ (SQL warehouse)     search)
 ```
 
-The `triage` LlmAgent calls `classify_intent` (a UC function) on the user's query, then transfers control to the right specialist via the auto-generated `transfer_to_*` tools. Each specialist exercises a different platform primitive — SQL, vector search, Genie — so the example walks through every governed-primitive shape.
+`RouterAgent` makes **one** routing decision from the closed set
+(billing / technical / account / other) using each specialist's `name` +
+`description`, then that branch runs. No triage handoff round-trip. Each
+specialist exercises a different platform primitive — SQL, vector search,
+Genie — so the example walks through every governed-primitive shape.
 
 ## What this example demonstrates
 
 | apx-agent feature | Where in this example |
 |---|---|
-| `@tool(uc="...")` | `classify_intent`, `format_address` — pure Python, sync to UC, governed |
+| `@tool(uc="...")` | `format_address` on billing (UC-synced); `classify_intent` remains a publishable helper |
 | `Dependencies.Workspace` injection | `get_recent_orders` — user-scoped SQL via OBO |
 | `vector_search_tool` | `technical_specialist` agent — docs retrieval |
 | `genie_tool` | `account_specialist` agent — natural-language account data |
 | `InMemoryMemoryStore` + `make_memory_tools` | `account_specialist` — principal-keyed `recall` / `remember` / `forget` for prefs that outlive the session |
-| `HandoffAgent` | Top-level — routes to specialists mid-conversation |
+| `RouterAgent` | Top-level — one closed-set routing decision, then the branch runs |
 | Resource auto-declaration | `apx-agent agents deploy` walks the tree, declares everything to MLflow |
 | Eval (`evalset.jsonl`) | 8 queries spanning the four intent buckets |
 
@@ -50,7 +54,7 @@ This example ships two deploy paths — pick by workload. The full tradeoff writ
 For production endpoints recognized by AI Playground, Review App, Supervisor Agent. Container build pipeline.
 
 ```bash
-# 1. Publish UC-syncable tools (classify_intent, format_address)
+# 1. Publish UC-syncable tools on the agent tree (format_address, …)
 apx-agent uc publish --module agent:agent --dry-run    # preview
 apx-agent uc publish --module agent:agent              # actually create + grant
 
@@ -90,7 +94,7 @@ bundle deploy + run`, and polls until `RUNNING`/`ACTIVE`.
 
 `APX_SMOKE_MODE=1` (set in `databricks.yml`'s `env` block by default) swaps the UC / Genie / Vector Search tool references for inline stubs so the Apps deploy works without pre-provisioning workspace resources. Remove the env var (or set it to anything else) to run against real resources.
 
-Memory recall **works across the HandoffAgent boundary** — principal-keyed memory survives sub-agent transitions because the key is the user, not the session. Verified live: a query routed to `account_specialist` correctly invokes the `recall` tool and returns Alice's seeded preferences.
+Memory recall is **principal-keyed**, not session-keyed — prefs survive across turns and redeploys because the key is the user. Verified live: a query routed to `account_specialist` correctly invokes the `recall` tool and returns Alice's seeded preferences.
 
 ## Evaluate
 
@@ -98,7 +102,7 @@ Memory recall **works across the HandoffAgent boundary** — principal-keyed mem
 apx-agent eval run evalset.jsonl --module agent:agent --model databricks-claude-sonnet-4-6
 ```
 
-The evalset checks routing accuracy — each query has an `expected_intent` field. With Mosaic AI Agent Evaluation's default scorers, you'll get correctness and relevance metrics; add a custom scorer to gate on the transfer tool that actually got called if you want strict routing-accuracy enforcement.
+The evalset checks routing accuracy — each query has an `expected_intent` field. With Mosaic AI Agent Evaluation's default scorers, you'll get correctness and relevance metrics; add a custom scorer to gate on the route that actually got chosen if you want strict routing-accuracy enforcement.
 
 ## Memory
 
@@ -126,11 +130,11 @@ account_agent = Agent(
 
 `make_memory_tools` mints three `@tool`-decorated callables — `recall`, `remember`, `forget` — closed over the store. The LLM sees them as ordinary tools and decides when to invoke them per the instructions.
 
-**The recall + remember pattern alongside HandoffAgent:**
+**The recall + remember pattern alongside RouterAgent:**
 
-Memory is keyed by `principal_id`, not by `session_id`. That's the load-bearing fact for handoff routing:
+Memory is keyed by `principal_id`, not by `session_id`. That's the load-bearing fact for routed specialists:
 
-- A turn routed `triage -> billing` and back to `triage -> account` finds the same memories — they're scoped to *the user*, not to *the conversation*.
+- A turn routed to `billing_specialist` and a later turn to `account_specialist` find the same memories — they're scoped to *the user*, not to *the conversation*.
 - A new conversation tomorrow under a brand-new `session_id` for the same user still sees yesterday's memories.
 - Memory survives sub-agent restarts, container redeploys, and (with a durable store) full process restarts.
 

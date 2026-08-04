@@ -1,11 +1,12 @@
-"""customer_triage: HandoffAgent routing support queries to billing, technical, and account specialists.
+"""customer_triage: RouterAgent routing support queries to billing, technical, and account specialists.
 
-Top-level ``HandoffAgent`` with four sub-agents (triage + three specialists). The
-``account_specialist`` is wired with principal-keyed memory via
-``InMemoryMemoryStore`` + ``make_memory_tools``. Tools and prompts are defined
-inline; ``APX_SMOKE_MODE=1`` swaps workspace-dependent tools for in-process stubs
-so the bundle deploys cleanly on workspaces without the prerequisite UC / Genie /
-Vector Search resources.
+Top-level ``RouterAgent`` with four mutually exclusive branches (three specialists
++ ``other``). One routing decision, then the chosen branch runs — no triage
+handoff round-trip (#600). The ``account_specialist`` is wired with
+principal-keyed memory via ``InMemoryMemoryStore`` + ``make_memory_tools``.
+Tools and prompts are defined inline; ``APX_SMOKE_MODE=1`` swaps
+workspace-dependent tools for in-process stubs so the bundle deploys cleanly on
+workspaces without the prerequisite UC / Genie / Vector Search resources.
 """
 from __future__ import annotations
 
@@ -13,8 +14,8 @@ import os
 
 from apx_agent import (
     Agent,
-    HandoffAgent,
     InMemoryMemoryStore,
+    RouterAgent,
     make_memory_tools,
     tool,
 )
@@ -29,7 +30,8 @@ if SMOKE_MODE:
         """Classify a customer query as billing, technical, account, or other.
 
         Returns one of: ``"billing"``, ``"technical"``, ``"account"``,
-        ``"other"``.
+        ``"other"``. Kept as a UC-shaped helper for offline checks / publish
+        demos; live routing uses each specialist's ``description`` (#600).
         """
         q = query.lower()
         if any(w in q for w in ("bill", "invoice", "charge", "payment", "refund")):
@@ -101,7 +103,10 @@ else:
 
     @tool(uc="main.agent_tools.classify_intent", grant=["agent_consumers"])
     def classify_intent(query: str) -> str:
-        """Classify a customer query as billing, technical, account, or other."""
+        """Classify a customer query as billing, technical, account, or other.
+
+        Offline / publish helper — live routing uses specialist descriptions.
+        """
         q = query.lower()
         if any(w in q for w in ("bill", "invoice", "charge", "payment", "refund")):
             return "billing"
@@ -194,28 +199,41 @@ account_memory_tools = make_memory_tools(
 
 
 billing_agent = Agent(
+    name="billing_specialist",
+    description=(
+        "Handles billing inquiries: invoices, charges, refunds, payments, "
+        "and order history."
+    ),
     instructions=(
         "You're a billing specialist. Answer questions about invoices, charges, "
         "refunds, and payment methods. Use get_recent_orders to look up the "
         "customer's order history when relevant."
     ),
     tools=billing_tools,
-    name="billing_specialist",
 )
 
 
 technical_agent = Agent(
+    name="technical_specialist",
+    description=(
+        "Handles technical support: product errors, outages, bugs, crashes, "
+        "and integration troubleshooting."
+    ),
     instructions=(
         "You're a technical specialist. Answer questions about product errors, "
         "outages, and integration issues. Use the docs_search tool to find "
         "relevant troubleshooting articles before answering."
     ),
     tools=technical_tools,
-    name="technical_specialist",
 )
 
 
 account_agent = Agent(
+    name="account_specialist",
+    description=(
+        "Handles account access: password resets, login/email changes, "
+        "notification preferences, and profile facts."
+    ),
     instructions=(
         "You're an account specialist. Help with password resets, email changes, "
         "and account access.\n"
@@ -226,37 +244,36 @@ account_agent = Agent(
         "answer. When the user shares a new preference or fact worth keeping, "
         "call `remember` with content that future turns will benefit from. "
         "Memories are keyed by the calling user, not by this conversation — "
-        "they persist across handoffs and across sessions.\n"
+        "they persist across sessions.\n"
         "\n"
         "Use ask_account_data for live account-record lookups via the Genie space."
     ),
     tools=[*account_memory_tools, *account_extra_tools],
-    name="account_specialist",
 )
 
 
-triage_classifier = Agent(
-    instructions=(
-        "You're a customer support triage agent. First, call classify_intent on "
-        "the user's question. Then call exactly one of the transfer tools based "
-        "on the result:\n"
-        "  billing   -> transfer_to_billing_specialist\n"
-        "  technical -> transfer_to_technical_specialist\n"
-        "  account   -> transfer_to_account_specialist\n"
-        "If intent is 'other', answer directly with a polite acknowledgment and "
-        "do not transfer."
+other_agent = Agent(
+    name="other",
+    description=(
+        "General acknowledgments when the query is not billing, technical, or "
+        "account related (greetings, off-topic, unclear intent)."
     ),
-    tools=[classify_intent],
-    name="triage",
+    instructions=(
+        "Politely acknowledge the user's message. Say you can help with billing, "
+        "technical, or account questions, and ask them to rephrase if needed. "
+        "Do not invent specialist answers."
+    ),
+    tools=[],
 )
 
 
-agent = HandoffAgent(
-    agents={
-        "triage": triage_classifier,
-        "billing_specialist": billing_agent,
-        "technical_specialist": technical_agent,
-        "account_specialist": account_agent,
-    },
-    start="triage",
+agent = RouterAgent(
+    agents=[billing_agent, technical_agent, account_agent, other_agent],
+    instructions=(
+        "Route each customer support query to exactly one specialist. "
+        "billing_specialist for invoices, charges, refunds, and payments; "
+        "technical_specialist for errors, outages, bugs, and integrations; "
+        "account_specialist for password, login, email, and preferences; "
+        "other for greetings or anything outside those topics."
+    ),
 )

@@ -10,7 +10,7 @@ orchestrator  ─── A2A ──→  billing_specialist
 
 The **orchestrator** classifies customer queries and delegates to the right specialist via `sub_agents=[url]`. Each specialist is a standalone app serving its own A2A card, `/invocations`, and `/mcp` — independently deployable, discoverable, and governed per hop (the caller's OBO token passes through).
 
-This is the "fleet" version of [`../customer_triage`](../customer_triage/), which composes the same agents locally using `HandoffAgent`. Use the fleet version when specialists have different consumers, deploy cadences, or scaling profiles.
+This is the "fleet" version of [`../customer_triage`](../customer_triage/), which composes the same specialists locally using `RouterAgent`. Use the fleet version when specialists have different consumers, deploy cadences, or scaling profiles.
 
 ## Quick start (local, smoke mode)
 
@@ -88,7 +88,7 @@ cd orchestrator && databricks bundle deploy --target dev \
 
 | | `customer_triage` | `customer_triage_fleet` |
 |---|---|---|
-| Composition | `HandoffAgent` — local, in-process | `sub_agents=[url]` — remote, over A2A |
+| Composition | `RouterAgent` — local, in-process | `sub_agents=[url]` — remote, over A2A |
 | Deploy unit | 1 app | 4 apps |
 | Specialist discovery | Compile-time | Runtime (A2A cards at `/.well-known/agent.json`) |
 | Independent scaling | No | Yes |
