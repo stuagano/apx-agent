@@ -13,7 +13,7 @@ from apx_agent._dev import (
     _enforce_dev_write_auth,
     _parse_judge_output,
 )
-from apx_agent._ui_probe import _validate_probe_url
+from apx_agent._ui_probe import _validate_probe_url, validate_wire_peer_url
 
 
 def _req(method: str = "POST", path: str = "/_apx/edit", headers=None, query=None):
@@ -150,6 +150,39 @@ def test_validate_probe_url_rejects(url):
 
 def test_validate_probe_url_allows_public():
     assert _validate_probe_url("https://example.com/health") is None
+
+
+# --- #610: Discover wire-agent Apps-host allowlist ------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://peer.aws.databricksapps.com/",  # https required
+        "https://evil.example/",
+        "https://databricksapps.com.evil.example/",
+        "https://169.254.169.254/",
+        "ftp://x.databricksapps.com/",
+        "not a url",
+    ],
+)
+def test_validate_wire_peer_url_rejects(url):
+    assert validate_wire_peer_url(url) is not None
+
+
+def test_validate_wire_peer_url_allows_apps_host(monkeypatch):
+    monkeypatch.setattr("apx_agent._ui_probe._validate_probe_url", lambda _url: None)
+    assert validate_wire_peer_url("https://peer.aws.databricksapps.com/") is None
+
+
+def test_validate_wire_peer_url_rejects_dns_rebind(monkeypatch):
+    def fake_getaddrinfo(host, port, *a, **k):
+        return [(None, None, None, None, ("169.254.169.254", 0))]
+
+    monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+    reason = validate_wire_peer_url("https://evil.aws.databricksapps.com/")
+    assert reason is not None
+    assert "blocked" in reason.lower() or "169.254" in reason
 
 
 # --- M4: judge parser fails closed on unclear output -----------------------

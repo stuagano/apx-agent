@@ -38,12 +38,14 @@ async def test_hot_apply_and_remove_sub_agent(monkeypatch: pytest.MonkeyPatch):
         return []
 
     monkeypatch.setattr("apx_agent._agents.LlmAgent.fetch_remote_tools", _fake_fetch)
+    # Apps suffix is allowlisted; skip live DNS for the unit test host.
+    monkeypatch.setattr("apx_agent._ui_probe._validate_probe_url", lambda _url: None)
 
     ok = await hot_apply_sub_agent(
         ctx,
         target="agent",
         ref="$APX_PEER_X_URL",
-        url="https://x.example",
+        url="https://x.aws.databricksapps.com",
         env_key="APX_PEER_X_URL",
     )
     assert ok is True
@@ -52,6 +54,26 @@ async def test_hot_apply_and_remove_sub_agent(monkeypatch: pytest.MonkeyPatch):
     ok2 = await hot_remove_sub_agent(ctx, target="agent", ref="$APX_PEER_X_URL")
     assert ok2 is True
     assert "$APX_PEER_X_URL" not in live._sub_agent_urls
+
+
+@pytest.mark.asyncio
+async def test_hot_apply_sub_agent_rejects_off_allowlist(monkeypatch: pytest.MonkeyPatch):
+    live = Agent(tools=[], instructions="hi")
+    ctx = _ctx(live)
+
+    async def _fake_fetch(self):
+        raise AssertionError("must not fetch off-allowlist peer")
+
+    monkeypatch.setattr("apx_agent._agents.LlmAgent.fetch_remote_tools", _fake_fetch)
+
+    ok = await hot_apply_sub_agent(
+        ctx,
+        target="agent",
+        ref="https://evil.example",
+        url="https://evil.example",
+    )
+    assert ok is False
+    assert live._sub_agent_urls == []
 
 
 @pytest.mark.asyncio
