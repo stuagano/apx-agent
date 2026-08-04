@@ -77,15 +77,16 @@ def test_apps_list_failure_is_non_fatal():
 
 
 def test_env_seed_urls_used_when_list_empty(monkeypatch):
+    apps_url = "https://mcp-data-inspector-7474660064938119.aws.databricksapps.com"
     monkeypatch.setenv(
         "APX_DISCOVER_APP_URLS",
-        "peer=https://peer.example,https://mcp-data-inspector-7474660064938119.aws.databricksapps.com",
+        f"peer={apps_url},https://evil.example/steal",
     )
     probed: list[str] = []
 
     def fake_probe(url, headers, timeout):
         probed.append(url)
-        if url == "https://peer.example":
+        if url == apps_url:
             return CARD
         return None
 
@@ -95,9 +96,125 @@ def test_env_seed_urls_used_when_list_empty(monkeypatch):
         config=SimpleNamespace(authenticate=lambda: {"Authorization": "Bearer x"}),
     )
     found = discover_app_agents(ws)
-    assert "https://peer.example" in probed
-    assert any("mcp-data-inspector" in u for u in probed)
+    assert apps_url in probed
+    assert all("evil.example" not in u for u in probed)
     assert [a.app_name for a in found] == ["peer"]
+
+
+def test_env_seed_rejects_non_apps_http_prefix(monkeypatch):
+    monkeypatch.setenv(
+        "APX_DISCOVER_APP_URLS",
+        "meta=http://169.254.169.254/,bad=https://evil.example/",
+    )
+    assert _apps_discovery._env_app_candidates() == []
+
+
+def test_probe_card_blocks_off_allowlist_before_http(monkeypatch):
+    """#613: never attach Bearer / open HTTP for non-Apps or private targets."""
+    calls: list[object] = []
+
+    class _BoomClient:
+        def __init__(self, *a, **k):
+            calls.append(("Client", k))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            calls.append(("get", a, k))
+            raise AssertionError("must not HTTP off-allowlist")
+
+    monkeypatch.setattr("httpx.Client", _BoomClient)
+    assert _apps_discovery._probe_card(
+        "https://evil.example",
+        {"Authorization": "Bearer secret"},
+        1.0,
+    ) is None
+    assert _apps_discovery._probe_card(
+        "https://169.254.169.254/",
+        {"Authorization": "Bearer secret"},
+        1.0,
+    ) is None
+    assert calls == []
+
+
+def test_probe_card_httpx_no_redirects_and_allowlisted(monkeypatch):
+    """#613: allowlisted Apps host uses httpx with follow_redirects=False."""
+    seen: dict[str, object] = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return CARD
+
+    class _Client:
+        def __init__(self, *a, **k):
+            seen["kwargs"] = k
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, headers=None):
+            seen["url"] = url
+            seen["headers"] = headers
+            return _Resp()
+
+    monkeypatch.setattr("httpx.Client", _Client)
+    monkeypatch.setattr(
+        "apx_agent._ui_probe.validate_wire_peer_url",
+        lambda _url: None,
+    )
+    card = _apps_discovery._probe_card(
+        "https://peer.aws.databricksapps.com",
+        {"Authorization": "Bearer x"},
+        2.5,
+    )
+    assert card == CARD
+    assert seen["kwargs"].get("follow_redirects") is False
+    assert str(seen["url"]).endswith("/.well-known/agent.json")
+    assert seen["headers"] == {"Authorization": "Bearer x"}
+
+
+def test_probe_card_redirect_status_is_not_followed(monkeypatch):
+    class _Resp:
+        status_code = 302
+
+        def json(self):
+            raise AssertionError("must not parse redirect body")
+
+    class _Client:
+        def __init__(self, *a, **k):
+            assert k.get("follow_redirects") is False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr("httpx.Client", _Client)
+    monkeypatch.setattr(
+        "apx_agent._ui_probe.validate_wire_peer_url",
+        lambda _url: None,
+    )
+    assert (
+        _apps_discovery._probe_card(
+            "https://peer.aws.databricksapps.com",
+            {"Authorization": "Bearer x"},
+            1.0,
+        )
+        is None
+    )
 
 
 def test_list_merges_app_agent_as_its_own_row(monkeypatch):

@@ -7,19 +7,20 @@ workspace's Apps, probe each running one's ``/.well-known/agent.json``, and keep
 the ones that answer with an apx/A2A agent card.
 
 The probe uses the SDK's own credentials (Bearer token via
-``ws.config.authenticate()``), which the Databricks Apps proxy accepts. Any app
-the caller can't list, can't reach, or that isn't an apx agent is simply
-omitted — discovery is best-effort and never raises.
+``ws.config.authenticate()``), which the Databricks Apps proxy accepts — but
+only after an Apps-host allowlist + SSRF check (#613). Redirects are never
+followed with credentials. Any app the caller can't list, can't reach, or that
+isn't an apx agent is simply omitted — discovery is best-effort and never
+raises.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
 import json
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 
 @dataclass
@@ -36,6 +37,23 @@ class AppAgentInfo:
     """Skill / tool names from the A2A card (best-effort)."""
 
 
+_APPS_HOST_SUFFIX = ".databricksapps.com"
+
+
+def _is_apps_https_url(url: str) -> bool:
+    """True when ``url`` is ``https://*.databricksapps.com`` (hostname suffix only)."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    return host == "databricksapps.com" or host.endswith(_APPS_HOST_SUFFIX)
+
+
 def _bearer_headers(ws: Any) -> dict[str, str]:
     """Auth headers from the SDK config (the configured Bearer credentials)."""
     try:
@@ -47,16 +65,26 @@ def _bearer_headers(ws: Any) -> dict[str, str]:
 def _probe_card(url: str, headers: dict[str, str], timeout: float) -> dict[str, Any] | None:
     """GET ``<url>/.well-known/agent.json``; return the parsed card or ``None``.
 
-    ``None`` means "not an apx agent / unreachable" — every error is non-fatal.
+    ``None`` means "not an apx agent / unreachable / blocked" — every error is
+    non-fatal. Credentials are attached only after the Apps-host + SSRF
+    allowlist (#613); redirects are never followed.
     """
+    import httpx
+
+    from ._ui_probe import validate_wire_peer_url
+
+    # Refuse Bearer to non-Apps / private / link-local targets before any HTTP.
+    if validate_wire_peer_url(url) is not None:
+        return None
+
     card_url = url.rstrip("/") + "/.well-known/agent.json"
-    req = urllib.request.Request(card_url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (workspace URL)
-            if resp.status != 200:
+        with httpx.Client(follow_redirects=False, timeout=timeout) as client:
+            resp = client.get(card_url, headers=headers)
+            if resp.status_code != 200:
                 return None
-            data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+            data = resp.json()
+    except (httpx.HTTPError, ValueError, OSError, json.JSONDecodeError):
         return None
     # An A2A card carries a name and a skills list — that's the apx signal.
     if isinstance(data, dict) and data.get("name") and "skills" in data:
@@ -134,7 +162,7 @@ def _env_app_candidates() -> list[tuple[str, str]]:
             m = re.match(r"^(.+)-(\d{10,})$", host.split(".")[0] if host else "")
             if m:
                 name = m.group(1)
-        if url.startswith("http"):
+        if url.startswith("http") and _is_apps_https_url(url):
             out.append((name or "app", url.rstrip("/")))
     return out
 
