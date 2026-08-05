@@ -6,8 +6,13 @@ Each surface is self-contained and styled to a shared dark theme; a fixed header
 (rendered by `_ui_nav.py`) lets you jump between them.
 
 On a **deployed App**, chat/Discover/Probe/Topology work behind workspace SSO.
-Discover inventory GETs use the caller's OBO token and **fail closed** (401)
-when it is missing — they do not list under the App service principal (#612).
+Discover **and Setup** inventory GETs use the caller's OBO token and **fail
+closed** (401) when it is missing — they do not list under the App service
+principal (#612, #627). That covers `/_apx/setup/catalogs`, `/schemas`,
+`/tables`, `/warehouses`, `/vs-indexes` and the Setup page's auto-prefill probe,
+so a suggestion never names a resource only the App SP can read. Operators who
+genuinely want App-SP inventory opt in with
+`APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true`.
 **Write** routes (edit, create tools, replay) are allowed for any **signed-in
 Apps user** (SSO / `X-Forwarded-Access-Token`). Discover wire/unwire additionally
 requires `APX_DEV_UI_TOKEN` (#611). Optional `APX_DEV_UI_TOKEN` also covers
@@ -83,6 +88,8 @@ When the project has no pack but a DataAgent declares a `catalog.schema`, the em
 
 ### `/_apx/setup` — First-run wizard
 Picks a catalog/schema, a SQL warehouse, and seeds suggested tools and agent instructions. Writes to `pyproject.toml` and the project's `.env` so the next reload comes up configured. Surfaces a nudge from `/_apx/agent` when `DEMO_CATALOG` / `WAREHOUSE_ID` aren't set.
+
+The dropdowns and the first-run auto-prefill both read as the signed-in user (OBO), the same as Discover — on a deployed App without OBO they fail closed rather than suggesting App-service-principal resources, and the page renders with unseeded dropdowns you fill in manually.
 
 ### `/_apx/eval` — Evalset + judge
 Stores evaluation rows (`/_apx/eval/data`), runs them through the agent, and scores responses with an LLM-as-judge (`/_apx/eval/judge`). Lightweight regression harness for iterating on prompts and tool wiring.
