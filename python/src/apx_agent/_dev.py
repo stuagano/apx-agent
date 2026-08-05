@@ -2298,8 +2298,14 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if not (current.get("DEMO_CATALOG")
                 and current.get("DEMO_SCHEMA")
                 and current.get("WAREHOUSE_ID")):
+            from ._defaults import _ws_prefer_obo
+
             try:
-                ws: WorkspaceClient = request.app.state.workspace_client
+                # Probe as the caller (#627): a suggestion the signed-in user
+                # cannot actually read is worse than no suggestion. On Apps
+                # without OBO this raises and the page renders unseeded rather
+                # than proposing App-SP-visible resources.
+                ws: WorkspaceClient = _ws_prefer_obo(request)
                 picked = await asyncio.to_thread(_pick_workspace_defaults, ws)
                 for k, v in picked.items():
                     current.setdefault(k, v)
@@ -2941,8 +2947,17 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.get("/_apx/setup/catalogs", response_model=list[str])
     async def setup_catalogs(request: Request) -> Any:
+        """List catalogs the caller can see.
+
+        Setup inventory is user-scoped like Discover (#627): reads run under the
+        caller's OBO token and fail closed (401) on Apps without one, so the
+        dropdowns never offer App-SP-visible catalogs the user cannot read.
+        """
         from fastapi.responses import JSONResponse
-        ws: WorkspaceClient = request.app.state.workspace_client
+
+        from ._defaults import _ws_prefer_obo
+
+        ws: WorkspaceClient = _ws_prefer_obo(request)
         try:
             cats = [c.name for c in ws.catalogs.list() if c.name]
         except Exception as e:
@@ -2952,10 +2967,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     @router.get("/_apx/setup/schemas", response_model=list[str])
     async def setup_schemas(request: Request) -> Any:
         from fastapi.responses import JSONResponse
+        from ._defaults import _ws_prefer_obo
+
         catalog = request.query_params.get("catalog", "")
         if not catalog:
             return []
-        ws: WorkspaceClient = request.app.state.workspace_client
+        ws: WorkspaceClient = _ws_prefer_obo(request)
         try:
             schemas = [s.name for s in ws.schemas.list(catalog_name=catalog) if s.name
                        and s.name not in ("information_schema",)]
@@ -2967,11 +2984,14 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def setup_tables(request: Request) -> Any:
         from fastapi.responses import JSONResponse
         import asyncio as _asyncio
+
+        from ._defaults import _ws_prefer_obo
+
         catalog = request.query_params.get("catalog", "")
         schema = request.query_params.get("schema", "")
         if not catalog or not schema:
             return []
-        ws: WorkspaceClient = request.app.state.workspace_client
+        ws: WorkspaceClient = _ws_prefer_obo(request)
         try:
             tables = await _asyncio.to_thread(
                 lambda: [t.name for t in ws.tables.list(catalog_name=catalog, schema_name=schema) if t.name]
@@ -2984,7 +3004,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def setup_warehouses(request: Request) -> Any:
         from fastapi.responses import JSONResponse
         import asyncio as _asyncio
-        ws: WorkspaceClient = request.app.state.workspace_client
+
+        from ._defaults import _ws_prefer_obo
+
+        ws: WorkspaceClient = _ws_prefer_obo(request)
         try:
             whs = await _asyncio.to_thread(lambda: [
                 {"id": w.id, "name": w.name or w.id, "state": getattr(w.state, "value", str(w.state))}
@@ -3345,7 +3368,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def setup_vs_indexes(request: Request) -> Any:
         import asyncio as _asyncio
         from fastapi.responses import JSONResponse
-        ws: WorkspaceClient = request.app.state.workspace_client
+
+        from ._defaults import _ws_prefer_obo
+
+        ws: WorkspaceClient = _ws_prefer_obo(request)
         try:
             indexes = await _asyncio.to_thread(lambda: _discover_vs_indexes(ws))
         except Exception as exc:

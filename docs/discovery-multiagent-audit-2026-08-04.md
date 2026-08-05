@@ -85,7 +85,7 @@ guardrails cannot apply; document remote leaf policy.
 
 | ID | Sev | Summary | Issue |
 |----|-----|---------|-------|
-| D5 | Med | Docs/UI oversell user-scoped Discover vs SP-seeded setup (residual after #612) | [#627](https://github.com/stuagano/apx-agent/issues/627) |
+| D5 | Med | Docs/UI oversell user-scoped Discover vs SP-seeded setup (residual after #612) — **fixed:** Setup inventory + auto-prefill now read via OBO | [#627](https://github.com/stuagano/apx-agent/issues/627) |
 | D6 | Med | Wire-tool plants UC/Genie/VS by client id; no wire-time grant check | [#628](https://github.com/stuagano/apx-agent/issues/628) |
 | D7 | Med | Discover inventory GETs open to any OBO App user (recon; residual after #612) | [#629](https://github.com/stuagano/apx-agent/issues/629) |
 | M5 | Med | A2A auth assumed at gateway, not in-process | [#631](https://github.com/stuagano/apx-agent/issues/631) |

@@ -144,6 +144,125 @@ async def test_workspace_agents_apps_no_obo_returns_401(
     assert r.status_code == 401
 
 
+def _inventory_ws(prefix: str) -> MagicMock:
+    """Workspace client whose inventory is tagged with ``prefix`` so a test can
+    tell which identity a Setup listing ran under."""
+    ws = MagicMock()
+    catalog = MagicMock()
+    catalog.name = f"{prefix}_catalog"
+    schema = MagicMock()
+    schema.name = f"{prefix}_schema"
+    table = MagicMock()
+    table.name = f"{prefix}_table"
+    warehouse = MagicMock()
+    warehouse.id = f"{prefix}-wh"
+    warehouse.name = f"{prefix} warehouse"
+    warehouse.state = MagicMock(value="RUNNING")
+    ws.catalogs.list.return_value = [catalog]
+    ws.schemas.list.return_value = [schema]
+    ws.tables.list.return_value = [table]
+    ws.warehouses.list.return_value = [warehouse]
+    return ws
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,params,expected", [
+    ("/_apx/setup/catalogs", {}, ["obo_catalog"]),
+    ("/_apx/setup/schemas", {"catalog": "obo_catalog"}, ["obo_schema"]),
+    (
+        "/_apx/setup/tables",
+        {"catalog": "obo_catalog", "schema": "obo_schema"},
+        ["obo_table"],
+    ),
+    (
+        "/_apx/setup/warehouses",
+        {},
+        [{"id": "obo-wh", "name": "obo warehouse", "state": "RUNNING"}],
+    ),
+])
+async def test_setup_inventory_lists_under_caller_obo_client(
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    params: dict[str, str],
+    expected: list,
+):
+    """#627: Setup inventory is user-scoped like Discover, not App-SP-scoped."""
+    obo_ws = _inventory_ws("obo")
+    app.state.workspace_client = _inventory_ws("sp")
+    monkeypatch.setattr("apx_agent._defaults._ws_prefer_obo", lambda _request: obo_ws)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get(
+            route,
+            params=params,
+            headers={"X-Forwarded-Access-Token": "obo-token"},
+        )
+
+    assert r.status_code == 200, r.text
+    assert r.json() == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,params", [
+    ("/_apx/setup/catalogs", {}),
+    ("/_apx/setup/schemas", {"catalog": "sp_catalog"}),
+    ("/_apx/setup/tables", {"catalog": "sp_catalog", "schema": "sp_schema"}),
+    ("/_apx/setup/warehouses", {}),
+    ("/_apx/setup/vs-indexes", {}),
+])
+async def test_setup_inventory_apps_no_obo_returns_401(
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    params: dict[str, str],
+):
+    """#627: Setup inventory fails closed on Apps without OBO (no App SP list)."""
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+    monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
+    sp_ws = _inventory_ws("sp")
+    for lister in (
+        sp_ws.catalogs.list,
+        sp_ws.schemas.list,
+        sp_ws.tables.list,
+        sp_ws.warehouses.list,
+        sp_ws.vector_search_endpoints.list_endpoints,
+    ):
+        lister.side_effect = AssertionError("must not list under App SP without OBO")
+    app.state.workspace_client = sp_ws
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get(route, params=params)
+
+    assert r.status_code == 401, r.text
+
+
+@pytest.mark.asyncio
+async def test_setup_page_seeds_defaults_from_caller_obo_client(
+    app: FastAPI, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """#627: the Setup page's auto-prefill probes as the caller, not the App SP."""
+    obo_ws = _inventory_ws("obo")
+    app.state.workspace_client = _inventory_ws("sp")
+    monkeypatch.setattr("apx_agent._defaults._ws_prefer_obo", lambda _request: obo_ws)
+    monkeypatch.setattr("apx_agent._dev._find_env_path", lambda: tmp_path / ".env")
+
+    probed: list[MagicMock] = []
+    monkeypatch.setattr(
+        "apx_agent._dev._pick_workspace_defaults",
+        lambda ws: probed.append(ws) or {},
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get(
+            "/_apx/setup",
+            headers={"X-Forwarded-Access-Token": "obo-token"},
+        )
+
+    assert r.status_code == 200
+    assert probed == [obo_ws]
+
+
 @pytest.mark.asyncio
 async def test_workspace_functions_lists_uc(app: FastAPI):
     fn = MagicMock()
