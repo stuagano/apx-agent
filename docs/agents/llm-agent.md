@@ -8,7 +8,7 @@
 - **`tools`** is a list of Python functions, tool objects, or `agent_tool(...)` wrappers. The LLM calls them in a loop until it produces a final answer.
 - **`description`** is the one-line summary used in routing context (RouterAgent/HandoffAgent) and A2A discovery cards. Write it like tool documentation — when to invoke this agent, what it knows.
 - **`model`** names the LLM endpoint in your Databricks workspace. It is not a constructor argument — set it via `[tool.apx.agent]` in `pyproject.toml`. Swap the endpoint to change the underlying model without changing anything else.
-- **`max_iterations`** is a safety cap on tool-calling loops. It defaults to `None`, in which case LangGraph's own recursion limit applies (apx adds no cap of its own); set an integer to bound the loop explicitly.
+- **`max_iterations`** is a safety cap on tool-calling loops. It defaults to `None`, in which case LangGraph's own recursion limit applies (apx adds no cap of its own); set an integer (including `0`) to bound the loop explicitly. `0` is a real cap (`recursion_limit=1`), not “unlimited.”
 
 ## Minimal example
 

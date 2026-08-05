@@ -294,7 +294,7 @@ Use code when the tool needs custom logic; use config for plain resource referen
 
 ### Limit iterations
 
-By default, the agent loops until it produces a final answer. Use `max_iterations` to cap the number of model+tool steps — useful when you want a hard ceiling on latency or cost:
+By default, the agent loops until it produces a final answer. Use `max_iterations` to cap the number of model+tool steps — useful when you want a hard ceiling on latency or cost. `None` leaves LangGraph’s default; any integer including `0` is an explicit cap (`0` → one hop, effectively no tool loop):
 
 ```python
 agent = Agent(
