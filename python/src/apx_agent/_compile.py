@@ -384,8 +384,11 @@ def _compile_llm_agent(
         # inside the agent (LLM calls + tool calls), which is exactly the
         # surface our hooks want to observe.
         config["callbacks"] = [handler]
+    # Cap tool-calling loops when the author set max_iterations.
+    # Use ``is not None`` so ``max_iterations=0`` is an explicit cap
+    # (recursion_limit=1), not a silent fall-through (#632).
     max_iter = getattr(agent, "_max_iterations", None)
-    if max_iter:
+    if max_iter is not None:
         # Each agent round is one LLM superstep plus (optionally) a tool
         # superstep; allow two graph supersteps per requested iteration so a
         # tool-calling turn isn't cut off mid-round, plus a small margin for

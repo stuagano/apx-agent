@@ -56,6 +56,11 @@ drafter = Agent(instructions="Draft a response. Call finish_loop when satisfied.
 refiner = LoopAgent(drafter, max_iterations=5)
 ```
 
+Nested budgets multiply. A `LoopAgent(max_iterations=N)` whose body is (or
+calls via `agent_tool`) another agent with its own `max_iterations=M` can run
+up to roughly `N × M` inner steps per outer turn — set both caps deliberately.
+`max_iterations=0` on an `LlmAgent` is an explicit hard stop, not unlimited.
+
 ## `agent_tool` — LLM-driven delegation
 
 When the parent LLM should decide whether — and how many times — to delegate to a sub-agent, wrap the sub-agent as a tool. The parent calls it like any other tool; the "tool" runs a full sub-agent loop and returns its final response. (This mirrors Google ADK's `AgentTool` pattern as a first-class composition primitive.)
