@@ -29,7 +29,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from ._ui_edit import _require_python_binding
 
 # ── POST /_apx/eval/data ─────────────────────────────────────────────────────
 
@@ -481,6 +483,17 @@ class DiscoverWireToolRequest(BaseModel):
     index_name: str | None = None  # vector_search_index
     columns: list[str] | None = None
     binding_name: str | None = None  # override / unwire key
+
+    @field_validator("binding_name")
+    @classmethod
+    def _binding_name_is_identifier(cls, v: str | None) -> str | None:
+        """#630: reject non-identifier / keyword names before the handler runs."""
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            return None
+        return _require_python_binding(stripped)
 
 
 class DiscoverWireResponse(BaseModel):

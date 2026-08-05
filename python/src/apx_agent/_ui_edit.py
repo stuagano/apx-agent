@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import keyword
 import logging
 import re
 from pathlib import Path
@@ -896,18 +897,35 @@ def _slug_tool_name(identifier: str, existing: set[str] | None = None) -> str:
     parts = [p for p in identifier.split(".") if p]
     raw = parts[-1] if parts else "tool"
     base = re.sub(r"\W", "_", raw) or "tool"
-    if base[0].isdigit():
+    if base[0].isdigit() or keyword.iskeyword(base):
         base = f"t_{base}"
     if base not in existing:
         return base
     if len(parts) >= 2:
         cand = re.sub(r"\W", "_", f"{parts[-2]}_{base}")
+        if cand[0].isdigit() or keyword.iskeyword(cand):
+            cand = f"t_{cand}"
         if cand not in existing:
             return cand
     i = 2
     while f"{base}_{i}" in existing:
         i += 1
     return f"{base}_{i}"
+
+
+def _require_python_binding(name: str) -> str:
+    """Return ``name`` if it is a non-keyword Python identifier; else raise.
+
+    Discover interpolates ``binding_name`` into ``agent.py``
+    (``{binding} = uc_function_tool(...)``). Reject anything that would not
+    parse as a Name (#630).
+    """
+    n = name.strip()
+    if not n.isidentifier() or keyword.iskeyword(n):
+        raise ValueError(
+            f"binding_name {name!r} must be a Python identifier and not a keyword"
+        )
+    return n
 
 
 def _existing_binding_names(source: str) -> set[str]:
