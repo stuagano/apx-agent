@@ -871,6 +871,13 @@ def _parse_judge_output(text: str) -> _JudgeOutput:
 # The guard is attached once at the router level and only enforces on
 # state-changing methods plus the SSRF probe / per-principal data reads, so
 # benign read GETs stay open.
+#
+# Discover / Setup inventory GETs (#629) are intentionally ungated beyond OBO:
+# any signed-in Apps user may enumerate resources *visible to them* under their
+# own grants (caller-scoped discovery). That is not App-SP recon — handlers use
+# ``_ws_prefer_obo`` and fail closed without OBO (#612). Requiring
+# ``APX_DEV_UI_TOKEN`` for inventory would break Discover browse for ordinary
+# App users; mutations stay operator-gated (#611).
 # ---------------------------------------------------------------------------
 
 _DEV_TOKEN_HEADER = "x-apx-dev-token"
@@ -994,8 +1001,9 @@ async def _dev_write_guard(request: Request) -> None:
     Attached at router construction so it covers every current and future
     write route (edit, tools/new, tools/suggest, replay/*, setup writes,
     DELETE tools) without per-route annotations that could miss one. Benign read
-    GETs (chat HTML, topology, probe/checks, setup/catalogs, …) fall through so
-    end-user chat and diagnostics work without the operator token.
+    GETs (chat HTML, topology, probe/checks, setup/catalogs, Discover inventory,
+    …) fall through so end-user chat and diagnostics work without the operator
+    token — intentional under OBO grants (#629), not an oversight.
     """
     # Two side-effecting GETs need gating too: the SSRF probe and
     # /_apx/deploy/stream, which spawns ``apx-agent deploy`` as a subprocess
