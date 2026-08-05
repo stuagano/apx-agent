@@ -18,7 +18,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -41,6 +41,7 @@ from ._agents import BaseAgent
 from ._audit import AuditAttrs, stamp_caller_correlation
 from ._models import AgentConfig
 from ._mlflow_tracing import safe_span
+from ._obo import _in_databricks_app, _sp_fallback_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,40 @@ _INVALID_PARAMS = -32602
 _INTERNAL_ERROR = -32603
 _TASK_NOT_FOUND = -32001
 _TASK_NOT_CANCELABLE = -32002
+
+
+def _require_a2a_apps_identity(request: Request) -> None:
+    """Fail closed on Apps when the request carries no gateway identity (#631).
+
+    Auth for App-to-app A2A remains the Databricks Apps SSO gateway + CAN_USE —
+    this does **not** invent a second protocol. It only asserts that a request
+    reaching ``POST /`` inside the Apps runtime still carries the proxy context
+    the gateway would have injected (``X-Forwarded-Access-Token`` or
+    ``Authorization: Bearer``). Local ``apx-agent run`` is unchanged. Operators
+    that intentionally expose A2A without gateway identity opt in with
+    ``APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true`` (same escape hatch as G2).
+    """
+    if not _in_databricks_app():
+        return
+    if _sp_fallback_allowed():
+        return
+    obo = (request.headers.get("x-forwarded-access-token") or "").strip()
+    if obo:
+        return
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer ") and auth[7:].strip():
+        return
+    raise HTTPException(
+        status_code=401,
+        detail=(
+            "A2A on a deployed App requires Apps gateway identity "
+            "(X-Forwarded-Access-Token or Authorization Bearer). "
+            "Authenticate at the Apps SSO gateway and grant CAN_USE; "
+            "this check only asserts that context is present (#631). "
+            "Local apx-agent run is unaffected. To intentionally run "
+            "without gateway identity, set APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true."
+        ),
+    )
 
 
 class _OwnedTask:
@@ -293,6 +328,7 @@ def mount_a2a_route(
 
     @app.post("/", include_in_schema=False)
     async def a2a_jsonrpc(request: Request) -> Any:
+        _require_a2a_apps_identity(request)
         try:
             raw = await request.json()
         except Exception:

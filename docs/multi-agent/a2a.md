@@ -21,12 +21,30 @@ On Model Serving, UC + the Mosaic AI registry are the equivalent discovery surfa
 
 ## App-to-app authentication
 
-When sub-agents are deployed as sibling Apps (not Model Serving endpoints), the orchestrator's calls go through the Databricks Apps SSO gateway:
+When sub-agents are deployed as sibling Apps (not Model Serving endpoints),
+**auth is at the Databricks Apps SSO gateway**, not a second in-process
+protocol (#631):
 
-1. **Routes under `/api/`** accept bearer tokens; other routes trigger interactive SSO. apx-agent only mounts its tool/MCP/dev-UI routes under the `/api` (`api_prefix`) path. The agent invocation endpoints — `/invocations` and `/responses` — mount only at their natural paths; there is no `/api/` mirror for them.
-2. **Each app has a service principal.** The platform creates one automatically. M2M credentials authenticate outbound calls.
-3. **CAN_USE permission** on the callee app for the caller's SP. Without it, the gateway returns 401.
-4. **FMAPI uses the app's own identity.** When app A calls app B, B's internal LLM calls use B's own SP token, not A's.
+1. The caller authenticates to the callee App (bearer / SSO). Without
+   credentials the gateway rejects before the agent process sees the request.
+2. **CAN_USE permission** on the callee app for the caller's SP. Without it,
+   the gateway returns 401.
+3. Each app has a service principal (platform-created). M2M credentials
+   authenticate outbound calls.
+4. **FMAPI uses the callee app's own identity.** When app A calls app B, B's
+   internal LLM calls use B's own SP token, not A's.
+
+The A2A JSON-RPC surface is `POST /` on the App. Inside the Apps runtime,
+apx-agent **also fails closed** when a request reaches that handler with
+neither `X-Forwarded-Access-Token` nor `Authorization: Bearer` — a belt-and-
+suspenders check that the gateway (or a mis-mounted path) did not drop
+identity. Local `apx-agent run` stays open for the solo-dev loop. Operators
+that intentionally serve A2A without gateway identity set
+`APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true` (same opt-in as G2 / Discover).
+
+Tool/MCP/dev-UI routes under `/api/` (`api_prefix`) also accept bearer tokens
+via the gateway; `/invocations` and `/responses` mount only at their natural
+paths (no `/api/` mirror).
 
 ```bash
 # 1. Mint an OAuth secret for each app's SP
@@ -54,8 +72,9 @@ databricks api patch /api/2.0/permissions/apps/<sub-agent-name> \
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| 302 redirect (HTML login page) | SSO gateway intercepted an unauthenticated call | Send a bearer token; A2A calls hit `/invocations` (or `/responses`) at the natural path — there is no `/api/` variant |
-| 401 Unauthorized | Caller's SP lacks CAN_USE on callee | Grant via permissions API |
+| 302 redirect (HTML login page) | SSO gateway intercepted an unauthenticated call | Send a bearer token; A2A JSON-RPC is `POST /` on the App URL |
+| 401 Unauthorized (gateway) | Caller's SP lacks CAN_USE on callee | Grant via permissions API |
+| 401 from apx-agent on Apps (`#631`) | Request reached `POST /` without proxy/bearer headers | Call through the Apps gateway (or set `APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true` only if intentional) |
 | FMAPI 401 inside sub-agent | Sub-agent using caller's OBO for LLM calls | Set `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET` on the sub-agent |
 | `invalid_client` on M2M | Wrong SP secret (app recreated, SP changed) | Mint a new secret for the current SP |
 
